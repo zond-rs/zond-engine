@@ -75,7 +75,7 @@ pub enum IpParseError {
 ///
 /// # Arguments
 ///
-/// * `inputs` - A slice of string-like objects representing scan targets.
+/// * `ips` - A slice of string-like objects representing scan targets.
 ///
 /// # Errors
 ///
@@ -88,32 +88,26 @@ pub enum IpParseError {
 /// use zond_core::parse::ip::{to_set, Keyword};
 /// use zond_core::models::ip::set::IpSet;
 ///
-/// let targets = vec!["192.168.1.0/24", "10.0.0.1, 10.0.0.5-10"];
-/// let noop_resolver = |_: Keyword, _: &mut IpSet| Ok(());
-/// let mut set = to_set(&targets, &noop_resolver).unwrap();
+/// let ips = vec!["192.168.1.0/24", "10.0.0.1, 10.0.0.5-10"];
+/// let mut set = to_set(&ips).unwrap();
 ///
 /// // /24 (256) + single (1) + range 5-10 (6) = 263
 /// assert_eq!(set.len(), 263);
 /// ```
-pub fn to_set<S, F>(inputs: &[S], resolve_fn: &F) -> Result<IpSet, IpParseError>
+pub fn to_set<S>(ips: &[S]) -> Result<IpSet, IpParseError>
 where
     S: AsRef<str>,
-    F: Fn(Keyword, &mut IpSet) -> Result<(), IpParseError>,
 {
     let mut set = IpSet::new();
 
-    for input in inputs {
-        let s = input.as_ref().trim();
+    for ip in ips {
+        let s = ip.as_ref().trim();
         if s.is_empty() {
             continue;
         }
 
-        if s.contains(',') {
-            for part in s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
-                parse_and_insert(part, &mut set, resolve_fn)?;
-            }
-        } else {
-            parse_and_insert(s, &mut set, resolve_fn)?;
+        for part in s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
+            parse_and_insert(part, &mut set)?;
         }
     }
 
@@ -129,14 +123,7 @@ where
 }
 
 /// Identifies the format of a single target string and inserts it into the set.
-fn parse_and_insert<F>(s: &str, set: &mut IpSet, resolve_fn: F) -> Result<(), IpParseError>
-where
-    F: Fn(Keyword, &mut IpSet) -> Result<(), IpParseError>,
-{
-    if s.eq_ignore_ascii_case("lan") {
-        return resolve_fn(Keyword::Lan, set);
-    }
-
+fn parse_and_insert(s: &str, set: &mut IpSet) -> Result<(), IpParseError> {
     if s.contains('/') {
         let range = parse_cidr(s)?;
         set.insert_range(range);
@@ -242,14 +229,10 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
-    fn noop_resolver(_: Keyword, _: &mut IpSet) -> Result<(), IpParseError> {
-        Ok(())
-    }
-
     #[test]
     fn to_set_basic_single() {
         let input = vec!["192.168.1.1"];
-        let mut set = to_set(&input, &noop_resolver).expect("Should parse single IP");
+        let mut set = to_set(&input).expect("Should parse single IP");
         assert_eq!(set.len(), 1);
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
     }
@@ -257,7 +240,7 @@ mod tests {
     #[test]
     fn to_set_comma_separated() {
         let input = vec!["10.0.0.1, 10.0.0.2, 10.0.0.5"];
-        let mut set = to_set(&input, &noop_resolver).expect("Should parse comma list");
+        let mut set = to_set(&input).expect("Should parse comma list");
         assert_eq!(set.len(), 3);
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
     }
@@ -265,53 +248,35 @@ mod tests {
     #[test]
     fn parse_cidr_blocks() {
         let input = vec!["172.16.0.0/24"];
-        let mut set = to_set(&input, &noop_resolver).expect("Should parse CIDR");
+        let mut set = to_set(&input).expect("Should parse CIDR");
         assert_eq!(set.len(), 256);
     }
 
     #[test]
     fn parse_short_range_suffix() {
         let input = vec!["192.168.1.250-2.10"];
-        let mut set = to_set(&input, &noop_resolver).unwrap();
+        let mut set = to_set(&input).unwrap();
         assert_eq!(set.len(), 17);
     }
 
     #[test]
     fn error_invalid_cidr() {
         let input = vec!["192.168.1.1/33"];
-        let result = to_set(&input, &noop_resolver);
+        let result = to_set(&input);
         assert_eq!(result.unwrap_err(), IpParseError::InvalidPrefix(33));
     }
 
     #[test]
     fn error_invalid_range_order() {
         let input = vec!["10.0.0.10-1"];
-        let result = to_set(&input, &noop_resolver);
+        let result = to_set(&input);
         assert!(matches!(result, Err(IpParseError::InvalidRange(_, _))));
     }
 
     #[test]
     fn empty_input_error() {
         let input: Vec<&str> = vec!["", " "];
-        let result = to_set(&input, &noop_resolver);
+        let result = to_set(&input);
         assert_eq!(result.unwrap_err(), IpParseError::EmptySet);
-    }
-
-    #[test]
-    fn lan_keyword_resolution() {
-        let input = vec!["lan"];
-
-        let mock_lan = |key: Keyword, set: &mut IpSet| match key {
-            Keyword::Lan => {
-                set.insert("10.0.0.1".parse().unwrap());
-                Ok(())
-            }
-            _ => Ok(()),
-        };
-
-        let mut set = to_set(&input, &mock_lan).expect("Should resolve LAN keyword");
-
-        assert!(set.contains(&"10.0.0.1".parse().unwrap()));
-        assert_eq!(set.len(), 1);
     }
 }

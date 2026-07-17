@@ -58,18 +58,13 @@ pub fn to_target_map(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ip::Keyword;
     use std::net::IpAddr;
-
-    fn noop_resolver(_: Keyword, _: &mut IpSet) -> Result<(), IpParseError> {
-        Ok(())
-    }
 
     #[test]
     fn facade_ip_resolution() {
         let inputs = vec!["127.0.0.1", "10.0.0.1-5"];
 
-        let mut set = to_ipset(&inputs, &noop_resolver).expect("Facade should resolve IP targets");
+        let mut set = to_ipset(&inputs).expect("Facade should resolve IP targets");
 
         assert_eq!(set.len(), 6);
         assert!(set.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
@@ -79,7 +74,7 @@ mod tests {
     #[test]
     fn facade_empty_input() {
         let inputs: Vec<&str> = vec![];
-        let result = to_ipset(&inputs, &noop_resolver);
+        let result = to_ipset(&inputs);
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), IpParseError::EmptySet);
@@ -88,7 +83,7 @@ mod tests {
     #[test]
     fn facade_comma_splitting() {
         let inputs = vec!["1.1.1.1, 2.2.2.2"];
-        let mut set = to_ipset(&inputs, &noop_resolver).unwrap();
+        let mut set = to_ipset(&inputs).unwrap();
 
         assert_eq!(set.len(), 2);
     }
