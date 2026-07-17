@@ -15,13 +15,13 @@ use zond_core::{
     parse::{IS_LAN_SCAN, IpParseError, ip::Keyword},
     warn,
 };
-
+use zond_core::models::ip::range::IpRange;
 use crate::interface;
 
 pub fn resolve(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
     match keyword {
         Keyword::Lan => resolve_lan(ip_set),
-        Keyword::Vpn => Ok(IpParseError),
+        Keyword::Vpn => Err(IpParseError::LanError("VPN resolution not implemented".into())),
     }
 }
 
@@ -47,10 +47,11 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
             verbosity = 1,
             "Resolved LAN: {} - {}", range.start_addr, range.end_addr
         );
-        set.insert_range(range);
+        set.insert_range(IpRange::V4(range));
     } else {
         warn!("Small subnet; scanning full network range.");
-        set.insert_range(Ipv4Range::new(net.network(), net.broadcast()).unwrap());
+        let range = Ipv4Range::new(net.network(), net.broadcast()).unwrap();
+        set.insert_range(IpRange::V4(range));
     }
 
     Ok(())

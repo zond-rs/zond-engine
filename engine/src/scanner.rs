@@ -25,8 +25,8 @@ use zond_core::models::host::Host;
 use zond_core::models::ip::set::IpSet;
 use zond_core::models::target::TargetMap;
 use zond_core::input::InputHandle;
-use zond_core::net::interface;
 use zond_core::{error, info, success, warn};
+use zond_system::interface
 
 mod connect;
 pub mod dispatcher;
@@ -85,7 +85,8 @@ pub async fn scan(target_map: TargetMap, cfg: &ZondConfig) -> anyhow::Result<Vec
 /// - **Concurrency**: Spawns multiple Tokio tasks; ensure the caller is within a multi-threaded runtime.
 pub async fn discover(targets: IpSet, cfg: &ZondConfig) -> anyhow::Result<Vec<Host>> {
     STOP_SIGNAL.store(false, Ordering::Relaxed);
-    let use_raw_sockets = preflight_check(cfg);
+    let use_raw_sockets: bool = preflight_check(cfg);
+
     if !use_raw_sockets {
         return connect::discover(targets).await;
     }
@@ -185,7 +186,7 @@ async fn spawn_resolver(dns_rx: UnboundedReceiver<IpAddr>) -> JoinHandle<Option<
 
 /// Prepares the environment for a session.
 ///
-/// Handles global side-effects like input listeners and returns whether
+/// Handles global side effects like input listeners and returns whether
 /// the process has the necessary privileges for raw socket operations.
 fn preflight_check(cfg: &ZondConfig) -> bool {
     if !cfg.disable_input {
@@ -196,6 +197,7 @@ fn preflight_check(cfg: &ZondConfig) -> bool {
         warn!("Root privileges missing, defaulting to unprivileged TCP scan");
         return false;
     }
+
     success!("Root privileges detected, raw socket scan enabled");
     true
 }

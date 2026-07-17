@@ -8,26 +8,26 @@ use pnet::datalink::{self, NetworkInterface};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
-
-use crate::models::ip::set::IpSet;
+use zond_core::models::ip::range::IpRange::V4;
+use zond_core::models::ip::set::IpSet;
 
 /// Maps target IPs to the interface used to reach them, split by Local vs Routed.
 /// Returns: Map<Interface, (Local_Targets, Routed_Targets)> and a set of Unmapped Targets.
 ///
 /// Under the hood, this evaluates `pnet::datalink::interfaces()`.
 pub fn map_ips_to_interfaces(
-    collection: IpSet,
+    ip_set: IpSet,
 ) -> (HashMap<NetworkInterface, (IpSet, IpSet)>, IpSet) {
     let interfaces: Vec<NetworkInterface> = datalink::interfaces()
         .into_iter()
         .filter(|i| i.is_up() && !i.is_loopback() && !i.ips.is_empty())
         .collect();
 
-    map_ips_to_interfaces_with(collection, interfaces)
+    map_ips_to_interfaces_with(ip_set, interfaces)
 }
 
 pub(crate) fn map_ips_to_interfaces_with(
-    collection: IpSet,
+    mut ip_set: IpSet,
     interfaces: Vec<NetworkInterface>,
 ) -> (HashMap<NetworkInterface, (IpSet, IpSet)>, IpSet) {
     let ip_to_idx: HashMap<IpAddr, usize> = interfaces
@@ -41,7 +41,7 @@ pub(crate) fn map_ips_to_interfaces_with(
     let mut singles_to_route = Vec::new();
 
     // 1. Handle Ranges
-    for range in collection.ranges() {
+    for range in ip_set.v4() {
         let start: Ipv4Addr = range.start_addr;
         let end: Ipv4Addr = range.end_addr;
         let mut owner_idx: Option<usize> = None;
@@ -58,7 +58,7 @@ pub(crate) fn map_ips_to_interfaces_with(
         }
 
         if let Some(idx) = owner_idx {
-            result_map.entry(idx).or_default().0.insert_range(*range);
+            result_map.entry(idx).or_default().0.insert_range(V4(*range));
         } else {
             for ip in range.to_iter() {
                 singles_to_route.push(ip);

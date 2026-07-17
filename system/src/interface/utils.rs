@@ -4,7 +4,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-use crate::models::ip::set::IpSet;
+use zond_core::models::ip::set::IpSet;
 use pnet::datalink::NetworkInterface;
 
 /// Resolves a list of prioritized network interfaces (e.g. wired interfaces first).
@@ -36,8 +36,8 @@ pub fn is_layer_2_capable(intf: &NetworkInterface) -> bool {
 }
 
 /// Validates whether the entire set of targets exists on the exact same layer 2 link as the interface.
-pub fn is_on_link(intf: &NetworkInterface, ips: &IpSet) -> bool {
-    for range in ips.ranges() {
+pub fn is_on_link(intf: &NetworkInterface, ips: &mut IpSet) -> bool {
+    for range in ips.v4() {
         let mut range_covered = false;
         for iface_ipnet in &intf.ips {
             if let pnet::ipnetwork::IpNetwork::V4(network) = iface_ipnet

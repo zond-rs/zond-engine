@@ -16,7 +16,7 @@ use std::{
 use anyhow::{Context, ensure};
 use pnet::packet::{Packet, udp::UdpPacket};
 use tokio::sync::mpsc::UnboundedReceiver;
-use zond_engine::{models::{host::Host, ip}, utils};
+use zond_core::{models::{host::Host, ip}};
 use zond_protocols::{
     dns,
     mdns::{self, MdnsRecord},

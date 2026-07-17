@@ -8,3 +8,5 @@ license.workspace = true
 pnet = { workspace = true }
 anyhow = { workspace = true }
 zond-core = { workspace = true }
+rayon = "1.11.0"
+tracing = { workspace = true }
