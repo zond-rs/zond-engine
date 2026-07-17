@@ -17,7 +17,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use zond_core::models::host::Host;
 use zond_core::models::ip::set::IpSet;
-use zond_core::models::port::{Port, PortSet, PortState, Protocol};
+use zond_core::models::port::{Port, PortSet, PortState, Protocol, Service};
 use zond_core::models::target::{Target, TargetMap, TargetSet};
 
 use super::STOP_SIGNAL;
@@ -80,7 +80,7 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
         Ok(Ok(stream)) => {
             let mut port = Port::new(target.port, Protocol::Tcp, PortState::Open);
             port.set_service(Service::new(
-                zond_plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???"),
+                zond_plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???".to_string()),
                 0, // Baseline confidence
             ));
             let port = zond_plugins::fingerprint_tcp(stream, port).await;
@@ -90,13 +90,13 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
             use std::io::ErrorKind;
             let state = match e.kind() {
                 ErrorKind::ConnectionRefused => PortState::Closed,
-                _ => PortState::Blocked,
+                _ => PortState::Filtered,
             };
 
             if state != PortState::Closed {
                 let mut port = Port::new(target.port, Protocol::Tcp, state);
                 port.set_service(Service::new(
-                    zond_plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???"),
+                    zond_plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???".to_string()),
                     0,
                 ));
                 Ok(Some((target.ip, port)))
@@ -108,7 +108,7 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
             // Timeout elapsed, implies a DROP -> Ghosted/Filtered
             let mut port = Port::new(target.port, Protocol::Tcp, PortState::Filtered);
             port.set_service(Service::new(
-                zond_plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???"),
+                zond_plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???".to_string()),
                 0,
             ));
             Ok(Some((target.ip, port)))

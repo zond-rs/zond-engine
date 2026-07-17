@@ -376,5 +376,5 @@ mod windows_impl {
 }
 
 pub fn get_network_interfaces() -> anyhow::Result<Vec<NetworkInterface>> {
-    zond_core::net::interface::get_prioritized_interfaces(10)
+    zond_system::interface::get_prioritized_interfaces(10)
 }

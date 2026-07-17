@@ -152,16 +152,40 @@ impl IpSet {
 
     // ─── Query API (Lazy) ────────────────────────────────────────────────────
 
-    /// Checks if the set contains the given IP address. Performs lazy merging if needed.
-    pub fn contains(&mut self, ip: &IpAddr) -> bool {
-        self.canonicalize();
-        self.contains_canonical(ip)
+    /// Checks if the set contains the given IP address. Performs lazy merging on a clone if needed.
+    pub fn contains(&self, ip: &IpAddr) -> bool {
+        if !self.v4_dirty && !self.v6_dirty {
+            return self.contains_canonical(ip);
+        }
+        match ip {
+            IpAddr::V4(v4) => {
+                let target = u32::from(*v4);
+                self.v4.iter().any(|range| {
+                    let start = u32::from(range.start_addr);
+                    let end = u32::from(range.end_addr);
+                    target >= start && target <= end
+                })
+            }
+            IpAddr::V6(v6) => {
+                let target = u128::from(*v6);
+                self.v6.iter().any(|range| {
+                    let start = u128::from(range.start_addr);
+                    let end = u128::from(range.end_addr);
+                    target >= start && target <= end
+                })
+            }
+        }
     }
 
-    /// Returns the total count of unique IP addresses. Performs lazy merging if needed.
-    pub fn len(&mut self) -> u128 {
-        self.canonicalize();
-        self.len_canonical()
+    /// Returns the total count of unique IP addresses. Performs lazy merging on a clone if needed.
+    pub fn len(&self) -> u128 {
+        if !self.v4_dirty && !self.v6_dirty {
+            self.len_canonical()
+        } else {
+            let mut temp = self.clone();
+            temp.canonicalize();
+            temp.len_canonical()
+        }
     }
 
     /// Returns `true` if the set is empty.
@@ -169,12 +193,17 @@ impl IpSet {
         self.v4.is_empty() && self.v6.is_empty()
     }
 
-    /// Returns an iterator over every individual IP address. Performs lazy merging if needed.
-    pub fn iter(&mut self) -> impl Iterator<Item = IpAddr> + '_ {
-        self.canonicalize();
-        self.v4.iter().flat_map(|range| range.to_iter()).chain(
-            self.v6.iter().flat_map(|range| range.to_iter())
-        )
+    /// Returns an iterator over every individual IP address. Performs lazy merging on a clone if needed.
+    pub fn iter(&self) -> Box<dyn Iterator<Item = IpAddr> + Send + '_> {
+        if self.v4_dirty || self.v6_dirty {
+            let mut temp = self.clone();
+            temp.canonicalize();
+            temp.into_iter()
+        } else {
+            let v4_iter = self.v4.iter().flat_map(|range| range.to_iter());
+            let v6_iter = self.v6.iter().flat_map(|range| range.to_iter());
+            Box::new(v4_iter.chain(v6_iter))
+        }
     }
 
     // ─── Query API (Read-Only / Sync) ────────────────────────────────────────
@@ -222,15 +251,13 @@ impl IpSet {
         v4_len + v6_len
     }
 
-    /// Returns the underlying IPv4 ranges. Performs lazy merging if needed.
-    pub fn v4(&mut self) -> &[Ipv4Range] {
-        self.canonicalize();
+    /// Returns the underlying IPv4 ranges. If dirty, these ranges may be overlapping and un-merged.
+    pub fn v4(&self) -> &[Ipv4Range] {
         &self.v4
     }
 
-    /// Returns the underlying IPv6 ranges. Performs lazy merging if needed.
-    pub fn v6(&mut self) -> &[Ipv6Range] {
-        self.canonicalize();
+    /// Returns the underlying IPv6 ranges. If dirty, these ranges may be overlapping and un-merged.
+    pub fn v6(&self) -> &[Ipv6Range] {
         &self.v6
     }
 }
@@ -241,7 +268,7 @@ impl IpSet {
 
 impl IntoIterator for IpSet {
     type Item = IpAddr;
-    type IntoIter = Box<dyn Iterator<Item = IpAddr>>;
+    type IntoIter = Box<dyn Iterator<Item = IpAddr> + Send>;
 
     /// Consumes the `IpSet` and returns an iterator over its individual IP addresses.
     fn into_iter(mut self) -> Self::IntoIter {

@@ -27,7 +27,7 @@ pub fn map_ips_to_interfaces(
 }
 
 pub(crate) fn map_ips_to_interfaces_with(
-    mut ip_set: IpSet,
+    ip_set: IpSet,
     interfaces: Vec<NetworkInterface>,
 ) -> (HashMap<NetworkInterface, (IpSet, IpSet)>, IpSet) {
     let ip_to_idx: HashMap<IpAddr, usize> = interfaces

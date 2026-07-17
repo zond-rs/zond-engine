@@ -42,15 +42,15 @@ async fn tcp_connect_scan_open_port() {
     let hosts = result.unwrap();
 
     assert_eq!(hosts.len(), 1, "Expected 1 host to be found");
-    assert_eq!(hosts[0].primary_ip, addr.ip());
+    assert_eq!(hosts[0].primary_ip(), addr.ip());
 
     let found_port = hosts[0]
         .ports()
-        .iter()
-        .find(|p| p.number == port_num)
+        .find(|p| p.number() == port_num)
         .expect("Target port not found in results");
+
     assert_eq!(
-        found_port.state,
+        found_port.state(),
         PortState::Open,
         "Port should be reported as Open"
     );
@@ -87,8 +87,8 @@ async fn tcp_connect_scan_closed_port() {
     let hosts = result.unwrap();
 
     if !hosts.is_empty() {
-        if let Some(port) = hosts[0].ports().iter().find(|p| p.number == port_num) {
-            assert_eq!(port.state, PortState::Closed);
+        if let Some(port) = hosts[0].ports().find(|p| p.number() == port_num) {
+            assert_eq!(port.state(), PortState::Closed);
         }
     }
 }

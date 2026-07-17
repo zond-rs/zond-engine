@@ -48,7 +48,7 @@ impl Dispatcher {
         tokio::spawn(async move {
             let mut batch = Vec::with_capacity(self.batch_size);
 
-            for unit in self.target_map.units {
+            for mut unit in self.target_map.units {
                 for target in unit.iter() {
                     if STOP_SIGNAL.load(Ordering::Relaxed) {
                         return;

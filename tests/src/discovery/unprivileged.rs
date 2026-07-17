@@ -10,6 +10,7 @@ use std::time::Duration;
 use zond_core::config::ZondConfig;
 use zond_core::models::host::Host;
 use zond_core::models::ip::{range::Ipv4Range, set::IpSet};
+use zond_core::models::ip::range::IpRange;
 use zond_engine::scanner::{self, STOP_SIGNAL};
 
 #[tokio::test]
@@ -34,7 +35,7 @@ async fn discovery_single_loopback() {
     assert!(!hosts.is_empty(), "No hosts found when scanning localhost");
     assert!(hosts[0].min_rtt().is_some(), "No RTT's were recorded");
 
-    let found_ip: IpAddr = hosts[0].primary_ip;
+    let found_ip: IpAddr = hosts[0].primary_ip();
     assert_eq!(
         found_ip, localhost,
         "Found host IP does not match expected localhost IP"
@@ -55,7 +56,7 @@ async fn discovery_range_loopback() {
     let start: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
     let end: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 3);
     let range: Ipv4Range = Ipv4Range::new(start, end).unwrap();
-    targets.insert_range(range);
+    targets.insert_range(IpRange::V4(range));
 
     let result = scanner::discover(targets, &cfg).await;
 
@@ -77,7 +78,7 @@ async fn stop_signal_aborts() {
     let start_addr: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
     let end_addr: Ipv4Addr = Ipv4Addr::new(127, 0, 255, 255);
     let range: Ipv4Range = Ipv4Range::new(start_addr, end_addr).unwrap();
-    targets.insert_range(range);
+    targets.insert_range(IpRange::V4(range));
 
     let cfg: ZondConfig = ZondConfig {
         no_banner: false,

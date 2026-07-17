@@ -13,12 +13,12 @@
 //! Layer 2 packets via the operating system's network sockets.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::{IpAddr, Ipv6Addr},
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
-
+use std::net::Ipv4Addr;
 use anyhow::{anyhow, bail, ensure};
 use pnet::{
     datalink::NetworkInterface,
@@ -30,11 +30,9 @@ use pnet::{
 };
 
 use zond_core::models::timer::ScanTimer;
-use zond_engine::{
+use zond_core::{
     error,
     models::{host::Host, ip::set::IpSet},
-    parse::IS_LAN_SCAN,
-    sender::{PacketType, SenderConfig},
     success,
 };
 
@@ -52,6 +50,8 @@ use crate::network::{
 
 use super::NetworkExplorer;
 use async_trait::async_trait;
+use pnet::datalink::MacAddr;
+use zond_system::interface::NetworkInterfaceExtension;
 
 const MAX_CHANNEL_TIME: Duration = Duration::from_millis(7_500);
 const MIN_CHANNEL_TIME: Duration = Duration::from_millis(2_500);
@@ -59,8 +59,11 @@ const MAX_SILENCE_MS: Duration = Duration::from_millis(500);
 const SEND_INTERVAL_US: Duration = Duration::from_micros(1000);
 
 pub struct LocalScanner {
-    hosts_map: HashMap<zond_core::models::mac::MacAddr, Host>,
-    sender_cfg: SenderConfig,
+    hosts_map: HashMap<MacAddr, Host>,
+    ip_set: IpSet,
+    local_mac: MacAddr,
+    src_v4: Option<Ipv4Addr>,
+    link_local: Option<Ipv6Addr>,
     eth_handle: EthernetHandle,
     timer: ScanTimer,
     dns_tx: Option<UnboundedSender<IpAddr>>,
@@ -70,9 +73,14 @@ pub struct LocalScanner {
 #[async_trait]
 impl NetworkExplorer for LocalScanner {
     async fn discover_hosts(&mut self) -> anyhow::Result<Vec<Host>> {
-        let mut packet_iter = protocol::eth_packet_iter(&self.sender_cfg)?;
-        let mut sending_finished = false;
+        let mut packet_iter = protocol::eth_packet_iter(
+            &self.local_mac,
+            &self.src_v4,
+            &self.link_local,
+            &self.ip_set,
+        )?;
 
+        let mut sending_finished = false;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL_US);
 
         let scan_deadline: Sleep = tokio::time::sleep(MAX_CHANNEL_TIME);
@@ -116,74 +124,67 @@ impl NetworkExplorer for LocalScanner {
 impl LocalScanner {
     pub fn new(
         intf: NetworkInterface,
-        collection: IpSet,
+        ip_set: IpSet,
         dns_tx: Option<UnboundedSender<IpAddr>>,
     ) -> anyhow::Result<Self> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
         let timer: ScanTimer = ScanTimer::new(MAX_CHANNEL_TIME, MIN_CHANNEL_TIME, MAX_SILENCE_MS);
-        let ips_len: usize = collection.len() as usize;
+        let len = ip_set.len() as usize;
+        let local_mac = intf.mac.unwrap();
 
-        let mut sender_cfg: SenderConfig = SenderConfig::from(&intf);
-        sender_cfg.add_packet_type(PacketType::ARP);
-        if IS_LAN_SCAN.load(Ordering::Relaxed) {
-            sender_cfg.add_packet_type(PacketType::ICMPv6);
+        let mut src_v4 = None;
+        for net in intf.get_ipv4_nets() {
+            if src_v4.is_none() && !net.ip().is_loopback() {
+                src_v4 = Some(net.ip());
+            }
+            if ip_set.v4().iter().any(|range| net.contains(range.start_addr)) {
+                src_v4 = Some(net.ip());
+                break;
+            }
         }
 
-        let mut target_ips: HashSet<IpAddr> = HashSet::new();
-
-        for ip in collection.into_iter() {
-            target_ips.insert(ip);
-        }
-
-        sender_cfg.add_targets(target_ips);
+        let link_local = intf
+            .get_ipv6_nets()
+            .into_iter()
+            .find(|net| net.ip().is_unicast_link_local())
+            .map(|net| net.ip());
 
         Ok(Self {
             hosts_map: HashMap::new(),
-            sender_cfg,
+            ip_set,
+            local_mac,
+            src_v4,
+            link_local,
             eth_handle,
             timer,
             dns_tx,
-            rtt_map: HashMap::with_capacity(ips_len),
+            rtt_map: HashMap::with_capacity(len),
         })
     }
 
     fn process_eth_packet(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         let eth_frame: EthernetPacket = ethernet::get_packet_from_u8(bytes)?;
-        if eth_frame.get_source() == self.sender_cfg.local_mac.unwrap() {
-            return Ok(());
-        }
+        let other_mac_addr = eth_frame.get_source();
+        ensure!(other_mac_addr != self.local_mac);
+
         let source_addr: IpAddr = protocol::get_ip_addr_from_eth(&eth_frame)?;
 
         ensure!(
-            self.sender_cfg.is_addr_in_subnet(source_addr),
+            self.ip_set.contains(&source_addr),
             "{source_addr} is not in range"
         );
 
-        // NOTE: This sucks as you might tell
-        if source_addr.is_ipv6()
-            && !IS_LAN_SCAN.load(Ordering::Relaxed)
-            && !self.hosts_map.contains_key(&eth_frame.get_source())
-        {
-            return Ok(());
-        }
-
-        let rtt: Option<Duration> = match self.calculate_rtt(&eth_frame) {
-            Ok(r) => r,
-            Err(e) => {
-                error!(verbosity = 2, "Failed to calculate RTT: {e}");
-                None
-            }
-        };
-
-        let pnet_mac = eth_frame.get_source();
-        let core_mac = pnet_mac.into_core();
+        let rtt: Option<Duration> = self.calculate_rtt(&eth_frame).unwrap_or_else(|e| {
+            error!(verbosity = 2, "Failed to calculate RTT: {e}");
+            None
+        });
 
         let mut is_new_host: bool = false;
-        let host: &mut Host = self.hosts_map.entry(core_mac).or_insert_with(|| {
+        let host: &mut Host = self.hosts_map.entry(other_mac_addr).or_insert_with(|| {
             self.timer.mark_activity();
             super::increment_host_count();
             is_new_host = true;
-            Host::new(source_addr).with_mac(core_mac)
+            Host::new(source_addr).with_mac(other_mac_addr.into_core())
         });
 
         if let Some(rtt) = rtt {
@@ -249,9 +250,9 @@ impl LocalScanner {
 
     fn should_continue(&self) -> bool {
         let not_stopped: bool = !super::STOP_SIGNAL.load(Ordering::Relaxed);
-        let time_expired: bool = !self.timer.has_expired();
-        let work_remains: bool = self.sender_cfg.len() > self.hosts_map.len();
+        let time_not_expired: bool = !self.timer.has_expired();
+        let work_remains: bool = self.ip_set.len() as usize > self.hosts_map.len();
 
-        not_stopped && time_expired && work_remains
+        not_stopped && time_not_expired && work_remains
     }
 }

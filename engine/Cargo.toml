@@ -8,6 +8,7 @@ license.workspace = true
 zond-core = { workspace = true }
 zond-protocols = { workspace = true }
 zond-plugins = { workspace = true }
+zond-system = { workspace = true }
 pnet = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

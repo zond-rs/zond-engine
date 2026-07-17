@@ -84,18 +84,18 @@ async fn port_state_fidelity_unprivileged() {
     let host = &hosts[0];
 
     // Verify 80 is OPEN
-    let p80 = host.ports().iter().find(|p| p.number == 80).unwrap();
-    assert_eq!(p80.state, PortState::Open);
+    let p80 = host.ports().find(|p| p.number() == 80).unwrap();
+    assert_eq!(p80.state(), PortState::Open);
 
     // Verify 443 is GHOSTED (Filtered)
-    let p443 = host.ports().iter().find(|p| p.number == 443).unwrap();
-    assert_eq!(p443.state, PortState::Ghosted);
+    let p443 = host.ports().find(|p| p.number() == 443).unwrap();
+    assert_eq!(p443.state(), PortState::Filtered);
 
     // Verify 22 is BLOCKED
-    let p22 = host.ports().iter().find(|p| p.number == 22).unwrap();
-    assert_eq!(p22.state, PortState::Blocked);
+    let p22 = host.ports().find(|p| p.number() == 22).unwrap();
+    assert_eq!(p22.state(), PortState::Filtered);
 
     // Verify 8080 is CLOSED
-    let p8080 = host.ports().iter().find(|p| p.number == 8080).unwrap();
-    assert_eq!(p8080.state, PortState::Closed);
+    let p8080 = host.ports().find(|p| p.number() == 8080).unwrap();
+    assert_eq!(p8080.state(), PortState::Closed);
 }

@@ -26,7 +26,7 @@ use zond_core::models::ip::set::IpSet;
 use zond_core::models::target::TargetMap;
 use zond_core::input::InputHandle;
 use zond_core::{error, info, success, warn};
-use zond_system::interface
+use zond_system::interface;
 
 mod connect;
 pub mod dispatcher;

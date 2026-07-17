@@ -18,7 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use zond_core::models::fingerprint::ServiceDefinition;
-use zond_core::models::port::{Port, Protocol};
+use zond_core::models::port::{Port, Protocol, Service};
 
 /// A compiled regex match rule for a service.
 pub struct CompiledMatch {
@@ -182,7 +182,7 @@ pub fn lookup_service_name(port: u16, _proto: Protocol) -> Option<String> {
     get_engine()
         .get_probes_for_port(port)
         .first()
-        .map(|srv| srv.def.service.name.clone())
+        .map(|srv| srv.service.name.clone())
 }
 
 /// High-level entry point for fingerprinting a TCP stream.
@@ -285,6 +285,7 @@ mod tests {
                 name: name.to_string(),
                 default_ports: ports,
                 description: None,
+                attribution: None,
             },
             probe: Vec::new(),
             r#match: patterns
@@ -295,6 +296,9 @@ mod tests {
                     version_group: v,
                     vendor: None,
                     product: None,
+                    context: None,
+                    example: None,
+                    metadata: None,
                 })
                 .collect(),
         };

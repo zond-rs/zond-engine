@@ -52,7 +52,7 @@ impl NetworkExplorer for RoutedScanner {
 
         loop {
             if super::STOP_SIGNAL.load(Ordering::Relaxed)
-                || self.ips.len() == (self.responded_ips.len() as u64)
+                || self.ips.len() == self.responded_ips.len() as u128
             {
                 break;
             }

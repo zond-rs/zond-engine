@@ -246,6 +246,18 @@ impl Host {
         self
     }
 
+    /// Adds a single RTT measurement and bumps `last_seen`.
+    pub fn add_rtt(&mut self, rtt: std::time::Duration) {
+        self.telemetry.add_rtt(rtt);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Builder method to add a single RTT measurement and return Self.
+    pub fn with_rtt(mut self, rtt: std::time::Duration) -> Self {
+        self.add_rtt(rtt);
+        self
+    }
+
     /// Adds multiple RTT measurements and bumps `last_seen`.
     pub fn set_rtts(&mut self, rtts: impl IntoIterator<Item = std::time::Duration>) {
         for rtt in rtts {

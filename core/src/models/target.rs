@@ -103,7 +103,7 @@ impl TargetSet {
     ///
     /// This uses `Arc` internally to prevent O(N) memory allocations when iterating
     /// over massive subnets (e.g., /8 or IPv6 ranges).
-    pub fn iter(&mut self) -> impl Iterator<Item = Target> + '_ {
+    pub fn iter(&mut self) -> impl Iterator<Item = Target> + Send + '_ {
         self.canonicalize();
 
         let ports_arc: Arc<[(u16, Protocol)]> = self.ports.to_vec().into();
@@ -143,7 +143,7 @@ impl TargetSet {
 /// A collection of multiple [`TargetSet`] units.
 #[derive(Debug, Clone, Default)]
 pub struct TargetMap {
-    units: Vec<TargetSet>,
+    pub units: Vec<TargetSet>,
 }
 
 impl TargetMap {
@@ -195,7 +195,7 @@ impl TargetMap {
     }
 
     /// Creates a flattened iterator over every target in every unit.
-    pub fn iter(&mut self) -> impl Iterator<Item = Target> + '_ {
+    pub fn iter(&mut self) -> impl Iterator<Item = Target> + Send + '_ {
         self.units.iter_mut().flat_map(|unit| unit.iter())
     }
 }

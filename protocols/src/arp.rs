@@ -14,13 +14,13 @@ use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use std::net::Ipv4Addr;
 
 pub fn create_packet(
-    src_mac: MacAddr,
+    src_mac: &MacAddr,
     dst_mac: MacAddr,
-    src_addr: Ipv4Addr,
+    src_addr: &Ipv4Addr,
     dst_addr: Ipv4Addr,
 ) -> anyhow::Result<Vec<u8>> {
     let eth_header: Vec<u8> =
-        ethernet::make_header(src_mac, MacAddr::broadcast(), EtherTypes::Arp)?;
+        ethernet::make_header(*src_mac, MacAddr::broadcast(), EtherTypes::Arp)?;
 
     let mut arp_buffer: [u8; ARP_LEN] = [0u8; ARP_LEN];
     {
@@ -31,9 +31,9 @@ pub fn create_packet(
         arp_packet.set_hw_addr_len(6);
         arp_packet.set_proto_addr_len(4);
         arp_packet.set_operation(ArpOperations::Request);
-        arp_packet.set_sender_hw_addr(src_mac);
+        arp_packet.set_sender_hw_addr(*src_mac);
         arp_packet.set_target_hw_addr(dst_mac);
-        arp_packet.set_sender_proto_addr(src_addr);
+        arp_packet.set_sender_proto_addr(*src_addr);
         arp_packet.set_target_proto_addr(dst_addr);
     }
 
@@ -129,7 +129,7 @@ mod tests {
         let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
 
         let buffer =
-            create_packet(src_mac, dst_mac, src_addr, dst_addr).expect("Packet creation failed");
+            create_packet(&src_mac, dst_mac, &src_addr, dst_addr).expect("Packet creation failed");
 
         assert!(buffer.len() >= 60);
 
