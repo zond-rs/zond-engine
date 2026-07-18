@@ -15,7 +15,7 @@
 //! as they simply push to an internal buffer. The set is sorted and merged ($O(N \log N)$)
 //! only when a query method is called or when [`IpSet::canonicalize`] is invoked explicitly.
 //!
-//! For maximum performance in multi-threaded scanning:
+//! For maximum performance in multithreaded scanning:
 //! 1. Build the set using `insert`, `extend`, or `FromIterator`.
 //! 2. Call [`IpSet::canonicalize`] once.
 //! 3. Use thread-safe query methods like [`IpSet::contains_canonical`].
@@ -90,7 +90,7 @@ impl IpSet {
     /// Manually triggers sorting and merging of all internal ranges.
     ///
     /// Call this after bulk insertions to prepare the set for high-performance
-    /// read-only queries or multi-threaded scanning.
+    /// read-only queries or multithreaded scanning.
     pub fn canonicalize(&mut self) {
         if self.v4_dirty {
             if !self.v4.is_empty() {
@@ -400,7 +400,8 @@ mod tests {
         assert_eq!(set.v4.len(), 2);
         assert!(set.v4_dirty);
         
-        // Query triggers merge
+        // Explicitly canonicalize since queries are now immutable
+        set.canonicalize();
         assert_eq!(set.len(), 2);
         assert!(!set.v4_dirty);
         assert_eq!(set.v4.len(), 1);
@@ -420,6 +421,7 @@ mod tests {
         // Insert: [0-50] (subsume all)
         set.insert_range("10.0.0.0-10.0.0.50".parse().unwrap());
         
+        set.canonicalize();
         assert_eq!(set.len(), 51);
         assert_eq!(set.v4().len(), 1);
     }
@@ -434,6 +436,7 @@ mod tests {
         set.insert(IpAddr::V6(max_minus_1));
         set.insert(IpAddr::V6(max_v6));
         
+        set.canonicalize();
         assert_eq!(set.len(), 2);
         assert_eq!(set.v6().len(), 1);
     }
@@ -444,7 +447,7 @@ mod tests {
         set.insert(IpAddr::V4(Ipv4Addr::from(1)));
         set.insert(IpAddr::V4(Ipv4Addr::from(2)));
         
-        // .iter() should trigger canonicalization
+        set.canonicalize();
         let ips: Vec<IpAddr> = set.iter().collect();
         assert_eq!(ips.len(), 2);
         assert!(!set.v4_dirty);
@@ -460,7 +463,7 @@ mod tests {
 
     #[test]
     fn from_str_mixed_advanced() {
-        let mut set = IpSet::from_str("1.1.1.1/32, 1.1.1.1, ::1-::1, 10.0.0.1-10.0.0.2").unwrap();
+        let set = IpSet::from_str("1.1.1.1/32, 1.1.1.1, ::1-::1, 10.0.0.1-10.0.0.2").unwrap();
         // 1.1.1.1 (v4) + ::1 (v6) + 10.0.0.1, 10.0.0.2 (v4)
         assert_eq!(set.len(), 4); 
     }
@@ -495,11 +498,11 @@ mod property_tests {
     use proptest::prelude::*;
 
     fn any_ipv4() -> impl Strategy<Value = Ipv4Addr> {
-        proptest::prelude::any::<u32>().prop_map(Ipv4Addr::from)
+        any::<u32>().prop_map(Ipv4Addr::from)
     }
 
     fn any_ipv6() -> impl Strategy<Value = Ipv6Addr> {
-        proptest::prelude::any::<u128>().prop_map(Ipv6Addr::from)
+        any::<u128>().prop_map(Ipv6Addr::from)
     }
 
     proptest::proptest! {

@@ -72,6 +72,9 @@ impl HostnameResolver {
                 res = self.dns_rx.recv() => {
                     match res {
                         Some(ip) => {
+                            if !is_queryable(&ip) {
+                                continue;
+                            }
                             match self.send_dns_query(&ip).await {
                                 Ok(_) => info!(outgoing, verbosity = 1, "DNS query for {ip} sent!"),
                                 Err(e) => error!("DNS query for {ip} failed: {e}")
@@ -124,10 +127,6 @@ impl HostnameResolver {
     }
 
     async fn send_dns_query(&mut self, ip: &IpAddr) -> anyhow::Result<()> {
-        if !is_queryable(ip) {
-            return Ok(());
-        }
-
         let id: u16 = self.get_next_trans_id();
         self.dns_map.insert(id, *ip);
 
@@ -212,6 +211,35 @@ impl HostnameResolver {
 
     fn get_next_trans_id(&self) -> u16 {
         self.id_counter.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+pub async fn resolve_hosts_async(hosts: &mut [Host]) {
+    use hickory_resolver::TokioResolver;
+
+    let Ok(builder) = TokioResolver::builder_tokio() else { return; };
+    let resolver = builder.build();
+
+    let mut set = tokio::task::JoinSet::new();
+
+    for (i, host) in hosts.iter().enumerate() {
+        if host.hostname().is_none() {
+            let primary_ip = host.primary_ip();
+            let resolver = resolver.clone();
+
+            set.spawn(async move {
+                if let Ok(lookup) = resolver.reverse_lookup(primary_ip).await {
+                    if let Some(name) = lookup.iter().next() {
+                        return (i, Some(name.to_string()));
+                    }
+                }
+                (i, None)
+            });
+        }
+    }
+
+    while let Some(Ok((idx, Some(name)))) = set.join_next().await {
+        hosts[idx].set_hostname(Some(name.trim_end_matches('.').to_string()));
     }
 }
 

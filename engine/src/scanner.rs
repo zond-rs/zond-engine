@@ -88,7 +88,11 @@ pub async fn discover(targets: IpSet, cfg: &ZondConfig) -> anyhow::Result<Vec<Ho
     let use_raw_sockets: bool = preflight_check(cfg);
 
     if !use_raw_sockets {
-        return connect::discover(targets).await;
+        let mut hosts = connect::discover(targets).await?;
+        if !cfg.no_dns {
+            resolver::resolve_hosts_async(&mut hosts).await;
+        }
+        return Ok(hosts);
     }
 
     let (dns_tx, resolver_task) = if !cfg.no_dns {

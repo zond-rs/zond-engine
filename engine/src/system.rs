@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 use anyhow;
 use pnet::datalink::NetworkInterface;

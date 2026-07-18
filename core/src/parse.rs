@@ -64,7 +64,7 @@ mod tests {
     fn facade_ip_resolution() {
         let inputs = vec!["127.0.0.1", "10.0.0.1-5"];
 
-        let mut set = to_ipset(&inputs, None).expect("Facade should resolve IP targets");
+        let set = to_ipset(&inputs, None).expect("Facade should resolve IP targets");
 
         assert_eq!(set.len(), 6);
         assert!(set.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn facade_comma_splitting() {
         let inputs = vec!["1.1.1.1, 2.2.2.2"];
-        let mut set = to_ipset(&inputs, None).unwrap();
+        let set = to_ipset(&inputs, None).unwrap();
 
         assert_eq!(set.len(), 2);
     }

@@ -98,8 +98,8 @@ pub enum IpParseError {
 /// use zond_core::parse::ip::{to_set, Keyword};
 /// use zond_core::models::ip::set::IpSet;
 ///
-/// let ips = vec!["192.168.1.0/24", "10.0.0.1, 10.0.0.5-10"];
-/// let mut set = to_set(&ips).unwrap();
+/// let ips = vec!["192.168.1.0/24", "10.0.0.1", "10.0.0.5-10"];
+/// let set = to_set(&ips, None).unwrap();
 ///
 /// // /24 (256) + single (1) + range 5-10 (6) = 263
 /// assert_eq!(set.len(), 263);
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn to_set_basic_single() {
         let input = vec!["192.168.1.1"];
-        let mut set = to_set(&input, None).expect("Should parse single IP");
+        let set = to_set(&input, None).expect("Should parse single IP");
         assert_eq!(set.len(), 1);
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
     }
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn to_set_comma_separated() {
         let input = vec!["10.0.0.1, 10.0.0.2, 10.0.0.5"];
-        let mut set = to_set(&input, None).expect("Should parse comma list");
+        let set = to_set(&input, None).expect("Should parse comma list");
         assert_eq!(set.len(), 3);
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
     }
@@ -268,14 +268,14 @@ mod tests {
     #[test]
     fn parse_cidr_blocks() {
         let input = vec!["172.16.0.0/24"];
-        let mut set = to_set(&input, None).expect("Should parse CIDR");
+        let set = to_set(&input, None).expect("Should parse CIDR");
         assert_eq!(set.len(), 256);
     }
 
     #[test]
     fn parse_short_range_suffix() {
         let input = vec!["192.168.1.250-2.10"];
-        let mut set = to_set(&input, None).unwrap();
+        let set = to_set(&input, None).unwrap();
         assert_eq!(set.len(), 17);
     }
 
