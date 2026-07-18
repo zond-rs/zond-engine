@@ -82,7 +82,7 @@ pub async fn scan(target_map: TargetMap, cfg: &ZondConfig) -> anyhow::Result<Vec
 ///
 /// ### Integration Notes
 /// - **State**: Updates [`FOUND_HOST_COUNT`] and reacts to [`STOP_SIGNAL`].
-/// - **Concurrency**: Spawns multiple Tokio tasks; ensure the caller is within a multi-threaded runtime.
+/// - **Concurrency**: Spawns multiple Tokio tasks; ensure the caller is within a multithreaded runtime.
 pub async fn discover(targets: IpSet, cfg: &ZondConfig) -> anyhow::Result<Vec<Host>> {
     STOP_SIGNAL.store(false, Ordering::Relaxed);
     let use_raw_sockets: bool = preflight_check(cfg);

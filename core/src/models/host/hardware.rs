@@ -14,7 +14,7 @@
 //! and multi-homed hosts by tracking a history of all seen addresses.
 
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
-use crate::models::mac::MacAddr;
+use crate::models::mac::{self, MacAddr};
 
 /// Physical hardware identification and auditing data for a network host.
 ///
@@ -34,17 +34,29 @@ pub struct HardwareInfo {
 
 impl HardwareInfo {
     /// Creates a new `HardwareInfo` record for a specifically discovered MAC address.
+    ///
+    /// The vendor is resolved automatically from the MAC's OUI, if known.
     pub fn new(mac: MacAddr) -> Self {
         let mut macs = BTreeMap::new();
         macs.insert(mac, Instant::now());
 
-        Self { macs, vendor: None }
+        Self {
+            macs,
+            vendor: mac::vendor(&mac).map(Arc::from),
+        }
     }
 
-    /// Records a discovery event for a specific MAC address, updating its 
+    /// Records a discovery event for a specific MAC address, updating its
     /// "last seen" timestamp.
+    ///
+    /// If no vendor has been identified yet, this attempts to resolve one
+    /// from the newly observed MAC's OUI.
     pub fn add_mac(&mut self, mac: MacAddr) {
         self.macs.insert(mac, Instant::now());
+
+        if self.vendor.is_none() {
+            self.vendor = mac::vendor(&mac).map(Arc::from);
+        }
     }
 
     /// Returns a read-only view of all recorded MAC addresses and their 

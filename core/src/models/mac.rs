@@ -61,7 +61,7 @@ fn get_oui_db() -> &'static Oui {
 }
 
 /// Identify the vendor of a MAC address.
-pub fn get_vendor(mac: &MacAddr) -> Option<String> {
+pub fn vendor(mac: &MacAddr) -> Option<String> {
     let db = get_oui_db();
     let mac_str = mac.to_string();
     match db.lookup_by_mac(&mac_str) {
@@ -91,14 +91,14 @@ mod tests {
     #[test]
     fn test_vendor_lookup() {
         let mac = MacAddr::new(0x00, 0x0C, 0x29, 0xAB, 0xCD, 0xEF);
-        let vendor = get_vendor(&mac);
+        let vendor = vendor(&mac);
         assert_eq!(vendor, Some("VMware, Inc".to_string()));
     }
 
     #[test]
     fn test_unknown_vendor_lookup() {
         let mac = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x00); // Locally administered
-        let vendor = get_vendor(&mac);
+        let vendor = vendor(&mac);
         assert_eq!(vendor, None);
     }
 }
