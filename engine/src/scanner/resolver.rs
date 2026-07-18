@@ -16,7 +16,7 @@ use std::{
 use anyhow::{Context, ensure};
 use pnet::packet::{Packet, udp::UdpPacket};
 use tokio::sync::mpsc::UnboundedReceiver;
-use zond_core::{error, info, models::{host::Host, ip}, success};
+use zond_core::{error, info, models::{host::Host, ip}};
 use zond_protocols::{
     dns,
     mdns::{self, MdnsRecord},
@@ -32,6 +32,7 @@ type TransID = u16;
 
 pub struct HostnameResolver {
     udp_handle: TransportHandle,
+    std_socket: std::sync::Arc<tokio::net::UdpSocket>,
     dns_map: HashMap<TransID, IpAddr>,
     mdns_cache: HashMap<IpAddr, MdnsRecord>,
     hostname_map: HashMap<IpAddr, Hostname>,
@@ -42,33 +43,52 @@ pub struct HostnameResolver {
 
 impl HostnameResolver {
     pub fn new(dns_rx: UnboundedReceiver<IpAddr>) -> anyhow::Result<Self> {
+        let dns_socket = get_dns_server_socket()?;
+        let bind_addr = match dns_socket {
+            SocketAddr::V4(_) => "0.0.0.0:0",
+            SocketAddr::V6(_) => "[::]:0",
+        };
+        let std_socket = std::net::UdpSocket::bind(bind_addr)?;
+        std_socket.set_nonblocking(true)?;
+        let tokio_socket = tokio::net::UdpSocket::from_std(std_socket)?;
+
         Ok(Self {
             udp_handle: transport::start_packet_capture(TransportType::UdpLayer4)?,
+            std_socket: std::sync::Arc::new(tokio_socket),
             dns_map: HashMap::new(),
             mdns_cache: HashMap::new(),
             hostname_map: HashMap::new(),
             dns_rx,
-            dns_socket: get_dns_server_socket()?,
+            dns_socket,
             id_counter: AtomicU16::new(0),
         })
     }
 
     pub async fn run(mut self) -> Self {
+        let socket = self.std_socket.clone();
+        let mut buf = [0u8; 2048];
         loop {
             tokio::select! {
                 res = self.dns_rx.recv() => {
                     match res {
                         Some(ip) => {
                             match self.send_dns_query(&ip).await {
-                                Ok(_) => success!(verbosity = 1, "DNS query for {ip} sent!"),
+                                Ok(_) => info!(outgoing, verbosity = 1, "DNS query for {ip} sent!"),
                                 Err(e) => error!("DNS query for {ip} failed: {e}")
                             }
                         }
                         None => break,
                     }
                 }
+                res = socket.recv_from(&mut buf) => {
+                    if let Ok((len, addr)) = res {
+                        if addr == self.dns_socket {
+                            let _ = self.process_dns_payload(&buf[..len]);
+                        }
+                    }
+                }
                 pkt = self.udp_handle.rx.recv() => {
-                    info!("UDP packet from {pkt:?}");
+                    info!(incoming, "UDP packet from {pkt:?}");
                     if let Some((bytes, _addr)) = pkt {
                         match self.process_udp_packets(&bytes) {
                             Ok(_) => {},
@@ -82,8 +102,19 @@ impl HostnameResolver {
         if !self.dns_map.is_empty() {
             let _ = tokio::time::timeout(Duration::from_millis(250), async {
                 while !self.dns_map.is_empty() {
-                    if let Some((bytes, _addr)) = self.udp_handle.rx.recv().await {
-                        let _ = self.process_udp_packets(&bytes);
+                    tokio::select! {
+                        res = socket.recv_from(&mut buf) => {
+                            if let Ok((len, addr)) = res {
+                                if addr == self.dns_socket {
+                                    let _ = self.process_dns_payload(&buf[..len]);
+                                }
+                            }
+                        }
+                        pkt = self.udp_handle.rx.recv() => {
+                            if let Some((bytes, _addr)) = pkt {
+                                let _ = self.process_udp_packets(&bytes);
+                            }
+                        }
                     }
                 }
             })
@@ -99,14 +130,7 @@ impl HostnameResolver {
         self.dns_map.insert(id, *ip);
 
         let bytes: Vec<u8> = dns::create_ptr_packet(ip, id)?;
-        
-        let bind_addr = match self.dns_socket {
-            SocketAddr::V4(_) => "0.0.0.0:0",
-            SocketAddr::V6(_) => "[::]:0",
-        };
-        
-        let socket = tokio::net::UdpSocket::bind(bind_addr).await?;
-        socket.send_to(&bytes, self.dns_socket).await?;
+        self.std_socket.send_to(&bytes, self.dns_socket).await?;
         
         Ok(())
     }
@@ -122,9 +146,13 @@ impl HostnameResolver {
     }
 
     fn process_dns_packet(&mut self, packet: UdpPacket) -> anyhow::Result<()> {
-        let (response_id, hostname) = dns::get_hostname(packet.payload())?;
+        self.process_dns_payload(packet.payload())
+    }
+
+    fn process_dns_payload(&mut self, payload: &[u8]) -> anyhow::Result<()> {
+        let (response_id, hostname) = dns::get_hostname(payload)?;
         if let Some(ip) = self.dns_map.remove(&response_id) {
-            info!(verbosity = 1, "Received DNS response for {ip}");
+            info!(incoming, verbosity = 1, "Received DNS response for {ip}");
             self.hostname_map.insert(ip, hostname);
         }
         Ok(())

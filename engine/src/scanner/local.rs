@@ -33,7 +33,7 @@ use zond_core::models::timer::ScanTimer;
 use zond_core::{
     error,
     models::{host::Host, ip::set::IpSet},
-    success,
+    info,
 };
 
 use protocol::ethernet;
@@ -188,7 +188,8 @@ impl LocalScanner {
         });
 
         if let Some(rtt) = rtt {
-            success!(
+            info!(
+                incoming,
                 verbosity = 2,
                 "{source_addr} response in {}ms",
                 rtt.as_millis()

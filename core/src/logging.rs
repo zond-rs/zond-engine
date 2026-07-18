@@ -11,6 +11,12 @@
 
 #[macro_export]
 macro_rules! info {
+    (incoming, $($arg:tt)+) => {
+        tracing::info!(status = "incoming", $($arg)+)
+    };
+    (outgoing, $($arg:tt)+) => {
+        tracing::info!(status = "outgoing", $($arg)+)
+    };
     ($($arg:tt)+) => {
         tracing::info!(status = "info", $($arg)+)
     };
