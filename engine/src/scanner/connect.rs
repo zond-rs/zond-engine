@@ -55,9 +55,11 @@ pub async fn scan(
         set.spawn(async move { port_prober(target).await });
     }
 
-    while let Some(Ok(Ok(Some((ip, port))))) = set.join_next().await {
-        let host = results_map.entry(ip).or_insert_with(|| Host::new(ip));
-        host.add_port(port);
+    while let Some(res) = set.join_next().await {
+        if let Ok(Ok(Some((ip, port)))) = res {
+            let host = results_map.entry(ip).or_insert_with(|| Host::new(ip));
+            host.add_port(port);
+        }
     }
 
     Ok(results_map.into_values().collect())
@@ -133,7 +135,6 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
 pub async fn discover(ips: IpSet) -> anyhow::Result<Vec<Host>> {
     const CONCURRENCY_LIMIT: usize = 2048;
 
-    // 1. Prepare Target Map for all IP x Common Port combinations
     let mut target_map = TargetMap::new();
     let port_set = PortSet::try_from(
         DISCOVERY_PORTS
@@ -145,14 +146,12 @@ pub async fn discover(ips: IpSet) -> anyhow::Result<Vec<Host>> {
     )?;
     target_map.add_unit(TargetSet::new(ips, port_set));
 
-    // 2. Setup Dispatcher and Shared State
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
     let mut rx = dispatcher.run_shuffled();
     let mut set = JoinSet::new();
     let found_hosts = Arc::new(Mutex::new(HashSet::new()));
     let mut hosts = Vec::new();
 
-    // 3. Concurrent Execution Loop
     while let Some(target) = rx.recv().await {
         if STOP_SIGNAL.load(Ordering::Relaxed) {
             break;
@@ -168,9 +167,10 @@ pub async fn discover(ips: IpSet) -> anyhow::Result<Vec<Host>> {
         set.spawn(async move { prober(target, inner_found).await });
     }
 
-    // 4. Final Collection
-    while let Some(Ok(Ok(Some(host)))) = set.join_next().await {
-        hosts.push(host);
+    while let Some(res) = set.join_next().await {
+        if let Ok(Ok(Some(host))) = res {
+            hosts.push(host);
+        }
     }
 
     Ok(hosts)
