@@ -12,13 +12,6 @@
 //! This scanner requires **root privileges** to construct and intercept raw
 //! Layer 2 packets via the operating system's network sockets.
 
-use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv6Addr},
-    sync::atomic::Ordering,
-    time::{Duration, Instant},
-};
-use std::net::Ipv4Addr;
 use anyhow::{anyhow, bail, ensure};
 use pnet::{
     datalink::NetworkInterface,
@@ -28,17 +21,24 @@ use pnet::{
         ethernet::{EtherTypes, EthernetPacket},
     },
 };
+use std::net::Ipv4Addr;
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv6Addr},
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 
 use crate::core::models::timer::ScanTimer;
-use crate::{error, info};
 use crate::core::models::{host::Host, ip::set::IpSet};
+use crate::{error, info};
 
+use crate::protocols::{self as protocol, ip};
 use protocol::ethernet;
 use tokio::{
     sync::mpsc::UnboundedSender,
     time::{Interval, Sleep},
 };
-use crate::protocols::{self as protocol, ip};
 
 use crate::network::{
     channel::{self, EthernetHandle},
@@ -46,9 +46,9 @@ use crate::network::{
 };
 
 use super::NetworkExplorer;
+use crate::system::interface::NetworkInterfaceExtension;
 use async_trait::async_trait;
 use pnet::datalink::MacAddr;
-use crate::system::interface::NetworkInterfaceExtension;
 
 const MAX_CHANNEL_TIME: Duration = Duration::from_millis(7_500);
 const MIN_CHANNEL_TIME: Duration = Duration::from_millis(2_500);
@@ -134,7 +134,11 @@ impl LocalScanner {
             if src_v4.is_none() && !net.ip().is_loopback() {
                 src_v4 = Some(net.ip());
             }
-            if ip_set.v4().iter().any(|range| net.contains(range.start_addr)) {
+            if ip_set
+                .v4()
+                .iter()
+                .any(|range| net.contains(range.start_addr))
+            {
                 src_v4 = Some(net.ip());
                 break;
             }

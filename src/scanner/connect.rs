@@ -6,6 +6,10 @@
 
 use std::collections::HashMap;
 
+use crate::core::models::host::Host;
+use crate::core::models::ip::set::IpSet;
+use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
+use crate::core::models::target::{Target, TargetMap, TargetSet};
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::Ordering;
@@ -15,10 +19,6 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
-use crate::core::models::host::Host;
-use crate::core::models::ip::set::IpSet;
-use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
-use crate::core::models::target::{Target, TargetMap, TargetSet};
 
 use super::STOP_SIGNAL;
 use super::dispatcher::Dispatcher;
@@ -82,7 +82,8 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
         Ok(Ok(stream)) => {
             let mut port = Port::new(target.port, Protocol::Tcp, PortState::Open);
             port.set_service(Service::new(
-                crate::plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???".to_string()),
+                crate::plugins::lookup_service_name(target.port, Protocol::Tcp)
+                    .unwrap_or("???".to_string()),
                 0, // Baseline confidence
             ));
             let port = crate::plugins::fingerprint_tcp(stream, port).await;
@@ -98,7 +99,8 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
             if state != PortState::Closed {
                 let mut port = Port::new(target.port, Protocol::Tcp, state);
                 port.set_service(Service::new(
-                    crate::plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???".to_string()),
+                    crate::plugins::lookup_service_name(target.port, Protocol::Tcp)
+                        .unwrap_or("???".to_string()),
                     0,
                 ));
                 Ok(Some((target.ip, port)))
@@ -110,7 +112,8 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
             // Timeout elapsed, implies a DROP -> Ghosted/Filtered
             let mut port = Port::new(target.port, Protocol::Tcp, PortState::Filtered);
             port.set_service(Service::new(
-                crate::plugins::lookup_service_name(target.port, Protocol::Tcp).unwrap_or("???".to_string()),
+                crate::plugins::lookup_service_name(target.port, Protocol::Tcp)
+                    .unwrap_or("???".to_string()),
                 0,
             ));
             Ok(Some((target.ip, port)))

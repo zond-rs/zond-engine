@@ -6,7 +6,7 @@
 
 //! # Network Telemetry
 //!
-//! This module provides the [`HostTelemetry`] model for tracking network 
+//! This module provides the [`HostTelemetry`] model for tracking network
 //! performance metrics and path discovery data over time.
 
 use std::{
@@ -16,8 +16,8 @@ use std::{
 
 /// Performance and discovery metrics for a specific network host.
 ///
-/// `HostTelemetry` maintains a sliding window of Round-Trip Time (RTT) 
-/// measurements and performs statistical analysis (Averaging and Jitter) 
+/// `HostTelemetry` maintains a sliding window of Round-Trip Time (RTT)
+/// measurements and performs statistical analysis (Averaging and Jitter)
 /// used for network health assessment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostTelemetry {
@@ -25,7 +25,7 @@ pub struct HostTelemetry {
     /// Ordered chronologically: oldest at the front, newest at the back.
     rtt_history: VecDeque<(Instant, Duration)>,
 
-    /// The maximum number of RTT samples to maintain. 
+    /// The maximum number of RTT samples to maintain.
     /// If this limit is reached, adding a new sample will purge the oldest one.
     pub max_samples: usize,
 
@@ -94,10 +94,10 @@ impl HostTelemetry {
         Some(sum / self.rtt_history.len() as u32)
     }
 
-    /// Calculates the network jitter as the **Average Absolute Difference** 
+    /// Calculates the network jitter as the **Average Absolute Difference**
     /// between consecutive RTT samples.
     ///
-    /// Jitter provides a measure of network stability. A high jitter relative 
+    /// Jitter provides a measure of network stability. A high jitter relative
     /// to the average RTT often indicates network congestion or bufferbloat.
     pub fn jitter(&self) -> Option<Duration> {
         if self.rtt_history.len() < 2 {
@@ -108,21 +108,17 @@ impl HostTelemetry {
         let mut prev = self.rtt_history[0].1;
 
         for &(_, curr) in self.rtt_history.iter().skip(1) {
-            total_diff += if curr > prev {
-                curr - prev
-            } else {
-                prev - curr
-            };
+            total_diff += curr.abs_diff(prev);
             prev = curr;
         }
 
         Some(total_diff / (self.rtt_history.len() - 1) as u32)
     }
 
-    /// Merges telemetry from another record, Ensuring chronological sortedness 
+    /// Merges telemetry from another record, Ensuring chronological sortedness
     /// and prioritizing the newest data points.
     ///
-    /// If the incoming record has a larger `max_samples` configuration, this 
+    /// If the incoming record has a larger `max_samples` configuration, this
     /// telemetry container will upgrade its own window size to match.
     pub fn merge(&mut self, mut other: HostTelemetry) {
         if other.max_samples > self.max_samples {
@@ -211,7 +207,10 @@ mod tests {
         t.add_rtt(Duration::from_millis(110)); // diff 10
         t.add_rtt(Duration::from_millis(105)); // diff 5
         // (10 + 5) / 2 = 7.5ms
-        assert_eq!(t.jitter(), Some(Duration::from_millis(7) + Duration::from_micros(500)));
+        assert_eq!(
+            t.jitter(),
+            Some(Duration::from_millis(7) + Duration::from_micros(500))
+        );
     }
 
     #[test]

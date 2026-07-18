@@ -4,11 +4,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'core/**'
-      - 'engine/**'
-      - 'cli/**'
-      - 'plugins/**'
-      - 'protocols/**'
+      - 'src/**'
       - 'tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -16,11 +12,7 @@ on:
   pull_request:
     branches: [ "main" ]
     paths:
-      - 'core/**'
-      - 'engine/**'
-      - 'cli/**'
-      - 'plugins/**'
-      - 'protocols/**'
+      - 'src/**'
       - 'tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -47,4 +39,4 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings

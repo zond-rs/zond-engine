@@ -4,7 +4,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-//! This module provides a native **Medium Access Control (MAC)** address type 
+//! This module provides a native **Medium Access Control (MAC)** address type
 //! to eliminate dependency on external network parsing libraries within the core.
 //!
 //! It also includes **Organizationally Unique Identifier (OUI)** database

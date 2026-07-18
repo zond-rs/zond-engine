@@ -6,19 +6,19 @@
 
 //! # Hardware Information
 //!
-//! This module defines the [`HardwareInfo`] model for identifying physical 
-//! network characteristics. It records hardware addresses (MACs) and vendor 
+//! This module defines the [`HardwareInfo`] model for identifying physical
+//! network characteristics. It records hardware addresses (MACs) and vendor
 //! metadata derived from the Organiztionally Unique Identifier (OUI).
 //!
-//! The model handles modern network complexities such as MAC randomization 
+//! The model handles modern network complexities such as MAC randomization
 //! and multi-homed hosts by tracking a history of all seen addresses.
 
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use crate::core::models::mac::{self, MacAddr};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 /// Physical hardware identification and auditing data for a network host.
 ///
-/// `HardwareInfo` tracks multiple MAC addresses to support multi-NIC hosts 
+/// `HardwareInfo` tracks multiple MAC addresses to support multi-NIC hosts
 /// and to detect "MAC hopping" on randomized devices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardwareInfo {
@@ -27,7 +27,7 @@ pub struct HardwareInfo {
 
     /// The hardware vendor identified from the MAC OUI (e.g., "Apple", "Dell").
     ///
-    /// This field should ideally be shared via an `Arc` to minimize heap 
+    /// This field should ideally be shared via an `Arc` to minimize heap
     /// allocations across thousands of identical host records.
     pub vendor: Option<Arc<str>>,
 }
@@ -59,7 +59,7 @@ impl HardwareInfo {
         }
     }
 
-    /// Returns a read-only view of all recorded MAC addresses and their 
+    /// Returns a read-only view of all recorded MAC addresses and their
     /// last-seen timestamps.
     #[inline]
     pub fn macs(&self) -> &BTreeMap<MacAddr, Instant> {
@@ -68,7 +68,7 @@ impl HardwareInfo {
 
     /// Returns the MAC address that was most recently observed.
     ///
-    /// This is typically used to identify the primary hardware interface 
+    /// This is typically used to identify the primary hardware interface
     /// currently active on the network.
     pub fn most_recent_mac(&self) -> Option<MacAddr> {
         self.macs
@@ -79,8 +79,8 @@ impl HardwareInfo {
 
     /// Removes all MAC address records that were last seen before the given `cutoff`.
     ///
-    /// This is a critical forensic cleanup step for long-running monitors in 
-    /// environments with aggressive MAC randomization, preventing memory 
+    /// This is a critical forensic cleanup step for long-running monitors in
+    /// environments with aggressive MAC randomization, preventing memory
     /// exhaustion from "ghost" hardware records.
     pub fn prune_stale_macs(&mut self, cutoff: Instant) {
         self.macs.retain(|_, last_seen| *last_seen >= cutoff);
@@ -88,7 +88,7 @@ impl HardwareInfo {
 
     /// Merges architectural findings from another hardware record.
     ///
-    /// MAC addresses are interleaved, with the newest timestamp prevailing 
+    /// MAC addresses are interleaved, with the newest timestamp prevailing
     /// for each unique address to prevent timeline regressions.
     pub fn merge(&mut self, other: HardwareInfo) {
         for (mac, time) in other.macs {
@@ -147,7 +147,10 @@ mod tests {
     #[test]
     fn most_recent_mac_on_empty() {
         // Construct an empty one manually via the pub(crate) field
-        let hw = HardwareInfo { macs: BTreeMap::new(), vendor: None };
+        let hw = HardwareInfo {
+            macs: BTreeMap::new(),
+            vendor: None,
+        };
         assert_eq!(hw.most_recent_mac(), None);
     }
 

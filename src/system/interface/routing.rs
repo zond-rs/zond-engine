@@ -4,20 +4,18 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
+use crate::core::models::ip::range::IpRange::V4;
+use crate::core::models::ip::set::IpSet;
 use pnet::datalink::{self, NetworkInterface};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
-use crate::core::models::ip::range::IpRange::V4;
-use crate::core::models::ip::set::IpSet;
 
 /// Maps target IPs to the interface used to reach them, split by Local vs Routed.
 /// Returns: Map<Interface, (Local_Targets, Routed_Targets)> and a set of Unmapped Targets.
 ///
 /// Under the hood, this evaluates `pnet::datalink::interfaces()`.
-pub fn map_ips_to_interfaces(
-    ip_set: IpSet,
-) -> (HashMap<NetworkInterface, (IpSet, IpSet)>, IpSet) {
+pub fn map_ips_to_interfaces(ip_set: IpSet) -> (HashMap<NetworkInterface, (IpSet, IpSet)>, IpSet) {
     let interfaces: Vec<NetworkInterface> = datalink::interfaces()
         .into_iter()
         .filter(|i| i.is_up() && !i.is_loopback() && !i.ips.is_empty())
@@ -58,7 +56,11 @@ pub(crate) fn map_ips_to_interfaces_with(
         }
 
         if let Some(idx) = owner_idx {
-            result_map.entry(idx).or_default().0.insert_range(V4(*range));
+            result_map
+                .entry(idx)
+                .or_default()
+                .0
+                .insert_range(V4(*range));
         } else {
             for ip in range.to_iter() {
                 singles_to_route.push(ip);

@@ -13,14 +13,17 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Context;
-use pnet::packet::{Packet, udp::UdpPacket};
-use tokio::sync::mpsc::UnboundedReceiver;
-use crate::{error, info, core::models::{host::Host, ip}};
 use crate::protocols::{
     dns,
     mdns::{self, MdnsRecord},
 };
+use crate::{
+    core::models::{host::Host, ip},
+    error, info,
+};
+use anyhow::Context;
+use pnet::packet::{Packet, udp::UdpPacket};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::network::transport::{self, TransportHandle, TransportType};
 
@@ -84,11 +87,10 @@ impl HostnameResolver {
                     }
                 }
                 res = socket.recv_from(&mut buf) => {
-                    if let Ok((len, addr)) = res {
-                        if addr == self.dns_socket {
+                    if let Ok((len, addr)) = res
+                        && addr == self.dns_socket {
                             let _ = self.process_dns_payload(&buf[..len]);
                         }
-                    }
                 }
                 pkt = self.udp_handle.rx.recv() => {
                     if let Some((bytes, _addr)) = pkt {
@@ -106,11 +108,10 @@ impl HostnameResolver {
                 while !self.dns_map.is_empty() {
                     tokio::select! {
                         res = socket.recv_from(&mut buf) => {
-                            if let Ok((len, addr)) = res {
-                                if addr == self.dns_socket {
+                            if let Ok((len, addr)) = res
+                                && addr == self.dns_socket {
                                     let _ = self.process_dns_payload(&buf[..len]);
                                 }
-                            }
                         }
                         pkt = self.udp_handle.rx.recv() => {
                             if let Some((bytes, _addr)) = pkt {
@@ -132,7 +133,7 @@ impl HostnameResolver {
 
         let bytes: Vec<u8> = dns::create_ptr_packet(ip, id)?;
         self.std_socket.send_to(&bytes, self.dns_socket).await?;
-        
+
         Ok(())
     }
 
@@ -217,7 +218,9 @@ impl HostnameResolver {
 pub async fn resolve_hosts_async(hosts: &mut [Host]) {
     use hickory_resolver::TokioResolver;
 
-    let Ok(builder) = TokioResolver::builder_tokio() else { return; };
+    let Ok(builder) = TokioResolver::builder_tokio() else {
+        return;
+    };
     let resolver = builder.build();
 
     let mut set = tokio::task::JoinSet::new();
@@ -228,10 +231,10 @@ pub async fn resolve_hosts_async(hosts: &mut [Host]) {
             let resolver = resolver.clone();
 
             set.spawn(async move {
-                if let Ok(lookup) = resolver.reverse_lookup(primary_ip).await {
-                    if let Some(name) = lookup.iter().next() {
-                        return (i, Some(name.to_string()));
-                    }
+                if let Ok(lookup) = resolver.reverse_lookup(primary_ip).await
+                    && let Some(name) = lookup.iter().next()
+                {
+                    return (i, Some(name.to_string()));
                 }
                 (i, None)
             });

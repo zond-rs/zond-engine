@@ -11,11 +11,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{error, success};
 use anyhow::ensure;
 use async_trait::async_trait;
 use pnet::{datalink::NetworkInterface, packet::tcp::TcpPacket};
 use tokio::sync::mpsc::UnboundedSender;
-use crate::{error, success};
 
 use crate::core::models::{host::Host, ip::set::IpSet};
 use crate::protocols as protocol;

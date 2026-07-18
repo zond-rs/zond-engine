@@ -21,7 +21,7 @@ use crate::core::models::mac::MacAddr;
 ///
 /// # Examples
 /// ```
-/// use crate::core::redact;
+/// use zond_engine::core::redact;
 ///
 /// assert_eq!(redact::hostname("kabelbox.local"), "kaXXXXXal");
 /// assert_eq!(redact::hostname("workstation"), "woXXXXXon");
@@ -54,14 +54,17 @@ pub fn hostname(name: &str) -> String {
 ///
 /// # Examples
 /// ```
-/// use crate::core::models::mac::MacAddr;
-/// use crate::core::redact;
+/// use zond_engine::core::models::mac::MacAddr;
+/// use zond_engine::core::redact;
 ///
 /// let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3);
 /// assert_eq!(redact::mac_addr(&mac), "2c:cf:67:XX:XX:XX");
 /// ```
 pub fn mac_addr(mac: &MacAddr) -> String {
-    format!("{:02x}:{:02x}:{:02x}:XX:XX:XX", mac.0[0], mac.0[1], mac.0[2])
+    format!(
+        "{:02x}:{:02x}:{:02x}:XX:XX:XX",
+        mac.0[0], mac.0[1], mac.0[2]
+    )
 }
 
 /// Redacts an IPv6 Global Unicast Address by preserving only the first 16-bit segment.
@@ -78,7 +81,7 @@ pub fn mac_addr(mac: &MacAddr) -> String {
 /// # Examples
 /// ```
 /// use std::net::Ipv6Addr;
-/// use crate::core::redact;
+/// use zond_engine::core::redact;
 ///
 /// let ip = "2a02:908:8c1:b880:1234:5678:9abc:def0".parse::<Ipv6Addr>().unwrap();
 /// // Only the first 16-bit segment (s[0]) remains visible
@@ -97,7 +100,7 @@ pub fn global_unicast(ip: &Ipv6Addr) -> String {
 /// # Examples
 /// ```
 /// use std::net::Ipv6Addr;
-/// use crate::core::redact;
+/// use zond_engine::core::redact;
 ///
 /// let ip = "fe80::ca52:61ff:fec7:594".parse::<Ipv6Addr>().unwrap();
 /// assert_eq!(redact::link_local(&ip), "fe80::ca52:61ff:XXXX:XXXX");
@@ -119,7 +122,7 @@ pub fn link_local(ip: &Ipv6Addr) -> String {
 /// # Examples
 /// ```
 ///
-/// use crate::core::redact;
+/// use zond_engine::core::redact;
 /// use std::net::Ipv6Addr;
 ///
 /// let ip = "fd12:3456:789a:1:a8b2:c3d4:e5f6:1234".parse::<Ipv6Addr>().unwrap();

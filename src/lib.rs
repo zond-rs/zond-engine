@@ -4,12 +4,12 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
+pub mod core;
 pub mod info;
 pub mod network;
+pub mod plugins;
+pub mod protocols;
 pub mod scanner;
 pub mod system;
-pub mod core;
-pub mod protocols;
-pub mod plugins;
 
 pub mod host_sys;

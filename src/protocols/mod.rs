@@ -15,11 +15,11 @@ pub mod tcp;
 pub mod udp;
 pub mod utils;
 
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use pnet::datalink::MacAddr;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use crate::core::models::ip::range::Ipv4Range;
 use crate::core::models::ip::set::IpSet;
+use pnet::datalink::MacAddr;
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 type Bytes = Vec<u8>;
 type PacketIter = Box<dyn Iterator<Item = (Bytes, IpAddr)> + Send>;
@@ -47,7 +47,11 @@ pub fn eth_packet_iter(
     Ok(Box::new(arp_iter.chain(icmp_iter)))
 }
 
-pub fn create_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) -> anyhow::Result<PacketIter> {
+pub fn create_arp_iter(
+    local_mac: &MacAddr,
+    src_ip: &Ipv4Addr,
+    ip_set: &IpSet,
+) -> anyhow::Result<PacketIter> {
     let local_mac = *local_mac;
     let src_ip = *src_ip;
     let dst_mac = MacAddr::broadcast();
@@ -71,7 +75,10 @@ pub fn create_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) -
     Ok(Box::new(iter))
 }
 
-fn create_icmpv6_packets(local_mac: &MacAddr, link_local_addr: &Ipv6Addr) -> anyhow::Result<PacketIter> {
+fn create_icmpv6_packets(
+    local_mac: &MacAddr,
+    link_local_addr: &Ipv6Addr,
+) -> anyhow::Result<PacketIter> {
     let packet: Vec<u8> = icmp::create_all_nodes_echo_request_v6(local_mac, link_local_addr)?;
 
     let iter = std::iter::once((packet, IpAddr::V6(*link_local_addr)));

@@ -116,9 +116,9 @@ impl Security {
 
     /// Returns `true` if the certificate is valid at a specific target time.
     pub fn is_cert_valid_at(&self, target_time: SystemTime) -> bool {
-        self.certificate.as_ref().map_or(false, |c| {
-            target_time >= c.validity_start() && target_time <= c.validity_end()
-        })
+        self.certificate
+            .as_ref()
+            .is_some_and(|c| target_time >= c.validity_start() && target_time <= c.validity_end())
     }
 
     /// Returns `true` if the certificate is currently valid, but expires within the given threshold.
@@ -127,7 +127,7 @@ impl Security {
     ///
     /// ```
     /// use std::time::Duration;
-    /// # use crate::core::models::port::{Security, CertificateInfo};
+    /// # use zond_engine::core::models::port::{Security, CertificateInfo};
     /// # let mut sec = Security::new();
     ///
     /// // Check if the certificate expires in the next 30 days
@@ -135,7 +135,7 @@ impl Security {
     /// ```
     pub fn is_cert_expiring(&self, threshold: Duration) -> bool {
         let now = SystemTime::now();
-        self.certificate.as_ref().map_or(false, |c| {
+        self.certificate.as_ref().is_some_and(|c| {
             // Must be currently valid...
             if now < c.validity_start() || now > c.validity_end() {
                 return false;

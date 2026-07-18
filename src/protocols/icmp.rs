@@ -43,7 +43,7 @@ pub fn create_all_nodes_echo_request_v6(
         let icmp_imm: EchoRequestPacket = icmp.to_immutable();
         let icmp_pkt: Icmpv6Packet =
             Icmpv6Packet::new(icmp_imm.packet()).context("failed to create ICMPv6 packet")?;
-        let csm = checksum(&icmp_pkt, &src_addr, &dst_addr);
+        let csm = checksum(&icmp_pkt, src_addr, &dst_addr);
         icmp.set_checksum(csm);
     }
 

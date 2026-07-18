@@ -6,10 +6,10 @@
 
 //! Extensions for MAC address conversions between pnet and the core domain model.
 
-use pnet::util::MacAddr as PnetMacAddr;
 use crate::core::models::mac::MacAddr as CoreMacAddr;
+use pnet::util::MacAddr as PnetMacAddr;
 
-/// An extension trait to seamlessly convert from `pnet::util::MacAddr` to the 
+/// An extension trait to seamlessly convert from `pnet::util::MacAddr` to the
 /// native `crate::core::models::mac::MacAddr`.
 pub trait IntoCoreMac {
     fn into_core(self) -> CoreMacAddr;

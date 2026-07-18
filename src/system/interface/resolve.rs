@@ -7,22 +7,22 @@ use crate::{info, warn};
 
 use std::{net::Ipv4Addr, sync::atomic::Ordering};
 
+use crate::core::models::ip::range::IpRange;
 use crate::core::{
-    
     models::ip::{
         range::{IpError, Ipv4Range},
         set::IpSet,
     },
     parse::{IS_LAN_SCAN, IpParseError, ip::Keyword},
-    
 };
-use crate::core::models::ip::range::IpRange;
 use crate::system::interface;
 
 pub fn resolve(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
     match keyword {
         Keyword::Lan => resolve_lan(ip_set),
-        Keyword::Vpn => Err(IpParseError::LanError("VPN resolution not implemented".into())),
+        Keyword::Vpn => Err(IpParseError::LanError(
+            "VPN resolution not implemented".into(),
+        )),
     }
 }
 

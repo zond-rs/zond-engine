@@ -127,11 +127,11 @@ mod tests {
         let mut timer = ScanTimer::new(
             Duration::from_secs(10),
             Duration::from_secs(5),
-            Duration::from_millis(50),
+            Duration::from_millis(500),
         );
 
         let wait_time1 = timer.time_until_next_tick();
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(50));
         let wait_time2 = timer.time_until_next_tick();
 
         assert!(wait_time2 < wait_time1);
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn test_hard_deadline_expiration() {
         let timer = ScanTimer::new(
-            Duration::from_millis(10), // short hard deadline
+            Duration::from_millis(10),  // short hard deadline
             Duration::from_millis(100), // long min runtime (will not be reached)
             Duration::from_secs(1),
         );

@@ -162,6 +162,9 @@ mod tests {
             reason.protocol,
             StatusProtocol::Custom(Arc::from("dns-probe"))
         );
-        assert_eq!(reason.details.as_deref(), Some("Resolved A record successfully"));
+        assert_eq!(
+            reason.details.as_deref(),
+            Some("Resolved A record successfully")
+        );
     }
 }

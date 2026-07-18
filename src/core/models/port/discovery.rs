@@ -72,7 +72,7 @@ impl Discovery {
     /// # Examples
     ///
     /// ```
-    /// use crate::core::models::port::discovery::{Discovery, ScanResponse};
+    /// use zond_engine::core::models::port::discovery::{Discovery, ScanResponse};
     ///
     /// let telemetry = Discovery::new(ScanResponse::TcpSynAck);
     /// assert_eq!(telemetry.reason(), &ScanResponse::TcpSynAck);

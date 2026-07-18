@@ -288,7 +288,7 @@ impl FromStr for IpRange {
 /// # Examples
 ///
 /// ```
-/// use crate::core::models::ip::range::{cidr_range, IpRange};
+/// use zond_engine::core::models::ip::range::{cidr_range, IpRange};
 /// use std::net::IpAddr;
 ///
 /// let range = cidr_range("192.168.1.5".parse().unwrap(), 24).unwrap();
@@ -365,7 +365,11 @@ mod tests {
     fn len_calculations_v4() {
         let cases = vec![
             (Ipv4Addr::new(10, 0, 0, 0), Ipv4Addr::new(10, 0, 0, 0), 1),
-            (Ipv4Addr::new(10, 0, 0, 0), Ipv4Addr::new(10, 0, 0, 255), 256),
+            (
+                Ipv4Addr::new(10, 0, 0, 0),
+                Ipv4Addr::new(10, 0, 0, 255),
+                256,
+            ),
             (Ipv4Addr::new(0, 0, 0, 0), Ipv4Addr::new(0, 0, 0, 10), 11),
         ];
 
@@ -377,7 +381,8 @@ mod tests {
 
     #[test]
     fn contains_logic_v4() {
-        let range = Ipv4Range::new(Ipv4Addr::new(172, 16, 0, 10), Ipv4Addr::new(172, 16, 0, 20)).unwrap();
+        let range =
+            Ipv4Range::new(Ipv4Addr::new(172, 16, 0, 10), Ipv4Addr::new(172, 16, 0, 20)).unwrap();
         assert!(range.contains(&Ipv4Addr::new(172, 16, 0, 10)));
         assert!(range.contains(&Ipv4Addr::new(172, 16, 0, 15)));
         assert!(range.contains(&Ipv4Addr::new(172, 16, 0, 20)));
@@ -389,11 +394,14 @@ mod tests {
     fn iteration_values_v4() {
         let range = Ipv4Range::new(Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(1, 1, 1, 3)).unwrap();
         let ips: Vec<IpAddr> = range.to_iter().collect();
-        assert_eq!(ips, vec![
-            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 2)),
-            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 3)),
-        ]);
+        assert_eq!(
+            ips,
+            vec![
+                IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                IpAddr::V4(Ipv4Addr::new(1, 1, 1, 2)),
+                IpAddr::V4(Ipv4Addr::new(1, 1, 1, 3)),
+            ]
+        );
     }
 
     #[test]
@@ -526,7 +534,7 @@ mod property_tests {
         #[test]
         fn cidr_v4_roundtrip(v4 in any_ipv4(), prefix in 1..=32u8) {
             let range = cidr_range(IpAddr::V4(v4), prefix).unwrap();
-            prop_assert_eq!(range.len() as u128, 1u128 << (32 - prefix));
+            prop_assert_eq!(range.len(), 1u128 << (32 - prefix));
         }
 
         #[test]

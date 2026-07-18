@@ -29,7 +29,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::AtomicBool;
 use thiserror::Error;
 
-use crate::core::models::ip::range::{IpError, Ipv4Range, IpRange};
+use crate::core::models::ip::range::{IpError, IpRange, Ipv4Range};
 use crate::core::models::ip::set::IpSet;
 use crate::success;
 
@@ -95,8 +95,8 @@ pub enum IpParseError {
 /// # Examples
 ///
 /// ```
-/// use crate::core::parse::ip::{to_set, Keyword};
-/// use crate::core::models::ip::set::IpSet;
+/// use zond_engine::core::parse::ip::{to_set, Keyword};
+/// use zond_engine::core::models::ip::set::IpSet;
 ///
 /// let ips = vec!["192.168.1.0/24", "10.0.0.1", "10.0.0.5-10"];
 /// let set = to_set(&ips, None).unwrap();
@@ -135,7 +135,11 @@ where
 }
 
 /// Identifies the format of a single target string and inserts it into the set.
-fn parse_and_insert(s: &str, set: &mut IpSet, resolver: Option<ResolverFn>) -> Result<(), IpParseError> {
+fn parse_and_insert(
+    s: &str,
+    set: &mut IpSet,
+    resolver: Option<ResolverFn>,
+) -> Result<(), IpParseError> {
     if s.contains('/') {
         let range = parse_cidr(s)?;
         set.insert_range(range);
@@ -152,7 +156,9 @@ fn parse_and_insert(s: &str, set: &mut IpSet, resolver: Option<ResolverFn>) -> R
         if let Some(r) = resolver {
             return r(Keyword::Lan, set);
         } else {
-            return Err(IpParseError::LanError("LAN keyword used but no resolver provided".into()));
+            return Err(IpParseError::LanError(
+                "LAN keyword used but no resolver provided".into(),
+            ));
         }
     }
 

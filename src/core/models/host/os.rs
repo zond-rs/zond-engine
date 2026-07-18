@@ -6,27 +6,27 @@
 
 //! # OS Fingerprinting Models
 //!
-//! This module provides the [`OsFingerprint`] entity, which aggregates findings 
-//! from multiple OS identification techniques (e.g., TCP/IP stack analysis, 
+//! This module provides the [`OsFingerprint`] entity, which aggregates findings
+//! from multiple OS identification techniques (e.g., TCP/IP stack analysis,
 //! service banner grabbing, or SNMP queries).
 
 use std::{collections::BTreeSet, sync::Arc};
 
 /// The absolute maximum number of CPEs we will store for a single OS fingerprint.
-/// This acts as a security boundary to prevent memory exhaustion from malicious 
+/// This acts as a security boundary to prevent memory exhaustion from malicious
 /// targets or runaway scanning scripts.
 pub const MAX_CPES_PER_OS: usize = 50;
 
 /// A high-fidelity record of a host's identified operating system.
 ///
-/// `OsFingerprint` uses an accuracy-based merging strategy: higher accuracy 
-/// findings overwrite lower accuracy ones, while findings with identical 
+/// `OsFingerprint` uses an accuracy-based merging strategy: higher accuracy
+/// findings overwrite lower accuracy ones, while findings with identical
 /// accuracy are combined to fill missing fields.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OsFingerprint {
     /// The primary OS name (e.g., "Linux", "Windows").
     ///
-    /// This field should ideally be provided by a string interner to maximize 
+    /// This field should ideally be provided by a string interner to maximize
     /// memory deduplication across broad scan results.
     pub name: Arc<str>,
 
@@ -55,7 +55,7 @@ impl OsFingerprint {
     ///
     /// ```
     /// # use std::sync::Arc;
-    /// # use crate::core::models::host::OsFingerprint;
+    /// # use zond_engine::core::models::host::OsFingerprint;
     /// let os = OsFingerprint::new("Ubuntu Linux", 95);
     /// assert_eq!(os.accuracy, 95);
     /// ```
@@ -85,7 +85,7 @@ impl OsFingerprint {
 
     /// Returns `true` if the identification has high certainty (>= 85%).
     ///
-    /// This threshold is often used by scanning engines to decide whether 
+    /// This threshold is often used by scanning engines to decide whether
     /// to terminate OS discovery or continue with more intrusive probes.
     pub fn is_highly_confident(&self) -> bool {
         self.accuracy >= 85

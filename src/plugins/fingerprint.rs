@@ -10,6 +10,8 @@
 //! and active probing. It uses a tiered identification strategy and port-based indexing
 //! to ensure high performance even with large signature datasets.
 
+use crate::core::models::fingerprint::ServiceDefinition;
+use crate::core::models::port::{Port, Protocol, Service};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -17,8 +19,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use crate::core::models::fingerprint::ServiceDefinition;
-use crate::core::models::port::{Port, Protocol, Service};
 
 /// A compiled regex match rule for a service.
 pub struct CompiledMatch {
@@ -327,7 +327,7 @@ mod tests {
 
         assert_eq!(engine.by_port.get(&80).unwrap().len(), 1);
         assert_eq!(engine.by_port.get(&22).unwrap().len(), 1);
-        assert!(engine.by_port.get(&443).is_none());
+        assert!(!engine.by_port.contains_key(&443));
     }
 
     #[test]

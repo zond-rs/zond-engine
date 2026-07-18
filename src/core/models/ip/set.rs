@@ -214,27 +214,42 @@ impl IpSet {
     ///
     /// Panics in debug mode if the set has pending unmerged ranges.
     pub fn contains_canonical(&self, ip: &IpAddr) -> bool {
-        debug_assert!(!self.v4_dirty && !self.v6_dirty, "IpSet must be canonicalized before calling contains_canonical");
+        debug_assert!(
+            !self.v4_dirty && !self.v6_dirty,
+            "IpSet must be canonicalized before calling contains_canonical"
+        );
         match ip {
             IpAddr::V4(v4) => {
                 let target = u32::from(*v4);
-                self.v4.binary_search_by(|range| {
+                self.v4
+                    .binary_search_by(|range| {
                         let start = u32::from(range.start_addr);
                         let end = u32::from(range.end_addr);
-                        if target < start { std::cmp::Ordering::Greater }
-                        else if target > end { std::cmp::Ordering::Less }
-                        else { std::cmp::Ordering::Equal }
-                    }).is_ok()
+                        if target < start {
+                            std::cmp::Ordering::Greater
+                        } else if target > end {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .is_ok()
             }
             IpAddr::V6(v6) => {
                 let target = u128::from(*v6);
-                self.v6.binary_search_by(|range| {
+                self.v6
+                    .binary_search_by(|range| {
                         let start = u128::from(range.start_addr);
                         let end = u128::from(range.end_addr);
-                        if target < start { std::cmp::Ordering::Greater }
-                        else if target > end { std::cmp::Ordering::Less }
-                        else { std::cmp::Ordering::Equal }
-                    }).is_ok()
+                        if target < start {
+                            std::cmp::Ordering::Greater
+                        } else if target > end {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .is_ok()
             }
         }
     }
@@ -245,7 +260,10 @@ impl IpSet {
     ///
     /// Panics in debug mode if the set has pending unmerged ranges.
     pub fn len_canonical(&self) -> u128 {
-        debug_assert!(!self.v4_dirty && !self.v6_dirty, "IpSet must be canonicalized before calling len_canonical");
+        debug_assert!(
+            !self.v4_dirty && !self.v6_dirty,
+            "IpSet must be canonicalized before calling len_canonical"
+        );
         let v4_len: u128 = self.v4.iter().map(|r| r.len() as u128).sum();
         let v6_len: u128 = self.v6.iter().map(|r| r.len()).sum();
         v4_len + v6_len
@@ -361,7 +379,10 @@ impl TryFrom<&str> for IpSet {
     type Error = IpSetError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let mut set = IpSet::new();
-        for part in value.split([',', ' ']).filter(|part| !part.trim().is_empty()) {
+        for part in value
+            .split([',', ' '])
+            .filter(|part| !part.trim().is_empty())
+        {
             let range = part.parse::<IpRange>()?;
             set.insert_range(range);
         }
@@ -395,11 +416,11 @@ mod tests {
         let mut set = IpSet::new();
         set.insert(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)));
         set.insert(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 2)));
-        
+
         // Before canonicalization, they stay as individual pushes
         assert_eq!(set.v4.len(), 2);
         assert!(set.v4_dirty);
-        
+
         // Explicitly canonicalize since queries are now immutable
         set.canonicalize();
         assert_eq!(set.len(), 2);
@@ -420,7 +441,7 @@ mod tests {
         set.insert_range("10.0.0.30-10.0.0.40".parse().unwrap());
         // Insert: [0-50] (subsume all)
         set.insert_range("10.0.0.0-10.0.0.50".parse().unwrap());
-        
+
         set.canonicalize();
         assert_eq!(set.len(), 51);
         assert_eq!(set.v4().len(), 1);
@@ -432,10 +453,10 @@ mod tests {
         // ::f...f (max)
         let max_v6 = Ipv6Addr::from(u128::MAX);
         let max_minus_1 = Ipv6Addr::from(u128::MAX - 1);
-        
+
         set.insert(IpAddr::V6(max_minus_1));
         set.insert(IpAddr::V6(max_v6));
-        
+
         set.canonicalize();
         assert_eq!(set.len(), 2);
         assert_eq!(set.v6().len(), 1);
@@ -446,7 +467,7 @@ mod tests {
         let mut set = IpSet::new();
         set.insert(IpAddr::V4(Ipv4Addr::from(1)));
         set.insert(IpAddr::V4(Ipv4Addr::from(2)));
-        
+
         set.canonicalize();
         let ips: Vec<IpAddr> = set.iter().collect();
         assert_eq!(ips.len(), 2);
@@ -465,7 +486,7 @@ mod tests {
     fn from_str_mixed_advanced() {
         let set = IpSet::from_str("1.1.1.1/32, 1.1.1.1, ::1-::1, 10.0.0.1-10.0.0.2").unwrap();
         // 1.1.1.1 (v4) + ::1 (v6) + 10.0.0.1, 10.0.0.2 (v4)
-        assert_eq!(set.len(), 4); 
+        assert_eq!(set.len(), 4);
     }
 
     #[test]
@@ -473,7 +494,7 @@ mod tests {
         let mut set = IpSet::new();
         let ips = (0..100).map(|i| IpAddr::V4(Ipv4Addr::from(i)));
         set.extend(ips);
-        
+
         assert_eq!(set.v4.len(), 100);
         set.canonicalize();
         assert_eq!(set.v4.len(), 1);

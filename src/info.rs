@@ -11,8 +11,8 @@
 //! This service acts as a facade for gathering local machine statistics and
 //! configuration, useful for debugging or self-awareness context.
 
-use pnet::datalink::NetworkInterface;
 use crate::core::models::localhost::{FirewallStatus, IpServiceGroup};
+use pnet::datalink::NetworkInterface;
 
 /// Retrieves a comprehensive snapshot of the local system's network state.
 pub fn get_system_info() -> anyhow::Result<SystemInfo> {

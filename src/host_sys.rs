@@ -4,13 +4,13 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
+use crate::core::models::localhost::{FirewallStatus, IpServiceGroup, Service};
+use anyhow;
+use pnet::datalink::NetworkInterface;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 #[cfg(target_os = "linux")]
 use std::process::Command;
-use anyhow;
-use pnet::datalink::NetworkInterface;
-use crate::core::models::localhost::{FirewallStatus, IpServiceGroup, Service};
 
 /// Intermediate representation of a socket entry.
 #[derive(Debug)]
