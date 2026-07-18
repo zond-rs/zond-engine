@@ -169,13 +169,15 @@ impl LocalScanner {
 
         let source_addr: IpAddr = protocol::get_ip_addr_from_eth(&eth_frame)?;
 
-        ensure!(
-            self.ip_set.contains(&source_addr),
-            "{source_addr} is not in range"
-        );
+        if source_addr.is_ipv4() {
+            ensure!(
+                self.ip_set.contains(&source_addr),
+                "{source_addr} is not in range"
+            );
+        }
 
         let rtt: Option<Duration> = self.calculate_rtt(&eth_frame).unwrap_or_else(|e| {
-            error!(verbosity = 2, "Failed to calculate RTT: {e}");
+            error!(verbosity = 1, "Failed to calculate RTT: {e}");
             None
         });
 

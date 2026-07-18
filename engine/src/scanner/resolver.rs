@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, ensure};
+use anyhow::Context;
 use pnet::packet::{Packet, udp::UdpPacket};
 use tokio::sync::mpsc::UnboundedReceiver;
 use zond_core::{error, info, models::{host::Host, ip}};
@@ -125,7 +125,10 @@ impl HostnameResolver {
     }
 
     async fn send_dns_query(&mut self, ip: &IpAddr) -> anyhow::Result<()> {
-        ensure!(is_queryable(ip), "{ip} cannot be queried");
+        if !is_queryable(ip) {
+            return Ok(());
+        }
+
         let id: u16 = self.get_next_trans_id();
         self.dns_map.insert(id, *ip);
 
