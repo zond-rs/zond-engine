@@ -20,20 +20,18 @@ To use the `zond-engine` in your own Rust project, add it as a dependency in you
 
 ```toml
 [dependencies]
-zond-engine = { git = "https://github.com/zond-rs/zond-engine" }
+zond-engine = "0.4.0"
 ```
 
-*Note: The engine will be published to `crates.io` in a future release.*
+## Modules
 
-## Project Structure
-
-This repository is a Cargo workspace containing the following crates:
+This monolithic crate contains the following core modules:
 
 * `core`: Shared data structures, constants, and utilities.
-* `engine`: The main asynchronous scanner, host resolution, and core orchestration logic.
 * `protocols`: Network protocol parsers and packet crafting (TCP, UDP, ICMP, DNS, MDNS, etc.).
 * `plugins`: Extendable modules for specific application-layer interactions or advanced enumeration.
 * `system`: OS-level utilities (interfaces, firewall status, local processes) for Linux and macOS.
+* `scanner`: The main asynchronous scanner, host resolution, and core orchestration logic.
 
 ## Compatibility
 
