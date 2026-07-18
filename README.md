@@ -25,7 +25,7 @@ zond-engine = "0.4.0"
 
 ## Modules
 
-This monolithic crate contains the following core modules:
+This crate contains the following core modules:
 
 * `core`: Shared data structures, constants, and utilities.
 * `protocols`: Network protocol parsers and packet crafting (TCP, UDP, ICMP, DNS, MDNS, etc.).
