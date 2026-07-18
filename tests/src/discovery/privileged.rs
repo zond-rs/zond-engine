@@ -43,14 +43,14 @@ async fn privileged_discovery_netns() {
             assert!(!hosts.is_empty(), "Should find the target in the namespace");
             let host = hosts
                 .iter()
-                .find(|h| h.primary_ip == target_ip)
+                .find(|h| h.primary_ip() == target_ip)
                 .expect("Target IP not found in results");
 
             assert!(
-                host.mac.is_some(),
+                host.mac().is_some(),
                 "Should resolve MAC address for local neighbor"
             );
-            println!("Found host: {:?} with MAC {:?}", host.primary_ip, host.mac);
+            println!("Found host: {:?} with MAC {:?}", host.primary_ip(), host.mac());
         }
         Err(e) => panic!("Discovery failed: {}", e),
     }
@@ -99,7 +99,7 @@ async fn privileged_discovery_hostname_resolution() {
         let host = &hosts[0];
         println!(
             "Resolved host: {:?} - Hostname: {:?}",
-            host.primary_ip, host.hostname
+            host.primary_ip(), host.hostname()
         );
         // On many systems, the namespace hostname won't resolve unless /etc/hosts is updated or a DNS server is present.
         // For now, we verify that the scan COMPLETE safely with resolution enabled.

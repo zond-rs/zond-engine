@@ -88,11 +88,10 @@ impl HostnameResolver {
                     }
                 }
                 pkt = self.udp_handle.rx.recv() => {
-                    info!(incoming, "UDP packet from {pkt:?}");
                     if let Some((bytes, _addr)) = pkt {
                         match self.process_udp_packets(&bytes) {
                             Ok(_) => {},
-                            Err(e) => error!("UDP packet processing failed: {e}")
+                            Err(e) => error!(verbosity = 1, "UDP packet processing failed: {e}")
                         }
                     }
                 }
