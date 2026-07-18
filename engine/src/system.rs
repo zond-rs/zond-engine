@@ -6,7 +6,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::process::Command;
 
 use anyhow;
 use pnet::datalink::NetworkInterface;

@@ -16,11 +16,10 @@ use std::{
 use anyhow::{Context, ensure};
 use pnet::packet::{Packet, udp::UdpPacket};
 use tokio::sync::mpsc::UnboundedReceiver;
-use zond_core::{models::{host::Host, ip}};
+use zond_core::{error, info, models::{host::Host, ip}, success};
 use zond_protocols::{
     dns,
     mdns::{self, MdnsRecord},
-    udp,
 };
 
 use crate::network::transport::{self, TransportHandle, TransportType};
@@ -60,14 +59,21 @@ impl HostnameResolver {
                 res = self.dns_rx.recv() => {
                     match res {
                         Some(ip) => {
-                            let _ = self.send_dns_query(&ip).await;
+                            match self.send_dns_query(&ip).await {
+                                Ok(_) => success!(verbosity = 1, "DNS query for {ip} sent!"),
+                                Err(e) => error!("DNS query for {ip} failed: {e}")
+                            }
                         }
                         None => break,
                     }
                 }
                 pkt = self.udp_handle.rx.recv() => {
+                    info!("UDP packet from {pkt:?}");
                     if let Some((bytes, _addr)) = pkt {
-                        let _ = self.process_udp_packets(&bytes);
+                        match self.process_udp_packets(&bytes) {
+                            Ok(_) => {},
+                            Err(e) => error!("UDP packet processing failed: {e}")
+                        }
                     }
                 }
             }
@@ -91,20 +97,17 @@ impl HostnameResolver {
         ensure!(is_queryable(ip), "{ip} cannot be queried");
         let id: u16 = self.get_next_trans_id();
         self.dns_map.insert(id, *ip);
-        let (dns_addr, dns_port) = (self.dns_socket.ip(), self.dns_socket.port());
 
         let bytes: Vec<u8> = dns::create_ptr_packet(ip, id)?;
-        let src_port: u16 = rand::random_range(50_000..u16::MAX);
-        let udp_bytes: Vec<u8> = udp::create_packet(src_port, dns_port, bytes)?;
-        let tx = self.udp_handle.tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let udp_pkt = UdpPacket::new(&udp_bytes)
-                .context("creating udp packet")
-                .unwrap();
-            let mut sender = tx.lock().unwrap();
-            sender.send_to(udp_pkt, dns_addr)
-        })
-        .await??;
+        
+        let bind_addr = match self.dns_socket {
+            SocketAddr::V4(_) => "0.0.0.0:0",
+            SocketAddr::V6(_) => "[::]:0",
+        };
+        
+        let socket = tokio::net::UdpSocket::bind(bind_addr).await?;
+        socket.send_to(&bytes, self.dns_socket).await?;
+        
         Ok(())
     }
 
@@ -121,6 +124,7 @@ impl HostnameResolver {
     fn process_dns_packet(&mut self, packet: UdpPacket) -> anyhow::Result<()> {
         let (response_id, hostname) = dns::get_hostname(packet.payload())?;
         if let Some(ip) = self.dns_map.remove(&response_id) {
+            info!(verbosity = 1, "Received DNS response for {ip}");
             self.hostname_map.insert(ip, hostname);
         }
         Ok(())
@@ -145,6 +149,7 @@ impl HostnameResolver {
             .or_else(|| mdns_record.ips.iter().next());
 
         if let Some(ip) = preferred_ip {
+            info!(verbosity = 1, "Received MDNS response for {ip}");
             self.mdns_cache.insert(*ip, mdns_record);
         }
 
