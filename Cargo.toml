@@ -13,7 +13,8 @@ members = [
 version = "0.4.0"
 license = "MPL-2.0"
 edition = "2024"
-repository = "https://github.com/hollowpointer/zond"
+repository = "https://github.com/zond-rs/zond-engine"
+description = "A lightweight, fast, and highly concurrent networking backend for packet crafting, protocol fingerprinting, and host discovery."
 
 [workspace.dependencies]
 anyhow = "1.0.99"
