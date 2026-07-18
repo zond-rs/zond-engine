@@ -191,7 +191,7 @@ impl LocalScanner {
             info!(
                 incoming,
                 verbosity = 2,
-                "{source_addr} response in {}ms",
+                "{source_addr} responded in {}ms",
                 rtt.as_millis()
             );
             host.add_rtt(rtt);

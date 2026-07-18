@@ -17,7 +17,6 @@ pub mod ip;
 
 pub use ip::{IS_LAN_SCAN, IpParseError, to_set as to_ipset};
 
-use crate::models::ip::set::IpSet;
 use crate::models::port::PortSet;
 use crate::models::target::{TargetMap, TargetSet};
 
@@ -26,18 +25,19 @@ use crate::models::target::{TargetMap, TargetSet};
 pub fn to_target_map(
     targets: &[String],
     global_ports: PortSet,
+    resolver: Option<ip::ResolverFn>,
 ) -> Result<TargetMap, anyhow::Error> {
     let mut map = TargetMap::new();
 
     for target in targets {
         if let Some((ip_str, port_str)) = target.split_once(':') {
-            let ip_set = IpSet::try_from(ip_str)
+            let ip_set = to_ipset(&[ip_str], resolver)
                 .map_err(|e| anyhow::anyhow!("Invalid IP in '{}': {}", ip_str, e))?;
             let port_set = PortSet::try_from(port_str)
                 .map_err(|e| anyhow::anyhow!("Invalid Port in '{}': {}", port_str, e))?;
             map.add_unit(TargetSet::new(ip_set, port_set));
         } else {
-            let ip_set = IpSet::try_from(target.as_str())
+            let ip_set = to_ipset(&[target.as_str()], resolver)
                 .map_err(|e| anyhow::anyhow!("Invalid IP '{}': {}", target, e))?;
             map.add_unit(TargetSet::new(ip_set, global_ports.clone()));
         }
@@ -64,7 +64,7 @@ mod tests {
     fn facade_ip_resolution() {
         let inputs = vec!["127.0.0.1", "10.0.0.1-5"];
 
-        let mut set = to_ipset(&inputs).expect("Facade should resolve IP targets");
+        let mut set = to_ipset(&inputs, None).expect("Facade should resolve IP targets");
 
         assert_eq!(set.len(), 6);
         assert!(set.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn facade_empty_input() {
         let inputs: Vec<&str> = vec![];
-        let result = to_ipset(&inputs);
+        let result = to_ipset(&inputs, None);
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), IpParseError::EmptySet);
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn facade_comma_splitting() {
         let inputs = vec!["1.1.1.1, 2.2.2.2"];
-        let mut set = to_ipset(&inputs).unwrap();
+        let mut set = to_ipset(&inputs, None).unwrap();
 
         assert_eq!(set.len(), 2);
     }

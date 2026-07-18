@@ -36,9 +36,19 @@ use crate::success;
 /// Global indicator set to `true` if a "lan" resolution was successfully performed.
 pub static IS_LAN_SCAN: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     Lan,
     Vpn,
+}
+
+impl Keyword {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Keyword::Lan => "lan",
+            Keyword::Vpn => "vpn",
+        }
+    }
 }
 
 /// Errors encountered during the parsing or resolution of IP-related strings.
@@ -94,7 +104,9 @@ pub enum IpParseError {
 /// // /24 (256) + single (1) + range 5-10 (6) = 263
 /// assert_eq!(set.len(), 263);
 /// ```
-pub fn to_set<S>(ips: &[S]) -> Result<IpSet, IpParseError>
+pub type ResolverFn = fn(Keyword, &mut IpSet) -> Result<(), IpParseError>;
+
+pub fn to_set<S>(ips: &[S], resolver: Option<ResolverFn>) -> Result<IpSet, IpParseError>
 where
     S: AsRef<str>,
 {
@@ -107,7 +119,7 @@ where
         }
 
         for part in s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
-            parse_and_insert(part, &mut set)?;
+            parse_and_insert(part, &mut set, resolver)?;
         }
     }
 
@@ -123,7 +135,7 @@ where
 }
 
 /// Identifies the format of a single target string and inserts it into the set.
-fn parse_and_insert(s: &str, set: &mut IpSet) -> Result<(), IpParseError> {
+fn parse_and_insert(s: &str, set: &mut IpSet, resolver: Option<ResolverFn>) -> Result<(), IpParseError> {
     if s.contains('/') {
         let range = parse_cidr(s)?;
         set.insert_range(range);
@@ -134,6 +146,14 @@ fn parse_and_insert(s: &str, set: &mut IpSet) -> Result<(), IpParseError> {
         let range = parse_range(s)?;
         set.insert_range(range);
         return Ok(());
+    }
+
+    if s.eq_ignore_ascii_case(Keyword::Lan.as_str()) {
+        if let Some(r) = resolver {
+            return r(Keyword::Lan, set);
+        } else {
+            return Err(IpParseError::LanError("LAN keyword used but no resolver provided".into()));
+        }
     }
 
     let ip = s
@@ -232,7 +252,7 @@ mod tests {
     #[test]
     fn to_set_basic_single() {
         let input = vec!["192.168.1.1"];
-        let mut set = to_set(&input).expect("Should parse single IP");
+        let mut set = to_set(&input, None).expect("Should parse single IP");
         assert_eq!(set.len(), 1);
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
     }
@@ -240,7 +260,7 @@ mod tests {
     #[test]
     fn to_set_comma_separated() {
         let input = vec!["10.0.0.1, 10.0.0.2, 10.0.0.5"];
-        let mut set = to_set(&input).expect("Should parse comma list");
+        let mut set = to_set(&input, None).expect("Should parse comma list");
         assert_eq!(set.len(), 3);
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
     }
@@ -248,35 +268,35 @@ mod tests {
     #[test]
     fn parse_cidr_blocks() {
         let input = vec!["172.16.0.0/24"];
-        let mut set = to_set(&input).expect("Should parse CIDR");
+        let mut set = to_set(&input, None).expect("Should parse CIDR");
         assert_eq!(set.len(), 256);
     }
 
     #[test]
     fn parse_short_range_suffix() {
         let input = vec!["192.168.1.250-2.10"];
-        let mut set = to_set(&input).unwrap();
+        let mut set = to_set(&input, None).unwrap();
         assert_eq!(set.len(), 17);
     }
 
     #[test]
     fn error_invalid_cidr() {
         let input = vec!["192.168.1.1/33"];
-        let result = to_set(&input);
+        let result = to_set(&input, None);
         assert_eq!(result.unwrap_err(), IpParseError::InvalidPrefix(33));
     }
 
     #[test]
     fn error_invalid_range_order() {
         let input = vec!["10.0.0.10-1"];
-        let result = to_set(&input);
+        let result = to_set(&input, None);
         assert!(matches!(result, Err(IpParseError::InvalidRange(_, _))));
     }
 
     #[test]
     fn empty_input_error() {
         let input: Vec<&str> = vec!["", " "];
-        let result = to_set(&input);
+        let result = to_set(&input, None);
         assert_eq!(result.unwrap_err(), IpParseError::EmptySet);
     }
 }
