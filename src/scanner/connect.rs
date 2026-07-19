@@ -12,15 +12,13 @@ use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
-
-use super::STOP_SIGNAL;
+use crate::core::controller::InputHandle;
 use super::dispatcher::Dispatcher;
 use crate::scanner::increment_host_count;
 
@@ -35,13 +33,14 @@ const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 /// open or filtered ports are aggregated into a collection of [`Host`] entities.
 pub async fn scan(
     mut rx: mpsc::Receiver<Target>,
+    input_handle: &InputHandle,
     concurrency_limit: usize,
 ) -> anyhow::Result<Vec<Host>> {
     let mut set = JoinSet::new();
     let mut results_map: HashMap<IpAddr, Host> = HashMap::new();
 
     while let Some(target) = rx.recv().await {
-        if STOP_SIGNAL.load(Ordering::Relaxed) {
+        if input_handle.should_stop() {
             break;
         }
 
@@ -135,7 +134,7 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
 ///   to minimize local network congestion.
 /// - **Fidelity Range**: Uses an adjustable 1000ms timeout window to capture
 ///   hosts on high-latency or geographically distant links.
-pub async fn discover(ips: IpSet) -> anyhow::Result<Vec<Host>> {
+pub async fn discover(ips: IpSet, input_handle: &InputHandle) -> anyhow::Result<Vec<Host>> {
     const CONCURRENCY_LIMIT: usize = 2048;
 
     let mut target_map = TargetMap::new();
@@ -150,13 +149,13 @@ pub async fn discover(ips: IpSet) -> anyhow::Result<Vec<Host>> {
     target_map.add_unit(TargetSet::new(ips, port_set));
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
-    let mut rx = dispatcher.run_shuffled();
+    let mut rx = dispatcher.run_shuffled(input_handle);
     let mut set = JoinSet::new();
     let found_hosts = Arc::new(Mutex::new(HashSet::new()));
     let mut hosts = Vec::new();
 
     while let Some(target) = rx.recv().await {
-        if STOP_SIGNAL.load(Ordering::Relaxed) {
+        if input_handle.should_stop() {
             break;
         }
 

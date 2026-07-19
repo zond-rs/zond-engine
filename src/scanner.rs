@@ -15,15 +15,14 @@
 //! [`HostnameResolver`].use std::net::IpAddr;
 
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::core::config::ZondConfig;
-use crate::core::input::InputHandle;
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::target::TargetMap;
 use crate::system::interface;
+use crate::core::controller::InputHandle;
 use crate::{error, info, success, warn};
 use async_trait::async_trait;
 use is_root::is_root;
@@ -43,9 +42,6 @@ use tokio::task::JoinHandle;
 use crate::scanner::resolver::HostnameResolver;
 
 pub static FOUND_HOST_COUNT: AtomicUsize = AtomicUsize::new(0);
-pub static STOP_SIGNAL: AtomicBool = AtomicBool::new(false);
-static INPUT_LISTENER_SPAWNED: AtomicBool = AtomicBool::new(false);
-
 pub fn increment_host_count() {
     FOUND_HOST_COUNT.fetch_add(1, Ordering::Relaxed);
 }
@@ -59,18 +55,15 @@ trait NetworkExplorer {
     async fn discover_hosts(&mut self) -> anyhow::Result<Vec<Host>>;
 }
 
-pub async fn scan(target_map: TargetMap, cfg: &ZondConfig) -> anyhow::Result<Vec<Host>> {
-    STOP_SIGNAL.store(false, Ordering::Relaxed);
-    let use_raw_sockets = preflight_check(cfg);
-
-    if use_raw_sockets {
+pub async fn scan(target_map: TargetMap, input_handle: &InputHandle) -> anyhow::Result<Vec<Host>> {
+    if not_root() {
         // Future: Remove this fallback once SYN scanner is ready
         warn!("Privileged port scanning (SYN) not yet implemented; using TCP connect fallback");
     }
 
     let dispatcher = dispatcher::Dispatcher::new(target_map);
-    let rx = dispatcher.run_shuffled();
-    connect::scan(rx, 50).await
+    let rx = dispatcher.run_shuffled(input_handle);
+    connect::scan(rx, input_handle, 50).await
 }
 
 /// The primary entry point for network discovery.
@@ -83,19 +76,17 @@ pub async fn scan(target_map: TargetMap, cfg: &ZondConfig) -> anyhow::Result<Vec
 /// ### Integration Notes
 /// - **State**: Updates [`FOUND_HOST_COUNT`] and reacts to [`STOP_SIGNAL`].
 /// - **Concurrency**: Spawns multiple Tokio tasks; ensure the caller is within a multithreaded runtime.
-pub async fn discover(targets: IpSet, cfg: &ZondConfig) -> anyhow::Result<Vec<Host>> {
-    STOP_SIGNAL.store(false, Ordering::Relaxed);
-    let use_raw_sockets: bool = preflight_check(cfg);
-
-    if !use_raw_sockets {
-        let mut hosts = connect::discover(targets).await?;
-        if !cfg.no_dns {
+pub async fn discover(targets: IpSet, cfg: &ZondConfig, input_handle: &InputHandle) -> anyhow::Result<Vec<Host>> {
+    let with_dns: bool = !cfg.no_dns;
+    if not_root() {
+        let mut hosts = connect::discover(targets, input_handle).await?;
+        if with_dns {
             resolver::resolve_hosts_async(&mut hosts).await;
         }
         return Ok(hosts);
     }
 
-    let (dns_tx, resolver_task) = if !cfg.no_dns {
+    let (dns_tx, resolver_task) = if with_dns {
         let (tx, rx) = mpsc::unbounded_channel();
         let task = spawn_resolver(rx).await;
         (Some(tx), Some(task))
@@ -104,7 +95,11 @@ pub async fn discover(targets: IpSet, cfg: &ZondConfig) -> anyhow::Result<Vec<Ho
         (None, None)
     };
 
-    let scanner_handles = spawn_explorers(targets, dns_tx).await;
+    let scanner_handles = spawn_explorers(
+        targets,
+        input_handle,
+        dns_tx
+    ).await;
 
     let mut hosts = Vec::new();
     for handle in scanner_handles {
@@ -126,6 +121,7 @@ pub async fn discover(targets: IpSet, cfg: &ZondConfig) -> anyhow::Result<Vec<Ho
 
 async fn spawn_explorers(
     targets: IpSet,
+    input_handle: &InputHandle,
     dns_tx: Option<mpsc::UnboundedSender<IpAddr>>,
 ) -> Vec<JoinHandle<anyhow::Result<Vec<Host>>>> {
     let mut handles = Vec::new();
@@ -139,8 +135,9 @@ async fn spawn_explorers(
             let tx = dns_tx.clone();
             let intf_c = intf.clone();
 
+            let input_handle_clone = input_handle.clone();
             let handle = tokio::spawn(async move {
-                let mut scanner = LocalScanner::new(intf_c, local_ips, tx)?;
+                let mut scanner = LocalScanner::new(intf_c, local_ips, input_handle_clone, tx)?;
                 scanner.discover_hosts().await
             });
             handles.push(handle);
@@ -152,8 +149,9 @@ async fn spawn_explorers(
             let tx = dns_tx.clone();
             let intf_c = intf.clone();
 
+            let input_handle_clone = input_handle.clone();
             let handle = tokio::spawn(async move {
-                let mut scanner = RoutedScanner::new(intf_c, routed_ips, tx)?;
+                let mut scanner = RoutedScanner::new(intf_c, routed_ips, input_handle_clone, tx)?;
                 scanner.discover_hosts().await
             });
             handles.push(handle);
@@ -166,7 +164,10 @@ async fn spawn_explorers(
             verbosity = 1,
             "Spawning FALLBACK scanner for unmapped targets"
         );
-        let handle = tokio::spawn(async move { connect::discover(unmapped_ips).await });
+        let input_handle_clone = input_handle.clone();
+        let handle = tokio::spawn(async move {
+            connect::discover(unmapped_ips, &input_handle_clone).await
+        });
         handles.push(handle);
     }
 
@@ -188,38 +189,12 @@ async fn spawn_resolver(dns_rx: UnboundedReceiver<IpAddr>) -> JoinHandle<Option<
     })
 }
 
-/// Prepares the environment for a session.
-///
-/// Handles global side effects like input listeners and returns whether
-/// the process has the necessary privileges for raw socket operations.
-fn preflight_check(cfg: &ZondConfig) -> bool {
-    if !cfg.disable_input {
-        spawn_user_input_listener();
-    }
-
+fn not_root() -> bool {
     if !is_root() {
         warn!("Root privileges missing, defaulting to unprivileged TCP scan");
-        return false;
+        return true;
     }
 
     success!("Root privileges detected, raw socket scan enabled");
-    true
-}
-
-fn spawn_user_input_listener() {
-    if INPUT_LISTENER_SPAWNED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    std::thread::spawn(|| {
-        let mut input_handle = InputHandle::new();
-        input_handle.start();
-        loop {
-            if input_handle.should_interrupt() {
-                STOP_SIGNAL.store(true, Ordering::Relaxed);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    });
+    false
 }
