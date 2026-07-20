@@ -18,9 +18,8 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
-use crate::core::controller::InputHandle;
+use crate::core::handle::{ScanEvent, ScanHandle};
 use super::dispatcher::Dispatcher;
-use crate::scanner::increment_host_count;
 
 /// Most common ports across Linux, Windows, and Networking gear.
 const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
@@ -33,14 +32,14 @@ const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 /// open or filtered ports are aggregated into a collection of [`Host`] entities.
 pub async fn scan(
     mut rx: mpsc::Receiver<Target>,
-    input_handle: &InputHandle,
+    scan_handle: &ScanHandle,
     concurrency_limit: usize,
 ) -> anyhow::Result<Vec<Host>> {
     let mut set = JoinSet::new();
     let mut results_map: HashMap<IpAddr, Host> = HashMap::new();
 
     while let Some(target) = rx.recv().await {
-        if input_handle.should_stop() {
+        if scan_handle.should_stop() {
             break;
         }
 
@@ -66,7 +65,7 @@ pub async fn scan(
 
 /// Probes a specific [`Target`] (IP, Port, Protocol) to accurately determine its state.
 ///
-/// Currently supports standard full TCP connect handshakes.
+/// Currently, supports standard full TCP connect handshakes.
 /// Returns An `Ok(Some((IpAddr, Port)))` if a non-closed port is discovered.
 async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
     if target.protocol == Protocol::Udp {
@@ -134,7 +133,7 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
 ///   to minimize local network congestion.
 /// - **Fidelity Range**: Uses an adjustable 1000ms timeout window to capture
 ///   hosts on high-latency or geographically distant links.
-pub async fn discover(ips: IpSet, input_handle: &InputHandle) -> anyhow::Result<Vec<Host>> {
+pub async fn discover(ips: IpSet, scan_handle: &ScanHandle) -> anyhow::Result<Vec<Host>> {
     const CONCURRENCY_LIMIT: usize = 2048;
 
     let mut target_map = TargetMap::new();
@@ -149,13 +148,13 @@ pub async fn discover(ips: IpSet, input_handle: &InputHandle) -> anyhow::Result<
     target_map.add_unit(TargetSet::new(ips, port_set));
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
-    let mut rx = dispatcher.run_shuffled(input_handle);
+    let mut rx = dispatcher.run_shuffled(scan_handle);
     let mut set = JoinSet::new();
     let found_hosts = Arc::new(Mutex::new(HashSet::new()));
     let mut hosts = Vec::new();
 
     while let Some(target) = rx.recv().await {
-        if input_handle.should_stop() {
+        if scan_handle.should_stop() {
             break;
         }
 
@@ -166,7 +165,8 @@ pub async fn discover(ips: IpSet, input_handle: &InputHandle) -> anyhow::Result<
         }
 
         let inner_found = Arc::clone(&found_hosts);
-        set.spawn(async move { prober(target, inner_found).await });
+        let inner_handle = scan_handle.clone();
+        set.spawn(async move { prober(target, inner_found, inner_handle).await });
     }
 
     while let Some(res) = set.join_next().await {
@@ -187,6 +187,7 @@ pub async fn discover(ips: IpSet, input_handle: &InputHandle) -> anyhow::Result<
 async fn prober(
     target: Target,
     found_set: Arc<Mutex<HashSet<IpAddr>>>,
+    scan_handle: ScanHandle,
 ) -> anyhow::Result<Option<Host>> {
     // 1. Early exit if already discovered
     {
@@ -205,7 +206,7 @@ async fn prober(
             // 2. Successful handshake -> Host is alive
             let mut set = found_set.lock().unwrap();
             if set.insert(target.ip) {
-                increment_host_count();
+                scan_handle.emit(ScanEvent::NewIp(target.ip));
                 let host: Host = Host::new(target.ip).with_rtt(start.elapsed());
                 Ok(Some(host))
             } else {
@@ -221,7 +222,7 @@ async fn prober(
                 | ErrorKind::ConnectionAborted => {
                     let mut set = found_set.lock().unwrap();
                     if set.insert(target.ip) {
-                        increment_host_count();
+                        scan_handle.emit(ScanEvent::NewIp(target.ip));
                         let host: Host = Host::new(target.ip).with_rtt(start.elapsed());
                         Ok(Some(host))
                     } else {

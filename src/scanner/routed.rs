@@ -15,7 +15,7 @@ use anyhow::ensure;
 use async_trait::async_trait;
 use pnet::{datalink::NetworkInterface, packet::tcp::TcpPacket};
 use tokio::sync::mpsc::UnboundedSender;
-use crate::core::controller::InputHandle;
+use crate::core::handle::{ScanEvent, ScanHandle};
 use crate::core::models::{host::Host, ip::set::IpSet};
 use crate::protocols as protocol;
 
@@ -35,7 +35,7 @@ pub struct RoutedScanner {
     src_v6: Option<Ipv6Addr>,
     responded_ips: HashMap<IpAddr, VecDeque<Duration>>,
     ips: IpSet,
-    input_handle: InputHandle,
+    scan_handle: ScanHandle,
     tcp_handle: TransportHandle,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     rtt_map: HashMap<(IpAddr, SeqNum), Instant>,
@@ -52,7 +52,7 @@ impl NetworkExplorer for RoutedScanner {
 
         loop {
             let all_responded = self.ips.len() == self.responded_ips.len() as u128;
-            if self.input_handle.should_stop() || all_responded {
+            if self.scan_handle.should_stop() || all_responded {
                 break;
             }
 
@@ -75,7 +75,7 @@ impl NetworkExplorer for RoutedScanner {
 
                             if is_new {
                                 let _ = self.dns_tx.as_ref().map(|dns| dns.send(ip));
-                                super::increment_host_count();
+                                self.scan_handle.emit(ScanEvent::NewIp(ip));
                             }
 
                             if let Some(tcp_packet) = TcpPacket::new(&bytes) {
@@ -116,7 +116,7 @@ impl RoutedScanner {
     pub fn new(
         intf: NetworkInterface,
         ips: IpSet,
-        input_handle: InputHandle,
+        scan_handle: ScanHandle,
         dns_tx: Option<UnboundedSender<IpAddr>>,
     ) -> anyhow::Result<Self> {
         let tcp_handle: TransportHandle =
@@ -142,7 +142,7 @@ impl RoutedScanner {
             src_v6,
             responded_ips: HashMap::new(),
             ips,
-            input_handle,
+            scan_handle,
             tcp_handle,
             dns_tx,
             rtt_map: HashMap::new(),

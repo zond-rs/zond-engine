@@ -221,7 +221,9 @@ pub async fn resolve_hosts_async(hosts: &mut [Host]) {
     let Ok(builder) = TokioResolver::builder_tokio() else {
         return;
     };
-    let resolver = builder.build();
+    let Ok(resolver) = builder.build() else {
+        return;
+    };
 
     let mut set = tokio::task::JoinSet::new();
 
@@ -231,10 +233,15 @@ pub async fn resolve_hosts_async(hosts: &mut [Host]) {
             let resolver = resolver.clone();
 
             set.spawn(async move {
+                use hickory_resolver::proto::rr::RData;
+
                 if let Ok(lookup) = resolver.reverse_lookup(primary_ip).await
-                    && let Some(name) = lookup.iter().next()
+                    && let Some(name) = lookup.answers().iter().find_map(|r| match &r.data {
+                        RData::PTR(ptr) => Some(ptr.to_string()),
+                        _ => None,
+                    })
                 {
-                    return (i, Some(name.to_string()));
+                    return (i, Some(name));
                 }
                 (i, None)
             });
@@ -260,7 +267,8 @@ fn get_dns_server_socket() -> anyhow::Result<SocketAddr> {
     let (config, _options) = read_system_conf()?;
 
     if let Some(ns) = config.name_servers().first() {
-        return Ok(ns.socket_addr);
+        let port = ns.connections.first().map(|c| c.port).unwrap_or(53);
+        return Ok(SocketAddr::new(ns.ip, port));
     }
 
     Ok("1.1.1.1:53".parse()?)

@@ -48,7 +48,7 @@ use super::NetworkExplorer;
 use crate::system::interface::NetworkInterfaceExtension;
 use async_trait::async_trait;
 use pnet::datalink::MacAddr;
-use crate::core::controller::InputHandle;
+use crate::core::handle::{ScanEvent, ScanHandle};
 
 const MAX_CHANNEL_TIME: Duration = Duration::from_millis(7_500);
 const MIN_CHANNEL_TIME: Duration = Duration::from_millis(2_500);
@@ -61,7 +61,7 @@ pub struct LocalScanner {
     local_mac: MacAddr,
     src_v4: Option<Ipv4Addr>,
     link_local: Option<Ipv6Addr>,
-    input_handle: InputHandle,
+    scan_handle: ScanHandle,
     eth_handle: EthernetHandle,
     timer: ScanTimer,
     dns_tx: Option<UnboundedSender<IpAddr>>,
@@ -121,7 +121,7 @@ impl LocalScanner {
     pub fn new(
         intf: NetworkInterface,
         ip_set: IpSet,
-        input_handle: InputHandle,
+        scan_handle: ScanHandle,
         dns_tx: Option<UnboundedSender<IpAddr>>,
     ) -> anyhow::Result<Self> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
@@ -156,7 +156,7 @@ impl LocalScanner {
             local_mac,
             src_v4,
             link_local,
-            input_handle,
+            scan_handle,
             eth_handle,
             timer,
             dns_tx,
@@ -186,7 +186,7 @@ impl LocalScanner {
         let mut is_new_host: bool = false;
         let host: &mut Host = self.hosts_map.entry(other_mac_addr).or_insert_with(|| {
             self.timer.mark_activity();
-            super::increment_host_count();
+            self.scan_handle.emit(ScanEvent::NewIp(source_addr));
             is_new_host = true;
             Host::new(source_addr).with_mac(other_mac_addr.into_core())
         });
@@ -254,7 +254,7 @@ impl LocalScanner {
     }
 
     fn should_stop(&self) -> bool {
-        let stopped: bool = self.input_handle.should_stop();
+        let stopped: bool = self.scan_handle.should_stop();
         let time_expired: bool = self.timer.has_expired();
         let work_remains: bool = self.ip_set.len() as usize > self.hosts_map.len();
 

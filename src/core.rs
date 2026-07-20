@@ -5,7 +5,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 pub mod config;
-pub mod controller;
+pub mod handle;
 pub mod logging;
 pub mod models;
 pub mod parse;

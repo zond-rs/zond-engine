@@ -6,7 +6,7 @@
 
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
-use crate::core::controller::InputHandle;
+use crate::core::handle::ScanHandle;
 use crate::core::models::target::{Target, TargetMap};
 
 /// A randomized dispatcher that streams targets to consumers.
@@ -39,9 +39,9 @@ impl Dispatcher {
     ///
     /// Returns an [`mpsc::Receiver`] that yields the targets. The channel is bounded
     /// to 2x the batch size to keep memory usage strictly controlled.
-    pub fn run_shuffled(self, input_handle: &InputHandle) -> mpsc::Receiver<Target> {
+    pub fn run_shuffled(self, scan_handle: &ScanHandle) -> mpsc::Receiver<Target> {
         let (tx, rx) = mpsc::channel(self.batch_size * 2);
-        let input_handle = input_handle.clone();
+        let scan_handle = scan_handle.clone();
 
         tokio::spawn(async move {
             let mut batch = Vec::with_capacity(self.batch_size);
@@ -54,7 +54,7 @@ impl Dispatcher {
                     if batch.len() >= self.batch_size {
                         batch.shuffle(&mut rand::rng());
                         for t in batch.drain(..) {
-                            if tx.send(t).await.is_err() || input_handle.should_stop() {
+                            if tx.send(t).await.is_err() || scan_handle.should_stop() {
                                 return;
                             }
                         }
@@ -66,7 +66,7 @@ impl Dispatcher {
             if !batch.is_empty() {
                 batch.shuffle(&mut rand::rng());
                 for t in batch {
-                    if tx.send(t).await.is_err() || input_handle.should_stop() {
+                    if tx.send(t).await.is_err() || scan_handle.should_stop() {
                         return;
                     }
                 }
