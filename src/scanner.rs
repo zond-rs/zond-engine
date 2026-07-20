@@ -61,7 +61,11 @@ pub async fn scan(target_map: TargetMap, scan_handle: &ScanHandle) -> anyhow::Re
 /// ### Integration Notes
 /// - **State**: Emits [`ScanEvent`]s and reacts to [`ScanHandle::should_stop`].
 /// - **Concurrency**: Spawns multiple Tokio tasks; ensure the caller is within a multithreaded runtime.
-pub async fn discover(targets: IpSet, cfg: &ZondConfig, scan_handle: &ScanHandle) -> anyhow::Result<Vec<Host>> {
+pub async fn discover(
+    targets: IpSet,
+    cfg: &ZondConfig,
+    scan_handle: &ScanHandle,
+) -> anyhow::Result<Vec<Host>> {
     let with_dns: bool = !cfg.no_dns;
     if not_root() {
         let mut hosts = connect::discover(targets, scan_handle).await?;
@@ -80,11 +84,7 @@ pub async fn discover(targets: IpSet, cfg: &ZondConfig, scan_handle: &ScanHandle
         (None, None)
     };
 
-    let scanner_handles = spawn_explorers(
-        targets,
-        scan_handle,
-        dns_tx
-    ).await;
+    let scanner_handles = spawn_explorers(targets, scan_handle, dns_tx).await;
 
     let mut hosts = Vec::new();
     for handle in scanner_handles {
@@ -150,9 +150,8 @@ async fn spawn_explorers(
             "Spawning FALLBACK scanner for unmapped targets"
         );
         let scan_handle_clone = scan_handle.clone();
-        let handle = tokio::spawn(async move {
-            connect::discover(unmapped_ips, &scan_handle_clone).await
-        });
+        let handle =
+            tokio::spawn(async move { connect::discover(unmapped_ips, &scan_handle_clone).await });
         handles.push(handle);
     }
 

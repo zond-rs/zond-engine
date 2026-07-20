@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use super::dispatcher::Dispatcher;
+use crate::core::handle::{ScanEvent, ScanHandle};
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
@@ -18,8 +20,6 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
-use crate::core::handle::{ScanEvent, ScanHandle};
-use super::dispatcher::Dispatcher;
 
 /// Most common ports across Linux, Windows, and Networking gear.
 const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];

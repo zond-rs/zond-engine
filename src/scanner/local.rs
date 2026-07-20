@@ -45,10 +45,10 @@ use crate::network::{
 };
 
 use super::NetworkExplorer;
+use crate::core::handle::{ScanEvent, ScanHandle};
 use crate::system::interface::NetworkInterfaceExtension;
 use async_trait::async_trait;
 use pnet::datalink::MacAddr;
-use crate::core::handle::{ScanEvent, ScanHandle};
 
 const MAX_CHANNEL_TIME: Duration = Duration::from_millis(7_500);
 const MIN_CHANNEL_TIME: Duration = Duration::from_millis(2_500);

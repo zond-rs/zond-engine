@@ -4,10 +4,10 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-use rand::seq::SliceRandom;
-use tokio::sync::mpsc;
 use crate::core::handle::ScanHandle;
 use crate::core::models::target::{Target, TargetMap};
+use rand::seq::SliceRandom;
+use tokio::sync::mpsc;
 
 /// A randomized dispatcher that streams targets to consumers.
 ///
@@ -48,7 +48,6 @@ impl Dispatcher {
 
             for mut unit in self.target_map.units {
                 for target in unit.iter() {
-
                     batch.push(target);
 
                     if batch.len() >= self.batch_size {

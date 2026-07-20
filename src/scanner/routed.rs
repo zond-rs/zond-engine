@@ -10,14 +10,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::core::handle::{ScanEvent, ScanHandle};
+use crate::core::models::{host::Host, ip::set::IpSet};
+use crate::protocols as protocol;
 use crate::{error, success};
 use anyhow::ensure;
 use async_trait::async_trait;
 use pnet::{datalink::NetworkInterface, packet::tcp::TcpPacket};
 use tokio::sync::mpsc::UnboundedSender;
-use crate::core::handle::{ScanEvent, ScanHandle};
-use crate::core::models::{host::Host, ip::set::IpSet};
-use crate::protocols as protocol;
 
 use crate::network::transport::{self, TransportHandle, TransportType};
 
