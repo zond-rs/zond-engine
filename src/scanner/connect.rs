@@ -10,7 +10,7 @@ use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
-use crate::scanner::session::ScanEvent;
+use crate::core::session::ScanEvent;
 use dashmap::DashMap;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};

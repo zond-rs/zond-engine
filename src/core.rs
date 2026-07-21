@@ -10,3 +10,4 @@ pub mod logging;
 pub mod models;
 pub mod parse;
 pub mod redact;
+pub mod session;

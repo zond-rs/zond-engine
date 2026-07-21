@@ -25,8 +25,8 @@ use tokio::task::JoinHandle;
 use crate::core::config::ZondConfig;
 use crate::core::handle::ScanHandle;
 use crate::core::models::{host::Host, ip::set::IpSet, target::TargetMap};
+use crate::core::session::{ScanEvent, ScanSession};
 use crate::scanner::resolver::HostnameResolver;
-use crate::scanner::session::{ScanEvent, ScanSession};
 use crate::system::interface;
 use crate::{error, info, success, warn};
 use local::LocalScanner;
@@ -37,7 +37,6 @@ pub mod dispatcher;
 mod local;
 mod resolver;
 mod routed;
-pub mod session;
 
 #[async_trait]
 trait NetworkExplorer {
