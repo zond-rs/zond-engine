@@ -22,7 +22,9 @@ use crate::{
     error, info,
 };
 use anyhow::Context;
+use dashmap::DashMap;
 use pnet::packet::{Packet, udp::UdpPacket};
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::network::transport::{self, TransportHandle, TransportType};
@@ -186,8 +188,9 @@ impl HostnameResolver {
         Ok(())
     }
 
-    pub fn resolve_hosts(&mut self, hosts: &mut Vec<Host>) {
-        for host in hosts {
+    pub fn resolve_hosts(&mut self, store: Arc<DashMap<IpAddr, Host>>) {
+        for mut host_entry in store.iter_mut() {
+            let host = host_entry.value_mut();
             let ips_to_check = host.ips().clone();
 
             for ip in ips_to_check {
@@ -215,7 +218,7 @@ impl HostnameResolver {
     }
 }
 
-pub async fn resolve_hosts_async(hosts: &mut [Host]) {
+pub async fn resolve_hosts_async(store: Arc<DashMap<IpAddr, Host>>) {
     use hickory_resolver::TokioResolver;
 
     let Ok(builder) = TokioResolver::builder_tokio() else {
@@ -227,29 +230,38 @@ pub async fn resolve_hosts_async(hosts: &mut [Host]) {
 
     let mut set = tokio::task::JoinSet::new();
 
-    for (i, host) in hosts.iter().enumerate() {
+    let mut ips_to_resolve = Vec::new();
+    for host_entry in store.iter() {
+        let host = host_entry.value();
         if host.hostname().is_none() {
-            let primary_ip = host.primary_ip();
-            let resolver = resolver.clone();
-
-            set.spawn(async move {
-                use hickory_resolver::proto::rr::RData;
-
-                if let Ok(lookup) = resolver.reverse_lookup(primary_ip).await
-                    && let Some(name) = lookup.answers().iter().find_map(|r| match &r.data {
-                        RData::PTR(ptr) => Some(ptr.to_string()),
-                        _ => None,
-                    })
-                {
-                    return (i, Some(name));
-                }
-                (i, None)
-            });
+            ips_to_resolve.push(host.primary_ip());
         }
     }
 
-    while let Some(Ok((idx, Some(name)))) = set.join_next().await {
-        hosts[idx].set_hostname(Some(name.trim_end_matches('.').to_string()));
+    for ip in ips_to_resolve {
+        let resolver = resolver.clone();
+
+        set.spawn(async move {
+            use hickory_resolver::proto::rr::RData;
+
+            if let Ok(lookup) = resolver.reverse_lookup(ip).await
+                && let Some(name) = lookup.answers().iter().find_map(|r| match &r.data {
+                    RData::PTR(ptr) => Some(ptr.to_string()),
+                    _ => None,
+                })
+            {
+                return (ip, Some(name));
+            }
+            (ip, None)
+        });
+    }
+
+    while let Some(Ok((ip, Some(name)))) = set.join_next().await {
+        if let Some(mut host_entry) = store.get_mut(&ip) {
+            host_entry
+                .value_mut()
+                .set_hostname(Some(name.trim_end_matches('.').to_string()));
+        }
     }
 }
 

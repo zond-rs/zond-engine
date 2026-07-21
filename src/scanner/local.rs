@@ -44,11 +44,14 @@ use crate::network::{
     mac::IntoCoreMac,
 };
 
-use super::NetworkExplorer;
-use crate::core::handle::{ScanEvent, ScanHandle};
+use crate::core::handle::ScanHandle;
+use crate::scanner::NetworkExplorer;
+use crate::scanner::session::ScanEvent;
 use crate::system::interface::NetworkInterfaceExtension;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use pnet::datalink::MacAddr;
+use std::sync::Arc;
 
 const MAX_CHANNEL_TIME: Duration = Duration::from_millis(7_500);
 const MIN_CHANNEL_TIME: Duration = Duration::from_millis(2_500);
@@ -56,7 +59,8 @@ const MAX_SILENCE_MS: Duration = Duration::from_millis(500);
 const SEND_INTERVAL_US: Duration = Duration::from_micros(1000);
 
 pub struct LocalScanner {
-    hosts_map: HashMap<MacAddr, Host>,
+    store: Arc<DashMap<IpAddr, Host>>,
+    events_tx: UnboundedSender<ScanEvent>,
     ip_set: IpSet,
     local_mac: MacAddr,
     src_v4: Option<Ipv4Addr>,
@@ -70,7 +74,7 @@ pub struct LocalScanner {
 
 #[async_trait]
 impl NetworkExplorer for LocalScanner {
-    async fn discover_hosts(&mut self) -> anyhow::Result<Vec<Host>> {
+    async fn discover_hosts(&mut self) -> anyhow::Result<()> {
         let mut packet_iter = protocol::eth_packet_iter(
             &self.local_mac,
             &self.src_v4,
@@ -113,7 +117,7 @@ impl NetworkExplorer for LocalScanner {
             }
         }
 
-        Ok(self.hosts_map.drain().map(|(_, v)| v).collect())
+        Ok(())
     }
 }
 
@@ -123,6 +127,8 @@ impl LocalScanner {
         ip_set: IpSet,
         scan_handle: ScanHandle,
         dns_tx: Option<UnboundedSender<IpAddr>>,
+        store: Arc<DashMap<IpAddr, Host>>,
+        events_tx: UnboundedSender<ScanEvent>,
     ) -> anyhow::Result<Self> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
         let timer: ScanTimer = ScanTimer::new(MAX_CHANNEL_TIME, MIN_CHANNEL_TIME, MAX_SILENCE_MS);
@@ -151,7 +157,8 @@ impl LocalScanner {
             .map(|net| net.ip());
 
         Ok(Self {
-            hosts_map: HashMap::new(),
+            store,
+            events_tx,
             ip_set,
             local_mac,
             src_v4,
@@ -184,12 +191,13 @@ impl LocalScanner {
         });
 
         let mut is_new_host: bool = false;
-        let host: &mut Host = self.hosts_map.entry(other_mac_addr).or_insert_with(|| {
+        let mut host = self.store.entry(source_addr).or_insert_with(|| {
             self.timer.mark_activity();
-            self.scan_handle.emit(ScanEvent::NewIp(source_addr));
             is_new_host = true;
             Host::new(source_addr).with_mac(other_mac_addr.into_core())
         });
+
+        let mut emit_update = false;
 
         if let Some(rtt) = rtt {
             info!(
@@ -199,12 +207,24 @@ impl LocalScanner {
                 rtt.as_millis()
             );
             host.add_rtt(rtt);
+            emit_update = true;
         }
 
         let is_new_ip: bool = host.add_ip(source_addr);
+        if is_new_ip {
+            emit_update = true;
+        }
 
         if source_addr.is_ipv4() && host.primary_ip().is_ipv6() {
             host.set_primary_ip(source_addr);
+            emit_update = true;
+        }
+
+        // drop the lock before sending over channel
+        drop(host);
+
+        if emit_update || is_new_host {
+            let _ = self.events_tx.send(ScanEvent::HostUpdated(source_addr));
         }
 
         if is_new_host || is_new_ip {
@@ -256,8 +276,7 @@ impl LocalScanner {
     fn should_stop(&self) -> bool {
         let stopped: bool = self.scan_handle.should_stop();
         let time_expired: bool = self.timer.has_expired();
-        let work_remains: bool = self.ip_set.len() as usize > self.hosts_map.len();
 
-        stopped || time_expired || !work_remains
+        stopped || time_expired
     }
 }

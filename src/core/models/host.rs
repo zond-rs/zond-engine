@@ -105,7 +105,7 @@ pub struct Host {
 impl Host {
     /// Creates a new `Host` centered around a primary IP address.
     ///
-    /// Initial status is always [`HostStatus::Unknown`].
+    /// The initial status is always [`HostStatus::Unknown`].
     pub fn new(primary_ip: IpAddr) -> Self {
         let mut ips = BTreeSet::new();
         ips.insert(primary_ip);

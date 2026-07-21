@@ -5,18 +5,21 @@
 // https://mozilla.org/MPL/2.0/.
 
 use std::{
-    collections::{HashMap, VecDeque, hash_map::Entry},
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     time::{Duration, Instant},
 };
 
-use crate::core::handle::{ScanEvent, ScanHandle};
+use crate::core::handle::ScanHandle;
 use crate::core::models::{host::Host, ip::set::IpSet};
 use crate::protocols as protocol;
+use crate::scanner::session::ScanEvent;
 use crate::{error, success};
 use anyhow::ensure;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use pnet::{datalink::NetworkInterface, packet::tcp::TcpPacket};
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::network::transport::{self, TransportHandle, TransportType};
@@ -33,17 +36,19 @@ type SeqNum = u32;
 pub struct RoutedScanner {
     src_v4: Option<Ipv4Addr>,
     src_v6: Option<Ipv6Addr>,
-    responded_ips: HashMap<IpAddr, VecDeque<Duration>>,
+    store: Arc<DashMap<IpAddr, Host>>,
+    events_tx: UnboundedSender<ScanEvent>,
     ips: IpSet,
     scan_handle: ScanHandle,
     tcp_handle: TransportHandle,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     rtt_map: HashMap<(IpAddr, SeqNum), Instant>,
+    responded_count: usize,
 }
 
 #[async_trait]
 impl NetworkExplorer for RoutedScanner {
-    async fn discover_hosts(&mut self) -> anyhow::Result<Vec<Host>> {
+    async fn discover_hosts(&mut self) -> anyhow::Result<()> {
         if let Err(e) = self.send_discovery_packets() {
             error!("Failed to send packets: {e}");
         }
@@ -51,7 +56,7 @@ impl NetworkExplorer for RoutedScanner {
         let deadline: Instant = calculate_deadline(self.ips.len() as usize);
 
         loop {
-            let all_responded = self.ips.len() == self.responded_ips.len() as u128;
+            let all_responded = self.ips.len() == self.responded_count as u128;
             if self.scan_handle.should_stop() || all_responded {
                 break;
             }
@@ -69,14 +74,18 @@ impl NetworkExplorer for RoutedScanner {
                                 continue;
                             }
 
-                            let entry = self.responded_ips.entry(ip);
-                            let is_new = matches!(entry, Entry::Vacant(_));
-                            let latencies = entry.or_default();
+                            let mut is_new = false;
+                            let mut host = self.store.entry(ip).or_insert_with(|| {
+                                is_new = true;
+                                Host::new(ip)
+                            });
 
                             if is_new {
+                                self.responded_count += 1;
                                 let _ = self.dns_tx.as_ref().map(|dns| dns.send(ip));
-                                self.scan_handle.emit(ScanEvent::NewIp(ip));
                             }
+
+                            let mut emit_update = false;
 
                             if let Some(tcp_packet) = TcpPacket::new(&bytes) {
                                 let ack_num: u32 = tcp_packet.get_acknowledgement();
@@ -84,8 +93,15 @@ impl NetworkExplorer for RoutedScanner {
 
                                 if let Some(start_time) = self.rtt_map.remove(&(ip, original_seq)) {
                                     let rtt: Duration = start_time.elapsed();
-                                    latencies.push_back(rtt);
+                                    host.add_rtt(rtt);
+                                    emit_update = true;
                                 }
+                            }
+
+                            drop(host);
+
+                            if is_new || emit_update {
+                                let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
                             }
                         },
                         None => break,
@@ -98,17 +114,7 @@ impl NetworkExplorer for RoutedScanner {
         }
 
         self.rtt_map.clear();
-        let hosts: Vec<Host> = self
-            .responded_ips
-            .drain()
-            .map(|(ip, latencies)| {
-                let mut host = Host::new(ip);
-                host.set_rtts(latencies);
-                host
-            })
-            .collect();
-
-        Ok(hosts)
+        Ok(())
     }
 }
 
@@ -118,6 +124,8 @@ impl RoutedScanner {
         ips: IpSet,
         scan_handle: ScanHandle,
         dns_tx: Option<UnboundedSender<IpAddr>>,
+        store: Arc<DashMap<IpAddr, Host>>,
+        events_tx: UnboundedSender<ScanEvent>,
     ) -> anyhow::Result<Self> {
         let tcp_handle: TransportHandle =
             transport::start_packet_capture(TransportType::TcpLayer4)?;
@@ -140,12 +148,14 @@ impl RoutedScanner {
         Ok(Self {
             src_v4,
             src_v6,
-            responded_ips: HashMap::new(),
+            store,
+            events_tx,
             ips,
             scan_handle,
             tcp_handle,
             dns_tx,
             rtt_map: HashMap::new(),
+            responded_count: 0,
         })
     }
 

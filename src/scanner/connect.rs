@@ -4,20 +4,20 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashMap;
-
 use super::dispatcher::Dispatcher;
-use crate::core::handle::{ScanEvent, ScanHandle};
+use crate::core::handle::ScanHandle;
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
+use crate::scanner::session::ScanEvent;
+use dashmap::DashMap;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
@@ -34,9 +34,10 @@ pub async fn scan(
     mut rx: mpsc::Receiver<Target>,
     scan_handle: &ScanHandle,
     concurrency_limit: usize,
-) -> anyhow::Result<Vec<Host>> {
-    let mut set = JoinSet::new();
-    let mut results_map: HashMap<IpAddr, Host> = HashMap::new();
+    store: Arc<DashMap<IpAddr, Host>>,
+    events_tx: UnboundedSender<ScanEvent>,
+) -> anyhow::Result<()> {
+    let mut set: JoinSet<anyhow::Result<Option<(IpAddr, Port)>>> = JoinSet::new();
 
     while let Some(target) = rx.recv().await {
         if scan_handle.should_stop() {
@@ -45,8 +46,14 @@ pub async fn scan(
 
         while set.len() >= concurrency_limit {
             if let Some(Ok(Ok(Some((ip, port))))) = set.join_next().await {
-                let host = results_map.entry(ip).or_insert_with(|| Host::new(ip));
+                let mut is_new = false;
+                let mut host = store.entry(ip).or_insert_with(|| {
+                    is_new = true;
+                    Host::new(ip)
+                });
                 host.add_port(port);
+                drop(host);
+                let _ = events_tx.send(ScanEvent::HostUpdated(ip));
             }
         }
 
@@ -55,12 +62,18 @@ pub async fn scan(
 
     while let Some(res) = set.join_next().await {
         if let Ok(Ok(Some((ip, port)))) = res {
-            let host = results_map.entry(ip).or_insert_with(|| Host::new(ip));
+            let mut is_new = false;
+            let mut host = store.entry(ip).or_insert_with(|| {
+                is_new = true;
+                Host::new(ip)
+            });
             host.add_port(port);
+            drop(host);
+            let _ = events_tx.send(ScanEvent::HostUpdated(ip));
         }
     }
 
-    Ok(results_map.into_values().collect())
+    Ok(())
 }
 
 /// Probes a specific [`Target`] (IP, Port, Protocol) to accurately determine its state.
@@ -133,7 +146,12 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
 ///   to minimize local network congestion.
 /// - **Fidelity Range**: Uses an adjustable 1000ms timeout window to capture
 ///   hosts on high-latency or geographically distant links.
-pub async fn discover(ips: IpSet, scan_handle: &ScanHandle) -> anyhow::Result<Vec<Host>> {
+pub async fn discover(
+    ips: IpSet,
+    scan_handle: &ScanHandle,
+    store: Arc<DashMap<IpAddr, Host>>,
+    events_tx: UnboundedSender<ScanEvent>,
+) -> anyhow::Result<()> {
     const CONCURRENCY_LIMIT: usize = 2048;
 
     let mut target_map = TargetMap::new();
@@ -149,9 +167,8 @@ pub async fn discover(ips: IpSet, scan_handle: &ScanHandle) -> anyhow::Result<Ve
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
     let mut rx = dispatcher.run_shuffled(scan_handle);
-    let mut set = JoinSet::new();
+    let mut set: JoinSet<anyhow::Result<Option<Host>>> = JoinSet::new();
     let found_hosts = Arc::new(Mutex::new(HashSet::new()));
-    let mut hosts = Vec::new();
 
     while let Some(target) = rx.recv().await {
         if scan_handle.should_stop() {
@@ -160,22 +177,31 @@ pub async fn discover(ips: IpSet, scan_handle: &ScanHandle) -> anyhow::Result<Ve
 
         while set.len() >= CONCURRENCY_LIMIT {
             if let Some(Ok(Ok(Some(host)))) = set.join_next().await {
-                hosts.push(host);
+                let ip = host.primary_ip();
+                store
+                    .entry(ip)
+                    .and_modify(|h| h.merge(host.clone()))
+                    .or_insert(host);
+                let _ = events_tx.send(ScanEvent::HostUpdated(ip));
             }
         }
 
         let inner_found = Arc::clone(&found_hosts);
-        let inner_handle = scan_handle.clone();
-        set.spawn(async move { prober(target, inner_found, inner_handle).await });
+        set.spawn(async move { prober(target, inner_found).await });
     }
 
     while let Some(res) = set.join_next().await {
         if let Ok(Ok(Some(host))) = res {
-            hosts.push(host);
+            let ip = host.primary_ip();
+            store
+                .entry(ip)
+                .and_modify(|h| h.merge(host.clone()))
+                .or_insert(host);
+            let _ = events_tx.send(ScanEvent::HostUpdated(ip));
         }
     }
 
-    Ok(hosts)
+    Ok(())
 }
 
 /// Concurrent network host prober.
@@ -187,7 +213,6 @@ pub async fn discover(ips: IpSet, scan_handle: &ScanHandle) -> anyhow::Result<Ve
 async fn prober(
     target: Target,
     found_set: Arc<Mutex<HashSet<IpAddr>>>,
-    scan_handle: ScanHandle,
 ) -> anyhow::Result<Option<Host>> {
     // 1. Early exit if already discovered
     {
@@ -206,7 +231,6 @@ async fn prober(
             // 2. Successful handshake -> Host is alive
             let mut set = found_set.lock().unwrap();
             if set.insert(target.ip) {
-                scan_handle.emit(ScanEvent::NewIp(target.ip));
                 let host: Host = Host::new(target.ip).with_rtt(start.elapsed());
                 Ok(Some(host))
             } else {
@@ -222,7 +246,6 @@ async fn prober(
                 | ErrorKind::ConnectionAborted => {
                     let mut set = found_set.lock().unwrap();
                     if set.insert(target.ip) {
-                        scan_handle.emit(ScanEvent::NewIp(target.ip));
                         let host: Host = Host::new(target.ip).with_rtt(start.elapsed());
                         Ok(Some(host))
                     } else {

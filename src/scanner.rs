@@ -14,16 +14,19 @@
 //! spawning concurrent explorers, and piping results through a background [`HostnameResolver`]
 
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use is_root::is_root;
-use tokio::sync::mpsc::{self, UnboundedReceiver};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::core::config::ZondConfig;
 use crate::core::handle::ScanHandle;
 use crate::core::models::{host::Host, ip::set::IpSet, target::TargetMap};
 use crate::scanner::resolver::HostnameResolver;
+use crate::scanner::session::{ScanEvent, ScanSession};
 use crate::system::interface;
 use crate::{error, info, success, warn};
 use local::LocalScanner;
@@ -34,21 +37,31 @@ pub mod dispatcher;
 mod local;
 mod resolver;
 mod routed;
+pub mod session;
 
 #[async_trait]
 trait NetworkExplorer {
-    async fn discover_hosts(&mut self) -> anyhow::Result<Vec<Host>>;
+    async fn discover_hosts(&mut self) -> anyhow::Result<()>;
 }
 
-pub async fn scan(target_map: TargetMap, scan_handle: &ScanHandle) -> anyhow::Result<Vec<Host>> {
+pub async fn scan(
+    target_map: TargetMap,
+) -> anyhow::Result<(ScanSession, JoinHandle<anyhow::Result<()>>)> {
     if not_root() {
         // Future: Remove this fallback once SYN scanner is ready
         warn!("Privileged port scanning (SYN) not yet implemented; using TCP connect fallback");
     }
 
-    let dispatcher = dispatcher::Dispatcher::new(target_map);
-    let rx = dispatcher.run_shuffled(scan_handle);
-    connect::scan(rx, scan_handle, 50).await
+    let (session, scan_handle, events_tx) = ScanSession::new();
+    let store = session.store.clone();
+
+    let join_handle = tokio::spawn(async move {
+        let dispatcher = dispatcher::Dispatcher::new(target_map);
+        let rx = dispatcher.run_shuffled(&scan_handle);
+        connect::scan(rx, &scan_handle, 50, store, events_tx).await
+    });
+
+    Ok((session, join_handle))
 }
 
 /// The primary entry point for network discovery.
@@ -59,20 +72,29 @@ pub async fn scan(target_map: TargetMap, scan_handle: &ScanHandle) -> anyhow::Re
 /// - **Parallel Resolver**: Streams found IPs to a background DNS task for zero-latency lookups.
 ///
 /// ### Integration Notes
-/// - **State**: Emits [`ScanEvent`]s and reacts to [`ScanHandle::should_stop`].
+/// - **State**: Emits [`ScanEvent`]s to `ScanSession` and reacts to [`ScanHandle::should_stop`].
 /// - **Concurrency**: Spawns multiple Tokio tasks; ensure the caller is within a multithreaded runtime.
 pub async fn discover(
     targets: IpSet,
     cfg: &ZondConfig,
-    scan_handle: &ScanHandle,
-) -> anyhow::Result<Vec<Host>> {
+) -> anyhow::Result<(ScanSession, JoinHandle<anyhow::Result<()>>)> {
     let with_dns: bool = !cfg.no_dns;
+    let (session, scan_handle, events_tx) = ScanSession::new();
+    let store = session.store.clone();
+
     if not_root() {
-        let mut hosts = connect::discover(targets, scan_handle).await?;
-        if with_dns {
-            resolver::resolve_hosts_async(&mut hosts).await;
-        }
-        return Ok(hosts);
+        let store_clone = store.clone();
+        let events_tx_clone = events_tx.clone();
+        let handle_clone = scan_handle.clone();
+
+        let join_handle = tokio::spawn(async move {
+            connect::discover(targets, &handle_clone, store_clone.clone(), events_tx_clone).await?;
+            if with_dns {
+                resolver::resolve_hosts_async(store_clone).await;
+            }
+            Ok(())
+        });
+        return Ok((session, join_handle));
     }
 
     let (dns_tx, resolver_task) = if with_dns {
@@ -84,31 +106,43 @@ pub async fn discover(
         (None, None)
     };
 
-    let scanner_handles = spawn_explorers(targets, scan_handle, dns_tx).await;
+    let scanner_handles = spawn_explorers(
+        targets,
+        &scan_handle,
+        dns_tx,
+        store.clone(),
+        events_tx.clone(),
+    )
+    .await;
 
-    let mut hosts = Vec::new();
-    for handle in scanner_handles {
-        match handle.await {
-            Ok(Ok(res)) => hosts.extend(res),
-            Ok(Err(e)) => error!("Scanner task failed: {e}"),
-            Err(e) => error!("Task panicked: {e}"),
+    let join_handle = tokio::spawn(async move {
+        for handle in scanner_handles {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => error!("Scanner task failed: {e}"),
+                Err(e) => error!("Task panicked: {e}"),
+            }
         }
-    }
 
-    if let Some(task) = resolver_task
-        && let Ok(Some(mut resolver)) = task.await
-    {
-        resolver.resolve_hosts(&mut hosts);
-    }
+        if let Some(task) = resolver_task
+            && let Ok(Some(mut resolver)) = task.await
+        {
+            resolver.resolve_hosts(store);
+        }
 
-    Ok(hosts)
+        Ok(())
+    });
+
+    Ok((session, join_handle))
 }
 
 async fn spawn_explorers(
     targets: IpSet,
     scan_handle: &ScanHandle,
-    dns_tx: Option<mpsc::UnboundedSender<IpAddr>>,
-) -> Vec<JoinHandle<anyhow::Result<Vec<Host>>>> {
+    dns_tx: Option<UnboundedSender<IpAddr>>,
+    store: Arc<DashMap<IpAddr, Host>>,
+    events_tx: UnboundedSender<ScanEvent>,
+) -> Vec<JoinHandle<anyhow::Result<()>>> {
     let mut handles = Vec::new();
 
     let (interface_map, unmapped_ips) = interface::map_ips_to_interfaces(targets);
@@ -121,8 +155,17 @@ async fn spawn_explorers(
             let intf_c = intf.clone();
 
             let scan_handle_clone = scan_handle.clone();
+            let store_clone = store.clone();
+            let events_tx_clone = events_tx.clone();
             let handle = tokio::spawn(async move {
-                let mut scanner = LocalScanner::new(intf_c, local_ips, scan_handle_clone, tx)?;
+                let mut scanner = LocalScanner::new(
+                    intf_c,
+                    local_ips,
+                    scan_handle_clone,
+                    tx,
+                    store_clone,
+                    events_tx_clone,
+                )?;
                 scanner.discover_hosts().await
             });
             handles.push(handle);
@@ -135,8 +178,17 @@ async fn spawn_explorers(
             let intf_c = intf.clone();
 
             let scan_handle_clone = scan_handle.clone();
+            let store_clone = store.clone();
+            let events_tx_clone = events_tx.clone();
             let handle = tokio::spawn(async move {
-                let mut scanner = RoutedScanner::new(intf_c, routed_ips, scan_handle_clone, tx)?;
+                let mut scanner = RoutedScanner::new(
+                    intf_c,
+                    routed_ips,
+                    scan_handle_clone,
+                    tx,
+                    store_clone,
+                    events_tx_clone,
+                )?;
                 scanner.discover_hosts().await
             });
             handles.push(handle);
@@ -150,8 +202,17 @@ async fn spawn_explorers(
             "Spawning FALLBACK scanner for unmapped targets"
         );
         let scan_handle_clone = scan_handle.clone();
-        let handle =
-            tokio::spawn(async move { connect::discover(unmapped_ips, &scan_handle_clone).await });
+        let store_clone = store.clone();
+        let events_tx_clone = events_tx.clone();
+        let handle = tokio::spawn(async move {
+            connect::discover(
+                unmapped_ips,
+                &scan_handle_clone,
+                store_clone,
+                events_tx_clone,
+            )
+            .await
+        });
         handles.push(handle);
     }
 
