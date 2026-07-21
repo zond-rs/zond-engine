@@ -70,6 +70,7 @@ pub struct LocalScanner {
     timer: ScanTimer,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     rtt_map: HashMap<IpAddr, Instant>,
+    mac_to_ip: HashMap<MacAddr, IpAddr>,
 }
 
 #[async_trait]
@@ -168,6 +169,7 @@ impl LocalScanner {
             timer,
             dns_tx,
             rtt_map: HashMap::with_capacity(len),
+            mac_to_ip: HashMap::new(),
         })
     }
 
@@ -190,11 +192,13 @@ impl LocalScanner {
             None
         });
 
+        let primary_ip = *self.mac_to_ip.entry(other_mac_addr).or_insert(source_addr);
+
         let mut is_new_host: bool = false;
-        let mut host = self.store.entry(source_addr).or_insert_with(|| {
+        let mut host = self.store.entry(primary_ip).or_insert_with(|| {
             self.timer.mark_activity();
             is_new_host = true;
-            Host::new(source_addr).with_mac(other_mac_addr.into_core())
+            Host::new(primary_ip).with_mac(other_mac_addr.into_core())
         });
 
         let mut emit_update = false;
@@ -224,7 +228,7 @@ impl LocalScanner {
         drop(host);
 
         if emit_update || is_new_host {
-            let _ = self.events_tx.send(ScanEvent::HostUpdated(source_addr));
+            let _ = self.events_tx.send(ScanEvent::HostUpdated(primary_ip));
         }
 
         if is_new_host || is_new_ip {
