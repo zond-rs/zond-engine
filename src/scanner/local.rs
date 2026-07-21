@@ -45,8 +45,8 @@ use crate::network::{
 };
 
 use crate::core::handle::ScanHandle;
-use crate::scanner::NetworkExplorer;
 use crate::core::session::ScanEvent;
+use crate::scanner::NetworkExplorer;
 use crate::system::interface::NetworkInterfaceExtension;
 use async_trait::async_trait;
 use dashmap::DashMap;

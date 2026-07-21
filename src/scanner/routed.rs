@@ -12,8 +12,8 @@ use std::{
 
 use crate::core::handle::ScanHandle;
 use crate::core::models::{host::Host, ip::set::IpSet};
-use crate::protocols as protocol;
 use crate::core::session::ScanEvent;
+use crate::protocols as protocol;
 use crate::{error, success};
 use anyhow::ensure;
 use async_trait::async_trait;
