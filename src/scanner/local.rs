@@ -12,7 +12,6 @@
 //! This scanner requires **root privileges** to construct and intercept raw
 //! Layer 2 packets via the operating system's network sockets.
 
-use anyhow::{anyhow, bail, ensure};
 use pnet::{
     datalink::NetworkInterface,
     packet::{
@@ -49,6 +48,20 @@ use crate::scanner::NetworkExplorer;
 use crate::system::interface::NetworkInterfaceExtension;
 use async_trait::async_trait;
 use pnet::datalink::MacAddr;
+
+#[derive(Debug, thiserror::Error)]
+pub enum LocalScannerError {
+    #[error("interface has no mac address")]
+    NoMacAddress,
+    #[error("invalid ARP packet")]
+    InvalidArpPacket,
+    #[error("unmapped RTT source: {0}")]
+    UnmappedRTTSource(IpAddr),
+    #[error("packet originated from this host")]
+    SelfSourcedPacket,
+    #[error("{0} is not in the scanned range")]
+    AddressOutOfRange(IpAddr),
+}
 
 const MAX_CHANNEL_TIME: Duration = Duration::from_millis(7_500);
 const MIN_CHANNEL_TIME: Duration = Duration::from_millis(2_500);
@@ -127,7 +140,7 @@ impl LocalScanner {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
         let timer: ScanTimer = ScanTimer::new(MAX_CHANNEL_TIME, MIN_CHANNEL_TIME, MAX_SILENCE_MS);
         let len = ip_set.len() as usize;
-        let local_mac = intf.mac.unwrap();
+        let local_mac = intf.mac.ok_or(LocalScannerError::NoMacAddress)?;
 
         let mut src_v4 = None;
         for net in intf.get_ipv4_nets() {
@@ -167,15 +180,14 @@ impl LocalScanner {
     fn process_eth_packet(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         let eth_frame: EthernetPacket = ethernet::get_packet_from_u8(bytes)?;
         let other_mac_addr = eth_frame.get_source();
-        ensure!(other_mac_addr != self.local_mac);
+        if other_mac_addr == self.local_mac {
+            return Err(LocalScannerError::SelfSourcedPacket.into());
+        }
 
         let source_addr: IpAddr = protocol::get_ip_addr_from_eth(&eth_frame)?;
 
-        if source_addr.is_ipv4() {
-            ensure!(
-                self.ip_set.contains(&source_addr),
-                "{source_addr} is not in range"
-            );
+        if source_addr.is_ipv4() && !self.ip_set.contains(&source_addr) {
+            return Err(LocalScannerError::AddressOutOfRange(source_addr).into());
         }
 
         let rtt: Option<Duration> = self.calculate_rtt(&eth_frame).unwrap_or_else(|e| {
@@ -232,31 +244,28 @@ impl LocalScanner {
     fn calculate_rtt(&mut self, eth_frame: &EthernetPacket) -> anyhow::Result<Option<Duration>> {
         match eth_frame.get_ethertype() {
             EtherTypes::Arp => {
-                let arp_packet: ArpPacket = ArpPacket::new(eth_frame.payload())
-                    .ok_or_else(|| anyhow!("packet invalid [ARP]"))?;
+                let arp_packet = ArpPacket::new(eth_frame.payload())
+                    .ok_or(LocalScannerError::InvalidArpPacket)?;
 
                 let src_addr: IpAddr = IpAddr::V4(arp_packet.get_sender_proto_addr());
 
                 let start_time: Instant = self
                     .rtt_map
                     .remove(&src_addr)
-                    .ok_or_else(|| anyhow!("unmapped address [ARP]"))?;
+                    .ok_or(LocalScannerError::UnmappedRTTSource(src_addr))?;
 
                 Ok(Some(start_time.elapsed()))
             }
 
             EtherTypes::Ipv6 => {
-                let dst_addr: Ipv6Addr = match ip::get_ipv6_dst_addr_from_eth(eth_frame) {
-                    Ok(addr) => addr,
-                    Err(_) => bail!("packet invalid [IPv6]"),
-                };
+                let dst_addr: Ipv6Addr = ip::get_ipv6_dst_addr_from_eth(eth_frame)?;
 
                 if dst_addr.is_unicast_link_local() {
                     let dst_addr: IpAddr = IpAddr::V6(dst_addr);
                     let start_time: &Instant = self
                         .rtt_map
                         .get(&dst_addr)
-                        .ok_or_else(|| anyhow!("unmapped link local [IPv6]"))?;
+                        .ok_or(LocalScannerError::UnmappedRTTSource(dst_addr))?;
 
                     return Ok(Some(start_time.elapsed()));
                 }

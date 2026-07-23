@@ -15,12 +15,21 @@ use crate::core::session::{ScanContext, ScanEvent};
 use crate::network::transport::{self, TransportHandle, TransportType};
 use crate::protocols as protocol;
 use crate::{error, success};
-use anyhow::ensure;
 use async_trait::async_trait;
 use pnet::{datalink::NetworkInterface, packet::tcp::TcpPacket};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::NetworkExplorer;
+
+#[derive(Debug, thiserror::Error)]
+pub enum RoutedScannerError {
+    #[error("interface has no ipv4 or ipv6 address")]
+    NoInterfaceIp,
+    #[error("interface has no ipv4 address")]
+    NoIpv4Address,
+    #[error("interface has no ipv6 address")]
+    NoIpv6Address,
+}
 
 // this shit needs improvement
 const MIN_SCAN_DURATION: Duration = Duration::from_millis(200);
@@ -133,10 +142,9 @@ impl RoutedScanner {
             _ => None,
         });
 
-        ensure!(
-            src_v4.is_some() || src_v6.is_some(),
-            "interface has no ip addresses"
-        );
+        if src_v4.is_none() && src_v6.is_none() {
+            return Err(RoutedScannerError::NoInterfaceIp.into());
+        }
 
         Ok(Self {
             src_v4,
@@ -153,12 +161,8 @@ impl RoutedScanner {
     fn send_discovery_packets(&mut self) -> anyhow::Result<()> {
         let dst_port: u16 = 443;
 
-        let src_v4 = self
-            .src_v4
-            .ok_or_else(|| anyhow::anyhow!("interface has no ipv4 address"))?;
-        let src_v6 = self
-            .src_v6
-            .ok_or_else(|| anyhow::anyhow!("interface has no ipv6 address"))?;
+        let src_v4 = self.src_v4.ok_or(RoutedScannerError::NoIpv4Address)?;
+        let src_v6 = self.src_v6.ok_or(RoutedScannerError::NoIpv6Address)?;
 
         let targets: Vec<IpAddr> = self.ips.iter().collect();
 
@@ -182,7 +186,7 @@ impl RoutedScanner {
                 Err(e) => {
                     error!(
                         verbosity = 2,
-                        "Failed to create TCP packet for ({dst_addr}:{dst_port}): {e}"
+                        "Failed to create TCP packet for {dst_addr}:{dst_port}: {e}"
                     );
                     return;
                 }
@@ -197,7 +201,10 @@ impl RoutedScanner {
                         success!(verbosity = 2, "Sent TCP packet to {dst_addr}:{dst_port}");
                         self.rtt_map.insert((*dst_addr, seq_num), Instant::now());
                     }
-                    Err(e) => error!(verbosity = 2, "Failed to send packet to {dst_addr}: {e}"),
+                    Err(e) => error!(
+                        verbosity = 2,
+                        "Failed to send packet to {dst_addr}:{dst_port}: {e}"
+                    ),
                 }
             }
         }
