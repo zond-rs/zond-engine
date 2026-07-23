@@ -8,24 +8,21 @@
 //!
 //! This module coordinates the execution of various scanning strategies:
 //! - **Privileged**: High-speed raw socket scans ([`LocalScanner`] for ARP/ICMP, [`RoutedScanner`] for TCP SYN).
-//! - **Unprivileged**: Standard TCP handshake fallback via [`handshake`].
+//! - **Unprivileged**: Standard TCP handshake fallback via the [`connect`] module.
 //!
 //! It manages the lifecycle of a scan by partitioning targets by interface,
 //! spawning concurrent explorers, and piping results through a background [`HostnameResolver`]
 
 use std::net::IpAddr;
-use std::sync::Arc;
 
 use async_trait::async_trait;
-use dashmap::DashMap;
 use is_root::is_root;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::core::config::ZondConfig;
-use crate::core::handle::ScanHandle;
-use crate::core::models::{host::Host, ip::set::IpSet, target::TargetMap};
-use crate::core::session::{ScanEvent, ScanSession};
+use crate::core::models::{ip::set::IpSet, target::TargetMap};
+use crate::core::session::{ScanContext, ScanSession};
 use crate::scanner::resolver::HostnameResolver;
 use crate::system::interface;
 use crate::{error, info, success, warn};
@@ -38,6 +35,8 @@ mod local;
 mod resolver;
 mod routed;
 
+const PORT_SCAN_CONCURRENCY: usize = 50;
+
 #[async_trait]
 trait NetworkExplorer {
     async fn discover_hosts(&mut self) -> anyhow::Result<()>;
@@ -46,18 +45,17 @@ trait NetworkExplorer {
 pub async fn scan(
     target_map: TargetMap,
 ) -> anyhow::Result<(ScanSession, JoinHandle<anyhow::Result<()>>)> {
+    let (session, ctx) = ScanSession::new();
+
     if not_root() {
         // Future: Remove this fallback once SYN scanner is ready
         warn!("Privileged port scanning (SYN) not yet implemented; using TCP connect fallback");
     }
 
-    let (session, scan_handle, events_tx) = ScanSession::new();
-    let store = session.store.clone();
-
     let join_handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
-        let rx = dispatcher.run_shuffled(&scan_handle);
-        connect::scan(rx, &scan_handle, 50, store, events_tx).await
+        let rx = dispatcher.run_shuffled(&ctx.handle);
+        connect::scan(rx, PORT_SCAN_CONCURRENCY, ctx).await
     });
 
     Ok((session, join_handle))
@@ -78,18 +76,13 @@ pub async fn discover(
     cfg: &ZondConfig,
 ) -> anyhow::Result<(ScanSession, JoinHandle<anyhow::Result<()>>)> {
     let with_dns: bool = !cfg.no_dns;
-    let (session, scan_handle, events_tx) = ScanSession::new();
-    let store = session.store.clone();
+    let (session, ctx) = ScanSession::new();
 
     if not_root() {
-        let store_clone = store.clone();
-        let events_tx_clone = events_tx.clone();
-        let handle_clone = scan_handle.clone();
-
         let join_handle = tokio::spawn(async move {
-            connect::discover(targets, &handle_clone, store_clone.clone(), events_tx_clone).await?;
+            connect::discover(targets, ctx.clone()).await?;
             if with_dns {
-                resolver::resolve_hosts_async(store_clone).await;
+                resolver::resolve_hosts_async(ctx.store).await;
             }
             Ok(())
         });
@@ -105,14 +98,7 @@ pub async fn discover(
         (None, None)
     };
 
-    let scanner_handles = spawn_explorers(
-        targets,
-        &scan_handle,
-        dns_tx,
-        store.clone(),
-        events_tx.clone(),
-    )
-    .await;
+    let scanner_handles = spawn_explorers(targets, &ctx, dns_tx).await;
 
     let join_handle = tokio::spawn(async move {
         for handle in scanner_handles {
@@ -126,7 +112,7 @@ pub async fn discover(
         if let Some(task) = resolver_task
             && let Ok(Some(mut resolver)) = task.await
         {
-            resolver.resolve_hosts(store);
+            resolver.resolve_hosts(ctx.store);
         }
 
         Ok(())
@@ -137,85 +123,49 @@ pub async fn discover(
 
 async fn spawn_explorers(
     targets: IpSet,
-    scan_handle: &ScanHandle,
+    ctx: &ScanContext,
     dns_tx: Option<UnboundedSender<IpAddr>>,
-    store: Arc<DashMap<IpAddr, Host>>,
-    events_tx: UnboundedSender<ScanEvent>,
 ) -> Vec<JoinHandle<anyhow::Result<()>>> {
-    let mut handles = Vec::new();
-
+    let mut explorers: Vec<Box<dyn NetworkExplorer + Send>> = Vec::new();
     let (interface_map, unmapped_ips) = interface::map_ips_to_interfaces(targets);
 
     for (intf, (local_ips, routed_ips)) in interface_map {
         // Local Scanner (ARP/ICMP)
         if !local_ips.is_empty() {
-            info!(verbosity = 1, "Spawning LOCAL scanner for {}", intf.name);
-            let tx = dns_tx.clone();
-            let intf_c = intf.clone();
-
-            let scan_handle_clone = scan_handle.clone();
-            let store_clone = store.clone();
-            let events_tx_clone = events_tx.clone();
-            let handle = tokio::spawn(async move {
-                let mut scanner = LocalScanner::new(
-                    intf_c,
-                    local_ips,
-                    scan_handle_clone,
-                    tx,
-                    store_clone,
-                    events_tx_clone,
-                )?;
-                scanner.discover_hosts().await
-            });
-            handles.push(handle);
+            info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
+            match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone()) {
+                Ok(scanner) => explorers.push(Box::new(scanner)),
+                Err(e) => error!("Failed to initialize local scanner for {}: {e}", intf.name),
+            }
         }
 
         // Routed Scanner (TCP Syn Scan)
         if !routed_ips.is_empty() {
-            info!(verbosity = 1, "Spawning ROUTED scanner for {}", intf.name);
-            let tx = dns_tx.clone();
-            let intf_c = intf.clone();
-
-            let scan_handle_clone = scan_handle.clone();
-            let store_clone = store.clone();
-            let events_tx_clone = events_tx.clone();
-            let handle = tokio::spawn(async move {
-                let mut scanner = RoutedScanner::new(
-                    intf_c,
-                    routed_ips,
-                    scan_handle_clone,
-                    tx,
-                    store_clone,
-                    events_tx_clone,
-                )?;
-                scanner.discover_hosts().await
-            });
-            handles.push(handle);
+            info!(verbosity = 1, "Spawning routed scanner for {}", intf.name);
+            match RoutedScanner::new(intf.clone(), routed_ips, ctx.clone(), dns_tx.clone()) {
+                Ok(scanner) => explorers.push(Box::new(scanner)),
+                Err(e) => error!("Failed to initialize routed scanner for {}: {e}", intf.name),
+            }
         }
     }
 
-    // Fallback Scanner (Unprivileged TCP Handshake) for unmapped IPs (e.g. localhost)
+    // Fallback Scanner (Unprivileged TCP Handshake) for unmapped IPs (e.g. localhost,
+    // or targets the OS couldn't resolve a route/interface for).
     if !unmapped_ips.is_empty() {
-        info!(
+        warn!(
             verbosity = 1,
-            "Spawning FALLBACK scanner for unmapped targets"
+            "Spawning fallback scanner for unmapped targets"
         );
-        let scan_handle_clone = scan_handle.clone();
-        let store_clone = store.clone();
-        let events_tx_clone = events_tx.clone();
-        let handle = tokio::spawn(async move {
-            connect::discover(
-                unmapped_ips,
-                &scan_handle_clone,
-                store_clone,
-                events_tx_clone,
-            )
-            .await
-        });
-        handles.push(handle);
+        explorers.push(Box::new(connect::ConnectScanner::new(
+            unmapped_ips,
+            ctx.clone(),
+        )));
     }
 
-    handles
+    explorers
+        .into_iter()
+        .map(|mut explorer| tokio::spawn(async move { explorer.discover_hosts().await }))
+        .collect()
 }
 
 async fn spawn_resolver(dns_rx: UnboundedReceiver<IpAddr>) -> JoinHandle<Option<HostnameResolver>> {

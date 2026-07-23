@@ -27,18 +27,36 @@ pub struct ScanSession {
     pub handle: ScanHandle,
 }
 
+/// The shared, cloneable handles that every scanning strategy needs: somewhere to
+/// write discovered hosts, somewhere to announce updates, and a way to check for abort.
+///
+/// Bundling these avoids passing (and cloning) the same three arguments individually
+/// at every scanner construction site.
+#[derive(Clone)]
+pub struct ScanContext {
+    pub handle: ScanHandle,
+    pub store: Arc<DashMap<IpAddr, Host>>,
+    pub events_tx: mpsc::UnboundedSender<ScanEvent>,
+}
+
 impl ScanSession {
-    pub fn new() -> (Self, ScanHandle, mpsc::UnboundedSender<ScanEvent>) {
+    pub fn new() -> (Self, ScanContext) {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::new();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (events_tx, rx) = mpsc::unbounded_channel();
 
         let session = Self {
-            store,
+            store: store.clone(),
             events: rx,
             handle: handle.clone(),
         };
 
-        (session, handle, tx)
+        let ctx = ScanContext {
+            handle,
+            store,
+            events_tx,
+        };
+
+        (session, ctx)
     }
 }

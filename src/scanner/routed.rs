@@ -10,19 +10,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::core::handle::ScanHandle;
 use crate::core::models::{host::Host, ip::set::IpSet};
-use crate::core::session::ScanEvent;
+use crate::core::session::{ScanContext, ScanEvent};
+use crate::network::transport::{self, TransportHandle, TransportType};
 use crate::protocols as protocol;
 use crate::{error, success};
 use anyhow::ensure;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use pnet::{datalink::NetworkInterface, packet::tcp::TcpPacket};
-use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
-
-use crate::network::transport::{self, TransportHandle, TransportType};
 
 use super::NetworkExplorer;
 
@@ -36,10 +32,8 @@ type SeqNum = u32;
 pub struct RoutedScanner {
     src_v4: Option<Ipv4Addr>,
     src_v6: Option<Ipv6Addr>,
-    store: Arc<DashMap<IpAddr, Host>>,
-    events_tx: UnboundedSender<ScanEvent>,
+    ctx: ScanContext,
     ips: IpSet,
-    scan_handle: ScanHandle,
     tcp_handle: TransportHandle,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     rtt_map: HashMap<(IpAddr, SeqNum), Instant>,
@@ -49,15 +43,16 @@ pub struct RoutedScanner {
 #[async_trait]
 impl NetworkExplorer for RoutedScanner {
     async fn discover_hosts(&mut self) -> anyhow::Result<()> {
-        if let Err(e) = self.send_discovery_packets() {
-            error!("Failed to send packets: {e}");
+        match self.send_discovery_packets() {
+            Ok(_) => success!("Discovery packets sent successfully"),
+            Err(e) => error!("Sending discovery packets failed: {e}"),
         }
 
         let deadline: Instant = calculate_deadline(self.ips.len() as usize);
 
         loop {
             let all_responded = self.ips.len() == self.responded_count as u128;
-            if self.scan_handle.should_stop() || all_responded {
+            if self.ctx.handle.should_stop() || all_responded {
                 break;
             }
 
@@ -75,7 +70,7 @@ impl NetworkExplorer for RoutedScanner {
                             }
 
                             let mut is_new = false;
-                            let mut host = self.store.entry(ip).or_insert_with(|| {
+                            let mut host = self.ctx.store.entry(ip).or_insert_with(|| {
                                 is_new = true;
                                 Host::new(ip)
                             });
@@ -101,7 +96,7 @@ impl NetworkExplorer for RoutedScanner {
                             drop(host);
 
                             if is_new || emit_update {
-                                let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
+                                let _ = self.ctx.events_tx.send(ScanEvent::HostUpdated(ip));
                             }
                         },
                         None => break,
@@ -122,10 +117,8 @@ impl RoutedScanner {
     pub fn new(
         intf: NetworkInterface,
         ips: IpSet,
-        scan_handle: ScanHandle,
+        ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
-        store: Arc<DashMap<IpAddr, Host>>,
-        events_tx: UnboundedSender<ScanEvent>,
     ) -> anyhow::Result<Self> {
         let tcp_handle: TransportHandle =
             transport::start_packet_capture(TransportType::TcpLayer4)?;
@@ -148,10 +141,8 @@ impl RoutedScanner {
         Ok(Self {
             src_v4,
             src_v6,
-            store,
-            events_tx,
+            ctx,
             ips,
-            scan_handle,
             tcp_handle,
             dns_tx,
             rtt_map: HashMap::new(),
@@ -160,36 +151,56 @@ impl RoutedScanner {
     }
 
     fn send_discovery_packets(&mut self) -> anyhow::Result<()> {
-        let src_port: u16 = rand::random_range(50_000..u16::MAX);
         let dst_port: u16 = 443;
-        for dst_addr in self.ips.iter() {
-            let src_addr: IpAddr = match dst_addr {
-                IpAddr::V4(_) => {
-                    ensure!(self.src_v4.is_some(), "interface has no ipv4 address");
-                    IpAddr::V4(self.src_v4.unwrap())
-                }
-                IpAddr::V6(_) => {
-                    ensure!(self.src_v6.is_some(), "interface has no ipv6 address");
-                    IpAddr::V6(self.src_v6.unwrap())
+
+        let src_v4 = self
+            .src_v4
+            .ok_or_else(|| anyhow::anyhow!("interface has no ipv4 address"))?;
+        let src_v6 = self
+            .src_v6
+            .ok_or_else(|| anyhow::anyhow!("interface has no ipv6 address"))?;
+
+        let targets: Vec<IpAddr> = self.ips.iter().collect();
+
+        for dst_addr in targets {
+            let src_addr = match dst_addr {
+                IpAddr::V4(_) => IpAddr::V4(src_v4),
+                IpAddr::V6(_) => IpAddr::V6(src_v6),
+            };
+            self.send_tcp_packet(&src_addr, &dst_addr, dst_port);
+        }
+
+        Ok(())
+    }
+
+    fn send_tcp_packet(&mut self, src_addr: &IpAddr, dst_addr: &IpAddr, dst_port: u16) {
+        let src_port: u16 = rand::random_range(50_000..u16::MAX);
+        let seq_num: u32 = rand::random_range(0..=u32::MAX);
+        let packet =
+            match protocol::tcp::create_packet(src_addr, dst_addr, src_port, dst_port, seq_num) {
+                Ok(pkt) => pkt,
+                Err(e) => {
+                    error!(
+                        verbosity = 2,
+                        "Failed to create TCP packet for ({dst_addr}:{dst_port}): {e}"
+                    );
+                    return;
                 }
             };
 
-            let seq_num: u32 = rand::random_range(0..=u32::MAX);
-            let packet: Vec<u8> =
-                protocol::tcp::create_packet(&src_addr, &dst_addr, src_port, dst_port, seq_num)?;
-
-            if let Some(packet) = TcpPacket::new(&packet) {
+        match TcpPacket::new(&packet) {
+            None => {}
+            Some(packet) => {
                 let mut tx = self.tcp_handle.tx.lock().unwrap();
-                match tx.send_to(packet, dst_addr) {
+                match tx.send_to(packet, *dst_addr) {
                     Ok(_) => {
-                        success!(verbosity = 2, "Sent discovery packet to {dst_addr}");
-                        self.rtt_map.insert((dst_addr, seq_num), Instant::now());
+                        success!(verbosity = 2, "Sent TCP packet to {dst_addr}:{dst_port}");
+                        self.rtt_map.insert((*dst_addr, seq_num), Instant::now());
                     }
                     Err(e) => error!(verbosity = 2, "Failed to send packet to {dst_addr}: {e}"),
                 }
             }
         }
-        Ok(())
     }
 }
 

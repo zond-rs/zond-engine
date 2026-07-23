@@ -4,25 +4,46 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
+use super::NetworkExplorer;
 use super::dispatcher::Dispatcher;
-use crate::core::handle::ScanHandle;
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
-use crate::core::session::ScanEvent;
-use dashmap::DashMap;
+use crate::core::session::{ScanContext, ScanEvent};
+use async_trait::async_trait;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 /// Most common ports across Linux, Windows, and Networking gear.
 const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
+
+/// Adapts the unprivileged [`discover`] strategy to [`NetworkExplorer`], so it can
+/// be spawned alongside [`LocalScanner`](super::local::LocalScanner) and
+/// [`RoutedScanner`](super::routed::RoutedScanner) from a single explorer list.
+pub struct ConnectScanner {
+    ips: IpSet,
+    ctx: ScanContext,
+}
+
+impl ConnectScanner {
+    pub fn new(ips: IpSet, ctx: ScanContext) -> Self {
+        Self { ips, ctx }
+    }
+}
+
+#[async_trait]
+impl NetworkExplorer for ConnectScanner {
+    async fn discover_hosts(&mut self) -> anyhow::Result<()> {
+        discover(std::mem::take(&mut self.ips), self.ctx.clone()).await
+    }
+}
 
 /// Performs a high-concurrency, unprivileged port scan.
 ///
@@ -32,28 +53,26 @@ const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 /// open or filtered ports are aggregated into a collection of [`Host`] entities.
 pub async fn scan(
     mut rx: mpsc::Receiver<Target>,
-    scan_handle: &ScanHandle,
     concurrency_limit: usize,
-    store: Arc<DashMap<IpAddr, Host>>,
-    events_tx: UnboundedSender<ScanEvent>,
+    ctx: ScanContext,
 ) -> anyhow::Result<()> {
     let mut set: JoinSet<anyhow::Result<Option<(IpAddr, Port)>>> = JoinSet::new();
 
     while let Some(target) = rx.recv().await {
-        if scan_handle.should_stop() {
+        if ctx.handle.should_stop() {
             break;
         }
 
         while set.len() >= concurrency_limit {
             if let Some(Ok(Ok(Some((ip, port))))) = set.join_next().await {
                 let mut is_new = false;
-                let mut host = store.entry(ip).or_insert_with(|| {
+                let mut host = ctx.store.entry(ip).or_insert_with(|| {
                     is_new = true;
                     Host::new(ip)
                 });
                 host.add_port(port);
                 drop(host);
-                let _ = events_tx.send(ScanEvent::HostUpdated(ip));
+                let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
             }
         }
 
@@ -63,13 +82,13 @@ pub async fn scan(
     while let Some(res) = set.join_next().await {
         if let Ok(Ok(Some((ip, port)))) = res {
             let mut is_new = false;
-            let mut host = store.entry(ip).or_insert_with(|| {
+            let mut host = ctx.store.entry(ip).or_insert_with(|| {
                 is_new = true;
                 Host::new(ip)
             });
             host.add_port(port);
             drop(host);
-            let _ = events_tx.send(ScanEvent::HostUpdated(ip));
+            let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
         }
     }
 
@@ -146,12 +165,7 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
 ///   to minimize local network congestion.
 /// - **Fidelity Range**: Uses an adjustable 1000ms timeout window to capture
 ///   hosts on high-latency or geographically distant links.
-pub async fn discover(
-    ips: IpSet,
-    scan_handle: &ScanHandle,
-    store: Arc<DashMap<IpAddr, Host>>,
-    events_tx: UnboundedSender<ScanEvent>,
-) -> anyhow::Result<()> {
+pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
     const CONCURRENCY_LIMIT: usize = 2048;
 
     let mut target_map = TargetMap::new();
@@ -166,23 +180,23 @@ pub async fn discover(
     target_map.add_unit(TargetSet::new(ips, port_set));
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
-    let mut rx = dispatcher.run_shuffled(scan_handle);
+    let mut rx = dispatcher.run_shuffled(&ctx.handle);
     let mut set: JoinSet<anyhow::Result<Option<Host>>> = JoinSet::new();
     let found_hosts = Arc::new(Mutex::new(HashSet::new()));
 
     while let Some(target) = rx.recv().await {
-        if scan_handle.should_stop() {
+        if ctx.handle.should_stop() {
             break;
         }
 
         while set.len() >= CONCURRENCY_LIMIT {
             if let Some(Ok(Ok(Some(host)))) = set.join_next().await {
                 let ip = host.primary_ip();
-                store
+                ctx.store
                     .entry(ip)
                     .and_modify(|h| h.merge(host.clone()))
                     .or_insert(host);
-                let _ = events_tx.send(ScanEvent::HostUpdated(ip));
+                let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
             }
         }
 
@@ -193,11 +207,11 @@ pub async fn discover(
     while let Some(res) = set.join_next().await {
         if let Ok(Ok(Some(host))) = res {
             let ip = host.primary_ip();
-            store
+            ctx.store
                 .entry(ip)
                 .and_modify(|h| h.merge(host.clone()))
                 .or_insert(host);
-            let _ = events_tx.send(ScanEvent::HostUpdated(ip));
+            let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
         }
     }
 

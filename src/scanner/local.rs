@@ -44,14 +44,11 @@ use crate::network::{
     mac::IntoCoreMac,
 };
 
-use crate::core::handle::ScanHandle;
-use crate::core::session::ScanEvent;
+use crate::core::session::{ScanContext, ScanEvent};
 use crate::scanner::NetworkExplorer;
 use crate::system::interface::NetworkInterfaceExtension;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use pnet::datalink::MacAddr;
-use std::sync::Arc;
 
 const MAX_CHANNEL_TIME: Duration = Duration::from_millis(7_500);
 const MIN_CHANNEL_TIME: Duration = Duration::from_millis(2_500);
@@ -59,13 +56,11 @@ const MAX_SILENCE_MS: Duration = Duration::from_millis(500);
 const SEND_INTERVAL_US: Duration = Duration::from_micros(1000);
 
 pub struct LocalScanner {
-    store: Arc<DashMap<IpAddr, Host>>,
-    events_tx: UnboundedSender<ScanEvent>,
+    ctx: ScanContext,
     ip_set: IpSet,
     local_mac: MacAddr,
     src_v4: Option<Ipv4Addr>,
     link_local: Option<Ipv6Addr>,
-    scan_handle: ScanHandle,
     eth_handle: EthernetHandle,
     timer: ScanTimer,
     dns_tx: Option<UnboundedSender<IpAddr>>,
@@ -126,10 +121,8 @@ impl LocalScanner {
     pub fn new(
         intf: NetworkInterface,
         ip_set: IpSet,
-        scan_handle: ScanHandle,
+        ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
-        store: Arc<DashMap<IpAddr, Host>>,
-        events_tx: UnboundedSender<ScanEvent>,
     ) -> anyhow::Result<Self> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
         let timer: ScanTimer = ScanTimer::new(MAX_CHANNEL_TIME, MIN_CHANNEL_TIME, MAX_SILENCE_MS);
@@ -158,13 +151,11 @@ impl LocalScanner {
             .map(|net| net.ip());
 
         Ok(Self {
-            store,
-            events_tx,
+            ctx,
             ip_set,
             local_mac,
             src_v4,
             link_local,
-            scan_handle,
             eth_handle,
             timer,
             dns_tx,
@@ -195,7 +186,7 @@ impl LocalScanner {
         let primary_ip = *self.mac_to_ip.entry(other_mac_addr).or_insert(source_addr);
 
         let mut is_new_host: bool = false;
-        let mut host = self.store.entry(primary_ip).or_insert_with(|| {
+        let mut host = self.ctx.store.entry(primary_ip).or_insert_with(|| {
             self.timer.mark_activity();
             is_new_host = true;
             Host::new(primary_ip).with_mac(other_mac_addr.into_core())
@@ -228,7 +219,7 @@ impl LocalScanner {
         drop(host);
 
         if emit_update || is_new_host {
-            let _ = self.events_tx.send(ScanEvent::HostUpdated(primary_ip));
+            let _ = self.ctx.events_tx.send(ScanEvent::HostUpdated(primary_ip));
         }
 
         if is_new_host || is_new_ip {
@@ -278,7 +269,7 @@ impl LocalScanner {
     }
 
     fn should_stop(&self) -> bool {
-        let stopped: bool = self.scan_handle.should_stop();
+        let stopped: bool = self.ctx.handle.should_stop();
         let time_expired: bool = self.timer.has_expired();
 
         stopped || time_expired
