@@ -233,28 +233,36 @@ impl LocalScanner {
             return Err(LocalScannerError::AddressOutOfRange(source_addr).into());
         }
 
-        let rtt = self.interpret_response(&eth_frame, source_addr);
-        self.record_response(source_mac, source_addr, rtt);
+        if let ProtocolMatch::Handled { rtt } = self.interpret_response(&eth_frame, source_addr) {
+            self.record_response(source_mac, source_addr, rtt);
+        }
 
         Ok(())
     }
 
-    /// Tries each configured [`DiscoveryProtocol`] against `frame` in turn,
-    /// returning the round-trip time the first one to claim it reports, or
-    /// `None` if no protocol recognized the frame or one failed to interpret it.
-    fn interpret_response(&mut self, frame: &EthernetPacket, source: IpAddr) -> Option<Duration> {
+    /// Tries each configured [`DiscoveryProtocol`] against `frame` in turn.
+    ///
+    /// Returns [`ProtocolMatch::Unhandled`] if no protocol recognized the
+    /// frame as a discovery response, or if one failed to interpret it - in
+    /// both cases the frame carries no reliable information about who sent
+    /// it and must not be attributed to any host. A frame reaching us
+    /// promiscuously that no protocol claims is common: LAN traffic between
+    /// other hosts, or traffic merely forwarded through a router rather than
+    /// sent directly, whose Ethernet source is the router, not whoever the
+    /// IP packet actually originated from.
+    fn interpret_response(&mut self, frame: &EthernetPacket, source: IpAddr) -> ProtocolMatch {
         for protocol in &self.protocols {
             match protocol.interpret(frame, source, &mut self.pending_probes) {
-                Ok(ProtocolMatch::Handled { rtt }) => return rtt,
+                Ok(ProtocolMatch::Handled { rtt }) => return ProtocolMatch::Handled { rtt },
                 Ok(ProtocolMatch::Unhandled) => continue,
                 Err(e) => {
-                    error!(verbosity = 1, "Failed to calculate RTT: {e}");
-                    return None;
+                    error!(verbosity = 1, "Failed to interpret discovery response: {e}");
+                    return ProtocolMatch::Unhandled;
                 }
             }
         }
 
-        None
+        ProtocolMatch::Unhandled
     }
 
     /// Applies a discovery response to shared scan state: updates or
