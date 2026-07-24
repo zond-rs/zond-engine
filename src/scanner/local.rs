@@ -27,16 +27,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::core::models::timer::ScanTimer;
+use crate::core::models::rtt_window::RttWindow;
+use crate::core::models::timer::{ScanBudget, ScanTimer};
 use crate::core::models::{host::Host, ip::set::IpSet};
 use crate::{error, info};
 
 use crate::protocols::{self as protocol, ip};
 use protocol::ethernet;
-use tokio::{
-    sync::mpsc::UnboundedSender,
-    time::{Interval, Sleep},
-};
+use tokio::{sync::mpsc::UnboundedSender, time::Interval};
 
 use crate::network::{
     channel::{self, EthernetHandle},
@@ -63,9 +61,33 @@ pub enum LocalScannerError {
     AddressOutOfRange(IpAddr),
 }
 
-const MAX_CHANNEL_TIME: Duration = Duration::from_millis(7_500);
-const MIN_CHANNEL_TIME: Duration = Duration::from_millis(2_500);
-const MAX_SILENCE_MS: Duration = Duration::from_millis(500);
+/// The overall time budget for one scan, before accounting for its target count.
+///
+/// `base` covers a single target; `per_target` is added for every additional
+/// one, up to `ceiling`. These starting values assume a local network
+/// segment, where round trips are typically well under a millisecond.
+const MAX_CHANNEL_BUDGET: ScanBudget = ScanBudget::new(
+    Duration::from_millis(2_000),
+    Duration::from_millis(20),
+    Duration::from_millis(15_000),
+);
+
+/// The minimum time a scan must run before it is allowed to end early due to
+/// silence, scaled the same way as [`MAX_CHANNEL_BUDGET`].
+const MIN_CHANNEL_BUDGET: ScanBudget = ScanBudget::new(
+    Duration::from_millis(800),
+    Duration::from_millis(7),
+    Duration::from_millis(5_000),
+);
+
+/// The bounds within which the silence tolerance is allowed to adapt, and
+/// how many recent samples inform that adaptation. See [`RttWindow`] for how
+/// the tolerance itself is derived from observed round-trip times.
+const SILENCE_FLOOR: Duration = Duration::from_millis(250);
+const SILENCE_CEILING: Duration = Duration::from_millis(2_000);
+const SILENCE_JITTER_MULTIPLIER: f64 = 4.0;
+const RTT_WINDOW_CAPACITY: usize = 20;
+
 const SEND_INTERVAL_US: Duration = Duration::from_micros(1000);
 
 pub struct LocalScanner {
@@ -76,6 +98,10 @@ pub struct LocalScanner {
     link_local: Option<Ipv6Addr>,
     eth_handle: EthernetHandle,
     timer: ScanTimer,
+    /// Recent round-trip times observed from any responding host, used to
+    /// adapt how long the scan waits before concluding the network has gone
+    /// quiet. See [`LocalScanner::current_silence_tolerance`].
+    rtt_window: RttWindow,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     rtt_map: HashMap<IpAddr, Instant>,
     mac_to_ip: HashMap<MacAddr, IpAddr>,
@@ -94,13 +120,17 @@ impl NetworkExplorer for LocalScanner {
         let mut sending_finished = false;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL_US);
 
-        let scan_deadline: Sleep = tokio::time::sleep(MAX_CHANNEL_TIME);
-        tokio::pin!(scan_deadline);
-
         loop {
             if self.should_stop() && sending_finished {
                 break;
             }
+
+            // Only needed once sending has finished: while packets are still
+            // going out, `send_interval` already drives the loop frequently
+            // enough for the check above to run promptly.
+            let next_tick = self
+                .timer
+                .time_until_next_tick(self.current_silence_tolerance());
 
             tokio::select! {
                 pkt = self.eth_handle.rx.recv() => {
@@ -122,7 +152,7 @@ impl NetworkExplorer for LocalScanner {
                     }
                 }
 
-                _ = &mut scan_deadline => break,
+                _ = tokio::time::sleep(next_tick), if sending_finished => {}
             }
         }
 
@@ -138,8 +168,11 @@ impl LocalScanner {
         dns_tx: Option<UnboundedSender<IpAddr>>,
     ) -> anyhow::Result<Self> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
-        let timer: ScanTimer = ScanTimer::new(MAX_CHANNEL_TIME, MIN_CHANNEL_TIME, MAX_SILENCE_MS);
         let len = ip_set.len() as usize;
+        let timer: ScanTimer = ScanTimer::new(
+            MAX_CHANNEL_BUDGET.for_target_count(len),
+            MIN_CHANNEL_BUDGET.for_target_count(len),
+        );
         let local_mac = intf.mac.ok_or(LocalScannerError::NoMacAddress)?;
 
         let mut src_v4 = None;
@@ -171,6 +204,7 @@ impl LocalScanner {
             link_local,
             eth_handle,
             timer,
+            rtt_window: RttWindow::new(RTT_WINDOW_CAPACITY),
             dns_tx,
             rtt_map: HashMap::with_capacity(len),
             mac_to_ip: HashMap::new(),
@@ -214,6 +248,7 @@ impl LocalScanner {
                 rtt.as_millis()
             );
             host.add_rtt(rtt);
+            self.rtt_window.record(rtt);
             emit_update = true;
         }
 
@@ -277,9 +312,20 @@ impl LocalScanner {
         }
     }
 
+    /// Derives how long to wait, right now, for further activity before
+    /// concluding the network has gone quiet.
+    ///
+    /// The value adapts to recently observed round-trip times: a fast,
+    /// stable network yields a short tolerance, while a slower or jitterier
+    /// one yields a longer one, within fixed safety bounds.
+    fn current_silence_tolerance(&self) -> Duration {
+        self.rtt_window
+            .suggest_timeout(SILENCE_JITTER_MULTIPLIER, SILENCE_FLOOR, SILENCE_CEILING)
+    }
+
     fn should_stop(&self) -> bool {
         let stopped: bool = self.ctx.handle.should_stop();
-        let time_expired: bool = self.timer.has_expired();
+        let time_expired: bool = self.timer.has_expired(self.current_silence_tolerance());
 
         stopped || time_expired
     }

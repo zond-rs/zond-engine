@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::core::models::rtt_window::RttWindow;
+use crate::core::models::timer::{ScanBudget, ScanTimer};
 use crate::core::models::{host::Host, ip::set::IpSet};
 use crate::core::session::{ScanContext, ScanEvent};
 use crate::network::transport::{self, TransportHandle, TransportType};
@@ -31,10 +33,31 @@ pub enum RoutedScannerError {
     NoIpv6Address,
 }
 
-// this shit needs improvement
-const MIN_SCAN_DURATION: Duration = Duration::from_millis(200);
-const MAX_SCAN_DURATION: Duration = Duration::from_millis(3000);
-const MS_PER_IP: f64 = 0.5;
+/// The overall time budget for one scan, before accounting for its target
+/// count. Routed targets may sit anywhere on the internet rather than on the
+/// local segment, but a probe that was ever going to get a reply typically
+/// does so quickly, so this starts noticeably tighter than a local-network scan.
+const MAX_SCAN_BUDGET: ScanBudget = ScanBudget::new(
+    Duration::from_millis(200),
+    Duration::from_micros(500),
+    Duration::from_millis(3_000),
+);
+
+/// The minimum time a scan must run before it is allowed to end early due to
+/// silence, scaled the same way as [`MAX_SCAN_BUDGET`].
+const MIN_SCAN_BUDGET: ScanBudget = ScanBudget::new(
+    Duration::from_millis(70),
+    Duration::from_micros(175),
+    Duration::from_millis(1_000),
+);
+
+/// The bounds within which the silence tolerance is allowed to adapt, and
+/// how many recent samples inform that adaptation. See [`RttWindow`] for how
+/// the tolerance itself is derived from observed round-trip times.
+const SILENCE_FLOOR: Duration = Duration::from_millis(150);
+const SILENCE_CEILING: Duration = Duration::from_millis(1_500);
+const SILENCE_JITTER_MULTIPLIER: f64 = 4.0;
+const RTT_WINDOW_CAPACITY: usize = 20;
 
 type SeqNum = u32;
 
@@ -44,6 +67,11 @@ pub struct RoutedScanner {
     ctx: ScanContext,
     ips: IpSet,
     tcp_handle: TransportHandle,
+    timer: ScanTimer,
+    /// Recent round-trip times observed from any responding host, used to
+    /// adapt how long the scan waits before concluding the network has gone
+    /// quiet. See [`RoutedScanner::current_silence_tolerance`].
+    rtt_window: RttWindow,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     rtt_map: HashMap<(IpAddr, SeqNum), Instant>,
     responded_count: usize,
@@ -57,16 +85,10 @@ impl NetworkExplorer for RoutedScanner {
             Err(e) => error!("Sending discovery packets failed: {e}"),
         }
 
-        let deadline: Instant = calculate_deadline(self.ips.len() as usize);
-
         loop {
             let all_responded = self.ips.len() == self.responded_count as u128;
-            if self.ctx.handle.should_stop() || all_responded {
-                break;
-            }
-
-            let remaining: Duration = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let silence = self.current_silence_tolerance();
+            if self.ctx.handle.should_stop() || all_responded || self.timer.has_expired(silence) {
                 break;
             }
 
@@ -86,6 +108,7 @@ impl NetworkExplorer for RoutedScanner {
 
                             if is_new {
                                 self.responded_count += 1;
+                                self.timer.mark_activity();
                                 let _ = self.dns_tx.as_ref().map(|dns| dns.send(ip));
                             }
 
@@ -98,6 +121,7 @@ impl NetworkExplorer for RoutedScanner {
                                 if let Some(start_time) = self.rtt_map.remove(&(ip, original_seq)) {
                                     let rtt: Duration = start_time.elapsed();
                                     host.add_rtt(rtt);
+                                    self.rtt_window.record(rtt);
                                     emit_update = true;
                                 }
                             }
@@ -111,9 +135,9 @@ impl NetworkExplorer for RoutedScanner {
                         None => break,
                     }
                 },
-                _ = tokio::time::sleep(remaining) => {
-                    break;
-                }
+                // Wakes periodically so the checks above are re-evaluated even
+                // when no further responses arrive.
+                _ = tokio::time::sleep(self.timer.time_until_next_tick(silence)) => {}
             }
         }
 
@@ -146,16 +170,35 @@ impl RoutedScanner {
             return Err(RoutedScannerError::NoInterfaceIp.into());
         }
 
+        let target_count = ips.len() as usize;
+        let timer = ScanTimer::new(
+            MAX_SCAN_BUDGET.for_target_count(target_count),
+            MIN_SCAN_BUDGET.for_target_count(target_count),
+        );
+
         Ok(Self {
             src_v4,
             src_v6,
             ctx,
             ips,
             tcp_handle,
+            timer,
+            rtt_window: RttWindow::new(RTT_WINDOW_CAPACITY),
             dns_tx,
             rtt_map: HashMap::new(),
             responded_count: 0,
         })
+    }
+
+    /// Derives how long to wait, right now, for further responses before
+    /// concluding no more hosts will answer.
+    ///
+    /// The value adapts to recently observed round-trip times: a fast,
+    /// stable path yields a short tolerance, while a slower or jitterier one
+    /// yields a longer one, within fixed safety bounds.
+    fn current_silence_tolerance(&self) -> Duration {
+        self.rtt_window
+            .suggest_timeout(SILENCE_JITTER_MULTIPLIER, SILENCE_FLOOR, SILENCE_CEILING)
     }
 
     fn send_discovery_packets(&mut self) -> anyhow::Result<()> {
@@ -209,13 +252,4 @@ impl RoutedScanner {
             }
         }
     }
-}
-
-fn calculate_deadline(ips_len: usize) -> Instant {
-    let variable_ms = (ips_len as f64 * MS_PER_IP) as u64;
-
-    let scan_duration = (MIN_SCAN_DURATION + Duration::from_millis(variable_ms))
-        .clamp(MIN_SCAN_DURATION, MAX_SCAN_DURATION);
-
-    Instant::now() + scan_duration
 }
