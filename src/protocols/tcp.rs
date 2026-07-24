@@ -12,6 +12,8 @@ use pnet::packet::tcp::{MutableTcpPacket, TcpOption, TcpPacket};
 const MIN_TCP_HDR_LEN: usize = 24;
 const WORD_IN_BYTES: usize = 4;
 const SYN_FLAG: u8 = 1 << 1;
+const RST_FLAG: u8 = 1 << 2;
+const ACK_FLAG: u8 = 1 << 4;
 
 pub fn create_packet(
     src_addr: &IpAddr,
@@ -56,4 +58,80 @@ pub fn create_packet(
 
 pub fn from_u8(bytes: &'_ [u8]) -> anyhow::Result<TcpPacket<'_>> {
     TcpPacket::new(bytes).context("truncated or invalid TCP packet")
+}
+
+/// What a SYN probe's response reveals about the state of the port it was sent to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeResponse {
+    /// SYN+ACK: something is listening and accepted the connection attempt.
+    Open,
+    /// RST: the port actively refused the connection attempt.
+    Closed,
+}
+
+/// Classifies a received segment as a response to a SYN probe, if it looks like one.
+///
+/// Returns `None` for anything that isn't a plain SYN+ACK or RST - established
+/// connection traffic, unrelated flag combinations, and so on - which a caller
+/// should treat as noise rather than a probe result.
+pub fn classify_probe_response(packet: &TcpPacket) -> Option<ProbeResponse> {
+    let flags = packet.get_flags();
+
+    if flags & RST_FLAG != 0 {
+        Some(ProbeResponse::Closed)
+    } else if flags & SYN_FLAG != 0 && flags & ACK_FLAG != 0 {
+        Some(ProbeResponse::Open)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pnet::packet::tcp::MutableTcpPacket;
+
+    fn packet_with_flags(flags: u8) -> Vec<u8> {
+        let mut buffer = vec![0u8; MIN_TCP_HDR_LEN];
+        let mut tcp = MutableTcpPacket::new(&mut buffer).unwrap();
+        tcp.set_data_offset((MIN_TCP_HDR_LEN / WORD_IN_BYTES) as u8);
+        tcp.set_flags(flags);
+        buffer
+    }
+
+    #[test]
+    fn classifies_syn_ack_as_open() {
+        let bytes = packet_with_flags(SYN_FLAG | ACK_FLAG);
+        let packet = TcpPacket::new(&bytes).unwrap();
+        assert_eq!(classify_probe_response(&packet), Some(ProbeResponse::Open));
+    }
+
+    #[test]
+    fn classifies_rst_as_closed() {
+        let bytes = packet_with_flags(RST_FLAG);
+        let packet = TcpPacket::new(&bytes).unwrap();
+        assert_eq!(
+            classify_probe_response(&packet),
+            Some(ProbeResponse::Closed)
+        );
+    }
+
+    #[test]
+    fn classifies_rst_ack_as_closed() {
+        // A RST replying to our SYN legitimately carries ACK too (RFC 793 §3.4);
+        // RST should take priority over the ACK bit alone.
+        let bytes = packet_with_flags(RST_FLAG | ACK_FLAG);
+        let packet = TcpPacket::new(&bytes).unwrap();
+        assert_eq!(
+            classify_probe_response(&packet),
+            Some(ProbeResponse::Closed)
+        );
+    }
+
+    #[test]
+    fn ignores_unrelated_flag_combinations() {
+        let bytes = packet_with_flags(ACK_FLAG);
+        let packet = TcpPacket::new(&bytes).unwrap();
+        assert_eq!(classify_probe_response(&packet), None);
+    }
 }

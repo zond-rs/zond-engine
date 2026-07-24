@@ -129,14 +129,28 @@ impl SourceIdentity {
 }
 
 pub struct LocalScanner {
+    /// Shared state (host store, event channel, abort signal) for the scan
+    /// this explorer is part of.
     ctx: ScanContext,
+    /// The addresses being probed for aliveness.
     ip_set: IpSet,
+    /// The address this scanner presents as its own when probing.
     identity: SourceIdentity,
+    /// Raw Ethernet capture used to send probe packets and receive replies.
     eth_handle: EthernetHandle,
+    /// Governs how long this sweep keeps running, adapting to observed
+    /// round-trip times.
     deadline: AdaptiveDeadline,
+    /// Wire formats this scanner recognizes as discovery replies, tried in
+    /// order against every received frame.
     protocols: Vec<Box<dyn DiscoveryProtocol>>,
+    /// Outstanding probes, keyed by the address a reply is expected from.
     pending_probes: PendingProbes,
+    /// Where to forward newly discovered addresses for hostname
+    /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
+    /// Maps each MAC seen back to the first address observed from it, so a
+    /// host reachable at more than one address is recorded once.
     mac_to_ip: HashMap<MacAddr, IpAddr>,
 }
 

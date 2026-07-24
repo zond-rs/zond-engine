@@ -28,7 +28,10 @@ const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 /// be spawned alongside [`LocalScanner`](super::local::LocalScanner) and
 /// [`RoutedScanner`](super::routed::RoutedScanner) from a single explorer list.
 pub struct ConnectScanner {
+    /// The addresses being probed for aliveness.
     ips: IpSet,
+    /// Shared state (host store, event channel, abort signal) for the scan
+    /// this explorer is part of.
     ctx: ScanContext,
 }
 

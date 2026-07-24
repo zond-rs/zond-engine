@@ -21,12 +21,12 @@
 //! with a raw-socket strategy suited to it - [`LocalScanner`] (in the
 //! [`local`] module) for hosts on the same physical segment, using
 //! ARP/ICMP, and [`RoutedScanner`] (in [`routed`]) for anything reached
-//! through a gateway, using TCP SYN. Targets that can't be mapped to an
-//! interface at all, along with every target when running unprivileged,
-//! fall back to plain TCP connect attempts via the [`connect`] module.
-//! `scan` currently always uses that same TCP-connect strategy regardless
-//! of privilege level; a faster SYN-based probe for privileged callers is
-//! planned but not wired up yet.
+//! through a gateway, using TCP SYN. `scan` takes the same approach for
+//! ports: privileged callers get [`routed::SynPortScanner`], which
+//! classifies each port from a single raw SYN probe instead of completing
+//! a full handshake. Either way, targets that can't be mapped to a usable
+//! interface, along with every target when running unprivileged, fall back
+//! to plain TCP connect attempts via the [`connect`] module.
 //!
 //! Every scanning strategy implements [`NetworkExplorer`], which is what
 //! lets [`discover`] spawn several unrelated scanners - one per interface,
@@ -86,28 +86,64 @@ trait NetworkExplorer {
 /// back with every port closed or filtered, at the cost of a wasted probe.
 /// Call [`discover`] first if you don't already know which targets exist.
 ///
-/// Every probe currently goes through a plain TCP connect attempt,
-/// regardless of privilege level. A faster SYN-based probe for privileged
-/// callers, mirroring what [`discover`] already does for host discovery, is
-/// planned but not implemented yet - so unlike `discover`, running this as
-/// root doesn't currently buy any speed.
+/// With root privileges, every probe is a raw TCP SYN sent from the best
+/// available network interface, classified by [`routed::SynPortScanner`]
+/// from a single reply rather than a completed handshake. Without root, or
+/// if no usable interface could be found, probes fall back to a plain TCP
+/// connect attempt per target via the [`connect`] module.
 pub async fn scan(
-    target_map: TargetMap,
+    mut target_map: TargetMap,
 ) -> anyhow::Result<(ScanSession, JoinHandle<anyhow::Result<()>>)> {
     let (session, ctx) = ScanSession::new();
-
-    if not_root() {
-        // TODO: drop this once a privileged SYN-based prober exists for scan().
-        warn!("Privileged port scanning (SYN) not yet implemented; using TCP connect fallback");
-    }
+    let target_count = target_map.gross_targets().unwrap_or(0) as usize;
+    let syn_scanner = build_syn_scanner(ctx.clone(), target_count);
 
     let join_handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
         let rx = dispatcher.run_shuffled(&ctx.handle);
-        connect::scan(rx, PORT_SCAN_CONCURRENCY, ctx).await
+
+        match syn_scanner {
+            Some(mut scanner) => scanner.scan(rx).await,
+            None => connect::scan(rx, PORT_SCAN_CONCURRENCY, ctx).await,
+        }
     });
 
     Ok((session, join_handle))
+}
+
+/// Attempts to build a privileged, raw-socket SYN port scanner on the best
+/// available network interface.
+///
+/// Returns `None` - meaning [`scan`] should fall back to TCP connect
+/// probes - when running unprivileged, when no usable interface can be
+/// found, or when the scanner fails to initialize (for instance, because
+/// raw sockets couldn't be opened); each of these is logged at its call
+/// site rather than treated as a hard failure, since the unprivileged path
+/// is always a working substitute.
+fn build_syn_scanner(ctx: ScanContext, target_count: usize) -> Option<routed::SynPortScanner> {
+    if not_root() {
+        return None;
+    }
+
+    let intf = match interface::get_prioritized_interfaces(1) {
+        Ok(mut interfaces) if !interfaces.is_empty() => interfaces.remove(0),
+        Ok(_) => {
+            warn!("No usable network interface found; using TCP connect fallback");
+            return None;
+        }
+        Err(e) => {
+            error!("Failed to enumerate network interfaces: {e}");
+            return None;
+        }
+    };
+
+    match routed::SynPortScanner::new(intf, ctx, target_count) {
+        Ok(scanner) => Some(scanner),
+        Err(e) => {
+            error!("Failed to initialize SYN port scanner: {e}");
+            None
+        }
+    }
 }
 
 /// Finds which hosts, among a set of target addresses, are actually alive.
