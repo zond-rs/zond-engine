@@ -10,8 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::core::models::rtt_window::RttWindow;
-use crate::core::models::timer::{ScanBudget, ScanTimer};
+use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::core::models::timer::ScanBudget;
 use crate::core::models::{host::Host, ip::set::IpSet};
 use crate::core::session::{ScanContext, ScanEvent};
 use crate::network::transport::{self, TransportHandle, TransportType};
@@ -33,31 +33,26 @@ pub enum RoutedScannerError {
     NoIpv6Address,
 }
 
-/// The overall time budget for one scan, before accounting for its target
-/// count. Routed targets may sit anywhere on the internet rather than on the
-/// local segment, but a probe that was ever going to get a reply typically
-/// does so quickly, so this starts noticeably tighter than a local-network scan.
-const MAX_SCAN_BUDGET: ScanBudget = ScanBudget::new(
-    Duration::from_millis(200),
-    Duration::from_micros(500),
-    Duration::from_millis(3_000),
+/// How long a scan runs, and how it adapts. Routed targets may sit anywhere
+/// on the internet rather than on the local segment, but a probe that was
+/// ever going to get a reply typically does so quickly, so this starts
+/// noticeably tighter than [`LocalScanner`](super::local::LocalScanner)'s budget.
+const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
+    ScanBudget::new(
+        Duration::from_millis(200),
+        Duration::from_micros(500),
+        Duration::from_millis(3_000),
+    ),
+    ScanBudget::new(
+        Duration::from_millis(70),
+        Duration::from_micros(175),
+        Duration::from_millis(1_000),
+    ),
+    Duration::from_millis(150),
+    Duration::from_millis(1_500),
+    4.0,
+    20,
 );
-
-/// The minimum time a scan must run before it is allowed to end early due to
-/// silence, scaled the same way as [`MAX_SCAN_BUDGET`].
-const MIN_SCAN_BUDGET: ScanBudget = ScanBudget::new(
-    Duration::from_millis(70),
-    Duration::from_micros(175),
-    Duration::from_millis(1_000),
-);
-
-/// The bounds within which the silence tolerance is allowed to adapt, and
-/// how many recent samples inform that adaptation. See [`RttWindow`] for how
-/// the tolerance itself is derived from observed round-trip times.
-const SILENCE_FLOOR: Duration = Duration::from_millis(150);
-const SILENCE_CEILING: Duration = Duration::from_millis(1_500);
-const SILENCE_JITTER_MULTIPLIER: f64 = 4.0;
-const RTT_WINDOW_CAPACITY: usize = 20;
 
 type SeqNum = u32;
 
@@ -67,11 +62,7 @@ pub struct RoutedScanner {
     ctx: ScanContext,
     ips: IpSet,
     tcp_handle: TransportHandle,
-    timer: ScanTimer,
-    /// Recent round-trip times observed from any responding host, used to
-    /// adapt how long the scan waits before concluding the network has gone
-    /// quiet. See [`RoutedScanner::current_silence_tolerance`].
-    rtt_window: RttWindow,
+    deadline: AdaptiveDeadline,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     rtt_map: HashMap<(IpAddr, SeqNum), Instant>,
     responded_count: usize,
@@ -87,8 +78,7 @@ impl NetworkExplorer for RoutedScanner {
 
         loop {
             let all_responded = self.ips.len() == self.responded_count as u128;
-            let silence = self.current_silence_tolerance();
-            if self.ctx.handle.should_stop() || all_responded || self.timer.has_expired(silence) {
+            if self.ctx.handle.should_stop() || all_responded || self.deadline.has_expired() {
                 break;
             }
 
@@ -108,7 +98,7 @@ impl NetworkExplorer for RoutedScanner {
 
                             if is_new {
                                 self.responded_count += 1;
-                                self.timer.mark_activity();
+                                self.deadline.mark_activity();
                                 let _ = self.dns_tx.as_ref().map(|dns| dns.send(ip));
                             }
 
@@ -121,7 +111,7 @@ impl NetworkExplorer for RoutedScanner {
                                 if let Some(start_time) = self.rtt_map.remove(&(ip, original_seq)) {
                                     let rtt: Duration = start_time.elapsed();
                                     host.add_rtt(rtt);
-                                    self.rtt_window.record(rtt);
+                                    self.deadline.record_rtt(rtt);
                                     emit_update = true;
                                 }
                             }
@@ -137,7 +127,7 @@ impl NetworkExplorer for RoutedScanner {
                 },
                 // Wakes periodically so the checks above are re-evaluated even
                 // when no further responses arrive.
-                _ = tokio::time::sleep(self.timer.time_until_next_tick(silence)) => {}
+                _ = tokio::time::sleep(self.deadline.time_until_next_tick()) => {}
             }
         }
 
@@ -171,10 +161,7 @@ impl RoutedScanner {
         }
 
         let target_count = ips.len() as usize;
-        let timer = ScanTimer::new(
-            MAX_SCAN_BUDGET.for_target_count(target_count),
-            MIN_SCAN_BUDGET.for_target_count(target_count),
-        );
+        let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, target_count);
 
         Ok(Self {
             src_v4,
@@ -182,23 +169,11 @@ impl RoutedScanner {
             ctx,
             ips,
             tcp_handle,
-            timer,
-            rtt_window: RttWindow::new(RTT_WINDOW_CAPACITY),
+            deadline,
             dns_tx,
             rtt_map: HashMap::new(),
             responded_count: 0,
         })
-    }
-
-    /// Derives how long to wait, right now, for further responses before
-    /// concluding no more hosts will answer.
-    ///
-    /// The value adapts to recently observed round-trip times: a fast,
-    /// stable path yields a short tolerance, while a slower or jitterier one
-    /// yields a longer one, within fixed safety bounds.
-    fn current_silence_tolerance(&self) -> Duration {
-        self.rtt_window
-            .suggest_timeout(SILENCE_JITTER_MULTIPLIER, SILENCE_FLOOR, SILENCE_CEILING)
     }
 
     fn send_discovery_packets(&mut self) -> anyhow::Result<()> {
