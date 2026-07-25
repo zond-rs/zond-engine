@@ -20,7 +20,7 @@ mod port_scan;
 
 use std::{
     collections::HashMap,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::IpAddr,
     time::{Duration, Instant},
 };
 
@@ -30,24 +30,15 @@ use crate::core::models::{host::Host, ip::set::IpSet};
 use crate::core::session::{ScanContext, ScanEvent};
 use crate::network::transport::{self, TransportHandle, TransportType};
 use crate::protocols as protocol;
+use crate::system::interface::RoutedTarget;
 use crate::{error, success};
 use async_trait::async_trait;
-use pnet::{datalink::NetworkInterface, packet::tcp::TcpPacket};
+use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::NetworkExplorer;
 
 pub use port_scan::SynPortScanner;
-
-#[derive(Debug, thiserror::Error)]
-pub enum RoutedScannerError {
-    #[error("interface has no ipv4 or ipv6 address")]
-    NoInterfaceIp,
-    #[error("interface has no ipv4 address")]
-    NoIpv4Address,
-    #[error("interface has no ipv6 address")]
-    NoIpv6Address,
-}
 
 /// How long a discovery sweep runs, and how it adapts. Routed targets may
 /// sit anywhere on the internet rather than on the local segment, but a
@@ -72,37 +63,6 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 );
 
 type SeqNum = u32;
-
-/// The addressing identity a raw TCP scanner uses when crafting outbound
-/// packets, resolved once at construction time and never changed
-/// afterward.
-struct RoutedSourceIdentity {
-    v4: Option<Ipv4Addr>,
-    v6: Option<Ipv6Addr>,
-}
-
-impl RoutedSourceIdentity {
-    /// Picks the addresses to present as this scanner's own from whatever
-    /// `intf` has assigned. Fails only if the interface has neither an
-    /// IPv4 nor an IPv6 address to probe with.
-    fn resolve(intf: &NetworkInterface) -> Result<Self, RoutedScannerError> {
-        let v4 = intf.ips.iter().find_map(|ip_net| match ip_net.ip() {
-            IpAddr::V4(ipv4) => Some(ipv4),
-            _ => None,
-        });
-
-        let v6 = intf.ips.iter().find_map(|ip_net| match ip_net.ip() {
-            IpAddr::V6(ipv6) => Some(ipv6),
-            _ => None,
-        });
-
-        if v4.is_none() && v6.is_none() {
-            return Err(RoutedScannerError::NoInterfaceIp);
-        }
-
-        Ok(Self { v4, v6 })
-    }
-}
 
 /// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port` and
 /// logs the outcome. Returns the randomly chosen sequence number it was
@@ -147,12 +107,16 @@ fn send_syn(
 }
 
 pub struct RoutedScanner {
-    /// The address this scanner presents as its own when probing.
-    identity: RoutedSourceIdentity,
     /// Shared state (host store, event channel, abort signal) for the scan
     /// this explorer is part of.
     ctx: ScanContext,
-    /// The addresses being probed for aliveness.
+    /// The targets to probe, each paired with the source address to send from.
+    /// Resolved once by the routing layer so the SYN's pseudo-header checksum
+    /// always matches the source the kernel actually routes the packet out
+    /// with. Drained when the probes are sent.
+    targets: Vec<RoutedTarget>,
+    /// Membership-and-count view of `targets`, used to filter incoming replies
+    /// and to size the adaptive deadline.
     ips: IpSet,
     /// Raw socket used to send SYN probes and receive replies.
     tcp_handle: TransportHandle,
@@ -203,21 +167,24 @@ impl NetworkExplorer for RoutedScanner {
 
 impl RoutedScanner {
     pub fn new(
-        intf: NetworkInterface,
-        ips: IpSet,
+        targets: Vec<RoutedTarget>,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
     ) -> anyhow::Result<Self> {
-        let identity = RoutedSourceIdentity::resolve(&intf)?;
         let tcp_handle: TransportHandle =
             transport::start_packet_capture(TransportType::TcpLayer4)?;
 
-        let target_count = ips.len() as usize;
-        let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, target_count);
+        let mut ips = IpSet::new();
+        for target in &targets {
+            ips.insert(target.target);
+        }
+        ips.canonicalize();
+
+        let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, targets.len());
 
         Ok(Self {
-            identity,
             ctx,
+            targets,
             ips,
             tcp_handle,
             deadline,
@@ -277,17 +244,11 @@ impl RoutedScanner {
     fn send_discovery_packets(&mut self) -> anyhow::Result<()> {
         let dst_port: u16 = 443;
 
-        let src_v4 = self.identity.v4.ok_or(RoutedScannerError::NoIpv4Address)?;
-        let src_v6 = self.identity.v6.ok_or(RoutedScannerError::NoIpv6Address)?;
+        // Taken so the send loop can mutate `self` while iterating them.
+        let targets = std::mem::take(&mut self.targets);
 
-        let targets: Vec<IpAddr> = self.ips.iter().collect();
-
-        for dst_addr in targets {
-            let src_addr = match dst_addr {
-                IpAddr::V4(_) => IpAddr::V4(src_v4),
-                IpAddr::V6(_) => IpAddr::V6(src_v6),
-            };
-            self.send_tcp_packet(src_addr, dst_addr, dst_port);
+        for RoutedTarget { target, source } in targets {
+            self.send_tcp_packet(source, target, dst_port);
         }
 
         Ok(())

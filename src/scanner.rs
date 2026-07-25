@@ -29,9 +29,10 @@
 //! to plain TCP connect attempts via the [`connect`] module.
 //!
 //! Every scanning strategy implements [`NetworkExplorer`], which is what
-//! lets [`discover`] spawn several unrelated scanners - one per interface,
-//! plus the fallback - and run them all through the same loop rather than
-//! special-casing each one. Discovered hosts land in a shared, thread-safe
+//! lets [`discover`] spawn several unrelated scanners - the per-interface
+//! local ones, the routed one, and the fallback - and run them all through
+//! the same loop rather than special-casing each one. Discovered hosts land
+//! in a shared, thread-safe
 //! store as they're found, and each update fires a lightweight event so a
 //! caller can watch a scan in progress instead of waiting for it to finish.
 //! If DNS resolution is enabled, hostnames for discovered hosts are looked
@@ -86,11 +87,12 @@ trait NetworkExplorer {
 /// back with every port closed or filtered, at the cost of a wasted probe.
 /// Call [`discover`] first if you don't already know which targets exist.
 ///
-/// With root privileges, every probe is a raw TCP SYN sent from the best
-/// available network interface, classified by [`routed::SynPortScanner`]
-/// from a single reply rather than a completed handshake. Without root, or
-/// if no usable interface could be found, probes fall back to a plain TCP
-/// connect attempt per target via the [`connect`] module.
+/// With root privileges, every probe is a raw TCP SYN sent from the source
+/// address the host would route each target through, classified by
+/// [`routed::SynPortScanner`] from a single reply rather than a completed
+/// handshake. Without root, or if the host has no address to probe from,
+/// probes fall back to a plain TCP connect attempt per target via the
+/// [`connect`] module.
 pub async fn scan(
     mut target_map: TargetMap,
 ) -> anyhow::Result<(ScanSession, JoinHandle<anyhow::Result<()>>)> {
@@ -111,33 +113,28 @@ pub async fn scan(
     Ok((session, join_handle))
 }
 
-/// Attempts to build a privileged, raw-socket SYN port scanner on the best
-/// available network interface.
+/// Attempts to build a privileged, raw-socket SYN port scanner, resolving
+/// each probe's source address per target across all of the host's
+/// interfaces and its routing table.
 ///
 /// Returns `None` - meaning [`scan`] should fall back to TCP connect
-/// probes - when running unprivileged, when no usable interface can be
-/// found, or when the scanner fails to initialize (for instance, because
-/// raw sockets couldn't be opened); each of these is logged at its call
-/// site rather than treated as a hard failure, since the unprivileged path
-/// is always a working substitute.
+/// probes - when running unprivileged, when the host has no address to probe
+/// from, or when the scanner fails to initialize (for instance, because raw
+/// sockets couldn't be opened); each of these is logged at its call site
+/// rather than treated as a hard failure, since the unprivileged path is
+/// always a working substitute.
 fn build_syn_scanner(ctx: ScanContext, target_count: usize) -> Option<routed::SynPortScanner> {
     if not_root() {
         return None;
     }
 
-    let intf = match interface::get_prioritized_interfaces(1) {
-        Ok(mut interfaces) if !interfaces.is_empty() => interfaces.remove(0),
-        Ok(_) => {
-            warn!("No usable network interface found; using TCP connect fallback");
-            return None;
-        }
-        Err(e) => {
-            error!("Failed to enumerate network interfaces: {e}");
-            return None;
-        }
-    };
+    let resolver = interface::SourceResolver::from_system();
+    if !resolver.has_sources() {
+        warn!("No usable network interface found; using TCP connect fallback");
+        return None;
+    }
 
-    match routed::SynPortScanner::new(intf, ctx, target_count) {
+    match routed::SynPortScanner::new(resolver, ctx, target_count) {
         Ok(scanner) => Some(scanner),
         Err(e) => {
             error!("Failed to initialize SYN port scanner: {e}");
@@ -220,64 +217,67 @@ pub async fn discover(
     Ok((session, join_handle))
 }
 
-/// Builds one scanning strategy per network interface a target could be
-/// reached through, plus a fallback for anything that couldn't be mapped to
-/// one, and runs all of them concurrently.
+/// Builds a scanning strategy for each way a target can be reached, and runs
+/// them all concurrently.
 ///
-/// [`interface::map_ips_to_interfaces`] splits the targets into, for each
-/// interface, the subset reachable directly on that segment versus the
-/// subset that has to be routed through it - these become a
-/// [`LocalScanner`] and a [`RoutedScanner`] respectively. A single
-/// interface can produce both, one, or neither, depending on which targets
-/// it can actually reach. Targets that map to no interface at all go to a
-/// [`connect::ConnectScanner`] instead. If constructing a particular
-/// scanner fails - a capture socket that couldn't be opened, an interface
-/// with no usable address - that one scanner is skipped and logged; the
-/// rest of the scan proceeds without it.
+/// [`interface::map_ips_to_interfaces`] classifies the targets into three
+/// groups: those on-link to an interface's segment become a per-interface
+/// [`LocalScanner`]; those reached through a gateway, each already paired
+/// with the source address to probe it from, are covered by a single
+/// [`RoutedScanner`]; and those with no resolvable route go to a
+/// [`connect::ConnectScanner`]. If constructing a particular scanner fails -
+/// a capture socket that couldn't be opened, for instance - that one scanner
+/// is skipped and logged; the rest of the scan proceeds without it.
 ///
 /// Every constructed scanner is spawned as its own task and its
 /// `JoinHandle` returned, so the caller can wait on all of them and react
-/// to failures individually rather than one bad interface aborting the
-/// whole scan.
+/// to failures individually rather than one bad scanner aborting the whole
+/// scan.
 async fn spawn_explorers(
     targets: IpSet,
     ctx: &ScanContext,
     dns_tx: Option<UnboundedSender<IpAddr>>,
 ) -> Vec<JoinHandle<anyhow::Result<()>>> {
     let mut explorers: Vec<Box<dyn NetworkExplorer + Send>> = Vec::new();
-    let (interface_map, unmapped_ips) = interface::map_ips_to_interfaces(targets);
+    let interface::RoutedTargets {
+        local,
+        routed,
+        unmapped,
+    } = interface::map_ips_to_interfaces(targets);
 
-    for (intf, (local_ips, routed_ips)) in interface_map {
-        // Local Scanner (ARP/ICMP)
-        if !local_ips.is_empty() {
-            info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
-            match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone()) {
-                Ok(scanner) => explorers.push(Box::new(scanner)),
-                Err(e) => error!("Failed to initialize local scanner for {}: {e}", intf.name),
-            }
+    // Local Scanner (ARP/ICMP)
+    for (intf, local_ips) in local {
+        if local_ips.is_empty() {
+            continue;
         }
+        info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
+        match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone()) {
+            Ok(scanner) => explorers.push(Box::new(scanner)),
+            Err(e) => error!("Failed to initialize local scanner for {}: {e}", intf.name),
+        }
+    }
 
-        // Routed Scanner (TCP Syn Scan)
-        if !routed_ips.is_empty() {
-            info!(verbosity = 1, "Spawning routed scanner for {}", intf.name);
-            match RoutedScanner::new(intf.clone(), routed_ips, ctx.clone(), dns_tx.clone()) {
-                Ok(scanner) => explorers.push(Box::new(scanner)),
-                Err(e) => error!("Failed to initialize routed scanner for {}: {e}", intf.name),
-            }
+    // Routed Scanner (TCP SYN)
+    if !routed.is_empty() {
+        info!(
+            verbosity = 1,
+            "Spawning routed scanner for {} target(s)",
+            routed.len()
+        );
+        match RoutedScanner::new(routed, ctx.clone(), dns_tx.clone()) {
+            Ok(scanner) => explorers.push(Box::new(scanner)),
+            Err(e) => error!("Failed to initialize routed scanner: {e}"),
         }
     }
 
     // Fallback Scanner (Unprivileged TCP Handshake) for unmapped IPs (e.g. localhost,
     // or targets the OS couldn't resolve a route/interface for).
-    if !unmapped_ips.is_empty() {
+    if !unmapped.is_empty() {
         warn!(
             verbosity = 1,
             "Spawning fallback scanner for unmapped targets"
         );
-        explorers.push(Box::new(connect::ConnectScanner::new(
-            unmapped_ips,
-            ctx.clone(),
-        )));
+        explorers.push(Box::new(connect::ConnectScanner::new(unmapped, ctx.clone())));
     }
 
     explorers

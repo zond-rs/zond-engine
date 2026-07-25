@@ -4,124 +4,143 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-use crate::core::models::ip::range::IpRange::V4;
+use crate::core::models::ip::range::IpRange::{V4, V6};
 use crate::core::models::ip::set::IpSet;
-use pnet::datalink::{self, NetworkInterface};
+use crate::system::interface::source::{ProbeSockets, probe_route_source, viable_interfaces};
+use pnet::datalink::NetworkInterface;
 use rayon::prelude::*;
-use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 
-/// Maps target IPs to the interface used to reach them, split by Local vs Routed.
-/// Returns: Map<Interface, (Local_Targets, Routed_Targets)> and a set of Unmapped Targets.
+/// An off-link target paired with the local source address a probe to it must
+/// be sent from. The routing layer resolves this once, up front, so the raw
+/// SYN scanner never has to guess a source at send time - which matters
+/// because the source it picks must match the one the kernel routes the
+/// packet out with, or the TCP checksum won't validate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutedTarget {
+    /// The destination being probed.
+    pub target: IpAddr,
+    /// The source address to send its probe from.
+    pub source: IpAddr,
+}
+
+/// The result of classifying a set of targets against this host's interfaces
+/// and routing table.
+#[derive(Debug, Default)]
+pub struct RoutedTargets {
+    /// Targets that share an interface's Layer-2 segment, grouped by that
+    /// interface. Reachable directly, so they get an ARP/NDP discovery
+    /// strategy bound to the interface.
+    pub local: HashMap<NetworkInterface, IpSet>,
+    /// Targets reached through a gateway, each already paired with the source
+    /// address to probe it from. Handled by a single raw TCP SYN scanner.
+    pub routed: Vec<RoutedTarget>,
+    /// Targets that are neither on-link nor have a resolvable route (e.g.
+    /// loopback), left to the unprivileged connect fallback.
+    pub unmapped: IpSet,
+}
+
+/// Classifies target IPs by how this host reaches them: on-link (per
+/// interface), routed through a gateway (paired with a source address), or
+/// unreachable.
 ///
 /// Under the hood, this evaluates `pnet::datalink::interfaces()`.
-pub fn map_ips_to_interfaces(ip_set: IpSet) -> (HashMap<NetworkInterface, (IpSet, IpSet)>, IpSet) {
-    let interfaces: Vec<NetworkInterface> = datalink::interfaces()
-        .into_iter()
-        .filter(|i| i.is_up() && !i.is_loopback() && !i.ips.is_empty())
-        .collect();
+pub fn map_ips_to_interfaces(ip_set: IpSet) -> RoutedTargets {
+    map_ips_to_interfaces_with(ip_set, viable_interfaces())
+}
 
-    map_ips_to_interfaces_with(ip_set, interfaces)
+/// Per-single classification carried out of the parallel pass, before the
+/// results are folded back into interface-indexed buckets.
+enum Classification {
+    /// On-link on the interface at this index.
+    Local(usize),
+    /// Routed off-link, to be sent from this source address.
+    Routed(IpAddr),
+    /// No route found.
+    Unmapped,
 }
 
 pub(crate) fn map_ips_to_interfaces_with(
     ip_set: IpSet,
     interfaces: Vec<NetworkInterface>,
-) -> (HashMap<NetworkInterface, (IpSet, IpSet)>, IpSet) {
-    let ip_to_idx: HashMap<IpAddr, usize> = interfaces
+) -> RoutedTargets {
+    let owned_ips: HashSet<IpAddr> = interfaces
         .iter()
-        .enumerate()
-        .flat_map(|(idx, iface)| iface.ips.iter().map(move |ip_net| (ip_net.ip(), idx)))
+        .flat_map(|iface| iface.ips.iter().map(|ip_net| ip_net.ip()))
         .collect();
 
-    let mut result_map: HashMap<usize, (IpSet, IpSet)> = HashMap::new();
-    let mut unmapped_ips = IpSet::new();
-    let mut singles_to_route = Vec::new();
+    let mut local: HashMap<usize, IpSet> = HashMap::new();
+    let mut routed: Vec<RoutedTarget> = Vec::new();
+    let mut unmapped = IpSet::new();
+    let mut singles_to_route: Vec<IpAddr> = Vec::new();
 
-    // 1. Handle Ranges
+    // A range wholly inside one interface's subnet is kept intact; anything
+    // else is expanded to singles for per-target route resolution.
     for range in ip_set.v4() {
-        let start: Ipv4Addr = range.start_addr;
-        let end: Ipv4Addr = range.end_addr;
-        let mut owner_idx: Option<usize> = None;
-
-        for (idx, iface) in interfaces.iter().enumerate() {
-            let is_local_subnet = iface.ips.iter().any(|ip_net| {
-                ip_net.contains(IpAddr::V4(start)) && ip_net.contains(IpAddr::V4(end))
-            });
-
-            if is_local_subnet {
-                owner_idx = Some(idx);
-                break;
-            }
+        let start = IpAddr::V4(range.start_addr);
+        let end = IpAddr::V4(range.end_addr);
+        match owning_interface(&interfaces, start, end) {
+            Some(idx) => local.entry(idx).or_default().insert_range(V4(*range)),
+            None => singles_to_route.extend(range.to_iter()),
         }
-
-        if let Some(idx) = owner_idx {
-            result_map
-                .entry(idx)
-                .or_default()
-                .0
-                .insert_range(V4(*range));
-        } else {
-            for ip in range.to_iter() {
-                singles_to_route.push(ip);
-            }
+    }
+    for range in ip_set.v6() {
+        let start = IpAddr::V6(range.start_addr);
+        let end = IpAddr::V6(range.end_addr);
+        match owning_interface(&interfaces, start, end) {
+            Some(idx) => local.entry(idx).or_default().insert_range(V6(*range)),
+            None => singles_to_route.extend(range.to_iter()),
         }
     }
 
-    type ThreadSockets = (Option<UdpSocket>, Option<UdpSocket>);
-
-    enum RouteType {
-        Local,
-        Routed,
-        Unmapped,
-    }
-
-    let processed_singles: Vec<(Option<usize>, RouteType, IpAddr)> = singles_to_route
+    let processed: Vec<(IpAddr, Classification)> = singles_to_route
         .par_iter()
-        .map_init(
-            || -> ThreadSockets { (None, None) },
-            |sockets, &target_ip| {
-                if let Some(idx) = find_local_index(&interfaces, target_ip) {
-                    return (Some(idx), RouteType::Local, target_ip);
-                }
+        .map_init(ProbeSockets::default, |sockets, &target| {
+            if let Some(idx) = find_local_index(&interfaces, target) {
+                return (target, Classification::Local(idx));
+            }
 
-                if let Some(source_ip) = resolve_route_source_ip(target_ip, sockets)
-                    && let Some(idx) = ip_to_idx.get(&source_ip).copied()
-                {
-                    return (Some(idx), RouteType::Routed, target_ip);
-                }
+            if let Some(source) = probe_route_source(target, sockets)
+                && owned_ips.contains(&source)
+            {
+                return (target, Classification::Routed(source));
+            }
 
-                (None, RouteType::Unmapped, target_ip)
-            },
-        )
+            (target, Classification::Unmapped)
+        })
         .collect();
 
-    for (idx_opt, route_type, ip) in processed_singles {
-        match route_type {
-            RouteType::Local => {
-                if let Some(idx) = idx_opt {
-                    result_map.entry(idx).or_default().0.insert(ip);
-                }
-            }
-            RouteType::Routed => {
-                if let Some(idx) = idx_opt {
-                    result_map.entry(idx).or_default().1.insert(ip);
-                }
-            }
-            RouteType::Unmapped => {
-                unmapped_ips.insert(ip);
-            }
+    for (target, class) in processed {
+        match class {
+            Classification::Local(idx) => local.entry(idx).or_default().insert(target),
+            Classification::Routed(source) => routed.push(RoutedTarget { target, source }),
+            Classification::Unmapped => unmapped.insert(target),
         }
     }
 
-    let mapped_interfaces = result_map
+    let local = local
         .into_iter()
-        .map(|(idx, (local_ips, routed_ips))| (interfaces[idx].clone(), (local_ips, routed_ips)))
+        .map(|(idx, ips)| (interfaces[idx].clone(), ips))
         .collect();
 
-    (mapped_interfaces, unmapped_ips)
+    RoutedTargets {
+        local,
+        routed,
+        unmapped,
+    }
 }
 
+/// Finds the first interface whose subnet fully contains the inclusive range
+/// `[start, end]`, meaning the whole range is on that interface's segment.
+fn owning_interface(interfaces: &[NetworkInterface], start: IpAddr, end: IpAddr) -> Option<usize> {
+    interfaces
+        .iter()
+        .position(|iface| iface.ips.iter().any(|net| net.contains(start) && net.contains(end)))
+}
+
+/// Finds the first interface whose subnet contains `target`, matching only
+/// within the same address family.
 fn find_local_index(interfaces: &[NetworkInterface], target: IpAddr) -> Option<usize> {
     interfaces.iter().position(|iface| {
         iface.ips.iter().any(|ip_net| match (target, ip_net.ip()) {
@@ -131,31 +150,6 @@ fn find_local_index(interfaces: &[NetworkInterface], target: IpAddr) -> Option<u
             _ => false,
         })
     })
-}
-
-fn resolve_route_source_ip(
-    target: IpAddr,
-    sockets: &mut (Option<UdpSocket>, Option<UdpSocket>),
-) -> Option<IpAddr> {
-    let socket_opt = if target.is_ipv4() {
-        &mut sockets.0
-    } else {
-        &mut sockets.1
-    };
-
-    if socket_opt.is_none() {
-        let bind_addr = if target.is_ipv4() {
-            "0.0.0.0:0"
-        } else {
-            "[::]:0"
-        };
-        *socket_opt = UdpSocket::bind(bind_addr).ok();
-    }
-
-    let socket = socket_opt.as_ref()?;
-
-    socket.connect((target, 53)).ok()?;
-    socket.local_addr().ok().map(|s| s.ip())
 }
 
 // ╔════════════════════════════════════════════╗
@@ -170,12 +164,14 @@ fn resolve_route_source_ip(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::ipnetwork::{IpNetwork, Ipv4Network};
+    use crate::core::models::ip::range::{IpRange, Ipv4Range, Ipv6Range};
+    use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn mock_interface(ip: IpAddr, prefix: u8) -> NetworkInterface {
         let net = match ip {
             IpAddr::V4(v4) => IpNetwork::V4(Ipv4Network::new(v4, prefix).unwrap()),
-            IpAddr::V6(_v6) => unimplemented!(),
+            IpAddr::V6(v6) => IpNetwork::V6(Ipv6Network::new(v6, prefix).unwrap()),
         };
 
         NetworkInterface {
@@ -212,5 +208,44 @@ mod tests {
             find_local_index(&interfaces, IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))),
             None
         );
+    }
+
+    #[test]
+    fn on_link_v4_range_stays_intact_and_local() {
+        let interfaces = vec![mock_interface(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 24)];
+        let mut set = IpSet::new();
+        set.insert_range(IpRange::V4(
+            Ipv4Range::new(Ipv4Addr::new(192, 168, 1, 10), Ipv4Addr::new(192, 168, 1, 20)).unwrap(),
+        ));
+
+        let result = map_ips_to_interfaces_with(set, interfaces);
+
+        assert!(result.routed.is_empty());
+        assert!(result.unmapped.is_empty());
+        assert_eq!(result.local.len(), 1);
+        let (_, ips) = result.local.into_iter().next().unwrap();
+        assert_eq!(ips.len(), 11);
+    }
+
+    #[test]
+    fn on_link_v6_range_is_classified_local() {
+        let base = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0);
+        let interfaces = vec![mock_interface(IpAddr::V6(base), 64)];
+        let mut set = IpSet::new();
+        set.insert_range(IpRange::V6(
+            Ipv6Range::new(
+                Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1),
+                Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 5),
+            )
+            .unwrap(),
+        ));
+
+        let result = map_ips_to_interfaces_with(set, interfaces);
+
+        assert!(result.routed.is_empty());
+        assert!(result.unmapped.is_empty());
+        assert_eq!(result.local.len(), 1);
+        let (_, ips) = result.local.into_iter().next().unwrap();
+        assert_eq!(ips.len(), 5);
     }
 }

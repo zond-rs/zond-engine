@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use pnet::datalink::NetworkInterface;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
@@ -33,8 +32,9 @@ use crate::core::session::{ScanContext, ScanEvent};
 use crate::error;
 use crate::network::transport::{self, TransportHandle, TransportType};
 use crate::protocols::tcp::{self, ProbeResponse};
+use crate::system::interface::SourceResolver;
 
-use super::{RoutedSourceIdentity, SeqNum, send_syn};
+use super::{SeqNum, send_syn};
 
 /// How long a port scan runs, and how it adapts. Uses the same bounds as
 /// [`super::DEADLINE_CONFIG`], since both send raw TCP SYN probes over the
@@ -66,8 +66,10 @@ type PendingProbes = HashMap<(IpAddr, u16), (SeqNum, Instant)>;
 /// host purely to check for a pulse, this sends one per `(address, port)`
 /// pair it's given and reports back what each one revealed.
 pub struct SynPortScanner {
-    /// The address this scanner presents as its own when probing.
-    identity: RoutedSourceIdentity,
+    /// Resolves, per target, the source address to send its probe from -
+    /// consulting on-link subnets and the kernel routing table, and caching
+    /// each answer so the many ports probed on one host cost a single lookup.
+    resolver: SourceResolver,
     /// Shared state (host store, event channel, abort signal) for the scan
     /// this prober is part of.
     ctx: ScanContext,
@@ -81,19 +83,18 @@ pub struct SynPortScanner {
 }
 
 impl SynPortScanner {
-    /// Builds a scanner that sends probes from `intf`, sized for a scan
-    /// covering `target_count` `(address, port)` pairs.
+    /// Builds a scanner that selects each probe's source via `resolver`, sized
+    /// for a scan covering `target_count` `(address, port)` pairs.
     pub fn new(
-        intf: NetworkInterface,
+        resolver: SourceResolver,
         ctx: ScanContext,
         target_count: usize,
     ) -> anyhow::Result<Self> {
-        let identity = RoutedSourceIdentity::resolve(&intf)?;
         let tcp_handle = transport::start_packet_capture(TransportType::TcpLayer4)?;
         let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, target_count);
 
         Ok(Self {
-            identity,
+            resolver,
             ctx,
             tcp_handle,
             deadline,
@@ -147,18 +148,10 @@ impl SynPortScanner {
             return;
         }
 
-        let src_addr = match target.ip {
-            IpAddr::V4(_) => self.identity.v4.map(IpAddr::V4),
-            IpAddr::V6(_) => self.identity.v6.map(IpAddr::V6),
-        };
-
-        let Some(src_addr) = src_addr else {
+        let Some(src_addr) = self.resolver.resolve(target.ip) else {
             error!(
                 verbosity = 2,
-                "No source address for {}'s address family; skipping {}:{}",
-                target.ip,
-                target.ip,
-                target.port
+                "No route to {}; skipping {}:{}", target.ip, target.ip, target.port
             );
             return;
         };

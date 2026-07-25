@@ -5,18 +5,14 @@
 // https://mozilla.org/MPL/2.0/.
 
 use crate::core::models::ip::set::IpSet;
+use crate::system::interface::source::viable_interfaces;
 use pnet::datalink::NetworkInterface;
 
 /// Resolves a list of prioritized network interfaces (e.g. wired interfaces first).
 ///
 /// Under the hood, this iterates over `pnet::datalink::interfaces()` directly.
 pub fn get_prioritized_interfaces(limit: usize) -> anyhow::Result<Vec<NetworkInterface>> {
-    let interfaces: Vec<NetworkInterface> = pnet::datalink::interfaces()
-        .into_iter()
-        .filter(|i| i.is_up() && !i.is_loopback() && !i.ips.is_empty())
-        .collect();
-
-    Ok(get_prioritized_interfaces_with(limit, interfaces))
+    Ok(get_prioritized_interfaces_with(limit, viable_interfaces()))
 }
 
 /// Core prioritization logic, decoupled from OS interface dependencies for testing.
