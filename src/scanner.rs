@@ -277,7 +277,10 @@ async fn spawn_explorers(
             verbosity = 1,
             "Spawning fallback scanner for unmapped targets"
         );
-        explorers.push(Box::new(connect::ConnectScanner::new(unmapped, ctx.clone())));
+        explorers.push(Box::new(connect::ConnectScanner::new(
+            unmapped,
+            ctx.clone(),
+        )));
     }
 
     explorers

@@ -134,9 +134,12 @@ pub(crate) fn map_ips_to_interfaces_with(
 /// Finds the first interface whose subnet fully contains the inclusive range
 /// `[start, end]`, meaning the whole range is on that interface's segment.
 fn owning_interface(interfaces: &[NetworkInterface], start: IpAddr, end: IpAddr) -> Option<usize> {
-    interfaces
-        .iter()
-        .position(|iface| iface.ips.iter().any(|net| net.contains(start) && net.contains(end)))
+    interfaces.iter().position(|iface| {
+        iface
+            .ips
+            .iter()
+            .any(|net| net.contains(start) && net.contains(end))
+    })
 }
 
 /// Finds the first interface whose subnet contains `target`, matching only
@@ -212,10 +215,17 @@ mod tests {
 
     #[test]
     fn on_link_v4_range_stays_intact_and_local() {
-        let interfaces = vec![mock_interface(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 24)];
+        let interfaces = vec![mock_interface(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            24,
+        )];
         let mut set = IpSet::new();
         set.insert_range(IpRange::V4(
-            Ipv4Range::new(Ipv4Addr::new(192, 168, 1, 10), Ipv4Addr::new(192, 168, 1, 20)).unwrap(),
+            Ipv4Range::new(
+                Ipv4Addr::new(192, 168, 1, 10),
+                Ipv4Addr::new(192, 168, 1, 20),
+            )
+            .unwrap(),
         ));
 
         let result = map_ips_to_interfaces_with(set, interfaces);

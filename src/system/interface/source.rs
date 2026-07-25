@@ -225,7 +225,10 @@ mod tests {
         let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
         let table = OnLinkTable::from_interfaces(&[intf]);
 
-        assert_eq!(table.source_for(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))), None);
+        assert_eq!(
+            table.source_for(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
+            None
+        );
     }
 
     #[test]
@@ -264,8 +267,14 @@ mod tests {
 
         assert!(resolver.has_sources());
         let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
-        assert_eq!(resolver.resolve(target), Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50))));
-        assert_eq!(resolver.resolve(target), Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50))));
+        assert_eq!(
+            resolver.resolve(target),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)))
+        );
+        assert_eq!(
+            resolver.resolve(target),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)))
+        );
     }
 
     #[test]
