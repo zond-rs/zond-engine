@@ -295,6 +295,12 @@ impl Host {
         self.telemetry.average_rtt()
     }
 
+    /// Returns the median recorded RTT, a summary of typical latency that is
+    /// robust against outliers. See [`HostTelemetry::median_rtt`].
+    pub fn median_rtt(&self) -> Option<std::time::Duration> {
+        self.telemetry.median_rtt()
+    }
+
     /// Returns the most recent MAC address, if hardware info is available.
     pub fn mac(&self) -> Option<crate::core::models::mac::MacAddr> {
         self.hardware.as_ref().and_then(|h| h.most_recent_mac())

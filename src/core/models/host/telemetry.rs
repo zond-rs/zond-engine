@@ -85,6 +85,32 @@ impl HostTelemetry {
         self.rtt_history.iter().map(|(_, rtt)| *rtt).max()
     }
 
+    /// Returns the median RTT across all samples in the current window.
+    ///
+    /// Unlike [`average_rtt`](Self::average_rtt), the median is robust against
+    /// outliers: a single anomalously slow sample (a retransmit, a scheduling
+    /// hiccup) barely moves it, making it a better single-number summary of a
+    /// host's typical latency. For an even number of samples the two middle
+    /// values are averaged.
+    ///
+    /// Returns `None` if no samples have been recorded yet.
+    pub fn median_rtt(&self) -> Option<Duration> {
+        if self.rtt_history.is_empty() {
+            return None;
+        }
+
+        let mut sorted: Vec<Duration> = self.rtt_history.iter().map(|(_, rtt)| *rtt).collect();
+        sorted.sort_unstable();
+
+        let mid = sorted.len() / 2;
+        if sorted.len() % 2 == 1 {
+            Some(sorted[mid])
+        } else {
+            // Average the two central samples without overflowing on the sum.
+            Some(sorted[mid - 1] + (sorted[mid] - sorted[mid - 1]) / 2)
+        }
+    }
+
     /// Calculates the arithmetic mean RTT from all samples in the window.
     pub fn average_rtt(&self) -> Option<Duration> {
         if self.rtt_history.is_empty() {
@@ -211,6 +237,45 @@ mod tests {
             t.jitter(),
             Some(Duration::from_millis(7) + Duration::from_micros(500))
         );
+    }
+
+    #[test]
+    fn median_is_none_when_empty() {
+        let t = HostTelemetry::new(5);
+        assert_eq!(t.median_rtt(), None);
+    }
+
+    #[test]
+    fn median_odd_count_is_the_middle_sample() {
+        let mut t = HostTelemetry::new(5);
+        // Inserted out of order to confirm the median sorts internally.
+        t.add_rtt(Duration::from_millis(30));
+        t.add_rtt(Duration::from_millis(10));
+        t.add_rtt(Duration::from_millis(20));
+        assert_eq!(t.median_rtt(), Some(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn median_even_count_averages_the_two_central_samples() {
+        let mut t = HostTelemetry::new(5);
+        t.add_rtt(Duration::from_millis(10));
+        t.add_rtt(Duration::from_millis(20));
+        t.add_rtt(Duration::from_millis(30));
+        t.add_rtt(Duration::from_millis(50));
+        // (20 + 30) / 2 = 25
+        assert_eq!(t.median_rtt(), Some(Duration::from_millis(25)));
+    }
+
+    #[test]
+    fn median_resists_a_single_outlier() {
+        let mut t = HostTelemetry::new(5);
+        t.add_rtt(Duration::from_millis(10));
+        t.add_rtt(Duration::from_millis(11));
+        t.add_rtt(Duration::from_millis(12));
+        t.add_rtt(Duration::from_secs(5)); // outlier
+        t.add_rtt(Duration::from_millis(13));
+        // Median stays near the cluster despite the 5s spike.
+        assert_eq!(t.median_rtt(), Some(Duration::from_millis(12)));
     }
 
     #[test]
