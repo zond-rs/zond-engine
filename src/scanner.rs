@@ -40,6 +40,7 @@
 //! discovery itself.
 
 use std::net::IpAddr;
+use std::pin::Pin;
 
 use async_trait::async_trait;
 use is_root::is_root;
@@ -48,7 +49,7 @@ use tokio::task::JoinHandle;
 
 use crate::core::config::ZondConfig;
 use crate::core::models::{ip::set::IpSet, target::TargetMap};
-use crate::core::session::{ScanContext, ScanSession};
+use crate::core::session::{ScanContext, ScanEvent, ScanSession, ScannerKind};
 use crate::scanner::resolver::HostnameResolver;
 use crate::system::interface;
 use crate::{error, info, success, warn};
@@ -63,6 +64,49 @@ mod routed;
 
 /// How many TCP connect probes [`scan`] runs at once.
 const PORT_SCAN_CONCURRENCY: usize = 50;
+
+/// An error from a scan.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum ScanError {
+    /// The scan did not run to completion because its task panicked or was
+    /// aborted.
+    #[error("scan task terminated abnormally")]
+    TaskFailed,
+}
+
+/// A handle to a running scan.
+///
+/// Discovered hosts arrive live through the paired [`ScanSession`]. Await this
+/// handle, or call [`ScanTask::join`], to wait for the whole scan to finish.
+/// To stop a scan early, call
+/// [`ScanHandle::abort`](crate::core::handle::ScanHandle::abort) on the
+/// session's handle.
+pub struct ScanTask {
+    handle: JoinHandle<()>,
+}
+
+impl ScanTask {
+    fn new(handle: JoinHandle<()>) -> Self {
+        Self { handle }
+    }
+
+    /// Waits for the scan to finish, failing only if it did not run to
+    /// completion. Per-target scan failures are reported through the
+    /// [`ScanSession`] event stream, not here.
+    pub async fn join(self) -> Result<(), ScanError> {
+        self.handle.await.map_err(|_| ScanError::TaskFailed)
+    }
+}
+
+impl IntoFuture for ScanTask {
+    type Output = Result<(), ScanError>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.join())
+    }
+}
 
 /// A scanning strategy that finds which hosts, among a set of targets it
 /// already owns, are actually reachable.
@@ -93,24 +137,28 @@ trait NetworkExplorer {
 /// handshake. Without root, or if the host has no address to probe from,
 /// probes fall back to a plain TCP connect attempt per target via the
 /// [`connect`] module.
-pub async fn scan(
-    mut target_map: TargetMap,
-) -> anyhow::Result<(ScanSession, JoinHandle<anyhow::Result<()>>)> {
+pub async fn scan(mut target_map: TargetMap) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::new();
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
     let syn_scanner = build_syn_scanner(ctx.clone(), target_count);
 
-    let join_handle = tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
         let rx = dispatcher.run_shuffled(&ctx.handle);
 
-        match syn_scanner {
-            Some(mut scanner) => scanner.scan(rx).await,
-            None => connect::scan(rx, PORT_SCAN_CONCURRENCY, ctx).await,
+        let (kind, outcome) = match syn_scanner {
+            Some(mut scanner) => (ScannerKind::Routed, scanner.scan(rx).await),
+            None => (
+                ScannerKind::Connect,
+                connect::scan(rx, PORT_SCAN_CONCURRENCY, ctx.clone()).await,
+            ),
+        };
+        if let Err(e) = outcome {
+            report_scanner_failure(&ctx, kind, e.to_string());
         }
     });
 
-    Ok((session, join_handle))
+    Ok((session, ScanTask::new(handle)))
 }
 
 /// Attempts to build a privileged, raw-socket SYN port scanner, resolving
@@ -163,26 +211,27 @@ fn build_syn_scanner(ctx: ScanContext, target_count: usize) -> Option<routed::Sy
 /// privileged, or active reverse lookups otherwise - without blocking or
 /// slowing down discovery itself.
 ///
-/// The returned `JoinHandle` resolves once every scanning strategy, and the
+/// The returned [`ScanTask`] resolves once every scanning strategy, and the
 /// resolver if one was started, has finished. To stop a scan early, call
 /// [`crate::core::handle::ScanHandle::abort`] on the session's handle; both
 /// phases check for that signal regularly rather than only between targets.
 pub async fn discover(
     targets: IpSet,
     cfg: &ZondConfig,
-) -> anyhow::Result<(ScanSession, JoinHandle<anyhow::Result<()>>)> {
+) -> Result<(ScanSession, ScanTask), ScanError> {
     let with_dns: bool = !cfg.no_dns;
     let (session, ctx) = ScanSession::new();
 
     if not_root() {
-        let join_handle = tokio::spawn(async move {
-            connect::discover(targets, ctx.clone()).await?;
+        let handle = tokio::spawn(async move {
+            if let Err(e) = connect::discover(targets, ctx.clone()).await {
+                report_scanner_failure(&ctx, ScannerKind::Connect, e.to_string());
+            }
             if with_dns {
                 resolver::resolve_hosts_async(ctx.store).await;
             }
-            Ok(())
         });
-        return Ok((session, join_handle));
+        return Ok((session, ScanTask::new(handle)));
     }
 
     let (dns_tx, resolver_task) = if with_dns {
@@ -196,12 +245,12 @@ pub async fn discover(
 
     let scanner_handles = spawn_explorers(targets, &ctx, dns_tx).await;
 
-    let join_handle = tokio::spawn(async move {
-        for handle in scanner_handles {
+    let handle = tokio::spawn(async move {
+        for (kind, handle) in scanner_handles {
             match handle.await {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => error!("Scanner task failed: {e}"),
-                Err(e) => error!("Task panicked: {e}"),
+                Ok(Err(e)) => report_scanner_failure(&ctx, kind, e.to_string()),
+                Err(e) => report_scanner_failure(&ctx, kind, format!("panicked: {e}")),
             }
         }
 
@@ -210,11 +259,9 @@ pub async fn discover(
         {
             resolver.resolve_hosts(ctx.store);
         }
-
-        Ok(())
     });
 
-    Ok((session, join_handle))
+    Ok((session, ScanTask::new(handle)))
 }
 
 /// Builds a scanning strategy for each way a target can be reached, and runs
@@ -229,16 +276,17 @@ pub async fn discover(
 /// a capture socket that couldn't be opened, for instance - that one scanner
 /// is skipped and logged; the rest of the scan proceeds without it.
 ///
-/// Every constructed scanner is spawned as its own task and its
-/// `JoinHandle` returned, so the caller can wait on all of them and react
-/// to failures individually rather than one bad scanner aborting the whole
-/// scan.
+/// Every constructed scanner is spawned as its own task, tagged with its
+/// [`ScannerKind`] and returned, so the caller can wait on all of them and
+/// react to failures individually rather than one bad scanner aborting the
+/// whole scan. A scanner that fails to start is reported via
+/// [`ScanEvent::ScannerFailed`] and skipped.
 async fn spawn_explorers(
     targets: IpSet,
     ctx: &ScanContext,
     dns_tx: Option<UnboundedSender<IpAddr>>,
-) -> Vec<JoinHandle<anyhow::Result<()>>> {
-    let mut explorers: Vec<Box<dyn NetworkExplorer + Send>> = Vec::new();
+) -> Vec<(ScannerKind, JoinHandle<anyhow::Result<()>>)> {
+    let mut explorers: Vec<(ScannerKind, Box<dyn NetworkExplorer + Send>)> = Vec::new();
     let interface::RoutedTargets {
         local,
         routed,
@@ -252,8 +300,10 @@ async fn spawn_explorers(
         }
         info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
         match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone()) {
-            Ok(scanner) => explorers.push(Box::new(scanner)),
-            Err(e) => error!("Failed to initialize local scanner for {}: {e}", intf.name),
+            Ok(scanner) => explorers.push((ScannerKind::Local, Box::new(scanner))),
+            Err(e) => {
+                report_scanner_failure(ctx, ScannerKind::Local, format!("{}: {e}", intf.name))
+            }
         }
     }
 
@@ -265,8 +315,8 @@ async fn spawn_explorers(
             routed.len()
         );
         match RoutedScanner::new(routed, ctx.clone(), dns_tx.clone()) {
-            Ok(scanner) => explorers.push(Box::new(scanner)),
-            Err(e) => error!("Failed to initialize routed scanner: {e}"),
+            Ok(scanner) => explorers.push((ScannerKind::Routed, Box::new(scanner))),
+            Err(e) => report_scanner_failure(ctx, ScannerKind::Routed, e.to_string()),
         }
     }
 
@@ -277,16 +327,30 @@ async fn spawn_explorers(
             verbosity = 1,
             "Spawning fallback scanner for unmapped targets"
         );
-        explorers.push(Box::new(connect::ConnectScanner::new(
-            unmapped,
-            ctx.clone(),
-        )));
+        explorers.push((
+            ScannerKind::Connect,
+            Box::new(connect::ConnectScanner::new(unmapped, ctx.clone())),
+        ));
     }
 
     explorers
         .into_iter()
-        .map(|mut explorer| tokio::spawn(async move { explorer.discover_hosts().await }))
+        .map(|(kind, mut explorer)| {
+            (
+                kind,
+                tokio::spawn(async move { explorer.discover_hosts().await }),
+            )
+        })
         .collect()
+}
+
+/// Logs a scanner failure and announces it on the event stream, so a consumer
+/// watching a scan can tell it ran degraded rather than clean.
+fn report_scanner_failure(ctx: &ScanContext, scanner: ScannerKind, reason: String) {
+    error!("Scanner {scanner:?} failed: {reason}");
+    let _ = ctx
+        .events_tx
+        .send(ScanEvent::ScannerFailed { scanner, reason });
 }
 
 /// Starts the background hostname resolver as its own task.

@@ -111,9 +111,7 @@ pub struct RoutedScanner {
     /// this explorer is part of.
     ctx: ScanContext,
     /// The targets to probe, each paired with the source address to send from.
-    /// Resolved once by the routing layer so the SYN's pseudo-header checksum
-    /// always matches the source the kernel actually routes the packet out
-    /// with. Drained when the probes are sent.
+    /// Drained when the probes are sent.
     targets: Vec<RoutedTarget>,
     /// Membership-and-count view of `targets`, used to filter incoming replies
     /// and to size the adaptive deadline.

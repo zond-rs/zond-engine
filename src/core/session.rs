@@ -6,12 +6,34 @@ use tokio::sync::mpsc;
 use crate::core::handle::ScanHandle;
 use crate::core::models::host::Host;
 
+/// Which scanning strategy a [`ScanEvent::ScannerFailed`] refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScannerKind {
+    /// Layer-2 discovery (ARP/NDP) on a local segment.
+    Local,
+    /// Raw TCP SYN discovery for gateway-routed targets.
+    Routed,
+    /// Unprivileged TCP connect fallback.
+    Connect,
+}
+
 /// Lightweight notifications for the status of an ongoing scan.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ScanEvent {
     /// Indicates that new data is available for a host.
     /// The consumer should read from `ScanSession::store` to get the latest state.
     HostUpdated(IpAddr),
+
+    /// A scanning strategy failed to start or terminated abnormally. The scan
+    /// continues with whatever strategies remain, so results may be incomplete
+    /// rather than absent.
+    ScannerFailed {
+        /// The strategy that failed.
+        scanner: ScannerKind,
+        /// A human-readable description of the failure.
+        reason: String,
+    },
 }
 
 /// A handle to an active network scan.

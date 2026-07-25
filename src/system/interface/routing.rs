@@ -13,10 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 /// An off-link target paired with the local source address a probe to it must
-/// be sent from. The routing layer resolves this once, up front, so the raw
-/// SYN scanner never has to guess a source at send time - which matters
-/// because the source it picks must match the one the kernel routes the
-/// packet out with, or the TCP checksum won't validate.
+/// be sent from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoutedTarget {
     /// The destination being probed.
