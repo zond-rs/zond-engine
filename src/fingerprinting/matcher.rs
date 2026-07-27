@@ -19,6 +19,7 @@
 //! each compiled regex in turn; a future prefilter (or a `hyperscan` backend)
 //! can replace the internals without changing the [`super`] orchestration.
 
+use rayon::prelude::*;
 use regex::{Regex, RegexBuilder};
 
 use crate::core::models::fingerprint::{MAX_COMPILED_REGEX_BYTES, MatchRule, ServiceDefinition};
@@ -107,10 +108,14 @@ pub struct ServiceMatcher {
 impl ServiceMatcher {
     /// Compiles every signature in `def`. Unsupported patterns are logged and
     /// omitted (see [`CompiledSignature::compile`]).
+    ///
+    /// Patterns are compiled in parallel: services with large linked signature
+    /// sets (e.g. HTTP) can carry hundreds of patterns, and compilation is the
+    /// dominant cost. `rayon`'s ordered collect keeps the result deterministic.
     pub fn compile(def: &ServiceDefinition) -> Self {
         let signatures = def
             .r#match
-            .iter()
+            .par_iter()
             .filter_map(|rule| CompiledSignature::compile(&def.service.name, rule))
             .collect();
 

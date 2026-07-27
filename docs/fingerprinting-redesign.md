@@ -190,21 +190,44 @@ Measured build/compile costs for the current 4,732-pattern set, for reference:
 |----------------------------------|---------|--------|
 | sequential `Regex::new` (today)  | 959 ms  | 6.6 s  |
 | `rayon` parallel `Regex::new`    | 150 ms  | 1.08 s |
-| `RegexSet::new(all)`             | 78 ms   | 428 ms |
+| `RegexSet::new(all)`             | **infeasible** — see §5.2 | |
 | build-time serialized DFA        | ~0 (runtime) | ~0 |
 | lazy per-port (1–4 patterns)     | ~0      | ~0     |
 
+> **Correction (measured during Phase 3).** An earlier draft listed `RegexSet::new(all)` at
+> ~78 ms; that number was a *fast failure*, not a build. A single `RegexSet` over all 4,732
+> patterns exceeds the compiled-size limit even at **256 MB**, and 64-pattern chunks already
+> blow 32 MB. `RegexSet` — chunked or not — is not a viable global prefilter for this set. See
+> §5.2 for what replaced it.
+
 ### 5.2 Two-stage matching for throughput
 
-1. **Prefilter:** one multi-pattern pass to select candidate signatures. Options, in order of
-   preference: `aho-corasick` over literal anchors extracted from each pattern; or a
-   `RegexSet`. This turns "run 4,732 regexes" into "run the 1–4 that could possibly match".
-2. **Capture stage:** run only the candidate patterns to extract version/product capture
-   groups.
+The original plan — a `RegexSet` prefilter over the whole set — does not survive contact with
+the data (see the correction above). Two things were true instead:
 
-Keep this behind a `Matcher` trait so a **vectorscan/hyperscan** backend can be dropped in
-later for DPI-grade throughput without changing callers. Do **not** start with hyperscan — it
-is a heavier (C) dependency; earn it with profiling.
+1. **A global automaton is the wrong primitive here.** The only prefilter that scales is
+   `aho-corasick` over *extracted literal anchors* (compact, millions-of-patterns friendly).
+   But extracting a *required* literal from an arbitrary regex is subtle, and a wrong extraction
+   silently drops matches — the very failure mode this redesign exists to kill. It needs the
+   recorded-response corpus (§8) in place first.
+2. **Most of the perceived need was reachability, not throughput.** The bulk of the signature
+   set (imported banner sets) is port-less. Analysis showed the high-value port-less services
+   (http, ssh, smtp, mysql, ftp, telnet, smb, sip, dns, ldap, imap, pop3, nntp) all have a
+   ported sibling, so **linking signatures by service name** makes them reachable through their
+   service's port — bounded, safe, no global automaton.
+
+**Phase 3 therefore shipped service-name linking** (the DB's port index is the union, per port,
+of every definition of every service reachable on that port; cold compilation is parallelised
+with `rayon` and cached). The `aho-corasick` global prefilter — for services on *non-standard*
+ports — is deferred to its own carefully-tested stage, gated on the test corpus.
+
+The remaining port-less-and-siblingless categories (favicon hashes, x509/TLS, SNMP, mDNS, NTP)
+are not TCP-banner signatures at all; they belong to dedicated analyzers (§4.2), not a banner
+prefilter.
+
+Whatever prefilter lands stays behind a `Matcher` trait so a **vectorscan/hyperscan** backend
+can be dropped in later for DPI-grade throughput without changing callers. Do **not** start with
+hyperscan — it is a heavier (C) dependency; earn it with profiling.
 
 ### 5.3 Linear-time guarantee & the backreference problem
 
@@ -376,16 +399,24 @@ Each phase ships value and is independently reviewable; no big-bang rewrite.
   out of `get_engine()` so port labelling needs zero regex; move any compilation off the
   reactor (`spawn_blocking`) and compile once; delete the per-connection `Regex::new` in
   `fingerprint_tcp`. This alone fixes the 9 s stall and the non-deterministic results on `main`.
-- **Phase 1 — pipeline abstraction.** Introduce `model.rs`, `Analyzer`, `Resolver`; port the
-  existing regex matcher in as `BannerRegexAnalyzer`. Behaviour-preserving. Consolidate
-  `src/plugins/fingerprint.rs` into `src/fingerprinting/`.
-- **Phase 2 — database contract.** Versioned schema, build-time validation (fail loud on bad
-  patterns), disk/mmap loading with embedded fallback, provenance/license metadata.
-- **Phase 3 — matcher upgrade.** Prefilter + build-time serialized DFAs; explicit
-  backref/fancy handling; fuzzing.
-- **Phase 4 — expand analyzers.** TLS cert, HTTP headers, JARM/JA3S, SSH, SNMP, favicon.
-- **Phase 5 — scale/perf.** Recorded-response corpus in CI, per-analyzer metrics; evaluate
-  hyperscan/vectorscan backend and `zond-fingerprints` package split.
+- **Phase 1 — pipeline abstraction. _(done)_** `model.rs`, `Analyzer`, `Resolver`; the regex
+  matcher ported in as `BannerRegexAnalyzer`; `src/plugins/fingerprint.rs` consolidated into
+  `src/fingerprinting/`. Fixed the 9 s stall and the non-deterministic results (Phase 0 was
+  folded in here — the cheap `port → name` index and off-reactor matching).
+- **Phase 2 — build-time validation. _(done)_** Every pattern and `version_group` validated in
+  `build.rs`; defects fail the build with a file pointer instead of shipping as silent coverage
+  gaps. Schema de-duplicated (build `include!`s the canonical types); deterministic artifact.
+  Recovered two signatures the 10 MiB regex size cap was silently dropping. _Deferred to a later
+  stage:_ versioned/disk-mmap artifact + provenance/license metadata (carries open decision #2).
+- **Phase 3 — service-name linking. _(done)_** The port index is service-linked, so port-less
+  supplementary signatures are matched through their service's port; cold compilation is
+  parallelised with `rayon` and cached. _Deferred:_ the `aho-corasick` global prefilter for
+  non-standard ports (§5.2), gated on the test corpus; build-time serialized DFAs; explicit
+  backref/`fancy-regex` handling; fuzzing.
+- **Phase 4 — expand analyzers.** TLS cert, HTTP headers, JARM/JA3S, SSH, SNMP, favicon — these
+  also absorb the port-less-and-siblingless signature categories (x509/TLS, favicon, SNMP, …).
+- **Phase 5 — scale/perf.** Recorded-response corpus in CI (also unblocks the prefilter),
+  per-analyzer metrics; evaluate hyperscan/vectorscan backend and `zond-fingerprints` split.
 
 ---
 

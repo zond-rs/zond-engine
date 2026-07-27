@@ -31,6 +31,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
+use rayon::prelude::*;
+
 use crate::core::models::fingerprint::ServiceDefinition;
 
 use super::matcher::ServiceMatcher;
@@ -50,7 +52,13 @@ pub struct SignatureDb {
     /// `port -> primary service name`, the first definition to claim the port.
     /// Built eagerly; contains no compiled state.
     name_index: HashMap<u16, Arc<str>>,
-    /// `port -> indices into `defs`` that list it as a default port.
+    /// `port -> indices into `defs`` matchable on that port.
+    ///
+    /// This is service-linked, not just the definitions that literally list the
+    /// port: it is the union, over every service name reachable on the port, of
+    /// *all* that service's definitions. So a service's port-less supplementary
+    /// signatures (e.g. imported banner sets) are matched alongside its
+    /// port-indexed ones, without a global scan.
     by_port: HashMap<u16, Vec<usize>>,
     /// Lazily compiled, cached matchers keyed by `defs` index.
     matchers: RwLock<HashMap<usize, Arc<ServiceMatcher>>>,
@@ -69,19 +77,49 @@ impl SignatureDb {
         })
     }
 
-    /// Builds the database (and its name index) from raw definitions.
+    /// Builds the database, its name index, and the service-linked port index
+    /// from raw definitions. Involves no regex compilation.
     fn from_defs(defs: Vec<ServiceDefinition>) -> Self {
-        let mut name_index: HashMap<u16, Arc<str>> = HashMap::new();
-        let mut by_port: HashMap<u16, Vec<usize>> = HashMap::new();
-
+        // service name -> every definition of that service (ported or port-less).
+        let mut service_defs: HashMap<&str, Vec<usize>> = HashMap::new();
         for (idx, def) in defs.iter().enumerate() {
+            service_defs
+                .entry(def.service.name.as_str())
+                .or_default()
+                .push(idx);
+        }
+
+        // Which service names are reachable on each port, and the primary name
+        // for the port (first ported definition to claim it).
+        let mut name_index: HashMap<u16, Arc<str>> = HashMap::new();
+        let mut port_services: HashMap<u16, Vec<&str>> = HashMap::new();
+        for def in defs.iter() {
+            let name = def.service.name.as_str();
             for &port in &def.service.default_ports {
-                by_port.entry(port).or_default().push(idx);
                 name_index
                     .entry(port)
-                    .or_insert_with(|| Arc::from(def.service.name.as_str()));
+                    .or_insert_with(|| Arc::from(name));
+                let names = port_services.entry(port).or_default();
+                if !names.contains(&name) {
+                    names.push(name);
+                }
             }
         }
+
+        // Link: a port's matchable set is every definition of every service
+        // name reachable on it, so port-less supplementary signatures come along.
+        let by_port = port_services
+            .into_iter()
+            .map(|(port, names)| {
+                let mut indices: Vec<usize> = names
+                    .iter()
+                    .flat_map(|name| service_defs.get(name).into_iter().flatten().copied())
+                    .collect();
+                indices.sort_unstable();
+                indices.dedup();
+                (port, indices)
+            })
+            .collect();
 
         Self {
             defs,
@@ -98,13 +136,40 @@ impl SignatureDb {
         self.name_index.get(&port).cloned()
     }
 
-    /// The compiled matchers for every service that claims `port`, compiled on
+    /// The compiled matchers matchable on `port` (service-linked), compiled on
     /// first use and cached. Empty if no service registers the port.
+    ///
+    /// Any not-yet-cached matchers are compiled in parallel, so the one-time
+    /// cost of a port with many linked services (e.g. SMTP) is spread across
+    /// cores rather than paid serially.
     pub fn matchers_for_port(&self, port: u16) -> Vec<Arc<ServiceMatcher>> {
         let Some(indices) = self.by_port.get(&port) else {
             return Vec::new();
         };
-        indices.iter().map(|&idx| self.matcher(idx)).collect()
+
+        let uncached: Vec<usize> = {
+            let cache = self.matchers.read().unwrap();
+            indices
+                .iter()
+                .copied()
+                .filter(|idx| !cache.contains_key(idx))
+                .collect()
+        };
+
+        if !uncached.is_empty() {
+            let compiled: Vec<(usize, Arc<ServiceMatcher>)> = uncached
+                .par_iter()
+                .map(|&idx| (idx, Arc::new(ServiceMatcher::compile(&self.defs[idx]))))
+                .collect();
+            let mut cache = self.matchers.write().unwrap();
+            for (idx, matcher) in compiled {
+                // `or_insert` keeps the first result if another thread raced us.
+                cache.entry(idx).or_insert(matcher);
+            }
+        }
+
+        let cache = self.matchers.read().unwrap();
+        indices.iter().map(|idx| cache[idx].clone()).collect()
     }
 
     /// The active-probe payloads (TCP only) registered for `port`, in
@@ -120,20 +185,6 @@ impl SignatureDb {
             .collect()
     }
 
-    /// Returns the cached matcher for `idx`, compiling it on first use.
-    fn matcher(&self, idx: usize) -> Arc<ServiceMatcher> {
-        if let Some(matcher) = self.matchers.read().unwrap().get(&idx) {
-            return matcher.clone();
-        }
-        // Compile under the write lock; `or_insert_with` makes the first writer
-        // win if two threads race the same service.
-        self.matchers
-            .write()
-            .unwrap()
-            .entry(idx)
-            .or_insert_with(|| Arc::new(ServiceMatcher::compile(&self.defs[idx])))
-            .clone()
-    }
 }
 
 #[cfg(test)]
@@ -196,5 +247,22 @@ mod tests {
         let db = db();
         assert_eq!(db.tcp_probe_payloads(443), vec!["PING".to_string()]);
         assert!(db.tcp_probe_payloads(22).is_empty());
+    }
+
+    #[test]
+    fn portless_signatures_link_to_their_services_port() {
+        let db = SignatureDb::from_defs(vec![
+            def("ssh", vec![22]),      // ported definition
+            def("ssh", vec![]),        // port-less supplementary set, same service
+            def("http", vec![80]),
+        ]);
+
+        // Port 22 pulls in both `ssh` definitions, including the port-less one,
+        // even though it lists no port of its own.
+        assert_eq!(db.matchers_for_port(22).len(), 2);
+        // A service unrelated to port 22 is not linked in.
+        assert_eq!(db.matchers_for_port(80).len(), 1);
+        // The port-less definition is unreachable on its own (it claims no port).
+        assert!(db.service_name(0).is_none()); // port 0 is unclaimed here
     }
 }
