@@ -41,6 +41,9 @@ mod analyzer;
 mod db;
 mod matcher;
 
+#[cfg(test)]
+mod corpus;
+
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::SignatureDb;
 pub use matcher::ServiceMatcher;

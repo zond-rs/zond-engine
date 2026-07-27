@@ -345,9 +345,19 @@ Track this as a hard gate before the first commercial release.
 
 ## 8. Reliability scaffolding (build this early)
 
-- **Recorded-response test corpus.** A directory of real captured service responses paired with
-  expected `ServiceVerdict`s, run as regression tests. A signature DB that evolves without this
-  *will* silently regress. This is the highest-leverage investment in the whole redesign.
+- **Recorded-response test corpus. _(done — `src/fingerprinting/corpus.rs`)_** Two layers:
+  (1) *self-consistency* — 95% of signature rules ship a recorded `example` banner; every one is
+  run through the real compiled matcher and the count of non-matching examples is pinned to a
+  baseline, so a signature edit that breaks (or fixes) one fails the test; (2) *golden
+  end-to-end* — real banners of well-known services driven through the whole pipeline
+  (port-linked selection → matching → resolution) with the exact service/product/version pinned.
+  - **Finding — lost recog case flags.** 218 of 4,477 examples do not match their own pattern,
+    overwhelmingly because of **case** (`"MIPS"` vs `mips`, `"FTP server"` vs `FTP Server`). The
+    imported rapid7/recog signatures carry a per-pattern case-insensitivity flag (`REG_ICASE`)
+    that was dropped on import. The fix is a **re-import that preserves per-pattern flags**, not
+    a blanket case-fold (recog defaults to case-sensitive; folding everything would add false
+    positives). The baseline is pinned at 218 so the number cannot silently grow; ratchet it down
+    as the flags are restored. Tracked as a signature-data follow-up.
 - **Per-analyzer metrics.** Hit rate, latency, top-N services — so signatures are tuned with
   data.
 - **Determinism tests.** Same input ⇒ same verdict, including probe ordering.
@@ -415,8 +425,10 @@ Each phase ships value and is independently reviewable; no big-bang rewrite.
   backref/`fancy-regex` handling; fuzzing.
 - **Phase 4 — expand analyzers.** TLS cert, HTTP headers, JARM/JA3S, SSH, SNMP, favicon — these
   also absorb the port-less-and-siblingless signature categories (x509/TLS, favicon, SNMP, …).
-- **Phase 5 — scale/perf.** Recorded-response corpus in CI (also unblocks the prefilter),
-  per-analyzer metrics; evaluate hyperscan/vectorscan backend and `zond-fingerprints` split.
+- **Phase 5 — scale/perf.** Recorded-response corpus landed (§8) and now guards regressions and
+  unblocks the prefilter; remaining: per-analyzer metrics, hyperscan/vectorscan evaluation, and
+  the `zond-fingerprints` split. Signature-data follow-up: re-import recog per-pattern case flags
+  to clear the 218 pinned example mismatches.
 
 ---
 

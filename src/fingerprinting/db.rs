@@ -136,6 +136,13 @@ impl SignatureDb {
         self.name_index.get(&port).cloned()
     }
 
+    /// All raw service definitions. Used by the corpus regression tests to
+    /// exercise every signature against its own recorded example.
+    #[cfg(test)]
+    pub(crate) fn definitions(&self) -> &[ServiceDefinition] {
+        &self.defs
+    }
+
     /// The compiled matchers matchable on `port` (service-linked), compiled on
     /// first use and cached. Empty if no service registers the port.
     ///
