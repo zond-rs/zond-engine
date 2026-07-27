@@ -216,18 +216,39 @@ the data (see the correction above). Two things were true instead:
    ported sibling, so **linking signatures by service name** makes them reachable through their
    service's port — bounded, safe, no global automaton.
 
-**Phase 3 therefore shipped service-name linking** (the DB's port index is the union, per port,
-of every definition of every service reachable on that port; cold compilation is parallelised
-with `rayon` and cached). The `aho-corasick` global prefilter — for services on *non-standard*
-ports — is deferred to its own carefully-tested stage, gated on the test corpus.
+**Phase 3 therefore shipped three things:**
+
+- **Service-name linking** — the DB's port index is the union, per port, of every definition of
+  every service reachable on that port; compilation is lazy, parallelised with `rayon`, cached.
+- **A signature model that is flat and index-addressed** — the port index and the prefilter both
+  hand back signature indices, matched uniformly.
+- **An Aho-Corasick literal prefilter** (`prefilter.rs`) for global matching on *non-standard*
+  ports. For each signature it extracts a set of **required literals** — from the pattern's
+  prefix (handling alternations), its longest guaranteed inner run, or its suffix — and indexes
+  them in one Aho-Corasick automaton. A response's candidates are the signatures whose literal
+  appears, plus a small always-run bucket.
+
+**Why the prefilter, and why it is safe.** An earlier iteration used a "compile-all/run-all"
+fallback and I justified it with "enough at this scale". That was wrong for a database we plan to
+grow a lot: run-all is O(N) in signature count. The prefilter is **sublinear** — measured on the
+current set: **0.76% always-run** (36 of 4,732 — binary protocols, pure-structural
+version/UUID/IP patterns, `(?i)` folded ones, a *bounded* category), **~64 candidates per
+response** (vs 4,732), **72 ms one-time build**. Only *required* literals are used, so a match is
+never wrongly excluded, and this is **proved against the corpus**: `corpus.rs`'s
+`prefilter_never_drops_a_matching_signature` asserts every matching example selects its signature
+(zero violations). The prefilter sits behind a `Prefilter` trait, so a `hyperscan`/`vectorscan`
+backend can replace it for DPI-grade throughput without touching callers.
+
+**Known limitation — global-match disambiguation.** On a non-standard port, an ambiguous banner
+(e.g. the shared `220` greeting) can match a different service's signature than intended (SMTP
+seen as FTP), because global matching has no port context and takes the first matching candidate.
+On the correct port, linking resolves it. Fix is a resolution-quality follow-up (confidence-
+downgrade global matches so port-confirmed always wins; prefer more-specific matches) — tracked,
+not a prefilter defect.
 
 The remaining port-less-and-siblingless categories (favicon hashes, x509/TLS, SNMP, mDNS, NTP)
-are not TCP-banner signatures at all; they belong to dedicated analyzers (§4.2), not a banner
-prefilter.
-
-Whatever prefilter lands stays behind a `Matcher` trait so a **vectorscan/hyperscan** backend
-can be dropped in later for DPI-grade throughput without changing callers. Do **not** start with
-hyperscan — it is a heavier (C) dependency; earn it with profiling.
+are not TCP-banner signatures at all; the prefilter does not help them — they belong to dedicated
+analyzers (§4.2) fed by their own data (a TLS handshake, a favicon fetch, an SNMP get).
 
 ### 5.3 Linear-time guarantee & the backreference problem
 
@@ -418,11 +439,13 @@ Each phase ships value and is independently reviewable; no big-bang rewrite.
   gaps. Schema de-duplicated (build `include!`s the canonical types); deterministic artifact.
   Recovered two signatures the 10 MiB regex size cap was silently dropping. _Deferred to a later
   stage:_ versioned/disk-mmap artifact + provenance/license metadata (carries open decision #2).
-- **Phase 3 — service-name linking. _(done)_** The port index is service-linked, so port-less
-  supplementary signatures are matched through their service's port; cold compilation is
-  parallelised with `rayon` and cached. _Deferred:_ the `aho-corasick` global prefilter for
-  non-standard ports (§5.2), gated on the test corpus; build-time serialized DFAs; explicit
-  backref/`fancy-regex` handling; fuzzing.
+- **Phase 3 — matcher: linking + prefilter. _(done)_** Flat, index-addressed signatures. The
+  port index is service-linked, so port-less supplementary signatures are matched through their
+  service's port. An Aho-Corasick required-literal prefilter (§5.2) makes global matching on
+  non-standard ports sublinear (0.76% always-run, ~64 candidates/response, corpus-proven sound),
+  behind a `Prefilter` trait. Compilation is lazy and `rayon`-parallel. _Deferred:_ global-match
+  disambiguation (confidence-downgrade); build-time serialized DFAs; backref/`fancy-regex`
+  handling; fuzzing; a `hyperscan` prefilter backend if profiling demands it.
 - **Phase 4 — expand analyzers.** TLS cert, HTTP headers, JARM/JA3S, SSH, SNMP, favicon — these
   also absorb the port-less-and-siblingless signature categories (x509/TLS, favicon, SNMP, …).
 - **Phase 5 — scale/perf.** Recorded-response corpus landed (§8) and now guards regressions and

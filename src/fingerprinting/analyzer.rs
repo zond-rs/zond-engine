@@ -20,6 +20,7 @@
 
 use super::db::SignatureDb;
 use super::model::{Evidence, SourceId};
+use super::prefilter::Prefilter;
 
 /// What an [`Analyzer`] is told about the port it is examining.
 ///
@@ -49,6 +50,12 @@ pub trait Analyzer: Send + Sync {
 /// Identifies services by matching regex signatures against banner and
 /// active-probe responses. The port-out of the previous engine, now one
 /// analyzer among the eventual many.
+///
+/// Matching is tiered: each response is checked first against the signatures
+/// linked to its port, and only if none match is it checked against the global
+/// set — narrowed by the prefilter — so a service on a non-standard port is
+/// still identified without scanning every signature. The prefilter is built
+/// lazily; most responses match on their port and never trigger it.
 pub struct BannerRegexAnalyzer;
 
 impl Analyzer for BannerRegexAnalyzer {
@@ -61,20 +68,34 @@ impl Analyzer for BannerRegexAnalyzer {
     }
 
     fn analyze(&self, ctx: &PortContext, responses: &[String]) -> Vec<Evidence> {
-        let matchers = SignatureDb::global().matchers_for_port(ctx.port);
-        let mut evidence = Vec::new();
+        let db = SignatureDb::global();
 
+        let port_signatures = db.signatures_for_port(ctx.port);
+        db.warm(port_signatures);
+
+        let mut evidence = Vec::new();
         for response in responses {
-            for matcher in &matchers {
-                if let Some(found) = matcher.identify(response) {
-                    evidence.push(found);
-                    // One service match per response from this analyzer; other
-                    // responses may still add corroborating evidence.
-                    break;
-                }
+            if let Some(found) = first_match(db, port_signatures, response) {
+                evidence.push(found);
+                continue;
+            }
+
+            // No port match: fall back to the whole set, narrowed by the
+            // prefilter to a small candidate list, compiled on demand.
+            let candidates = db.prefilter().candidates(response);
+            db.warm(&candidates);
+            if let Some(found) = first_match(db, &candidates, response) {
+                evidence.push(found);
             }
         }
 
         evidence
     }
+}
+
+/// Evidence from the first signature in `indices` that identifies `response`.
+fn first_match(db: &SignatureDb, indices: &[usize], response: &str) -> Option<Evidence> {
+    indices
+        .iter()
+        .find_map(|&idx| db.signature(idx).identify(response))
 }

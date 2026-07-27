@@ -40,13 +40,13 @@ pub mod model;
 mod analyzer;
 mod db;
 mod matcher;
+mod prefilter;
 
 #[cfg(test)]
 mod corpus;
 
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::SignatureDb;
-pub use matcher::ServiceMatcher;
 pub use model::{Confidence, Evidence, ServiceVerdict, SourceId};
 
 use std::time::Duration;

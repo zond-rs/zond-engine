@@ -2234,6 +2234,7 @@ dependencies = [
 name = "zond-engine"
 version = "0.7.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "bincode",
@@ -2247,6 +2248,7 @@ dependencies = [
  "rand 0.10.2",
  "rayon",
  "regex",
+ "regex-syntax",
  "serde",
  "sysinfo",
  "thiserror",
