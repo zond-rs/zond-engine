@@ -7,7 +7,7 @@
 pub mod core;
 pub mod info;
 pub mod network;
-pub mod plugins;
+pub mod fingerprinting;
 pub mod protocols;
 pub mod scanner;
 pub mod system;

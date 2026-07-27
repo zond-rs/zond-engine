@@ -115,11 +115,11 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
         Ok(Ok(stream)) => {
             let mut port = Port::new(target.port, Protocol::Tcp, PortState::Open);
             port.set_service(Service::new(
-                crate::plugins::lookup_service_name(target.port, Protocol::Tcp)
+                crate::fingerprinting::lookup_service_name(target.port, Protocol::Tcp)
                     .unwrap_or("???".to_string()),
                 0, // Baseline confidence
             ));
-            let port = crate::plugins::fingerprint_tcp(stream, port).await;
+            let port = crate::fingerprinting::fingerprint_tcp(stream, port).await;
             Ok(Some((target.ip, port)))
         }
         Ok(Err(e)) => {
@@ -132,7 +132,7 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
             if state != PortState::Closed {
                 let mut port = Port::new(target.port, Protocol::Tcp, state);
                 port.set_service(Service::new(
-                    crate::plugins::lookup_service_name(target.port, Protocol::Tcp)
+                    crate::fingerprinting::lookup_service_name(target.port, Protocol::Tcp)
                         .unwrap_or("???".to_string()),
                     0,
                 ));
@@ -145,7 +145,7 @@ async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
             // Timeout elapsed, implies a DROP -> Ghosted/Filtered
             let mut port = Port::new(target.port, Protocol::Tcp, PortState::Filtered);
             port.set_service(Service::new(
-                crate::plugins::lookup_service_name(target.port, Protocol::Tcp)
+                crate::fingerprinting::lookup_service_name(target.port, Protocol::Tcp)
                     .unwrap_or("???".to_string()),
                 0,
             ));

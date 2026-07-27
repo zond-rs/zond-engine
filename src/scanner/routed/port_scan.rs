@@ -206,7 +206,7 @@ impl SynPortScanner {
 
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState) {
         let mut port = Port::new(port_num, Protocol::Tcp, state);
-        let service_name = crate::plugins::lookup_service_name(port_num, Protocol::Tcp)
+        let service_name = crate::fingerprinting::lookup_service_name(port_num, Protocol::Tcp)
             .unwrap_or("???".to_string());
         port.set_service(Service::new(service_name, 0));
 
