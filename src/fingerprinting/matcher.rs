@@ -19,9 +19,9 @@
 //! each compiled regex in turn; a future prefilter (or a `hyperscan` backend)
 //! can replace the internals without changing the [`super`] orchestration.
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
-use crate::core::models::fingerprint::{MatchRule, ServiceDefinition};
+use crate::core::models::fingerprint::{MAX_COMPILED_REGEX_BYTES, MatchRule, ServiceDefinition};
 use crate::warn;
 
 use super::model::{Confidence, Evidence, SourceId};
@@ -40,8 +40,15 @@ struct CompiledSignature {
 impl CompiledSignature {
     /// Compiles one rule, or logs and returns `None` if its pattern is not
     /// supported by the engine (e.g. backreferences). Never drops silently.
+    ///
+    /// The signature set is validated at build time (see `build.rs`) with the
+    /// same size limit, so in a correctly built binary this never fails; the
+    /// fallback exists only as defence in depth.
     fn compile(service: &str, rule: &MatchRule) -> Option<Self> {
-        match Regex::new(&rule.pattern) {
+        match RegexBuilder::new(&rule.pattern)
+            .size_limit(MAX_COMPILED_REGEX_BYTES)
+            .build()
+        {
             Ok(pattern) => Some(Self {
                 pattern,
                 service: service.to_string(),

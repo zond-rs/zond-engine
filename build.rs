@@ -4,80 +4,124 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+//! # Fingerprint database compiler
+//!
+//! Compiles the human-authored TOML signatures in `assets/fingerprinting/` into
+//! the `bincode` blob the engine embeds and loads at runtime.
+//!
+//! Every signature is **validated here, at build time**. A pattern the engine
+//! cannot compile, or a `version_group` that points at a capture group the
+//! pattern does not have, fails the build with a pointer to the offending file —
+//! rather than being silently dropped and shipped as an invisible coverage gap.
+//! Softer issues (a service with no ports, an unknown probe protocol) surface as
+//! build warnings.
+//!
+//! The authoring schema is not redefined here: it is `include!`d from the
+//! canonical definitions in `src/core/models/fingerprint.rs`, so the build-time
+//! and runtime views can never drift apart.
+
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ServiceSignature {
-    pub name: String,
-    pub default_ports: Vec<u16>,
-    pub description: Option<String>,
-    pub attribution: Option<String>,
+use regex::RegexBuilder;
+
+/// The authoring schema, shared verbatim with the runtime. Kept in an inner
+/// module so its items don't leak into the build script's namespace.
+mod schema {
+    include!("src/core/models/fingerprint.rs");
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Probe {
-    pub name: Option<String>,
-    pub payload: String,
-    pub protocol: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MatchRule {
-    pub name: Option<String>,
-    pub pattern: String,
-    pub version_group: Option<u8>,
-    pub vendor: Option<String>,
-    pub product: Option<String>,
-    pub context: Option<String>,
-    pub example: Option<String>,
-    pub metadata: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ServiceDefinition {
-    pub service: ServiceSignature,
-    #[serde(default)]
-    pub probe: Vec<Probe>,
-    #[serde(default)]
-    pub r#match: Vec<MatchRule>,
-}
+use schema::{MAX_COMPILED_REGEX_BYTES, ServiceDefinition};
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/fingerprinting");
+    println!("cargo:rerun-if-changed=src/core/models/fingerprint.rs");
 
-    let out_dir = env::var_os("OUT_DIR").unwrap();
+    let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest_path = Path::new(&out_dir).join("fingerprints.bin");
 
-    let fingerprint_dir = Path::new("assets/fingerprinting");
-    let mut services = Vec::new();
+    let mut toml_files = Vec::new();
+    collect_toml_files(Path::new("assets/fingerprinting"), &mut toml_files);
+    // Sort for a deterministic, reproducible artifact: the order here decides
+    // which definition wins a shared port in the runtime name index.
+    toml_files.sort();
 
-    fn collect_toml_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    collect_toml_files(&path, files);
-                } else if path.extension().and_then(|s| s.to_str()) == Some("toml") {
-                    files.push(path);
-                }
+    let mut services = Vec::with_capacity(toml_files.len());
+    for path in &toml_files {
+        let content = fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        let def: ServiceDefinition = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
+        validate(&def, path);
+        services.push(def);
+    }
+
+    let encoded = bincode::serialize(&services).expect("failed to serialize fingerprint database");
+    fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
+}
+
+/// Validates one service definition, aborting the build on any defect that would
+/// silently degrade detection, and warning on softer issues.
+fn validate(def: &ServiceDefinition, path: &Path) {
+    let file = path.display();
+    let service = &def.service.name;
+
+    // Note: a definition with no `default_ports` is legitimate — it is a
+    // port-less banner signature intended for global matching, not the port
+    // index. Those become reachable with the prefilter (see the fingerprinting
+    // redesign RFC, phase 3); they are not a defect and are not flagged here.
+
+    for (i, rule) in def.r#match.iter().enumerate() {
+        // Compile with the exact limit the runtime uses, so the build accepts
+        // precisely the patterns the engine will.
+        let compiled = RegexBuilder::new(&rule.pattern)
+            .size_limit(MAX_COMPILED_REGEX_BYTES)
+            .build()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{file}: service '{service}' match #{i} has an unusable pattern: {e}\n  \
+                     pattern: {}",
+                    rule.pattern
+                )
+            });
+
+        if let Some(group) = rule.version_group {
+            // `captures_len()` counts group 0 (the whole match) plus each
+            // capturing group, so valid indices are `0..captures_len()`.
+            if group as usize >= compiled.captures_len() {
+                panic!(
+                    "{file}: service '{service}' match #{i} references version_group {group}, but \
+                     the pattern has {} capture group(s)\n  pattern: {}",
+                    compiled.captures_len() - 1,
+                    rule.pattern
+                );
             }
         }
     }
 
-    let mut toml_files = Vec::new();
-    collect_toml_files(fingerprint_dir, &mut toml_files);
-
-    for path in toml_files {
-        let content = fs::read_to_string(&path).unwrap();
-        let def: ServiceDefinition = toml::from_str(&content)
-            .unwrap_or_else(|e| panic!("Failed to parse {:?}: {}", path, e));
-        services.push(def);
+    for (i, probe) in def.probe.iter().enumerate() {
+        if !matches!(probe.protocol.as_str(), "tcp" | "udp") {
+            println!(
+                "cargo:warning={file}: service '{service}' probe #{i} has unknown protocol '{}' \
+                 (expected 'tcp' or 'udp')",
+                probe.protocol
+            );
+        }
     }
+}
 
-    let encoded = bincode::serialize(&services).unwrap();
-    fs::write(&dest_path, encoded).unwrap();
+/// Recursively collects every `.toml` file under `dir`.
+fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_toml_files(&path, files);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+            files.push(path);
+        }
+    }
 }

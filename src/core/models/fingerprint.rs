@@ -7,6 +7,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Upper bound on a single compiled signature's memory footprint.
+///
+/// The `regex` crate defaults to a 10 MiB compiled-size cap; a few legitimate
+/// signatures with large bounded repetitions (e.g. `{1,512}`) compile just past
+/// it and would otherwise be dropped. 32 MiB admits them while still bounding
+/// worst-case memory. This constant is shared by the runtime matcher and the
+/// build-time validator so both accept exactly the same set of patterns.
+pub const MAX_COMPILED_REGEX_BYTES: usize = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceSignature {
     pub name: String,
