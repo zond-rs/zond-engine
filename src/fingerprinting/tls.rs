@@ -42,6 +42,10 @@ use tokio_rustls::TlsConnector;
 
 use super::response::TlsInfo;
 
+/// A completed TLS client tunnel over a TCP socket. The transport reads and
+/// probes *through* this to fingerprint the protocol carried inside.
+pub type TlsTunnel = tokio_rustls::client::TlsStream<TcpStream>;
+
 /// How long to wait for a handshake on a port where we *expect* TLS (an
 /// implicit-TLS port). Patient: a handshake is the whole point here, worth
 /// waiting out a slow server.
@@ -153,39 +157,50 @@ fn connector() -> &'static TlsConnector {
 
 /// Handshake on a port where TLS is *expected* — an implicit-TLS port. Patient
 /// (see [`TLS_HANDSHAKE_TIMEOUT`]).
-pub async fn handshake(stream: TcpStream, peer: IpAddr) -> Option<TlsInfo> {
+pub async fn handshake(stream: TcpStream, peer: IpAddr) -> Option<(TlsTunnel, TlsInfo)> {
     handshake_within(stream, peer, TLS_HANDSHAKE_TIMEOUT).await
 }
 
 /// *Speculative* handshake on a silent, un-probed port that might be TLS on a
 /// non-standard port. Tighter budget (see [`SPECULATIVE_TLS_TIMEOUT`]) because
 /// the prior is low and this cost is paid on every silent port.
-pub async fn speculative_handshake(stream: TcpStream, peer: IpAddr) -> Option<TlsInfo> {
+pub async fn speculative_handshake(
+    stream: TcpStream,
+    peer: IpAddr,
+) -> Option<(TlsTunnel, TlsInfo)> {
     handshake_within(stream, peer, SPECULATIVE_TLS_TIMEOUT).await
 }
 
-/// Completes a TLS handshake over `stream` within `budget` and returns the
-/// certificate chain the peer presented, as owned DER.
+/// Completes a TLS handshake over `stream` within `budget`, returning the live
+/// tunnel and the certificate chain the peer presented (owned DER).
 ///
 /// `peer` is the address we connected to; it becomes the rustls server name.
 /// Because we scan by IP, no SNI is sent and the accept-any verifier makes the
 /// name irrelevant to whether the handshake completes — we take whatever
-/// certificate the default virtual host serves. Returns `None` on timeout,
-/// handshake failure, or if the peer presented no certificate.
-async fn handshake_within(stream: TcpStream, peer: IpAddr, budget: Duration) -> Option<TlsInfo> {
+/// certificate the default virtual host serves. The tunnel is returned so the
+/// caller can re-probe *through* it; the certificate may be empty (anonymous
+/// handshake) without failing. Returns `None` only on timeout or handshake
+/// failure.
+async fn handshake_within(
+    stream: TcpStream,
+    peer: IpAddr,
+    budget: Duration,
+) -> Option<(TlsTunnel, TlsInfo)> {
     let server_name = ServerName::IpAddress(peer.into());
     let connect = connector().connect(server_name, stream);
 
     let tls = timeout(budget, connect).await.ok()?.ok()?;
 
-    let (_, conn) = tls.get_ref();
-    let certificates: Vec<Vec<u8>> = conn
-        .peer_certificates()?
+    let certificates: Vec<Vec<u8>> = tls
+        .get_ref()
+        .1
+        .peer_certificates()
+        .unwrap_or(&[])
         .iter()
         .map(|der| der.as_ref().to_vec())
         .collect();
 
-    (!certificates.is_empty()).then_some(TlsInfo { certificates })
+    Some((tls, TlsInfo { certificates }))
 }
 
 #[cfg(test)]

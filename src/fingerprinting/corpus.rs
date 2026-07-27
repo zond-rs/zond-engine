@@ -35,7 +35,7 @@ use super::matcher::Signature;
 use super::prefilter::{LiteralPrefilter, Prefilter};
 use super::response::{ResponseSet, TlsInfo};
 use super::{
-    Analyzer, BannerRegexAnalyzer, Confidence, PortContext, ServiceVerdict, TlsCertAnalyzer,
+    Analyzer, BannerRegexAnalyzer, Confidence, PortContext, ServiceVerdict, TlsCertAnalyzer, Tunnel,
 };
 
 /// Recorded examples that do not match their own pattern today (lost recog case
@@ -146,7 +146,13 @@ fn golden_cases_resolve_end_to_end() {
 
     for case in cases {
         let responses = ResponseSet::from_banners(vec![case.response.to_string()]);
-        let evidence = BannerRegexAnalyzer.analyze(&PortContext { port: case.port }, &responses);
+        let evidence = BannerRegexAnalyzer.analyze(
+            &PortContext {
+                port: case.port,
+                tunnel: None,
+            },
+            &responses,
+        );
         let verdict = ServiceVerdict::resolve(evidence);
 
         assert_eq!(
@@ -185,7 +191,7 @@ fn non_standard_port_is_identified_via_global_fallback() {
     );
 
     let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1".to_string()]);
-    let evidence = BannerRegexAnalyzer.analyze(&PortContext { port }, &responses);
+    let evidence = BannerRegexAnalyzer.analyze(&PortContext { port, tunnel: None }, &responses);
     let verdict = ServiceVerdict::resolve(evidence);
 
     assert_eq!(verdict.service.as_deref(), Some("ssh"));
@@ -207,13 +213,22 @@ fn tls_cert_identifies_self_signed_appliance() {
         }),
     };
 
-    let evidence = TlsCertAnalyzer.analyze(&PortContext { port: 8443 }, &responses);
+    let evidence = TlsCertAnalyzer.analyze(
+        &PortContext {
+            port: 8443,
+            tunnel: Some(Tunnel::Tls),
+        },
+        &responses,
+    );
     let verdict = ServiceVerdict::resolve(evidence);
 
     // The port is identified as TLS, and the self-signed subject O= names the vendor.
     assert_eq!(verdict.service.as_deref(), Some("ssl"));
     assert_eq!(verdict.vendor.as_deref(), Some("Zond Appliance"));
     assert_eq!(verdict.confidence, Confidence::Probable);
+    // The tunnel's own `ssl` verdict is not re-prefixed into `ssl/ssl`, even
+    // under a TLS context.
+    assert_eq!(verdict.to_service().unwrap().name(), "ssl");
 }
 
 #[test]
@@ -222,7 +237,30 @@ fn tls_analyzer_is_silent_without_a_certificate() {
     let responses = ResponseSet::from_banners(vec!["HTTP/1.1 200 OK".to_string()]);
     assert!(
         TlsCertAnalyzer
-            .analyze(&PortContext { port: 80 }, &responses)
+            .analyze(
+                &PortContext {
+                    port: 80,
+                    tunnel: None,
+                },
+                &responses,
+            )
             .is_empty()
     );
+}
+
+#[test]
+fn banner_matched_in_a_tunnel_is_labelled_with_scheme() {
+    // A protocol identified from data read inside TLS keeps its bare service on
+    // the evidence but is labelled `ssl/<proto>` for the user.
+    let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1".to_string()]);
+    let ctx = PortContext {
+        port: 22,
+        tunnel: Some(Tunnel::Tls),
+    };
+    let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses);
+    let verdict = ServiceVerdict::resolve(evidence);
+
+    assert_eq!(verdict.service.as_deref(), Some("ssh")); // evidence stays bare
+    assert_eq!(verdict.tunnel, Some(Tunnel::Tls));
+    assert_eq!(verdict.to_service().unwrap().name(), "ssl/ssh"); // label composes both
 }

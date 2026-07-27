@@ -68,6 +68,26 @@ pub enum SourceId {
     // Future analyzers: HttpHeaders, Jarm, Ssh, Snmp, Favicon, ...
 }
 
+/// A transport the observed traffic was carried *inside*.
+///
+/// When an analyzer identifies a protocol from data read through a tunnel, the
+/// verdict records it here so the label can reflect both facts (e.g. `ssl/http`)
+/// while `Evidence::service` stays the bare protocol for downstream use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tunnel {
+    /// A completed TLS handshake — the payload was decrypted before analysis.
+    Tls,
+}
+
+impl Tunnel {
+    /// The scheme prefix this tunnel contributes to a service label.
+    fn scheme(self) -> &'static str {
+        match self {
+            Tunnel::Tls => "ssl",
+        }
+    }
+}
+
 /// One independent observation about what a port is running.
 ///
 /// Every descriptive field is optional: a detector reports only what it
@@ -83,6 +103,9 @@ pub struct Evidence {
     /// A CPE identifier, when known. Kept as a string until a typed CPE model
     /// lands; forward-compatible with structured parsing later.
     pub cpe: Option<String>,
+    /// The transport this observation was read through, if any. Set when the
+    /// data was decrypted from a tunnel (e.g. banner matched inside TLS).
+    pub tunnel: Option<Tunnel>,
     pub confidence: Confidence,
     pub source: SourceId,
 }
@@ -97,6 +120,7 @@ impl Evidence {
             version: None,
             vendor: None,
             cpe: None,
+            tunnel: None,
             confidence,
             source,
         }
@@ -121,6 +145,12 @@ impl Evidence {
         self.vendor = Some(vendor.into());
         self
     }
+
+    /// Records the tunnel this observation was read through.
+    pub fn with_tunnel(mut self, tunnel: Tunnel) -> Self {
+        self.tunnel = Some(tunnel);
+        self
+    }
 }
 
 /// The reconciled answer for a port, plus the full evidence it was drawn from.
@@ -135,6 +165,9 @@ pub struct ServiceVerdict {
     pub version: Option<String>,
     pub vendor: Option<String>,
     pub cpe: Option<String>,
+    /// The tunnel the winning `service` was observed through, if any. Drives the
+    /// `ssl/…` label in [`ServiceVerdict::to_service`].
+    pub tunnel: Option<Tunnel>,
     pub confidence: Confidence,
     pub evidence: Vec<Evidence>,
 }
@@ -160,6 +193,11 @@ impl ServiceVerdict {
         };
 
         for ev in &evidence {
+            // The tunnel travels with the service field: whichever evidence
+            // first supplies the service also decides how it is labelled.
+            if verdict.service.is_none() && ev.service.is_some() {
+                verdict.tunnel = ev.tunnel;
+            }
             fill(&mut verdict.service, &ev.service);
             fill(&mut verdict.product, &ev.product);
             fill(&mut verdict.version, &ev.version);
@@ -178,8 +216,17 @@ impl ServiceVerdict {
 
     /// Projects the verdict onto the crate's [`Service`] model, if it names
     /// anything. Returns `None` for an empty verdict.
+    ///
+    /// A tunnelled service is labelled `<scheme>/<name>` (e.g. `ssl/http`),
+    /// keeping both observed facts visible — the protocol *and* that it was
+    /// carried inside TLS — without renaming the bare protocol. An untunnelled
+    /// service, or the tunnel's own `ssl` verdict, is labelled plainly.
     pub fn to_service(&self) -> Option<Service> {
         let name = self.service.clone().or_else(|| self.product.clone())?;
+        let name = match self.tunnel {
+            Some(tunnel) => format!("{}/{name}", tunnel.scheme()),
+            None => name,
+        };
         let mut service = Service::new(name, self.confidence.as_score());
         if let Some(product) = &self.product {
             service = service.with_product(product.clone());
@@ -245,6 +292,24 @@ mod tests {
     #[test]
     fn empty_verdict_maps_to_no_service() {
         assert!(ServiceVerdict::resolve(Vec::new()).to_service().is_none());
+    }
+
+    #[test]
+    fn tunnel_prefixes_the_service_label_and_travels_with_service() {
+        let tunnelled = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("nginx")
+            .with_tunnel(Tunnel::Tls);
+        let verdict = ServiceVerdict::resolve(vec![tunnelled]);
+        assert_eq!(verdict.service.as_deref(), Some("http")); // bare on the verdict
+        assert_eq!(verdict.tunnel, Some(Tunnel::Tls));
+        assert_eq!(verdict.to_service().unwrap().name(), "ssl/http"); // composed label
+
+        // Without a tunnel the label is plain.
+        let plain = ev(Confidence::Strong).with_service("http");
+        let verdict = ServiceVerdict::resolve(vec![plain]);
+        assert_eq!(verdict.tunnel, None);
+        assert_eq!(verdict.to_service().unwrap().name(), "http");
     }
 
     #[test]

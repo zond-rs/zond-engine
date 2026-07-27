@@ -479,10 +479,29 @@ Each phase ships value and is independently reviewable; no big-bang rewrite.
       `Evidence`/`ServiceVerdict` but is **dropped by `to_service()`** — the crate `Service` model
       has no `vendor` field, so it is not yet user-visible. Surface it (and SAN host attribution)
       as a follow-up.
-  - **Phase 4b — re-probe through the TLS tunnel. _(next)_** Reintroduce a `tunnel` signal on
-    `Evidence` and have the transport run the banner grab + active probes *inside* the completed
-    TLS stream, so HTTPS/IMAPS/etc. get full banner-regex product/version ID (Strong) that
-    overrides the shallow `ssl` label. This is where the real https coverage lands.
+  - **Phase 4b — re-probe through the TLS tunnel. _(done)_** The handshake now returns the live
+    `TlsStream`; a transport-generic `collect_responses<S: AsyncRead + AsyncWrite>` runs the banner
+    grab + active probes over either the raw socket or the tunnel, so the protocol carried inside
+    TLS is fingerprinted by the same `BannerRegexAnalyzer`. A `Tunnel` (`Tls`) signal rides on
+    `Evidence` (stamped from `PortContext`) and on `ServiceVerdict`, and `to_service()` labels a
+    tunnelled service `<scheme>/<name>`.
+    - **Decision — label `ssl/http`, not `https`.** Both facts are now *observed* (the protocol
+      from the decrypted banner, TLS from the handshake), so the label shows both explicitly,
+      nmap-style, with no per-protocol rename map. `Evidence::service` stays the bare protocol
+      (`http`) for downstream CPE/CVE; the `ssl/` prefix is applied only at the `Service`
+      projection. The tunnel's own bare `ssl` verdict (no inner protocol matched) is *not*
+      re-prefixed. Verified end-to-end: badssl/google/github :443 now resolve `ssl/http` where 4a
+      gave bare `ssl`.
+    - **Prerequisite fixed — probe payloads were not unescaped.** Payloads are authored as TOML
+      *literal* strings (`'GET / HTTP/1.1\r\n\r\n'`), so `\r\n` reached the wire as literal
+      backslashes — HTTP active-probing was malformed on the plaintext path too, not just in the
+      tunnel. Now decoded at load (`\r \n \t \0 \xHH \\`) and stored as `Vec<u8>` so binary probes
+      are representable. (`db.rs::unescape`.)
+    - **Known limitation — first-match, not best-match.** Inside TLS on 443 the result is
+      `ssl/http` at Probable, not `ssl/http nginx <ver>`: `BannerRegexAnalyzer` takes the *first*
+      matching signature, and a generic HTTP signature shadows the specific `Server: …` ones. This
+      is a pre-existing matcher-quality issue (same family as global-match disambiguation), not a
+      4b regression; best-match selection is a separate follow-up.
 - **Phase 5 — scale/perf.** Recorded-response corpus landed (§8) and now guards regressions and
   unblocks the prefilter; remaining: per-analyzer metrics, hyperscan/vectorscan evaluation, and
   the `zond-fingerprints` split. Signature-data follow-up: re-import recog per-pattern case flags

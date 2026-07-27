@@ -59,7 +59,9 @@ pub struct SignatureDb {
     /// signatures are matched alongside its port-indexed ones.
     by_port: HashMap<u16, Vec<usize>>,
     /// `port -> TCP active-probe payloads` of the services reachable on it.
-    probes: HashMap<u16, Vec<String>>,
+    /// Payloads are decoded bytes (escapes resolved, see [`unescape`]), ready to
+    /// go on the wire as-is — including non-UTF-8 binary probes.
+    probes: HashMap<u16, Vec<Vec<u8>>>,
     /// The global-match prefilter, built on first use.
     prefilter: OnceLock<LiteralPrefilter>,
 }
@@ -82,8 +84,8 @@ impl SignatureDb {
         let mut signatures = Vec::new();
         // service name -> its signature indices (across every definition).
         let mut service_sigs: HashMap<String, Vec<usize>> = HashMap::new();
-        // service name -> its TCP active-probe payloads.
-        let mut service_probes: HashMap<String, Vec<String>> = HashMap::new();
+        // service name -> its TCP active-probe payloads (decoded to bytes).
+        let mut service_probes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
         for def in &defs {
             for rule in &def.r#match {
                 let idx = signatures.len();
@@ -97,7 +99,7 @@ impl SignatureDb {
                 service_probes
                     .entry(def.service.name.clone())
                     .or_default()
-                    .push(probe.payload.clone());
+                    .push(unescape(&probe.payload));
             }
         }
 
@@ -119,7 +121,7 @@ impl SignatureDb {
         // Link: a port's signatures (and probes) are those of every service
         // reachable on it.
         let mut by_port: HashMap<u16, Vec<usize>> = HashMap::new();
-        let mut probes: HashMap<u16, Vec<String>> = HashMap::new();
+        let mut probes: HashMap<u16, Vec<Vec<u8>>> = HashMap::new();
         for (port, names) in &port_services {
             let mut indices: Vec<usize> = names
                 .iter()
@@ -131,7 +133,7 @@ impl SignatureDb {
             indices.dedup();
             by_port.insert(*port, indices);
 
-            let payloads: Vec<String> = names
+            let payloads: Vec<Vec<u8>> = names
                 .iter()
                 .filter_map(|name| service_probes.get(name))
                 .flatten()
@@ -167,8 +169,9 @@ impl SignatureDb {
         &self.signatures[idx]
     }
 
-    /// The TCP active-probe payloads registered for `port` (service-linked).
-    pub fn tcp_probe_payloads(&self, port: u16) -> &[String] {
+    /// The TCP active-probe payloads registered for `port` (service-linked), as
+    /// decoded bytes ready to send.
+    pub fn tcp_probe_payloads(&self, port: u16) -> &[Vec<u8>] {
         self.probes.get(&port).map_or(&[], Vec::as_slice)
     }
 
@@ -193,14 +196,56 @@ impl SignatureDb {
     /// reach the recorded `example` banners the runtime signatures drop.
     #[cfg(test)]
     pub(crate) fn embedded_definitions() -> Vec<ServiceDefinition> {
-        bincode::deserialize(EMBEDDED_DB).expect("embedded fingerprint database failed to deserialize")
+        bincode::deserialize(EMBEDDED_DB)
+            .expect("embedded fingerprint database failed to deserialize")
     }
+}
+
+/// Decodes the backslash escapes in an authored probe payload into raw bytes.
+///
+/// Payloads are authored as readable TOML *literal* strings (e.g.
+/// `'GET / HTTP/1.1\r\n\r\n'`), so escapes arrive verbatim — a literal `\`, `r`
+/// — and would go on the wire malformed if sent as-is. This resolves the common
+/// set (`\r`, `\n`, `\t`, `\0`, `\xHH`, `\\`) to the bytes they denote; any other
+/// escape is preserved literally so nothing is silently lost.
+fn unescape(payload: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len());
+    let mut chars = payload.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
+            continue;
+        }
+        match chars.next() {
+            Some('r') => out.push(b'\r'),
+            Some('n') => out.push(b'\n'),
+            Some('t') => out.push(b'\t'),
+            Some('0') => out.push(0),
+            Some('\\') => out.push(b'\\'),
+            Some('x') => {
+                let hi = chars.next().and_then(|h| h.to_digit(16));
+                let lo = chars.next().and_then(|l| l.to_digit(16));
+                match (hi, lo) {
+                    (Some(hi), Some(lo)) => out.push((hi * 16 + lo) as u8),
+                    // Malformed \xHH: keep the marker, best-effort.
+                    _ => out.extend_from_slice(b"\\x"),
+                }
+            }
+            // Unknown escape (or trailing backslash): keep it literally.
+            Some(other) => {
+                out.push(b'\\');
+                out.extend_from_slice(other.encode_utf8(&mut [0u8; 4]).as_bytes());
+            }
+            None => out.push(b'\\'),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::fingerprint::{MatchRule, ServiceSignature};
+    use crate::core::models::fingerprint::{MatchRule, Probe, ServiceSignature};
 
     fn def(name: &str, ports: Vec<u16>, patterns: &[&str]) -> ServiceDefinition {
         ServiceDefinition {
@@ -264,5 +309,30 @@ mod tests {
             .iter()
             .find_map(|&i| db.signature(i).identify("HTTP/1.1 200 OK"));
         assert_eq!(hit.and_then(|e| e.service), Some("http".to_string()));
+    }
+
+    #[test]
+    fn unescape_decodes_common_sequences() {
+        assert_eq!(unescape(r"GET /\r\n"), b"GET /\r\n");
+        assert_eq!(unescape(r"a\tb\0c"), b"a\tb\0c");
+        assert_eq!(unescape(r"\x00\xff\x1b"), &[0x00, 0xff, 0x1b]);
+        assert_eq!(unescape(r"c:\path"), br"c:\path"); // unknown escape kept literal
+        assert_eq!(unescape(r"\\n"), br"\n"); // escaped backslash, then literal n
+    }
+
+    #[test]
+    fn probe_payloads_are_decoded_to_wire_bytes() {
+        let mut d = def("http", vec![80], &["^HTTP/1"]);
+        d.probe = vec![Probe {
+            name: None,
+            payload: r"GET / HTTP/1.1\r\n\r\n".to_string(),
+            protocol: "tcp".to_string(),
+        }];
+        let db = SignatureDb::from_defs(vec![d]);
+        // The authored `\r\n` must reach the wire as real CRLF, not backslashes.
+        assert_eq!(
+            db.tcp_probe_payloads(80),
+            &[b"GET / HTTP/1.1\r\n\r\n".to_vec()]
+        );
     }
 }

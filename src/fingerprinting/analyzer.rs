@@ -19,16 +19,20 @@
 //! one place instead of scattered through each analyzer.
 
 use super::db::SignatureDb;
-use super::model::{Evidence, SourceId};
+use super::model::{Evidence, SourceId, Tunnel};
 use super::prefilter::Prefilter;
 use super::response::ResponseSet;
 
 /// What an [`Analyzer`] is told about the port it is examining.
 ///
-/// Deliberately small for now; it grows as analyzers need more context (TLS
-/// tunnel state, prior evidence, transport hints) without changing the trait.
+/// Deliberately small; it grows as analyzers need more context (prior evidence,
+/// transport hints) without changing the trait.
 pub struct PortContext {
     pub port: u16,
+    /// The tunnel the responses were read through, if any. Set when the
+    /// transport handed the analyzers data decrypted from a tunnel, so evidence
+    /// drawn from it can be marked accordingly.
+    pub tunnel: Option<Tunnel>,
 }
 
 /// A source of fingerprinting evidence.
@@ -78,7 +82,7 @@ impl Analyzer for BannerRegexAnalyzer {
         let mut evidence = Vec::new();
         for response in &responses.banners {
             if let Some(found) = first_match(db, port_signatures, response) {
-                evidence.push(found);
+                evidence.push(stamp(found, ctx));
                 continue;
             }
 
@@ -87,7 +91,7 @@ impl Analyzer for BannerRegexAnalyzer {
             let candidates = db.prefilter().candidates(response);
             db.warm(&candidates);
             if let Some(found) = first_match(db, &candidates, response) {
-                evidence.push(found);
+                evidence.push(stamp(found, ctx));
             }
         }
 
@@ -100,4 +104,11 @@ fn first_match(db: &SignatureDb, indices: &[usize], response: &str) -> Option<Ev
     indices
         .iter()
         .find_map(|&idx| db.signature(idx).identify(response))
+}
+
+/// Marks `evidence` with the tunnel its response was read through, so a banner
+/// matched inside TLS is labelled as tunnelled.
+fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
+    evidence.tunnel = ctx.tunnel;
+    evidence
 }
