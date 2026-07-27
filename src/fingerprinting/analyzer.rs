@@ -21,6 +21,7 @@
 use super::db::SignatureDb;
 use super::model::{Evidence, SourceId};
 use super::prefilter::Prefilter;
+use super::response::ResponseSet;
 
 /// What an [`Analyzer`] is told about the port it is examining.
 ///
@@ -43,8 +44,9 @@ pub trait Analyzer: Send + Sync {
     /// port).
     fn interested(&self, ctx: &PortContext) -> bool;
 
-    /// Produces evidence from the collected `responses` for the port.
-    fn analyze(&self, ctx: &PortContext, responses: &[String]) -> Vec<Evidence>;
+    /// Produces evidence from the [`ResponseSet`] collected for the port. An
+    /// analyzer reads only the fields it understands and ignores the rest.
+    fn analyze(&self, ctx: &PortContext, responses: &ResponseSet) -> Vec<Evidence>;
 }
 
 /// Identifies services by matching regex signatures against banner and
@@ -67,14 +69,14 @@ impl Analyzer for BannerRegexAnalyzer {
         true
     }
 
-    fn analyze(&self, ctx: &PortContext, responses: &[String]) -> Vec<Evidence> {
+    fn analyze(&self, ctx: &PortContext, responses: &ResponseSet) -> Vec<Evidence> {
         let db = SignatureDb::global();
 
         let port_signatures = db.signatures_for_port(ctx.port);
         db.warm(port_signatures);
 
         let mut evidence = Vec::new();
-        for response in responses {
+        for response in &responses.banners {
             if let Some(found) = first_match(db, port_signatures, response) {
                 evidence.push(found);
                 continue;

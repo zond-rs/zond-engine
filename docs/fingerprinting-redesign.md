@@ -448,6 +448,41 @@ Each phase ships value and is independently reviewable; no big-bang rewrite.
   handling; fuzzing; a `hyperscan` prefilter backend if profiling demands it.
 - **Phase 4 — expand analyzers.** TLS cert, HTTP headers, JARM/JA3S, SSH, SNMP, favicon — these
   also absorb the port-less-and-siblingless signature categories (x509/TLS, favicon, SNMP, …).
+  - **Phase 4a — TLS certificate analyzer. _(done)_** The first non-regex analyzer, proving the
+    extension point on structured binary rather than a text banner. The `Vec<String>` analyzer
+    input became a typed `ResponseSet { banners, tls }` (`response.rs`) so non-banner evidence has
+    a home (TLS now, raw binary frames for the nerva ports later). `tls.rs` completes a real
+    handshake and captures the presented chain as raw DER; `tls_cert.rs` parses the leaf and emits
+    `service = "ssl"` (Probable), plus `vendor` from the subject `O=` **only when the cert is
+    self-signed** (subject == issuer), where `O=` reliably names the operator/appliance vendor. The
+    transport goes straight to a handshake on implicit-TLS ports and opportunistically on any
+    silent, un-probed port (non-standard-port TLS). Verified end-to-end against live expired/
+    self-signed/wrong-host hosts and a recorded self-signed DER fixture in `corpus.rs`.
+    - **Empirical findings.** (1) The handshake *must* complete — TLS 1.3 encrypts the server
+      `Certificate` message, so raw-record scraping cannot see modern certs; we run a real rustls
+      client with an accept-any verifier (a scanner wants the presented chain, not a trust
+      decision). (2) Crypto provider pinned to pure-Rust **ring**, not rustls's default `aws-lc-rs`,
+      which needs cmake/NASM and is a Windows-build friction point for a cross-platform product.
+    - **Decision — `ssl` is the only truthful label; no port→name map.** The analyzer observed one
+      thing (a handshake completed), not the application protocol inside the tunnel, so it reports
+      exactly that: `ssl` at Probable. A `443→https` map would be port-number *guessing* wearing a
+      Probable badge — conflating an observed fact with a heuristic, the anti-pattern this pipeline
+      exists to kill (and it can't reuse the DB index, which maps `443→http`, `8443→kubernetes`).
+      **Phase 4b's tunnel re-probe supersedes `ssl` with the specific protocol (https, imaps) at
+      Strong, backed by real evidence.** The interim cost is cosmetic (users expect 443 to say
+      `https`) and is accepted for correctness now.
+    - **Decision — split TLS handshake timeouts by prior.** Expected-TLS (implicit-TLS) ports keep
+      the patient 3 s `TLS_HANDSHAKE_TIMEOUT`; a *speculative* handshake on a silent, un-probed
+      non-standard port uses a tighter `SPECULATIVE_TLS_TIMEOUT` (1.5 s), since a real TLS server on
+      a reachable port completes sub-second and this cost is paid on every silent port.
+    - **Known gap.** The extracted `vendor` (and cert host attribution: CN/SAN) lives on
+      `Evidence`/`ServiceVerdict` but is **dropped by `to_service()`** — the crate `Service` model
+      has no `vendor` field, so it is not yet user-visible. Surface it (and SAN host attribution)
+      as a follow-up.
+  - **Phase 4b — re-probe through the TLS tunnel. _(next)_** Reintroduce a `tunnel` signal on
+    `Evidence` and have the transport run the banner grab + active probes *inside* the completed
+    TLS stream, so HTTPS/IMAPS/etc. get full banner-regex product/version ID (Strong) that
+    overrides the shallow `ssl` label. This is where the real https coverage lands.
 - **Phase 5 — scale/perf.** Recorded-response corpus landed (§8) and now guards regressions and
   unblocks the prefilter; remaining: per-analyzer metrics, hyperscan/vectorscan evaluation, and
   the `zond-fingerprints` split. Signature-data follow-up: re-import recog per-pattern case flags

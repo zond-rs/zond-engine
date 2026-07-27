@@ -41,6 +41,9 @@ mod analyzer;
 mod db;
 mod matcher;
 mod prefilter;
+mod response;
+mod tls;
+mod tls_cert;
 
 #[cfg(test)]
 mod corpus;
@@ -48,6 +51,8 @@ mod corpus;
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::SignatureDb;
 pub use model::{Confidence, Evidence, ServiceVerdict, SourceId};
+pub use response::{ResponseSet, TlsInfo};
+pub use tls_cert::TlsCertAnalyzer;
 
 use std::time::Duration;
 
@@ -70,7 +75,9 @@ const MAX_RESPONSE_BYTES: usize = 4096;
 /// scan hot path for every classified port. Returns the same names the fuller
 /// fingerprinting path uses, so a quick label and a deep identification agree.
 pub fn lookup_service_name(port: u16, _protocol: Protocol) -> Option<String> {
-    SignatureDb::global().service_name(port).map(|s| s.to_string())
+    SignatureDb::global()
+        .service_name(port)
+        .map(|s| s.to_string())
 }
 
 /// Actively fingerprints an open TCP `stream` and refines `port`'s service.
@@ -83,36 +90,62 @@ pub fn lookup_service_name(port: u16, _protocol: Protocol) -> Option<String> {
 /// If nothing identifies, a trimmed printable banner is attached as a
 /// last-resort label rather than leaving the port unannotated.
 pub async fn fingerprint_tcp(mut stream: TcpStream, mut port: Port) -> Port {
-    let mut responses: Vec<String> = Vec::new();
+    let peer = stream.peer_addr().ok().map(|addr| addr.ip());
+    let mut banners: Vec<String> = Vec::new();
+    let mut tls = None;
 
-    // Stage 1: banner grab. Many services announce themselves on connect.
-    if let Some(banner) = read_response(&mut stream, BANNER_READ_TIMEOUT).await {
-        responses.push(banner);
+    if tls::is_tls_port(port.number()) {
+        // Implicit-TLS port: the peer waits for our ClientHello, so go straight
+        // to a handshake instead of a banner grab that would only time out.
+        if let Some(ip) = peer {
+            tls = tls::handshake(stream, ip).await;
+        }
+    } else {
+        // Stage 1: banner grab. Many services announce themselves on connect.
+        if let Some(banner) = read_response(&mut stream, BANNER_READ_TIMEOUT).await {
+            banners.push(banner);
+        }
+
+        // Stage 2: active probes registered for this port.
+        let probes = SignatureDb::global().tcp_probe_payloads(port.number());
+        let sent_probe = !probes.is_empty();
+        for payload in probes {
+            if stream.write_all(payload.as_bytes()).await.is_err() {
+                break;
+            }
+            if let Some(reply) = read_response(&mut stream, PROBE_READ_TIMEOUT).await {
+                banners.push(reply);
+            }
+        }
+
+        // Stage 3: opportunistic TLS. The port stayed silent and we never wrote
+        // to it, so the stream is pristine — it may be TLS on a non-standard
+        // port. (Once we have sent a plaintext probe the stream is committed to
+        // that protocol and can no longer carry a handshake.)
+        if banners.is_empty()
+            && !sent_probe
+            && let Some(ip) = peer
+        {
+            tls = tls::speculative_handshake(stream, ip).await;
+        }
     }
 
-    // Stage 2: active probes registered for this port.
-    for payload in SignatureDb::global().tcp_probe_payloads(port.number()) {
-        if stream.write_all(payload.as_bytes()).await.is_err() {
-            break;
-        }
-        if let Some(reply) = read_response(&mut stream, PROBE_READ_TIMEOUT).await {
-            responses.push(reply);
-        }
-    }
-
+    let responses = ResponseSet { banners, tls };
     if responses.is_empty() {
         return port;
     }
 
-    // Stage 3: analysis, off the reactor.
-    match analyze(port.number(), responses.clone()).await {
+    // Stage 4: analysis, off the reactor. Keep a last-resort banner label before
+    // the response set is handed to the blocking pool.
+    let fallback = first_printable(&responses.banners);
+    match analyze(port.number(), responses).await {
         Some(verdict) if !verdict.is_empty() => {
             if let Some(service) = verdict.to_service() {
                 port.set_service(service);
             }
         }
         _ => {
-            if let Some(banner) = first_printable(&responses) {
+            if let Some(banner) = fallback {
                 port.set_service(Service::new(format!("banner: {banner}"), 0));
             }
         }
@@ -124,13 +157,13 @@ pub async fn fingerprint_tcp(mut stream: TcpStream, mut port: Port) -> Port {
 /// Runs the registered analyzers over `responses` on the blocking pool and
 /// resolves their evidence into a verdict. Returns `None` if analysis produced
 /// nothing (or the blocking task failed to join).
-async fn analyze(port: u16, responses: Vec<String>) -> Option<ServiceVerdict> {
+async fn analyze(port: u16, responses: ResponseSet) -> Option<ServiceVerdict> {
     tokio::task::spawn_blocking(move || {
         let ctx = PortContext { port };
 
-        // The analyzer registry. New evidence sources (TLS, HTTP, JARM, ...)
+        // The analyzer registry. New evidence sources (HTTP, JARM, SNMP, ...)
         // are added here.
-        let analyzers: [&dyn Analyzer; 1] = [&BannerRegexAnalyzer];
+        let analyzers: [&dyn Analyzer; 2] = [&BannerRegexAnalyzer, &TlsCertAnalyzer];
 
         let mut evidence = Vec::new();
         for analyzer in analyzers {

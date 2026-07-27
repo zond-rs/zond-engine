@@ -63,7 +63,9 @@ pub enum SourceId {
     PortHeuristic,
     /// A regex signature matched a banner or active-probe response.
     BannerRegex,
-    // Future analyzers: TlsCert, HttpHeaders, Jarm, Ssh, Snmp, Favicon, ...
+    /// A TLS certificate was captured and parsed from the port.
+    TlsCert,
+    // Future analyzers: HttpHeaders, Jarm, Ssh, Snmp, Favicon, ...
 }
 
 /// One independent observation about what a port is running.
@@ -215,8 +217,12 @@ mod tests {
 
     #[test]
     fn resolve_prefers_strongest_evidence_per_field() {
-        let weak = ev(Confidence::Weak).with_service("http").with_product("generic");
-        let strong = ev(Confidence::Strong).with_service("http").with_product("nginx");
+        let weak = ev(Confidence::Weak)
+            .with_service("http")
+            .with_product("generic");
+        let strong = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("nginx");
         let verdict = ServiceVerdict::resolve(vec![weak, strong]);
 
         assert_eq!(verdict.product.as_deref(), Some("nginx"));
@@ -226,7 +232,9 @@ mod tests {
 
     #[test]
     fn resolve_merges_fields_across_evidence() {
-        let a = ev(Confidence::Strong).with_service("https").with_product("nginx");
+        let a = ev(Confidence::Strong)
+            .with_service("https")
+            .with_product("nginx");
         let b = ev(Confidence::Probable).with_version("1.25.3");
         let verdict = ServiceVerdict::resolve(vec![a, b]);
 
@@ -242,7 +250,10 @@ mod tests {
     #[test]
     fn verdict_projects_onto_service_model() {
         let verdict = ServiceVerdict::resolve(vec![
-            ev(Confidence::Strong).with_service("ssh").with_product("OpenSSH").with_version("9.6"),
+            ev(Confidence::Strong)
+                .with_service("ssh")
+                .with_product("OpenSSH")
+                .with_version("9.6"),
         ]);
         let service = verdict.to_service().expect("names a service");
         assert_eq!(service.confidence(), Confidence::Strong.as_score());
