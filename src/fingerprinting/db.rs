@@ -308,7 +308,10 @@ mod tests {
             .signatures_for_port(80)
             .iter()
             .find_map(|&i| db.signature(i).identify("HTTP/1.1 200 OK"));
-        assert_eq!(hit.and_then(|e| e.service), Some("http".to_string()));
+        assert_eq!(
+            hit.and_then(|m| m.evidence.service),
+            Some("http".to_string())
+        );
     }
 
     #[test]
@@ -327,6 +330,7 @@ mod tests {
             name: None,
             payload: r"GET / HTTP/1.1\r\n\r\n".to_string(),
             protocol: "tcp".to_string(),
+            rarity: 0,
         }];
         let db = SignatureDb::from_defs(vec![d]);
         // The authored `\r\n` must reach the wire as real CRLF, not backslashes.

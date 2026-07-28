@@ -142,6 +142,16 @@ fn golden_cases_resolve_end_to_end() {
             product: Some("dropbear"),
             version: Some("2022.83"),
         },
+        // Best-match, not first-match: the generic `HTTP/1.1` signature is
+        // listed before the `Server: nginx` one and matches this response too,
+        // but the more specific match — naming product and version — must win.
+        Case {
+            port: 80,
+            response: "HTTP/1.1 200 OK\r\nServer: nginx/1.25.3\r\nContent-Type: text/html\r\n\r\n",
+            service: "http",
+            product: Some("nginx"),
+            version: Some("1.25.3"),
+        },
     ];
 
     for case in cases {

@@ -62,6 +62,11 @@ pub trait Analyzer: Send + Sync {
 /// set — narrowed by the prefilter — so a service on a non-standard port is
 /// still identified without scanning every signature. The prefilter is built
 /// lazily; most responses match on their port and never trigger it.
+///
+/// Within a tier the analyzer picks the **most specific** match, not the first
+/// one to fire (see [`best_match`]): a generic `HTTP/1.1` signature no longer
+/// shadows the `Server: nginx/1.25.3` signature that names a product and
+/// version.
 pub struct BannerRegexAnalyzer;
 
 impl Analyzer for BannerRegexAnalyzer {
@@ -81,7 +86,7 @@ impl Analyzer for BannerRegexAnalyzer {
 
         let mut evidence = Vec::new();
         for response in &responses.banners {
-            if let Some(found) = first_match(db, port_signatures, response) {
+            if let Some(found) = best_match(db, port_signatures, response) {
                 evidence.push(stamp(found, ctx));
                 continue;
             }
@@ -90,7 +95,7 @@ impl Analyzer for BannerRegexAnalyzer {
             // prefilter to a small candidate list, compiled on demand.
             let candidates = db.prefilter().candidates(response);
             db.warm(&candidates);
-            if let Some(found) = first_match(db, &candidates, response) {
+            if let Some(found) = best_match(db, &candidates, response) {
                 evidence.push(stamp(found, ctx));
             }
         }
@@ -99,11 +104,22 @@ impl Analyzer for BannerRegexAnalyzer {
     }
 }
 
-/// Evidence from the first signature in `indices` that identifies `response`.
-fn first_match(db: &SignatureDb, indices: &[usize], response: &str) -> Option<Evidence> {
+/// Evidence from the **most specific** signature in `indices` that identifies
+/// `response`, by [`MatchQuality`](super::matcher::MatchQuality).
+///
+/// Unlike a first-match scan, this evaluates every candidate so a generic
+/// signature listed earlier cannot shadow a more specific one (e.g. a bare
+/// `HTTP/1.1` match hiding a `Server:`-header match that names a product and
+/// version). Ties keep the lowest-indexed signature, so the result stays
+/// deterministic. Candidate sets are bounded — the linked port set, or the
+/// prefilter-narrowed global set — so evaluating all of them stays cheap.
+fn best_match(db: &SignatureDb, indices: &[usize], response: &str) -> Option<Evidence> {
     indices
         .iter()
-        .find_map(|&idx| db.signature(idx).identify(response))
+        .filter_map(|&idx| db.signature(idx).identify(response))
+        // Replace only on a strictly better match, so the lowest index wins ties.
+        .reduce(|best, m| if m.quality > best.quality { m } else { best })
+        .map(|m| m.evidence)
 }
 
 /// Marks `evidence` with the tunnel its response was read through, so a banner

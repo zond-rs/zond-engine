@@ -85,8 +85,10 @@ impl Signature {
             .as_ref()
     }
 
-    /// Produces evidence if this signature matches `response`.
-    pub fn identify(&self, response: &str) -> Option<Evidence> {
+    /// Matches `response`, returning the [`Evidence`] it yields paired with a
+    /// [`MatchQuality`] for ranking it against other signatures that match the
+    /// same response. `None` if the pattern does not match.
+    pub fn identify(&self, response: &str) -> Option<Match> {
         let captures = self.regex()?.captures(response)?;
 
         let version = self
@@ -101,14 +103,47 @@ impl Signature {
             Confidence::Probable
         };
 
+        // Detail counts the identity fields the signature *itself* supplies,
+        // beyond what confidence already conveys — an explicit product and an
+        // explicit vendor. It breaks ties between equal-confidence matches so a
+        // signature that names a product outranks a bare protocol match.
+        let detail = self.product.is_some() as u8 + self.vendor.is_some() as u8;
+
         let mut evidence = Evidence::new(SourceId::BannerRegex, confidence)
             .with_service(self.service.clone())
             // Fall back to the service name as product when the rule names none.
             .with_product(self.product.clone().unwrap_or_else(|| self.service.clone()));
         evidence.vendor = self.vendor.clone();
         evidence.version = version;
-        Some(evidence)
+
+        Some(Match {
+            evidence,
+            quality: MatchQuality { confidence, detail },
+        })
     }
+}
+
+/// A signature's successful match against a response: the [`Evidence`] it
+/// yields, paired with the [`MatchQuality`] used to choose the most specific
+/// match when several signatures match the same response.
+pub struct Match {
+    pub evidence: Evidence,
+    pub quality: MatchQuality,
+}
+
+/// How specific a signature's match is, for ranking competing matches against
+/// one response. Ordered least-to-most specific.
+///
+/// `confidence` is compared first: a captured version (`Strong`) is the
+/// strongest identity signal, so it outranks any versionless match regardless
+/// of other fields. Within one confidence level, `detail` — the number of
+/// identity fields the signature supplies (an explicit product, a vendor) —
+/// breaks the tie, so a specific `Server: Apache` match outranks a bare
+/// `HTTP/1.1` protocol match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MatchQuality {
+    confidence: Confidence,
+    detail: u8,
 }
 
 #[cfg(test)]
@@ -130,8 +165,14 @@ mod tests {
 
     #[test]
     fn captures_version_and_reports_strong_confidence() {
-        let sig = Signature::new("ssh", &rule(r"^SSH-[\d.]+-OpenSSH_([\w.]+)", Some(1), Some("OpenSSH")));
-        let ev = sig.identify("SSH-2.0-OpenSSH_9.6p1 Debian").expect("should match");
+        let sig = Signature::new(
+            "ssh",
+            &rule(r"^SSH-[\d.]+-OpenSSH_([\w.]+)", Some(1), Some("OpenSSH")),
+        );
+        let ev = sig
+            .identify("SSH-2.0-OpenSSH_9.6p1 Debian")
+            .expect("should match")
+            .evidence;
         assert_eq!(ev.service.as_deref(), Some("ssh"));
         assert_eq!(ev.product.as_deref(), Some("OpenSSH"));
         assert_eq!(ev.version.as_deref(), Some("9.6p1"));
@@ -141,9 +182,27 @@ mod tests {
     #[test]
     fn bare_match_is_probable_and_defaults_product() {
         let sig = Signature::new("http", &rule("^HTTP/1.1", None, None));
-        let ev = sig.identify("HTTP/1.1 200 OK").expect("should match");
+        let ev = sig
+            .identify("HTTP/1.1 200 OK")
+            .expect("should match")
+            .evidence;
         assert_eq!(ev.confidence, Confidence::Probable);
         assert_eq!(ev.product.as_deref(), Some("http"));
+    }
+
+    #[test]
+    fn specific_match_outranks_generic_for_same_response() {
+        let response = "HTTP/1.1 200 OK\r\nServer: nginx/1.25.3\r\n";
+        // Generic protocol match: no version, no explicit product/vendor.
+        let generic = Signature::new("http", &rule(r"(?i)^HTTP/\d+\.\d+\s+\d+", None, None));
+        // Specific server match: captures a version and names product + vendor.
+        let mut nginx_rule = rule(r"(?i)Server:\s*nginx/([\d.]+)", Some(1), Some("nginx"));
+        nginx_rule.vendor = Some("NGINX".to_string());
+        let nginx = Signature::new("http", &nginx_rule);
+
+        let generic_q = generic.identify(response).expect("generic matches").quality;
+        let nginx_q = nginx.identify(response).expect("nginx matches").quality;
+        assert!(nginx_q > generic_q, "specific match must outrank generic");
     }
 
     #[test]

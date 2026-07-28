@@ -239,12 +239,15 @@ never wrongly excluded, and this is **proved against the corpus**: `corpus.rs`'s
 (zero violations). The prefilter sits behind a `Prefilter` trait, so a `hyperscan`/`vectorscan`
 backend can replace it for DPI-grade throughput without touching callers.
 
-**Known limitation — global-match disambiguation.** On a non-standard port, an ambiguous banner
-(e.g. the shared `220` greeting) can match a different service's signature than intended (SMTP
-seen as FTP), because global matching has no port context and takes the first matching candidate.
-On the correct port, linking resolves it. Fix is a resolution-quality follow-up (confidence-
-downgrade global matches so port-confirmed always wins; prefer more-specific matches) — tracked,
-not a prefilter defect.
+**Global-match disambiguation — largely resolved by best-match (Phase 4c).** Matching within a
+candidate set now picks the **most specific** signature, not the first to fire (see §5.4), so a
+generic signature can no longer shadow a specific one and the "prefer more-specific matches" half
+of this problem is closed. A residue remains only when two *equally specific* signatures from
+different services match the same banner on a **non-standard** port, where there is no port context
+to break the tie (e.g. a bare `220` greeting matching SMTP and FTP at equal confidence); best-match
+keeps the lowest-indexed candidate there. On the correct port, linking resolves it. The remaining
+lever — confidence-downgrading global matches so a port-confirmed match always outranks a global
+one — is tracked, not a prefilter defect.
 
 The remaining port-less-and-siblingless categories (favicon hashes, x509/TLS, SNMP, mDNS, NTP)
 are not TCP-banner signatures at all; the prefilter does not help them — they belong to dedicated
@@ -261,6 +264,33 @@ them. Handle this **explicitly at build time**, never with a silent `.ok()`:
   linear-time and is a ReDoS surface.
 - Anything that compiles in neither engine **fails the build** with a pointer to the offending
   `assets/fingerprinting/…/service.toml`. Coverage gaps become visible in CI, not in production.
+
+### 5.4 Best-match, not first-match
+
+Within a candidate set (the linked port set, or the prefilter-narrowed global set) several
+signatures can match one response. The analyzer evaluates **all** of them and keeps the **most
+specific** match rather than short-circuiting on the first, so a generic signature listed earlier
+cannot shadow a specific one — the concrete symptom being a bare `HTTP/1.1` match hiding the
+`Server: nginx/1.25.3` match that names a product *and* version.
+
+Specificity is a two-key ordering, `(confidence, detail)`, compared lexicographically:
+
+1. **`confidence`** dominates — a captured version (`Strong`) is the strongest identity signal, so
+   it outranks any versionless (`Probable`) match regardless of other fields.
+2. **`detail`** breaks ties within one confidence level: the count of identity fields the signature
+   *itself* supplies (an explicit product, a vendor), so `Server: Apache` outranks a bare protocol
+   match even when neither carries a version.
+
+Ties keep the lowest-indexed candidate, so results stay deterministic. The signal is drawn only
+from fields actually extracted — no pattern-length or match-coverage heuristics that could inflate
+confidence — keeping selection honest and consistent with the evidence model. Candidate sets are
+bounded (linked-port or prefilter-narrowed), so evaluating all of them stays cheap. This is guarded
+by a golden end-to-end case (`corpus.rs`): the nginx banner, whose generic-vs-specific contest
+fails under first-match and passes under best-match.
+
+*Future refinement:* the scoring lives behind one `MatchQuality` type, so a richer model (e.g.
+weighting explicit `cpe`, or the port-confirmation downgrade from §5.2) can slot in without
+touching the analyzer.
 
 ---
 
@@ -444,8 +474,9 @@ Each phase ships value and is independently reviewable; no big-bang rewrite.
   service's port. An Aho-Corasick required-literal prefilter (§5.2) makes global matching on
   non-standard ports sublinear (0.76% always-run, ~64 candidates/response, corpus-proven sound),
   behind a `Prefilter` trait. Compilation is lazy and `rayon`-parallel. _Deferred:_ global-match
-  disambiguation (confidence-downgrade); build-time serialized DFAs; backref/`fancy-regex`
-  handling; fuzzing; a `hyperscan` prefilter backend if profiling demands it.
+  disambiguation (best-match specificity done in Phase 4c, §5.4; port-confirmation confidence-
+  downgrade still open); build-time serialized DFAs; backref/`fancy-regex` handling; fuzzing; a
+  `hyperscan` prefilter backend if profiling demands it.
 - **Phase 4 — expand analyzers.** TLS cert, HTTP headers, JARM/JA3S, SSH, SNMP, favicon — these
   also absorb the port-less-and-siblingless signature categories (x509/TLS, favicon, SNMP, …).
   - **Phase 4a — TLS certificate analyzer. _(done)_** The first non-regex analyzer, proving the
@@ -497,11 +528,21 @@ Each phase ships value and is independently reviewable; no big-bang rewrite.
       backslashes — HTTP active-probing was malformed on the plaintext path too, not just in the
       tunnel. Now decoded at load (`\r \n \t \0 \xHH \\`) and stored as `Vec<u8>` so binary probes
       are representable. (`db.rs::unescape`.)
-    - **Known limitation — first-match, not best-match.** Inside TLS on 443 the result is
-      `ssl/http` at Probable, not `ssl/http nginx <ver>`: `BannerRegexAnalyzer` takes the *first*
-      matching signature, and a generic HTTP signature shadows the specific `Server: …` ones. This
-      is a pre-existing matcher-quality issue (same family as global-match disambiguation), not a
-      4b regression; best-match selection is a separate follow-up.
+    - **Known limitation (resolved in 4c) — first-match, not best-match.** As shipped in 4b, inside
+      TLS on 443 the result was `ssl/http` at Probable, not `ssl/http nginx <ver>`, because
+      `BannerRegexAnalyzer` took the *first* matching signature and a generic HTTP signature shadowed
+      the specific `Server: …` ones. Phase 4c replaces first-match with best-match (§5.4) and closes
+      this.
+  - **Phase 4c — best-match selection. _(done)_** The analyzer now evaluates every candidate in a
+    set and keeps the most specific match — `(confidence, detail)` ordering, §5.4 — instead of the
+    first to fire, so a generic signature can no longer shadow a specific one. This resolves the 4b
+    `ssl/http` → `ssl/http nginx <ver>` gap and the "prefer more-specific matches" half of the
+    global-match disambiguation problem (§5.2) in one place. A `MatchQuality` returned alongside each
+    match localises the scoring; the selection is guarded by a golden case (the nginx banner fails
+    under first-match, passes under best-match) and a matcher unit test. Verified empirically that a
+    live nginx host (`nginx.org:80`) returns `Server: nginx/1.29.8`, confirming the golden banner
+    shape is realistic. _Still open:_ the port-confirmation confidence-downgrade, and equal-
+    specificity cross-service ties on non-standard ports (§5.2 residue).
 - **Phase 5 — scale/perf.** Recorded-response corpus landed (§8) and now guards regressions and
   unblocks the prefilter; remaining: per-analyzer metrics, hyperscan/vectorscan evaluation, and
   the `zond-fingerprints` split. Signature-data follow-up: re-import recog per-pattern case flags

@@ -108,6 +108,18 @@ fn validate(def: &ServiceDefinition, path: &Path) {
                 probe.protocol
             );
         }
+        // Rarity is a 0..=9 intensity band (see `Probe::rarity`). A larger value
+        // is almost certainly an authoring typo — it would silently keep the
+        // probe from ever being sent at normal intensity. Warn rather than fail:
+        // it degrades nothing that ships today (the runtime does not gate on it
+        // yet) and out-of-band values may be deliberate once it does.
+        if probe.rarity > 9 {
+            println!(
+                "cargo:warning={file}: service '{service}' probe #{i} has rarity {} outside the \
+                 expected 0..=9 band",
+                probe.rarity
+            );
+        }
     }
 }
 

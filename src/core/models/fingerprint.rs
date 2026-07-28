@@ -29,6 +29,18 @@ pub struct Probe {
     pub name: Option<String>,
     pub payload: String,
     pub protocol: String,
+    /// How aggressive/uncommon this probe is, `0..=9`, mirroring nmap's probe
+    /// rarity. A probe is sent only when its rarity is within the scan's
+    /// intensity level (`rarity <= intensity`), so low-rarity probes go out on
+    /// every scan and high-rarity ones only when explicitly asked for.
+    ///
+    /// Reserved ahead of the intensity/softmatch work (see
+    /// `docs/fingerprinting-redesign.md`): the runtime does not yet gate on it.
+    /// `#[serde(default)]` makes it backward-compatible — every existing probe
+    /// deserializes at rarity `0` (common, always sent), so current behaviour is
+    /// unchanged until an intensity cap is wired in.
+    #[serde(default)]
+    pub rarity: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
