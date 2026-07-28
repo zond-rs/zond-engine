@@ -33,7 +33,7 @@ use rayon::prelude::*;
 use super::db::SignatureDb;
 use super::matcher::Signature;
 use super::prefilter::{LiteralPrefilter, Prefilter};
-use super::response::{ResponseSet, TlsInfo};
+use super::response::{Collected, ResponseSet, TlsInfo};
 use super::{
     Analyzer, BannerRegexAnalyzer, Confidence, PortContext, ServiceVerdict, TlsCertAnalyzer, Tunnel,
 };
@@ -162,6 +162,7 @@ fn golden_cases_resolve_end_to_end() {
                 tunnel: None,
             },
             &responses,
+            &Collected::default(),
         );
         let verdict = ServiceVerdict::resolve(evidence);
 
@@ -201,7 +202,11 @@ fn non_standard_port_is_identified_via_global_fallback() {
     );
 
     let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1".to_string()]);
-    let evidence = BannerRegexAnalyzer.analyze(&PortContext { port, tunnel: None }, &responses);
+    let evidence = BannerRegexAnalyzer.analyze(
+        &PortContext { port, tunnel: None },
+        &responses,
+        &Collected::default(),
+    );
     let verdict = ServiceVerdict::resolve(evidence);
 
     assert_eq!(verdict.service.as_deref(), Some("ssh"));
@@ -229,6 +234,7 @@ fn tls_cert_identifies_self_signed_appliance() {
             tunnel: Some(Tunnel::Tls),
         },
         &responses,
+        &Collected::default(),
     );
     let verdict = ServiceVerdict::resolve(evidence);
 
@@ -253,6 +259,7 @@ fn tls_analyzer_is_silent_without_a_certificate() {
                     tunnel: None,
                 },
                 &responses,
+                &Collected::default(),
             )
             .is_empty()
     );
@@ -267,7 +274,7 @@ fn banner_matched_in_a_tunnel_is_labelled_with_scheme() {
         port: 22,
         tunnel: Some(Tunnel::Tls),
     };
-    let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses);
+    let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses, &Collected::default());
     let verdict = ServiceVerdict::resolve(evidence);
 
     assert_eq!(verdict.service.as_deref(), Some("ssh")); // evidence stays bare

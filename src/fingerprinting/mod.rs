@@ -28,12 +28,13 @@
 //!
 //! ## Concurrency contract
 //!
-//! Network I/O runs on the async reactor here in [`fingerprint_tcp`]; the
-//! CPU-bound analysis runs on the blocking pool via [`analyze`]. Nothing in this
-//! module compiles a regex on a reactor thread — see `SignatureDb` for why that
-//! matters.
+//! Every analyzer runs in two phases and [`analyze`] enforces the split: the
+//! transport's first-contact I/O and each analyzer's own `collect` probes run on
+//! the async reactor; all `analyze` (CPU) work is handed to the blocking pool.
+//! Nothing in this module compiles a regex on a reactor thread — see
+//! `SignatureDb` for why that matters.
 //!
-//! The design and roadmap live in `docs/fingerprinting-redesign.md`.
+//! The design and roadmap live in `docs/fingerprinting.md`.
 
 pub mod model;
 
@@ -51,7 +52,7 @@ mod corpus;
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::SignatureDb;
 pub use model::{Confidence, Evidence, ServiceVerdict, SourceId, Tunnel};
-pub use response::{ResponseSet, TlsInfo};
+pub use response::{Collected, ResponseSet, TlsInfo};
 pub use tls_cert::TlsCertAnalyzer;
 
 use std::time::Duration;
@@ -197,27 +198,47 @@ where
     banners
 }
 
-/// Runs the registered analyzers over `responses` on the blocking pool and
-/// resolves their evidence into a verdict. `tunnel` marks how the responses were
-/// carried, so evidence drawn from decrypted data is labelled accordingly.
-/// Returns `None` if analysis produced nothing (or the blocking task failed to
-/// join).
+/// The analyzer registry. New evidence sources (HTTP, JARM, SNMP, nerva binary
+/// handlers, ...) are added here — the only place the set is enumerated. The
+/// instances are stateless zero-sized values, so a `'static` slice of shared
+/// references is free and lets both phases (and the blocking task) reference the
+/// same set.
+static ANALYZERS: &[&dyn Analyzer] = &[&BannerRegexAnalyzer, &TlsCertAnalyzer];
+
+/// Runs the registered analyzers over `responses` and resolves their evidence
+/// into a verdict, honouring the two-phase contract: each interested analyzer's
+/// [`collect`](Analyzer::collect) runs here on the reactor (I/O), then all the
+/// [`analyze`](Analyzer::analyze) work is handed to the blocking pool (CPU).
+/// `tunnel` marks how the shared responses were carried, so evidence drawn from
+/// decrypted data is labelled accordingly. Returns `None` if analysis produced
+/// nothing (or the blocking task failed to join).
 async fn analyze(
     port: u16,
     responses: ResponseSet,
     tunnel: Option<Tunnel>,
 ) -> Option<ServiceVerdict> {
+    let ctx = PortContext { port, tunnel };
+
+    // Phase 1 — I/O on the reactor: let each interested analyzer run its own
+    // probes. Passive analyzers return an empty `Collected` (their inputs are in
+    // the shared `responses`); the index of each result matches `ANALYZERS`.
+    let mut collected = Vec::with_capacity(ANALYZERS.len());
+    for analyzer in ANALYZERS {
+        collected.push(if analyzer.interested(&ctx) {
+            analyzer.collect(&ctx).await
+        } else {
+            Collected::default()
+        });
+    }
+
+    // Phase 2 — CPU off the reactor: parse the shared responses plus each
+    // analyzer's own frames into evidence, then resolve. A large match set can
+    // never stall the scheduler from here.
     tokio::task::spawn_blocking(move || {
-        let ctx = PortContext { port, tunnel };
-
-        // The analyzer registry. New evidence sources (HTTP, JARM, SNMP, ...)
-        // are added here.
-        let analyzers: [&dyn Analyzer; 2] = [&BannerRegexAnalyzer, &TlsCertAnalyzer];
-
         let mut evidence = Vec::new();
-        for analyzer in analyzers {
+        for (analyzer, collected) in ANALYZERS.iter().zip(&collected) {
             if analyzer.interested(&ctx) {
-                evidence.extend(analyzer.analyze(&ctx, &responses));
+                evidence.extend(analyzer.analyze(&ctx, &responses, collected));
             }
         }
 
@@ -252,4 +273,29 @@ fn first_printable(responses: &[String]) -> Option<String> {
         .collect();
 
     (!printable.is_empty()).then_some(printable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn analyze_runs_both_phases_and_resolves() {
+        // Drives the real orchestration — the collect phase (a no-op for the two
+        // passive analyzers) followed by the off-reactor analyze phase — over a
+        // recorded SSH banner, and asserts it resolves through to a verdict.
+        let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1 Debian".to_string()]);
+        let verdict = analyze(22, responses, None).await.expect("names a service");
+
+        assert_eq!(verdict.service.as_deref(), Some("ssh"));
+        assert_eq!(verdict.product.as_deref(), Some("OpenSSH"));
+        assert_eq!(verdict.version.as_deref(), Some("9.6p1"));
+    }
+
+    #[tokio::test]
+    async fn analyze_returns_none_when_no_evidence() {
+        // No banners and no TLS: both phases run, no analyzer produces evidence,
+        // so the orchestration resolves to nothing rather than an empty verdict.
+        assert!(analyze(1, ResponseSet::default(), None).await.is_none());
+    }
 }

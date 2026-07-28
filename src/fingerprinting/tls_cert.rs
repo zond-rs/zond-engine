@@ -31,16 +31,18 @@
 //! [`Analyzer`]: super::analyzer::Analyzer
 //! [`Probable`]: super::model::Confidence::Probable
 
+use async_trait::async_trait;
 use x509_parser::parse_x509_certificate;
 
 use super::analyzer::{Analyzer, PortContext};
 use super::model::{Confidence, Evidence, SourceId};
-use super::response::ResponseSet;
+use super::response::{Collected, ResponseSet};
 
 /// Identifies TLS-bearing ports from the certificate captured during the
 /// handshake. See the module docs for what it does and does not claim.
 pub struct TlsCertAnalyzer;
 
+#[async_trait]
 impl Analyzer for TlsCertAnalyzer {
     fn id(&self) -> SourceId {
         SourceId::TlsCert
@@ -53,7 +55,14 @@ impl Analyzer for TlsCertAnalyzer {
         true
     }
 
-    fn analyze(&self, _ctx: &PortContext, responses: &ResponseSet) -> Vec<Evidence> {
+    // Passive: the certificate was captured by the transport's handshake and
+    // lives in the shared `ResponseSet`, so the default `collect` no-op applies.
+    fn analyze(
+        &self,
+        _ctx: &PortContext,
+        responses: &ResponseSet,
+        _collected: &Collected,
+    ) -> Vec<Evidence> {
         let Some(leaf) = responses.tls.as_ref().and_then(|tls| tls.leaf()) else {
             return Vec::new();
         };

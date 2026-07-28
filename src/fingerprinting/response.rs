@@ -66,3 +66,21 @@ impl ResponseSet {
         self.banners.is_empty() && self.tls.is_none()
     }
 }
+
+/// The raw frames an [`Analyzer`] gathered from its *own* probes during the
+/// collect phase, kept separate from the shared first-contact data in
+/// [`ResponseSet`].
+///
+/// Bytes, not text: an active analyzer speaks a specific protocol (a JARM
+/// ClientHello sweep, an SSH `KEXINIT`, a Modbus request, and the future
+/// nerva-derived binary handlers) and parses the reply byte-for-byte, so there
+/// is no lossy `String` in the way. A passive analyzer — one that reads only the
+/// shared [`ResponseSet`] — never overrides `collect`, so its `Collected` is
+/// simply empty.
+///
+/// [`Analyzer`]: super::analyzer::Analyzer
+#[derive(Debug, Clone, Default)]
+pub struct Collected {
+    /// Raw frames read from this analyzer's own probes, in the order collected.
+    pub frames: Vec<Vec<u8>>,
+}
