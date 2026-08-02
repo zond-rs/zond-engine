@@ -207,11 +207,35 @@ fn non_standard_port_is_identified_via_global_fallback() {
         &responses,
         &Collected::default(),
     );
+    // A global-fallback match is not corroborated by the port.
+    assert!(
+        evidence.iter().all(|e| !e.port_confirmed),
+        "global-fallback evidence must not be port-confirmed"
+    );
     let verdict = ServiceVerdict::resolve(evidence);
 
     assert_eq!(verdict.service.as_deref(), Some("ssh"));
     assert_eq!(verdict.product.as_deref(), Some("OpenSSH"));
     assert_eq!(verdict.version.as_deref(), Some("9.6p1"));
+}
+
+#[test]
+fn port_linked_match_is_tagged_port_confirmed() {
+    // The same SSH banner on port 22 matches a signature registered for the
+    // port, so its evidence is port-confirmed — the flag the resolver ranks on.
+    let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1 Debian-3".to_string()]);
+    let evidence = BannerRegexAnalyzer.analyze(
+        &PortContext {
+            port: 22,
+            tunnel: None,
+        },
+        &responses,
+        &Collected::default(),
+    );
+    assert!(
+        evidence.iter().any(|e| e.port_confirmed),
+        "a port-linked match must be tagged port-confirmed"
+    );
 }
 
 /// A recorded self-signed appliance certificate (DER). Subject == issuer,

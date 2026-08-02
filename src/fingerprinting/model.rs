@@ -113,6 +113,13 @@ pub struct Evidence {
     /// The transport this observation was read through, if any. Set when the
     /// data was decrypted from a tunnel (e.g. banner matched inside TLS).
     pub tunnel: Option<Tunnel>,
+    /// Whether this match is corroborated by the port it was found on — i.e. the
+    /// signature was one registered for this port, not one found only by global
+    /// content search. A port-confirmed match carries a stronger prior (the
+    /// service was *expected* here), so the resolver ranks it above a
+    /// global-only match of equal confidence. Analyzers that do not consult the
+    /// port-signature index leave it `false`.
+    pub port_confirmed: bool,
     pub confidence: Confidence,
     pub source: SourceId,
 }
@@ -129,6 +136,7 @@ impl Evidence {
             extrainfo: None,
             cpe: None,
             tunnel: None,
+            port_confirmed: false,
             confidence,
             source,
         }
@@ -194,9 +202,19 @@ impl ServiceVerdict {
     /// can contribute different fields. Ties preserve insertion order, keeping
     /// the result deterministic. The full evidence set is retained.
     pub fn resolve(mut evidence: Vec<Evidence>) -> Self {
-        // Stable sort keeps equal-confidence evidence in the order produced,
-        // so results do not depend on analyzer scheduling.
-        evidence.sort_by_key(|e| std::cmp::Reverse(e.confidence));
+        // Rank strongest-first. Confidence dominates: a genuinely stronger
+        // identification is never buried by port context. Within one confidence
+        // level, a port-confirmed match (its signature was registered for this
+        // port) outranks a global-only one — a coincidental cross-protocol
+        // banner match (the classic bare-`220` FTP-vs-SMTP ambiguity) loses to
+        // the service actually expected on the port. The sort is stable, so a
+        // full tie keeps the order produced and stays independent of analyzer
+        // scheduling.
+        evidence.sort_by(|a, b| {
+            b.confidence
+                .cmp(&a.confidence)
+                .then(b.port_confirmed.cmp(&a.port_confirmed))
+        });
 
         let mut verdict = ServiceVerdict {
             confidence: evidence
@@ -340,6 +358,35 @@ mod tests {
                 .with_product("http"),
         ]);
         assert_eq!(verdict.product.as_deref(), Some("http"));
+    }
+
+    #[test]
+    fn port_confirmed_match_wins_the_service_at_equal_confidence() {
+        // Insertion order puts the global match first, so without the
+        // port-confirmation tie-break the stable sort would keep "smtp". The
+        // port-confirmed "ftp" — the service actually expected on this port —
+        // must win. This is the bare-`220` FTP-vs-SMTP residue.
+        let global_smtp = ev(Confidence::Probable).with_service("smtp");
+        let mut port_ftp = ev(Confidence::Probable).with_service("ftp");
+        port_ftp.port_confirmed = true;
+
+        let verdict = ServiceVerdict::resolve(vec![global_smtp, port_ftp]);
+        assert_eq!(verdict.service.as_deref(), Some("ftp"));
+    }
+
+    #[test]
+    fn confidence_still_dominates_port_confirmation() {
+        // A weak port-confirmed match must not bury a genuinely stronger global
+        // identification — confidence is the primary key, port-confirmation only
+        // breaks ties within a level.
+        let mut weak_port = ev(Confidence::Probable).with_service("ftp");
+        weak_port.port_confirmed = true;
+        let strong_global = ev(Confidence::Strong)
+            .with_service("smtp")
+            .with_product("Postfix");
+
+        let verdict = ServiceVerdict::resolve(vec![weak_port, strong_global]);
+        assert_eq!(verdict.service.as_deref(), Some("smtp"));
     }
 
     #[test]

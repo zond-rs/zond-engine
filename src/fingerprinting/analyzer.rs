@@ -130,16 +130,18 @@ impl Analyzer for BannerRegexAnalyzer {
         let mut evidence = Vec::new();
         for response in &responses.banners {
             if let Some(found) = best_match(db, port_signatures, response) {
-                evidence.push(stamp(found, ctx));
+                // Matched a signature registered for this port: port-confirmed.
+                evidence.push(stamp(found, ctx, true));
                 continue;
             }
 
             // No port match: fall back to the whole set, narrowed by the
-            // prefilter to a small candidate list, compiled on demand.
+            // prefilter to a small candidate list, compiled on demand. A match
+            // here is global-only — found by content, not corroborated by port.
             let candidates = db.prefilter().candidates(response);
             db.warm(&candidates);
             if let Some(found) = best_match(db, &candidates, response) {
-                evidence.push(stamp(found, ctx));
+                evidence.push(stamp(found, ctx, false));
             }
         }
 
@@ -165,10 +167,12 @@ fn best_match(db: &SignatureDb, indices: &[usize], response: &str) -> Option<Evi
         .map(|m| m.evidence)
 }
 
-/// Marks `evidence` with the tunnel its response was read through, so a banner
-/// matched inside TLS is labelled as tunnelled.
-fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
+/// Marks `evidence` with the tunnel its response was read through (so a banner
+/// matched inside TLS is labelled as tunnelled) and whether the match was
+/// port-confirmed (from the port-linked signature set) or global-only.
+fn stamp(mut evidence: Evidence, ctx: &PortContext, port_confirmed: bool) -> Evidence {
     evidence.tunnel = ctx.tunnel;
+    evidence.port_confirmed = port_confirmed;
     evidence
 }
 

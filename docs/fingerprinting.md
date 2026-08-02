@@ -150,10 +150,16 @@ NTP) also depend on §D UDP; the rest are TCP-only and can land now.
 
 ### E. Resolver quality
 
-- [ ] **Port-confirmation downgrade:** a port-confirmed match must outrank a
-      global-only match, closing the `220` SMTP-vs-FTP residue on non-standard
-      ports (best-match closed the specificity half; this closes the
-      port-context half). Pairs with the softmatch stop rule.
+- [x] **Port-confirmation downgrade:** `Evidence` now carries `port_confirmed`
+      (set by `BannerRegexAnalyzer` — true for a port-linked-tier match, false
+      for a global-fallback one), and `resolve` ranks by `(confidence,
+      port_confirmed)`. Confidence still dominates (a weak port match never
+      buries a strong global identification); within a level the port-confirmed
+      match wins, so a coincidental cross-protocol banner match (bare-`220`
+      FTP-vs-SMTP) loses to the service expected on the port. This closes the
+      port-context half at equal confidence; making port-confirmation override a
+      *higher*-confidence global match is intentionally deferred — it needs the
+      cross-probe context of the softmatch stop rule to be safe.
 - [x] **Surface vendor + extrainfo attribution:** the `Service` model now carries
       `vendor`, and `extrainfo` is threaded through `Evidence`/`ServiceVerdict` →
       `to_service()`. Fixes the silent data loss where `TlsCertAnalyzer` extracted
