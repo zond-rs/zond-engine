@@ -5,9 +5,9 @@
 // https://mozilla.org/MPL/2.0/.
 
 pub mod core;
+pub mod fingerprinting;
 pub mod info;
 pub mod network;
-pub mod fingerprinting;
 pub mod protocols;
 pub mod scanner;
 pub mod system;

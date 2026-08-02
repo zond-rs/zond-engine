@@ -205,7 +205,11 @@ fn non_standard_port_is_identified_via_global_fallback() {
 
     let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1".to_string()]);
     let evidence = BannerRegexAnalyzer.analyze(
-        &PortContext { port, addr: None, tunnel: None },
+        &PortContext {
+            port,
+            addr: None,
+            tunnel: None,
+        },
         &responses,
         &Collected::default(),
     );

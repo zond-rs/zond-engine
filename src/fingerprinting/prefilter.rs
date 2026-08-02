@@ -162,7 +162,10 @@ fn longest_required_literal(hir: &Hir) -> Option<Vec<u8>> {
     match hir.kind() {
         HirKind::Literal(literal) => Some(literal.0.to_vec()),
         HirKind::Capture(capture) => longest_required_literal(&capture.sub),
-        HirKind::Concat(parts) => parts.iter().filter_map(longest_required_literal).max_by_key(Vec::len),
+        HirKind::Concat(parts) => parts
+            .iter()
+            .filter_map(longest_required_literal)
+            .max_by_key(Vec::len),
         HirKind::Repetition(rep) if rep.min >= 1 => longest_required_literal(&rep.sub),
         _ => None,
     }
@@ -205,7 +208,10 @@ mod tests {
         // No prefix literal (leading capture/class), but a strong inner literal.
         let sigs = [sig(r"^(\S{1,64}) FTP Server \(Version ([\d.]+)\)")];
         let pf = LiteralPrefilter::build(&sigs);
-        assert!(pf.candidates("host.example FTP Server (Version 1.2.3)").contains(&0));
+        assert!(
+            pf.candidates("host.example FTP Server (Version 1.2.3)")
+                .contains(&0)
+        );
         assert!(pf.candidates("SSH-2.0-OpenSSH_9.6").is_empty());
     }
 

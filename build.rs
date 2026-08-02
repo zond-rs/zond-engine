@@ -84,8 +84,8 @@ fn validate(def: &ServiceDefinition, path: &Path) {
         // Compile with the exact engine-selection and limit the runtime uses, so
         // the build accepts precisely the patterns the engine will — including
         // backref/lookaround patterns via the bounded fancy fallback.
-        let compiled = pattern::compile(&rule.pattern, MAX_COMPILED_REGEX_BYTES)
-            .unwrap_or_else(|e| {
+        let compiled =
+            pattern::compile(&rule.pattern, MAX_COMPILED_REGEX_BYTES).unwrap_or_else(|e| {
                 panic!(
                     "{file}: service '{service}' match #{i} has an unusable pattern: {e}\n  \
                      pattern: {}",

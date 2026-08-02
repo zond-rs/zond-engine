@@ -440,7 +440,10 @@ mod tests {
             .with_extrainfo("PHP/8.2.1");
         let verdict = ServiceVerdict::resolve(vec![server, powered_by]);
 
-        assert_eq!(verdict.vendor.as_deref(), Some("Apache Software Foundation"));
+        assert_eq!(
+            verdict.vendor.as_deref(),
+            Some("Apache Software Foundation")
+        );
         assert_eq!(verdict.extrainfo.as_deref(), Some("PHP/8.2.1"));
 
         let service = verdict.to_service().expect("names a service");

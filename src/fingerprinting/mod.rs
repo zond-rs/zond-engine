@@ -299,7 +299,9 @@ mod tests {
         // passive analyzers) followed by the off-reactor analyze phase — over a
         // recorded SSH banner, and asserts it resolves through to a verdict.
         let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1 Debian".to_string()]);
-        let verdict = analyze(22, None, responses, None).await.expect("names a service");
+        let verdict = analyze(22, None, responses, None)
+            .await
+            .expect("names a service");
 
         assert_eq!(verdict.service.as_deref(), Some("ssh"));
         assert_eq!(verdict.product.as_deref(), Some("OpenSSH"));
@@ -312,7 +314,8 @@ mod tests {
         // only reach the generic `http` label. The structured HTTP analyzer must
         // carry it through to product and version via the full pipeline.
         let responses = ResponseSet::from_banners(vec![
-            "HTTP/1.1 200 OK\r\nServer: gunicorn/21.2.0\r\nContent-Type: text/html\r\n\r\n".to_string(),
+            "HTTP/1.1 200 OK\r\nServer: gunicorn/21.2.0\r\nContent-Type: text/html\r\n\r\n"
+                .to_string(),
         ]);
         let verdict = analyze(8000, None, responses, None)
             .await
@@ -330,7 +333,8 @@ mod tests {
         // HTTP analyzer supplies the X-Powered-By extrainfo, and the framework
         // never usurps the product slot. All three land on one Service.
         let responses = ResponseSet::from_banners(vec![
-            "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58\r\nX-Powered-By: PHP/8.2.1\r\n\r\n".to_string(),
+            "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58\r\nX-Powered-By: PHP/8.2.1\r\n\r\n"
+                .to_string(),
         ]);
         let service = analyze(80, None, responses, None)
             .await
@@ -366,6 +370,10 @@ mod tests {
     async fn analyze_returns_none_when_no_evidence() {
         // No banners and no TLS: both phases run, no analyzer produces evidence,
         // so the orchestration resolves to nothing rather than an empty verdict.
-        assert!(analyze(1, None, ResponseSet::default(), None).await.is_none());
+        assert!(
+            analyze(1, None, ResponseSet::default(), None)
+                .await
+                .is_none()
+        );
     }
 }

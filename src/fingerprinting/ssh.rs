@@ -364,7 +364,10 @@ mod tests {
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].service.as_deref(), Some("ssh"));
         assert_eq!(evidence[0].confidence, Confidence::Strong);
-        assert_eq!(evidence[0].extrainfo.as_deref(), Some("hostkey ssh-ed25519"));
+        assert_eq!(
+            evidence[0].extrainfo.as_deref(),
+            Some("hostkey ssh-ed25519")
+        );
     }
 
     proptest! {

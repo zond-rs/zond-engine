@@ -89,7 +89,10 @@ impl Signature {
     /// [`MatchQuality`] for ranking it against other signatures that match the
     /// same response. `None` if the pattern does not match.
     pub fn identify(&self, response: &str) -> Option<Match> {
-        let version = self.compiled()?.identify(response, self.version_group)?.version;
+        let version = self
+            .compiled()?
+            .identify(response, self.version_group)?
+            .version;
 
         // A captured version is a materially stronger signal than a bare match.
         let confidence = if version.is_some() {

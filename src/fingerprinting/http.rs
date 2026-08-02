@@ -211,7 +211,11 @@ mod tests {
 
     fn analyze(port: u16, banner: &str) -> Vec<Evidence> {
         HttpHeadersAnalyzer.analyze(
-            &PortContext { port, addr: None, tunnel: None },
+            &PortContext {
+                port,
+                addr: None,
+                tunnel: None,
+            },
             &ResponseSet::from_banners(vec![banner.to_string()]),
             &Collected::default(),
         )
@@ -259,7 +263,10 @@ mod tests {
 
     #[test]
     fn trailing_os_comment_token_is_ignored() {
-        let evidence = analyze(80, "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58 (Ubuntu)\r\n\r\n");
+        let evidence = analyze(
+            80,
+            "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58 (Ubuntu)\r\n\r\n",
+        );
         let server = evidence
             .iter()
             .find(|e| e.product.as_deref() == Some("Apache"))
@@ -297,7 +304,11 @@ mod tests {
             "framework lands in extrainfo"
         );
         // Crucially, no evidence names PHP as a *product*.
-        assert!(evidence.iter().all(|e| e.product.as_deref() != Some("PHP/8.2.1")));
+        assert!(
+            evidence
+                .iter()
+                .all(|e| e.product.as_deref() != Some("PHP/8.2.1"))
+        );
     }
 
     #[test]
