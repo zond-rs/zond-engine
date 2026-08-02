@@ -30,7 +30,7 @@ use crate::core::models::target::Target;
 use crate::core::models::timer::ScanBudget;
 use crate::core::session::{ScanContext, ScanEvent};
 use crate::error;
-use crate::network::transport::{self, TransportHandle, TransportType};
+use crate::network::probe::{ProbeKind, ProbeTransport};
 use crate::protocols::tcp::{self, ProbeResponse};
 use crate::system::interface::SourceResolver;
 
@@ -73,8 +73,8 @@ pub struct SynPortScanner {
     /// Shared state (host store, event channel, abort signal) for the scan
     /// this prober is part of.
     ctx: ScanContext,
-    /// Raw socket used to send SYN probes and receive replies.
-    tcp_handle: TransportHandle,
+    /// Transport used to send SYN probes and receive replies.
+    transport: ProbeTransport,
     /// Governs how long this scan keeps running, adapting to observed
     /// round-trip times.
     deadline: AdaptiveDeadline,
@@ -90,13 +90,13 @@ impl SynPortScanner {
         ctx: ScanContext,
         target_count: usize,
     ) -> anyhow::Result<Self> {
-        let tcp_handle = transport::start_packet_capture(TransportType::TcpLayer4)?;
+        let transport = ProbeTransport::open(ProbeKind::TcpSyn)?;
         let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, target_count);
 
         Ok(Self {
             resolver,
             ctx,
-            tcp_handle,
+            transport,
             deadline,
             pending: PendingProbes::new(),
         })
@@ -126,7 +126,7 @@ impl SynPortScanner {
                     }
                 }
 
-                res = self.tcp_handle.rx.recv() => {
+                res = self.transport.rx.recv() => {
                     match res {
                         Some((bytes, ip)) => self.handle_reply(ip, &bytes),
                         None => break,
@@ -156,7 +156,8 @@ impl SynPortScanner {
             return;
         };
 
-        if let Some(seq_num) = send_syn(&self.tcp_handle, src_addr, target.ip, target.port) {
+        if let Some(seq_num) = send_syn(self.transport.tx.as_ref(), src_addr, target.ip, target.port)
+        {
             self.pending
                 .insert((target.ip, target.port), (seq_num, Instant::now()));
         }

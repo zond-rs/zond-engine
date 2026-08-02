@@ -6,47 +6,55 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::protocols::utils::IP_V6_HDR_LEN;
+use crate::protocols::utils::{IP_V4_HDR_LEN, IP_V6_HDR_LEN};
 use anyhow::Context;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::EthernetPacket;
 use pnet::packet::ip::IpNextHeaderProtocol;
-use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet, checksum};
 use pnet::packet::ipv6::{Ipv6Packet, MutableIpv6Packet};
 
-// const WORD_LEN: usize = 4;
-// const NO_FRAG_FLAG: u8 = 1 << 1;
+const WORD_LEN: usize = 4;
+/// The "Don't Fragment" bit, expressed in the 3-bit flags field that
+/// `MutableIpv4Packet::set_flags` writes. Our probes are single, minimal
+/// packets that should never be fragmented in transit.
+const DONT_FRAGMENT: u8 = 0b010;
 
-// pub fn create_ipv4_header(
-//     src_addr: Ipv4Addr,
-//     dst_addr: Ipv4Addr,
-//     total_length: u16,
-//     next_protocol: IpNextHeaderProtocol,
-// ) -> anyhow::Result<Vec<u8>> {
-//     let mut buffer: [u8; IP_V4_HDR_LEN] = [0; IP_V4_HDR_LEN];
-//     {
-//         let mut ipv4: MutableIpv4Packet = MutableIpv4Packet::new(&mut buffer[..])
-//             .context("creating ipv4 packet")?;
-//         ipv4.set_version(4);
-//         ipv4.set_header_length((IP_V4_HDR_LEN / WORD_LEN) as u8);
-//         ipv4.set_dscp(0);
-//         ipv4.set_ecn(0);
-//         ipv4.set_total_length(total_length);
-//         ipv4.set_identification(rand::random());
-//         ipv4.set_flags(NO_FRAG_FLAG);
-//         ipv4.set_fragment_offset(0);
-//         ipv4.set_ttl(64);
-//         ipv4.set_next_level_protocol(next_protocol);
-//         ipv4.set_source(src_addr);
-//         ipv4.set_destination(dst_addr);
-//         let ipv4_imm = ipv4.to_immutable();
-//         let ipv4_pkt = Ipv4Packet::new(ipv4_imm.packet()).context("transforming ipv4 to packet")?;
-//         let csm = checksum(&ipv4_pkt);
-//         ipv4.set_checksum(csm);
-//     }
+/// Builds a 20-byte IPv4 header (no options) for a packet carrying
+/// `payload_length` bytes of `next_protocol` from `src_addr` to `dst_addr`.
+///
+/// The header checksum is computed over the finished header. The kernel is
+/// not in this path - these headers are emitted straight onto the wire via a
+/// Layer-2 send - so every field, including the checksum, has to be correct
+/// here or the receiver drops the packet.
+pub fn create_ipv4_header(
+    src_addr: Ipv4Addr,
+    dst_addr: Ipv4Addr,
+    payload_length: u16,
+    next_protocol: IpNextHeaderProtocol,
+) -> anyhow::Result<Vec<u8>> {
+    let mut buffer: [u8; IP_V4_HDR_LEN] = [0; IP_V4_HDR_LEN];
+    {
+        let mut ipv4: MutableIpv4Packet =
+            MutableIpv4Packet::new(&mut buffer[..]).context("creating ipv4 packet")?;
+        ipv4.set_version(4);
+        ipv4.set_header_length((IP_V4_HDR_LEN / WORD_LEN) as u8);
+        ipv4.set_dscp(0);
+        ipv4.set_ecn(0);
+        ipv4.set_total_length(IP_V4_HDR_LEN as u16 + payload_length);
+        ipv4.set_identification(rand::random());
+        ipv4.set_flags(DONT_FRAGMENT);
+        ipv4.set_fragment_offset(0);
+        ipv4.set_ttl(64);
+        ipv4.set_next_level_protocol(next_protocol);
+        ipv4.set_source(src_addr);
+        ipv4.set_destination(dst_addr);
+        let csm = checksum(&ipv4.to_immutable());
+        ipv4.set_checksum(csm);
+    }
 
-//     Ok(buffer.to_vec())
-// }
+    Ok(buffer.to_vec())
+}
 
 pub fn create_ipv6_header(
     src_addr: Ipv6Addr,

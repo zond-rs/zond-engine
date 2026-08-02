@@ -28,7 +28,7 @@ use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::timer::ScanBudget;
 use crate::core::models::{host::Host, ip::set::IpSet};
 use crate::core::session::{ScanContext, ScanEvent};
-use crate::network::transport::{self, TransportHandle, TransportType};
+use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
 use crate::protocols as protocol;
 use crate::system::interface::RoutedTarget;
 use crate::{error, success};
@@ -64,12 +64,12 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 
 type SeqNum = u32;
 
-/// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port` and
-/// logs the outcome. Returns the randomly chosen sequence number it was
-/// sent with on success, so the caller can record it for correlating a
-/// later reply.
+/// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port`
+/// through `sender` and logs the outcome. Returns the randomly chosen
+/// sequence number it was sent with on success, so the caller can record it
+/// for correlating a later reply.
 fn send_syn(
-    tcp_handle: &TransportHandle,
+    sender: &dyn ProbeSender,
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
@@ -89,9 +89,7 @@ fn send_syn(
             }
         };
 
-    let tcp_packet = TcpPacket::new(&packet)?;
-
-    match tcp_handle.tx.send_to(tcp_packet, dst_addr) {
+    match sender.send(&packet, src_addr, dst_addr) {
         Ok(_) => {
             success!(verbosity = 2, "Sent SYN probe to {dst_addr}:{dst_port}");
             Some(seq_num)
@@ -116,8 +114,8 @@ pub struct RoutedScanner {
     /// Membership-and-count view of `targets`, used to filter incoming replies
     /// and to size the adaptive deadline.
     ips: IpSet,
-    /// Raw socket used to send SYN probes and receive replies.
-    tcp_handle: TransportHandle,
+    /// Transport used to send SYN probes and receive replies.
+    transport: ProbeTransport,
     /// Governs how long this sweep keeps running, adapting to observed
     /// round-trip times.
     deadline: AdaptiveDeadline,
@@ -146,7 +144,7 @@ impl NetworkExplorer for RoutedScanner {
             }
 
             tokio::select! {
-                res = self.tcp_handle.rx.recv() => {
+                res = self.transport.rx.recv() => {
                     match res {
                         Some((bytes, ip)) => self.handle_discovery_reply(ip, &bytes),
                         None => break,
@@ -169,8 +167,7 @@ impl RoutedScanner {
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
     ) -> anyhow::Result<Self> {
-        let tcp_handle: TransportHandle =
-            transport::start_packet_capture(TransportType::TcpLayer4)?;
+        let transport = ProbeTransport::open(ProbeKind::TcpSyn)?;
 
         let mut ips = IpSet::new();
         for target in &targets {
@@ -184,7 +181,7 @@ impl RoutedScanner {
             ctx,
             targets,
             ips,
-            tcp_handle,
+            transport,
             deadline,
             dns_tx,
             rtt_map: HashMap::new(),
@@ -253,7 +250,7 @@ impl RoutedScanner {
     }
 
     fn send_tcp_packet(&mut self, src_addr: IpAddr, dst_addr: IpAddr, dst_port: u16) {
-        if let Some(seq_num) = send_syn(&self.tcp_handle, src_addr, dst_addr, dst_port) {
+        if let Some(seq_num) = send_syn(self.transport.tx.as_ref(), src_addr, dst_addr, dst_port) {
             self.rtt_map.insert((dst_addr, seq_num), Instant::now());
         }
     }

@@ -4,19 +4,24 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-//! # Raw Transport-Layer Sockets
+//! # Raw Transport-Layer Sockets (Send Path)
 //!
-//! Wraps `pnet`'s raw transport-layer (Layer 4) sockets behind a single
-//! handle that streams incoming packets over a Tokio channel, so async
-//! scanning code never has to touch the underlying blocking socket API
-//! directly.
+//! Wraps `pnet`'s raw transport-layer (Layer 4) sockets for *sending* probes,
+//! so async scanning code never touches the blocking socket API directly.
+//!
+//! This module deliberately opens no receiver. Receiving TCP/UDP over a raw
+//! socket works on Linux but is silently dead on macOS/BSD, whose kernels
+//! never deliver those protocols to raw sockets - so replies are captured at
+//! the link layer via [`crate::network::capture`] instead, and every scanner
+//! pairs this send-only handle with that capture through
+//! [`crate::network::probe::ProbeTransport`].
 //!
 //! A raw socket is bound to one address family: an IPv4 socket can neither
-//! send to nor receive from an IPv6 destination, and vice versa. TCP
-//! scanning needs both, since targets can be either, so [`start_packet_capture`]
-//! opens one socket per address family for [`TransportType::TcpLayer4`] and
-//! merges their incoming traffic into a single stream. [`TransportType::UdpLayer4`]
-//! stays IPv4-only, since nothing in this crate currently needs UDP over IPv6.
+//! send to nor receive from an IPv6 destination, and vice versa. TCP scanning
+//! needs both, since targets can be either, so [`open_sender`] opens one
+//! socket per address family for [`TransportType::TcpLayer4`].
+//! [`TransportType::UdpLayer4`] stays IPv4-only, since nothing in this crate
+//! currently needs UDP over IPv6.
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -28,7 +33,6 @@ use pnet::{
         self, TransportChannelType, TransportProtocol, TransportReceiver, TransportSender,
     },
 };
-use tokio::sync::mpsc;
 
 const TRANSPORT_BUFFER_SIZE: usize = 4096;
 const CHANNEL_TYPE_UDP_V4: TransportChannelType =
@@ -45,13 +49,6 @@ pub enum TransportType {
     TcpLayer4,
     /// Raw UDP datagrams, over IPv4 only.
     UdpLayer4,
-}
-
-/// A handle to an open raw-socket capture: a sender for outgoing packets and
-/// a channel yielding incoming ones as they arrive.
-pub struct TransportHandle {
-    pub tx: TransportSenderHandle,
-    pub rx: mpsc::UnboundedReceiver<(Vec<u8>, IpAddr)>,
 }
 
 /// Routes an outgoing packet to whichever underlying raw socket matches its
@@ -81,57 +78,36 @@ impl TransportSenderHandle {
     }
 }
 
-macro_rules! spawn_listener {
-    ($tx:expr, $rx:expr, $iter_func:path) => {
-        std::thread::spawn(move || {
-            let mut iterator = $iter_func(&mut $rx);
-            loop {
-                if let Ok((packet, source_ip)) = iterator.next() {
-                    if $tx.send((packet.packet().to_vec(), source_ip)).is_err() {
-                        break;
-                    }
-                }
-            }
-        })
-    };
-}
-
-pub fn start_packet_capture(transport_type: TransportType) -> anyhow::Result<TransportHandle> {
-    let (queue_tx, queue_rx) = mpsc::unbounded_channel();
-
-    let tx = match transport_type {
+/// Opens only the outgoing half of a raw transport capture: the raw
+/// socket(s) needed to *send* segments, with no receiver threads.
+///
+/// Sending over a raw Layer-4 socket works on every supported OS - it's only
+/// *receiving* TCP/UDP this way that BSD-derived kernels refuse - so the
+/// [`RawIpSender`](crate::network::probe::RawIpSender) pairs this send-only
+/// handle with a `libpcap` capture for replies instead of the (silently dead
+/// on macOS) raw-socket receiver.
+pub fn open_sender(transport_type: TransportType) -> anyhow::Result<TransportSenderHandle> {
+    match transport_type {
         TransportType::TcpLayer4 => {
-            let (v4_tx, mut v4_rx) = open_channel(CHANNEL_TYPE_TCP_V4)?;
-            let v4_queue_tx = queue_tx.clone();
-            spawn_listener!(v4_queue_tx, v4_rx, pnet::transport::tcp_packet_iter);
-
-            // IPv6 raw sockets aren't available on every host (some sandboxes
-            // and containers block them even as root); TCP scanning still
-            // works over IPv4 alone, so a failure here isn't fatal.
+            let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_TCP_V4)?;
+            // IPv6 raw sockets aren't available on every host; TCP scanning
+            // still works over IPv4 alone, so a failure here isn't fatal.
             let v6 = open_channel(CHANNEL_TYPE_TCP_V6)
                 .ok()
-                .map(|(v6_tx, mut v6_rx)| {
-                    let v6_queue_tx = queue_tx.clone();
-                    spawn_listener!(v6_queue_tx, v6_rx, pnet::transport::tcp_packet_iter);
-                    Arc::new(Mutex::new(v6_tx))
-                });
-
-            TransportSenderHandle {
+                .map(|(v6_tx, _v6_rx)| Arc::new(Mutex::new(v6_tx)));
+            Ok(TransportSenderHandle {
                 v4: Some(Arc::new(Mutex::new(v4_tx))),
                 v6,
-            }
+            })
         }
         TransportType::UdpLayer4 => {
-            let (tx, mut rx) = open_channel(CHANNEL_TYPE_UDP_V4)?;
-            spawn_listener!(queue_tx, rx, pnet::transport::udp_packet_iter);
-            TransportSenderHandle {
-                v4: Some(Arc::new(Mutex::new(tx))),
+            let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_UDP_V4)?;
+            Ok(TransportSenderHandle {
+                v4: Some(Arc::new(Mutex::new(v4_tx))),
                 v6: None,
-            }
+            })
         }
-    };
-
-    Ok(TransportHandle { tx, rx: queue_rx })
+    }
 }
 
 fn open_channel(

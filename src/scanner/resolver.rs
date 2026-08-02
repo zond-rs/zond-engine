@@ -27,7 +27,7 @@ use pnet::packet::{Packet, udp::UdpPacket};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::network::transport::{self, TransportHandle, TransportType};
+use crate::network::probe::{ProbeKind, ProbeTransport};
 
 const DNS_PORT: u16 = 53;
 const MDNS_PORT: u16 = 5353;
@@ -36,7 +36,7 @@ type Hostname = String;
 type TransID = u16;
 
 pub struct HostnameResolver {
-    udp_handle: TransportHandle,
+    transport: ProbeTransport,
     std_socket: std::sync::Arc<tokio::net::UdpSocket>,
     dns_map: HashMap<TransID, IpAddr>,
     mdns_cache: HashMap<IpAddr, MdnsRecord>,
@@ -58,7 +58,7 @@ impl HostnameResolver {
         let tokio_socket = tokio::net::UdpSocket::from_std(std_socket)?;
 
         Ok(Self {
-            udp_handle: transport::start_packet_capture(TransportType::UdpLayer4)?,
+            transport: ProbeTransport::open(ProbeKind::UdpResolve)?,
             std_socket: std::sync::Arc::new(tokio_socket),
             dns_map: HashMap::new(),
             mdns_cache: HashMap::new(),
@@ -94,7 +94,7 @@ impl HostnameResolver {
                             let _ = self.process_dns_payload(&buf[..len]);
                         }
                 }
-                pkt = self.udp_handle.rx.recv() => {
+                pkt = self.transport.rx.recv() => {
                     if let Some((bytes, _addr)) = pkt {
                         match self.process_udp_packets(&bytes) {
                             Ok(_) => {},
@@ -115,7 +115,7 @@ impl HostnameResolver {
                                     let _ = self.process_dns_payload(&buf[..len]);
                                 }
                         }
-                        pkt = self.udp_handle.rx.recv() => {
+                        pkt = self.transport.rx.recv() => {
                             if let Some((bytes, _addr)) = pkt {
                                 let _ = self.process_udp_packets(&bytes);
                             }
