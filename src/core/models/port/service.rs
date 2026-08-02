@@ -25,10 +25,15 @@ pub struct Service {
     /// The specific product or daemon name (e.g., "OpenSSH", "nginx").
     product: Option<String>,
 
+    /// The organization behind the product, when an analyzer can attribute one
+    /// (e.g., "NGINX", "Apache Software Foundation", a self-signed cert's `O=`).
+    vendor: Option<String>,
+
     /// The version string reported or detected (e.g., "8.9p1", "1.21.0").
     version: Option<String>,
 
-    /// Additional metadata or environment hints (e.g., "protocol 2.0", "Debian").
+    /// Additional metadata or environment hints (e.g., "protocol 2.0", "Debian",
+    /// an HTTP `X-Powered-By` technology like "PHP/8.2.1").
     extrainfo: Option<String>,
 
     /// A list of Common Platform Enumeration (CPE) identifiers.
@@ -46,6 +51,7 @@ impl Service {
             name: name.into(),
             confidence: confidence.min(100),
             product: None,
+            vendor: None,
             version: None,
             extrainfo: None,
             cpe: Vec::new(),
@@ -65,6 +71,11 @@ impl Service {
     /// Returns the detected product name, if any.
     pub fn product(&self) -> Option<&str> {
         self.product.as_deref()
+    }
+
+    /// Returns the attributed vendor/organization, if any.
+    pub fn vendor(&self) -> Option<&str> {
+        self.vendor.as_deref()
     }
 
     /// Returns the detected version string, if any.
@@ -88,9 +99,21 @@ impl Service {
         self
     }
 
+    /// Builder method to assign a vendor string.
+    pub fn with_vendor(mut self, vendor: impl Into<String>) -> Self {
+        self.vendor = Some(vendor.into());
+        self
+    }
+
     /// Builder method to assign a version string.
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
+        self
+    }
+
+    /// Builder method to assign an extrainfo string.
+    pub fn with_extrainfo(mut self, extrainfo: impl Into<String>) -> Self {
+        self.extrainfo = Some(extrainfo.into());
         self
     }
 
@@ -120,6 +143,9 @@ impl Service {
             if other.product.is_some() {
                 self.product = other.product;
             }
+            if other.vendor.is_some() {
+                self.vendor = other.vendor;
+            }
             if other.version.is_some() {
                 self.version = other.version;
             }
@@ -130,6 +156,9 @@ impl Service {
             // Additive merge for equal or lower confidence probes
             if self.product.is_none() {
                 self.product = other.product;
+            }
+            if self.vendor.is_none() {
+                self.vendor = other.vendor;
             }
             if self.version.is_none() {
                 self.version = other.version;
@@ -174,6 +203,25 @@ mod tests {
         assert_eq!(srv.product(), Some("nginx"));
         assert_eq!(srv.version(), Some("1.21.0"));
         assert_eq!(srv.cpe().len(), 1);
+    }
+
+    #[test]
+    fn service_carries_vendor_and_extrainfo() {
+        let srv = Service::new("http", 90)
+            .with_product("Apache")
+            .with_vendor("Apache Software Foundation")
+            .with_extrainfo("PHP/8.2.1");
+
+        assert_eq!(srv.vendor(), Some("Apache Software Foundation"));
+        assert_eq!(srv.extrainfo(), Some("PHP/8.2.1"));
+    }
+
+    #[test]
+    fn service_merge_higher_confidence_overwrites_vendor() {
+        let mut srv1 = Service::new("http", 50).with_vendor("Unknown");
+        let srv2 = Service::new("http", 100).with_vendor("NGINX");
+        srv1.merge(srv2);
+        assert_eq!(srv1.vendor(), Some("NGINX"));
     }
 
     #[test]

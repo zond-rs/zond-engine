@@ -242,9 +242,13 @@ fn tls_cert_identifies_self_signed_appliance() {
     assert_eq!(verdict.service.as_deref(), Some("ssl"));
     assert_eq!(verdict.vendor.as_deref(), Some("Zond Appliance"));
     assert_eq!(verdict.confidence, Confidence::Probable);
+    let service = verdict.to_service().unwrap();
     // The tunnel's own `ssl` verdict is not re-prefixed into `ssl/ssl`, even
     // under a TLS context.
-    assert_eq!(verdict.to_service().unwrap().name(), "ssl");
+    assert_eq!(service.name(), "ssl");
+    // The vendor now reaches the projected Service — previously extracted here
+    // but dropped by `to_service`, which had no vendor field.
+    assert_eq!(service.vendor(), Some("Zond Appliance"));
 }
 
 #[test]

@@ -102,6 +102,11 @@ pub struct Evidence {
     pub product: Option<String>,
     pub version: Option<String>,
     pub vendor: Option<String>,
+    /// Supplementary detail that is not the product itself: an environment hint
+    /// or a *secondary* technology (an HTTP `X-Powered-By` value like `PHP/8.2`,
+    /// an SSH `protocol 2.0`). Kept separate from `product` precisely so it can
+    /// never displace the primary product in the resolver.
+    pub extrainfo: Option<String>,
     /// A CPE identifier, when known. Kept as a string until a typed CPE model
     /// lands; forward-compatible with structured parsing later.
     pub cpe: Option<String>,
@@ -121,6 +126,7 @@ impl Evidence {
             product: None,
             version: None,
             vendor: None,
+            extrainfo: None,
             cpe: None,
             tunnel: None,
             confidence,
@@ -148,6 +154,11 @@ impl Evidence {
         self
     }
 
+    pub fn with_extrainfo(mut self, extrainfo: impl Into<String>) -> Self {
+        self.extrainfo = Some(extrainfo.into());
+        self
+    }
+
     /// Records the tunnel this observation was read through.
     pub fn with_tunnel(mut self, tunnel: Tunnel) -> Self {
         self.tunnel = Some(tunnel);
@@ -166,6 +177,7 @@ pub struct ServiceVerdict {
     pub product: Option<String>,
     pub version: Option<String>,
     pub vendor: Option<String>,
+    pub extrainfo: Option<String>,
     pub cpe: Option<String>,
     /// The tunnel the winning `service` was observed through, if any. Drives the
     /// `ssl/…` label in [`ServiceVerdict::to_service`].
@@ -203,6 +215,7 @@ impl ServiceVerdict {
             fill(&mut verdict.service, &ev.service);
             fill(&mut verdict.version, &ev.version);
             fill(&mut verdict.vendor, &ev.vendor);
+            fill(&mut verdict.extrainfo, &ev.extrainfo);
             fill(&mut verdict.cpe, &ev.cpe);
         }
 
@@ -247,8 +260,14 @@ impl ServiceVerdict {
         if let Some(product) = &self.product {
             service = service.with_product(product.clone());
         }
+        if let Some(vendor) = &self.vendor {
+            service = service.with_vendor(vendor.clone());
+        }
         if let Some(version) = &self.version {
             service = service.with_version(version.clone());
+        }
+        if let Some(extrainfo) = &self.extrainfo {
+            service = service.with_extrainfo(extrainfo.clone());
         }
         Some(service)
     }
@@ -356,6 +375,29 @@ mod tests {
         let verdict = ServiceVerdict::resolve(vec![plain]);
         assert_eq!(verdict.tunnel, None);
         assert_eq!(verdict.to_service().unwrap().name(), "http");
+    }
+
+    #[test]
+    fn vendor_and_extrainfo_resolve_and_reach_the_service() {
+        // Different analyzers contribute different attribution: a Server match
+        // names product+vendor, an X-Powered-By match adds a secondary tech.
+        // Both must survive resolution and land on the projected Service.
+        let server = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("Apache")
+            .with_vendor("Apache Software Foundation");
+        let powered_by = ev(Confidence::Probable)
+            .with_service("http")
+            .with_extrainfo("PHP/8.2.1");
+        let verdict = ServiceVerdict::resolve(vec![server, powered_by]);
+
+        assert_eq!(verdict.vendor.as_deref(), Some("Apache Software Foundation"));
+        assert_eq!(verdict.extrainfo.as_deref(), Some("PHP/8.2.1"));
+
+        let service = verdict.to_service().expect("names a service");
+        assert_eq!(service.product(), Some("Apache"));
+        assert_eq!(service.vendor(), Some("Apache Software Foundation"));
+        assert_eq!(service.extrainfo(), Some("PHP/8.2.1"));
     }
 
     #[test]

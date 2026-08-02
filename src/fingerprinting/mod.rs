@@ -317,6 +317,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyze_composes_curated_product_vendor_with_powered_by_extrainfo() {
+        // End-to-end composition across analyzers: the curated Apache signature
+        // (banner analyzer) supplies the rich product + vendor, the structured
+        // HTTP analyzer supplies the X-Powered-By extrainfo, and the framework
+        // never usurps the product slot. All three land on one Service.
+        let responses = ResponseSet::from_banners(vec![
+            "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58\r\nX-Powered-By: PHP/8.2.1\r\n\r\n".to_string(),
+        ]);
+        let service = analyze(80, responses, None)
+            .await
+            .expect("names a service")
+            .to_service()
+            .expect("projects onto a service");
+
+        assert_eq!(service.name(), "http");
+        assert_eq!(service.product(), Some("Apache HTTP Server"));
+        assert_eq!(service.vendor(), Some("Apache Software Foundation"));
+        assert_eq!(service.version(), Some("2.4.58"));
+        assert_eq!(service.extrainfo(), Some("PHP/8.2.1"));
+    }
+
+    #[tokio::test]
     async fn analyze_resolves_a_versionless_server_to_its_name_not_generic_http() {
         // Regression: a versionless `Server` is Probable, the same as the HTTP
         // analyzer's baseline. If the baseline names a product, the stable sort

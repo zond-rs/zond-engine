@@ -154,9 +154,17 @@ NTP) also depend on §D UDP; the rest are TCP-only and can land now.
       global-only match, closing the `220` SMTP-vs-FTP residue on non-standard
       ports (best-match closed the specificity half; this closes the
       port-context half). Pairs with the softmatch stop rule.
-- [ ] **Surface vendor + cert CN/SAN attribution:** extracted onto
-      `Evidence`/`ServiceVerdict` but dropped by `to_service()` (the crate
-      `Service` model has no `vendor` field). Not user-visible today.
+- [x] **Surface vendor + extrainfo attribution:** the `Service` model now carries
+      `vendor`, and `extrainfo` is threaded through `Evidence`/`ServiceVerdict` →
+      `to_service()`. Fixes the silent data loss where `TlsCertAnalyzer` extracted
+      a vendor that `to_service()` then dropped, and unblocks the HTTP analyzer's
+      `X-Powered-By` (now emitted as `extrainfo`, so a framework never displaces
+      the server in the single `product` slot). Composes cleanly: a curated
+      Apache signature supplies product+vendor while the HTTP analyzer supplies
+      extrainfo, all merging onto one `Service`.
+- [ ] **Cert CN/SAN host attribution:** the subject CN / SAN hostnames describe
+      the *host*, not the service, so they belong on the `Host` model, not
+      `Evidence`. Separate follow-up at that layer.
 
 ### F. Artifact & ops — commercial-necessary
 

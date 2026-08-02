@@ -28,16 +28,14 @@
 //!
 //! ## Scope of the evidence it emits
 //!
-//! For now it reports the **`Server`** product/version and a baseline `http`
-//! service label. It deliberately does *not* turn `X-Powered-By`, `Set-Cookie`,
-//! or `X-AspNet-Version` into evidence yet: those name a *secondary* technology
-//! (`Apache` serving `PHP/8.2`), and the crate's [`Service`] model has only one
-//! `product` slot — emitting them would let the framework clobber the real
-//! server in the resolver. The parser already exposes every header, so once an
-//! `extrainfo`/technologies field exists (see the resolver-quality track in
-//! `docs/fingerprinting.md`) those become a few lines here.
+//! It reports the **`Server`** product/version, the **`X-Powered-By`** secondary
+//! technology (as `extrainfo`), and a baseline `http` service label. Server and
+//! X-Powered-By live in different slots on purpose: `X-Powered-By` names a
+//! *component* (`Apache` serving `PHP/8.2`), so it goes to `extrainfo` and can
+//! never displace the real server in the resolver's single `product` slot. The
+//! parser exposes every header, so further secondary-tech signals (`Set-Cookie`
+//! framework cookies, `X-AspNet-Version`) are a few lines more when wanted.
 //!
-//! [`Service`]: crate::core::models::port::Service
 //! [`ResponseSet`]: super::response::ResponseSet
 
 use async_trait::async_trait;
@@ -106,6 +104,18 @@ impl Analyzer for HttpHeadersAnalyzer {
                 .with_product(product);
             server.version = version;
             evidence.push(stamp(server, ctx));
+        }
+
+        // `X-Powered-By`: a *secondary* technology (PHP, ASP.NET, Express). It
+        // names a component running behind the server, not the server itself, so
+        // it goes to `extrainfo` — never the product slot the server owns.
+        if let Some(powered_by) = http.header("x-powered-by") {
+            evidence.push(stamp(
+                Evidence::new(SourceId::HttpHeaders, Confidence::Probable)
+                    .with_service("http")
+                    .with_extrainfo(powered_by),
+                ctx,
+            ));
         }
 
         evidence
@@ -264,6 +274,29 @@ mod tests {
         // The baseline names no product: that slot is reserved for a real server
         // name so a versionless `Server` header is never clobbered (see below).
         assert_eq!(evidence[0].product, None);
+    }
+
+    #[test]
+    fn x_powered_by_becomes_extrainfo_beside_the_server_product() {
+        // The server owns the product slot; the framework is a separate signal.
+        let evidence = analyze(
+            80,
+            "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58\r\nX-Powered-By: PHP/8.2.1\r\n\r\n",
+        );
+        assert!(
+            evidence
+                .iter()
+                .any(|e| e.product.as_deref() == Some("Apache")),
+            "server keeps the product slot"
+        );
+        assert!(
+            evidence
+                .iter()
+                .any(|e| e.extrainfo.as_deref() == Some("PHP/8.2.1")),
+            "framework lands in extrainfo"
+        );
+        // Crucially, no evidence names PHP as a *product*.
+        assert!(evidence.iter().all(|e| e.product.as_deref() != Some("PHP/8.2.1")));
     }
 
     #[test]
