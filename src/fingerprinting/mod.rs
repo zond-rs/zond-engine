@@ -41,6 +41,7 @@ pub mod model;
 mod analyzer;
 mod db;
 mod matcher;
+mod pattern;
 mod prefilter;
 mod response;
 mod tls;

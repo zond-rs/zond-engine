@@ -24,13 +24,21 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use regex::RegexBuilder;
-
 /// The authoring schema, shared verbatim with the runtime. Kept in an inner
 /// module so its items don't leak into the build script's namespace.
 mod schema {
     include!("src/core/models/fingerprint.rs");
 }
+
+/// The pattern-compilation logic, shared verbatim with the runtime so the build
+/// accepts *exactly* the patterns the engine can match — including the
+/// backref/lookaround patterns that fall back to the bounded fancy engine. If it
+/// compiles here, the runtime can compile it; if it fails here, it never ships.
+///
+/// Loaded via `#[path]` (rather than `include!`) so the file's own module docs
+/// are honoured — `include!` forbids the inner `//!` comments it carries.
+#[path = "src/fingerprinting/pattern.rs"]
+mod pattern;
 
 use schema::{MAX_COMPILED_REGEX_BYTES, ServiceDefinition};
 
@@ -73,11 +81,10 @@ fn validate(def: &ServiceDefinition, path: &Path) {
     // redesign RFC, phase 3); they are not a defect and are not flagged here.
 
     for (i, rule) in def.r#match.iter().enumerate() {
-        // Compile with the exact limit the runtime uses, so the build accepts
-        // precisely the patterns the engine will.
-        let compiled = RegexBuilder::new(&rule.pattern)
-            .size_limit(MAX_COMPILED_REGEX_BYTES)
-            .build()
+        // Compile with the exact engine-selection and limit the runtime uses, so
+        // the build accepts precisely the patterns the engine will — including
+        // backref/lookaround patterns via the bounded fancy fallback.
+        let compiled = pattern::compile(&rule.pattern, MAX_COMPILED_REGEX_BYTES)
             .unwrap_or_else(|e| {
                 panic!(
                     "{file}: service '{service}' match #{i} has an unusable pattern: {e}\n  \

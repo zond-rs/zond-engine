@@ -65,6 +65,13 @@ Five properties. Every checklist item below serves one of them.
   product/vendor count; ties keep the lowest index (deterministic).
 - Prefilter uses only *required* literals, so a match is never wrongly excluded;
   soundness is asserted against the corpus, not assumed.
+- **Backtracking bound is a step limit, not a wall clock.** The fancy-regex
+  fallback is bounded by a backtrack-step ceiling, chosen over a wall-clock
+  timeout deliberately: a synchronous match can't be interrupted mid-flight (a
+  watchdog thread would leave the runaway match burning a core anyway), and a
+  step ceiling is deterministic — same pattern + input resolves identically on
+  every machine, keeping the corpus tests reproducible. A limit hit is reported
+  as "no match", never a hang.
 
 ---
 
@@ -97,11 +104,15 @@ NTP) also depend on §D UDP; the rest are TCP-only and can land now.
 
 ### C. Matcher completeness
 
-- [ ] **Backref/lookaround path:** sandboxed `fancy-regex`, hard wall-clock
-      timeout, on the blocking pool. Today `build.rs` *fails* on any pattern the
-      `regex` crate can't compile → a hard ceiling on what corpus can be imported
-      (many real-world nmap-derived signatures use backrefs). **Blocker for broad
-      import.**
+- [x] **Backref/lookaround path** (`pattern.rs`, new): a two-tier matcher. The
+      linear `regex` (RE2) engine stays the primary; a bounded `fancy-regex`
+      backtracking engine is the fallback, reached *only* for patterns the linear
+      engine can't express (backrefs, lookaround). `build.rs` and the runtime
+      share the exact selection logic (`#[path]`-included), so the build accepts
+      precisely what the engine can match instead of aborting — the import
+      ceiling is lifted. Bound is a deterministic **backtrack-step limit**, not a
+      wall clock (see durable decision below); analysis already runs off the
+      reactor, so a bounded match can't stall the scheduler.
 
 ### D. Probing strategy
 

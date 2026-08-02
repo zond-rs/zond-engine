@@ -12,19 +12,22 @@
 //! them by index, so a candidate set from either can be matched uniformly.
 //!
 //! A signature's regex is compiled **lazily, once, on first match**, guarded by
-//! a `OnceLock` — never eagerly for the whole set, never per connection. The
-//! signature set is validated at build time (see `build.rs`) with the same size
-//! limit, so in a correctly built binary compilation never fails; the `None`
-//! branch is defence in depth and is logged, not silently dropped.
+//! a `OnceLock` — never eagerly for the whole set, never per connection. Which
+//! engine compiles it (the linear `regex` engine, or the bounded `fancy-regex`
+//! backtracking engine for backref/lookaround patterns) is decided by
+//! [`pattern::compile`](super::pattern::compile); see that module for the
+//! selection and safety rules. The signature set is validated at build time
+//! (see `build.rs`) with the same logic and size limit, so in a correctly built
+//! binary compilation never fails; the `None` branch is defence in depth and is
+//! logged, not silently dropped.
 
 use std::sync::OnceLock;
-
-use regex::{Regex, RegexBuilder};
 
 use crate::core::models::fingerprint::{MAX_COMPILED_REGEX_BYTES, MatchRule};
 use crate::warn;
 
 use super::model::{Confidence, Evidence, SourceId};
+use super::pattern::{self, CompiledPattern};
 
 /// A single service signature: metadata, its pattern, and its lazily-compiled
 /// regex.
@@ -36,7 +39,7 @@ pub struct Signature {
     version_group: Option<u8>,
     pattern: String,
     /// `None` until first use; `Some(None)` if the pattern failed to compile.
-    compiled: OnceLock<Option<Regex>>,
+    compiled: OnceLock<Option<CompiledPattern>>,
 }
 
 impl Signature {
@@ -58,20 +61,17 @@ impl Signature {
         &self.pattern
     }
 
-    /// Compiles the regex on first call and caches it. Returns `None` if the
-    /// pattern is unsupported by the engine (logged once).
+    /// Compiles the regex on first call and caches it. Returns `None` if neither
+    /// engine can compile the pattern (logged once).
     pub fn compile(&self) {
-        self.regex();
+        self.compiled();
     }
 
-    fn regex(&self) -> Option<&Regex> {
+    fn compiled(&self) -> Option<&CompiledPattern> {
         self.compiled
-            .get_or_init(|| {
-                match RegexBuilder::new(&self.pattern)
-                    .size_limit(MAX_COMPILED_REGEX_BYTES)
-                    .build()
-                {
-                    Ok(regex) => Some(regex),
+            .get_or_init(
+                || match pattern::compile(&self.pattern, MAX_COMPILED_REGEX_BYTES) {
+                    Ok(compiled) => Some(compiled),
                     Err(e) => {
                         warn!(
                             "Fingerprint signature for service '{}' was skipped: its pattern \
@@ -80,8 +80,8 @@ impl Signature {
                         );
                         None
                     }
-                }
-            })
+                },
+            )
             .as_ref()
     }
 
@@ -89,12 +89,7 @@ impl Signature {
     /// [`MatchQuality`] for ranking it against other signatures that match the
     /// same response. `None` if the pattern does not match.
     pub fn identify(&self, response: &str) -> Option<Match> {
-        let captures = self.regex()?.captures(response)?;
-
-        let version = self
-            .version_group
-            .and_then(|group| captures.get(group as usize))
-            .map(|m| m.as_str().to_string());
+        let version = self.compiled()?.identify(response, self.version_group)?.version;
 
         // A captured version is a materially stronger signal than a bare match.
         let confidence = if version.is_some() {
@@ -212,8 +207,20 @@ mod tests {
     }
 
     #[test]
+    fn backreference_signature_matches_via_the_fancy_engine() {
+        // A backreference: unsupported by the linear engine, so this signature
+        // only identifies at all because of the backtracking fallback. It used
+        // to be rejected outright at build time.
+        let sig = Signature::new("dup", &rule(r"^(\w+) \1$", None, None));
+        assert!(sig.identify("token token").is_some());
+        assert!(sig.identify("token other").is_none());
+    }
+
+    #[test]
     fn unsupported_pattern_is_skipped_not_fatal() {
-        let sig = Signature::new("x", &rule(r"(a)\1", None, None));
+        // A genuine syntax error that neither engine can compile: identification
+        // yields nothing rather than panicking.
+        let sig = Signature::new("x", &rule("(", None, None));
         assert!(sig.identify("aa").is_none());
     }
 }
