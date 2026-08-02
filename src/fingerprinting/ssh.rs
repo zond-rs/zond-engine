@@ -252,6 +252,7 @@ fn skip_name_list(buf: &[u8], cursor: &mut usize) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
@@ -364,6 +365,32 @@ mod tests {
         assert_eq!(evidence[0].service.as_deref(), Some("ssh"));
         assert_eq!(evidence[0].confidence, Confidence::Strong);
         assert_eq!(evidence[0].extrainfo.as_deref(), Some("hostkey ssh-ed25519"));
+    }
+
+    proptest! {
+        /// The `KEXINIT` parser runs on bytes straight off an untrusted socket,
+        /// so on *any* input it must return cleanly — never panic, never read out
+        /// of bounds, never allocate on a hostile length. If this completes for
+        /// every generated buffer, parsing is both safe and bounded.
+        #[test]
+        fn kexinit_parser_never_panics_on_arbitrary_bytes(
+            bytes in proptest::collection::vec(any::<u8>(), 0..4096)
+        ) {
+            let _ = server_host_key_algorithms(&bytes);
+        }
+
+        /// A well-formed message byte + cookie followed by fuzzed bytes drives
+        /// the name-list cursor itself under adversarial lengths, past the early
+        /// message-type rejection.
+        #[test]
+        fn kexinit_name_list_cursor_survives_fuzzed_lengths(
+            tail in proptest::collection::vec(any::<u8>(), 0..512)
+        ) {
+            let mut payload = vec![SSH_MSG_KEXINIT];
+            payload.extend_from_slice(&[0u8; 16]);
+            payload.extend_from_slice(&tail);
+            let _ = server_host_key_algorithms(&payload);
+        }
     }
 
     #[tokio::test]

@@ -207,6 +207,7 @@ impl HttpResponse {
 mod tests {
     use super::*;
     use crate::fingerprinting::model::Tunnel;
+    use proptest::prelude::*;
 
     fn analyze(port: u16, banner: &str) -> Vec<Evidence> {
         HttpHeadersAnalyzer.analyze(
@@ -302,6 +303,32 @@ mod tests {
     #[test]
     fn non_http_banner_yields_nothing() {
         assert!(analyze(22, "SSH-2.0-OpenSSH_9.6p1 Debian-3").is_empty());
+    }
+
+    proptest! {
+        /// The response parser must never panic on arbitrary input — banners come
+        /// off the wire. `(?s)` lets `.` match newlines, so CRLF/LF framing edge
+        /// cases (empty lines, colon-less lines, unterminated headers) are fuzzed.
+        #[test]
+        fn http_parse_never_panics(raw in "(?s).*") {
+            let _ = HttpResponse::parse(&raw);
+        }
+
+        /// A valid status line forces the header-parsing path, so the fuzzed body
+        /// exercises header splitting rather than bouncing off the `HTTP/` gate.
+        #[test]
+        fn http_header_parsing_never_panics(body in "(?s).*") {
+            if let Some(response) = HttpResponse::parse(&format!("HTTP/1.1 200 OK\r\n{body}")) {
+                let _ = response.header("server");
+                let _ = response.header("x-powered-by");
+            }
+        }
+
+        /// `Server` value splitting must never panic on arbitrary content.
+        #[test]
+        fn parse_server_never_panics(value in "(?s).*") {
+            let _ = parse_server(&value);
+        }
     }
 
     #[test]

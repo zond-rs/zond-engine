@@ -28,6 +28,7 @@
 //! Restoring it (a re-import that preserves `flags`, not a blanket case-fold) is
 //! tracked in the RFC; until then the baseline is pinned so it cannot grow.
 
+use proptest::prelude::*;
 use rayon::prelude::*;
 
 use super::db::SignatureDb;
@@ -218,6 +219,26 @@ fn non_standard_port_is_identified_via_global_fallback() {
     assert_eq!(verdict.service.as_deref(), Some("ssh"));
     assert_eq!(verdict.product.as_deref(), Some("OpenSSH"));
     assert_eq!(verdict.version.as_deref(), Some("9.6p1"));
+}
+
+proptest! {
+    /// The headline fuzz target: adversarial banners driven through the **whole**
+    /// banner-matching pipeline against the real signature set — prefilter →
+    /// (fast/fancy) regex → best-match → resolve. It must never panic and always
+    /// terminate, no matter what bytes arrive on the wire. Port 80 exercises the
+    /// port-linked tier; unmatched banners fall through to the global prefilter,
+    /// so both matching paths are covered.
+    #[test]
+    fn banner_pipeline_never_panics_on_adversarial_input(banner in "(?s).*") {
+        let responses = ResponseSet::from_banners(vec![banner]);
+        let ctx = PortContext {
+            port: 80,
+            addr: None,
+            tunnel: None,
+        };
+        let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses, &Collected::default());
+        let _ = ServiceVerdict::resolve(evidence);
+    }
 }
 
 #[test]

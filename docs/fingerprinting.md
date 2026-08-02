@@ -195,8 +195,15 @@ anticipated.
       update/licensing story. Decide `rkyv` vs `bincode` by benchmark.
 - [ ] **Per-analyzer metrics:** hit rate, latency, top-N services — so tuning is
       data-driven.
-- [ ] **Fuzz the matchers** against random/adversarial banners: assert no panic,
-      bounded time.
+- [x] **Fuzz the matchers/parsers** against random/adversarial input (`proptest`,
+      colocated per module): the full banner pipeline against the real signature
+      set (prefilter → fast/fancy regex → best-match → resolve), the SSH `KEXINIT`
+      binary parser (arbitrary bytes — no panic, no OOB, no hostile-length alloc),
+      the HTTP response + `Server` parsers, the fancy-regex path (terminates on
+      any input — the backtrack-step limit is the guarantee), and the prefilter.
+      No panics found; the properties stand as regression guards. Deeper coverage
+      (a `cargo-fuzz` target with a corpus) can layer on later, but the untrusted
+      surfaces are covered.
 
 ---
 

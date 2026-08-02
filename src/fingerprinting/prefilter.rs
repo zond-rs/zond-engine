@@ -172,6 +172,7 @@ fn longest_required_literal(hir: &Hir) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::core::models::fingerprint::MatchRule;
+    use proptest::prelude::*;
 
     fn sig(pattern: &str) -> Signature {
         Signature::new(
@@ -221,5 +222,17 @@ mod tests {
         let sigs = [sig(r"^Server: nginx")];
         let pf = LiteralPrefilter::build(&sigs);
         assert!(pf.candidates("server: NGINX/1.25").contains(&0));
+    }
+
+    proptest! {
+        /// Candidate selection scans arbitrary response text through the
+        /// Aho-Corasick automaton; it must never panic on any input, including
+        /// non-ASCII and control characters.
+        #[test]
+        fn candidates_never_panics_on_arbitrary_input(response in "(?s).*") {
+            let sigs = [sig(r"^HTTP/\d"), sig(r"Server: (\w+)"), sig(r"^\d{3} ")];
+            let pf = LiteralPrefilter::build(&sigs);
+            let _ = pf.candidates(&response);
+        }
     }
 }
