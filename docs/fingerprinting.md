@@ -90,11 +90,18 @@ Five properties. Every checklist item below serves one of them.
 - [ ] Author CPEs in signatures and populate `Evidence.cpe` (downstream
       CVE/inventory; currently always `None`).
 
-### B. Analyzers — 3 of ~8 today
+### B. Analyzers — 4 of ~8 today
 
 The two-phase trait now hosts active analyzers: each overrides `collect` (its own
 probe/handshake) and parses in `analyze`. The three that need UDP (SNMP, DNS,
 NTP) also depend on §D UDP; the rest are TCP-only and can land now.
+
+The active `collect→analyze` path is proven end-to-end with real network I/O by
+the SSH analyzer (below) — the reference every future active analyzer (JARM, the
+nerva binary/ICS handlers) follows. Enabling it required threading the peer
+address into `PortContext` (`addr`), since an active analyzer opens its own
+connection; that is the "grows as analyzers need more context" the trait
+anticipated.
 
 - [x] HTTP headers (structured, not regex-on-banner) — `http.rs`. Parses the
       captured response and lifts product/version out of the `Server` header for
@@ -109,7 +116,15 @@ NTP) also depend on §D UDP; the rest are TCP-only and can land now.
       non-standard ports** (a `GET` from `collect` where no probe is configured)
       is the other open follow-up.
 - [ ] JARM / JA3S TLS-stack fingerprinting (identifies servers silent in-band).
-- [ ] SSH (KEX / host-key algorithms).
+- [x] SSH (KEX / host-key algorithms) — `ssh.rs`. The first **active** analyzer:
+      `collect` opens its own connection, does the identification-string exchange,
+      and reads the server's `SSH_MSG_KEXINIT`; `analyze` bounds-checks and parses
+      the algorithm name-lists. Adds protocol confirmation (`ssh` at Strong — a
+      completed handshake, not just a banner starting `SSH-`) and the server's
+      host-key algorithm list as `extrainfo` (a basis for later HASSH-style ID).
+      Active probing is gated to ports 22/2222 (a fresh connection is not free);
+      SSH on non-standard ports still resolves from its banner, and driving the
+      probe from an accumulating service guess is the ProbePlanner's job (§D).
 - [ ] SNMP (`sysDescr`), favicon hash, DNS `version.bind`, NTP.
 - [ ] Binary / ICS analyzers arrive via nerva (see below).
 

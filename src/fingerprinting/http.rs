@@ -210,7 +210,7 @@ mod tests {
 
     fn analyze(port: u16, banner: &str) -> Vec<Evidence> {
         HttpHeadersAnalyzer.analyze(
-            &PortContext { port, tunnel: None },
+            &PortContext { port, addr: None, tunnel: None },
             &ResponseSet::from_banners(vec![banner.to_string()]),
             &Collected::default(),
         )
@@ -321,6 +321,7 @@ mod tests {
         let evidence = HttpHeadersAnalyzer.analyze(
             &PortContext {
                 port: 443,
+                addr: None,
                 tunnel: Some(Tunnel::Tls),
             },
             &ResponseSet::from_banners(vec![

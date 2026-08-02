@@ -45,6 +45,7 @@ mod matcher;
 mod pattern;
 mod prefilter;
 mod response;
+mod ssh;
 mod tls;
 mod tls_cert;
 
@@ -56,6 +57,7 @@ pub use db::SignatureDb;
 pub use http::HttpHeadersAnalyzer;
 pub use model::{Confidence, Evidence, ServiceVerdict, SourceId, Tunnel};
 pub use response::{Collected, ResponseSet, TlsInfo};
+pub use ssh::SshAnalyzer;
 pub use tls_cert::TlsCertAnalyzer;
 
 use std::time::Duration;
@@ -94,6 +96,9 @@ pub fn lookup_service_name(port: u16, _protocol: Protocol) -> Option<String> {
 /// If nothing identifies, a trimmed printable banner is attached as a
 /// last-resort label rather than leaving the port unannotated.
 pub async fn fingerprint_tcp(stream: TcpStream, mut port: Port) -> Port {
+    // Capture the peer address before `gather` consumes the stream, so active
+    // analyzers can open their own connection to the same target.
+    let addr = stream.peer_addr().ok();
     let (responses, tunnel) = gather(stream, port.number()).await;
     if responses.is_empty() {
         return port;
@@ -102,7 +107,7 @@ pub async fn fingerprint_tcp(stream: TcpStream, mut port: Port) -> Port {
     // Analysis runs off the reactor. Keep a last-resort banner label before the
     // response set is handed to the blocking pool.
     let fallback = first_printable(&responses.banners);
-    match analyze(port.number(), responses, tunnel).await {
+    match analyze(port.number(), addr, responses, tunnel).await {
         Some(verdict) if !verdict.is_empty() => {
             if let Some(service) = verdict.to_service() {
                 port.set_service(service);
@@ -209,6 +214,7 @@ where
 static ANALYZERS: &[&dyn Analyzer] = &[
     &BannerRegexAnalyzer,
     &HttpHeadersAnalyzer,
+    &SshAnalyzer,
     &TlsCertAnalyzer,
 ];
 
@@ -221,10 +227,11 @@ static ANALYZERS: &[&dyn Analyzer] = &[
 /// nothing (or the blocking task failed to join).
 async fn analyze(
     port: u16,
+    addr: Option<std::net::SocketAddr>,
     responses: ResponseSet,
     tunnel: Option<Tunnel>,
 ) -> Option<ServiceVerdict> {
-    let ctx = PortContext { port, tunnel };
+    let ctx = PortContext { port, addr, tunnel };
 
     // Phase 1 — I/O on the reactor: let each interested analyzer run its own
     // probes. Passive analyzers return an empty `Collected` (their inputs are in
@@ -292,7 +299,7 @@ mod tests {
         // passive analyzers) followed by the off-reactor analyze phase — over a
         // recorded SSH banner, and asserts it resolves through to a verdict.
         let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1 Debian".to_string()]);
-        let verdict = analyze(22, responses, None).await.expect("names a service");
+        let verdict = analyze(22, None, responses, None).await.expect("names a service");
 
         assert_eq!(verdict.service.as_deref(), Some("ssh"));
         assert_eq!(verdict.product.as_deref(), Some("OpenSSH"));
@@ -307,7 +314,7 @@ mod tests {
         let responses = ResponseSet::from_banners(vec![
             "HTTP/1.1 200 OK\r\nServer: gunicorn/21.2.0\r\nContent-Type: text/html\r\n\r\n".to_string(),
         ]);
-        let verdict = analyze(8000, responses, None)
+        let verdict = analyze(8000, None, responses, None)
             .await
             .expect("names a service");
 
@@ -325,7 +332,7 @@ mod tests {
         let responses = ResponseSet::from_banners(vec![
             "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58\r\nX-Powered-By: PHP/8.2.1\r\n\r\n".to_string(),
         ]);
-        let service = analyze(80, responses, None)
+        let service = analyze(80, None, responses, None)
             .await
             .expect("names a service")
             .to_service()
@@ -347,7 +354,7 @@ mod tests {
         let responses = ResponseSet::from_banners(vec![
             "HTTP/1.1 403 Forbidden\r\nServer: cloudflare\r\n\r\n".to_string(),
         ]);
-        let verdict = analyze(8000, responses, None)
+        let verdict = analyze(8000, None, responses, None)
             .await
             .expect("names a service");
 
@@ -359,6 +366,6 @@ mod tests {
     async fn analyze_returns_none_when_no_evidence() {
         // No banners and no TLS: both phases run, no analyzer produces evidence,
         // so the orchestration resolves to nothing rather than an empty verdict.
-        assert!(analyze(1, ResponseSet::default(), None).await.is_none());
+        assert!(analyze(1, None, ResponseSet::default(), None).await.is_none());
     }
 }

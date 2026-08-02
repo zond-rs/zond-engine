@@ -159,6 +159,7 @@ fn golden_cases_resolve_end_to_end() {
         let evidence = BannerRegexAnalyzer.analyze(
             &PortContext {
                 port: case.port,
+                addr: None,
                 tunnel: None,
             },
             &responses,
@@ -203,7 +204,7 @@ fn non_standard_port_is_identified_via_global_fallback() {
 
     let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1".to_string()]);
     let evidence = BannerRegexAnalyzer.analyze(
-        &PortContext { port, tunnel: None },
+        &PortContext { port, addr: None, tunnel: None },
         &responses,
         &Collected::default(),
     );
@@ -227,6 +228,7 @@ fn port_linked_match_is_tagged_port_confirmed() {
     let evidence = BannerRegexAnalyzer.analyze(
         &PortContext {
             port: 22,
+            addr: None,
             tunnel: None,
         },
         &responses,
@@ -255,6 +257,7 @@ fn tls_cert_identifies_self_signed_appliance() {
     let evidence = TlsCertAnalyzer.analyze(
         &PortContext {
             port: 8443,
+            addr: None,
             tunnel: Some(Tunnel::Tls),
         },
         &responses,
@@ -284,6 +287,7 @@ fn tls_analyzer_is_silent_without_a_certificate() {
             .analyze(
                 &PortContext {
                     port: 80,
+                    addr: None,
                     tunnel: None,
                 },
                 &responses,
@@ -300,6 +304,7 @@ fn banner_matched_in_a_tunnel_is_labelled_with_scheme() {
     let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1".to_string()]);
     let ctx = PortContext {
         port: 22,
+        addr: None,
         tunnel: Some(Tunnel::Tls),
     };
     let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses, &Collected::default());

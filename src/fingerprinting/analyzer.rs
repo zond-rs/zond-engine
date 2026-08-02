@@ -45,6 +45,12 @@ use super::response::{Collected, ResponseSet};
 /// transport hints) without changing the trait.
 pub struct PortContext {
     pub port: u16,
+    /// The address of the peer being fingerprinted, when known. An *active*
+    /// analyzer whose [`collect`](Analyzer::collect) opens its own connection
+    /// (SSH, JARM, a binary/ICS handler) dials this; it is `None` in contexts
+    /// with no live socket (unit tests, a passive-only path), and passive
+    /// analyzers ignore it.
+    pub addr: Option<std::net::SocketAddr>,
     /// The tunnel the responses were read through, if any. Set when the
     /// transport handed the analyzers data decrypted from a tunnel, so evidence
     /// drawn from it can be marked accordingly.
@@ -225,6 +231,7 @@ mod tests {
     async fn collect_output_reaches_analyze_as_raw_bytes() {
         let ctx = PortContext {
             port: 7,
+            addr: None,
             tunnel: None,
         };
         // Drive the two phases exactly as the orchestrator does.
@@ -241,6 +248,7 @@ mod tests {
         // A passive analyzer that never overrides `collect` gathers nothing.
         let ctx = PortContext {
             port: 80,
+            addr: None,
             tunnel: None,
         };
         assert!(BannerRegexAnalyzer.collect(&ctx).await.frames.is_empty());

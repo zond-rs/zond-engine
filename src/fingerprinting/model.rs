@@ -67,7 +67,9 @@ pub enum SourceId {
     TlsCert,
     /// A structured parse of an HTTP response's headers.
     HttpHeaders,
-    // Future analyzers: Jarm, Ssh, Snmp, Favicon, ...
+    /// An SSH protocol exchange (version banner + `KEXINIT` algorithm lists).
+    Ssh,
+    // Future analyzers: Jarm, Snmp, Favicon, ...
 }
 
 /// A transport the observed traffic was carried *inside*.
