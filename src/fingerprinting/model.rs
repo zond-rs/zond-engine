@@ -65,7 +65,9 @@ pub enum SourceId {
     BannerRegex,
     /// A TLS certificate was captured and parsed from the port.
     TlsCert,
-    // Future analyzers: HttpHeaders, Jarm, Ssh, Snmp, Favicon, ...
+    /// A structured parse of an HTTP response's headers.
+    HttpHeaders,
+    // Future analyzers: Jarm, Ssh, Snmp, Favicon, ...
 }
 
 /// A transport the observed traffic was carried *inside*.
@@ -199,11 +201,25 @@ impl ServiceVerdict {
                 verdict.tunnel = ev.tunnel;
             }
             fill(&mut verdict.service, &ev.service);
-            fill(&mut verdict.product, &ev.product);
             fill(&mut verdict.version, &ev.version);
             fill(&mut verdict.vendor, &ev.vendor);
             fill(&mut verdict.cpe, &ev.cpe);
         }
+
+        // Product needs more than "first that carries it". A product that merely
+        // echoes the service ("http" for service http) is what a *generic* match
+        // emits — the `generic_http` signature, the matcher's product-defaults-
+        // to-service fallback, a protocol baseline. It conveys no product, so it
+        // must not bury a real name ("cloudflare", bare "nginx") that a more
+        // specific analyzer supplied at the *same* confidence. Prefer the
+        // highest-confidence product that names something beyond the service;
+        // fall back to the echo only when nothing more specific exists.
+        verdict.product = evidence
+            .iter()
+            .filter_map(|ev| ev.product.as_deref())
+            .find(|product| Some(*product) != verdict.service.as_deref())
+            .or_else(|| evidence.iter().find_map(|ev| ev.product.as_deref()))
+            .map(str::to_string);
 
         verdict.evidence = evidence;
         verdict
@@ -275,6 +291,36 @@ mod tests {
         assert_eq!(verdict.product.as_deref(), Some("nginx"));
         assert_eq!(verdict.confidence, Confidence::Strong);
         assert_eq!(verdict.evidence.len(), 2);
+    }
+
+    #[test]
+    fn informative_product_beats_a_service_echo_at_equal_confidence() {
+        // A generic match names product == service ("http"); a specific analyzer
+        // names the real server ("cloudflare"). Both Probable. Even with the
+        // generic one first (as `generic_http` sorts ahead of later analyzers),
+        // the real name must win the product slot.
+        let generic = ev(Confidence::Probable)
+            .with_service("http")
+            .with_product("http");
+        let specific = ev(Confidence::Probable)
+            .with_service("http")
+            .with_product("cloudflare");
+        let verdict = ServiceVerdict::resolve(vec![generic, specific]);
+
+        assert_eq!(verdict.service.as_deref(), Some("http"));
+        assert_eq!(verdict.product.as_deref(), Some("cloudflare"));
+    }
+
+    #[test]
+    fn service_echo_product_is_kept_when_nothing_more_specific_exists() {
+        // With no informative product available, the echo is still surfaced
+        // rather than dropping the product entirely.
+        let verdict = ServiceVerdict::resolve(vec![
+            ev(Confidence::Probable)
+                .with_service("http")
+                .with_product("http"),
+        ]);
+        assert_eq!(verdict.product.as_deref(), Some("http"));
     }
 
     #[test]

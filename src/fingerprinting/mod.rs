@@ -40,6 +40,7 @@ pub mod model;
 
 mod analyzer;
 mod db;
+mod http;
 mod matcher;
 mod pattern;
 mod prefilter;
@@ -52,6 +53,7 @@ mod corpus;
 
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::SignatureDb;
+pub use http::HttpHeadersAnalyzer;
 pub use model::{Confidence, Evidence, ServiceVerdict, SourceId, Tunnel};
 pub use response::{Collected, ResponseSet, TlsInfo};
 pub use tls_cert::TlsCertAnalyzer;
@@ -204,7 +206,11 @@ where
 /// instances are stateless zero-sized values, so a `'static` slice of shared
 /// references is free and lets both phases (and the blocking task) reference the
 /// same set.
-static ANALYZERS: &[&dyn Analyzer] = &[&BannerRegexAnalyzer, &TlsCertAnalyzer];
+static ANALYZERS: &[&dyn Analyzer] = &[
+    &BannerRegexAnalyzer,
+    &HttpHeadersAnalyzer,
+    &TlsCertAnalyzer,
+];
 
 /// Runs the registered analyzers over `responses` and resolves their evidence
 /// into a verdict, honouring the two-phase contract: each interested analyzer's
@@ -291,6 +297,40 @@ mod tests {
         assert_eq!(verdict.service.as_deref(), Some("ssh"));
         assert_eq!(verdict.product.as_deref(), Some("OpenSSH"));
         assert_eq!(verdict.version.as_deref(), Some("9.6p1"));
+    }
+
+    #[tokio::test]
+    async fn analyze_identifies_a_long_tail_http_server_end_to_end() {
+        // gunicorn has no curated `Server:` regex, so the banner analyzer can
+        // only reach the generic `http` label. The structured HTTP analyzer must
+        // carry it through to product and version via the full pipeline.
+        let responses = ResponseSet::from_banners(vec![
+            "HTTP/1.1 200 OK\r\nServer: gunicorn/21.2.0\r\nContent-Type: text/html\r\n\r\n".to_string(),
+        ]);
+        let verdict = analyze(8000, responses, None)
+            .await
+            .expect("names a service");
+
+        assert_eq!(verdict.service.as_deref(), Some("http"));
+        assert_eq!(verdict.product.as_deref(), Some("gunicorn"));
+        assert_eq!(verdict.version.as_deref(), Some("21.2.0"));
+    }
+
+    #[tokio::test]
+    async fn analyze_resolves_a_versionless_server_to_its_name_not_generic_http() {
+        // Regression: a versionless `Server` is Probable, the same as the HTTP
+        // analyzer's baseline. If the baseline names a product, the stable sort
+        // keeps it first and the real server ("cloudflare") is buried under a
+        // generic "http". This must resolve to the server name.
+        let responses = ResponseSet::from_banners(vec![
+            "HTTP/1.1 403 Forbidden\r\nServer: cloudflare\r\n\r\n".to_string(),
+        ]);
+        let verdict = analyze(8000, responses, None)
+            .await
+            .expect("names a service");
+
+        assert_eq!(verdict.service.as_deref(), Some("http"));
+        assert_eq!(verdict.product.as_deref(), Some("cloudflare"));
     }
 
     #[tokio::test]

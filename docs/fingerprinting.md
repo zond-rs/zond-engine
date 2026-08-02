@@ -90,13 +90,24 @@ Five properties. Every checklist item below serves one of them.
 - [ ] Author CPEs in signatures and populate `Evidence.cpe` (downstream
       CVE/inventory; currently always `None`).
 
-### B. Analyzers — 2 of ~8 today
+### B. Analyzers — 3 of ~8 today
 
 The two-phase trait now hosts active analyzers: each overrides `collect` (its own
 probe/handshake) and parses in `analyze`. The three that need UDP (SNMP, DNS,
 NTP) also depend on §D UDP; the rest are TCP-only and can land now.
 
-- [ ] HTTP headers (structured, not regex-on-banner) — highest value.
+- [x] HTTP headers (structured, not regex-on-banner) — `http.rs`. Parses the
+      captured response and lifts product/version out of the `Server` header for
+      *any* server (`gunicorn`, `Microsoft-IIS/10.0`, `openresty`, …), covering
+      the long tail the curated `Server:` regexes miss. Passive (reads the
+      shared `get_root` response, no double-probe). Scope today is the `Server`
+      header + a baseline `http` label; `X-Powered-By`/`Set-Cookie`/
+      `X-AspNet-Version` are deferred until the `Service` model gains an
+      `extrainfo`/technologies slot (see §E) — emitting them now would clobber
+      the real server in the single `product` field. The parser already exposes
+      every header, so that is a small follow-up. **Active HTTP probing on
+      non-standard ports** (a `GET` from `collect` where no probe is configured)
+      is the other open follow-up.
 - [ ] JARM / JA3S TLS-stack fingerprinting (identifies servers silent in-band).
 - [ ] SSH (KEX / host-key algorithms).
 - [ ] SNMP (`sysDescr`), favicon hash, DNS `version.bind`, NTP.
