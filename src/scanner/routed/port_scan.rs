@@ -102,6 +102,25 @@ impl SynPortScanner {
         })
     }
 
+    /// Builds a scanner around an already-constructed transport, opening no
+    /// sockets. The seam that lets tests drive probe/reply correlation with a
+    /// mock sender and synthesized replies.
+    #[cfg(test)]
+    pub(crate) fn with_transport(
+        resolver: SourceResolver,
+        ctx: ScanContext,
+        transport: ProbeTransport,
+        target_count: usize,
+    ) -> Self {
+        Self {
+            resolver,
+            ctx,
+            transport,
+            deadline: AdaptiveDeadline::new(DEADLINE_CONFIG, target_count),
+            pending: PendingProbes::new(),
+        }
+    }
+
     /// Consumes `targets`, sending a SYN probe for each TCP one - this
     /// scanner doesn't support UDP or SCTP yet, so those are skipped - and
     /// classifying every reply, until every probe has been resolved or the
@@ -216,5 +235,159 @@ impl SynPortScanner {
         drop(host);
 
         let _ = self.ctx.events_tx.send(ScanEvent::HostUpdated(ip));
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    use pnet::ipnetwork::{IpNetwork, Ipv4Network};
+    use pnet::packet::tcp::MutableTcpPacket;
+
+    use crate::core::session::ScanSession;
+    use crate::network::capture::CaptureGuard;
+    use crate::network::probe::{MockSender, ProbeTransport};
+
+    const SYN: u8 = 1 << 1;
+    const RST: u8 = 1 << 2;
+    const ACK: u8 = 1 << 4;
+    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+
+    /// An interface whose /24 contains [`TARGET`], so source resolution
+    /// answers on-link without a kernel route probe.
+    fn on_link_interface() -> pnet::datalink::NetworkInterface {
+        pnet::datalink::NetworkInterface {
+            name: "test0".to_string(),
+            description: String::new(),
+            index: 0,
+            mac: None,
+            ips: vec![IpNetwork::V4(
+                Ipv4Network::new(Ipv4Addr::new(192, 168, 1, 50), 24).unwrap(),
+            )],
+            flags: 0,
+        }
+    }
+
+    /// Builds a bare 20-byte TCP segment carrying the given source port,
+    /// acknowledgement number, and flags - the shape a captured reply arrives
+    /// in after the link and IP headers are stripped.
+    fn tcp_segment(src_port: u16, ack: u32, flags: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 20];
+        let mut tcp = MutableTcpPacket::new(&mut buf).unwrap();
+        tcp.set_source(src_port);
+        tcp.set_destination(40_000);
+        tcp.set_data_offset(5);
+        tcp.set_acknowledgement(ack);
+        tcp.set_flags(flags);
+        buf
+    }
+
+    /// A scanner wired to a recording [`MockSender`] and an idle capture
+    /// stream, plus the session store to assert against.
+    fn scanner_with_mock() -> (SynPortScanner, ScanSession) {
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let transport =
+            ProbeTransport::from_parts(Box::new(MockSender::default()), reply_rx, CaptureGuard::noop());
+        let resolver = SourceResolver::from_interfaces(&[on_link_interface()]);
+        let scanner = SynPortScanner::with_transport(resolver, ctx, transport, 8);
+        (scanner, session)
+    }
+
+    /// Sends a probe to `TARGET:port` and returns the sequence number it was
+    /// recorded under, so a matching reply can be synthesized.
+    fn probe(scanner: &mut SynPortScanner, port: u16) -> SeqNum {
+        scanner.send_probe(Target {
+            ip: TARGET,
+            port,
+            protocol: Protocol::Tcp,
+        });
+        scanner.pending.get(&(TARGET, port)).expect("probe recorded").0
+    }
+
+    fn port_state(session: &ScanSession, port: u16) -> Option<PortState> {
+        session
+            .store
+            .get(&TARGET)
+            .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
+    }
+
+    #[test]
+    fn syn_ack_matching_probe_is_open() {
+        let (mut scanner, session) = scanner_with_mock();
+        let seq = probe(&mut scanner, 80);
+
+        scanner.handle_reply(TARGET, &tcp_segment(80, seq.wrapping_add(1), SYN | ACK));
+
+        assert_eq!(port_state(&session, 80), Some(PortState::Open));
+        assert!(!scanner.pending.contains_key(&(TARGET, 80)));
+    }
+
+    #[test]
+    fn rst_matching_probe_is_closed() {
+        let (mut scanner, session) = scanner_with_mock();
+        let seq = probe(&mut scanner, 81);
+
+        scanner.handle_reply(TARGET, &tcp_segment(81, seq.wrapping_add(1), RST | ACK));
+
+        assert_eq!(port_state(&session, 81), Some(PortState::Closed));
+    }
+
+    #[test]
+    fn reply_with_wrong_ack_is_ignored() {
+        let (mut scanner, session) = scanner_with_mock();
+        let seq = probe(&mut scanner, 82);
+
+        // Acknowledgement doesn't correspond to our sequence number: a stray
+        // or spoofed segment, not a reply to our probe.
+        scanner.handle_reply(TARGET, &tcp_segment(82, seq.wrapping_add(999), SYN | ACK));
+
+        assert_eq!(port_state(&session, 82), None);
+        assert!(scanner.pending.contains_key(&(TARGET, 82)));
+    }
+
+    #[test]
+    fn reply_for_unprobed_port_is_ignored() {
+        let (mut scanner, session) = scanner_with_mock();
+        let seq = probe(&mut scanner, 80);
+
+        // Same host, but a port we never probed.
+        scanner.handle_reply(TARGET, &tcp_segment(1234, seq.wrapping_add(1), SYN | ACK));
+
+        assert_eq!(port_state(&session, 1234), None);
+        assert!(scanner.pending.contains_key(&(TARGET, 80)));
+    }
+
+    #[test]
+    fn unanswered_probes_resolve_as_filtered() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, 443);
+
+        scanner.resolve_remaining_as_filtered();
+
+        assert_eq!(port_state(&session, 443), Some(PortState::Filtered));
+        assert!(scanner.pending.is_empty());
+    }
+
+    #[test]
+    fn non_tcp_targets_are_not_probed() {
+        let (mut scanner, _session) = scanner_with_mock();
+        scanner.send_probe(Target {
+            ip: TARGET,
+            port: 53,
+            protocol: Protocol::Udp,
+        });
+        assert!(scanner.pending.is_empty());
     }
 }

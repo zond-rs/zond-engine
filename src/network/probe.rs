@@ -31,10 +31,12 @@
 
 use std::net::IpAddr;
 
+use anyhow::Context;
 use pnet::datalink;
 use pnet::packet::Packet;
 
 use crate::network::capture::{self, CaptureGuard, CaptureStream};
+use crate::network::ethernet::EthernetSender;
 use crate::network::transport::{self, TransportSenderHandle, TransportType};
 
 /// Which kind of raw probe traffic a [`ProbeTransport`] carries. Determines
@@ -117,6 +119,18 @@ impl ProbeSender for RawIpSender {
     }
 }
 
+/// A sender that refuses to send. Paired with a capture for receive-only
+/// transports (the DNS/mDNS resolver only listens), so no raw send socket is
+/// opened just to be thrown away - and a stray send attempt fails loudly
+/// rather than silently doing nothing.
+struct NoopSender;
+
+impl ProbeSender for NoopSender {
+    fn send(&self, _segment: &[u8], _src: IpAddr, _dst: IpAddr) -> anyhow::Result<()> {
+        anyhow::bail!("this transport is receive-only and cannot send")
+    }
+}
+
 /// A probe transport: a swappable sender paired with a capture-fed receive
 /// stream. Scanners hold one of these and depend only on [`ProbeTransport::tx`]
 /// and [`ProbeTransport::rx`], never on how either is realized.
@@ -132,15 +146,24 @@ pub struct ProbeTransport {
 }
 
 impl ProbeTransport {
-    /// Opens a transport for `kind`: a raw-socket sender plus a filtered
-    /// `libpcap` capture on every currently-up interface.
+    /// Opens a transport for `kind` using the send backend appropriate to the
+    /// platform: a raw-socket sender on Unix, and the Layer-2 Ethernet sender
+    /// on Windows, where the OS blocks raw-socket TCP sends outright. Both
+    /// pair with a filtered `libpcap` capture on every currently-up interface.
     ///
     /// Capturing on all up interfaces (loopback included) means a reply is
     /// caught whichever interface the kernel routed the probe out of - the
     /// egress path can differ per destination, especially with a VPN in play,
     /// so binding to a single guessed interface would silently miss replies.
     pub fn open(kind: ProbeKind) -> anyhow::Result<Self> {
-        Self::open_on(kind, &capturable_interfaces())
+        #[cfg(windows)]
+        {
+            Self::open_ethernet(kind)
+        }
+        #[cfg(not(windows))]
+        {
+            Self::open_on(kind, &capturable_interfaces())
+        }
     }
 
     /// [`open`](Self::open) against an explicit interface-name list.
@@ -149,6 +172,40 @@ impl ProbeTransport {
         let tx: Box<dyn ProbeSender> = Box::new(RawIpSender::open(kind)?);
         Ok(Self {
             tx,
+            rx,
+            _capture: capture,
+        })
+    }
+
+    /// Opens a transport whose send half builds and emits Ethernet frames
+    /// directly ([`EthernetSender`]) instead of using a raw socket.
+    ///
+    /// For Windows (where raw TCP sends are blocked) and for deliberately
+    /// bypassing the host stack. Fails if the host has no Ethernet-capable
+    /// interface - only a tunnel or loopback - in which case the raw-IP
+    /// transport from [`open`](Self::open) is the correct choice.
+    pub fn open_ethernet(kind: ProbeKind) -> anyhow::Result<Self> {
+        let sender = EthernetSender::from_system()
+            .context("no Ethernet-capable interface for Layer-2 send")?;
+        let (rx, capture) = capture::start(&capturable_interfaces(), kind.filter())?;
+        Ok(Self {
+            tx: Box::new(sender),
+            rx,
+            _capture: capture,
+        })
+    }
+
+    /// Opens a receive-only transport: a filtered capture on every up
+    /// interface, with a sender that refuses to send.
+    ///
+    /// For consumers that only listen - the passive DNS/mDNS resolver never
+    /// emits raw packets - so no raw send socket is opened. That drops an
+    /// unnecessary privilege requirement and failure mode (a host that blocks
+    /// raw sockets can still resolve hostnames).
+    pub fn open_receiver(kind: ProbeKind) -> anyhow::Result<Self> {
+        let (rx, capture) = capture::start(&capturable_interfaces(), kind.filter())?;
+        Ok(Self {
+            tx: Box::new(NoopSender),
             rx,
             _capture: capture,
         })
@@ -177,6 +234,23 @@ fn capturable_interfaces() -> Vec<String> {
         .collect()
 }
 
+/// A [`ProbeSender`] that records what it was asked to send instead of
+/// touching a socket, so transport wiring and scanner logic can be exercised
+/// without root. Available crate-wide under `cfg(test)`.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub struct MockSender {
+    pub sent: std::sync::Arc<std::sync::Mutex<Vec<(Vec<u8>, IpAddr, IpAddr)>>>,
+}
+
+#[cfg(test)]
+impl ProbeSender for MockSender {
+    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> anyhow::Result<()> {
+        self.sent.lock().unwrap().push((segment.to_vec(), src, dst));
+        Ok(())
+    }
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -189,21 +263,6 @@ fn capturable_interfaces() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-
-    /// A [`ProbeSender`] that records what it was asked to send instead of
-    /// touching a socket, so transport wiring can be exercised without root.
-    #[derive(Clone, Default)]
-    pub struct MockSender {
-        pub sent: Arc<Mutex<Vec<(Vec<u8>, IpAddr, IpAddr)>>>,
-    }
-
-    impl ProbeSender for MockSender {
-        fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> anyhow::Result<()> {
-            self.sent.lock().unwrap().push((segment.to_vec(), src, dst));
-            Ok(())
-        }
-    }
 
     #[tokio::test]
     async fn transport_forwards_sends_and_delivers_replies() {

@@ -58,7 +58,7 @@ impl HostnameResolver {
         let tokio_socket = tokio::net::UdpSocket::from_std(std_socket)?;
 
         Ok(Self {
-            transport: ProbeTransport::open(ProbeKind::UdpResolve)?,
+            transport: ProbeTransport::open_receiver(ProbeKind::UdpResolve)?,
             std_socket: std::sync::Arc::new(tokio_socket),
             dns_map: HashMap::new(),
             mdns_cache: HashMap::new(),

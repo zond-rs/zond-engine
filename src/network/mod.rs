@@ -6,8 +6,10 @@
 
 pub mod capture;
 pub mod channel;
+pub mod ethernet;
 pub mod frame;
 pub mod mac;
+pub mod neighbor;
 pub mod probe;
 pub mod transport;
 pub mod utils;
