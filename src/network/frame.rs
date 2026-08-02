@@ -110,10 +110,8 @@ pub fn strip_to_ip(link: LinkType, frame: &[u8]) -> Option<&[u8]> {
 fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
     let ethertype = u16::from_be_bytes([*frame.get(12)?, *frame.get(13)?]);
     let (ethertype, payload_offset) = if ethertype == ETHERTYPE_VLAN {
-        let inner = u16::from_be_bytes([
-            *frame.get(ETH_HDR_LEN + 2)?,
-            *frame.get(ETH_HDR_LEN + 3)?,
-        ]);
+        let inner =
+            u16::from_be_bytes([*frame.get(ETH_HDR_LEN + 2)?, *frame.get(ETH_HDR_LEN + 3)?]);
         (inner, ETH_HDR_LEN + VLAN_TAG_LEN)
     } else {
         (ethertype, ETH_HDR_LEN)

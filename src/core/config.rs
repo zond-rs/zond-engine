@@ -4,6 +4,28 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
+/// How the privileged (raw) scanners put probe packets on the wire.
+///
+/// Only affects the raw-socket SYN paths; the unprivileged TCP-connect
+/// fallback and the on-link ARP/ICMPv6 [`LocalScanner`](crate::scanner)
+/// discovery are unaffected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SendMode {
+    /// Pick per platform: a raw Layer-4 socket on Unix - which the kernel
+    /// routes, ARPs, and fragments for us, and which works through VPN
+    /// tunnels - and self-built Layer-2 Ethernet frames on Windows, where the
+    /// OS blocks raw-socket TCP sends outright.
+    #[default]
+    Auto,
+    /// Force a raw Layer-4 socket regardless of platform.
+    RawSocket,
+    /// Force self-built Layer-2 Ethernet frames, bypassing the host IP stack
+    /// (and the local firewall / connection tracking that a raw-socket send
+    /// still traverses). Requires an Ethernet-capable interface and can't
+    /// reach loopback or tunnel-only destinations.
+    Ethernet,
+}
+
 /// Global configuration options for the scanner execution.
 ///
 /// This struct controls the runtime behavior of the application, including
@@ -61,4 +83,9 @@ pub struct ZondConfig {
     /// * Running as a background system service (daemon).
     /// * Non-interactive testing environments.
     pub disable_input: bool,
+
+    /// How raw SYN probes are placed on the wire. Defaults to
+    /// [`SendMode::Auto`], which is correct on every supported platform;
+    /// override it only to force Layer-2 sends for host-stack-bypass scanning.
+    pub send_mode: SendMode,
 }

@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
+use crate::core::config::SendMode;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::host::Host;
 use crate::core::models::port::{Port, PortState, Protocol, Service};
@@ -89,8 +90,9 @@ impl SynPortScanner {
         resolver: SourceResolver,
         ctx: ScanContext,
         target_count: usize,
+        send_mode: SendMode,
     ) -> anyhow::Result<Self> {
-        let transport = ProbeTransport::open(ProbeKind::TcpSyn)?;
+        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, send_mode)?;
         let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, target_count);
 
         Ok(Self {
@@ -175,7 +177,8 @@ impl SynPortScanner {
             return;
         };
 
-        if let Some(seq_num) = send_syn(self.transport.tx.as_ref(), src_addr, target.ip, target.port)
+        if let Some(seq_num) =
+            send_syn(self.transport.tx.as_ref(), src_addr, target.ip, target.port)
         {
             self.pending
                 .insert((target.ip, target.port), (seq_num, Instant::now()));
@@ -298,8 +301,11 @@ mod tests {
     fn scanner_with_mock() -> (SynPortScanner, ScanSession) {
         let (session, ctx) = ScanSession::new();
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
-        let transport =
-            ProbeTransport::from_parts(Box::new(MockSender::default()), reply_rx, CaptureGuard::noop());
+        let transport = ProbeTransport::from_parts(
+            Box::new(MockSender::default()),
+            reply_rx,
+            CaptureGuard::noop(),
+        );
         let resolver = SourceResolver::from_interfaces(&[on_link_interface()]);
         let scanner = SynPortScanner::with_transport(resolver, ctx, transport, 8);
         (scanner, session)
@@ -313,7 +319,11 @@ mod tests {
             port,
             protocol: Protocol::Tcp,
         });
-        scanner.pending.get(&(TARGET, port)).expect("probe recorded").0
+        scanner
+            .pending
+            .get(&(TARGET, port))
+            .expect("probe recorded")
+            .0
     }
 
     fn port_state(session: &ScanSession, port: u16) -> Option<PortState> {

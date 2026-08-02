@@ -24,6 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::core::config::SendMode;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::timer::ScanBudget;
 use crate::core::models::{host::Host, ip::set::IpSet};
@@ -166,8 +167,9 @@ impl RoutedScanner {
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
+        send_mode: SendMode,
     ) -> anyhow::Result<Self> {
-        let transport = ProbeTransport::open(ProbeKind::TcpSyn)?;
+        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, send_mode)?;
 
         let mut ips = IpSet::new();
         for target in &targets {

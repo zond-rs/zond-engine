@@ -27,6 +27,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 
+use zond_engine::core::config::{SendMode, ZondConfig};
 use zond_engine::core::models::ip::set::IpSet;
 use zond_engine::core::models::port::{PortSet, PortState};
 use zond_engine::core::models::target::{TargetMap, TargetSet};
@@ -34,6 +35,17 @@ use zond_engine::scanner;
 
 #[tokio::main]
 async fn main() {
+    // `cargo run --example verify_scan -- ethernet` forces the Layer-2 send
+    // backend (host-stack bypass); otherwise the platform default is used.
+    // Note: Ethernet mode can't reach loopback, so only the 1.1.1.1 check is
+    // meaningful there.
+    let send_mode = match std::env::args().nth(1).as_deref() {
+        Some("ethernet") => SendMode::Ethernet,
+        Some("raw") => SendMode::RawSocket,
+        _ => SendMode::Auto,
+    };
+    println!("Send mode: {send_mode:?}\n");
+
     // A real listener on loopback: a guaranteed-Open port.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind open port");
     let open_port = listener.local_addr().unwrap().port();
@@ -54,23 +66,40 @@ async fn main() {
     let localhost: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let external: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 
-    println!(
-        "Loopback 127.0.0.1: port {open_port} should be Open, port {closed_port} should be Closed."
-    );
-    println!("External 1.1.1.1: port 443 should be Open (off-link / VPN send path).\n");
+    // Ethernet mode builds frames itself and can't reach loopback (no
+    // Ethernet interface to ARP), so loopback is skipped there. Off-link
+    // 1.1.1.1 uses the gateway MAC read from the OS; the on-link gateway
+    // probe below is what exercises the *active* ARP path.
+    let ethernet = send_mode == SendMode::Ethernet;
+    let gateway = if ethernet { default_gateway() } else { None };
 
     let mut target_map = TargetMap::new();
 
-    let mut local_ips = IpSet::new();
-    local_ips.insert(localhost);
-    let local_ports = PortSet::try_from(format!("{open_port}, {closed_port}").as_str()).unwrap();
-    target_map.add_unit(TargetSet::new(local_ips, local_ports));
+    if !ethernet {
+        let mut local_ips = IpSet::new();
+        local_ips.insert(localhost);
+        let local_ports =
+            PortSet::try_from(format!("{open_port}, {closed_port}").as_str()).unwrap();
+        target_map.add_unit(TargetSet::new(local_ips, local_ports));
+    }
 
     let mut ext_ips = IpSet::new();
     ext_ips.insert(external);
     target_map.add_unit(TargetSet::new(ext_ips, PortSet::try_from("443").unwrap()));
 
-    let (session, task) = scanner::scan(target_map).await.expect("scan started");
+    if let Some(gw) = gateway {
+        let mut gw_ips = IpSet::new();
+        gw_ips.insert(gw);
+        // Port 80 is a report-only probe: whatever it returns (Open or
+        // Closed), a non-Filtered result proves the on-link ARP round trip.
+        target_map.add_unit(TargetSet::new(gw_ips, PortSet::try_from("80").unwrap()));
+    }
+
+    let cfg = ZondConfig {
+        send_mode,
+        ..Default::default()
+    };
+    let (session, task) = scanner::scan(target_map, &cfg).await.expect("scan started");
     task.await.expect("scan finished");
 
     let state_of = |ip: IpAddr, port: u16| -> Option<PortState> {
@@ -80,23 +109,58 @@ async fn main() {
             .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
     };
 
-    let open = state_of(localhost, open_port);
-    let closed = state_of(localhost, closed_port);
     let external_open = state_of(external, 443);
-
     println!("Results:");
-    println!("  127.0.0.1:{open_port:<5} -> {open:?}   (want Open)");
-    println!("  127.0.0.1:{closed_port:<5} -> {closed:?}   (want Closed)");
-    println!("  1.1.1.1:443     -> {external_open:?}   (want Open)\n");
+    if !ethernet {
+        println!(
+            "  127.0.0.1:{open_port:<5} -> {:?}   (want Open)",
+            state_of(localhost, open_port)
+        );
+        println!(
+            "  127.0.0.1:{closed_port:<5} -> {:?}   (want Closed)",
+            state_of(localhost, closed_port)
+        );
+    }
+    println!("  1.1.1.1:443     -> {external_open:?}   (want Open)");
+    if let Some(gw) = gateway {
+        let gw_state = state_of(gw, 80);
+        let arp_ok = matches!(gw_state, Some(PortState::Open | PortState::Closed));
+        println!(
+            "  gateway {gw}:80 -> {gw_state:?}   (active ARP round trip: {})",
+            if arp_ok {
+                "OK"
+            } else {
+                "inconclusive (dropped)"
+            }
+        );
+    }
+    println!();
 
-    let pass = open == Some(PortState::Open)
-        && closed == Some(PortState::Closed)
-        && external_open == Some(PortState::Open);
+    // The off-link Open classification is the universal success signal. In
+    // non-Ethernet modes the deterministic loopback Open/Closed are required
+    // too; in Ethernet mode loopback is out of scope.
+    let mut pass = external_open == Some(PortState::Open);
+    if !ethernet {
+        pass &= state_of(localhost, open_port) == Some(PortState::Open)
+            && state_of(localhost, closed_port) == Some(PortState::Closed);
+    }
 
     if pass {
-        println!("PASS: Open, Closed, and off-link Open all classified correctly.");
+        println!("PASS: reply classification is correct for {send_mode:?} mode.");
     } else {
-        println!("FAIL: at least one port did not classify as expected (see above).");
+        println!("FAIL: at least one required port did not classify as expected (see above).");
         std::process::exit(1);
     }
+}
+
+/// The default IPv4 gateway, if the OS reports one - an on-link host we can
+/// ARP to exercise the Layer-2 active-resolution path.
+fn default_gateway() -> Option<IpAddr> {
+    netdev::get_default_interface()
+        .ok()?
+        .gateway?
+        .ipv4
+        .first()
+        .copied()
+        .map(IpAddr::V4)
 }

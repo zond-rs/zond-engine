@@ -264,7 +264,9 @@ mod tests {
     #[test]
     fn off_link_target_routes_via_gateway_with_known_mac() {
         let resolver = NeighborResolver::from_interfaces(vec![ethernet_iface()]);
-        let route = resolver.resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))).unwrap();
+        let route = resolver
+            .resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+            .unwrap();
 
         assert!(!route.on_link);
         assert_eq!(route.next_hop, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
@@ -280,7 +282,10 @@ mod tests {
 
         assert_eq!(resolver.resolve(target).unwrap().next_hop_mac, None);
         resolver.remember("en0", target, learned);
-        assert_eq!(resolver.resolve(target).unwrap().next_hop_mac, Some(learned));
+        assert_eq!(
+            resolver.resolve(target).unwrap().next_hop_mac,
+            Some(learned)
+        );
     }
 
     #[test]
@@ -296,7 +301,9 @@ mod tests {
         };
         let resolver = NeighborResolver::from_interfaces(vec![gatewayless, ethernet_iface()]);
 
-        let route = resolver.resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))).unwrap();
+        let route = resolver
+            .resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+            .unwrap();
         assert_eq!(route.interface, "en0");
         assert_eq!(route.next_hop_mac, Some(GW_MAC));
     }
@@ -306,13 +313,21 @@ mod tests {
         let mut iface = ethernet_iface();
         iface.gateway_v4 = None;
         let resolver = NeighborResolver::from_interfaces(vec![iface]);
-        assert!(resolver.resolve(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))).is_none());
+        assert!(
+            resolver
+                .resolve(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
+                .is_none()
+        );
     }
 
     #[test]
     fn no_ethernet_interfaces_resolves_nothing() {
         let resolver = NeighborResolver::from_interfaces(vec![]);
         assert!(!resolver.has_ethernet());
-        assert!(resolver.resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))).is_none());
+        assert!(
+            resolver
+                .resolve(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+                .is_none()
+        );
     }
 }

@@ -35,6 +35,7 @@ use anyhow::Context;
 use pnet::datalink;
 use pnet::packet::Packet;
 
+use crate::core::config::SendMode;
 use crate::network::capture::{self, CaptureGuard, CaptureStream};
 use crate::network::ethernet::EthernetSender;
 use crate::network::transport::{self, TransportSenderHandle, TransportType};
@@ -146,23 +147,36 @@ pub struct ProbeTransport {
 }
 
 impl ProbeTransport {
-    /// Opens a transport for `kind` using the send backend appropriate to the
-    /// platform: a raw-socket sender on Unix, and the Layer-2 Ethernet sender
-    /// on Windows, where the OS blocks raw-socket TCP sends outright. Both
-    /// pair with a filtered `libpcap` capture on every currently-up interface.
+    /// Opens a transport for `kind` with the platform-default send backend
+    /// ([`SendMode::Auto`]).
+    pub fn open(kind: ProbeKind) -> anyhow::Result<Self> {
+        Self::open_with(kind, SendMode::Auto)
+    }
+
+    /// Opens a transport for `kind`, choosing the send backend per `mode`.
     ///
-    /// Capturing on all up interfaces (loopback included) means a reply is
-    /// caught whichever interface the kernel routed the probe out of - the
+    /// All modes pair with a filtered `libpcap` capture on every currently-up
+    /// interface. Capturing on all of them (loopback included) means a reply
+    /// is caught whichever interface the kernel routed the probe out of - the
     /// egress path can differ per destination, especially with a VPN in play,
     /// so binding to a single guessed interface would silently miss replies.
-    pub fn open(kind: ProbeKind) -> anyhow::Result<Self> {
-        #[cfg(windows)]
-        {
-            Self::open_ethernet(kind)
-        }
-        #[cfg(not(windows))]
-        {
-            Self::open_on(kind, &capturable_interfaces())
+    pub fn open_with(kind: ProbeKind, mode: SendMode) -> anyhow::Result<Self> {
+        match mode {
+            SendMode::Ethernet => Self::open_ethernet(kind),
+            SendMode::RawSocket => Self::open_on(kind, &capturable_interfaces()),
+            // On Windows raw-socket TCP sends are blocked, so Layer-2 is the
+            // only path; everywhere else the raw socket is simplest and works
+            // through tunnels without ARP.
+            SendMode::Auto => {
+                #[cfg(windows)]
+                {
+                    Self::open_ethernet(kind)
+                }
+                #[cfg(not(windows))]
+                {
+                    Self::open_on(kind, &capturable_interfaces())
+                }
+            }
         }
     }
 
@@ -234,13 +248,17 @@ fn capturable_interfaces() -> Vec<String> {
         .collect()
 }
 
+/// A record of one recorded send: `(segment, source, destination)`.
+#[cfg(test)]
+pub type SentProbe = (Vec<u8>, IpAddr, IpAddr);
+
 /// A [`ProbeSender`] that records what it was asked to send instead of
 /// touching a socket, so transport wiring and scanner logic can be exercised
 /// without root. Available crate-wide under `cfg(test)`.
 #[cfg(test)]
 #[derive(Clone, Default)]
 pub struct MockSender {
-    pub sent: std::sync::Arc<std::sync::Mutex<Vec<(Vec<u8>, IpAddr, IpAddr)>>>,
+    pub sent: std::sync::Arc<std::sync::Mutex<Vec<SentProbe>>>,
 }
 
 #[cfg(test)]

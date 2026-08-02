@@ -47,7 +47,7 @@ use is_root::is_root;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::core::config::ZondConfig;
+use crate::core::config::{SendMode, ZondConfig};
 use crate::core::models::{ip::set::IpSet, target::TargetMap};
 use crate::core::session::{ScanContext, ScanEvent, ScanSession, ScannerKind};
 use crate::scanner::resolver::HostnameResolver;
@@ -137,10 +137,13 @@ trait NetworkExplorer {
 /// handshake. Without root, or if the host has no address to probe from,
 /// probes fall back to a plain TCP connect attempt per target via the
 /// [`connect`] module.
-pub async fn scan(mut target_map: TargetMap) -> Result<(ScanSession, ScanTask), ScanError> {
+pub async fn scan(
+    mut target_map: TargetMap,
+    cfg: &ZondConfig,
+) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::new();
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
-    let syn_scanner = build_syn_scanner(ctx.clone(), target_count);
+    let syn_scanner = build_syn_scanner(ctx.clone(), target_count, cfg.send_mode);
 
     let handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
@@ -171,7 +174,11 @@ pub async fn scan(mut target_map: TargetMap) -> Result<(ScanSession, ScanTask), 
 /// sockets couldn't be opened); each of these is logged at its call site
 /// rather than treated as a hard failure, since the unprivileged path is
 /// always a working substitute.
-fn build_syn_scanner(ctx: ScanContext, target_count: usize) -> Option<routed::SynPortScanner> {
+fn build_syn_scanner(
+    ctx: ScanContext,
+    target_count: usize,
+    send_mode: SendMode,
+) -> Option<routed::SynPortScanner> {
     if not_root() {
         return None;
     }
@@ -182,7 +189,7 @@ fn build_syn_scanner(ctx: ScanContext, target_count: usize) -> Option<routed::Sy
         return None;
     }
 
-    match routed::SynPortScanner::new(resolver, ctx, target_count) {
+    match routed::SynPortScanner::new(resolver, ctx, target_count, send_mode) {
         Ok(scanner) => Some(scanner),
         Err(e) => {
             error!("Failed to initialize SYN port scanner: {e}");
@@ -243,7 +250,7 @@ pub async fn discover(
         (None, None)
     };
 
-    let scanner_handles = spawn_explorers(targets, &ctx, dns_tx).await;
+    let scanner_handles = spawn_explorers(targets, &ctx, dns_tx, cfg.send_mode).await;
 
     let handle = tokio::spawn(async move {
         for (kind, handle) in scanner_handles {
@@ -285,6 +292,7 @@ async fn spawn_explorers(
     targets: IpSet,
     ctx: &ScanContext,
     dns_tx: Option<UnboundedSender<IpAddr>>,
+    send_mode: SendMode,
 ) -> Vec<(ScannerKind, JoinHandle<anyhow::Result<()>>)> {
     let mut explorers: Vec<(ScannerKind, Box<dyn NetworkExplorer + Send>)> = Vec::new();
     let interface::RoutedTargets {
@@ -314,7 +322,7 @@ async fn spawn_explorers(
             "Spawning routed scanner for {} target(s)",
             routed.len()
         );
-        match RoutedScanner::new(routed, ctx.clone(), dns_tx.clone()) {
+        match RoutedScanner::new(routed, ctx.clone(), dns_tx.clone(), send_mode) {
             Ok(scanner) => explorers.push((ScannerKind::Routed, Box::new(scanner))),
             Err(e) => report_scanner_failure(ctx, ScannerKind::Routed, e.to_string()),
         }

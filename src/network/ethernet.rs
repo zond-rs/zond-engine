@@ -262,7 +262,10 @@ mod tests {
     fn ignores_arp_reply_from_other_ip() {
         let mac = MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
         let reply = arp_reply(Ipv4Addr::new(192, 168, 1, 201), mac);
-        assert_eq!(parse_arp_reply(&reply, Ipv4Addr::new(192, 168, 1, 200)), None);
+        assert_eq!(
+            parse_arp_reply(&reply, Ipv4Addr::new(192, 168, 1, 200)),
+            None
+        );
     }
 
     #[test]
@@ -270,9 +273,6 @@ mod tests {
         let mut buf = vec![0u8; 42];
         let mut eth = MutableEthernetPacket::new(&mut buf).unwrap();
         eth.set_ethertype(EtherTypes::Ipv4);
-        assert_eq!(
-            parse_arp_reply(&buf, Ipv4Addr::new(192, 168, 1, 200)),
-            None
-        );
+        assert_eq!(parse_arp_reply(&buf, Ipv4Addr::new(192, 168, 1, 200)), None);
     }
 }
