@@ -2675,6 +2675,7 @@ dependencies = [
  "fancy-regex",
  "hickory-resolver",
  "is-root",
+ "libc",
  "mac_oui",
  "netdev",
  "pcap",

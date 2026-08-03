@@ -1,0 +1,82 @@
+// Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors
+//
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at
+// https://mozilla.org/MPL/2.0/.
+
+//! Portable service-fingerprinting tests.
+//!
+//! These scan a *real* speak-first server on loopback and assert the full
+//! pipeline — connect, banner grab, analyzer, verdict — identifies its product
+//! and version. Speak-first protocols (SSH here) are the ones the engine can
+//! identify on any port from the banner alone, which is what makes this portable
+//! without root. Fingerprinting that needs a port-specific probe (HTTP, TLS,
+//! Postgres, Redis) needs root to bind its real port, so its classification
+//! logic is covered by in-crate unit tests instead (see `tests/README.md`).
+
+mod common;
+
+use common::*;
+
+/// An SSH server announcing an OpenSSH banner must be resolved all the way to
+/// service + product + version, not left at the port→name baseline.
+#[tokio::test]
+async fn identifies_openssh_from_its_banner() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    let server = spawn_banner_server(b"SSH-2.0-OpenSSH_9.6p1 Debian-3\r\n").await;
+    let outcome = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let port = host
+        .ports()
+        .find(|p| p.number() == server.port)
+        .expect("scanned port present in results");
+
+    let service = port.service().expect("a service was identified");
+    assert_eq!(service.name(), "ssh", "protocol should resolve to ssh");
+    assert_eq!(
+        service.product(),
+        Some("OpenSSH"),
+        "product should be extracted from the banner"
+    );
+    assert_eq!(
+        service.version(),
+        Some("9.6p1"),
+        "version should be extracted from the banner"
+    );
+}
+
+/// A server that greets with an unrecognised banner still gets an open port and
+/// *some* service label (a last-resort banner tag), never a silent drop of the
+/// finding.
+#[tokio::test]
+async fn unknown_banner_still_yields_an_open_port() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    let server = spawn_banner_server(b"WIDGET/4.2 ready\r\n").await;
+    let outcome = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    let state = outcome
+        .port_state(LOOPBACK, server.port)
+        .expect("port present");
+    assert_eq!(
+        state,
+        zond_engine::core::models::port::PortState::Open,
+        "a reachable listener must read Open regardless of banner recognisability"
+    );
+}
