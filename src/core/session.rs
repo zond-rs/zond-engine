@@ -62,29 +62,49 @@ pub struct ScanContext {
 }
 
 impl ScanContext {
-    /// Inserts or updates the host at `ip`, applies `update`, and announces the
-    /// change on the event stream. Returns `true` if the host was newly created.
+    /// The single place a host finding enters the store.
     ///
-    /// This is the single choke point every simple scanning path funnels host
-    /// findings through, so the "upsert into the shared store, then emit
-    /// [`ScanEvent::HostUpdated`]" sequence - and the rule that the store guard
-    /// is released before the event is sent - lives here rather than being
-    /// re-spelled at each call site.
+    /// Upserts the host at `ip`, runs `edit` against it while the store guard is
+    /// held, then releases that guard *before* emitting
+    /// [`ScanEvent::HostUpdated`] - so the DashMap lock is never held across the
+    /// channel send. That ordering rule lives here, once, rather than being
+    /// re-spelled (and eventually mis-spelled) at each scanner. Returns `true` if
+    /// this call created the host.
     ///
-    /// Strategies whose emit is conditional or interleaved with other per-reply
-    /// bookkeeping (the local and routed discovery scanners) drive the store
-    /// directly instead; this serves the paths that unconditionally record a
-    /// finding and notify.
-    pub fn update_host(&self, ip: IpAddr, update: impl FnOnce(&mut Host)) -> bool {
+    /// `edit` returns whether the change is worth announcing: `true` emits the
+    /// event, `false` suppresses it - e.g. a duplicate reply from an already
+    /// known host that revealed nothing new. A newly created host is always
+    /// announced, regardless of what `edit` returns.
+    ///
+    /// Anything a caller must do *without* the guard held - hostname resolution,
+    /// adaptive-deadline bookkeeping - keys off the returned flag and runs after
+    /// this call, so no scanner has to reason about guard lifetime itself.
+    /// Callers that always want to announce their change use the
+    /// [`update_host`](Self::update_host) shorthand.
+    pub fn write_host(&self, ip: IpAddr, edit: impl FnOnce(&mut Host) -> bool) -> bool {
         let mut is_new = false;
         let mut host = self.store.entry(ip).or_insert_with(|| {
             is_new = true;
             Host::new(ip)
         });
-        update(&mut host);
+        let changed = edit(&mut host);
         drop(host);
-        let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
+
+        if changed || is_new {
+            let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
+        }
         is_new
+    }
+
+    /// Upserts the host at `ip`, applies `update`, and unconditionally announces
+    /// the change. The convenience form of [`write_host`](Self::write_host) for
+    /// the paths that always record a finding worth emitting - a port state, a
+    /// merged host. Returns `true` if this call created the host.
+    pub fn update_host(&self, ip: IpAddr, update: impl FnOnce(&mut Host)) -> bool {
+        self.write_host(ip, |host| {
+            update(host);
+            true
+        })
     }
 }
 

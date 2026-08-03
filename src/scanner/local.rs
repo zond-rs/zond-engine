@@ -29,8 +29,8 @@ use tokio::time::Interval;
 
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::timer::ScanBudget;
-use crate::core::models::{host::Host, ip::set::IpSet};
-use crate::core::session::{ScanContext, ScanEvent};
+use crate::core::models::ip::set::IpSet;
+use crate::core::session::ScanContext;
 use crate::network::channel::{self, EthernetHandle};
 use crate::network::mac::IntoCoreMac;
 use crate::protocols::{self as protocol, ethernet};
@@ -324,21 +324,38 @@ impl LocalScanner {
     fn record_response(&mut self, source_mac: MacAddr, source_addr: IpAddr, rtt: Option<Duration>) {
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
 
-        let mut is_new_host = false;
-        let mut host = self.ctx.store.entry(primary_ip).or_insert_with(|| {
-            self.deadline.mark_activity();
-            is_new_host = true;
-            Host::new(primary_ip)
+        // Host mutation only; `write_host` owns the guard, the drop-before-emit
+        // ordering, and the event. `is_new_ip` is surfaced for the DNS decision
+        // below, which - like the deadline bookkeeping - runs after the guard is
+        // released.
+        let mut is_new_ip = false;
+        let is_new_host = self.ctx.write_host(primary_ip, |host| {
+            // Set the MAC whether we just created the host or the port scanner
+            // created it first, so enrichment order doesn't decide whether a MAC
+            // is recorded. Only the first MAC seen for the host is kept.
+            if host.mac().is_none() {
+                host.set_mac(source_mac.into_core());
+            }
+
+            let mut changed = rtt.is_some();
+            if let Some(rtt) = rtt {
+                host.add_rtt(rtt);
+            }
+
+            is_new_ip = host.add_ip(source_addr);
+            changed |= is_new_ip;
+
+            if source_addr.is_ipv4() && host.primary_ip().is_ipv6() {
+                host.set_primary_ip(source_addr);
+                changed = true;
+            }
+
+            changed
         });
 
-        // Set the MAC whether we just created the host or the port scanner
-        // created it first, so enrichment order doesn't decide whether a MAC
-        // is recorded. Only the first MAC seen for the host is kept.
-        if host.mac().is_none() {
-            host.set_mac(source_mac.into_core());
+        if is_new_host {
+            self.deadline.mark_activity();
         }
-
-        let mut emit_update = false;
 
         if let Some(rtt) = rtt {
             info!(
@@ -347,28 +364,13 @@ impl LocalScanner {
                 "{source_addr} responded in {}ms",
                 rtt.as_millis()
             );
-            host.add_rtt(rtt);
             self.deadline.record_rtt(rtt);
-            emit_update = true;
         }
 
-        let is_new_ip = host.add_ip(source_addr);
-        emit_update |= is_new_ip;
-
-        if source_addr.is_ipv4() && host.primary_ip().is_ipv6() {
-            host.set_primary_ip(source_addr);
-            emit_update = true;
-        }
-
-        // Drop the lock on the shared store before sending over the event channel.
-        drop(host);
-
-        if emit_update || is_new_host {
-            let _ = self.ctx.events_tx.send(ScanEvent::HostUpdated(primary_ip));
-        }
-
-        if is_new_host || is_new_ip {
-            self.dns_tx.as_ref().map(|tx| tx.send(source_addr));
+        if (is_new_host || is_new_ip)
+            && let Some(tx) = &self.dns_tx
+        {
+            let _ = tx.send(source_addr);
         }
     }
 

@@ -27,8 +27,8 @@ use std::{
 use crate::core::config::SendMode;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::timer::ScanBudget;
-use crate::core::models::{host::Host, ip::set::IpSet};
-use crate::core::session::{ScanContext, ScanEvent};
+use crate::core::models::ip::set::IpSet;
+use crate::core::session::ScanContext;
 use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
 use crate::protocols as protocol;
 use crate::system::interface::RoutedTarget;
@@ -201,30 +201,27 @@ impl RoutedScanner {
 
         let rtt = self.correlate_rtt(ip, bytes);
 
-        let mut is_new = false;
-        let mut host = self.ctx.store.entry(ip).or_insert_with(|| {
-            is_new = true;
-            Host::new(ip)
+        // Host mutation only; the guard is dropped and the event emitted inside
+        // `write_host`, so the deadline and DNS follow-ups below never run under
+        // the store lock.
+        let is_new = self.ctx.write_host(ip, |host| {
+            if let Some(rtt) = rtt {
+                host.add_rtt(rtt);
+                return true;
+            }
+            false
         });
 
         if is_new {
             self.responded_count += 1;
             self.deadline.mark_activity();
-            let _ = self.dns_tx.as_ref().map(|dns| dns.send(ip));
+            if let Some(dns) = &self.dns_tx {
+                let _ = dns.send(ip);
+            }
         }
-
-        let mut emit_update = false;
 
         if let Some(rtt) = rtt {
-            host.add_rtt(rtt);
             self.deadline.record_rtt(rtt);
-            emit_update = true;
-        }
-
-        drop(host);
-
-        if is_new || emit_update {
-            let _ = self.ctx.events_tx.send(ScanEvent::HostUpdated(ip));
         }
     }
 
