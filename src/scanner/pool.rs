@@ -22,6 +22,8 @@
 
 use tokio::task::JoinSet;
 
+use crate::error;
+
 /// A bounded pool of in-flight probe tasks.
 ///
 /// Holds at most `limit` tasks in a [`JoinSet`]. [`admit`](ProbePool::admit)
@@ -72,14 +74,19 @@ where
         }
     }
 
-    /// Awaits the next finished probe and folds its output. A task that panicked
-    /// (a [`JoinError`](tokio::task::JoinError)) is dropped rather than
-    /// propagated. Does nothing if the pool is empty.
+    /// Awaits the next finished probe and folds its output. Does nothing if the
+    /// pool is empty.
+    ///
+    /// A probe task that panicked surfaces here as a
+    /// [`JoinError`](tokio::task::JoinError). The pool never aborts its tasks, so
+    /// that only ever means a genuine panic in probe code - a bug. It is logged
+    /// and the sweep continues rather than being propagated, so one defective
+    /// probe can't sink the whole scan, but it no longer vanishes unseen.
     async fn reap(&mut self) {
-        if let Some(joined) = self.set.join_next().await
-            && let Ok(output) = joined
-        {
-            (self.fold)(output);
+        match self.set.join_next().await {
+            Some(Ok(output)) => (self.fold)(output),
+            Some(Err(e)) => error!("probe task panicked: {e}"),
+            None => {}
         }
     }
 }

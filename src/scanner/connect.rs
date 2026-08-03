@@ -68,8 +68,10 @@ impl NetworkExplorer for ConnectScanner {
 }
 
 /// The outcome of one finished [`port_prober`] task: the port it classified, or
-/// `None` if the port was closed or the target wasn't probed at all.
-type ProbedPort = anyhow::Result<Option<(IpAddr, Port)>>;
+/// `None` if the port was closed or the target wasn't probed at all. A probe never
+/// fails - every network outcome maps to a port state or to `None` - so this is a
+/// plain [`Option`], not a `Result`.
+type ProbedPort = Option<(IpAddr, Port)>;
 
 /// Adapts the unprivileged [`scan`] engine to [`PortScanner`], so
 /// [`crate::scanner::scan`] can drive it through the same path as the privileged
@@ -134,14 +136,14 @@ pub async fn scan(
 
 /// Folds one finished probe into the store, if it classified a non-closed port.
 fn absorb_probe(ctx: &ScanContext, probed: ProbedPort) {
-    if let Ok(Some((ip, port))) = probed {
+    if let Some((ip, port)) = probed {
         ctx.update_host(ip, |host| host.add_port(port));
     }
 }
 
 /// Probes a single [`Target`] over a full TCP connect handshake and classifies
-/// its port. Returns `Ok(Some(..))` for a non-closed port and `Ok(None)` for a
-/// closed port or a target this strategy doesn't handle.
+/// its port. Returns `Some(..)` for a non-closed port and `None` for a closed
+/// port or a target this strategy doesn't handle.
 ///
 /// An accepted connection is `Open` and gets fingerprinted over the live stream;
 /// a refusal is `Closed`; anything else - including a timeout, the usual
@@ -150,7 +152,7 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort) {
 async fn port_prober(target: Target) -> ProbedPort {
     if target.protocol == Protocol::Udp {
         // UDP can't be probed through a TCP stream; skip rather than misreport.
-        return Ok(None);
+        return None;
     }
 
     let socket_addr = SocketAddr::new(target.ip, target.port);
@@ -160,29 +162,29 @@ async fn port_prober(target: Target) -> ProbedPort {
             let port =
                 crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Open);
             let port = crate::fingerprinting::fingerprint_tcp(stream, port).await;
-            Ok(Some((target.ip, port)))
+            Some((target.ip, port))
         }
         Ok(Err(e)) => {
             use std::io::ErrorKind;
             match e.kind() {
                 // A refusal is a definite "closed"; report nothing to record.
-                ErrorKind::ConnectionRefused => Ok(None),
+                ErrorKind::ConnectionRefused => None,
                 // Anything else reached the host but didn't complete: filtered.
-                _ => Ok(Some((
+                _ => Some((
                     target.ip,
                     crate::fingerprinting::baseline_port(
                         target.port,
                         Protocol::Tcp,
                         PortState::Filtered,
                     ),
-                ))),
+                )),
             }
         }
         // Timeout: the probe was silently dropped, the classic firewall signature.
-        Err(_) => Ok(Some((
+        Err(_) => Some((
             target.ip,
             crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Filtered),
-        ))),
+        )),
     }
 }
 
@@ -233,15 +235,16 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
 }
 
 /// The outcome of one finished [`prober`] task: a live [`Host`], or `None` if the
-/// target stayed silent or was already claimed by a parallel probe.
-type ProbedHost = anyhow::Result<Option<Host>>;
+/// target stayed silent or was already claimed by a parallel probe. A probe never
+/// fails, so this is a plain [`Option`], not a `Result`.
+type ProbedHost = Option<Host>;
 
 /// Merges one finished discovery probe's host into the store. A freshly created
 /// entry starts from [`Host::new`] and absorbs the probe's findings (RTT, any
 /// extra IPs), so the recorded result is the same whether or not the host was
 /// seen before.
 fn absorb_host(ctx: &ScanContext, probed: ProbedHost) {
-    if let Ok(Some(host)) = probed {
+    if let Some(host) = probed {
         let ip = host.primary_ip();
         ctx.update_host(ip, |existing| existing.merge(host));
     }
@@ -253,15 +256,12 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost) {
 /// network traffic and OS resource usage, it employs a thread-safe early-exit
 /// mechanism: if the host has already been identified by a parallel probe
 /// (e.g., SSH responded before HTTP), this task terminates immediately.
-async fn prober(
-    target: Target,
-    found_set: Arc<Mutex<HashSet<IpAddr>>>,
-) -> anyhow::Result<Option<Host>> {
+async fn prober(target: Target, found_set: Arc<Mutex<HashSet<IpAddr>>>) -> ProbedHost {
     // 1. Early exit if already discovered
     {
         let set = found_set.lock().unwrap();
         if set.contains(&target.ip) {
-            return Ok(None);
+            return None;
         }
     }
 
@@ -273,10 +273,9 @@ async fn prober(
             // 2. Successful handshake -> Host is alive
             let mut set = found_set.lock().unwrap();
             if set.insert(target.ip) {
-                let host: Host = Host::new(target.ip).with_rtt(start.elapsed());
-                Ok(Some(host))
+                Some(Host::new(target.ip).with_rtt(start.elapsed()))
             } else {
-                Ok(None)
+                None
             }
         }
         Ok(Err(e)) => {
@@ -288,18 +287,17 @@ async fn prober(
                 | ErrorKind::ConnectionAborted => {
                     let mut set = found_set.lock().unwrap();
                     if set.insert(target.ip) {
-                        let host: Host = Host::new(target.ip).with_rtt(start.elapsed());
-                        Ok(Some(host))
+                        Some(Host::new(target.ip).with_rtt(start.elapsed()))
                     } else {
-                        Ok(None)
+                        None
                     }
                 }
                 _ => {
                     // Ignore local network errors (No route, Permission denied, etc.)
-                    Ok(None)
+                    None
                 }
             }
         }
-        Err(_elapsed) => Ok(None),
+        Err(_elapsed) => None,
     }
 }
