@@ -4,22 +4,41 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
+//! # Unprivileged TCP Connect Scanning
+//!
+//! The fallback strategy when raw sockets aren't available - no root, no usable
+//! interface, or a target the OS couldn't route. Everything here is built on
+//! ordinary [`TcpStream`] connects, so it needs no special privileges and works
+//! anywhere the async runtime does.
+//!
+//! It answers both scan phases. [`discover`] establishes host presence by
+//! probing a small set of common infrastructure ports and treating any TCP-layer
+//! response (an accept, or even a refusal) as proof the host is alive.
+//! [`scan`] takes known targets and classifies each port from a full connect
+//! handshake. Both consume a randomized [`Dispatcher`] stream and bound their
+//! in-flight connections with a [`JoinSet`] to avoid exhausting OS sockets, and
+//! both record findings through the shared [`ScanContext`] like every other
+//! strategy.
+
 use super::NetworkExplorer;
 use super::dispatcher::Dispatcher;
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
-use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
+use crate::core::models::port::{Port, PortSet, PortState, Protocol};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
-use crate::core::session::{ScanContext, ScanEvent};
+use crate::core::session::ScanContext;
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{self};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
+
+/// How long a single connect probe waits before treating silence as a drop.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Most common ports across Linux, Windows, and Networking gear.
 const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
@@ -48,109 +67,98 @@ impl NetworkExplorer for ConnectScanner {
     }
 }
 
+/// The outcome of one finished [`port_prober`] task: the port it classified, or
+/// `None` if the port was closed or the target wasn't probed at all.
+type ProbedPort = anyhow::Result<Option<(IpAddr, Port)>>;
+
 /// Performs a high-concurrency, unprivileged port scan.
 ///
-/// This engine is the primary scanning strategy for users without root privileges.
-/// It consumes a randomized stream of [`Target`]s from a [`Dispatcher`], maintaining
-/// a strictly bounded concurrency set to prevent OS socket exhaustion. Discovered
-/// open or filtered ports are aggregated into a collection of [`Host`] entities.
+/// This is the primary scanning strategy for callers without root privileges. It
+/// consumes a randomized stream of [`Target`]s from a [`Dispatcher`], holding the
+/// number of in-flight connections at or below `concurrency_limit` to avoid
+/// exhausting OS sockets, and records every non-closed port it finds into the
+/// shared [`ScanContext`] store.
 pub async fn scan(
     mut rx: mpsc::Receiver<Target>,
     concurrency_limit: usize,
     ctx: ScanContext,
 ) -> anyhow::Result<()> {
-    let mut set: JoinSet<anyhow::Result<Option<(IpAddr, Port)>>> = JoinSet::new();
+    let mut set: JoinSet<ProbedPort> = JoinSet::new();
 
     while let Some(target) = rx.recv().await {
         if ctx.handle.should_stop() {
             break;
         }
 
+        // Make room before admitting the next probe, draining completed ones.
         while set.len() >= concurrency_limit {
-            if let Some(Ok(Ok(Some((ip, port))))) = set.join_next().await {
-                let mut is_new = false;
-                let mut host = ctx.store.entry(ip).or_insert_with(|| {
-                    is_new = true;
-                    Host::new(ip)
-                });
-                host.add_port(port);
-                drop(host);
-                let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
-            }
+            absorb_probe(&ctx, set.join_next().await);
         }
 
         set.spawn(async move { port_prober(target).await });
     }
 
-    while let Some(res) = set.join_next().await {
-        if let Ok(Ok(Some((ip, port)))) = res {
-            let mut is_new = false;
-            let mut host = ctx.store.entry(ip).or_insert_with(|| {
-                is_new = true;
-                Host::new(ip)
-            });
-            host.add_port(port);
-            drop(host);
-            let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
-        }
+    // Every target dispatched; wait out the probes still in flight.
+    while !set.is_empty() {
+        absorb_probe(&ctx, set.join_next().await);
     }
 
     Ok(())
 }
 
-/// Probes a specific [`Target`] (IP, Port, Protocol) to accurately determine its state.
+/// Folds one finished probe into the store, if it classified a non-closed port.
+/// Takes the raw [`JoinSet::join_next`] output so the admit-throttle and the
+/// final drain share one body.
+fn absorb_probe(ctx: &ScanContext, joined: Option<Result<ProbedPort, tokio::task::JoinError>>) {
+    if let Some(Ok(Ok(Some((ip, port))))) = joined {
+        ctx.update_host(ip, |host| host.add_port(port));
+    }
+}
+
+/// Probes a single [`Target`] over a full TCP connect handshake and classifies
+/// its port. Returns `Ok(Some(..))` for a non-closed port and `Ok(None)` for a
+/// closed port or a target this strategy doesn't handle.
 ///
-/// Currently, supports standard full TCP connect handshakes.
-/// Returns An `Ok(Some((IpAddr, Port)))` if a non-closed port is discovered.
-async fn port_prober(target: Target) -> anyhow::Result<Option<(IpAddr, Port)>> {
+/// An accepted connection is `Open` and gets fingerprinted over the live stream;
+/// a refusal is `Closed`; anything else - including a timeout, the usual
+/// signature of a firewall drop - is `Filtered`. Only TCP is supported; UDP
+/// targets are skipped.
+async fn port_prober(target: Target) -> ProbedPort {
     if target.protocol == Protocol::Udp {
-        // UDP isn't natively handled by standard TCP streams, gracefully skip or assume closed for now.
+        // UDP can't be probed through a TCP stream; skip rather than misreport.
         return Ok(None);
     }
 
     let socket_addr = SocketAddr::new(target.ip, target.port);
-    let probe_timeout = Duration::from_millis(1000);
 
-    match timeout(probe_timeout, TcpStream::connect(socket_addr)).await {
+    match timeout(PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
         Ok(Ok(stream)) => {
-            let mut port = Port::new(target.port, Protocol::Tcp, PortState::Open);
-            port.set_service(Service::new(
-                crate::fingerprinting::lookup_service_name(target.port, Protocol::Tcp)
-                    .unwrap_or("???".to_string()),
-                0, // Baseline confidence
-            ));
+            let port =
+                crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Open);
             let port = crate::fingerprinting::fingerprint_tcp(stream, port).await;
             Ok(Some((target.ip, port)))
         }
         Ok(Err(e)) => {
             use std::io::ErrorKind;
-            let state = match e.kind() {
-                ErrorKind::ConnectionRefused => PortState::Closed,
-                _ => PortState::Filtered,
-            };
-
-            if state != PortState::Closed {
-                let mut port = Port::new(target.port, Protocol::Tcp, state);
-                port.set_service(Service::new(
-                    crate::fingerprinting::lookup_service_name(target.port, Protocol::Tcp)
-                        .unwrap_or("???".to_string()),
-                    0,
-                ));
-                Ok(Some((target.ip, port)))
-            } else {
-                Ok(None)
+            match e.kind() {
+                // A refusal is a definite "closed"; report nothing to record.
+                ErrorKind::ConnectionRefused => Ok(None),
+                // Anything else reached the host but didn't complete: filtered.
+                _ => Ok(Some((
+                    target.ip,
+                    crate::fingerprinting::baseline_port(
+                        target.port,
+                        Protocol::Tcp,
+                        PortState::Filtered,
+                    ),
+                ))),
             }
         }
-        Err(_) => {
-            // Timeout elapsed, implies a DROP -> Ghosted/Filtered
-            let mut port = Port::new(target.port, Protocol::Tcp, PortState::Filtered);
-            port.set_service(Service::new(
-                crate::fingerprinting::lookup_service_name(target.port, Protocol::Tcp)
-                    .unwrap_or("???".to_string()),
-                0,
-            ));
-            Ok(Some((target.ip, port)))
-        }
+        // Timeout: the probe was silently dropped, the classic firewall signature.
+        Err(_) => Ok(Some((
+            target.ip,
+            crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Filtered),
+        ))),
     }
 }
 
@@ -184,7 +192,7 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
     let mut rx = dispatcher.run_shuffled(&ctx.handle);
-    let mut set: JoinSet<anyhow::Result<Option<Host>>> = JoinSet::new();
+    let mut set: JoinSet<ProbedHost> = JoinSet::new();
     let found_hosts = Arc::new(Mutex::new(HashSet::new()));
 
     while let Some(target) = rx.recv().await {
@@ -192,33 +200,37 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
             break;
         }
 
+        // Make room before admitting the next probe, draining completed ones.
         while set.len() >= CONCURRENCY_LIMIT {
-            if let Some(Ok(Ok(Some(host)))) = set.join_next().await {
-                let ip = host.primary_ip();
-                ctx.store
-                    .entry(ip)
-                    .and_modify(|h| h.merge(host.clone()))
-                    .or_insert(host);
-                let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
-            }
+            absorb_host(&ctx, set.join_next().await);
         }
 
         let inner_found = Arc::clone(&found_hosts);
         set.spawn(async move { prober(target, inner_found).await });
     }
 
-    while let Some(res) = set.join_next().await {
-        if let Ok(Ok(Some(host))) = res {
-            let ip = host.primary_ip();
-            ctx.store
-                .entry(ip)
-                .and_modify(|h| h.merge(host.clone()))
-                .or_insert(host);
-            let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
-        }
+    // Every target dispatched; wait out the probes still in flight.
+    while !set.is_empty() {
+        absorb_host(&ctx, set.join_next().await);
     }
 
     Ok(())
+}
+
+/// The outcome of one finished [`prober`] task: a live [`Host`], or `None` if the
+/// target stayed silent or was already claimed by a parallel probe.
+type ProbedHost = anyhow::Result<Option<Host>>;
+
+/// Merges one finished discovery probe's host into the store. A freshly created
+/// entry starts from [`Host::new`] and absorbs the probe's findings (RTT, any
+/// extra IPs), so the recorded result is the same whether or not the host was
+/// seen before. Takes the raw [`JoinSet::join_next`] output so the
+/// admit-throttle and the final drain share one body.
+fn absorb_host(ctx: &ScanContext, joined: Option<Result<ProbedHost, tokio::task::JoinError>>) {
+    if let Some(Ok(Ok(Some(host)))) = joined {
+        let ip = host.primary_ip();
+        ctx.update_host(ip, |existing| existing.merge(host));
+    }
 }
 
 /// Concurrent network host prober.
@@ -240,10 +252,9 @@ async fn prober(
     }
 
     let socket_addr: SocketAddr = SocketAddr::new(target.ip, target.port);
-    let probe_timeout: Duration = Duration::from_millis(1000);
 
     let start: Instant = Instant::now();
-    match timeout(probe_timeout, TcpStream::connect(socket_addr)).await {
+    match timeout(PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
         Ok(Ok(_)) => {
             // 2. Successful handshake -> Host is alive
             let mut set = found_set.lock().unwrap();

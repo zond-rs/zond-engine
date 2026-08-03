@@ -18,44 +18,25 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
 use crate::core::config::SendMode;
-use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::core::models::host::Host;
-use crate::core::models::port::{Port, PortState, Protocol, Service};
+use crate::core::models::deadline::AdaptiveDeadline;
+use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::target::Target;
-use crate::core::models::timer::ScanBudget;
-use crate::core::session::{ScanContext, ScanEvent};
+use crate::core::session::ScanContext;
 use crate::error;
 use crate::network::probe::{ProbeKind, ProbeTransport};
 use crate::protocols::tcp::{self, ProbeResponse};
 use crate::system::interface::SourceResolver;
 
-use super::{SeqNum, send_syn};
-
-/// How long a port scan runs, and how it adapts. Uses the same bounds as
-/// [`super::DEADLINE_CONFIG`], since both send raw TCP SYN probes over the
-/// same kind of network path.
-const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
-    ScanBudget::new(
-        Duration::from_millis(200),
-        Duration::from_micros(500),
-        Duration::from_millis(3_000),
-    ),
-    ScanBudget::new(
-        Duration::from_millis(70),
-        Duration::from_micros(175),
-        Duration::from_millis(1_000),
-    ),
-    Duration::from_millis(150),
-    Duration::from_millis(1_500),
-    4.0,
-    20,
-);
+// Port scanning and routed discovery send the same kind of raw TCP SYN over the
+// same kind of network path, so they share one adaptive-deadline profile rather
+// than maintaining two copies that must be kept in step.
+use super::{DEADLINE_CONFIG, SeqNum, send_syn};
 
 /// Outstanding probes, keyed by the target they were sent to, recording the
 /// sequence number they were sent with and when.
@@ -228,16 +209,8 @@ impl SynPortScanner {
     }
 
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState) {
-        let mut port = Port::new(port_num, Protocol::Tcp, state);
-        let service_name = crate::fingerprinting::lookup_service_name(port_num, Protocol::Tcp)
-            .unwrap_or("???".to_string());
-        port.set_service(Service::new(service_name, 0));
-
-        let mut host = self.ctx.store.entry(ip).or_insert_with(|| Host::new(ip));
-        host.add_port(port);
-        drop(host);
-
-        let _ = self.ctx.events_tx.send(ScanEvent::HostUpdated(ip));
+        let port = crate::fingerprinting::baseline_port(port_num, Protocol::Tcp, state);
+        self.ctx.update_host(ip, |host| host.add_port(port));
     }
 }
 

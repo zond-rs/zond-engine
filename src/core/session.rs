@@ -61,6 +61,33 @@ pub struct ScanContext {
     pub events_tx: mpsc::UnboundedSender<ScanEvent>,
 }
 
+impl ScanContext {
+    /// Inserts or updates the host at `ip`, applies `update`, and announces the
+    /// change on the event stream. Returns `true` if the host was newly created.
+    ///
+    /// This is the single choke point every simple scanning path funnels host
+    /// findings through, so the "upsert into the shared store, then emit
+    /// [`ScanEvent::HostUpdated`]" sequence - and the rule that the store guard
+    /// is released before the event is sent - lives here rather than being
+    /// re-spelled at each call site.
+    ///
+    /// Strategies whose emit is conditional or interleaved with other per-reply
+    /// bookkeeping (the local and routed discovery scanners) drive the store
+    /// directly instead; this serves the paths that unconditionally record a
+    /// finding and notify.
+    pub fn update_host(&self, ip: IpAddr, update: impl FnOnce(&mut Host)) -> bool {
+        let mut is_new = false;
+        let mut host = self.store.entry(ip).or_insert_with(|| {
+            is_new = true;
+            Host::new(ip)
+        });
+        update(&mut host);
+        drop(host);
+        let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
+        is_new
+    }
+}
+
 impl ScanSession {
     pub fn new() -> (Self, ScanContext) {
         let store = Arc::new(DashMap::new());

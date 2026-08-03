@@ -33,8 +33,8 @@ use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::core::models::port::{Port, PortState, Protocol, Service};
-use crate::core::session::{ScanContext, ScanEvent};
+use crate::core::models::port::{Port, PortState, Protocol};
+use crate::core::session::ScanContext;
 
 /// How long to wait for the fingerprint connection to establish before giving
 /// up on a port. Matches the connect scanner's probe budget.
@@ -113,12 +113,7 @@ async fn fingerprint_one(ip: IpAddr, port_number: u16) -> Option<(IpAddr, Port)>
 
     // Seed the same baseline the connect scanner uses, then let the engine
     // refine it over the live connection.
-    let mut port = Port::new(port_number, Protocol::Tcp, PortState::Open);
-    port.set_service(Service::new(
-        crate::fingerprinting::lookup_service_name(port_number, Protocol::Tcp)
-            .unwrap_or_else(|| "???".to_string()),
-        0,
-    ));
+    let port = crate::fingerprinting::baseline_port(port_number, Protocol::Tcp, PortState::Open);
     let port = crate::fingerprinting::fingerprint_tcp(stream, port).await;
     Some((ip, port))
 }
@@ -127,10 +122,7 @@ async fn fingerprint_one(ip: IpAddr, port_number: u16) -> Option<(IpAddr, Port)>
 /// update. [`Port::merge`] is confidence-driven, so the fingerprint overwrites
 /// the discovery phase's name-only baseline.
 fn write_back(ctx: &ScanContext, ip: IpAddr, port: Port) {
-    if let Some(mut host) = ctx.store.get_mut(&ip) {
-        host.add_port(port);
-    }
-    let _ = ctx.events_tx.send(ScanEvent::HostUpdated(ip));
+    ctx.update_host(ip, |host| host.add_port(port));
 }
 
 #[cfg(test)]

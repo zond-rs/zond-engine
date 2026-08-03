@@ -66,7 +66,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::core::models::port::{Port, Protocol, Service};
+use crate::core::models::port::{Port, PortState, Protocol, Service};
 
 /// How long to wait for a service to speak first (banner grab).
 const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);
@@ -84,6 +84,27 @@ pub fn lookup_service_name(port: u16, _protocol: Protocol) -> Option<String> {
     SignatureDb::global()
         .service_name(port)
         .map(|s| s.to_string())
+}
+
+/// The confidence-0 service every scan path seeds before deeper fingerprinting:
+/// the port→name label, or the `???` placeholder when a port has no registered
+/// name. Centralising it keeps the SYN, connect, and service-detection paths
+/// agreeing on the same starting point.
+pub fn baseline_service(port: u16, protocol: Protocol) -> Service {
+    let name = lookup_service_name(port, protocol).unwrap_or_else(|| "???".to_string());
+    Service::new(name, 0)
+}
+
+/// A [`Port`] in the given `state` carrying only the [`baseline_service`] label.
+///
+/// This is the shape every discovery path records before (and if) a full
+/// fingerprint refines it: the SYN and filtered/closed paths stop here, while
+/// the connect and service-detection paths hand the result to
+/// [`fingerprint_tcp`] to upgrade in place.
+pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
+    let mut classified = Port::new(port, protocol, state);
+    classified.set_service(baseline_service(port, protocol));
+    classified
 }
 
 /// Actively fingerprints an open TCP `stream` and refines `port`'s service.
