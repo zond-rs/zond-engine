@@ -20,6 +20,10 @@ pub enum ScannerKind {
     SynPort,
     /// Unprivileged TCP connect fallback.
     Connect,
+    /// Privileged raw UDP port scanning.
+    UdpPort,
+    /// Composite scanner that delegates to protocol-specific scanners.
+    Composite,
 }
 
 /// Lightweight notifications for the status of an ongoing scan.

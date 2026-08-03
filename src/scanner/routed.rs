@@ -16,6 +16,7 @@
 //! This scanner requires root privileges to open the raw sockets involved.
 
 mod port_scan;
+mod udp_scan;
 
 use std::{
     collections::HashMap,
@@ -39,6 +40,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::NetworkExplorer;
 
 pub use port_scan::SynPortScanner;
+pub use udp_scan::UdpPortScanner;
 
 /// How long a discovery sweep runs and how it adapts. Routed targets may sit
 /// anywhere on the internet rather than on the local segment, but a probe that
@@ -97,6 +99,43 @@ fn send_syn(
             error!(
                 verbosity = 2,
                 "Failed to send SYN probe to {dst_addr}:{dst_port}: {e}"
+            );
+            None
+        }
+    }
+}
+
+/// Sends a single UDP packet.
+fn send_udp(
+    sender: &dyn ProbeSender,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
+    dst_port: u16,
+) -> Option<()> {
+    let src_port: u16 = rand::random_range(50_000..u16::MAX);
+    // Send empty payload for UDP port probing
+    let payload = vec![];
+
+    let packet = match crate::protocols::udp::create_packet(src_port, dst_port, payload) {
+        Ok(pkt) => pkt,
+        Err(e) => {
+            error!(
+                verbosity = 2,
+                "Failed to create UDP packet for {dst_addr}:{dst_port}: {e}"
+            );
+            return None;
+        }
+    };
+
+    match sender.send(&packet, src_addr, dst_addr) {
+        Ok(_) => {
+            success!(verbosity = 2, "Sent UDP probe to {dst_addr}:{dst_port}");
+            Some(())
+        }
+        Err(e) => {
+            error!(
+                verbosity = 2,
+                "Failed to send UDP probe to {dst_addr}:{dst_port}: {e}"
             );
             None
         }

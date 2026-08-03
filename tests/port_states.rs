@@ -87,3 +87,40 @@ async fn only_open_ports_survive_a_mixed_scan() {
         Some(PortState::Open)
     );
 }
+
+/// A live UDP listener that responds is reported Open.
+#[tokio::test]
+async fn open_udp_listener_is_reported_open() {
+    if is_privileged() {
+        eprintln!("SKIP: unprivileged connect path");
+        return;
+    }
+
+    let server = spawn_udp_server(b"hi\n").await;
+    let spec = format!("u:{}", server.port);
+    let outcome = run_scan(target_map(LOOPBACK, &spec), &test_config()).await;
+
+    assert_eq!(
+        outcome.port_state(LOOPBACK, server.port),
+        Some(PortState::Open),
+    );
+}
+
+/// A refused (closed) UDP port is never reported Open.
+#[tokio::test]
+async fn closed_udp_port_is_not_reported_open() {
+    if is_privileged() {
+        eprintln!("SKIP: unprivileged connect path");
+        return;
+    }
+
+    let port = closed_udp_loopback_port().await;
+    let spec = format!("u:{}", port);
+    let outcome = run_scan(target_map(LOOPBACK, &spec), &test_config()).await;
+
+    assert_ne!(
+        outcome.port_state(LOOPBACK, port),
+        Some(PortState::Open),
+        "a closed loopback udp port must never classify as Open"
+    );
+}

@@ -20,7 +20,7 @@ To use the `zond-engine` in your own Rust project, add it as a dependency in you
 
 ```toml
 [dependencies]
-zond-engine = "0.7.0"
+zond-engine = "0.9.0"
 ```
 
 ## Modules

@@ -49,6 +49,8 @@ pub enum ProbeKind {
     TcpSyn,
     /// UDP service probes (DNS / mDNS) and their replies, over IPv4.
     UdpResolve,
+    /// UDP port probes and their ICMP Port Unreachable / direct replies.
+    UdpProbe,
 }
 
 impl ProbeKind {
@@ -56,7 +58,7 @@ impl ProbeKind {
     fn transport_type(self) -> TransportType {
         match self {
             ProbeKind::TcpSyn => TransportType::TcpLayer4,
-            ProbeKind::UdpResolve => TransportType::UdpLayer4,
+            ProbeKind::UdpResolve | ProbeKind::UdpProbe => TransportType::UdpLayer4,
         }
     }
 
@@ -70,6 +72,8 @@ impl ProbeKind {
             ProbeKind::TcpSyn => "tcp and (tcp[tcpflags] & (tcp-syn|tcp-rst)) != 0",
             // DNS (53) and mDNS (5353) responses, by source port.
             ProbeKind::UdpResolve => "udp and (src port 53 or src port 5353)",
+            // For UDP port scans, we want ICMP/ICMP6 port unreachable or raw UDP replies.
+            ProbeKind::UdpProbe => "icmp or icmp6 or udp",
         }
     }
 }

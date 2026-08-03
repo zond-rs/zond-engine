@@ -109,6 +109,37 @@ pub async fn closed_loopback_port() -> u16 {
     port
 }
 
+/// Serves a simple UDP response. On the first packet received, it writes `reply`
+/// back to the sender and exits. This ensures a valid UDP response is generated
+/// for the scanner to classify the port as Open.
+pub async fn spawn_udp_server(reply: &'static [u8]) -> Server {
+    let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback udp server");
+    let port = socket.local_addr().expect("server local addr").port();
+
+    let task = tokio::spawn(async move {
+        let mut buf = vec![0; 1024];
+        // Just wait for one packet and reply
+        if let Ok((_len, src)) = socket.recv_from(&mut buf).await {
+            let _ = socket.send_to(reply, src).await;
+        }
+    });
+
+    Server { port, _task: task }
+}
+
+/// Reserves and immediately frees a UDP loopback port, yielding a number that is
+/// guaranteed to generate an ICMP Port Unreachable.
+pub async fn closed_udp_loopback_port() -> u16 {
+    let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind to reserve a udp port");
+    let port = socket.local_addr().expect("reserved addr").port();
+    drop(socket);
+    port
+}
+
 /// A single-IP [`TargetMap`] over the given comma/range port spec (e.g. `"80"`
 /// or `"22,80,443"`), as [`scanner::scan`] expects.
 pub fn target_map(ip: IpAddr, ports: &str) -> TargetMap {

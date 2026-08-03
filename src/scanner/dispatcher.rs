@@ -83,3 +83,69 @@ impl Dispatcher {
         rx
     }
 }
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::models::ip::set::IpSet;
+    use crate::core::models::port::PortSet;
+    use crate::core::models::target::TargetSet;
+    use std::net::IpAddr;
+
+    #[tokio::test]
+    async fn dispatcher_emits_all_targets_shuffled() {
+        let mut target_map = TargetMap::new();
+        let ip_set: IpSet = "192.168.1.1-192.168.1.10".parse().unwrap();
+        let port_set: PortSet = "80".parse().unwrap();
+        let unit = TargetSet::new(ip_set, port_set);
+        target_map.units.push(unit);
+
+        let handle = ScanHandle::new();
+        let dispatcher = Dispatcher::new(target_map).with_batch_size(4);
+        let mut rx = dispatcher.run_shuffled(&handle);
+
+        let mut received = Vec::new();
+        while let Some(target) = rx.recv().await {
+            received.push(target);
+        }
+
+        assert_eq!(received.len(), 10);
+        let is_ordered = received.windows(2).all(|w| match (w[0].ip, w[1].ip) {
+            (IpAddr::V4(a), IpAddr::V4(b)) => a.octets()[3] < b.octets()[3],
+            _ => false,
+        });
+        assert!(!is_ordered, "Targets were not shuffled");
+    }
+
+    #[tokio::test]
+    async fn dispatcher_stops_early_on_abort() {
+        let mut target_map = TargetMap::new();
+        let ip_set: IpSet = "192.168.1.1-192.168.1.100".parse().unwrap();
+        let port_set: PortSet = "80".parse().unwrap();
+        let unit = TargetSet::new(ip_set, port_set);
+        target_map.units.push(unit);
+
+        let handle = ScanHandle::new();
+        let dispatcher = Dispatcher::new(target_map).with_batch_size(10);
+        let mut rx = dispatcher.run_shuffled(&handle);
+
+        let mut count = 0;
+        while let Some(_target) = rx.recv().await {
+            count += 1;
+            if count == 15 {
+                handle.abort();
+            }
+        }
+
+        assert!((15..100).contains(&count));
+    }
+}

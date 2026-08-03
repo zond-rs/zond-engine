@@ -101,8 +101,49 @@ impl PortScanner for ConnectPortScanner {
         ScannerKind::Connect
     }
 
+    fn supported_protocols(&self) -> Vec<Protocol> {
+        vec![Protocol::Tcp]
+    }
+
     async fn scan(&mut self, rx: mpsc::Receiver<Target>) -> anyhow::Result<()> {
         scan(rx, self.concurrency, self.ctx.clone()).await
+    }
+}
+
+/// Unprivileged UDP port scanner.
+pub struct ConnectUdpPortScanner {
+    ctx: ScanContext,
+    concurrency: usize,
+}
+
+impl ConnectUdpPortScanner {
+    pub fn new(ctx: ScanContext, concurrency: usize) -> Self {
+        Self { ctx, concurrency }
+    }
+}
+
+#[async_trait]
+impl PortScanner for ConnectUdpPortScanner {
+    fn kind(&self) -> ScannerKind {
+        ScannerKind::Connect // or add a new one if preferred, but Connect covers unprivileged
+    }
+
+    fn supported_protocols(&self) -> Vec<Protocol> {
+        vec![Protocol::Udp]
+    }
+
+    async fn scan(&mut self, mut rx: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+        let mut pool = ProbePool::new(self.concurrency, |probed| absorb_probe(&self.ctx, probed));
+
+        while let Some(target) = rx.recv().await {
+            if self.ctx.handle.should_stop() {
+                break;
+            }
+            pool.admit(udp_port_prober(target)).await;
+        }
+
+        pool.drain().await;
+        Ok(())
     }
 }
 
@@ -188,6 +229,74 @@ async fn port_prober(target: Target) -> ProbedPort {
             target.ip,
             crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Filtered),
         )),
+    }
+}
+
+/// Probes a single [`Target`] for UDP using a standard OS `UdpSocket`.
+async fn udp_port_prober(target: Target) -> ProbedPort {
+    if target.protocol != Protocol::Udp {
+        return None;
+    }
+
+    let socket_addr = SocketAddr::new(target.ip, target.port);
+    let socket = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+
+    if socket.connect(socket_addr).await.is_err() {
+        return None;
+    }
+
+    // Send an empty UDP packet (or could be customized for specific payloads like DNS)
+    if socket.send(b"").await.is_err() {
+        return None; // Could be blocked locally
+    }
+
+    let mut buf = [0u8; 1024];
+    match timeout(tuning::CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
+        Ok(Ok(_)) => {
+            // Valid response received, port is open
+            Some((
+                target.ip,
+                crate::fingerprinting::baseline_port(target.port, Protocol::Udp, PortState::Open),
+            ))
+        }
+        Ok(Err(e)) => {
+            use std::io::ErrorKind;
+            // ConnectionRefused on UDP usually means we received an ICMP Port Unreachable
+            if e.kind() == ErrorKind::ConnectionRefused {
+                Some((
+                    target.ip,
+                    crate::fingerprinting::baseline_port(
+                        target.port,
+                        Protocol::Udp,
+                        PortState::Closed,
+                    ),
+                ))
+            } else {
+                // Any other error means it's likely OpenFiltered
+                Some((
+                    target.ip,
+                    crate::fingerprinting::baseline_port(
+                        target.port,
+                        Protocol::Udp,
+                        PortState::OpenFiltered,
+                    ),
+                ))
+            }
+        }
+        Err(_) => {
+            // Timeout means no ICMP unreachable and no valid response
+            Some((
+                target.ip,
+                crate::fingerprinting::baseline_port(
+                    target.port,
+                    Protocol::Udp,
+                    PortState::OpenFiltered,
+                ),
+            ))
+        }
     }
 }
 

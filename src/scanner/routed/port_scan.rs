@@ -181,6 +181,10 @@ impl PortScanner for SynPortScanner {
         ScannerKind::SynPort
     }
 
+    fn supported_protocols(&self) -> Vec<Protocol> {
+        vec![Protocol::Tcp]
+    }
+
     /// Consumes `targets`, sending a SYN probe for each TCP one and classifying
     /// every reply, until each probe has been resolved or the scan's deadline
     /// expires. UDP and SCTP targets are skipped, since this scanner does not
@@ -229,6 +233,15 @@ impl PortScanner for SynPortScanner {
         service::detect(ctx).await;
     }
 }
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
 mod tests {

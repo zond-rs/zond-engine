@@ -57,6 +57,7 @@ use crate::{error, info, success, warn};
 use local::{LocalScanner, Scope};
 use routed::RoutedScanner;
 
+mod composite;
 mod connect;
 pub mod dispatcher;
 mod local;
@@ -182,10 +183,13 @@ pub async fn scan(
     let ips = target_ips(&target_map);
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
 
-    let syn_scanner = if caps.privileged {
-        build_syn_scanner(ctx.clone(), target_count, cfg.send_mode)
+    let (syn_scanner, udp_scanner) = if caps.privileged {
+        (
+            build_syn_scanner(ctx.clone(), target_count, cfg.send_mode),
+            build_udp_scanner(ctx.clone(), target_count, cfg.send_mode),
+        )
     } else {
-        None
+        (None, None)
     };
 
     // A privileged scan enriches hosts the same way `discover` does: ARP and
@@ -195,7 +199,7 @@ pub async fn scan(
     // does. The unprivileged fallback cannot ARP, so it settles for active
     // reverse DNS. Keying on `syn_scanner` rather than `caps.privileged` means a
     // privileged host that could not build a SYN scanner still takes the fallback.
-    let enrichment = if syn_scanner.is_some() {
+    let enrichment = if syn_scanner.is_some() || udp_scanner.is_some() {
         Some(Enrichment::spawn(ips, &ctx, caps, cfg.send_mode, Scope::Targeted).await)
     } else {
         None
@@ -203,7 +207,14 @@ pub async fn scan(
 
     // Both branches of the privilege fork now sit behind one interface. Pick the
     // strategy here and drive it uniformly below.
-    let scanner = into_port_scanner(syn_scanner, ctx.clone());
+    let mut scanners: Vec<Box<dyn PortScanner>> = Vec::new();
+    if let Some(scanner) = syn_scanner {
+        scanners.push(Box::new(scanner));
+    }
+    if let Some(scanner) = udp_scanner {
+        scanners.push(Box::new(scanner));
+    }
+    let scanner = into_port_scanner(scanners, ctx.clone());
 
     let handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
@@ -251,6 +262,9 @@ trait PortScanner: Send {
     /// Identifies the strategy, used to tag a [`ScanEvent::ScannerFailed`] when
     /// a run fails.
     fn kind(&self) -> ScannerKind;
+
+    /// Returns the set of transport protocols this scanner is capable of probing.
+    fn supported_protocols(&self) -> Vec<crate::core::models::port::Protocol>;
 
     /// Probes every target arriving on `targets` and records each port's state
     /// in the shared store. Returns `Ok` when the run completes, including an
@@ -475,21 +489,52 @@ fn build_syn_scanner(
     }
 }
 
+/// Tries to build a privileged raw-socket UDP port scanner.
+fn build_udp_scanner(
+    ctx: ScanContext,
+    target_count: usize,
+    send_mode: SendMode,
+) -> Option<routed::UdpPortScanner> {
+    let resolver = interface::SourceResolver::from_system();
+    if !resolver.has_sources() {
+        return None; // Fallback will be used
+    }
+
+    match routed::UdpPortScanner::new(resolver, ctx, target_count, send_mode) {
+        Ok(scanner) => Some(scanner),
+        Err(e) => {
+            error!("Failed to initialize UDP port scanner: {e}");
+            None
+        }
+    }
+}
+
 /// Selects the port-scanning strategy behind the [`PortScanner`] interface: the
 /// privileged raw-SYN scanner when [`build_syn_scanner`] produced one, otherwise
 /// the unprivileged TCP-connect fallback. Both are driven identically by
 /// [`run_port_scan`], so the choice of strategy stays confined to this one place.
 fn into_port_scanner(
-    syn_scanner: Option<routed::SynPortScanner>,
+    scanners: Vec<Box<dyn PortScanner>>,
     ctx: ScanContext,
 ) -> Box<dyn PortScanner> {
-    match syn_scanner {
-        Some(scanner) => Box::new(scanner),
-        None => Box::new(connect::ConnectPortScanner::new(
-            ctx,
-            tuning::CONNECT_CONCURRENCY,
-        )),
+    if !scanners.is_empty() {
+        return Box::new(composite::CompositePortScanner::new(scanners));
     }
+
+    let tcp_scanner: Box<dyn PortScanner> = Box::new(connect::ConnectPortScanner::new(
+        ctx.clone(),
+        tuning::CONNECT_CONCURRENCY,
+    ));
+
+    let udp_scanner: Box<dyn PortScanner> = Box::new(connect::ConnectUdpPortScanner::new(
+        ctx.clone(),
+        tuning::CONNECT_CONCURRENCY,
+    ));
+
+    Box::new(composite::CompositePortScanner::new(vec![
+        tcp_scanner,
+        udp_scanner,
+    ]))
 }
 
 /// Drives one port-scan strategy to completion. It streams targets through the
