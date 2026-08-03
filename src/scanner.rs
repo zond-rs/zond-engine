@@ -168,6 +168,57 @@ trait PortScanner: Send {
     async fn detect_services(&mut self, _ctx: &ScanContext) {}
 }
 
+/// The environment-derived facts that steer how a scan runs.
+///
+/// Both entry points face the same two questions - can we open raw sockets, and
+/// should we resolve hostnames - and used to answer them in subtly different
+/// shapes at each branch (`not_root()` in one layer here, `!cfg.no_dns`
+/// recomputed there). Resolving them once, up front, into this value is what lets
+/// [`scan`] and [`discover`] fork on the *same* facts and keeps the "privileged
+/// vs. unprivileged" and "DNS on vs. off" policy from drifting between phases.
+#[derive(Clone, Copy)]
+struct ScanCapabilities {
+    /// Whether raw-socket scanning is available, i.e. the process is root. When
+    /// false, every phase falls back to unprivileged TCP connect scanning.
+    privileged: bool,
+    /// Whether hostname resolution is enabled (the inverse of `cfg.no_dns`).
+    dns: bool,
+}
+
+impl ScanCapabilities {
+    /// Resolves the runtime capabilities from the environment and config,
+    /// announcing which scanning mode they imply - once, here, rather than from
+    /// the code that later acts on them.
+    fn resolve(cfg: &ZondConfig) -> Self {
+        let privileged = is_root();
+        if privileged {
+            success!("Root privileges detected, raw socket scan enabled");
+        } else {
+            warn!("Root privileges missing, defaulting to unprivileged TCP scan");
+        }
+        Self {
+            privileged,
+            dns: !cfg.no_dns,
+        }
+    }
+}
+
+/// Completes the hostname-resolution tail of a scan.
+///
+/// A privileged scan spawned passive DNS/mDNS resolution as part of its
+/// [`Enrichment`]; awaiting that here folds the collected hostnames and extra IPs
+/// into the store (along with the rest of the enrichment strategies). An
+/// unprivileged scan has no enrichment, so it falls back to active reverse lookups
+/// when DNS is enabled, and does nothing when it isn't. This is the single place
+/// the "passive when privileged, active otherwise" policy lives.
+async fn finish_enrichment(enrichment: Option<Enrichment>, caps: ScanCapabilities, ctx: &ScanContext) {
+    match enrichment {
+        Some(enrichment) => enrichment.finish(ctx).await,
+        None if caps.dns => resolver::resolve_hosts_async(ctx.store.clone()).await,
+        None => {}
+    }
+}
+
 /// Probes a known set of targets for open ports.
 ///
 /// This is the second phase of a scan: given targets and the ports to check
@@ -187,19 +238,25 @@ pub async fn scan(
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::new();
+    let caps = ScanCapabilities::resolve(cfg);
     let ips = target_ips(&target_map);
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
-    let with_dns = !cfg.no_dns;
-    let syn_scanner = build_syn_scanner(ctx.clone(), target_count, cfg.send_mode);
+
+    let syn_scanner = if caps.privileged {
+        build_syn_scanner(ctx.clone(), target_count, cfg.send_mode)
+    } else {
+        None
+    };
 
     // A privileged scan enriches hosts exactly as `discover` does - ARP/ICMPv6
     // for MAC and RTT, TCP SYN for RTT, passive DNS/mDNS for hostnames and
     // extra IPs - running concurrently with the port scan and writing into the
     // same store, so a scanned host carries the same detail a discovered one
     // does. The unprivileged fallback can't ARP, so it settles for active
-    // reverse DNS.
+    // reverse DNS. Keying on `syn_scanner` (not `caps.privileged`) means a
+    // privileged host that couldn't build a SYN scanner still takes the fallback.
     let enrichment = if syn_scanner.is_some() {
-        Some(Enrichment::spawn(ips, &ctx, cfg, Scope::Targeted).await)
+        Some(Enrichment::spawn(ips, &ctx, caps, cfg.send_mode, Scope::Targeted).await)
     } else {
         None
     };
@@ -213,12 +270,7 @@ pub async fn scan(
         let rx = dispatcher.run_shuffled(&ctx.handle);
 
         run_port_scan(scanner, rx, &ctx).await;
-
-        match enrichment {
-            Some(enrichment) => enrichment.finish(&ctx).await,
-            None if with_dns => resolver::resolve_hosts_async(ctx.store.clone()).await,
-            None => {}
-        }
+        finish_enrichment(enrichment, caps, &ctx).await;
     });
 
     Ok((session, ScanTask::new(handle)))
@@ -244,21 +296,17 @@ fn target_ips(target_map: &TargetMap) -> IpSet {
 /// each probe's source address per target across all of the host's
 /// interfaces and its routing table.
 ///
-/// Returns `None` - meaning [`scan`] should fall back to TCP connect
-/// probes - when running unprivileged, when the host has no address to probe
-/// from, or when the scanner fails to initialize (for instance, because raw
-/// sockets couldn't be opened); each of these is logged at its call site
-/// rather than treated as a hard failure, since the unprivileged path is
-/// always a working substitute.
+/// Called only once privilege is confirmed (see [`ScanCapabilities`]). Returns
+/// `None` - meaning [`scan`] should fall back to TCP connect probes - when the
+/// host has no address to probe from, or when the scanner fails to initialize
+/// (for instance, because raw sockets couldn't be opened); each is logged here
+/// rather than treated as a hard failure, since the unprivileged path is always a
+/// working substitute.
 fn build_syn_scanner(
     ctx: ScanContext,
     target_count: usize,
     send_mode: SendMode,
 ) -> Option<routed::SynPortScanner> {
-    if not_root() {
-        return None;
-    }
-
     let resolver = interface::SourceResolver::from_system();
     if !resolver.has_sources() {
         warn!("No usable network interface found; using TCP connect fallback");
@@ -329,8 +377,14 @@ struct Enrichment {
 impl Enrichment {
     /// Spawns every enrichment strategy for `targets`; they begin running
     /// immediately and concurrently. Call [`Enrichment::finish`] to await them.
-    async fn spawn(targets: IpSet, ctx: &ScanContext, cfg: &ZondConfig, scope: Scope) -> Self {
-        let (dns_tx, resolver) = if !cfg.no_dns {
+    async fn spawn(
+        targets: IpSet,
+        ctx: &ScanContext,
+        caps: ScanCapabilities,
+        send_mode: SendMode,
+        scope: Scope,
+    ) -> Self {
+        let (dns_tx, resolver) = if caps.dns {
             let (tx, rx) = mpsc::unbounded_channel();
             (Some(tx), Some(spawn_resolver(rx).await))
         } else {
@@ -338,7 +392,7 @@ impl Enrichment {
             (None, None)
         };
 
-        let scanners = spawn_explorers(targets, ctx, dns_tx, cfg.send_mode, scope).await;
+        let scanners = spawn_explorers(targets, ctx, dns_tx, send_mode, scope).await;
         Self { scanners, resolver }
     }
 
@@ -389,25 +443,26 @@ pub async fn discover(
     targets: IpSet,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
-    let with_dns: bool = !cfg.no_dns;
     let (session, ctx) = ScanSession::new();
+    let caps = ScanCapabilities::resolve(cfg);
 
-    if not_root() {
+    // Unprivileged discovery has no raw enrichment strategies to spawn; it runs
+    // the connect-based sweep itself, then the same DNS tail. Split out via an
+    // early return because `targets` moves into one path or the other.
+    if !caps.privileged {
         let handle = tokio::spawn(async move {
             if let Err(e) = connect::discover(targets, ctx.clone()).await {
                 report_scanner_failure(&ctx, ScannerKind::Connect, e.to_string());
             }
-            if with_dns {
-                resolver::resolve_hosts_async(ctx.store).await;
-            }
+            finish_enrichment(None, caps, &ctx).await;
         });
         return Ok((session, ScanTask::new(handle)));
     }
 
-    let enrichment = Enrichment::spawn(targets, &ctx, cfg, Scope::Sweep).await;
+    let enrichment = Enrichment::spawn(targets, &ctx, caps, cfg.send_mode, Scope::Sweep).await;
 
     let handle = tokio::spawn(async move {
-        enrichment.finish(&ctx).await;
+        finish_enrichment(Some(enrichment), caps, &ctx).await;
     });
 
     Ok((session, ScanTask::new(handle)))
@@ -527,18 +582,3 @@ async fn spawn_resolver(dns_rx: UnboundedReceiver<IpAddr>) -> JoinHandle<Option<
     })
 }
 
-/// Checks for root privileges, logging which scanning mode this implies.
-///
-/// Returns `true` when *not* running as root, i.e. when the caller should
-/// fall back to unprivileged, TCP-connect-based scanning rather than raw
-/// sockets. The inverted name reads more sensibly at the call site -
-/// `if not_root() { /* fall back */ }` - than mirroring `is_root` would.
-fn not_root() -> bool {
-    if !is_root() {
-        warn!("Root privileges missing, defaulting to unprivileged TCP scan");
-        return true;
-    }
-
-    success!("Root privileges detected, raw socket scan enabled");
-    false
-}
