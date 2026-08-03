@@ -63,6 +63,7 @@ use routed::RoutedScanner;
 mod connect;
 pub mod dispatcher;
 mod local;
+mod pool;
 mod resolver;
 mod routed;
 mod service;

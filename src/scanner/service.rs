@@ -30,11 +30,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use tokio::net::TcpStream;
-use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::core::models::port::{Port, PortState, Protocol};
 use crate::core::session::ScanContext;
+use crate::scanner::pool::ProbePool;
 
 /// How long to wait for the fingerprint connection to establish before giving
 /// up on a port. Matches the connect scanner's probe budget.
@@ -59,31 +59,20 @@ pub async fn detect(ctx: &ScanContext) {
         return;
     }
 
-    let mut set: JoinSet<Option<(IpAddr, Port)>> = JoinSet::new();
-    let mut targets = targets.into_iter();
-
-    loop {
-        // Top up the in-flight set until it is full or we run out of targets.
-        while set.len() < CONCURRENCY {
-            if ctx.handle.should_stop() {
-                break;
-            }
-            let Some((ip, port)) = targets.next() else {
-                break;
-            };
-            set.spawn(fingerprint_one(ip, port));
+    let mut pool = ProbePool::new(CONCURRENCY, |fingerprinted| {
+        if let Some((ip, port)) = fingerprinted {
+            write_back(ctx, ip, port);
         }
+    });
 
-        match set.join_next().await {
-            Some(joined) => {
-                if let Ok(Some((ip, port))) = joined {
-                    write_back(ctx, ip, port);
-                }
-            }
-            // No tasks left in flight: either done, or asked to stop.
-            None => break,
+    for (ip, port) in targets {
+        if ctx.handle.should_stop() {
+            break;
         }
+        pool.admit(fingerprint_one(ip, port)).await;
     }
+
+    pool.drain().await;
 }
 
 /// Every open TCP `(ip, port)` in the store, snapshotted so the DashMap is not

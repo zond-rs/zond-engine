@@ -21,6 +21,7 @@
 //! strategy.
 
 use super::dispatcher::Dispatcher;
+use super::pool::ProbePool;
 use super::{NetworkExplorer, PortScanner};
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
@@ -34,7 +35,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 /// How long a single connect probe waits before treating silence as a drop.
@@ -118,34 +118,23 @@ pub async fn scan(
     concurrency_limit: usize,
     ctx: ScanContext,
 ) -> anyhow::Result<()> {
-    let mut set: JoinSet<ProbedPort> = JoinSet::new();
+    let mut pool = ProbePool::new(concurrency_limit, |probed| absorb_probe(&ctx, probed));
 
     while let Some(target) = rx.recv().await {
         if ctx.handle.should_stop() {
             break;
         }
-
-        // Make room before admitting the next probe, draining completed ones.
-        while set.len() >= concurrency_limit {
-            absorb_probe(&ctx, set.join_next().await);
-        }
-
-        set.spawn(async move { port_prober(target).await });
+        pool.admit(port_prober(target)).await;
     }
 
     // Every target dispatched; wait out the probes still in flight.
-    while !set.is_empty() {
-        absorb_probe(&ctx, set.join_next().await);
-    }
-
+    pool.drain().await;
     Ok(())
 }
 
 /// Folds one finished probe into the store, if it classified a non-closed port.
-/// Takes the raw [`JoinSet::join_next`] output so the admit-throttle and the
-/// final drain share one body.
-fn absorb_probe(ctx: &ScanContext, joined: Option<Result<ProbedPort, tokio::task::JoinError>>) {
-    if let Some(Ok(Ok(Some((ip, port))))) = joined {
+fn absorb_probe(ctx: &ScanContext, probed: ProbedPort) {
+    if let Ok(Some((ip, port))) = probed {
         ctx.update_host(ip, |host| host.add_port(port));
     }
 }
@@ -227,28 +216,19 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
     let mut rx = dispatcher.run_shuffled(&ctx.handle);
-    let mut set: JoinSet<ProbedHost> = JoinSet::new();
     let found_hosts = Arc::new(Mutex::new(HashSet::new()));
+    let mut pool = ProbePool::new(CONCURRENCY_LIMIT, |probed| absorb_host(&ctx, probed));
 
     while let Some(target) = rx.recv().await {
         if ctx.handle.should_stop() {
             break;
         }
-
-        // Make room before admitting the next probe, draining completed ones.
-        while set.len() >= CONCURRENCY_LIMIT {
-            absorb_host(&ctx, set.join_next().await);
-        }
-
-        let inner_found = Arc::clone(&found_hosts);
-        set.spawn(async move { prober(target, inner_found).await });
+        let found = Arc::clone(&found_hosts);
+        pool.admit(prober(target, found)).await;
     }
 
     // Every target dispatched; wait out the probes still in flight.
-    while !set.is_empty() {
-        absorb_host(&ctx, set.join_next().await);
-    }
-
+    pool.drain().await;
     Ok(())
 }
 
@@ -259,10 +239,9 @@ type ProbedHost = anyhow::Result<Option<Host>>;
 /// Merges one finished discovery probe's host into the store. A freshly created
 /// entry starts from [`Host::new`] and absorbs the probe's findings (RTT, any
 /// extra IPs), so the recorded result is the same whether or not the host was
-/// seen before. Takes the raw [`JoinSet::join_next`] output so the
-/// admit-throttle and the final drain share one body.
-fn absorb_host(ctx: &ScanContext, joined: Option<Result<ProbedHost, tokio::task::JoinError>>) {
-    if let Some(Ok(Ok(Some(host)))) = joined {
+/// seen before.
+fn absorb_host(ctx: &ScanContext, probed: ProbedHost) {
+    if let Ok(Some(host)) = probed {
         let ip = host.primary_ip();
         ctx.update_host(ip, |existing| existing.merge(host));
     }
