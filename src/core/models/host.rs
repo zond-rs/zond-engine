@@ -242,8 +242,16 @@ impl Host {
 
     /// Builder method to set the hardware MAC and return Self.
     pub fn with_mac(mut self, mac: crate::core::models::mac::MacAddr) -> Self {
-        self.set_hardware(HardwareInfo::new(mac));
+        self.set_mac(mac);
         self
+    }
+
+    /// Sets the hardware MAC on an existing host. Unlike [`Host::with_mac`],
+    /// this works by reference, so a host created by one scanner (e.g. the
+    /// port scanner, which has no MAC) can be enriched with a MAC learned by
+    /// another (the ARP-based local scanner) regardless of which ran first.
+    pub fn set_mac(&mut self, mac: crate::core::models::mac::MacAddr) {
+        self.set_hardware(HardwareInfo::new(mac));
     }
 
     /// Adds a single RTT measurement and bumps `last_seen`.

@@ -29,6 +29,7 @@ pub fn eth_packet_iter(
     src_v4: &Option<Ipv4Addr>,
     link_local: &Option<Ipv6Addr>,
     ip_set: &IpSet,
+    icmpv6_sweep: bool,
 ) -> anyhow::Result<PacketIter> {
     let arp_iter = src_v4
         .as_ref()
@@ -37,8 +38,12 @@ pub fn eth_packet_iter(
         .into_iter()
         .flatten();
 
+    // The ICMPv6 probe is an all-nodes solicitation - it makes every host on
+    // the segment answer. That's what discovery wants, but a targeted scan
+    // must not sweep, so it's gated here.
     let icmp_iter = link_local
         .as_ref()
+        .filter(|_| icmpv6_sweep)
         .map(|v6| create_icmpv6_packets(local_mac, v6))
         .transpose()?
         .into_iter()

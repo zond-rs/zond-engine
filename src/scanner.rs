@@ -48,12 +48,13 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::core::config::{SendMode, ZondConfig};
+use crate::core::models::ip::range::IpRange;
 use crate::core::models::{ip::set::IpSet, target::TargetMap};
 use crate::core::session::{ScanContext, ScanEvent, ScanSession, ScannerKind};
 use crate::scanner::resolver::HostnameResolver;
 use crate::system::interface;
 use crate::{error, info, success, warn};
-use local::LocalScanner;
+use local::{LocalScanner, Scope};
 use routed::RoutedScanner;
 
 mod connect;
@@ -61,6 +62,7 @@ pub mod dispatcher;
 mod local;
 mod resolver;
 mod routed;
+mod service;
 
 /// How many TCP connect probes [`scan`] runs at once.
 const PORT_SCAN_CONCURRENCY: usize = 50;
@@ -142,15 +144,35 @@ pub async fn scan(
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::new();
+    let ips = target_ips(&target_map);
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
+    let with_dns = !cfg.no_dns;
     let syn_scanner = build_syn_scanner(ctx.clone(), target_count, cfg.send_mode);
+
+    // A privileged scan enriches hosts exactly as `discover` does - ARP/ICMPv6
+    // for MAC and RTT, TCP SYN for RTT, passive DNS/mDNS for hostnames and
+    // extra IPs - running concurrently with the port scan and writing into the
+    // same store, so a scanned host carries the same detail a discovered one
+    // does. The unprivileged fallback can't ARP, so it settles for active
+    // reverse DNS.
+    let enrichment = if syn_scanner.is_some() {
+        Some(Enrichment::spawn(ips, &ctx, cfg, Scope::Targeted).await)
+    } else {
+        None
+    };
 
     let handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
         let rx = dispatcher.run_shuffled(&ctx.handle);
 
         let (kind, outcome) = match syn_scanner {
-            Some(mut scanner) => (ScannerKind::Routed, scanner.scan(rx).await),
+            Some(mut scanner) => {
+                let outcome = scanner.scan(rx).await;
+                if outcome.is_ok() && !ctx.handle.should_stop() {
+                    service::detect(&ctx).await;
+                }
+                (ScannerKind::Routed, outcome)
+            }
             None => (
                 ScannerKind::Connect,
                 connect::scan(rx, PORT_SCAN_CONCURRENCY, ctx.clone()).await,
@@ -159,9 +181,31 @@ pub async fn scan(
         if let Err(e) = outcome {
             report_scanner_failure(&ctx, kind, e.to_string());
         }
+
+        match enrichment {
+            Some(enrichment) => enrichment.finish(&ctx).await,
+            None if with_dns => resolver::resolve_hosts_async(ctx.store.clone()).await,
+            None => {}
+        }
     });
 
     Ok((session, ScanTask::new(handle)))
+}
+
+/// Collects every target address from a [`TargetMap`] into an [`IpSet`], so
+/// the host-enrichment phase knows which addresses to identify.
+fn target_ips(target_map: &TargetMap) -> IpSet {
+    let mut ips = IpSet::new();
+    for unit in &target_map.units {
+        for range in unit.ips().v4() {
+            ips.insert_range(IpRange::V4(*range));
+        }
+        for range in unit.ips().v6() {
+            ips.insert_range(IpRange::V6(*range));
+        }
+    }
+    ips.canonicalize();
+    ips
 }
 
 /// Attempts to build a privileged, raw-socket SYN port scanner, resolving
@@ -194,6 +238,56 @@ fn build_syn_scanner(
         Err(e) => {
             error!("Failed to initialize SYN port scanner: {e}");
             None
+        }
+    }
+}
+
+/// The privileged host-identification phase, shared by [`discover`] and
+/// [`scan`].
+///
+/// It spawns the same strategies discovery uses - per-interface
+/// [`LocalScanner`]s (ARP/ICMPv6, yielding MAC and RTT), a [`RoutedScanner`]
+/// for off-link targets (RTT), and the passive DNS/mDNS
+/// [`HostnameResolver`] - all writing into the shared store. `discover` runs
+/// this alone; `scan` runs it alongside the port scan. Keeping it in one place
+/// is what lets both surface identical host detail without duplicating the
+/// orchestration.
+struct Enrichment {
+    scanners: Vec<(ScannerKind, JoinHandle<anyhow::Result<()>>)>,
+    resolver: Option<JoinHandle<Option<HostnameResolver>>>,
+}
+
+impl Enrichment {
+    /// Spawns every enrichment strategy for `targets`; they begin running
+    /// immediately and concurrently. Call [`Enrichment::finish`] to await them.
+    async fn spawn(targets: IpSet, ctx: &ScanContext, cfg: &ZondConfig, scope: Scope) -> Self {
+        let (dns_tx, resolver) = if !cfg.no_dns {
+            let (tx, rx) = mpsc::unbounded_channel();
+            (Some(tx), Some(spawn_resolver(rx).await))
+        } else {
+            info!("DNS resolution skipped by user flag");
+            (None, None)
+        };
+
+        let scanners = spawn_explorers(targets, ctx, dns_tx, cfg.send_mode, scope).await;
+        Self { scanners, resolver }
+    }
+
+    /// Awaits every enrichment strategy, reporting any that failed, then folds
+    /// the resolver's collected hostnames and extra IPs into the store.
+    async fn finish(self, ctx: &ScanContext) {
+        for (kind, handle) in self.scanners {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => report_scanner_failure(ctx, kind, e.to_string()),
+                Err(e) => report_scanner_failure(ctx, kind, format!("panicked: {e}")),
+            }
+        }
+
+        if let Some(task) = self.resolver
+            && let Ok(Some(mut resolver)) = task.await
+        {
+            resolver.resolve_hosts(ctx.store.clone());
         }
     }
 }
@@ -241,31 +335,10 @@ pub async fn discover(
         return Ok((session, ScanTask::new(handle)));
     }
 
-    let (dns_tx, resolver_task) = if with_dns {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let task = spawn_resolver(rx).await;
-        (Some(tx), Some(task))
-    } else {
-        info!("DNS resolution skipped by user flag");
-        (None, None)
-    };
-
-    let scanner_handles = spawn_explorers(targets, &ctx, dns_tx, cfg.send_mode).await;
+    let enrichment = Enrichment::spawn(targets, &ctx, cfg, Scope::Sweep).await;
 
     let handle = tokio::spawn(async move {
-        for (kind, handle) in scanner_handles {
-            match handle.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => report_scanner_failure(&ctx, kind, e.to_string()),
-                Err(e) => report_scanner_failure(&ctx, kind, format!("panicked: {e}")),
-            }
-        }
-
-        if let Some(task) = resolver_task
-            && let Ok(Some(mut resolver)) = task.await
-        {
-            resolver.resolve_hosts(ctx.store);
-        }
+        enrichment.finish(&ctx).await;
     });
 
     Ok((session, ScanTask::new(handle)))
@@ -293,6 +366,7 @@ async fn spawn_explorers(
     ctx: &ScanContext,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     send_mode: SendMode,
+    scope: Scope,
 ) -> Vec<(ScannerKind, JoinHandle<anyhow::Result<()>>)> {
     let mut explorers: Vec<(ScannerKind, Box<dyn NetworkExplorer + Send>)> = Vec::new();
     let interface::RoutedTargets {
@@ -307,7 +381,7 @@ async fn spawn_explorers(
             continue;
         }
         info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
-        match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone()) {
+        match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone(), scope) {
             Ok(scanner) => explorers.push((ScannerKind::Local, Box::new(scanner))),
             Err(e) => {
                 report_scanner_failure(ctx, ScannerKind::Local, format!("{}: {e}", intf.name))

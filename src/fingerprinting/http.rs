@@ -135,26 +135,39 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
 /// like `Apache/2.4.58 (Ubuntu)` are ignored) and splits it into a product and a
 /// version at the first `/`, keeping the version only when it actually looks like
 /// one (starts with a digit). A comment opener `(` also ends the product, so
-/// `Jetty(9.4)` yields `Jetty`. Returns `None` for an empty value.
+/// `Jetty(9.4)` yields `Jetty`. Returns `None` for an empty value, or for a
+/// placeholder token like `null` that names no real product.
 fn parse_server(value: &str) -> Option<(String, Option<String>)> {
     let token = value.split_whitespace().next()?;
 
     if let Some((product, version)) = token.split_once('/') {
         let product = product.trim_end_matches('(');
         let versioned = version.starts_with(|c: char| c.is_ascii_digit());
-        if !product.is_empty() && versioned {
+        if !product.is_empty() && !is_placeholder(product) && versioned {
             return Some((product.to_string(), Some(version.to_string())));
         }
         // A `/` but no numeric version (e.g. a URL-ish token): treat the whole
         // left side as the product name, no version.
-        if !product.is_empty() {
+        if !product.is_empty() && !is_placeholder(product) {
             return Some((product.to_string(), None));
         }
     }
 
     // No `/`: the token is a bare product name (possibly with a `(` comment).
     let product = token.split('(').next().unwrap_or(token);
-    (!product.is_empty()).then(|| (product.to_string(), None))
+    (!product.is_empty() && !is_placeholder(product)).then(|| (product.to_string(), None))
+}
+
+/// Whether a server token is a null-ish placeholder rather than a real product
+/// name. Some devices (notably embedded/router HTTP stacks) emit `Server: null`,
+/// `unknown`, `-`, and the like — a captured value, but no identification. We
+/// drop it so the resolver keeps the clean `http` baseline instead of surfacing
+/// a bogus product.
+fn is_placeholder(product: &str) -> bool {
+    matches!(
+        product.trim().to_ascii_lowercase().as_str(),
+        "" | "null" | "nil" | "none" | "unknown" | "unspecified" | "-"
+    )
 }
 
 /// A minimally-parsed HTTP response: enough to read headers by name. The body is
@@ -309,6 +322,22 @@ mod tests {
                 .iter()
                 .all(|e| e.product.as_deref() != Some("PHP/8.2.1"))
         );
+    }
+
+    #[test]
+    fn placeholder_server_token_names_no_product() {
+        // Embedded/router stacks that answer `Server: null` must not surface
+        // "null" as a product; the response still counts as HTTP, so only the
+        // baseline `http` evidence (no product) remains.
+        let evidence = analyze(80, "HTTP/1.1 200 OK\r\nServer: null\r\n\r\n");
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].service.as_deref(), Some("http"));
+        assert_eq!(evidence[0].product, None);
+
+        // The raw splitter rejects the same tokens directly.
+        assert_eq!(parse_server("null"), None);
+        assert_eq!(parse_server("-"), None);
+        assert_eq!(parse_server("Unknown"), None);
     }
 
     #[test]

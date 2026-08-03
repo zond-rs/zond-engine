@@ -17,7 +17,7 @@
 
 mod discovery;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
@@ -78,6 +78,19 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 );
 
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
+
+/// How much of the segment a [`LocalScanner`] run touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Probe every address in range and record every responder, including
+    /// IPv6-only neighbors found via an all-nodes solicitation. Used by
+    /// `discover`, whose whole job is to find whatever is on the segment.
+    Sweep,
+    /// Probe only the given target addresses and record only those. No
+    /// all-nodes solicitation, so scanning one host never lights up its
+    /// neighbors. Used by `scan`, where the targets are already known.
+    Targeted,
+}
 
 /// The addressing identity this scanner uses to speak on its interface,
 /// resolved once at construction time and never changed afterward.
@@ -152,6 +165,11 @@ pub struct LocalScanner {
     /// Maps each MAC seen back to the first address observed from it, so a
     /// host reachable at more than one address is recorded once.
     mac_to_ip: HashMap<MacAddr, IpAddr>,
+    /// Whether to sweep the segment or probe only the given targets.
+    scope: Scope,
+    /// Target addresses that have answered, so a targeted run can stop the
+    /// moment every one of them has, rather than waiting out the deadline.
+    responded: HashSet<IpAddr>,
 }
 
 #[async_trait]
@@ -162,13 +180,14 @@ impl NetworkExplorer for LocalScanner {
             &self.identity.ipv4,
             &self.identity.link_local_ipv6,
             &self.ip_set,
+            matches!(self.scope, Scope::Sweep),
         )?;
 
         let mut sending_finished = false;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL);
 
         loop {
-            if self.should_stop() && sending_finished {
+            if sending_finished && (self.should_stop() || self.all_targets_responded()) {
                 break;
             }
 
@@ -211,6 +230,7 @@ impl LocalScanner {
         ip_set: IpSet,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
+        scope: Scope,
     ) -> anyhow::Result<Self> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
         let identity = SourceIdentity::resolve(&intf, &ip_set)?;
@@ -228,6 +248,8 @@ impl LocalScanner {
             pending_probes: PendingProbes::with_capacity(target_count),
             dns_tx,
             mac_to_ip: HashMap::new(),
+            scope,
+            responded: HashSet::new(),
         })
     }
 
@@ -243,15 +265,31 @@ impl LocalScanner {
         }
 
         let source_addr: IpAddr = protocol::get_ip_addr_from_eth(&eth_frame)?;
-        if source_addr.is_ipv4() && !self.ip_set.contains(&source_addr) {
+        // A targeted run records only its exact targets; a sweep records every
+        // in-range IPv4 responder plus any IPv6 neighbor (linked by MAC).
+        let out_of_range = match self.scope {
+            Scope::Targeted => !self.ip_set.contains(&source_addr),
+            Scope::Sweep => source_addr.is_ipv4() && !self.ip_set.contains(&source_addr),
+        };
+        if out_of_range {
             return Err(LocalScannerError::AddressOutOfRange(source_addr).into());
         }
 
         if let ProtocolMatch::Handled { rtt } = self.interpret_response(&eth_frame, source_addr) {
+            if self.ip_set.contains(&source_addr) {
+                self.responded.insert(source_addr);
+            }
             self.record_response(source_mac, source_addr, rtt);
         }
 
         Ok(())
+    }
+
+    /// Whether every target address has answered. Only meaningful for a
+    /// [`Scope::Targeted`] run; a sweep's range is far larger than the set of
+    /// live hosts, so this effectively never trips and it runs to its deadline.
+    fn all_targets_responded(&self) -> bool {
+        self.responded.len() as u128 >= self.ip_set.len()
     }
 
     /// Tries each configured [`DiscoveryProtocol`] against `frame` in turn.
@@ -290,8 +328,15 @@ impl LocalScanner {
         let mut host = self.ctx.store.entry(primary_ip).or_insert_with(|| {
             self.deadline.mark_activity();
             is_new_host = true;
-            Host::new(primary_ip).with_mac(source_mac.into_core())
+            Host::new(primary_ip)
         });
+
+        // Set the MAC whether we just created the host or the port scanner
+        // created it first, so enrichment order doesn't decide whether a MAC
+        // is recorded. Only the first MAC seen for the host is kept.
+        if host.mac().is_none() {
+            host.set_mac(source_mac.into_core());
+        }
 
         let mut emit_update = false;
 
