@@ -13,18 +13,18 @@
 //!
 //! The unprivileged [`connect`](super::connect) scanner already holds a live
 //! `TcpStream` the moment it finds a port open, so it fingerprints inline. The
-//! privileged [`SynPortScanner`](super::routed::SynPortScanner) never completes
-//! a handshake — it classifies each port from a single raw SYN/SYN-ACK/RST
-//! exchange — so it has no connection to fingerprint through. Fingerprinting
-//! does not need raw sockets; it needs a real TCP connection. This phase opens
-//! one to each open TCP port and runs the same engine, so a fast privileged scan
+//! privileged [`SynPortScanner`](super::routed::SynPortScanner) never completes a
+//! handshake, since it classifies each port from a single raw SYN/SYN-ACK/RST
+//! exchange, and so it has no connection to fingerprint through. Fingerprinting
+//! does not need raw sockets, it needs a real TCP connection. This phase opens one
+//! to each open TCP port and runs the same engine, so a fast privileged scan
 //! reports the same service detail as the connect fallback instead of a bare
-//! port→name guess.
+//! port-to-name guess.
 //!
-//! Discovery and identification are deliberately separate: finding which ports
-//! are open is cheap and wants raw-packet speed, while identifying what runs on
-//! them needs a real conversation with the service. Keeping them apart lets each
-//! use the transport that suits it.
+//! Discovery and identification are kept separate on purpose. Finding which ports
+//! are open is cheap and benefits from raw-packet speed, while identifying what
+//! runs on them needs a real conversation with the service. Splitting the two lets
+//! each use the transport that suits it.
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -39,10 +39,10 @@ use crate::scanner::tuning::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 /// Fingerprints every open TCP port currently in the store, upgrading each
 /// port's service in place.
 ///
-/// Intended to run once, after a discovery phase that established port *state*
-/// but not service identity — i.e. the SYN path. Ports already carrying a
-/// fingerprint (from the connect scanner) are re-identified harmlessly, but the
-/// caller runs this only where it is needed.
+/// Intended to run once, after a discovery phase that established port *state* but
+/// not service identity, which is the SYN path. Ports that already carry a
+/// fingerprint from the connect scanner would be re-identified harmlessly, but the
+/// caller only runs this where it is actually needed.
 pub async fn detect(ctx: &ScanContext) {
     // Snapshot the targets up front so no DashMap guard is held across an await.
     let targets = open_tcp_ports(ctx);
@@ -115,8 +115,8 @@ mod tests {
 
     #[tokio::test]
     async fn detect_fingerprints_an_open_tcp_port_end_to_end() {
-        // A loopback "service" that greets on connect with an SSH banner — the
-        // stand-in for what a SYN-discovered open port would say once we connect.
+        // A loopback "service" that greets on connect with an SSH banner, standing
+        // in for what a SYN-discovered open port would say once we connect.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {

@@ -9,15 +9,15 @@
 //! One reusable driver for the pattern every fan-out scan shares: spawn a probe
 //! task per target, cap how many run at once, and fold each result as it
 //! finishes. The connect port scan, the connect discovery sweep, and the
-//! service-detection pass all need exactly this, and each used to re-spell the
-//! same fiddly [`JoinSet`] bookkeeping - make room before admitting a probe,
-//! drain the stragglers at the end, drop a panicked task rather than let it abort
-//! the sweep - inline.
+//! service-detection pass all need exactly this. Each used to repeat the same
+//! fiddly [`JoinSet`] bookkeeping inline: make room before admitting a probe,
+//! drain the stragglers at the end, and drop a panicked task rather than let it
+//! abort the sweep.
 //!
-//! [`ProbePool`] owns that bookkeeping once. A caller keeps its own source loop,
-//! because sources differ (an async [`mpsc`](tokio::sync::mpsc) receiver for the
-//! dispatched scans, a plain iterator for service detection) even though the
-//! concurrency management doesn't, and hands each unit of work to
+//! [`ProbePool`] owns that bookkeeping in one place. A caller keeps its own source
+//! loop, since the sources differ (an async [`mpsc`](tokio::sync::mpsc) receiver
+//! for the dispatched scans, a plain iterator for service detection) even though
+//! the concurrency management does not, and hands each unit of work to
 //! [`ProbePool::admit`].
 
 use tokio::task::JoinSet;
@@ -27,11 +27,11 @@ use crate::error;
 /// A bounded pool of in-flight probe tasks.
 ///
 /// Holds at most `limit` tasks in a [`JoinSet`]. [`admit`](ProbePool::admit)
-/// spawns one, first reaping finished tasks - blocking only when the pool is
-/// already full - so the cap is never exceeded; [`drain`](ProbePool::drain)
-/// awaits whatever remains once the caller's source runs dry. Every finished
-/// task's output is passed to the `fold` closure the pool was built with; a task
-/// that panicked is dropped, which matches a scan's best-effort contract: one lost
+/// spawns one, first reaping finished tasks so the cap is never exceeded, and
+/// blocks only when the pool is already full. [`drain`](ProbePool::drain) awaits
+/// whatever remains once the caller's source runs dry. Every finished task's
+/// output is passed to the `fold` closure the pool was built with. A task that
+/// panicked is dropped, which matches a scan's best-effort contract: one lost
 /// probe must not sink the whole sweep.
 pub(in crate::scanner) struct ProbePool<R, F: FnMut(R)> {
     set: JoinSet<R>,
@@ -79,9 +79,9 @@ where
     ///
     /// A probe task that panicked surfaces here as a
     /// [`JoinError`](tokio::task::JoinError). The pool never aborts its tasks, so
-    /// that only ever means a genuine panic in probe code - a bug. It is logged
-    /// and the sweep continues rather than being propagated, so one defective
-    /// probe can't sink the whole scan, but it no longer vanishes unseen.
+    /// this only ever means a genuine panic in probe code, which is a bug. It is
+    /// logged and the sweep continues rather than propagating the error, so one
+    /// defective probe cannot sink the whole scan while still not vanishing unseen.
     async fn reap(&mut self) {
         match self.set.join_next().await {
             Some(Ok(output)) => (self.fold)(output),

@@ -6,13 +6,12 @@
 
 //! # Routed Host Discovery
 //!
-//! Finds hosts reached through a gateway rather than sitting on the local
-//! segment, by sending a single raw TCP SYN packet to each target and
-//! listening for any reply - a full three-way handshake is never
-//! completed, so this works whether the target port is actually open or
-//! not. [`port_scan`] builds on the same raw-socket machinery to answer a
-//! different question: not just whether a host is alive, but which of its
-//! ports are open.
+//! Finds hosts reached through a gateway rather than ones sitting on the local
+//! segment. It sends a single raw TCP SYN packet to each target and listens for
+//! any reply. A full three-way handshake is never completed, so this works
+//! whether or not the target port is open. [`port_scan`] builds on the same
+//! raw-socket machinery to answer a different question: not whether a host is
+//! alive, but which of its ports are open.
 //!
 //! This scanner requires root privileges to open the raw sockets involved.
 
@@ -41,11 +40,10 @@ use super::NetworkExplorer;
 
 pub use port_scan::SynPortScanner;
 
-/// How long a discovery sweep runs, and how it adapts. Routed targets may
-/// sit anywhere on the internet rather than on the local segment, but a
-/// probe that was ever going to get a reply typically does so quickly, so
-/// this starts noticeably tighter than
-/// [`LocalScanner`](super::local::LocalScanner)'s budget.
+/// How long a discovery sweep runs and how it adapts. Routed targets may sit
+/// anywhere on the internet rather than on the local segment, but a probe that
+/// is ever going to get a reply usually gets one quickly, so this budget starts
+/// noticeably tighter than [`LocalScanner`](super::local::LocalScanner)'s.
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(
         Duration::from_millis(200),
@@ -65,10 +63,10 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 
 type SeqNum = u32;
 
-/// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port`
-/// through `sender` and logs the outcome. Returns the randomly chosen
-/// sequence number it was sent with on success, so the caller can record it
-/// for correlating a later reply.
+/// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port` through
+/// `sender` and logs the outcome. On success it returns the randomly chosen
+/// sequence number the packet was sent with, so the caller can record it and
+/// correlate a later reply.
 fn send_syn(
     sender: &dyn ProbeSender,
     src_addr: IpAddr,

@@ -6,15 +6,15 @@
 
 //! # SYN Port Probing
 //!
-//! Implements the privileged half of [`crate::scanner::scan`]: probing
-//! specific `(address, port)` pairs with raw TCP SYN packets and
-//! classifying each one by how - or whether - it responds, rather than
-//! completing a full TCP handshake per port the way the unprivileged
-//! fallback in [`crate::scanner::connect`] has to.
+//! Implements the privileged half of [`crate::scanner::scan`]. It probes
+//! specific `(address, port)` pairs with raw TCP SYN packets and classifies each
+//! one by whether and how it responds, rather than completing a full TCP
+//! handshake per port the way the unprivileged fallback in
+//! [`crate::scanner::connect`] must.
 //!
-//! A SYN+ACK means the port is open; a RST means it's closed; silence
-//! until the scan's deadline means it's filtered - most likely a firewall
-//! dropping the probe rather than responding to it.
+//! A SYN+ACK means the port is open, a RST means it is closed, and silence until
+//! the scan's deadline means it is filtered, most likely by a firewall dropping
+//! the probe rather than answering it.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -37,7 +37,7 @@ use crate::system::interface::SourceResolver;
 
 // Port scanning and routed discovery send the same kind of raw TCP SYN over the
 // same kind of network path, so they share one adaptive-deadline profile rather
-// than maintaining two copies that must be kept in step.
+// than keeping two copies in step.
 use super::{DEADLINE_CONFIG, SeqNum, send_syn};
 
 /// Outstanding probes, keyed by the target they were sent to, recording the
@@ -46,13 +46,13 @@ type PendingProbes = HashMap<(IpAddr, u16), (SeqNum, Instant)>;
 
 /// Probes specific `(address, port)` pairs with raw TCP SYN packets.
 ///
-/// Unlike [`RoutedScanner`](super::RoutedScanner), which sends one SYN per
-/// host purely to check for a pulse, this sends one per `(address, port)`
-/// pair it's given and reports back what each one revealed.
+/// Unlike [`RoutedScanner`](super::RoutedScanner), which sends one SYN per host
+/// purely to check for a pulse, this sends one per `(address, port)` pair it is
+/// given and reports what each one revealed.
 pub struct SynPortScanner {
-    /// Resolves, per target, the source address to send its probe from -
-    /// consulting on-link subnets and the kernel routing table, and caching
-    /// each answer so the many ports probed on one host cost a single lookup.
+    /// Resolves the source address to send each target's probe from, consulting
+    /// on-link subnets and the kernel routing table. Each answer is cached, so
+    /// the many ports probed on one host cost a single lookup.
     resolver: SourceResolver,
     /// Shared state (host store, event channel, abort signal) for the scan
     /// this prober is part of.
@@ -88,8 +88,8 @@ impl SynPortScanner {
     }
 
     /// Builds a scanner around an already-constructed transport, opening no
-    /// sockets. The seam that lets tests drive probe/reply correlation with a
-    /// mock sender and synthesized replies.
+    /// sockets. This is the seam that lets tests drive probe and reply
+    /// correlation with a mock sender and synthesized replies.
     #[cfg(test)]
     pub(crate) fn with_transport(
         resolver: SourceResolver,
@@ -159,8 +159,8 @@ impl SynPortScanner {
         self.record_port(ip, key.1, state);
     }
 
-    /// Marks every probe still outstanding once the scan winds down as
-    /// filtered: no SYN+ACK, no RST, nothing - the most common signature of
+    /// Marks every probe still outstanding once the scan winds down as filtered.
+    /// No SYN+ACK and no RST ever arrived, which is the most common signature of
     /// a firewall silently dropping the packet rather than answering it.
     fn resolve_remaining_as_filtered(&mut self) {
         let remaining: Vec<(IpAddr, u16)> = self.pending.drain().map(|(key, _)| key).collect();
@@ -181,10 +181,10 @@ impl PortScanner for SynPortScanner {
         ScannerKind::SynPort
     }
 
-    /// Consumes `targets`, sending a SYN probe for each TCP one - this
-    /// scanner doesn't support UDP or SCTP yet, so those are skipped - and
-    /// classifying every reply, until every probe has been resolved or the
-    /// scan's deadline expires. Anything still outstanding at that point is
+    /// Consumes `targets`, sending a SYN probe for each TCP one and classifying
+    /// every reply, until each probe has been resolved or the scan's deadline
+    /// expires. UDP and SCTP targets are skipped, since this scanner does not
+    /// support them yet. Anything still outstanding when the loop ends is
     /// reported as filtered.
     async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
         let mut sending_finished = false;
@@ -263,8 +263,8 @@ mod tests {
     }
 
     /// Builds a bare 20-byte TCP segment carrying the given source port,
-    /// acknowledgement number, and flags - the shape a captured reply arrives
-    /// in after the link and IP headers are stripped.
+    /// acknowledgement number, and flags. This is the shape a captured reply
+    /// arrives in after the link and IP headers are stripped.
     fn tcp_segment(src_port: u16, ack: u32, flags: u8) -> Vec<u8> {
         let mut buf = vec![0u8; 20];
         let mut tcp = MutableTcpPacket::new(&mut buf).unwrap();

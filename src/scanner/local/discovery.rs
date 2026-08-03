@@ -6,13 +6,12 @@
 
 //! # Discovery Response Protocols
 //!
-//! [`LocalScanner`](super::LocalScanner) sends more than one kind of probe
-//! onto the wire and has to recognize more than one kind of reply. Rather
-//! than growing a single function that understands every wire format it
-//! might ever need to, each format is its own [`DiscoveryProtocol`]
-//! implementation, and the scanner just tries each one against every frame
-//! it receives. Adding support for a new discovery mechanism means writing
-//! one more implementation here, not touching the receive loop.
+//! [`LocalScanner`](super::LocalScanner) sends more than one kind of probe onto
+//! the wire and has to recognize more than one kind of reply. Rather than
+//! growing a single function that understands every wire format, each format is
+//! its own [`DiscoveryProtocol`] implementation, and the scanner tries each one
+//! against every frame it receives. Supporting a new discovery mechanism means
+//! writing one more implementation here instead of touching the receive loop.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -30,22 +29,22 @@ pub type PendingProbes = HashMap<IpAddr, Instant>;
 
 /// What a [`DiscoveryProtocol`] found when asked to interpret one received frame.
 pub enum ProtocolMatch {
-    /// This frame isn't one the protocol recognizes; another protocol may still claim it.
+    /// The protocol does not recognize this frame. Another protocol may still
+    /// claim it.
     Unhandled,
-    /// This frame is a discovery response, with a round-trip time if a
+    /// The frame is a discovery response, carrying a round-trip time when a
     /// matching outbound probe was still on record.
     Handled { rtt: Option<Duration> },
 }
 
 /// A wire-level protocol capable of recognizing discovery responses.
 ///
-/// [`LocalScanner`](super::LocalScanner) tries each configured protocol
-/// against every received frame in turn; the first one that claims it
-/// decides whether - and how precisely - a round-trip time can be computed.
-/// The scanner has already identified the frame's source address and ruled
-/// out obvious noise (packets from itself, addresses outside the scan)
-/// before a protocol ever sees the frame, so implementations only need to
-/// concern themselves with their own wire format.
+/// [`LocalScanner`](super::LocalScanner) tries each configured protocol against
+/// every received frame in turn, and the first one that claims a frame decides
+/// whether a round-trip time can be computed and how precisely. The scanner has
+/// already identified the frame's source address and ruled out obvious noise
+/// (packets from itself, addresses outside the scan) before a protocol ever sees
+/// the frame, so an implementation only needs to handle its own wire format.
 pub trait DiscoveryProtocol: Send {
     fn interpret(
         &self,
@@ -57,11 +56,11 @@ pub trait DiscoveryProtocol: Send {
 
 /// Recognizes ARP replies as discovery responses.
 ///
-/// A round trip is measured from when a request was sent to a given
-/// address to when that same address answers. ARP traffic that doesn't
-/// correspond to an outstanding probe - other hosts' requests, gratuitous
-/// announcements - is common on a shared segment and isn't treated as an
-/// error, just a response with no timing data.
+/// A round trip is measured from when a request was sent to a given address to
+/// when that same address answers. ARP traffic that does not correspond to an
+/// outstanding probe, such as other hosts' requests or gratuitous announcements,
+/// is common on a shared segment. It is not treated as an error, only as a
+/// response with no timing data.
 pub struct ArpProtocol;
 
 impl DiscoveryProtocol for ArpProtocol {
@@ -80,15 +79,15 @@ impl DiscoveryProtocol for ArpProtocol {
     }
 }
 
-/// Recognizes inbound IPv6 traffic addressed directly to this host as a
-/// reply to the single ICMPv6 all-nodes probe sent at the start of a scan.
+/// Recognizes inbound IPv6 traffic addressed directly to this host as a reply to
+/// the single ICMPv6 all-nodes probe sent at the start of a scan.
 ///
-/// Unlike ARP, this probe isn't sent per target - it's one multicast
-/// solicitation any IPv6 neighbor may answer - so the round trip is
-/// measured from that single send against every qualifying reply, rather
-/// than being consumed after the first one. A qualifying reply with no
-/// matching send on record would mean the probe was never actually sent,
-/// which is treated as an error rather than silently ignored.
+/// Unlike ARP, this probe is not sent per target. It is one multicast
+/// solicitation that any IPv6 neighbor may answer, so the round trip is measured
+/// from that single send against every qualifying reply rather than being
+/// consumed after the first one. A qualifying reply with no matching send on
+/// record would mean the probe was never actually sent, which is treated as an
+/// error rather than silently ignored.
 pub struct Icmpv6Protocol;
 
 impl DiscoveryProtocol for Icmpv6Protocol {

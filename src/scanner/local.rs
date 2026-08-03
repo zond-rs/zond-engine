@@ -6,14 +6,13 @@
 
 //! # Local Area Network Scanner
 //!
-//! Discovers hosts on the same physical network segment by sending ARP
-//! requests (IPv4) and a single ICMPv6 all-nodes solicitation (IPv6), then
-//! listening for replies. Recognizing those replies is delegated to the
-//! [`discovery`] module, so adding a new discovery mechanism doesn't mean
-//! touching the receive loop itself.
+//! Discovers hosts on the same physical network segment by sending ARP requests
+//! (IPv4) and a single ICMPv6 all-nodes solicitation (IPv6), then listening for
+//! replies. Recognizing those replies is left to the [`discovery`] module, so
+//! adding a new discovery mechanism does not mean touching the receive loop.
 //!
-//! This scanner requires root privileges: it constructs and intercepts raw
-//! Ethernet frames directly, bypassing the operating system's own IP stack.
+//! This scanner requires root privileges. It builds and intercepts raw Ethernet
+//! frames directly, bypassing the operating system's own IP stack.
 
 mod discovery;
 
@@ -40,8 +39,8 @@ use crate::{error, info};
 
 use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6Protocol, PendingProbes, ProtocolMatch};
 
-/// Errors specific to local-network scanning: interface setup problems and
-/// packets that fail the sanity checks a discovery reply is expected to pass.
+/// Errors specific to local-network scanning, covering interface setup problems
+/// and packets that fail the sanity checks a discovery reply is expected to pass.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalScannerError {
     #[error("interface has no mac address")]
@@ -54,12 +53,12 @@ pub enum LocalScannerError {
     AddressOutOfRange(IpAddr),
 }
 
-/// How long a discovery sweep runs, and how it adapts. `base` and
-/// `per_target` scale with the number of targets; `silence_floor`,
-/// `silence_ceiling`, and `jitter_multiplier` bound how the tolerance for
-/// network silence adapts to recently observed round-trip times. These
-/// starting values assume a local network segment, where round trips are
-/// typically well under a millisecond.
+/// How long a discovery sweep runs and how it adapts. The base and per-target
+/// budgets scale with the number of targets, while the silence floor, silence
+/// ceiling, and jitter multiplier bound how far the tolerance for network
+/// silence can stretch in response to recent round-trip times. These starting
+/// values assume a local segment, where round trips are usually well under a
+/// millisecond.
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(
         Duration::from_millis(2_000),
@@ -83,12 +82,12 @@ const SEND_INTERVAL: Duration = Duration::from_micros(1000);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// Probe every address in range and record every responder, including
-    /// IPv6-only neighbors found via an all-nodes solicitation. Used by
-    /// `discover`, whose whole job is to find whatever is on the segment.
+    /// IPv6-only neighbors found through an all-nodes solicitation. Used by
+    /// `discover`, whose job is to find whatever is on the segment.
     Sweep,
-    /// Probe only the given target addresses and record only those. No
-    /// all-nodes solicitation, so scanning one host never lights up its
-    /// neighbors. Used by `scan`, where the targets are already known.
+    /// Probe only the given target addresses and record only those. No all-nodes
+    /// solicitation is sent, so scanning one host never lights up its neighbors.
+    /// Used by `scan`, where the targets are already known.
     Targeted,
 }
 
@@ -101,14 +100,13 @@ struct SourceIdentity {
 }
 
 impl SourceIdentity {
-    /// Picks the addresses this scanner will present as its own when
-    /// probing `ip_set` from `intf`.
+    /// Picks the addresses this scanner will present as its own when probing
+    /// `ip_set` from `intf`.
     ///
-    /// The IPv4 address preferred is, in order: one in the same subnet as
-    /// the targets being scanned, falling back to the interface's first
-    /// non-loopback address. The IPv6 address is the interface's link-local
-    /// address, if it has one, since that's what the ICMPv6 all-nodes probe
-    /// is sent from.
+    /// For IPv4, it prefers an address in the same subnet as the targets being
+    /// scanned and otherwise falls back to the interface's first non-loopback
+    /// address. For IPv6, it uses the interface's link-local address when it has
+    /// one, since that is what the ICMPv6 all-nodes probe is sent from.
     fn resolve(intf: &NetworkInterface, ip_set: &IpSet) -> Result<Self, LocalScannerError> {
         let mac = intf.mac.ok_or(LocalScannerError::NoMacAddress)?;
 
@@ -253,9 +251,8 @@ impl LocalScanner {
         })
     }
 
-    /// Validates an incoming frame and routes it to the two halves of
-    /// handling a discovery reply: figuring out what it means, then
-    /// recording that in shared scan state.
+    /// Validates an incoming frame, then handles a discovery reply in two steps:
+    /// working out what it means, and recording that in shared scan state.
     fn process_eth_packet(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         let eth_frame: EthernetPacket = ethernet::get_packet_from_u8(bytes)?;
 
@@ -285,23 +282,24 @@ impl LocalScanner {
         Ok(())
     }
 
-    /// Whether every target address has answered. Only meaningful for a
-    /// [`Scope::Targeted`] run; a sweep's range is far larger than the set of
-    /// live hosts, so this effectively never trips and it runs to its deadline.
+    /// Whether every target address has answered. This is only meaningful for a
+    /// [`Scope::Targeted`] run. A sweep's range is far larger than the set of
+    /// live hosts, so the check effectively never trips and the sweep runs to
+    /// its deadline.
     fn all_targets_responded(&self) -> bool {
         self.responded.len() as u128 >= self.ip_set.len()
     }
 
     /// Tries each configured [`DiscoveryProtocol`] against `frame` in turn.
     ///
-    /// Returns [`ProtocolMatch::Unhandled`] if no protocol recognized the
-    /// frame as a discovery response, or if one failed to interpret it - in
-    /// both cases the frame carries no reliable information about who sent
-    /// it and must not be attributed to any host. A frame reaching us
-    /// promiscuously that no protocol claims is common: LAN traffic between
-    /// other hosts, or traffic merely forwarded through a router rather than
-    /// sent directly, whose Ethernet source is the router, not whoever the
-    /// IP packet actually originated from.
+    /// Returns [`ProtocolMatch::Unhandled`] when no protocol recognized the frame
+    /// as a discovery response, or when one recognized it but failed to interpret
+    /// it. Either way the frame carries no reliable information about who sent it
+    /// and must not be attributed to any host. Seeing a frame that no protocol
+    /// claims is common in promiscuous mode: it may be LAN traffic between other
+    /// hosts, or traffic forwarded through a router rather than sent directly,
+    /// whose Ethernet source is the router itself and not the host the IP packet
+    /// originated from.
     fn interpret_response(&mut self, frame: &EthernetPacket, source: IpAddr) -> ProtocolMatch {
         for protocol in &self.protocols {
             match protocol.interpret(frame, source, &mut self.pending_probes) {
@@ -317,17 +315,16 @@ impl LocalScanner {
         ProtocolMatch::Unhandled
     }
 
-    /// Applies a discovery response to shared scan state: updates or
-    /// creates the responding host, feeds the adaptive deadline, and
-    /// notifies both the scan's event channel and the hostname resolver of
-    /// anything new.
+    /// Applies a discovery response to shared scan state. It creates or updates
+    /// the responding host, feeds the adaptive deadline, and notifies both the
+    /// scan's event channel and the hostname resolver of anything new.
     fn record_response(&mut self, source_mac: MacAddr, source_addr: IpAddr, rtt: Option<Duration>) {
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
 
-        // Host mutation only; `write_host` owns the guard, the drop-before-emit
-        // ordering, and the event. `is_new_ip` is surfaced for the DNS decision
-        // below, which - like the deadline bookkeeping - runs after the guard is
-        // released.
+        // Host mutation only. `write_host` owns the guard, the drop-before-emit
+        // ordering, and the event. `is_new_ip` is returned for the DNS decision
+        // below, which runs after the guard is released, as does the deadline
+        // bookkeeping.
         let mut is_new_ip = false;
         let is_new_host = self.ctx.write_host(primary_ip, |host| {
             // Set the MAC whether we just created the host or the port scanner

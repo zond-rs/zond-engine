@@ -6,19 +6,18 @@
 
 //! # Unprivileged TCP Connect Scanning
 //!
-//! The fallback strategy when raw sockets aren't available - no root, no usable
-//! interface, or a target the OS couldn't route. Everything here is built on
-//! ordinary [`TcpStream`] connects, so it needs no special privileges and works
-//! anywhere the async runtime does.
+//! The fallback strategy for when raw sockets are not available, whether because
+//! the process is not root, no usable interface exists, or the OS could not route
+//! a target. Everything here is built on ordinary [`TcpStream`] connects, so it
+//! needs no special privileges and works anywhere the async runtime does.
 //!
-//! It answers both scan phases. [`discover`] establishes host presence by
-//! probing a small set of common infrastructure ports and treating any TCP-layer
-//! response (an accept, or even a refusal) as proof the host is alive.
-//! [`scan`] takes known targets and classifies each port from a full connect
-//! handshake. Both consume a randomized [`Dispatcher`] stream and bound their
-//! in-flight connections with a [`ProbePool`](super::pool::ProbePool) to avoid
-//! exhausting OS sockets, and both record findings through the shared
-//! [`ScanContext`] like every other strategy.
+//! It answers both scan phases. [`discover`] establishes host presence by probing
+//! a small set of common infrastructure ports and treating any TCP-layer response,
+//! an accept or even a refusal, as proof the host is alive. [`scan`] takes known
+//! targets and classifies each port from a full connect handshake. Both consume a
+//! randomized [`Dispatcher`] stream and cap their in-flight connections with a
+//! [`ProbePool`](super::pool::ProbePool) to avoid exhausting OS sockets, and both
+//! record findings through the shared [`ScanContext`] like every other strategy.
 
 use super::dispatcher::Dispatcher;
 use super::pool::ProbePool;
@@ -67,21 +66,21 @@ impl NetworkExplorer for ConnectScanner {
 }
 
 /// The outcome of one finished [`port_prober`] task: the port it classified, or
-/// `None` if the port was closed or the target wasn't probed at all. A probe never
-/// fails - every network outcome maps to a port state or to `None` - so this is a
-/// plain [`Option`], not a `Result`.
+/// `None` when the port was closed or the target was not probed at all. A probe
+/// never fails, since every network outcome maps to a port state or to `None`, so
+/// this is a plain [`Option`] rather than a `Result`.
 type ProbedPort = Option<(IpAddr, Port)>;
 
 /// Adapts the unprivileged [`scan`] engine to [`PortScanner`], so
 /// [`crate::scanner::scan`] can drive it through the same path as the privileged
 /// [`SynPortScanner`](super::routed::SynPortScanner).
 ///
-/// It carries no [`detect_services`](PortScanner::detect_services) override: the
-/// connect engine fingerprints each port inline over the live stream it already
-/// holds (see [`port_prober`]), so a second identification pass would be wasted
-/// work. That is the whole reason service detection lives on the trait rather than
-/// in the caller - the "connect needs no second pass" fact is expressed here, by
-/// its absence, instead of as a branch at the call site.
+/// It carries no [`detect_services`](PortScanner::detect_services) override,
+/// because the connect engine fingerprints each port inline over the live stream
+/// it already holds (see [`port_prober`]), so a second identification pass would
+/// be wasted work. This is the reason service detection lives on the trait rather
+/// than in the caller: the fact that connect needs no second pass is expressed
+/// here by its absence, instead of as a branch at the call site.
 pub struct ConnectPortScanner {
     /// Shared state (host store, event channel, abort signal) for the scan this
     /// strategy is part of.
@@ -144,9 +143,9 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort) {
 /// its port. Returns `Some(..)` for a non-closed port and `None` for a closed
 /// port or a target this strategy doesn't handle.
 ///
-/// An accepted connection is `Open` and gets fingerprinted over the live stream;
-/// a refusal is `Closed`; anything else - including a timeout, the usual
-/// signature of a firewall drop - is `Filtered`. Only TCP is supported; UDP
+/// An accepted connection is `Open` and gets fingerprinted over the live stream,
+/// and a refusal is `Closed`. Anything else is `Filtered`, including a timeout,
+/// which is the usual signature of a firewall drop. Only TCP is supported, so UDP
 /// targets are skipped.
 async fn port_prober(target: Target) -> ProbedPort {
     if target.protocol == Protocol::Udp {
@@ -192,20 +191,19 @@ async fn port_prober(target: Target) -> ProbedPort {
     }
 }
 
-/// High-fidelity, multi-port host discovery for unprivileged environments.
+/// Multi-port host discovery for unprivileged environments.
 ///
-/// This engine performs a rapid sweep of target networks by probing a curated
-/// set of infrastructure ports: SSH (22), HTTP (80), HTTPS (443), SMB (445),
-/// and RDP (3389). This multi-port approach ensures high discovery fidelity
-/// across Linux, Windows, and embedded network targets.
+/// Sweeps the target networks by probing a small set of common infrastructure
+/// ports: SSH (22), HTTP (80), HTTPS (443), SMB (445), and RDP (3389). Spreading
+/// the probe across several ports catches hosts that only expose one of them,
+/// which improves the odds of finding Linux, Windows, and embedded targets alike.
 ///
-/// ### Characteristics
-/// - **Early-Exit**: Probes for an IP are immediately bypassed if the host
-///   has already been confirmed alive by a parallel task.
-/// - **Randomized**: Target distribution is handled by a shuffling [`Dispatcher`]
-///   to minimize local network congestion.
-/// - **Fidelity Range**: Uses an adjustable 1000ms timeout window to capture
-///   hosts on high-latency or geographically distant links.
+/// Once any port confirms a host is alive, the remaining probes for that IP are
+/// skipped, so a host is recorded once rather than once per open port. Targets
+/// are drawn from a shuffling [`Dispatcher`] to spread load across the network
+/// instead of hammering one subnet at a time, and each probe waits out the
+/// [`CONNECT_PROBE_TIMEOUT`](tuning::CONNECT_PROBE_TIMEOUT) so that hosts on slow
+/// or distant links still register.
 pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
     let mut target_map = TargetMap::new();
     let port_set = PortSet::try_from(
@@ -238,9 +236,9 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The outcome of one finished [`prober`] task: a live [`Host`], or `None` if the
-/// target stayed silent or was already claimed by a parallel probe. A probe never
-/// fails, so this is a plain [`Option`], not a `Result`.
+/// The outcome of one finished [`prober`] task: a live [`Host`], or `None` when
+/// the target stayed silent or was already claimed by a parallel probe. A probe
+/// never fails, so this is a plain [`Option`] rather than a `Result`.
 type ProbedHost = Option<Host>;
 
 /// Merges one finished discovery probe's host into the store. A freshly created
@@ -254,19 +252,18 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost) {
     }
 }
 
-/// Concurrent network host prober.
+/// Probes a single [`Target`] for host presence over a TCP connect.
 ///
-/// Attempts a TCP connection to a specific [`Target`]. To minimize unnecessary
-/// network traffic and OS resource usage, it employs a thread-safe early-exit
-/// mechanism: if the host has already been identified by a parallel probe
-/// (e.g., SSH responded before HTTP), this task terminates immediately.
+/// To avoid needless traffic and wasted sockets, it exits early when the host has
+/// already been identified by a parallel probe, for example when SSH responded
+/// before HTTP finished.
 ///
-/// `found_set` is a sharded [`DashSet`] rather than a `Mutex<HashSet>` so the
-/// many concurrent probes contend per-shard instead of on one global lock, and
+/// `found_set` is a sharded [`DashSet`] rather than a `Mutex<HashSet>`, so the
+/// many concurrent probes contend per shard instead of on one global lock.
 /// `insert` returning `false` is what makes exactly the first prober to reach a
-/// host emit it - the rest fold to `None`.
+/// host emit it, while the rest fold to `None`.
 async fn prober(target: Target, found_set: Arc<DashSet<IpAddr>>) -> ProbedHost {
-    // 1. Early exit if already discovered
+    // Skip the connect entirely if another probe already found this host.
     if found_set.contains(&target.ip) {
         return None;
     }
@@ -280,10 +277,10 @@ async fn prober(target: Target, found_set: Arc<DashSet<IpAddr>>) -> ProbedHost {
     )
     .await
     {
-        // 2. A completed handshake means the host is alive.
+        // A completed handshake means the host is alive.
         Ok(Ok(_)) => true,
-        // 3. Only these TCP errors imply the host answered at the IP/TCP layer; any
-        //    other error (no route, permission denied, timeout) says nothing.
+        // Only these TCP errors imply the host answered at the IP/TCP layer. Any
+        // other error (no route, permission denied, timeout) says nothing.
         Ok(Err(e)) => {
             use std::io::ErrorKind;
             matches!(

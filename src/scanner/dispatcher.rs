@@ -4,23 +4,28 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
+//! # Target Dispatch
+//!
+//! Turns a [`TargetMap`] into a shuffled stream of individual [`Target`]s for the
+//! scanning strategies to consume. Rather than expand the whole address space into
+//! memory and shuffle it in one pass, it fills a fixed-size batch, shuffles that,
+//! and streams it out before moving on. Neighbouring addresses end up spread apart
+//! in time, which avoids hammering one subnet in a tight burst, and the memory cost
+//! stays bounded regardless of how large the target range is.
+
 use crate::core::handle::ScanHandle;
 use crate::core::models::target::{Target, TargetMap};
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 
-/// A randomized dispatcher that streams targets to consumers.
-///
-/// Converts a [`TargetMap`] into a batched, pseudo-randomized stream of `Target`s.
-/// Allows highly concurrent and evasive port scanning by shuffling chunks of targets
-/// without materializing the entire address space in memory.
+/// Streams the targets of a [`TargetMap`] out in shuffled batches.
 pub struct Dispatcher {
     target_map: TargetMap,
     batch_size: usize,
 }
 
 impl Dispatcher {
-    /// Creates a new [`Dispatcher`] from a [`TargetMap`] with a default batch size of 8192.
+    /// Creates a dispatcher over `target_map` with a default batch size of 8192.
     pub fn new(target_map: TargetMap) -> Self {
         Self {
             target_map,
@@ -28,17 +33,20 @@ impl Dispatcher {
         }
     }
 
-    /// Customizes the batch size for randomization.
-    /// Larger batches provide better randomization but consume more memory locally.
+    /// Overrides the batch size. A larger batch shuffles addresses over a wider
+    /// window, at the cost of holding more of them in memory at once.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
         self
     }
 
-    /// Spawns a background task that feeds shuffled batches of targets continuously.
+    /// Spawns a background task that streams shuffled batches of targets and
+    /// returns the [`mpsc::Receiver`] they arrive on.
     ///
-    /// Returns an [`mpsc::Receiver`] that yields the targets. The channel is bounded
-    /// to 2x the batch size to keep memory usage strictly controlled.
+    /// The channel holds up to twice the batch size, so the producer can prepare
+    /// the next batch while the current one is still being consumed without letting
+    /// the buffer grow without bound. The task stops early if the receiver is
+    /// dropped or `scan_handle` signals a stop.
     pub fn run_shuffled(self, scan_handle: &ScanHandle) -> mpsc::Receiver<Target> {
         let (tx, rx) = mpsc::channel(self.batch_size * 2);
         let scan_handle = scan_handle.clone();

@@ -7,12 +7,12 @@
 //! # Scan tuning
 //!
 //! The timeouts and concurrency ceilings the unprivileged (TCP connect) scan
-//! paths run against, gathered in one place. These used to be re-declared per
-//! module - a `1000ms` connect budget spelled once in [`connect`](super::connect)
-//! and again in [`service`](super::service), a fan-out of `50` living both as a
-//! [`scan`](super::scan) constant and a `service` constant - which meant tuning
-//! one copy silently diverged from the other. Defining them here once keeps the
-//! knobs consistent and easy to find.
+//! paths run against, gathered in one place. These used to be declared per module:
+//! a `1000ms` connect budget spelled once in [`connect`](super::connect) and again
+//! in [`service`](super::service), and a fan-out of `50` living as both a
+//! [`scan`](super::scan) constant and a `service` constant. Tuning one copy then
+//! quietly left the other behind. Defining them here once keeps the knobs
+//! consistent and easy to find.
 //!
 //! Only the connect-based paths are covered. The raw-socket scanners size
 //! themselves adaptively from observed round-trip times (see
