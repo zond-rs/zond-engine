@@ -28,8 +28,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::core::models::timer::ScanBudget;
 use crate::core::models::ip::set::IpSet;
+use crate::core::models::timer::ScanBudget;
 use crate::core::session::ScanContext;
 use crate::network::channel::{self, EthernetHandle};
 use crate::network::mac::IntoCoreMac;
@@ -174,7 +174,7 @@ pub struct LocalScanner {
 
 #[async_trait]
 impl NetworkExplorer for LocalScanner {
-    async fn discover_hosts(&mut self) -> anyhow::Result<()> {
+    async fn discover_hosts(mut self: Box<Self>) -> anyhow::Result<()> {
         let mut packet_iter = protocol::eth_packet_iter(
             &self.identity.mac,
             &self.identity.ipv4,

@@ -67,9 +67,7 @@ mod pool;
 mod resolver;
 mod routed;
 mod service;
-
-/// How many TCP connect probes [`scan`] runs at once.
-const PORT_SCAN_CONCURRENCY: usize = 50;
+mod tuning;
 
 /// An error from a scan.
 #[non_exhaustive]
@@ -124,9 +122,13 @@ impl IntoFuture for ScanTask {
 /// connect) interchangeable from the caller's point of view: build one, run
 /// it, move on. [`spawn_explorers`] relies on exactly that to drive a
 /// handful of unrelated scanner types through one shared loop.
+///
+/// The run consumes the scanner (`self: Box<Self>`): a discovery sweep happens
+/// exactly once, so an implementation owns and can move out of its state rather
+/// than pretending, via `&mut self`, that it might run again.
 #[async_trait]
 trait NetworkExplorer {
-    async fn discover_hosts(&mut self) -> anyhow::Result<()>;
+    async fn discover_hosts(self: Box<Self>) -> anyhow::Result<()>;
 }
 
 /// A scanning strategy that classifies the ports of a known set of targets.
@@ -211,7 +213,11 @@ impl ScanCapabilities {
 /// unprivileged scan has no enrichment, so it falls back to active reverse lookups
 /// when DNS is enabled, and does nothing when it isn't. This is the single place
 /// the "passive when privileged, active otherwise" policy lives.
-async fn finish_enrichment(enrichment: Option<Enrichment>, caps: ScanCapabilities, ctx: &ScanContext) {
+async fn finish_enrichment(
+    enrichment: Option<Enrichment>,
+    caps: ScanCapabilities,
+    ctx: &ScanContext,
+) {
     match enrichment {
         Some(enrichment) => enrichment.finish(ctx).await,
         None if caps.dns => resolver::resolve_hosts_async(ctx.store.clone()).await,
@@ -332,7 +338,10 @@ fn into_port_scanner(
 ) -> Box<dyn PortScanner> {
     match syn_scanner {
         Some(scanner) => Box::new(scanner),
-        None => Box::new(connect::ConnectPortScanner::new(ctx, PORT_SCAN_CONCURRENCY)),
+        None => Box::new(connect::ConnectPortScanner::new(
+            ctx,
+            tuning::CONNECT_CONCURRENCY,
+        )),
     }
 }
 
@@ -541,7 +550,7 @@ async fn spawn_explorers(
 
     explorers
         .into_iter()
-        .map(|(kind, mut explorer)| {
+        .map(|(kind, explorer)| {
             (
                 kind,
                 tokio::spawn(async move { explorer.discover_hosts().await }),
@@ -581,4 +590,3 @@ async fn spawn_resolver(dns_rx: UnboundedReceiver<IpAddr>) -> JoinHandle<Option<
         }
     })
 }
-

@@ -178,7 +178,7 @@ impl SynPortScanner {
 #[async_trait]
 impl PortScanner for SynPortScanner {
     fn kind(&self) -> ScannerKind {
-        ScannerKind::Routed
+        ScannerKind::SynPort
     }
 
     /// Consumes `targets`, sending a SYN probe for each TCP one - this
@@ -229,15 +229,6 @@ impl PortScanner for SynPortScanner {
         service::detect(ctx).await;
     }
 }
-
-// ╔════════════════════════════════════════════╗
-// ║ ████████╗███████╗███████╗████████╗███████╗ ║
-// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
-// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
-// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
-// ║    ██║   ███████╗███████║   ██║   ███████║ ║
-// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
-// ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
 mod tests {

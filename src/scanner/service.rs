@@ -27,7 +27,6 @@
 //! use the transport that suits it.
 
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
 
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -35,15 +34,7 @@ use tokio::time::timeout;
 use crate::core::models::port::{Port, PortState, Protocol};
 use crate::core::session::ScanContext;
 use crate::scanner::pool::ProbePool;
-
-/// How long to wait for the fingerprint connection to establish before giving
-/// up on a port. Matches the connect scanner's probe budget.
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(1_000);
-
-/// How many ports to fingerprint at once. Fingerprinting is I/O-bound (a
-/// connection plus banner/probe round-trips per port), so a bounded fan-out
-/// keeps a wide scan fast without exhausting sockets.
-const CONCURRENCY: usize = 50;
+use crate::scanner::tuning::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 
 /// Fingerprints every open TCP port currently in the store, upgrading each
 /// port's service in place.
@@ -59,7 +50,7 @@ pub async fn detect(ctx: &ScanContext) {
         return;
     }
 
-    let mut pool = ProbePool::new(CONCURRENCY, |fingerprinted| {
+    let mut pool = ProbePool::new(CONNECT_CONCURRENCY, |fingerprinted| {
         if let Some((ip, port)) = fingerprinted {
             write_back(ctx, ip, port);
         }
@@ -95,7 +86,7 @@ fn open_tcp_ports(ctx: &ScanContext) -> Vec<(IpAddr, u16)> {
 /// the discovery phase already recorded).
 async fn fingerprint_one(ip: IpAddr, port_number: u16) -> Option<(IpAddr, Port)> {
     let addr = SocketAddr::new(ip, port_number);
-    let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
+    let stream = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr))
         .await
         .ok()?
         .ok()?;

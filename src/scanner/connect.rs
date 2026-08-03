@@ -16,29 +16,26 @@
 //! response (an accept, or even a refusal) as proof the host is alive.
 //! [`scan`] takes known targets and classifies each port from a full connect
 //! handshake. Both consume a randomized [`Dispatcher`] stream and bound their
-//! in-flight connections with a [`JoinSet`] to avoid exhausting OS sockets, and
-//! both record findings through the shared [`ScanContext`] like every other
-//! strategy.
+//! in-flight connections with a [`ProbePool`](super::pool::ProbePool) to avoid
+//! exhausting OS sockets, and both record findings through the shared
+//! [`ScanContext`] like every other strategy.
 
 use super::dispatcher::Dispatcher;
 use super::pool::ProbePool;
-use super::{NetworkExplorer, PortScanner};
+use super::{NetworkExplorer, PortScanner, tuning};
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
 use crate::core::session::{ScanContext, ScannerKind};
 use async_trait::async_trait;
-use std::collections::HashSet;
+use dashmap::DashSet;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-
-/// How long a single connect probe waits before treating silence as a drop.
-const PROBE_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Most common ports across Linux, Windows, and Networking gear.
 const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
@@ -62,8 +59,10 @@ impl ConnectScanner {
 
 #[async_trait]
 impl NetworkExplorer for ConnectScanner {
-    async fn discover_hosts(&mut self) -> anyhow::Result<()> {
-        discover(std::mem::take(&mut self.ips), self.ctx.clone()).await
+    async fn discover_hosts(self: Box<Self>) -> anyhow::Result<()> {
+        // A discovery run is single-shot, so it consumes the scanner: `ips` and
+        // `ctx` move straight into `discover`, no `mem::take` placeholder needed.
+        discover(self.ips, self.ctx).await
     }
 }
 
@@ -157,7 +156,12 @@ async fn port_prober(target: Target) -> ProbedPort {
 
     let socket_addr = SocketAddr::new(target.ip, target.port);
 
-    match timeout(PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
+    match timeout(
+        tuning::CONNECT_PROBE_TIMEOUT,
+        TcpStream::connect(socket_addr),
+    )
+    .await
+    {
         Ok(Ok(stream)) => {
             let port =
                 crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Open);
@@ -203,8 +207,6 @@ async fn port_prober(target: Target) -> ProbedPort {
 /// - **Fidelity Range**: Uses an adjustable 1000ms timeout window to capture
 ///   hosts on high-latency or geographically distant links.
 pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
-    const CONCURRENCY_LIMIT: usize = 2048;
-
     let mut target_map = TargetMap::new();
     let port_set = PortSet::try_from(
         DISCOVERY_PORTS
@@ -218,8 +220,10 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
     let mut rx = dispatcher.run_shuffled(&ctx.handle);
-    let found_hosts = Arc::new(Mutex::new(HashSet::new()));
-    let mut pool = ProbePool::new(CONCURRENCY_LIMIT, |probed| absorb_host(&ctx, probed));
+    let found_hosts = Arc::new(DashSet::new());
+    let mut pool = ProbePool::new(tuning::DISCOVERY_CONCURRENCY, |probed| {
+        absorb_host(&ctx, probed)
+    });
 
     while let Some(target) = rx.recv().await {
         if ctx.handle.should_stop() {
@@ -256,48 +260,47 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost) {
 /// network traffic and OS resource usage, it employs a thread-safe early-exit
 /// mechanism: if the host has already been identified by a parallel probe
 /// (e.g., SSH responded before HTTP), this task terminates immediately.
-async fn prober(target: Target, found_set: Arc<Mutex<HashSet<IpAddr>>>) -> ProbedHost {
+///
+/// `found_set` is a sharded [`DashSet`] rather than a `Mutex<HashSet>` so the
+/// many concurrent probes contend per-shard instead of on one global lock, and
+/// `insert` returning `false` is what makes exactly the first prober to reach a
+/// host emit it - the rest fold to `None`.
+async fn prober(target: Target, found_set: Arc<DashSet<IpAddr>>) -> ProbedHost {
     // 1. Early exit if already discovered
-    {
-        let set = found_set.lock().unwrap();
-        if set.contains(&target.ip) {
-            return None;
-        }
+    if found_set.contains(&target.ip) {
+        return None;
     }
 
     let socket_addr: SocketAddr = SocketAddr::new(target.ip, target.port);
 
     let start: Instant = Instant::now();
-    match timeout(PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
-        Ok(Ok(_)) => {
-            // 2. Successful handshake -> Host is alive
-            let mut set = found_set.lock().unwrap();
-            if set.insert(target.ip) {
-                Some(Host::new(target.ip).with_rtt(start.elapsed()))
-            } else {
-                None
-            }
-        }
+    let alive = match timeout(
+        tuning::CONNECT_PROBE_TIMEOUT,
+        TcpStream::connect(socket_addr),
+    )
+    .await
+    {
+        // 2. A completed handshake means the host is alive.
+        Ok(Ok(_)) => true,
+        // 3. Only these TCP errors imply the host answered at the IP/TCP layer; any
+        //    other error (no route, permission denied, timeout) says nothing.
         Ok(Err(e)) => {
             use std::io::ErrorKind;
-            // 3. Only specific TCP errors imply the target host responded at the IP/TCP layer
-            match e.kind() {
+            matches!(
+                e.kind(),
                 ErrorKind::ConnectionRefused
-                | ErrorKind::ConnectionReset
-                | ErrorKind::ConnectionAborted => {
-                    let mut set = found_set.lock().unwrap();
-                    if set.insert(target.ip) {
-                        Some(Host::new(target.ip).with_rtt(start.elapsed()))
-                    } else {
-                        None
-                    }
-                }
-                _ => {
-                    // Ignore local network errors (No route, Permission denied, etc.)
-                    None
-                }
-            }
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+            )
         }
-        Err(_elapsed) => None,
+        Err(_elapsed) => false,
+    };
+
+    // `insert` returns false if a parallel probe already claimed this host, so
+    // exactly the first prober to reach it emits the record; the rest fold to None.
+    if alive && found_set.insert(target.ip) {
+        Some(Host::new(target.ip).with_rtt(start.elapsed()))
+    } else {
+        None
     }
 }

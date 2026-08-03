@@ -26,8 +26,8 @@ use std::{
 
 use crate::core::config::SendMode;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::core::models::timer::ScanBudget;
 use crate::core::models::ip::set::IpSet;
+use crate::core::models::timer::ScanBudget;
 use crate::core::session::ScanContext;
 use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
 use crate::protocols as protocol;
@@ -132,7 +132,7 @@ pub struct RoutedScanner {
 
 #[async_trait]
 impl NetworkExplorer for RoutedScanner {
-    async fn discover_hosts(&mut self) -> anyhow::Result<()> {
+    async fn discover_hosts(mut self: Box<Self>) -> anyhow::Result<()> {
         match self.send_discovery_packets() {
             Ok(_) => success!("Discovery packets sent successfully"),
             Err(e) => error!("Sending discovery packets failed: {e}"),

@@ -13,6 +13,11 @@ pub enum ScannerKind {
     Local,
     /// Raw TCP SYN discovery for gateway-routed targets.
     Routed,
+    /// Raw TCP SYN port scanning (the port-scan phase, distinct from [`Routed`]
+    /// host discovery).
+    ///
+    /// [`Routed`]: ScannerKind::Routed
+    SynPort,
     /// Unprivileged TCP connect fallback.
     Connect,
 }
