@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Instant;
 
+use async_trait::async_trait;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
@@ -27,10 +28,11 @@ use crate::core::config::SendMode;
 use crate::core::models::deadline::AdaptiveDeadline;
 use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::target::Target;
-use crate::core::session::ScanContext;
+use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
 use crate::network::probe::{ProbeKind, ProbeTransport};
 use crate::protocols::tcp::{self, ProbeResponse};
+use crate::scanner::{PortScanner, service};
 use crate::system::interface::SourceResolver;
 
 // Port scanning and routed discovery send the same kind of raw TCP SYN over the
@@ -104,47 +106,6 @@ impl SynPortScanner {
         }
     }
 
-    /// Consumes `targets`, sending a SYN probe for each TCP one - this
-    /// scanner doesn't support UDP or SCTP yet, so those are skipped - and
-    /// classifying every reply, until every probe has been resolved or the
-    /// scan's deadline expires. Anything still outstanding at that point is
-    /// reported as filtered.
-    pub async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
-        let mut sending_finished = false;
-
-        loop {
-            if self.ctx.handle.should_stop() || self.deadline.has_expired() {
-                break;
-            }
-            if sending_finished && self.pending.is_empty() {
-                break;
-            }
-
-            tokio::select! {
-                target = targets.recv(), if !sending_finished => {
-                    match target {
-                        Some(target) => self.send_probe(target),
-                        None => sending_finished = true,
-                    }
-                }
-
-                res = self.transport.rx.recv() => {
-                    match res {
-                        Some((bytes, ip)) => self.handle_reply(ip, &bytes),
-                        None => break,
-                    }
-                }
-
-                // Wakes periodically so the checks above are re-evaluated
-                // even when no further replies arrive.
-                _ = tokio::time::sleep(self.deadline.time_until_next_tick()) => {}
-            }
-        }
-
-        self.resolve_remaining_as_filtered();
-        Ok(())
-    }
-
     fn send_probe(&mut self, target: Target) {
         if target.protocol != Protocol::Tcp {
             return;
@@ -211,6 +172,61 @@ impl SynPortScanner {
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState) {
         let port = crate::fingerprinting::baseline_port(port_num, Protocol::Tcp, state);
         self.ctx.update_host(ip, |host| host.add_port(port));
+    }
+}
+
+#[async_trait]
+impl PortScanner for SynPortScanner {
+    fn kind(&self) -> ScannerKind {
+        ScannerKind::Routed
+    }
+
+    /// Consumes `targets`, sending a SYN probe for each TCP one - this
+    /// scanner doesn't support UDP or SCTP yet, so those are skipped - and
+    /// classifying every reply, until every probe has been resolved or the
+    /// scan's deadline expires. Anything still outstanding at that point is
+    /// reported as filtered.
+    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+        let mut sending_finished = false;
+
+        loop {
+            if self.ctx.handle.should_stop() || self.deadline.has_expired() {
+                break;
+            }
+            if sending_finished && self.pending.is_empty() {
+                break;
+            }
+
+            tokio::select! {
+                target = targets.recv(), if !sending_finished => {
+                    match target {
+                        Some(target) => self.send_probe(target),
+                        None => sending_finished = true,
+                    }
+                }
+
+                res = self.transport.rx.recv() => {
+                    match res {
+                        Some((bytes, ip)) => self.handle_reply(ip, &bytes),
+                        None => break,
+                    }
+                }
+
+                // Wakes periodically so the checks above are re-evaluated
+                // even when no further replies arrive.
+                _ = tokio::time::sleep(self.deadline.time_until_next_tick()) => {}
+            }
+        }
+
+        self.resolve_remaining_as_filtered();
+        Ok(())
+    }
+
+    /// Fingerprints every open port the SYN pass found. The raw exchange that
+    /// classified each port never opened a connection, so this second pass makes
+    /// one per open port and runs the shared fingerprint engine over it.
+    async fn detect_services(&mut self, ctx: &ScanContext) {
+        service::detect(ctx).await;
     }
 }
 

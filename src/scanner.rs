@@ -49,7 +49,10 @@ use tokio::task::JoinHandle;
 
 use crate::core::config::{SendMode, ZondConfig};
 use crate::core::models::ip::range::IpRange;
-use crate::core::models::{ip::set::IpSet, target::TargetMap};
+use crate::core::models::{
+    ip::set::IpSet,
+    target::{Target, TargetMap},
+};
 use crate::core::session::{ScanContext, ScanEvent, ScanSession, ScannerKind};
 use crate::scanner::resolver::HostnameResolver;
 use crate::system::interface;
@@ -125,6 +128,45 @@ trait NetworkExplorer {
     async fn discover_hosts(&mut self) -> anyhow::Result<()>;
 }
 
+/// A scanning strategy that classifies the ports of a known set of targets.
+///
+/// This is the port-scan analogue of [`NetworkExplorer`]. Where that trait lets
+/// [`discover`] drive several host-discovery strategies through one loop, this
+/// lets [`scan`] drive whichever port-scan strategy privilege selected - the raw
+/// [`routed::SynPortScanner`] or the unprivileged [`connect`] fallback - through
+/// one path, without special-casing either. Implementations consume the shuffled
+/// [`Target`] stream a [`dispatcher::Dispatcher`] produces and write findings into
+/// the shared [`ScanContext`] they were built with; [`PortScanner::scan`] only
+/// reports whether the run itself completed. [`run_port_scan`] relies on exactly
+/// that to treat both strategies identically.
+#[async_trait]
+trait PortScanner: Send {
+    /// Which strategy this is, used to tag a [`ScanEvent::ScannerFailed`] if the
+    /// run fails.
+    fn kind(&self) -> ScannerKind;
+
+    /// Probes every target arriving on `targets` and records each port's state
+    /// into the shared store. Returns `Ok` if the run completed - including an
+    /// early stop via the abort signal - and `Err` only if the strategy itself
+    /// failed.
+    async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> anyhow::Result<()>;
+
+    /// Second-pass service identification, run once after a successful
+    /// [`scan`](PortScanner::scan) that was not aborted.
+    ///
+    /// The SYN strategy classifies port *state* from a single raw exchange and
+    /// never holds a connection to fingerprint through, so it opens one here for
+    /// each open port. The connect strategy already fingerprinted inline while it
+    /// held the live stream, so its implementation is the default no-op. Keeping
+    /// this on the trait puts the "does this strategy need a second pass?"
+    /// decision in the type, rather than in a branch at the call site.
+    ///
+    /// Takes `&mut self` to match [`scan`](PortScanner::scan): the receiver never
+    /// crosses the await as a shared reference, so the strategy types need only be
+    /// [`Send`], not [`Sync`].
+    async fn detect_services(&mut self, _ctx: &ScanContext) {}
+}
+
 /// Probes a known set of targets for open ports.
 ///
 /// This is the second phase of a scan: given targets and the ports to check
@@ -161,26 +203,15 @@ pub async fn scan(
         None
     };
 
+    // Both branches of the privilege fork now live behind one interface: pick the
+    // strategy here, drive it uniformly below.
+    let scanner = into_port_scanner(syn_scanner, ctx.clone());
+
     let handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
         let rx = dispatcher.run_shuffled(&ctx.handle);
 
-        let (kind, outcome) = match syn_scanner {
-            Some(mut scanner) => {
-                let outcome = scanner.scan(rx).await;
-                if outcome.is_ok() && !ctx.handle.should_stop() {
-                    service::detect(&ctx).await;
-                }
-                (ScannerKind::Routed, outcome)
-            }
-            None => (
-                ScannerKind::Connect,
-                connect::scan(rx, PORT_SCAN_CONCURRENCY, ctx.clone()).await,
-            ),
-        };
-        if let Err(e) = outcome {
-            report_scanner_failure(&ctx, kind, e.to_string());
-        }
+        run_port_scan(scanner, rx, &ctx).await;
 
         match enrichment {
             Some(enrichment) => enrichment.finish(&ctx).await,
@@ -239,6 +270,43 @@ fn build_syn_scanner(
             error!("Failed to initialize SYN port scanner: {e}");
             None
         }
+    }
+}
+
+/// Selects the port-scanning strategy behind the [`PortScanner`] interface: the
+/// privileged raw-SYN scanner when [`build_syn_scanner`] could construct one,
+/// otherwise the unprivileged TCP-connect fallback. Both are driven identically
+/// by [`run_port_scan`], so the choice of strategy is confined to this one place.
+fn into_port_scanner(
+    syn_scanner: Option<routed::SynPortScanner>,
+    ctx: ScanContext,
+) -> Box<dyn PortScanner> {
+    match syn_scanner {
+        Some(scanner) => Box::new(scanner),
+        None => Box::new(connect::ConnectPortScanner::new(ctx, PORT_SCAN_CONCURRENCY)),
+    }
+}
+
+/// Drives one port-scan strategy to completion: streams targets through it, then -
+/// if it succeeded and the scan wasn't aborted - lets the strategy run its own
+/// service-detection pass (a no-op for strategies that fingerprint inline).
+///
+/// A strategy failure is reported on the event stream, tagged with the strategy's
+/// own [`ScannerKind`], and otherwise swallowed so the surrounding scan (host
+/// enrichment, DNS) still finishes.
+async fn run_port_scan(
+    mut scanner: Box<dyn PortScanner>,
+    rx: mpsc::Receiver<Target>,
+    ctx: &ScanContext,
+) {
+    let kind = scanner.kind();
+    match scanner.scan(rx).await {
+        Ok(()) => {
+            if !ctx.handle.should_stop() {
+                scanner.detect_services(ctx).await;
+            }
+        }
+        Err(e) => report_scanner_failure(ctx, kind, e.to_string()),
     }
 }
 

@@ -20,13 +20,13 @@
 //! both record findings through the shared [`ScanContext`] like every other
 //! strategy.
 
-use super::NetworkExplorer;
 use super::dispatcher::Dispatcher;
+use super::{NetworkExplorer, PortScanner};
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
-use crate::core::session::ScanContext;
+use crate::core::session::{ScanContext, ScannerKind};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
@@ -70,6 +70,41 @@ impl NetworkExplorer for ConnectScanner {
 /// The outcome of one finished [`port_prober`] task: the port it classified, or
 /// `None` if the port was closed or the target wasn't probed at all.
 type ProbedPort = anyhow::Result<Option<(IpAddr, Port)>>;
+
+/// Adapts the unprivileged [`scan`] engine to [`PortScanner`], so
+/// [`crate::scanner::scan`] can drive it through the same path as the privileged
+/// [`SynPortScanner`](super::routed::SynPortScanner).
+///
+/// It carries no [`detect_services`](PortScanner::detect_services) override: the
+/// connect engine fingerprints each port inline over the live stream it already
+/// holds (see [`port_prober`]), so a second identification pass would be wasted
+/// work. That is the whole reason service detection lives on the trait rather than
+/// in the caller - the "connect needs no second pass" fact is expressed here, by
+/// its absence, instead of as a branch at the call site.
+pub struct ConnectPortScanner {
+    /// Shared state (host store, event channel, abort signal) for the scan this
+    /// strategy is part of.
+    ctx: ScanContext,
+    /// The ceiling on in-flight connect probes.
+    concurrency: usize,
+}
+
+impl ConnectPortScanner {
+    pub fn new(ctx: ScanContext, concurrency: usize) -> Self {
+        Self { ctx, concurrency }
+    }
+}
+
+#[async_trait]
+impl PortScanner for ConnectPortScanner {
+    fn kind(&self) -> ScannerKind {
+        ScannerKind::Connect
+    }
+
+    async fn scan(&mut self, rx: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+        scan(rx, self.concurrency, self.ctx.clone()).await
+    }
+}
 
 /// Performs a high-concurrency, unprivileged port scan.
 ///
