@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::NetworkExplorer;
+use super::{NetworkExplorer, payload};
 
 pub use port_scan::SynPortScanner;
 pub use udp_scan::UdpPortScanner;
@@ -120,9 +120,9 @@ fn send_udp(
     dst_addr: IpAddr,
     dst_port: u16,
 ) -> Option<()> {
-    // An empty payload elicits a reply only from a service that answers
-    // anything at all; per-port protocol payloads are a separate piece of work.
-    let payload = vec![];
+    // What makes an open port answer at all: UDP has no handshake, so the
+    // application itself has to recognize the request. See [`payload`].
+    let payload = payload::for_port(dst_port).to_vec();
 
     let packet = match crate::protocols::udp::create_packet(
         &src_addr, &dst_addr, src_port, dst_port, payload,

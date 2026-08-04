@@ -40,7 +40,7 @@ mod schema {
 #[path = "src/fingerprinting/pattern.rs"]
 mod pattern;
 
-use schema::{MAX_COMPILED_REGEX_BYTES, ServiceDefinition};
+use schema::{MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, ServiceDefinition, unescape};
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/fingerprinting");
@@ -115,6 +115,10 @@ fn validate(def: &ServiceDefinition, path: &Path) {
                 probe.protocol
             );
         }
+
+        if probe.protocol == "udp" {
+            validate_udp_payload(&unescape(&probe.payload), def, i, path);
+        }
         // Rarity is a 0..=9 intensity band (see `Probe::rarity`). A larger value
         // is almost certainly an authoring typo — it would silently keep the
         // probe from ever being sent at normal intensity. Warn rather than fail:
@@ -128,6 +132,196 @@ fn validate(def: &ServiceDefinition, path: &Path) {
             );
         }
     }
+}
+
+/// Validates one authored UDP probe payload, aborting the build if it could
+/// never work on the wire.
+///
+/// UDP probes are checked far more strictly than TCP ones because their failure
+/// mode is invisible. A TCP probe with a defect still reaches an open port and
+/// usually draws *something*; a UDP datagram whose length fields disagree with
+/// its contents is discarded by the target application without a word, and the
+/// scanner reads the resulting silence as `OpenFiltered` - the exact verdict it
+/// would report for a filtered port. The probe would look like it worked, on
+/// every host, forever.
+///
+/// So the bytes are parsed here the way the service would parse them. Generic
+/// limits apply to every payload; the format-specific checks are keyed on the
+/// service name, and a UDP probe for a service with no validator is reported as
+/// a warning rather than passing quietly.
+fn validate_udp_payload(payload: &[u8], def: &ServiceDefinition, index: usize, path: &Path) {
+    let file = path.display();
+    let service = &def.service.name;
+
+    let generic = if payload.is_empty() {
+        Err("decodes to zero bytes; an empty datagram cannot elicit a reply".to_string())
+    } else if payload.len() > MAX_UDP_PROBE_BYTES {
+        Err(format!(
+            "is {} bytes, over the {MAX_UDP_PROBE_BYTES}-byte probe ceiling",
+            payload.len()
+        ))
+    } else {
+        Ok(())
+    };
+
+    let outcome = generic.and_then(|()| match service.as_str() {
+        "dns" | "mdns" => validate_dns_query(payload),
+        "snmp" => validate_ber(payload),
+        "ntp" => validate_ntp_request(payload),
+        "netbios-ns" => validate_netbios_query(payload),
+        "ssdp" => validate_ssdp_search(payload),
+        _ => {
+            println!(
+                "cargo:warning={file}: service '{service}' udp probe #{index} has no \
+                 format-specific validation; a malformed payload here would be \
+                 indistinguishable from a filtered port"
+            );
+            Ok(())
+        }
+    });
+
+    if let Err(reason) = outcome {
+        panic!("{file}: service '{service}' udp probe #{index} {reason}");
+    }
+}
+
+/// Parses a DNS query with the same parser the runtime uses, then checks it
+/// carries exactly one question - a query with none asks nothing and is
+/// answered by nobody.
+fn validate_dns_query(payload: &[u8]) -> Result<(), String> {
+    let packet = dns_parser::Packet::parse(payload)
+        .map_err(|e| format!("is not a parseable DNS message: {e}"))?;
+
+    match packet.questions.len() {
+        1 => Ok(()),
+        n => Err(format!(
+            "carries {n} questions; a probe should ask exactly one"
+        )),
+    }
+}
+
+/// Walks a BER structure, checking that every length field describes the bytes
+/// that actually follow it, and that the payload is exactly one top-level
+/// element with nothing trailing.
+fn validate_ber(payload: &[u8]) -> Result<(), String> {
+    /// Returns how many bytes the element at the start of `bytes` occupies,
+    /// recursing into constructed ones.
+    fn walk(bytes: &[u8]) -> Result<usize, String> {
+        let tag = *bytes
+            .first()
+            .ok_or("has a truncated BER element with no tag")?;
+        let len = *bytes.get(1).ok_or("has a BER tag with no length byte")? as usize;
+        if len & 0x80 != 0 {
+            return Err("uses long-form BER lengths, which this validator does not cover".into());
+        }
+        let body = bytes.get(2..2 + len).ok_or_else(|| {
+            format!("has a BER element (tag {tag:#04x}) claiming {len} bytes it does not have")
+        })?;
+
+        // SEQUENCE (0x30) and the context-specific PDU tags (0xa0..) are
+        // constructed: their contents are themselves elements.
+        if tag == 0x30 || tag & 0xa0 == 0xa0 {
+            let mut consumed = 0;
+            while consumed < body.len() {
+                consumed += walk(&body[consumed..])?;
+            }
+        }
+        Ok(2 + len)
+    }
+
+    let consumed = walk(payload)?;
+    if consumed != payload.len() {
+        return Err(format!(
+            "has {} trailing bytes after its top-level BER element",
+            payload.len() - consumed
+        ));
+    }
+    Ok(())
+}
+
+/// Checks an SNTP client request: the fixed 48-byte size, and the mode field a
+/// server dispatches on. A packet in the wrong mode is answered by nobody.
+fn validate_ntp_request(payload: &[u8]) -> Result<(), String> {
+    const NTP_PACKET_BYTES: usize = 48;
+    const MODE_CLIENT: u8 = 3;
+
+    if payload.len() != NTP_PACKET_BYTES {
+        return Err(format!(
+            "is {} bytes; an SNTP packet is exactly {NTP_PACKET_BYTES}",
+            payload.len()
+        ));
+    }
+
+    let mode = payload[0] & 0b111;
+    if mode != MODE_CLIENT {
+        return Err(format!(
+            "has mode {mode}; a request a server will answer must be mode {MODE_CLIENT} (client)"
+        ));
+    }
+
+    let version = (payload[0] >> 3) & 0b111;
+    if !(1..=4).contains(&version) {
+        return Err(format!(
+            "has NTP version {version}, outside the 1..=4 range"
+        ));
+    }
+    Ok(())
+}
+
+/// Checks a NetBIOS Name Service query: one question, and a name field whose
+/// declared length matches the encoded name that follows it.
+fn validate_netbios_query(payload: &[u8]) -> Result<(), String> {
+    const HEADER_BYTES: usize = 12;
+    const ENCODED_NAME_BYTES: usize = 32;
+    // Header + length byte + encoded name + terminator + QTYPE + QCLASS.
+    const REQUEST_BYTES: usize = HEADER_BYTES + 1 + ENCODED_NAME_BYTES + 1 + 4;
+
+    if payload.len() != REQUEST_BYTES {
+        return Err(format!(
+            "is {} bytes; a node status request is {REQUEST_BYTES}",
+            payload.len()
+        ));
+    }
+
+    let questions = u16::from_be_bytes([payload[4], payload[5]]);
+    if questions != 1 {
+        return Err(format!(
+            "declares {questions} questions; a probe should ask exactly one"
+        ));
+    }
+
+    let declared = payload[HEADER_BYTES] as usize;
+    if declared != ENCODED_NAME_BYTES {
+        return Err(format!(
+            "declares a {declared}-byte name; first-level encoding always yields \
+             {ENCODED_NAME_BYTES}"
+        ));
+    }
+    if payload[HEADER_BYTES + 1 + ENCODED_NAME_BYTES] != 0 {
+        return Err("does not terminate its encoded name with a zero length byte".into());
+    }
+    Ok(())
+}
+
+/// Checks an SSDP search: the request line, the headers UPnP devices require,
+/// and the blank line that ends the request. A device ignores a request that is
+/// missing any of them.
+fn validate_ssdp_search(payload: &[u8]) -> Result<(), String> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|_| "is not valid UTF-8, but SSDP is a text protocol".to_string())?;
+
+    if !text.starts_with("M-SEARCH * HTTP/1.1\r\n") {
+        return Err("does not open with an `M-SEARCH * HTTP/1.1` request line".into());
+    }
+    if !text.ends_with("\r\n\r\n") {
+        return Err("is not terminated by a blank line".into());
+    }
+    for header in ["HOST:", "MAN:", "MX:", "ST:"] {
+        if !text.contains(header) {
+            return Err(format!("is missing the required `{header}` header"));
+        }
+    }
+    Ok(())
 }
 
 /// Recursively collects every `.toml` file under `dir`.

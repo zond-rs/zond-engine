@@ -41,7 +41,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pnet::packet::Packet;
@@ -53,9 +53,10 @@ use pnet::packet::udp::UdpPacket;
 use tokio::sync::mpsc;
 
 use crate::core::config::SendMode;
-use crate::core::models::deadline::AdaptiveDeadline;
+use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::target::Target;
+use crate::core::models::timer::ScanBudget;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
 use crate::network::capture::CapturedSegment;
@@ -64,13 +65,89 @@ use crate::network::probe::{ProbeKind, ProbeTransport};
 use crate::scanner::PortScanner;
 use crate::system::interface::SourceResolver;
 
-use super::{DEADLINE_CONFIG, send_udp};
+use super::send_udp;
 
 /// The probe a reply refers to: the `(address, port)` it was sent to.
 type ProbeTarget = (IpAddr, u16);
 
 /// Outstanding probes, keyed by the target they were sent to.
 type PendingProbes = HashMap<ProbeTarget, Instant>;
+
+/// How long this scan runs and how it adapts.
+///
+/// Deliberately *not* the profile the SYN scanners share
+/// ([`DEADLINE_CONFIG`](super::DEADLINE_CONFIG)), because the thing being
+/// waited for is different in kind. A SYN probe is answered by the target's
+/// TCP stack as fast as the link allows. A UDP probe's most informative answer
+/// is an ICMP error, and hosts **rate-limit** those: Linux emits roughly one
+/// destination-unreachable per second by default (`net.ipv4.icmp_ratelimit`),
+/// and BSD does the same. Answers to a multi-port scan therefore arrive spread
+/// over seconds no matter how fast the network is.
+///
+/// That reshapes every number here, but `silence_floor` most of all. The SYN
+/// profile gives up after 150 ms of quiet, which is generous for a stack that
+/// answers immediately and *meaningless* against a host allowed to speak once
+/// per second: the scan would stop while its answers were still queued and
+/// legally on their way, then report the ports it never heard about as
+/// filtered. A floor above the rate-limit interval is what makes silence
+/// evidence of anything at all.
+const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
+    // Hard ceiling: a UDP scan is inherently slow, but it still has to finish.
+    ScanBudget::new(
+        Duration::from_millis(2_000),
+        Duration::from_millis(200),
+        Duration::from_secs(45),
+    ),
+    // Minimum runtime, so a scan cannot conclude before the first rate-limited
+    // answers have had time to arrive.
+    ScanBudget::new(
+        Duration::from_millis(500),
+        Duration::from_millis(50),
+        Duration::from_secs(10),
+    ),
+    // Silence floor: longer than one rate-limit interval, so quiet means
+    // "nothing is coming" rather than "the host is not allowed to answer yet".
+    Duration::from_millis(1_200),
+    Duration::from_secs(5),
+    4.0,
+    20,
+);
+
+/// How long one probe waits for an answer before it is written off as
+/// open-filtered.
+///
+/// This is what lets a verdict be reached *during* the scan rather than only
+/// when the whole thing winds down: probes retire as they expire, so results
+/// stream out to the caller and [`MAX_IN_FLIGHT`] has room to admit the next
+/// target.
+///
+/// Generous on purpose. A reply arriving after its probe has expired finds
+/// nothing outstanding to match and is dropped, leaving a genuinely open port
+/// reported as open-filtered - so this bounds how slow a host may be before the
+/// scan stops believing it. Three seconds is far beyond any healthy round trip
+/// (the loopback and LAN measurements behind this are single-digit
+/// milliseconds) while still keeping a fully silent host from pinning probes
+/// for the entire run.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The most probes left outstanding at once.
+///
+/// Two jobs: it bounds the memory a scan of a large address space can occupy,
+/// and it keeps the send loop from emptying the dispatcher into the network as
+/// fast as the socket accepts writes - a burst that outruns any rate-limited
+/// host's ability to answer manufactures open-filtered verdicts.
+///
+/// The ceiling is global rather than per host because
+/// [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) already hands out
+/// shuffled targets, so consecutive probes in a multi-host scan naturally land
+/// on different hosts. A per-host cap on top of that would constrain something
+/// the target stream has already spread out.
+const MAX_IN_FLIGHT: usize = 512;
+
+/// How often the loop revisits its own bookkeeping while probes are
+/// outstanding, so an expiry is noticed promptly instead of waiting out the
+/// deadline's much longer tick.
+const PENDING_TICK: Duration = Duration::from_millis(50);
 
 // The ICMPv6 Destination Unreachable codes this scanner acts on (RFC 4443
 // §3.1). Spelled out here because `pnet` models ICMPv6 codes as a bare
@@ -208,14 +285,58 @@ impl UdpPortScanner {
         self.record_port(ip, port, state);
     }
 
+    /// Retires probes that have waited longer than [`PROBE_TIMEOUT`].
+    ///
+    /// Silence is a verdict in UDP, not an absence of one, so there is no
+    /// reason to hold it until the end of the scan: expiring probes as they age
+    /// streams results to the caller while the scan is still running, and frees
+    /// room under [`MAX_IN_FLIGHT`] for the targets still queued behind them.
+    ///
+    /// An expiry is not activity - nothing answered - so the adaptive deadline
+    /// is deliberately left untouched here.
+    fn expire_stale_probes(&mut self) {
+        let now = Instant::now();
+        let stale: Vec<ProbeTarget> = self
+            .pending
+            .iter()
+            .filter(|(_, sent_at)| now.duration_since(**sent_at) >= PROBE_TIMEOUT)
+            .map(|(target, _)| *target)
+            .collect();
+
+        for target in stale {
+            self.pending.remove(&target);
+            self.record_port(target.0, target.1, PortState::OpenFiltered);
+        }
+    }
+
     /// Marks every probe still outstanding once the scan winds down as
     /// open-filtered. No ICMP error and no UDP reply arrived, which is equally
     /// consistent with a firewall dropping the probe and with a service that
     /// had nothing to say to it.
+    ///
+    /// [`expire_stale_probes`](Self::expire_stale_probes) retires most probes
+    /// long before this runs; what reaches here are the ones still young when
+    /// the scan's own deadline ran out.
     fn resolve_remaining_as_filtered(&mut self) {
         let remaining: Vec<ProbeTarget> = self.pending.drain().map(|(key, _)| key).collect();
         for (ip, port) in remaining {
             self.record_port(ip, port, PortState::OpenFiltered);
+        }
+    }
+
+    /// How long the loop may sleep before it must look at its own state again.
+    ///
+    /// The adaptive deadline decides this while nothing is outstanding. With
+    /// probes in flight the wait is additionally capped at [`PENDING_TICK`], so
+    /// an expiry is acted on promptly rather than whenever the deadline
+    /// happens to tick - which matters most in the case where *nothing* is
+    /// arriving, since then no reply will wake the loop either.
+    fn tick_delay(&self) -> Duration {
+        let until_deadline_tick = self.deadline.time_until_next_tick();
+        if self.pending.is_empty() {
+            until_deadline_tick
+        } else {
+            until_deadline_tick.min(PENDING_TICK)
         }
     }
 
@@ -345,10 +466,18 @@ impl PortScanner for UdpPortScanner {
     /// every reply (or ICMP error), until each probe has been resolved or the
     /// scan's deadline expires. Anything still outstanding when the loop ends is
     /// reported as OpenFiltered.
+    ///
+    /// New targets are admitted only while fewer than [`MAX_IN_FLIGHT`] probes
+    /// are outstanding. That ceiling is what paces the scan: probes leave as
+    /// earlier ones are answered or expire, so the send rate settles at the
+    /// rate the network is actually resolving them instead of at the rate the
+    /// dispatcher can produce them.
     async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
         let mut sending_finished = false;
 
         loop {
+            self.expire_stale_probes();
+
             if self.ctx.handle.should_stop() || self.deadline.has_expired() {
                 break;
             }
@@ -356,8 +485,13 @@ impl PortScanner for UdpPortScanner {
                 break;
             }
 
+            // Both are read off `self` before the `select!`, which borrows the
+            // receive half mutably for the duration of the statement.
+            let admitting = !sending_finished && self.pending.len() < MAX_IN_FLIGHT;
+            let tick = self.tick_delay();
+
             tokio::select! {
-                target = targets.recv(), if !sending_finished => {
+                target = targets.recv(), if admitting => {
                     match target {
                         Some(target) => self.send_probe(target),
                         None => sending_finished = true,
@@ -373,7 +507,7 @@ impl PortScanner for UdpPortScanner {
 
                 // Wakes periodically so the checks above are re-evaluated
                 // even when no further replies arrive.
-                _ = tokio::time::sleep(self.deadline.time_until_next_tick()) => {}
+                _ = tokio::time::sleep(tick) => {}
             }
         }
 
@@ -911,6 +1045,89 @@ mod tests {
             answering_probe(&reply.bytes, src_port),
             Some(service_port),
             "a real reply must resolve to the port that sent it",
+        );
+    }
+
+    /// A probe older than [`PROBE_TIMEOUT`] is written off while the scan is
+    /// still running, so results reach the caller as they are decided rather
+    /// than all at once at the end.
+    #[test]
+    fn probes_older_than_the_timeout_expire_during_the_scan() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+        probe(&mut scanner, TARGET, 161);
+
+        // Age one probe past the timeout, leaving the other fresh.
+        let aged = Instant::now() - PROBE_TIMEOUT - Duration::from_millis(1);
+        scanner.pending.insert((TARGET, 53), aged);
+
+        scanner.expire_stale_probes();
+
+        assert_eq!(
+            port_state(&session, TARGET, 53),
+            Some(PortState::OpenFiltered)
+        );
+        assert_eq!(port_state(&session, TARGET, 161), None, "still waiting");
+        assert_eq!(scanner.pending.len(), 1);
+    }
+
+    /// Expiring a probe is not activity: nothing answered, so the adaptive
+    /// deadline must not be told the scan is making progress.
+    #[test]
+    fn expiry_does_not_extend_the_deadline() {
+        let (mut scanner, _session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+        scanner
+            .pending
+            .insert((TARGET, 53), Instant::now() - PROBE_TIMEOUT);
+
+        // A deadline whose silence clock has been reset reports a full tick;
+        // capture the value before and after to see whether it moved.
+        let before = scanner.deadline.time_until_next_tick();
+        scanner.expire_stale_probes();
+        let after = scanner.deadline.time_until_next_tick();
+
+        assert!(
+            after <= before,
+            "silence clock was reset by an expiry ({before:?} -> {after:?})"
+        );
+    }
+
+    /// While probes are outstanding the loop must not sleep past the point
+    /// where the next one can expire - nothing else will wake it, because
+    /// silence is exactly the case being timed.
+    #[test]
+    fn pending_probes_shorten_the_sleep() {
+        let (mut scanner, _session) = scanner_with_mock();
+        assert!(scanner.pending.is_empty());
+        let idle = scanner.tick_delay();
+
+        probe(&mut scanner, TARGET, 53);
+        let busy = scanner.tick_delay();
+
+        assert!(
+            busy <= PENDING_TICK,
+            "sleep not capped while probes are out"
+        );
+        assert!(idle > PENDING_TICK, "idle tick should follow the deadline");
+    }
+
+    /// The UDP profile has to tolerate silence for longer than a host's ICMP
+    /// rate-limit interval (~1/sec), or a scan concludes while its answers are
+    /// still queued. This is the property that makes it a separate profile from
+    /// the SYN one, so it is asserted rather than left to a comment.
+    #[test]
+    fn silence_floor_outlasts_the_icmp_rate_limit() {
+        const ICMP_RATE_LIMIT_INTERVAL: Duration = Duration::from_secs(1);
+
+        assert!(
+            DEADLINE_CONFIG.silence_floor > ICMP_RATE_LIMIT_INTERVAL,
+            "silence floor {:?} is shorter than one rate-limited answer",
+            DEADLINE_CONFIG.silence_floor
+        );
+        assert!(
+            super::super::DEADLINE_CONFIG.silence_floor < ICMP_RATE_LIMIT_INTERVAL,
+            "the SYN profile was expected to be the tighter one"
         );
     }
 

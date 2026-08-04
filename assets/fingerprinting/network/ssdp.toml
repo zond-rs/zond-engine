@@ -1,0 +1,17 @@
+[service]
+name = "ssdp"
+default_ports = [1900]
+description = "Simple Service Discovery Protocol (UPnP)"
+
+# An SSDP discovery request. Unlike the other UDP probes this one is plain text,
+# an HTTP-shaped request that UPnP devices answer with the URL of their device
+# description.
+#
+# `HOST` names the SSDP multicast group even though a scan sends this to one
+# address: the header is part of the request format, not the addressing. `MX`
+# bounds how long a device may wait before answering, so the smallest useful
+# value keeps the reply inside the probe's own timeout.
+[[probe]]
+name = "ssdp_m_search"
+payload = 'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 1\r\nST: ssdp:all\r\n\r\n'
+protocol = "udp"

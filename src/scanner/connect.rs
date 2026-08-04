@@ -21,7 +21,7 @@
 
 use super::dispatcher::Dispatcher;
 use super::pool::ProbePool;
-use super::{NetworkExplorer, PortScanner, tuning};
+use super::{NetworkExplorer, PortScanner, payload, tuning};
 use crate::core::models::host::Host;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol};
@@ -292,7 +292,7 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
         return None;
     }
 
-    if let Err(e) = socket.send(b"").await {
+    if let Err(e) = socket.send(payload::for_port(target.port)).await {
         // A refusal can surface here rather than on the receive: the kernel
         // reports a queued ICMP error on whichever operation comes next.
         return match e.kind() {

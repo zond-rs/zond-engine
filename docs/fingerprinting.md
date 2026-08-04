@@ -154,9 +154,17 @@ anticipated.
 - [ ] **ProbePlanner** (`plan.rs`, new): probe selection keyed on the
       accumulating service guess, not just the port. The DB already holds
       `service → probes` internally; expose it. Prerequisite for softmatch.
-- [ ] **UDP fingerprinting:** send UDP probes and interpret ICMP
-      port-unreachable. The whole subsystem is TCP-only today; DNS/SNMP/NTP/etc.
-      are unreachable to version detection.
+- [ ] **UDP fingerprinting:** the *sending* half now exists. The corpus carries
+      `protocol = "udp"` probes (dns, mdns, ntp, snmp, netbios-ns, ssdp),
+      `SignatureDb::udp_probe_payloads` indexes them by port, and the scanner
+      sends them and interprets ICMP port-unreachable — see
+      [udp-scanning.md](udp-scanning.md). What is missing is the *reading* half:
+      the replies those probes draw are counted as evidence a port is open and
+      then discarded, though they carry exactly what a fingerprint wants (a
+      `version.bind` answer is the BIND version string; an SNMP reply is
+      `sysDescr`). Needs a UDP analyzer path feeding `Collected`, plus `[[match]]`
+      rules on the new definitions — which now sit in the same files as the
+      probes that provoke the responses they would match.
 - [x] **Raw-bytes response channel:** an analyzer's own probe frames flow as raw
       `Vec<u8>` through `Collected` (`response.rs`), so binary analyzers parse
       bytes directly. (The shared first-contact `ResponseSet.banners` stays

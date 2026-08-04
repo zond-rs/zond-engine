@@ -36,7 +36,7 @@ use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 
-use crate::core::models::fingerprint::ServiceDefinition;
+use crate::core::models::fingerprint::{ServiceDefinition, unescape};
 
 use super::matcher::Signature;
 use super::prefilter::LiteralPrefilter;
@@ -61,7 +61,19 @@ pub struct SignatureDb {
     /// `port -> TCP active-probe payloads` of the services reachable on it.
     /// Payloads are decoded bytes (escapes resolved, see [`unescape`]), ready to
     /// go on the wire as-is — including non-UTF-8 binary probes.
-    probes: HashMap<u16, Vec<Vec<u8>>>,
+    tcp_probes: HashMap<u16, Vec<Vec<u8>>>,
+    /// `port -> UDP probe payloads`, indexed exactly like [`Self::tcp_probes`]
+    /// but kept apart, because the two are sent by different machinery for
+    /// different reasons.
+    ///
+    /// A TCP probe is a *fingerprinting* payload: the port is already known to
+    /// be open, and the probe exists to make the service say something
+    /// identifying. A UDP probe is what establishes the port is open at all,
+    /// since UDP offers no handshake to infer it from. The same bytes usually
+    /// serve both, which is why they are authored together per service, but a
+    /// scanner asking "what should I send to port 161" must not be handed a TCP
+    /// payload that would mean nothing there.
+    udp_probes: HashMap<u16, Vec<Vec<u8>>>,
     /// The global-match prefilter, built on first use.
     prefilter: OnceLock<LiteralPrefilter>,
 }
@@ -84,8 +96,11 @@ impl SignatureDb {
         let mut signatures = Vec::new();
         // service name -> its signature indices (across every definition).
         let mut service_sigs: HashMap<String, Vec<usize>> = HashMap::new();
-        // service name -> its TCP active-probe payloads (decoded to bytes).
-        let mut service_probes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+        // service name -> its active-probe payloads (decoded to bytes), per
+        // transport. Authored in one file per service; separated here because
+        // they are sent by different code for different purposes.
+        let mut service_tcp_probes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+        let mut service_udp_probes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
         for def in &defs {
             for rule in &def.r#match {
                 let idx = signatures.len();
@@ -95,8 +110,15 @@ impl SignatureDb {
                     .or_default()
                     .push(idx);
             }
-            for probe in def.probe.iter().filter(|p| p.protocol == "tcp") {
-                service_probes
+            for probe in &def.probe {
+                let by_protocol = match probe.protocol.as_str() {
+                    "tcp" => &mut service_tcp_probes,
+                    "udp" => &mut service_udp_probes,
+                    // An unknown protocol is already a build warning; ignore it
+                    // here rather than guess which transport it belongs to.
+                    _ => continue,
+                };
+                by_protocol
                     .entry(def.service.name.clone())
                     .or_default()
                     .push(unescape(&probe.payload));
@@ -121,7 +143,8 @@ impl SignatureDb {
         // Link: a port's signatures (and probes) are those of every service
         // reachable on it.
         let mut by_port: HashMap<u16, Vec<usize>> = HashMap::new();
-        let mut probes: HashMap<u16, Vec<Vec<u8>>> = HashMap::new();
+        let mut tcp_probes: HashMap<u16, Vec<Vec<u8>>> = HashMap::new();
+        let mut udp_probes: HashMap<u16, Vec<Vec<u8>>> = HashMap::new();
         for (port, names) in &port_services {
             let mut indices: Vec<usize> = names
                 .iter()
@@ -133,14 +156,19 @@ impl SignatureDb {
             indices.dedup();
             by_port.insert(*port, indices);
 
-            let payloads: Vec<Vec<u8>> = names
-                .iter()
-                .filter_map(|name| service_probes.get(name))
-                .flatten()
-                .cloned()
-                .collect();
-            if !payloads.is_empty() {
-                probes.insert(*port, payloads);
+            for (source, index) in [
+                (&service_tcp_probes, &mut tcp_probes),
+                (&service_udp_probes, &mut udp_probes),
+            ] {
+                let payloads: Vec<Vec<u8>> = names
+                    .iter()
+                    .filter_map(|name| source.get(name))
+                    .flatten()
+                    .cloned()
+                    .collect();
+                if !payloads.is_empty() {
+                    index.insert(*port, payloads);
+                }
             }
         }
 
@@ -148,7 +176,8 @@ impl SignatureDb {
             signatures,
             name_index,
             by_port,
-            probes,
+            tcp_probes,
+            udp_probes,
             prefilter: OnceLock::new(),
         }
     }
@@ -172,7 +201,17 @@ impl SignatureDb {
     /// The TCP active-probe payloads registered for `port` (service-linked), as
     /// decoded bytes ready to send.
     pub fn tcp_probe_payloads(&self, port: u16) -> &[Vec<u8>] {
-        self.probes.get(&port).map_or(&[], Vec::as_slice)
+        self.tcp_probes.get(&port).map_or(&[], Vec::as_slice)
+    }
+
+    /// The UDP probe payloads registered for `port` (service-linked), as decoded
+    /// bytes ready to send.
+    ///
+    /// Empty for a port no service registers a UDP probe for, which a scanner
+    /// reads as "send an empty datagram": still enough to draw an ICMP error
+    /// from a closed port, never enough to make an open one speak.
+    pub fn udp_probe_payloads(&self, port: u16) -> &[Vec<u8>] {
+        self.udp_probes.get(&port).map_or(&[], Vec::as_slice)
     }
 
     /// The global-match prefilter, built (over the whole set) on first use and
@@ -199,47 +238,6 @@ impl SignatureDb {
         bincode::deserialize(EMBEDDED_DB)
             .expect("embedded fingerprint database failed to deserialize")
     }
-}
-
-/// Decodes the backslash escapes in an authored probe payload into raw bytes.
-///
-/// Payloads are authored as readable TOML *literal* strings (e.g.
-/// `'GET / HTTP/1.1\r\n\r\n'`), so escapes arrive verbatim — a literal `\`, `r`
-/// — and would go on the wire malformed if sent as-is. This resolves the common
-/// set (`\r`, `\n`, `\t`, `\0`, `\xHH`, `\\`) to the bytes they denote; any other
-/// escape is preserved literally so nothing is silently lost.
-fn unescape(payload: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(payload.len());
-    let mut chars = payload.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
-            continue;
-        }
-        match chars.next() {
-            Some('r') => out.push(b'\r'),
-            Some('n') => out.push(b'\n'),
-            Some('t') => out.push(b'\t'),
-            Some('0') => out.push(0),
-            Some('\\') => out.push(b'\\'),
-            Some('x') => {
-                let hi = chars.next().and_then(|h| h.to_digit(16));
-                let lo = chars.next().and_then(|l| l.to_digit(16));
-                match (hi, lo) {
-                    (Some(hi), Some(lo)) => out.push((hi * 16 + lo) as u8),
-                    // Malformed \xHH: keep the marker, best-effort.
-                    _ => out.extend_from_slice(b"\\x"),
-                }
-            }
-            // Unknown escape (or trailing backslash): keep it literally.
-            Some(other) => {
-                out.push(b'\\');
-                out.extend_from_slice(other.encode_utf8(&mut [0u8; 4]).as_bytes());
-            }
-            None => out.push(b'\\'),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

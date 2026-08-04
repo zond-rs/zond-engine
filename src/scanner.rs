@@ -62,6 +62,7 @@ mod composite;
 mod connect;
 pub mod dispatcher;
 mod local;
+mod payload;
 mod pool;
 mod resolver;
 mod routed;
