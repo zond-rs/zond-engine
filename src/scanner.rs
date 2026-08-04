@@ -48,6 +48,7 @@ use crate::core::config::{SendMode, ZondConfig};
 use crate::core::models::ip::range::IpRange;
 use crate::core::models::{
     ip::set::IpSet,
+    port::Protocol,
     target::{Target, TargetMap},
 };
 use crate::core::session::{ScanContext, ScanEvent, ScanSession, ScannerKind};
@@ -264,7 +265,12 @@ trait PortScanner: Send {
     fn kind(&self) -> ScannerKind;
 
     /// Returns the set of transport protocols this scanner is capable of probing.
-    fn supported_protocols(&self) -> Vec<crate::core::models::port::Protocol>;
+    ///
+    /// [`into_port_scanner`] reads this to decide which protocols still need an
+    /// unprivileged fallback, and [`composite::CompositePortScanner`] reads it
+    /// to route each target, so a scanner that under-reports its coverage is
+    /// simply never given that work.
+    fn supported_protocols(&self) -> Vec<Protocol>;
 
     /// Probes every target arriving on `targets` and records each port's state
     /// in the shared store. Returns `Ok` when the run completes, including an
@@ -509,32 +515,44 @@ fn build_udp_scanner(
     }
 }
 
-/// Selects the port-scanning strategy behind the [`PortScanner`] interface: the
-/// privileged raw-SYN scanner when [`build_syn_scanner`] produced one, otherwise
-/// the unprivileged TCP-connect fallback. Both are driven identically by
-/// [`run_port_scan`], so the choice of strategy stays confined to this one place.
+/// Assembles the port-scanning strategy behind the [`PortScanner`] interface:
+/// whichever privileged scanners were built, backed by an unprivileged connect
+/// fallback for every protocol none of them covers. All of them are driven
+/// identically by [`run_port_scan`], so the choice stays confined to this one
+/// place.
+///
+/// The fallback is decided **per protocol**, not per scan. A host can fail to
+/// build one raw scanner and not the other - the SYN scanner needs a raw TCP
+/// socket, the UDP scanner a raw UDP one, and a sandbox can permit one and
+/// refuse the other - and a protocol left without any scanner is not a degraded
+/// scan but a silent one: [`composite::CompositePortScanner`] has nowhere to
+/// route those targets, so they would simply never be probed and never be
+/// reported. Asking each scanner what it covers, rather than assuming a
+/// privileged scan covers everything, is what keeps that from happening.
 fn into_port_scanner(
-    scanners: Vec<Box<dyn PortScanner>>,
+    mut scanners: Vec<Box<dyn PortScanner>>,
     ctx: ScanContext,
 ) -> Box<dyn PortScanner> {
-    if !scanners.is_empty() {
-        return Box::new(composite::CompositePortScanner::new(scanners));
+    let covered: Vec<Protocol> = scanners
+        .iter()
+        .flat_map(|scanner| scanner.supported_protocols())
+        .collect();
+
+    if !covered.contains(&Protocol::Tcp) {
+        scanners.push(Box::new(connect::ConnectPortScanner::new(
+            ctx.clone(),
+            tuning::CONNECT_CONCURRENCY,
+        )));
     }
 
-    let tcp_scanner: Box<dyn PortScanner> = Box::new(connect::ConnectPortScanner::new(
-        ctx.clone(),
-        tuning::CONNECT_CONCURRENCY,
-    ));
+    if !covered.contains(&Protocol::Udp) {
+        scanners.push(Box::new(connect::ConnectUdpPortScanner::new(
+            ctx,
+            tuning::CONNECT_CONCURRENCY,
+        )));
+    }
 
-    let udp_scanner: Box<dyn PortScanner> = Box::new(connect::ConnectUdpPortScanner::new(
-        ctx.clone(),
-        tuning::CONNECT_CONCURRENCY,
-    ));
-
-    Box::new(composite::CompositePortScanner::new(vec![
-        tcp_scanner,
-        udp_scanner,
-    ]))
+    Box::new(composite::CompositePortScanner::new(scanners))
 }
 
 /// Drives one port-scan strategy to completion. It streams targets through the
@@ -627,4 +645,92 @@ fn report_scanner_failure(ctx: &ScanContext, scanner: ScannerKind, reason: Strin
     let _ = ctx
         .events_tx
         .send(ScanEvent::ScannerFailed { scanner, reason });
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scanner that claims a protocol and does nothing, standing in for a
+    /// privileged strategy that was built successfully.
+    struct StubScanner(Vec<Protocol>);
+
+    #[async_trait::async_trait]
+    impl PortScanner for StubScanner {
+        fn kind(&self) -> ScannerKind {
+            ScannerKind::SynPort
+        }
+
+        fn supported_protocols(&self) -> Vec<Protocol> {
+            self.0.clone()
+        }
+
+        async fn scan(&mut self, _targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn covered(scanners: Vec<Box<dyn PortScanner>>) -> Vec<Protocol> {
+        let (_session, ctx) = ScanSession::new();
+        into_port_scanner(scanners, ctx).supported_protocols()
+    }
+
+    /// With no privileged scanner at all, both connect fallbacks stand in.
+    #[test]
+    fn an_unprivileged_scan_covers_both_protocols() {
+        let protocols = covered(Vec::new());
+        assert!(protocols.contains(&Protocol::Tcp));
+        assert!(protocols.contains(&Protocol::Udp));
+    }
+
+    /// The regression guard for the per-protocol fallback: a host that could
+    /// build the raw UDP scanner but not the SYN one must still probe TCP.
+    /// Gating on "any privileged scanner exists" left those targets with no
+    /// route at all, so they were dropped without a record.
+    #[test]
+    fn a_protocol_without_a_privileged_scanner_still_gets_a_fallback() {
+        let protocols = covered(vec![Box::new(StubScanner(vec![Protocol::Udp]))]);
+        assert!(
+            protocols.contains(&Protocol::Tcp),
+            "TCP targets would be silently dropped"
+        );
+        assert!(protocols.contains(&Protocol::Udp));
+    }
+
+    /// And the mirror case: raw TCP available, raw UDP not.
+    #[test]
+    fn a_privileged_tcp_only_scan_falls_back_for_udp() {
+        let protocols = covered(vec![Box::new(StubScanner(vec![Protocol::Tcp]))]);
+        assert!(protocols.contains(&Protocol::Tcp));
+        assert!(
+            protocols.contains(&Protocol::Udp),
+            "UDP targets would be silently dropped"
+        );
+    }
+
+    /// When the privileged scanners already cover everything, no fallback is
+    /// added - a connect scanner beside them would re-probe the same ports.
+    #[test]
+    fn fully_covered_protocols_gain_no_fallback() {
+        let (_session, ctx) = ScanSession::new();
+        let scanner = into_port_scanner(
+            vec![
+                Box::new(StubScanner(vec![Protocol::Tcp])),
+                Box::new(StubScanner(vec![Protocol::Udp])),
+            ],
+            ctx,
+        );
+        // Two scanners in, two scanners out: `supported_protocols` deduplicates,
+        // so count the routes rather than the protocols.
+        assert_eq!(scanner.supported_protocols().len(), 2);
+    }
 }

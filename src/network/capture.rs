@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use pcap::{Active, Capture, Device};
+use pnet::packet::ip::IpNextHeaderProtocol;
 use tokio::sync::mpsc;
 
 use crate::network::frame::{self, LinkType};
@@ -43,10 +44,26 @@ const SNAP_LEN: i32 = 65_535;
 /// without busy-looping.
 const READ_TIMEOUT_MS: i32 = 100;
 
-/// The parsed receive stream produced by a running capture: `(layer4_segment,
-/// source_ip)` pairs from every captured interface, interleaved in arrival
-/// order.
-pub type CaptureStream = mpsc::UnboundedReceiver<(Vec<u8>, IpAddr)>;
+/// One reply lifted off the wire: the Layer-4 segment, who sent it, and which
+/// protocol it is.
+///
+/// The protocol is carried rather than inferred because a filter may admit
+/// more than one - a UDP port scan watches for both direct UDP replies and the
+/// ICMP errors that answer them - and Layer-4 headers are not self-describing
+/// enough to tell apart after the fact (see [`frame::IpSegment`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedSegment {
+    /// The address the reply came from.
+    pub source: IpAddr,
+    /// The protocol [`bytes`](Self::bytes) should be parsed as.
+    pub protocol: IpNextHeaderProtocol,
+    /// The Layer-4 segment, link and IP headers already stripped.
+    pub bytes: Vec<u8>,
+}
+
+/// The parsed receive stream produced by a running capture: [`CapturedSegment`]s
+/// from every captured interface, interleaved in arrival order.
+pub type CaptureStream = mpsc::UnboundedReceiver<CapturedSegment>;
 
 /// Keeps a set of live per-interface captures running for as long as it's
 /// held. Dropping it signals every reader thread to stop; each exits at its
@@ -151,14 +168,20 @@ fn open(name: &str, filter: &str) -> anyhow::Result<(Capture<Active>, LinkType)>
 fn reader_loop(
     mut capture: Capture<Active>,
     link: LinkType,
-    tx: mpsc::UnboundedSender<(Vec<u8>, IpAddr)>,
+    tx: mpsc::UnboundedSender<CapturedSegment>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Relaxed) {
         match capture.next_packet() {
             Ok(packet) => {
-                if let Some((source, segment)) = frame::parse_captured_segment(link, packet.data)
-                    && tx.send((segment.to_vec(), source)).is_err()
+                if let Some(parsed) = frame::parse_captured_segment(link, packet.data)
+                    && tx
+                        .send(CapturedSegment {
+                            source: parsed.source,
+                            protocol: parsed.protocol,
+                            bytes: parsed.payload.to_vec(),
+                        })
+                        .is_err()
                 {
                     break;
                 }

@@ -211,7 +211,7 @@ impl PortScanner for SynPortScanner {
 
                 res = self.transport.rx.recv() => {
                     match res {
-                        Some((bytes, ip)) => self.handle_reply(ip, &bytes),
+                        Some(reply) => self.handle_reply(reply.source, &reply.bytes),
                         None => break,
                     }
                 }

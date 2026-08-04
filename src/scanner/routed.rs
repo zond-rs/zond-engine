@@ -105,18 +105,28 @@ fn send_syn(
     }
 }
 
-/// Sends a single UDP packet.
+/// Sends a single UDP probe from `src_port` to `dst_addr:dst_port` through
+/// `sender` and logs the outcome.
+///
+/// Unlike [`send_syn`], which randomizes its source port per probe, every UDP
+/// probe in a scan leaves from the same `src_port`. That single port is the
+/// scan's identity on the wire: the capture filter narrows direct replies down
+/// to it, and the datagram quoted inside an ICMP error is checked against it.
+/// Randomizing per probe would leave no filter expressible but "all UDP".
 fn send_udp(
     sender: &dyn ProbeSender,
+    src_port: u16,
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
 ) -> Option<()> {
-    let src_port: u16 = rand::random_range(50_000..u16::MAX);
-    // Send empty payload for UDP port probing
+    // An empty payload elicits a reply only from a service that answers
+    // anything at all; per-port protocol payloads are a separate piece of work.
     let payload = vec![];
 
-    let packet = match crate::protocols::udp::create_packet(src_port, dst_port, payload) {
+    let packet = match crate::protocols::udp::create_packet(
+        &src_addr, &dst_addr, src_port, dst_port, payload,
+    ) {
         Ok(pkt) => pkt,
         Err(e) => {
             error!(
@@ -184,7 +194,7 @@ impl NetworkExplorer for RoutedScanner {
             tokio::select! {
                 res = self.transport.rx.recv() => {
                     match res {
-                        Some((bytes, ip)) => self.handle_discovery_reply(ip, &bytes),
+                        Some(reply) => self.handle_discovery_reply(reply.source, &reply.bytes),
                         None => break,
                     }
                 },
