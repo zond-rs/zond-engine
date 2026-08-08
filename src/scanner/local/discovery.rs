@@ -13,90 +13,71 @@
 //! against every frame it receives. Supporting a new discovery mechanism means
 //! writing one more implementation here instead of touching the receive loop.
 
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::time::{Duration, Instant};
-
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 
 use crate::protocols::ip;
 
-use super::LocalScannerError;
-
-/// Outstanding discovery probes, keyed by the address a reply is expected
-/// from, recording when each one was sent.
-pub type PendingProbes = HashMap<IpAddr, Instant>;
-
 /// What a [`DiscoveryProtocol`] found when asked to interpret one received frame.
+///
+/// The two "handled" answers differ in what they entitle the scanner to
+/// conclude about the probe that provoked them, which is why they are separate
+/// variants rather than one carrying a round-trip time. A protocol reads bytes;
+/// deciding which outstanding probe a frame retires is the scanner's job, since
+/// only the scanner knows what it sent and when.
 pub enum ProtocolMatch {
     /// The protocol does not recognize this frame. Another protocol may still
     /// claim it.
     Unhandled,
-    /// The frame is a discovery response, carrying a round-trip time when a
-    /// matching outbound probe was still on record.
-    Handled { rtt: Option<Duration> },
+    /// A reply to the unicast probe aimed at this frame's own source address,
+    /// so it answers exactly one outstanding probe and retires it.
+    Solicited,
+    /// A reply to the single all-nodes solicitation. That probe is not consumed
+    /// by any one reply, because every neighbour on the segment may answer the
+    /// same packet.
+    AllNodes,
 }
 
 /// A wire-level protocol capable of recognizing discovery responses.
 ///
 /// [`LocalScanner`](super::LocalScanner) tries each configured protocol against
-/// every received frame in turn, and the first one that claims a frame decides
-/// whether a round-trip time can be computed and how precisely. The scanner has
-/// already identified the frame's source address and ruled out obvious noise
-/// (packets from itself, addresses outside the scan) before a protocol ever sees
-/// the frame, so an implementation only needs to handle its own wire format.
+/// every received frame in turn, and the first one to claim a frame decides what
+/// kind of answer it is. The scanner has already identified the frame's source
+/// address and ruled out obvious noise (packets from itself, addresses outside
+/// the scan) before a protocol ever sees the frame, so an implementation is a
+/// pure function of the bytes in front of it.
 pub trait DiscoveryProtocol: Send {
-    fn interpret(
-        &self,
-        frame: &EthernetPacket,
-        source: IpAddr,
-        pending: &mut PendingProbes,
-    ) -> anyhow::Result<ProtocolMatch>;
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch>;
 }
 
 /// Recognizes ARP replies as discovery responses.
 ///
-/// A round trip is measured from when a request was sent to a given address to
-/// when that same address answers. ARP traffic that does not correspond to an
-/// outstanding probe, such as other hosts' requests or gratuitous announcements,
-/// is common on a shared segment. It is not treated as an error, only as a
-/// response with no timing data.
+/// Every ARP frame from an in-range address counts, whether or not it answers an
+/// outstanding request: other hosts' requests and gratuitous announcements are
+/// common on a shared segment and are just as good a proof that someone is
+/// there. Whether one also yields a round-trip time depends on there being a
+/// probe outstanding to measure against, which the scanner determines.
 pub struct ArpProtocol;
 
 impl DiscoveryProtocol for ArpProtocol {
-    fn interpret(
-        &self,
-        frame: &EthernetPacket,
-        source: IpAddr,
-        pending: &mut PendingProbes,
-    ) -> anyhow::Result<ProtocolMatch> {
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
         if frame.get_ethertype() != EtherTypes::Arp {
             return Ok(ProtocolMatch::Unhandled);
         }
 
-        let rtt = pending.remove(&source).map(|sent_at| sent_at.elapsed());
-        Ok(ProtocolMatch::Handled { rtt })
+        Ok(ProtocolMatch::Solicited)
     }
 }
 
 /// Recognizes inbound IPv6 traffic addressed directly to this host as a reply to
-/// the single ICMPv6 all-nodes probe sent at the start of a scan.
+/// the single ICMPv6 all-nodes probe sent at the start of a sweep.
 ///
-/// Unlike ARP, this probe is not sent per target. It is one multicast
-/// solicitation that any IPv6 neighbor may answer, so the round trip is measured
-/// from that single send against every qualifying reply rather than being
-/// consumed after the first one. A qualifying reply with no matching send on
-/// record would mean the probe was never actually sent, which is treated as an
-/// error rather than silently ignored.
+/// Unlike ARP, that probe is not sent per target: it is one multicast
+/// solicitation any IPv6 neighbour may answer, so it is measured against every
+/// qualifying reply rather than being consumed by the first.
 pub struct Icmpv6Protocol;
 
 impl DiscoveryProtocol for Icmpv6Protocol {
-    fn interpret(
-        &self,
-        frame: &EthernetPacket,
-        _source: IpAddr,
-        pending: &mut PendingProbes,
-    ) -> anyhow::Result<ProtocolMatch> {
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
         if frame.get_ethertype() != EtherTypes::Ipv6 {
             return Ok(ProtocolMatch::Unhandled);
         }
@@ -106,14 +87,7 @@ impl DiscoveryProtocol for Icmpv6Protocol {
             return Ok(ProtocolMatch::Unhandled);
         }
 
-        let destination = IpAddr::V6(destination);
-        let sent_at = pending
-            .get(&destination)
-            .ok_or(LocalScannerError::UnmappedRttSource(destination))?;
-
-        Ok(ProtocolMatch::Handled {
-            rtt: Some(sent_at.elapsed()),
-        })
+        Ok(ProtocolMatch::AllNodes)
     }
 }
 
@@ -165,61 +139,30 @@ mod tests {
     fn arp_protocol_ignores_non_arp_frames() {
         let frame_bytes = ipv6_frame(Ipv6Addr::LOCALHOST);
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
-        let mut pending = PendingProbes::new();
 
-        let result = ArpProtocol.interpret(&frame, Ipv6Addr::LOCALHOST.into(), &mut pending);
+        let result = ArpProtocol.interpret(&frame);
 
         assert!(matches!(result.unwrap(), ProtocolMatch::Unhandled));
     }
 
+    /// An ARP frame answers a probe aimed at the address that sent it, which is
+    /// what entitles the scanner to retire exactly that probe.
     #[test]
-    fn arp_protocol_reports_rtt_for_a_pending_probe() {
-        let sender = Ipv4Addr::new(192, 168, 1, 50);
-        let frame_bytes = arp_reply_frame(sender);
+    fn arp_protocol_claims_arp_frames_as_solicited() {
+        let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 168, 1, 50));
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
 
-        let mut pending = PendingProbes::new();
-        pending.insert(sender.into(), Instant::now());
+        let result = ArpProtocol.interpret(&frame).unwrap();
 
-        let result = ArpProtocol
-            .interpret(&frame, sender.into(), &mut pending)
-            .unwrap();
-
-        match result {
-            ProtocolMatch::Handled { rtt } => assert!(rtt.is_some()),
-            ProtocolMatch::Unhandled => panic!("expected a handled ARP reply"),
-        }
-        assert!(
-            !pending.contains_key(&sender.into()),
-            "a consumed probe should be removed"
-        );
-    }
-
-    #[test]
-    fn arp_protocol_reports_no_rtt_without_a_pending_probe() {
-        let sender = Ipv4Addr::new(192, 168, 1, 50);
-        let frame_bytes = arp_reply_frame(sender);
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
-        let mut pending = PendingProbes::new();
-
-        let result = ArpProtocol
-            .interpret(&frame, sender.into(), &mut pending)
-            .unwrap();
-
-        match result {
-            ProtocolMatch::Handled { rtt } => assert!(rtt.is_none()),
-            ProtocolMatch::Unhandled => panic!("unsolicited ARP traffic should still be handled"),
-        }
+        assert!(matches!(result, ProtocolMatch::Solicited));
     }
 
     #[test]
     fn icmpv6_protocol_ignores_non_ipv6_frames() {
         let frame_bytes = arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2));
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
-        let mut pending = PendingProbes::new();
 
-        let result =
-            Icmpv6Protocol.interpret(&frame, Ipv4Addr::new(10, 0, 0, 2).into(), &mut pending);
+        let result = Icmpv6Protocol.interpret(&frame);
 
         assert!(matches!(result.unwrap(), ProtocolMatch::Unhandled));
     }
@@ -228,47 +171,23 @@ mod tests {
     fn icmpv6_protocol_ignores_traffic_not_addressed_to_a_link_local_unicast() {
         let frame_bytes = ipv6_frame(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)); // multicast
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
-        let mut pending = PendingProbes::new();
 
-        let result = Icmpv6Protocol.interpret(&frame, Ipv6Addr::LOCALHOST.into(), &mut pending);
+        let result = Icmpv6Protocol.interpret(&frame);
 
         assert!(matches!(result.unwrap(), ProtocolMatch::Unhandled));
     }
 
+    /// IPv6 traffic aimed at this host answers the all-nodes solicitation, and
+    /// every neighbour may answer the same one - so the match must not imply
+    /// that any single probe has been used up.
     #[test]
-    fn icmpv6_protocol_reports_rtt_without_consuming_the_probe() {
-        let own_link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-        let frame_bytes = ipv6_frame(own_link_local);
+    fn icmpv6_protocol_claims_link_local_traffic_for_the_all_nodes_probe() {
+        let frame_bytes = ipv6_frame(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
-
-        let mut pending = PendingProbes::new();
-        pending.insert(own_link_local.into(), Instant::now());
 
         for _ in 0..2 {
-            let result = Icmpv6Protocol
-                .interpret(&frame, own_link_local.into(), &mut pending)
-                .unwrap();
-
-            match result {
-                ProtocolMatch::Handled { rtt } => assert!(rtt.is_some()),
-                ProtocolMatch::Unhandled => panic!("expected a handled reply"),
-            }
+            let result = Icmpv6Protocol.interpret(&frame).unwrap();
+            assert!(matches!(result, ProtocolMatch::AllNodes));
         }
-        assert!(
-            pending.contains_key(&own_link_local.into()),
-            "a multicast probe's timestamp isn't consumed by a single reply"
-        );
-    }
-
-    #[test]
-    fn icmpv6_protocol_errors_when_no_probe_was_ever_sent() {
-        let own_link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-        let frame_bytes = ipv6_frame(own_link_local);
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
-        let mut pending = PendingProbes::new();
-
-        let result = Icmpv6Protocol.interpret(&frame, own_link_local.into(), &mut pending);
-
-        assert!(result.is_err());
     }
 }

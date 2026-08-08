@@ -7,9 +7,10 @@
 //! The retransmission contract, written before the feature existed.
 //!
 //! Each test here was `#[ignore]`d until the path it covers retransmitted, and
-//! removing that attribute is what "retransmission is done" means for that path.
-//! The Layer 4 paths - SYN port scanning, routed discovery, UDP - run today. The
-//! link-layer ones are still ignored.
+//! removing that attribute is what "retransmission is done" meant for that path.
+//! Every path now does: SYN port scanning, routed discovery, UDP, and ARP on the
+//! local segment. What is left is a regression suite - these are the cases that
+//! would silently stop being true if the retry policy were retuned carelessly.
 //!
 //! # Why this matters more than it looks
 //!
@@ -335,7 +336,6 @@ async fn a_lost_icmp_error_is_retried_and_the_port_still_reads_closed() {
 /// ARP is lossy on a busy segment far more often than people expect, and a
 /// discovery sweep that never retries simply reports live hosts as absent.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn a_lost_arp_request_is_retried_and_the_host_is_still_discovered() {
     let target_v4 = match TARGET {
         std::net::IpAddr::V4(v4) => v4,
@@ -376,7 +376,6 @@ async fn a_lost_arp_request_is_retried_and_the_host_is_still_discovered() {
 /// The bound applies here too: an address with nothing on it must not be
 /// probed indefinitely, or a sweep of a mostly-empty range never terminates.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn an_empty_address_is_probed_a_bounded_number_of_times() {
     let target_v4 = match TARGET {
         std::net::IpAddr::V4(v4) => v4,

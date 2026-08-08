@@ -16,7 +16,7 @@
 
 mod discovery;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,7 @@ use tokio::time::Interval;
 
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::ip::set::IpSet;
+use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy};
 use crate::core::models::timer::ScanBudget;
 use crate::core::session::ScanContext;
 use crate::network::channel::{self, EthernetHandle};
@@ -37,7 +38,44 @@ use crate::scanner::NetworkExplorer;
 use crate::system::interface::NetworkInterfaceExtension;
 use crate::{error, info};
 
-use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6Protocol, PendingProbes, ProtocolMatch};
+use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6Protocol, ProtocolMatch};
+
+/// Outstanding ARP requests and the schedule they are retried on.
+///
+/// The attempt token is `()`: consecutive requests for one address are
+/// identical on the wire, so a reply cannot say which of them it answers. The
+/// ledger applies Karn's rule on that basis and declines to measure a round trip
+/// it cannot attribute.
+///
+/// The all-nodes solicitation is deliberately not in here. It is one multicast
+/// packet that every neighbour may answer, so it has no single outcome to
+/// resolve and nothing to retire; the scanner times it separately.
+type Ledger = ProbeLedger<IpAddr, ()>;
+
+/// How an ARP request is retransmitted.
+///
+/// ARP is lost on a busy segment considerably more often than its reputation
+/// suggests - requests are broadcast, and a switch under load drops broadcast
+/// before anything else - and a sweep that never asks twice simply reports the
+/// hosts it missed as absent.
+///
+/// The timings are a segment's, not an internet path's: a neighbour that is
+/// going to answer does so in well under a millisecond, so the floor is what
+/// governs almost immediately and a silent address is settled in about a second
+/// rather than in the seconds a wide-area profile would spend.
+///
+/// No silent-host rule, because there would be nothing for it to do: each
+/// address here is probed once, so no host ever accumulates the exhausted
+/// probes that rule counts.
+const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
+    3,
+    Duration::from_millis(150),
+    Duration::from_millis(25),
+    Duration::from_secs(1),
+    2.0,
+    0.2,
+    None,
+);
 
 /// Errors specific to local-network scanning, covering interface setup problems
 /// and packets that fail the sanity checks a discovery reply is expected to pass.
@@ -162,8 +200,20 @@ pub struct LocalScanner {
     /// Wire formats this scanner recognizes as discovery replies, tried in
     /// order against every received frame.
     protocols: Vec<Box<dyn DiscoveryProtocol>>,
-    /// Outstanding probes, keyed by the address a reply is expected from.
-    pending_probes: PendingProbes,
+    /// Outstanding ARP requests, and when each is next due to be repeated or
+    /// given up on.
+    ledger: Ledger,
+    /// Scratch space for the probes coming due on one iteration, reused so a
+    /// quiet tick allocates nothing.
+    due: Vec<Due<IpAddr>>,
+    /// Addresses waiting to be asked again. Held as a queue rather than resent
+    /// on the spot so a retry leaves through the same paced ticker a first
+    /// attempt does, which is what keeps a burst of expiring probes from
+    /// becoming a burst on the wire.
+    retries: VecDeque<IpAddr>,
+    /// When the one all-nodes solicitation went out, if it did. Every IPv6
+    /// reply is measured against it, and none of them consume it.
+    solicited_at: Option<Instant>,
     /// Where to forward newly discovered addresses for hostname
     /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
@@ -190,38 +240,61 @@ impl NetworkExplorer for LocalScanner {
 
         let mut sending_finished = false;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL);
+        // Without this, an interval that went unpolled while the loop waited on
+        // replies hands back every tick it missed at once, and the pacing this
+        // ticker exists to impose evaporates exactly when the queue is longest.
+        send_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
-            if sending_finished && (self.should_stop() || self.all_targets_responded()) {
+            let now = Instant::now();
+            self.service_retries(now);
+
+            if self.ctx.handle.should_stop() || self.deadline.hard_deadline_passed() {
+                break;
+            }
+            if sending_finished && self.all_targets_responded() {
+                break;
+            }
+            // Silence is only evidence once nothing is outstanding: with probes
+            // still waiting on their timers, quiet is what the retry schedule
+            // expects rather than a sign the segment has gone quiet.
+            if sending_finished && self.idle() && self.deadline.has_expired() {
                 break;
             }
 
-            // Only needed once sending has finished: while packets are still
-            // going out, `send_interval` already drives the loop frequently
-            // enough for the check above to run promptly.
-            let next_tick = self.deadline.time_until_next_tick();
+            // Anything left to put on the wire, whether a first attempt or a
+            // repeat, goes through the same paced ticker.
+            let sending = !sending_finished || !self.retries.is_empty();
+            let idle_delay = self.tick_delay(now);
 
             tokio::select! {
                 pkt = self.eth_handle.rx.recv() => {
                     match pkt {
-                        Some(bytes) => _ = self.process_eth_packet(&bytes),
+                        Some(bytes) => _ = self.process_eth_packet(&bytes, Instant::now()),
                         None => break,
                     }
                 }
 
-                _ = send_interval.tick(), if !sending_finished => {
-                    match packet_iter.next() {
-                        Some((packet, ip)) => {
-                            self.pending_probes.insert(ip, Instant::now());
-                            self.eth_handle.tx.send_to(&packet, None);
-                        },
-                        None => {
-                            sending_finished = true;
-                        },
+                _ = send_interval.tick(), if sending => {
+                    // Repeats first: an address already asked once is an
+                    // obligation this sweep owns, where the next new address is
+                    // only work it intends to do.
+                    if let Some(target) = self.retries.pop_front() {
+                        self.send_arp_request(target, Instant::now());
+                    } else if !sending_finished {
+                        match packet_iter.next() {
+                            Some((packet, ip)) => {
+                                self.record_probe(ip, Instant::now());
+                                self.eth_handle.tx.send_to(&packet, None);
+                            },
+                            None => {
+                                sending_finished = true;
+                            },
+                        }
                     }
                 }
 
-                _ = tokio::time::sleep(next_tick), if sending_finished => {}
+                _ = tokio::time::sleep(idle_delay), if !sending => {}
             }
         }
 
@@ -261,7 +334,10 @@ impl LocalScanner {
         let identity = SourceIdentity::resolve(&intf, &ip_set)?;
 
         let target_count = ip_set.len() as usize;
-        let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, target_count);
+        // The sweep has to outlive the schedule it commits each probe to, or
+        // addresses are given up on having never been fully asked.
+        let deadline_config = DEADLINE_CONFIG.allowing_for(RETRY_POLICY.worst_case_probe_lifetime());
+        let deadline = AdaptiveDeadline::new(deadline_config, target_count);
 
         Ok(Self {
             ctx,
@@ -270,7 +346,10 @@ impl LocalScanner {
             eth_handle,
             deadline,
             protocols: vec![Box::new(ArpProtocol), Box::new(Icmpv6Protocol)],
-            pending_probes: PendingProbes::with_capacity(target_count),
+            ledger: Ledger::new(RETRY_POLICY, target_count),
+            due: Vec::new(),
+            retries: VecDeque::new(),
+            solicited_at: None,
             dns_tx,
             mac_to_ip: HashMap::new(),
             scope,
@@ -278,9 +357,83 @@ impl LocalScanner {
         })
     }
 
+    /// Notes that a probe for `ip` has just gone out.
+    ///
+    /// The packet iterator emits the all-nodes solicitation alongside the
+    /// per-address ARP requests, and the two are recorded differently: an ARP
+    /// request is one address's probe, to be repeated and eventually given up
+    /// on, while the solicitation is a single broadcast question with no one
+    /// answer and so nothing to retire.
+    fn record_probe(&mut self, ip: IpAddr, now: Instant) {
+        if Some(ip) == self.identity.link_local_ipv6.map(IpAddr::V6) {
+            self.solicited_at = Some(now);
+            return;
+        }
+
+        self.ledger.arm(ip, ip, (), now);
+    }
+
+    /// Rebuilds and sends the ARP request for `target`.
+    ///
+    /// Nothing about the request is kept between attempts, because nothing needs
+    /// to be: the frame is a function of this scanner's identity and the address
+    /// being asked about, and rebuilding it is cheaper than holding a copy per
+    /// outstanding probe.
+    fn send_arp_request(&mut self, target: IpAddr, now: Instant) {
+        let (IpAddr::V4(target_v4), Some(source_v4)) = (target, self.identity.ipv4) else {
+            return;
+        };
+
+        match protocol::arp::create_packet(
+            &self.identity.mac,
+            MacAddr::broadcast(),
+            &source_v4,
+            target_v4,
+        ) {
+            Ok(packet) => {
+                self.eth_handle.tx.send_to(&packet, None);
+                self.ledger.arm(target, target, (), now);
+            }
+            // Not armed, so the ledger's charge for this attempt stands and the
+            // address runs out of attempts on schedule rather than waiting
+            // outstanding forever.
+            Err(e) => error!(verbosity = 1, "Failed to rebuild ARP request for {target}: {e}"),
+        }
+    }
+
+    /// Queues everything due to be asked again.
+    ///
+    /// An address that has run out of attempts needs nothing recorded: a host
+    /// that never answered is one this sweep does not report, and the ledger
+    /// emptying is part of what tells the loop it is finished.
+    fn service_retries(&mut self, now: Instant) {
+        self.ledger.drain_due(now, &mut self.due);
+        for event in self.due.drain(..) {
+            if let Due::Retry { key, .. } = event {
+                self.retries.push_back(key);
+            }
+        }
+    }
+
+    /// Whether the sweep has nothing left to send and nothing left to wait for.
+    fn idle(&self) -> bool {
+        self.retries.is_empty() && self.ledger.is_empty()
+    }
+
+    /// How long the loop may sleep once it has stopped sending: until the
+    /// sweep's next checkpoint, or until the next address is due to be asked
+    /// again, whichever comes first.
+    fn tick_delay(&self, now: Instant) -> Duration {
+        let until_deadline_tick = self.deadline.time_until_next_tick();
+        match self.ledger.next_due() {
+            Some(due) => until_deadline_tick.min(due.saturating_duration_since(now)),
+            None => until_deadline_tick,
+        }
+    }
+
     /// Validates an incoming frame, then handles a discovery reply in two steps:
     /// working out what it means, and recording that in shared scan state.
-    fn process_eth_packet(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+    fn process_eth_packet(&mut self, bytes: &[u8], now: Instant) -> anyhow::Result<()> {
         let eth_frame: EthernetPacket = ethernet::get_packet_from_u8(bytes)?;
 
         let source_mac = eth_frame.get_source();
@@ -299,12 +452,28 @@ impl LocalScanner {
             return Err(LocalScannerError::AddressOutOfRange(source_addr).into());
         }
 
-        if let ProtocolMatch::Handled { rtt } = self.interpret_response(&eth_frame, source_addr) {
-            if self.ip_set.contains(&source_addr) {
-                self.responded.insert(source_addr);
-            }
-            self.record_response(source_mac, source_addr, rtt);
+        let rtt = match self.interpret_response(&eth_frame) {
+            ProtocolMatch::Unhandled => return Ok(()),
+            // The reply retires this address's own request, and measures it if
+            // the ledger can say which attempt was answered.
+            ProtocolMatch::Solicited => self
+                .ledger
+                .resolve(&source_addr, None, now)
+                .and_then(|resolution| resolution.rtt),
+            // Measured against the one solicitation, which stays outstanding for
+            // every other neighbour that may still answer it. A reply with no
+            // solicitation on record means one was never sent, so there is
+            // nothing this frame can be a reply to.
+            ProtocolMatch::AllNodes => match self.solicited_at {
+                Some(sent_at) => Some(now.saturating_duration_since(sent_at)),
+                None => return Err(LocalScannerError::UnmappedRttSource(source_addr).into()),
+            },
+        };
+
+        if self.ip_set.contains(&source_addr) {
+            self.responded.insert(source_addr);
         }
+        self.record_response(source_mac, source_addr, rtt);
 
         Ok(())
     }
@@ -327,11 +496,11 @@ impl LocalScanner {
     /// hosts, or traffic forwarded through a router rather than sent directly,
     /// whose Ethernet source is the router itself and not the host the IP packet
     /// originated from.
-    fn interpret_response(&mut self, frame: &EthernetPacket, source: IpAddr) -> ProtocolMatch {
+    fn interpret_response(&mut self, frame: &EthernetPacket) -> ProtocolMatch {
         for protocol in &self.protocols {
-            match protocol.interpret(frame, source, &mut self.pending_probes) {
-                Ok(ProtocolMatch::Handled { rtt }) => return ProtocolMatch::Handled { rtt },
+            match protocol.interpret(frame) {
                 Ok(ProtocolMatch::Unhandled) => continue,
+                Ok(matched) => return matched,
                 Err(e) => {
                     error!(verbosity = 1, "Failed to interpret discovery response: {e}");
                     return ProtocolMatch::Unhandled;
@@ -398,7 +567,4 @@ impl LocalScanner {
         }
     }
 
-    fn should_stop(&self) -> bool {
-        self.ctx.handle.should_stop() || self.deadline.has_expired()
-    }
 }
