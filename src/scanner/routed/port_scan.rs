@@ -24,10 +24,10 @@ use async_trait::async_trait;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
-use crate::core::config::SendMode;
+use crate::core::config::ProbeTuning;
 use crate::core::models::deadline::AdaptiveDeadline;
 use crate::core::models::port::{PortState, Protocol};
-use crate::core::models::retry::{Due, ProbeLedger};
+use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy};
 use crate::core::models::target::Target;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
@@ -91,10 +91,16 @@ impl SynPortScanner {
         resolver: SourceResolver,
         ctx: ScanContext,
         target_count: usize,
-        send_mode: SendMode,
+        tuning: ProbeTuning,
     ) -> anyhow::Result<Self> {
-        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, send_mode)?;
-        Ok(Self::with_transport(resolver, ctx, transport, target_count))
+        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, tuning.send_mode)?;
+        Ok(Self::build(
+            resolver,
+            ctx,
+            transport,
+            target_count,
+            RETRY_POLICY.configured(tuning.retry),
+        ))
     }
 
     /// Builds a scanner around an already-opened transport, so the caller
@@ -104,22 +110,37 @@ impl SynPortScanner {
     /// the `test-support` feature) this is the seam that lets probe and reply
     /// correlation be driven against a simulated network rather than a real
     /// one, with no privileges and no interface.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
         transport: ProbeTransport,
         target_count: usize,
     ) -> Self {
+        Self::build(resolver, ctx, transport, target_count, RETRY_POLICY)
+    }
+
+    /// The common constructor, taking the retry schedule as an argument because
+    /// it is the one thing the two public ones disagree about - and because the
+    /// scan's own deadline is derived from it, so it has to be settled before
+    /// anything is built rather than patched in afterwards.
+    fn build(
+        resolver: SourceResolver,
+        ctx: ScanContext,
+        transport: ProbeTransport,
+        target_count: usize,
+        retry: RetryPolicy,
+    ) -> Self {
         // The scan has to outlive its own retry schedule, or probes are written
         // off as unanswered having never been fully asked.
-        let deadline_config = DEADLINE_CONFIG.allowing_for(RETRY_POLICY.worst_case_probe_lifetime());
+        let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
 
         Self {
             resolver,
             ctx,
             transport,
             deadline: AdaptiveDeadline::new(deadline_config, target_count),
-            ledger: Ledger::new(RETRY_POLICY, target_count.min(MAX_IN_FLIGHT)),
+            ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT)),
             due: Vec::new(),
         }
     }

@@ -36,7 +36,7 @@ use tokio::time::Interval;
 
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::ip::set::IpSet;
-use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy};
+use crate::core::models::retry::{Due, ProbeLedger, RetryConfig, RetryPolicy};
 use crate::core::models::timer::ScanBudget;
 use crate::core::session::ScanContext;
 use crate::network::channel::{self, EthernetHandle};
@@ -390,9 +390,18 @@ impl LocalScanner {
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
         scope: Scope,
+        retry: RetryConfig,
     ) -> anyhow::Result<Self> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
-        Self::with_handle(intf, ip_set, ctx, dns_tx, scope, eth_handle)
+        Self::build(
+            intf,
+            ip_set,
+            ctx,
+            dns_tx,
+            scope,
+            eth_handle,
+            RETRY_POLICY.configured(retry),
+        )
     }
 
     /// Builds a scanner around an already-opened Ethernet channel, so the caller
@@ -404,6 +413,7 @@ impl LocalScanner {
     /// (`EthernetHandle::from_parts`, behind the `test-support` feature) and a
     /// hand-built [`NetworkInterface`], this is the seam that lets ARP and NDP
     /// discovery be driven against a simulated segment with no privileges.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_handle(
         intf: NetworkInterface,
         ip_set: IpSet,
@@ -412,12 +422,28 @@ impl LocalScanner {
         scope: Scope,
         eth_handle: EthernetHandle,
     ) -> anyhow::Result<Self> {
+        Self::build(intf, ip_set, ctx, dns_tx, scope, eth_handle, RETRY_POLICY)
+    }
+
+    /// The common constructor, taking the retry schedule as an argument because
+    /// the sweep's own deadline is derived from it and so has to be settled
+    /// before anything is built.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        intf: NetworkInterface,
+        ip_set: IpSet,
+        ctx: ScanContext,
+        dns_tx: Option<UnboundedSender<IpAddr>>,
+        scope: Scope,
+        eth_handle: EthernetHandle,
+        retry: RetryPolicy,
+    ) -> anyhow::Result<Self> {
         let identity = SourceIdentity::resolve(&intf, &ip_set)?;
 
         let target_count = ip_set.len() as usize;
         // The sweep has to outlive the schedule it commits each probe to, or
         // addresses are given up on having never been fully asked.
-        let deadline_config = DEADLINE_CONFIG.allowing_for(RETRY_POLICY.worst_case_probe_lifetime());
+        let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
         let deadline = AdaptiveDeadline::new(deadline_config, target_count);
 
         Ok(Self {
@@ -427,7 +453,7 @@ impl LocalScanner {
             eth_handle,
             deadline,
             protocols: vec![Box::new(ArpProtocol), Box::new(Icmpv6Protocol)],
-            ledger: Ledger::new(RETRY_POLICY, target_count),
+            ledger: Ledger::new(retry, target_count),
             due: Vec::new(),
             retries: VecDeque::new(),
             solicitation: Solicitation::default(),

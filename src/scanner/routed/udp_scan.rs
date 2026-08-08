@@ -51,7 +51,7 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::udp::UdpPacket;
 use tokio::sync::mpsc;
 
-use crate::core::config::SendMode;
+use crate::core::config::ProbeTuning;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
@@ -220,22 +220,23 @@ impl UdpPortScanner {
         resolver: SourceResolver,
         ctx: ScanContext,
         target_count: usize,
-        send_mode: SendMode,
+        tuning: ProbeTuning,
     ) -> anyhow::Result<Self> {
         let src_port: u16 = rand::random_range(50_000..u16::MAX);
         let transport = ProbeTransport::open_with(
             ProbeKind::UdpProbe {
                 reply_port: src_port,
             },
-            send_mode,
+            tuning.send_mode,
         )?;
 
-        Ok(Self::with_transport(
+        Ok(Self::build(
             resolver,
             ctx,
             transport,
             target_count,
             src_port,
+            RETRY_POLICY.configured(tuning.retry),
         ))
     }
 
@@ -248,6 +249,7 @@ impl UdpPortScanner {
     /// transport (`ProbeTransport::from_parts`, behind the `test-support`
     /// feature) this is the seam that lets classification be driven against a
     /// simulated network rather than a real one.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -255,16 +257,30 @@ impl UdpPortScanner {
         target_count: usize,
         src_port: u16,
     ) -> Self {
+        Self::build(resolver, ctx, transport, target_count, src_port, RETRY_POLICY)
+    }
+
+    /// The common constructor, taking the retry schedule as an argument because
+    /// the scan's own deadline is derived from it and so has to be settled
+    /// before anything is built.
+    fn build(
+        resolver: SourceResolver,
+        ctx: ScanContext,
+        transport: ProbeTransport,
+        target_count: usize,
+        src_port: u16,
+        retry: RetryPolicy,
+    ) -> Self {
         // The scan has to outlive its own retry schedule, or probes are written
         // off as unanswered having never been fully asked.
-        let deadline_config = DEADLINE_CONFIG.allowing_for(RETRY_POLICY.worst_case_probe_lifetime());
+        let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
 
         Self {
             resolver,
             ctx,
             transport,
             deadline: AdaptiveDeadline::new(deadline_config, target_count),
-            ledger: Ledger::new(RETRY_POLICY, target_count.min(MAX_IN_FLIGHT)),
+            ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT)),
             due: Vec::new(),
             src_port,
         }

@@ -120,7 +120,9 @@ pub struct RetryPolicy {
     pub initial_rto: Duration,
     /// The shortest timeout measurement may justify.
     pub min_rto: Duration,
-    /// The longest timeout, applied to the backed-off value as well.
+    /// The longest timeout, applied to the backed-off value as well. Also the
+    /// ceiling on [`initial_rto`](Self::initial_rto), so a policy whose numbers
+    /// disagree resolves in favour of the bound rather than the guess.
     pub max_rto: Duration,
     /// Multiplier applied per attempt, so a path that is losing packets is
     /// asked less often rather than more.
@@ -133,6 +135,64 @@ pub struct RetryPolicy {
     pub jitter: f64,
     /// How the budget is cut for hosts that never answer, if at all.
     pub silent_host: Option<SilentHostPolicy>,
+}
+
+/// How much effort a scan spends before accepting silence as an answer.
+///
+/// Every probing path has its own tuned [`RetryPolicy`], set against what its
+/// protocol actually requires - a SYN is answered as fast as the path allows, an
+/// ICMP error only as fast as the host is permitted to send one. This scales
+/// that starting point rather than replacing it, so choosing "fast" does not
+/// quietly hand the UDP scanner a schedule its protocol cannot satisfy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScanEffort {
+    /// One probe per target and no repeats.
+    ///
+    /// A first-class choice rather than a disabled feature: it is what an
+    /// address-space-scale sweep wants, where per-probe state cannot be afforded
+    /// and coverage is bought with a second pass instead.
+    Single,
+    /// Fewer attempts and less patience. For a network already known to be
+    /// healthy, where a missed host is cheaper than the time spent confirming
+    /// one is absent.
+    Fast,
+    #[default]
+    Balanced,
+    /// More attempts, more patience, and no shortcuts on hosts that stay
+    /// silent. For a lossy path, or a result someone is going to act on.
+    Thorough,
+}
+
+/// User control over retransmission, applied on top of each scanner's own
+/// profile.
+#[derive(Debug, Clone, Copy)]
+pub struct RetryConfig {
+    pub effort: ScanEffort,
+    /// Replaces the attempt budget outright, whatever `effort` implies. One
+    /// disables retransmission.
+    pub max_attempts: Option<u8>,
+    /// Multiplies how long the scan is willing to wait.
+    ///
+    /// Deliberately does not touch the shortest timeout a policy allows. That
+    /// floor is not a preference to be traded away, it is what the protocol
+    /// costs: retrying a UDP probe sooner than the target is permitted to answer
+    /// is not a faster scan, it is a wasted packet.
+    pub timeout_scale: Option<f64>,
+    /// Whether a host that answers nothing at all may have its budget cut.
+    /// Turning this off spends the full budget on every port of every silent
+    /// address, which is thorough and expensive.
+    pub dampen_silent_hosts: bool,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            effort: ScanEffort::default(),
+            max_attempts: None,
+            timeout_scale: None,
+            dampen_silent_hosts: true,
+        }
+    }
 }
 
 impl RetryPolicy {
@@ -171,6 +231,64 @@ impl RetryPolicy {
             0.2,
             None,
         )
+    }
+
+    /// This policy as `config` asks for it.
+    ///
+    /// The scanner's own numbers are the starting point and the protocol's
+    /// constraints survive: the effort level and the scale factor move what the
+    /// scan is *willing* to wait, never the floor below which waiting less is
+    /// simply wrong.
+    pub fn configured(self, config: RetryConfig) -> Self {
+        let mut policy = match config.effort {
+            ScanEffort::Single => Self {
+                max_attempts: 1,
+                ..self
+            },
+            ScanEffort::Fast => Self {
+                max_attempts: self.max_attempts.saturating_sub(1).max(1),
+                ..self
+            }
+            .scaled(0.6),
+            ScanEffort::Balanced => self,
+            ScanEffort::Thorough => Self {
+                max_attempts: self.max_attempts.saturating_add(2),
+                ..self
+            }
+            .scaled(1.5),
+        };
+
+        if config.effort == ScanEffort::Thorough || !config.dampen_silent_hosts {
+            policy.silent_host = None;
+        }
+        if let Some(max_attempts) = config.max_attempts {
+            policy.max_attempts = max_attempts.max(1);
+        }
+        if let Some(scale) = config.timeout_scale {
+            policy = policy.scaled(scale);
+        }
+
+        policy
+    }
+
+    /// This policy with its patience multiplied by `factor`.
+    ///
+    /// [`min_rto`](Self::min_rto) is untouched on purpose. It is the shortest
+    /// wait that can still produce an answer, which is a property of the
+    /// protocol rather than of how much hurry the caller is in.
+    fn scaled(self, factor: f64) -> Self {
+        if factor <= 0.0 || !factor.is_finite() {
+            return self;
+        }
+
+        Self {
+            initial_rto: self.initial_rto.mul_f64(factor),
+            // Scaling the ceiling below the floor would leave the policy
+            // describing an empty range. The floor wins, since it is the one of
+            // the two that the protocol imposes.
+            max_rto: self.max_rto.mul_f64(factor).max(self.min_rto),
+            ..self
+        }
     }
 
     /// The longest a probe can occupy the ledger: every attempt's timeout at
@@ -644,12 +762,23 @@ where
             .and_then(|state| state.estimator.timeout())
             .or_else(|| self.global.timeout());
 
+        // Held to the floor whichever it came from. The starting value is a
+        // guess about an unknown path and may be tuned down freely, but not
+        // below the point where an answer could not have arrived yet - a probe
+        // repeated sooner than the protocol can reply is a wasted packet, not a
+        // faster scan.
+        //
+        // The ceiling is taken as at least the floor so a policy whose bounds
+        // have been configured into disagreeing still describes a real range
+        // rather than an empty one.
+        let ceiling = self.policy.max_rto.max(self.policy.min_rto);
         let base = match measured {
-            Some(measured) => measured.clamp(self.policy.min_rto, self.policy.max_rto),
-            None => self.policy.initial_rto.min(self.policy.max_rto),
+            Some(measured) => measured,
+            None => self.policy.initial_rto,
         };
+        let base = base.clamp(self.policy.min_rto, ceiling);
 
-        let scaled = scale(base, self.policy.backoff, attempt).min(self.policy.max_rto);
+        let scaled = scale(base, self.policy.backoff, attempt).min(ceiling);
         self.jitter.spread(scaled, self.policy.jitter)
     }
 
@@ -1305,6 +1434,179 @@ mod tests {
             Duration::from_millis(240),
             "one attempt, jittered upward"
         );
+    }
+
+    // ── Configuration ──────────────────────────────────────────────────────
+
+    /// A profile shaped like the UDP scanner's, where the floor exists because
+    /// the protocol imposes it rather than because it seemed about right.
+    fn rate_limited_policy() -> RetryPolicy {
+        RetryPolicy::new(
+            2,
+            Duration::from_millis(1_500),
+            Duration::from_millis(1_200),
+            Duration::from_secs(5),
+            1.5,
+            0.0,
+            Some(SilentHostPolicy::new(32, 1)),
+        )
+    }
+
+    fn effort(effort: ScanEffort) -> RetryConfig {
+        RetryConfig {
+            effort,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_default_configuration_changes_nothing() {
+        let base = policy();
+        let configured = base.configured(RetryConfig::default());
+
+        assert_eq!(configured.max_attempts, base.max_attempts);
+        assert_eq!(configured.initial_rto, base.initial_rto);
+        assert_eq!(configured.min_rto, base.min_rto);
+        assert_eq!(configured.max_rto, base.max_rto);
+        assert!(configured.silent_host.is_none(), "as the base had none");
+    }
+
+    #[test]
+    fn a_single_attempt_effort_disables_retransmission() {
+        let configured = policy().configured(effort(ScanEffort::Single));
+        assert_eq!(configured.max_attempts, 1);
+    }
+
+    #[test]
+    fn effort_moves_the_budget_in_the_direction_it_says() {
+        let base = policy();
+        let fast = base.configured(effort(ScanEffort::Fast));
+        let thorough = base.configured(effort(ScanEffort::Thorough));
+
+        assert!(fast.max_attempts < base.max_attempts);
+        assert!(thorough.max_attempts > base.max_attempts);
+        assert!(fast.initial_rto < base.initial_rto);
+        assert!(thorough.initial_rto > base.initial_rto);
+    }
+
+    /// Even at the lowest effort a probe is still sent once.
+    #[test]
+    fn effort_never_reduces_the_budget_below_one_attempt() {
+        let base = RetryPolicy::none();
+        assert_eq!(base.max_attempts, 1);
+        assert_eq!(
+            base.configured(effort(ScanEffort::Fast)).max_attempts,
+            1,
+            "there is no such thing as sending a probe zero times"
+        );
+    }
+
+    /// The rule that keeps a global knob from producing a locally nonsensical
+    /// schedule: hurrying the scan must not shorten the wait below what the
+    /// protocol needs to answer at all.
+    #[test]
+    fn hurrying_a_scan_never_lowers_the_protocol_floor() {
+        let base = rate_limited_policy();
+
+        for config in [
+            effort(ScanEffort::Fast),
+            RetryConfig {
+                timeout_scale: Some(0.1),
+                ..Default::default()
+            },
+            RetryConfig {
+                effort: ScanEffort::Fast,
+                timeout_scale: Some(0.01),
+                ..Default::default()
+            },
+        ] {
+            let configured = base.configured(config);
+            assert_eq!(
+                configured.min_rto, base.min_rto,
+                "the floor is what the protocol costs, not a preference"
+            );
+        }
+    }
+
+    /// A scale small enough to push the ceiling under the floor must leave a
+    /// usable policy rather than an empty range, and must not panic.
+    #[test]
+    fn scaling_never_leaves_the_ceiling_below_the_floor() {
+        let configured = rate_limited_policy().configured(RetryConfig {
+            timeout_scale: Some(0.01),
+            ..Default::default()
+        });
+
+        assert!(configured.max_rto >= configured.min_rto);
+        assert!(configured.worst_case_probe_lifetime() > Duration::ZERO);
+    }
+
+    /// And the floor genuinely binds: a starting timeout scaled below it is
+    /// still not used, so no probe is repeated sooner than it could be answered.
+    #[test]
+    fn a_scaled_down_start_is_still_held_above_the_floor() {
+        let t0 = Instant::now();
+        let base = rate_limited_policy();
+        let configured = base.configured(RetryConfig {
+            timeout_scale: Some(0.1),
+            ..Default::default()
+        });
+        assert!(configured.initial_rto < configured.min_rto, "test premise");
+
+        let mut ledger: ProbeLedger<(IpAddr, u16), ()> = ProbeLedger::seeded(configured, 4, 3);
+        ledger.arm(HOST, (HOST, 53), (), t0);
+
+        assert_eq!(
+            ledger.next_due().unwrap().saturating_duration_since(t0),
+            base.min_rto
+        );
+    }
+
+    #[test]
+    fn an_explicit_budget_overrides_the_effort_level() {
+        let configured = policy().configured(RetryConfig {
+            effort: ScanEffort::Thorough,
+            max_attempts: Some(2),
+            ..Default::default()
+        });
+
+        assert_eq!(configured.max_attempts, 2);
+    }
+
+    #[test]
+    fn the_silent_host_rule_can_be_turned_off() {
+        let base = rate_limited_policy();
+        assert!(base.silent_host.is_some(), "test premise");
+
+        let kept = base.configured(RetryConfig::default());
+        assert!(kept.silent_host.is_some());
+
+        let off = base.configured(RetryConfig {
+            dampen_silent_hosts: false,
+            ..Default::default()
+        });
+        assert!(off.silent_host.is_none());
+    }
+
+    /// Thorough means no shortcuts, and cutting the budget on a silent host is
+    /// the one shortcut this policy takes.
+    #[test]
+    fn a_thorough_scan_takes_no_shortcut_on_silent_hosts() {
+        let configured = rate_limited_policy().configured(effort(ScanEffort::Thorough));
+        assert!(configured.silent_host.is_none());
+    }
+
+    #[test]
+    fn a_nonsensical_scale_is_ignored_rather_than_obeyed() {
+        let base = policy();
+        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let configured = base.configured(RetryConfig {
+                timeout_scale: Some(scale),
+                ..Default::default()
+            });
+            assert_eq!(configured.initial_rto, base.initial_rto, "scale {scale}");
+            assert_eq!(configured.max_rto, base.max_rto, "scale {scale}");
+        }
     }
 
     // ── Properties ─────────────────────────────────────────────────────────

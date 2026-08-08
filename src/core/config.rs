@@ -4,6 +4,8 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
+use crate::core::models::retry::RetryConfig;
+
 /// How the privileged (raw) scanners put probe packets on the wire.
 ///
 /// Only affects the raw-socket SYN paths; the unprivileged TCP-connect
@@ -24,6 +26,18 @@ pub enum SendMode {
     /// still traverses). Requires an Ethernet-capable interface and can't
     /// reach loopback or tunnel-only destinations.
     Ethernet,
+}
+
+/// The knobs a probing strategy is built from, carried together so adding one
+/// does not mean threading another parameter through every constructor.
+///
+/// Not every strategy reads every field: local discovery builds its own
+/// Ethernet frames and so has no use for [`SendMode`], while every strategy that
+/// sends a probe at all has a use for [`RetryConfig`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProbeTuning {
+    pub send_mode: SendMode,
+    pub retry: RetryConfig,
 }
 
 /// Global configuration options for the scanner execution.
@@ -88,4 +102,22 @@ pub struct ZondConfig {
     /// [`SendMode::Auto`], which is correct on every supported platform;
     /// override it only to force Layer-2 sends for host-stack-bypass scanning.
     pub send_mode: SendMode,
+
+    /// How hard the scan tries before accepting silence as an answer.
+    ///
+    /// Every probing path has its own schedule, tuned to what its protocol
+    /// requires; this scales those rather than replacing them, so raising or
+    /// lowering the effort cannot hand a scanner a schedule its protocol cannot
+    /// satisfy. Defaults to [`ScanEffort::Balanced`].
+    pub retry: RetryConfig,
+}
+
+impl ZondConfig {
+    /// The probe-level knobs, bundled for the strategies that need them.
+    pub fn probe_tuning(&self) -> ProbeTuning {
+        ProbeTuning {
+            send_mode: self.send_mode,
+            retry: self.retry,
+        }
+    }
 }

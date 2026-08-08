@@ -18,8 +18,11 @@
 //! - the union across every run, which is the best evidence available of how
 //!   many hosts are really there,
 //! - the intersection, which is the part of the answer that is dependable,
-//! - and the count of addresses found by some runs but not others, which is the
+//! - and the count of devices found by some runs but not others, which is the
 //!   number that has to go to zero.
+//!
+//! Devices are counted by [`identity`], not by store key, so a neighbour that
+//! keys differently between runs is not mistaken for an unreliable one.
 //!
 //! Each run also prints the scanner's own audit line (see
 //! [`scanner::audit`](../src/scanner/audit.rs)), which says whether a shortfall
@@ -39,12 +42,32 @@
 //! ```
 
 use std::collections::{BTreeSet, HashMap};
-use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use zond_engine::core::config::ZondConfig;
+use zond_engine::core::models::host::Host;
 use zond_engine::core::parse::to_ipset;
 use zond_engine::scanner;
+
+/// What counts as "the same thing found twice".
+///
+/// Not the store key, which is whichever address happened to answer first. A
+/// neighbour that replies to ARP is keyed by its IPv4 address and one that
+/// replies to the all-nodes solicitation by its link-local, so the *same*
+/// device can key differently between runs while being found just as reliably
+/// on each. Counting keys reports that as instability, which is a statement
+/// about this program rather than about the scan.
+///
+/// A MAC address is the identity where one is known, which on a local segment
+/// is everywhere. Off-link there is none, and the address is all there is.
+type Device = String;
+
+fn identity(host: &Host) -> Device {
+    match host.mac() {
+        Some(mac) => format!("mac {mac}"),
+        None => format!("ip {}", host.primary_ip()),
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -77,9 +100,9 @@ async fn main() {
     println!("\ndiscovery benchmark: {targets} ({total} addresses), {runs} runs\n");
 
     let mut results: Vec<(usize, Duration)> = Vec::with_capacity(runs);
-    // How many runs each address was found in, which is what separates a host
-    // that is reliably discovered from one that is discovered by luck.
-    let mut seen_in: HashMap<IpAddr, usize> = HashMap::new();
+    // How many runs each device was found in, which is what separates one that
+    // is reliably discovered from one that is discovered by luck.
+    let mut seen_in: HashMap<Device, usize> = HashMap::new();
 
     for run in 1..=runs {
         let started = Instant::now();
@@ -89,9 +112,9 @@ async fn main() {
         task.await.expect("discovery finishes");
         let elapsed = started.elapsed();
 
-        let found: BTreeSet<IpAddr> = session.store.iter().map(|entry| *entry.key()).collect();
-        for ip in &found {
-            *seen_in.entry(*ip).or_insert(0) += 1;
+        let found: BTreeSet<Device> = session.store.iter().map(|entry| identity(&entry)).collect();
+        for device in &found {
+            *seen_in.entry(device.clone()).or_insert(0) += 1;
         }
 
         println!(
@@ -108,7 +131,7 @@ fn summarize(
     total: u128,
     runs: usize,
     results: &[(usize, Duration)],
-    seen_in: &HashMap<IpAddr, usize>,
+    seen_in: &HashMap<Device, usize>,
 ) {
     let mut counts: Vec<usize> = results.iter().map(|(found, _)| *found).collect();
     let mut times: Vec<Duration> = results.iter().map(|(_, elapsed)| *elapsed).collect();
@@ -130,7 +153,7 @@ fn summarize(
         times[times.len() / 2],
         times[times.len() - 1],
     );
-    println!("  union   {union} addresses answered at least once");
+    println!("  union   {union} devices answered at least once");
     println!("  stable  {stable} answered in every run");
     println!(
         "  flaky   {flaky} answered in some runs but not others{}",

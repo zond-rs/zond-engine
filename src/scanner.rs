@@ -43,7 +43,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::core::config::{SendMode, ZondConfig};
+use crate::core::config::{ProbeTuning, ZondConfig};
 use crate::core::models::ip::range::IpRange;
 use crate::core::models::{
     ip::set::IpSet,
@@ -172,7 +172,7 @@ pub async fn discover(
         return Ok((session, ScanTask::new(handle)));
     }
 
-    let enrichment = Enrichment::spawn(targets, &ctx, caps, cfg.send_mode, Scope::Sweep).await;
+    let enrichment = Enrichment::spawn(targets, &ctx, caps, cfg.probe_tuning(), Scope::Sweep).await;
 
     let handle = tokio::spawn(async move {
         finish_enrichment(Some(enrichment), caps, &ctx).await;
@@ -206,8 +206,8 @@ pub async fn scan(
 
     let (syn_scanner, udp_scanner) = if caps.privileged {
         (
-            build_syn_scanner(ctx.clone(), target_count, cfg.send_mode),
-            build_udp_scanner(ctx.clone(), target_count, cfg.send_mode),
+            build_syn_scanner(ctx.clone(), target_count, cfg.probe_tuning()),
+            build_udp_scanner(ctx.clone(), target_count, cfg.probe_tuning()),
         )
     } else {
         (None, None)
@@ -221,7 +221,7 @@ pub async fn scan(
     // reverse DNS. Keying on `syn_scanner` rather than `caps.privileged` means a
     // privileged host that could not build a SYN scanner still takes the fallback.
     let enrichment = if syn_scanner.is_some() || udp_scanner.is_some() {
-        Some(Enrichment::spawn(ips, &ctx, caps, cfg.send_mode, Scope::Targeted).await)
+        Some(Enrichment::spawn(ips, &ctx, caps, cfg.probe_tuning(), Scope::Targeted).await)
     } else {
         None
     };
@@ -369,7 +369,7 @@ impl Enrichment {
         targets: IpSet,
         ctx: &ScanContext,
         caps: ScanCapabilities,
-        send_mode: SendMode,
+        tuning: ProbeTuning,
         scope: Scope,
     ) -> Self {
         let (dns_tx, resolver) = if caps.dns {
@@ -380,7 +380,7 @@ impl Enrichment {
             (None, None)
         };
 
-        let scanners = spawn_explorers(targets, ctx, dns_tx, send_mode, scope).await;
+        let scanners = spawn_explorers(targets, ctx, dns_tx, tuning, scope).await;
         Self { scanners, resolver }
     }
 
@@ -424,7 +424,7 @@ async fn spawn_explorers(
     targets: IpSet,
     ctx: &ScanContext,
     dns_tx: Option<UnboundedSender<IpAddr>>,
-    send_mode: SendMode,
+    tuning: ProbeTuning,
     scope: Scope,
 ) -> Vec<(ScannerKind, JoinHandle<anyhow::Result<()>>)> {
     let mut explorers: Vec<(ScannerKind, Box<dyn NetworkExplorer + Send>)> = Vec::new();
@@ -440,7 +440,7 @@ async fn spawn_explorers(
             continue;
         }
         info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
-        match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone(), scope) {
+        match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone(), scope, tuning.retry) {
             Ok(scanner) => explorers.push((ScannerKind::Local, Box::new(scanner))),
             Err(e) => {
                 report_scanner_failure(ctx, ScannerKind::Local, format!("{}: {e}", intf.name))
@@ -455,7 +455,7 @@ async fn spawn_explorers(
             "Spawning routed scanner for {} target(s)",
             routed.len()
         );
-        match RoutedScanner::new(routed, ctx.clone(), dns_tx.clone(), send_mode) {
+        match RoutedScanner::new(routed, ctx.clone(), dns_tx.clone(), tuning) {
             Ok(scanner) => explorers.push((ScannerKind::Routed, Box::new(scanner))),
             Err(e) => report_scanner_failure(ctx, ScannerKind::Routed, e.to_string()),
         }
@@ -498,7 +498,7 @@ async fn spawn_explorers(
 fn build_syn_scanner(
     ctx: ScanContext,
     target_count: usize,
-    send_mode: SendMode,
+    tuning: ProbeTuning,
 ) -> Option<routed::SynPortScanner> {
     let resolver = interface::SourceResolver::from_system();
     if !resolver.has_sources() {
@@ -506,7 +506,7 @@ fn build_syn_scanner(
         return None;
     }
 
-    match routed::SynPortScanner::new(resolver, ctx, target_count, send_mode) {
+    match routed::SynPortScanner::new(resolver, ctx, target_count, tuning) {
         Ok(scanner) => Some(scanner),
         Err(e) => {
             error!("Failed to initialize SYN port scanner: {e}");
@@ -519,14 +519,14 @@ fn build_syn_scanner(
 fn build_udp_scanner(
     ctx: ScanContext,
     target_count: usize,
-    send_mode: SendMode,
+    tuning: ProbeTuning,
 ) -> Option<routed::UdpPortScanner> {
     let resolver = interface::SourceResolver::from_system();
     if !resolver.has_sources() {
         return None; // Fallback will be used
     }
 
-    match routed::UdpPortScanner::new(resolver, ctx, target_count, send_mode) {
+    match routed::UdpPortScanner::new(resolver, ctx, target_count, tuning) {
         Ok(scanner) => Some(scanner),
         Err(e) => {
             error!("Failed to initialize UDP port scanner: {e}");

@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::core::config::SendMode;
+use crate::core::config::ProbeTuning;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
@@ -313,10 +313,10 @@ impl RoutedScanner {
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
-        send_mode: SendMode,
+        tuning: ProbeTuning,
     ) -> anyhow::Result<Self> {
-        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, send_mode)?;
-        Ok(Self::with_transport(targets, ctx, dns_tx, transport))
+        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, tuning.send_mode)?;
+        Ok(Self::build(targets, ctx, dns_tx, transport, RETRY_POLICY.configured(tuning.retry)))
     }
 
     /// Builds a sweep around an already-opened transport, so the caller decides
@@ -326,11 +326,25 @@ impl RoutedScanner {
     /// the `test-support` feature) this is the seam that lets liveness
     /// detection and RTT correlation be driven against a simulated network
     /// rather than a real one.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_transport(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
         transport: ProbeTransport,
+    ) -> Self {
+        Self::build(targets, ctx, dns_tx, transport, RETRY_POLICY)
+    }
+
+    /// The common constructor, taking the retry schedule as an argument because
+    /// the sweep's own deadline is derived from it and so has to be settled
+    /// before anything is built.
+    fn build(
+        targets: Vec<RoutedTarget>,
+        ctx: ScanContext,
+        dns_tx: Option<UnboundedSender<IpAddr>>,
+        transport: ProbeTransport,
+        retry: RetryPolicy,
     ) -> Self {
         let mut ips = IpSet::new();
         let mut sources = HashMap::with_capacity(targets.len());
@@ -343,7 +357,7 @@ impl RoutedScanner {
         let target_count = sources.len();
         // The sweep has to outlive its own retry schedule, or probes are given
         // up on having never been fully asked.
-        let deadline_config = DEADLINE_CONFIG.allowing_for(RETRY_POLICY.worst_case_probe_lifetime());
+        let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
 
         Self {
             ctx,
@@ -352,7 +366,7 @@ impl RoutedScanner {
             transport,
             deadline: AdaptiveDeadline::new(deadline_config, target_count),
             dns_tx,
-            ledger: ProbeLedger::new(RETRY_POLICY, target_count),
+            ledger: ProbeLedger::new(retry, target_count),
             due: Vec::new(),
             responded_count: 0,
             audit: ProbeAudit::new(),
