@@ -6,11 +6,12 @@
 
 //! Portable port-state classification tests.
 //!
-//! The privileged SYN path's Open/Closed/Filtered logic is unit-tested in-crate
-//! with synthetic replies; these assert the unprivileged connect path's real
-//! behaviour against loopback. `Filtered` (a silent firewall drop) can't be
-//! reproduced on loopback without netfilter, so it is left to a privileged CI
-//! tier on a real Linux host (see `tests/README.md`).
+//! These assert the unprivileged connect path's real behaviour against
+//! loopback, which is limited to what a cooperative kernel will produce: open
+//! and closed. `Filtered` is a silent firewall drop and cannot be reproduced on
+//! loopback at all, so the privileged SYN path's full Open/Closed/Filtered
+//! logic belongs against the simulated network in `common::fake_net` instead
+//! (see `tests/README.md`).
 
 mod common;
 

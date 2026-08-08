@@ -6,11 +6,12 @@
 
 //! Shared helpers for the portable (Tier 1) integration tests.
 //!
-//! These tests drive the *public* scanning API — [`scanner::scan`] and
-//! [`scanner::discover`] — end to end against real protocol servers on
+//! These tests drive the *public* scanning API - [`scanner::scan`] and
+//! [`scanner::discover`] - end to end against real protocol servers on
 //! loopback, so they run identically on macOS and Linux with no root and no
-//! network setup. Anything that needs raw sockets, firewalls, or injected
-//! latency is covered by in-crate unit tests instead (see `tests/README.md`).
+//! network setup. Loopback only ever answers open or closed, so lost probes,
+//! firewalls, and injected latency belong to the simulated network in
+//! [`fake_net`] instead (see `tests/README.md`).
 //!
 //! A note on privilege: when the process is root, `scan`/`discover` take their
 //! raw-socket ARP/SYN paths, whose behaviour against loopback is
