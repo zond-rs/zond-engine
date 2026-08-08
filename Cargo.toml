@@ -19,7 +19,6 @@ tracing = "0.1.44"
 tokio = { version = "1.53.0", features = ["full"] }
 hickory-resolver = { version = "0.26.1", features = ["tokio"] }
 libc = "0.2"
-sysinfo = "0.39.6"
 dashmap = "6.1.0"
 windows-sys = { version = "0.61.2", features = ["Win32_NetworkManagement_IpHelper", "Win32_Foundation", "Win32_Networking_WinSock", "Win32_NetworkManagement_Ndis", "Win32_Security", "Win32_System_Threading"] }
 mac_oui = { version = "0.4.11", features = ["with-db"] }

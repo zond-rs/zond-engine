@@ -9,7 +9,7 @@ use anyhow;
 use pnet::datalink::NetworkInterface;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 
 /// Intermediate representation of a socket entry.
@@ -219,13 +219,16 @@ pub fn get_firewall_status() -> anyhow::Result<FirewallStatus> {
 mod windows_impl {
     use super::*;
     use std::net::Ipv4Addr;
-    use sysinfo::{Pid, ProcessesToUpdate, System};
-    use windows_sys::Win32::Foundation::NO_ERROR;
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE, MAX_PATH, NO_ERROR};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP_STATE_LISTEN,
         TCP_TABLE_OWNER_PID_LISTENER, UDP_TABLE_OWNER_PID,
     };
     use windows_sys::Win32::Networking::WinSock::AF_INET;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
 
     #[repr(C)]
     #[allow(non_snake_case)]
@@ -260,10 +263,46 @@ mod windows_impl {
         table: [MIB_UDPROW_OWNER_PID; 1],
     }
 
+    /// Resolves a process ID to the file name of its executable, or `"Unknown"`
+    /// when the process cannot be opened. Protected and already-exited processes
+    /// routinely deny access, so failure here is expected rather than fatal.
+    fn image_name(pid: u32) -> String {
+        const UNKNOWN: &str = "Unknown";
+
+        // SAFETY: `OpenProcess` validates the pid itself and reports failure by
+        // returning null, which is checked before the handle is used.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
+        if handle.is_null() {
+            return UNKNOWN.to_string();
+        }
+
+        let mut buf = [0u16; MAX_PATH as usize];
+        let mut len = buf.len() as u32;
+        // SAFETY: `handle` is live and `len` states `buf`'s true capacity; the call
+        // writes at most `len` code units and updates `len` to the count written.
+        let ok = unsafe {
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
+        } != 0;
+        // SAFETY: `handle` came from `OpenProcess` above and is not used again.
+        unsafe { CloseHandle(handle) };
+
+        if !ok {
+            return UNKNOWN.to_string();
+        }
+
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit('\\')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(UNKNOWN)
+            .to_string()
+    }
+
     pub fn retrieve_native_sockets() -> anyhow::Result<Vec<SocketInfo>> {
         let mut entries = Vec::new();
-        let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+        // A process listening on many ports appears once per socket, so the name
+        // is resolved at most once per distinct owner.
+        let mut names: HashMap<u32, String> = HashMap::new();
 
         // 1. TCP IPv4
         let tcp_table = get_tcp_ipv4_table()?;
@@ -271,10 +310,7 @@ mod windows_impl {
             let row = unsafe { &*tcp_table.table.as_ptr().add(i) };
             if row.dwState == MIB_TCP_STATE_LISTEN as u32 {
                 let pid = row.dwOwningPid;
-                let process_name = sys
-                    .process(Pid::from(pid as usize))
-                    .map(|p| p.name().to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Unknown".to_string());
+                let process_name = names.entry(pid).or_insert_with(|| image_name(pid)).clone();
 
                 entries.push(SocketInfo {
                     ip: IpAddr::V4(Ipv4Addr::from(u32::from_be(row.dwLocalAddr))),
@@ -290,10 +326,7 @@ mod windows_impl {
         for i in 0..udp_table.dwNumEntries as usize {
             let row = unsafe { &*udp_table.table.as_ptr().add(i) };
             let pid = row.dwOwningPid;
-            let process_name = sys
-                .process(Pid::from(pid as usize))
-                .map(|p| p.name().to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Unknown".to_string());
+            let process_name = names.entry(pid).or_insert_with(|| image_name(pid)).clone();
 
             entries.push(SocketInfo {
                 ip: IpAddr::V4(Ipv4Addr::from(u32::from_be(row.dwLocalAddr))),
