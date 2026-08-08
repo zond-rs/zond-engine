@@ -40,7 +40,6 @@ use std::net::IpAddr;
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use is_root::is_root;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
@@ -53,6 +52,7 @@ use crate::core::models::{
 use crate::core::session::{ScanContext, ScanEvent, ScanSession, ScannerKind};
 use crate::scanner::resolver::HostnameResolver;
 use crate::system::interface;
+use crate::system::privilege::is_elevated;
 use crate::{error, info, success, warn};
 use local::{LocalScanner, Scope};
 use routed::RoutedScanner;
@@ -309,7 +309,7 @@ impl ScanCapabilities {
     /// announces the scanning mode they imply once, here, rather than from the
     /// code that later acts on them.
     fn resolve(cfg: &ZondConfig) -> Self {
-        let privileged = is_root();
+        let privileged = is_elevated();
         if privileged {
             success!("Root privileges detected, raw socket scan enabled");
         } else {
