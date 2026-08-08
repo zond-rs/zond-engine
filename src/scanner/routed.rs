@@ -37,28 +37,49 @@ use async_trait::async_trait;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::audit::{ProbeAudit, StopReason};
 use super::{NetworkExplorer, payload};
 
 pub use port_scan::SynPortScanner;
 pub use udp_scan::UdpPortScanner;
 
-/// How long a discovery sweep runs and how it adapts. Routed targets may sit
-/// anywhere on the internet rather than on the local segment, but a probe that
-/// is ever going to get a reply usually gets one quickly, so this budget starts
-/// noticeably tighter than [`LocalScanner`](super::local::LocalScanner)'s.
+/// How long a routed sweep or port scan runs and how it adapts.
+///
+/// Routed targets sit anywhere on the internet rather than on one segment, so a
+/// single scan spans a wide range of round trips and the extremes matter more
+/// than the average. Two of these values carry most of that weight:
+///
+/// - **Silence floor.** The silence tolerance is derived from observed round
+///   trips, which the fastest responders dominate - they answer first and pull
+///   the estimate toward their own latency, which would end the scan while
+///   slower targets are still legitimately in flight. The floor is what bounds
+///   that, so it is set against the tail of the round-trip distribution rather
+///   than its middle.
+/// - **Hard budget.** The base gives a distant target room for several round
+///   trips; the per-target term covers the send burst and the spread of
+///   arrivals behind it. The ceiling is a backstop against a scan that will not
+///   terminate, not a duration any scan is expected to reach.
+///
+/// The minimum runtime exists so silence is never the reason a scan stops
+/// before an answer could plausibly have arrived at all.
+///
+/// A generous budget costs nothing when a scan succeeds, since both loops exit
+/// as soon as every target is resolved ([`RoutedScanner`] once all targets have
+/// responded, [`SynPortScanner`] once nothing is pending). It is spent only
+/// when something is still missing.
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(
-        Duration::from_millis(200),
-        Duration::from_micros(500),
-        Duration::from_millis(3_000),
+        Duration::from_millis(2_000),
+        Duration::from_millis(1),
+        Duration::from_secs(60),
     ),
     ScanBudget::new(
-        Duration::from_millis(70),
-        Duration::from_micros(175),
-        Duration::from_millis(1_000),
+        Duration::from_millis(300),
+        Duration::from_micros(500),
+        Duration::from_secs(10),
     ),
-    Duration::from_millis(150),
-    Duration::from_millis(1_500),
+    Duration::from_millis(400),
+    Duration::from_secs(3),
     4.0,
     20,
 );
@@ -175,6 +196,10 @@ pub struct RoutedScanner {
     rtt_map: HashMap<(IpAddr, SeqNum), Instant>,
     /// How many distinct addresses have responded so far.
     responded_count: usize,
+    /// Per-run counters, so a sweep that finds fewer hosts than it should can be
+    /// attributed to loss, to its own deadline, or to correlation rather than
+    /// guessed at. Reported once when the loop exits.
+    audit: ProbeAudit,
 }
 
 #[async_trait]
@@ -185,25 +210,37 @@ impl NetworkExplorer for RoutedScanner {
             Err(e) => error!("Sending discovery packets failed: {e}"),
         }
 
-        loop {
+        // The loop yields why it stopped, so the audit cannot report a reason
+        // the code never actually took.
+        let reason = loop {
             let all_responded = self.ips.len() == self.responded_count as u128;
-            if self.ctx.handle.should_stop() || all_responded || self.deadline.has_expired() {
-                break;
+            if self.ctx.handle.should_stop() {
+                break StopReason::Aborted;
+            }
+            if all_responded {
+                break StopReason::AllResponded;
+            }
+            if self.deadline.has_expired() {
+                break StopReason::DeadlineExpired;
             }
 
             tokio::select! {
                 res = self.transport.rx.recv() => {
                     match res {
-                        Some(reply) => self.handle_discovery_reply(reply.source, &reply.bytes),
-                        None => break,
+                        Some(reply) => {
+                            self.audit.record_segment();
+                            self.handle_discovery_reply(reply.source, &reply.bytes);
+                        }
+                        None => break StopReason::StreamClosed,
                     }
                 },
                 // Wakes periodically so the checks above are re-evaluated even
                 // when no further responses arrive.
                 _ = tokio::time::sleep(self.deadline.time_until_next_tick()) => {}
             }
-        }
+        };
 
+        self.audit.report("routed-discovery", self.ips.len(), reason);
         self.rtt_map.clear();
         Ok(())
     }
@@ -250,6 +287,7 @@ impl RoutedScanner {
             dns_tx,
             rtt_map: HashMap::new(),
             responded_count: 0,
+            audit: ProbeAudit::new(),
         }
     }
 
@@ -258,10 +296,14 @@ impl RoutedScanner {
     /// number matches an outstanding probe.
     fn handle_discovery_reply(&mut self, ip: IpAddr, bytes: &[u8]) {
         if !self.ips.contains(&ip) {
+            self.audit.record_off_target();
             return;
         }
 
         let rtt = self.correlate_rtt(ip, bytes);
+        if rtt.is_none() {
+            self.audit.record_reply_without_rtt();
+        }
 
         // Host mutation only; the guard is dropped and the event emitted inside
         // `write_host`, so the deadline and DNS follow-ups below never run under
@@ -276,6 +318,7 @@ impl RoutedScanner {
 
         if is_new {
             self.responded_count += 1;
+            self.audit.record_host_found();
             self.deadline.mark_activity();
             if let Some(dns) = &self.dns_tx {
                 let _ = dns.send(ip);
@@ -311,7 +354,10 @@ impl RoutedScanner {
     }
 
     fn send_tcp_packet(&mut self, src_addr: IpAddr, dst_addr: IpAddr, dst_port: u16) {
-        if let Some(seq_num) = send_syn(self.transport.tx.as_ref(), src_addr, dst_addr, dst_port) {
+        let seq_num = send_syn(self.transport.tx.as_ref(), src_addr, dst_addr, dst_port);
+        self.audit.record_send(seq_num.is_some());
+
+        if let Some(seq_num) = seq_num {
             self.rtt_map.insert((dst_addr, seq_num), Instant::now());
         }
     }

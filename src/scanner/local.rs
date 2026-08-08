@@ -59,11 +59,18 @@ pub enum LocalScannerError {
 /// silence can stretch in response to recent round-trip times. These starting
 /// values assume a local segment, where round trips are usually well under a
 /// millisecond.
+///
+/// The hard ceiling carries a constraint the other values do not. This scanner
+/// paces its own sends at [`SEND_INTERVAL`], so a sweep needs at least
+/// `target_count * SEND_INTERVAL` simply to emit its probes. A ceiling below
+/// that stops the sweep mid-send, and does so invisibly: an address that was
+/// never probed is indistinguishable from one with nothing on it. Keep this
+/// well above `SEND_INTERVAL` times the largest range worth sweeping.
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(
         Duration::from_millis(2_000),
         Duration::from_millis(20),
-        Duration::from_millis(15_000),
+        Duration::from_secs(120),
     ),
     ScanBudget::new(
         Duration::from_millis(800),

@@ -58,6 +58,7 @@ use crate::{error, info, success, warn};
 use local::{LocalScanner, Scope};
 use routed::RoutedScanner;
 
+mod audit;
 mod composite;
 mod connect;
 pub mod dispatcher;

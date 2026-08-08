@@ -45,6 +45,11 @@ x509-parser = "0.18.1"
 
 [dev-dependencies]
 proptest = "1.6.0"
+# The library emits `tracing` events but installs no subscriber, leaving that to
+# the consumer. The benchmark example needs one to see the scanners' own audit
+# lines, so it carries the collector here rather than in the library's own
+# dependency set.
+tracing-subscriber = "0.3"
 # A dev-dependency on this crate itself, which is how the integration tests in
 # `tests/` get a build of the library with `test-support` turned on. Cargo
 # unifies it with the library target, so nothing is compiled twice and the
