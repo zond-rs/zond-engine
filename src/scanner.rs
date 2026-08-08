@@ -61,17 +61,26 @@ use routed::RoutedScanner;
 mod composite;
 mod connect;
 pub mod dispatcher;
-mod local;
 mod payload;
 mod pool;
-mod resolver;
 mod service;
 
-// The raw scanners stay an implementation detail of [`scan`] and [`discover`]
-// by default; under `test-support` they are reachable directly, which is what
-// lets an out-of-crate test build one over a synthetic transport. Splitting the
-// declaration is the only way to vary an item's visibility by feature, and it
-// keeps the default public API exactly what it was.
+#[cfg(not(feature = "test-support"))]
+mod local;
+#[cfg(feature = "test-support")]
+pub mod local;
+
+// The raw scanners and the hostname resolver stay implementation details of
+// [`scan`] and [`discover`] by default; under `test-support` they are reachable
+// directly, which is what lets an out-of-crate test build one over a synthetic
+// transport. Splitting each declaration is the only way to vary an item's
+// visibility by feature, and it keeps the default public API exactly what it
+// was.
+#[cfg(not(feature = "test-support"))]
+mod resolver;
+#[cfg(feature = "test-support")]
+pub mod resolver;
+
 #[cfg(not(feature = "test-support"))]
 mod routed;
 #[cfg(feature = "test-support")]
