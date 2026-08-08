@@ -7,9 +7,17 @@
 //! # Local Area Network Scanner
 //!
 //! Discovers hosts on the same physical network segment by sending ARP requests
-//! (IPv4) and a single ICMPv6 all-nodes solicitation (IPv6), then listening for
-//! replies. Recognizing those replies is left to the [`discovery`] module, so
-//! adding a new discovery mechanism does not mean touching the receive loop.
+//! (IPv4) and ICMPv6 all-nodes solicitations (IPv6), then listening for replies.
+//! Recognizing those replies is left to the [`discovery`] module, so adding a
+//! new discovery mechanism does not mean touching the receive loop.
+//!
+//! The two probes are repeated on different terms, because they ask different
+//! questions. An ARP request is put to one address, answered once, and retired
+//! by that answer, so it is retransmitted through the shared
+//! [`ProbeLedger`](crate::core::models::retry::ProbeLedger) like every other
+//! probe in the engine. The solicitation is put to the whole segment and
+//! answered by whoever is listening, so it is simply repeated a few times and
+//! given a window to be answered in.
 //!
 //! This scanner requires root privileges. It builds and intercepts raw Ethernet
 //! frames directly, bypassing the operating system's own IP stack.
@@ -123,6 +131,75 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
 
+/// How many times the all-nodes solicitation is sent.
+///
+/// It is one packet standing in for the entire IPv6 half of a sweep: every
+/// neighbour that has no address in the scanned IPv4 range is found through this
+/// and nothing else. Sending it once made IPv6 discovery the only part of the
+/// engine with no retransmission at all, and it showed - the IPv4 hosts of a
+/// segment came back identically on every run while the IPv6-only ones came and
+/// went.
+const SOLICITATION_ATTEMPTS: u8 = 3;
+
+/// How long to leave between solicitations.
+const SOLICITATION_INTERVAL: Duration = Duration::from_millis(600);
+
+/// How long after the final solicitation the sweep keeps listening.
+///
+/// Deliberately far longer than any segment's round trip, because what is being
+/// waited for is not one. A neighbour answers a multicast probe on a schedule of
+/// its own - implementations spread their replies to keep the whole segment from
+/// answering at once, and a device asleep on wifi answers when it next wakes.
+/// Measured on a live segment, replies to this probe arrive between roughly 0.9
+/// and 1.9 seconds after it goes out, and the same host varies by a second
+/// between runs.
+const SOLICITATION_WINDOW: Duration = Duration::from_millis(1_500);
+
+/// The all-nodes solicitation's schedule: how many have gone out, when the next
+/// is owed, and how long the last one is still worth waiting on.
+///
+/// Kept separately from the [`Ledger`] rather than as an entry in it, because it
+/// is a different kind of thing. Every other probe is a question put to one
+/// address, answered once, and retired by that answer. This is a question put to
+/// the whole segment: no single reply resolves it, no reply means the next one
+/// is not coming, and there is nothing to give up on.
+#[derive(Debug, Default)]
+struct Solicitation {
+    sent: u8,
+    next_due: Option<Instant>,
+    last_sent_at: Option<Instant>,
+}
+
+impl Solicitation {
+    /// Records one going out and schedules the next, if any are still owed.
+    fn record_sent(&mut self, now: Instant) {
+        self.sent = self.sent.saturating_add(1);
+        self.last_sent_at = Some(now);
+        self.next_due = (self.sent < SOLICITATION_ATTEMPTS).then(|| now + SOLICITATION_INTERVAL);
+    }
+
+    /// Whether another one is owed now.
+    fn is_due(&self, now: Instant) -> bool {
+        self.next_due.is_some_and(|due| due <= now)
+    }
+
+    /// Whether a reply could still legitimately arrive: another solicitation is
+    /// owed, or the last one is still inside its response window.
+    fn window_open(&self, now: Instant) -> bool {
+        if self.next_due.is_some() {
+            return true;
+        }
+        self.last_sent_at
+            .is_some_and(|sent_at| now < sent_at + SOLICITATION_WINDOW)
+    }
+
+    /// When this next needs the loop's attention.
+    fn next_wakeup(&self) -> Option<Instant> {
+        self.next_due
+            .or_else(|| self.last_sent_at.map(|sent_at| sent_at + SOLICITATION_WINDOW))
+    }
+}
+
 /// How much of the segment a [`LocalScanner`] run touches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -211,9 +288,9 @@ pub struct LocalScanner {
     /// attempt does, which is what keeps a burst of expiring probes from
     /// becoming a burst on the wire.
     retries: VecDeque<IpAddr>,
-    /// When the one all-nodes solicitation went out, if it did. Every IPv6
-    /// reply is measured against it, and none of them consume it.
-    solicited_at: Option<Instant>,
+    /// The all-nodes solicitation's own schedule, which every IPv6-only
+    /// neighbour on the segment is found through.
+    solicitation: Solicitation,
     /// Where to forward newly discovered addresses for hostname
     /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
@@ -258,13 +335,14 @@ impl NetworkExplorer for LocalScanner {
             // Silence is only evidence once nothing is outstanding: with probes
             // still waiting on their timers, quiet is what the retry schedule
             // expects rather than a sign the segment has gone quiet.
-            if sending_finished && self.idle() && self.deadline.has_expired() {
+            if sending_finished && self.idle(now) && self.deadline.has_expired() {
                 break;
             }
 
             // Anything left to put on the wire, whether a first attempt or a
             // repeat, goes through the same paced ticker.
-            let sending = !sending_finished || !self.retries.is_empty();
+            let sending =
+                !sending_finished || !self.retries.is_empty() || self.solicitation.is_due(now);
             let idle_delay = self.tick_delay(now);
 
             tokio::select! {
@@ -279,8 +357,11 @@ impl NetworkExplorer for LocalScanner {
                     // Repeats first: an address already asked once is an
                     // obligation this sweep owns, where the next new address is
                     // only work it intends to do.
+                    let now = Instant::now();
                     if let Some(target) = self.retries.pop_front() {
-                        self.send_arp_request(target, Instant::now());
+                        self.send_arp_request(target, now);
+                    } else if self.solicitation.is_due(now) {
+                        self.send_solicitation(now);
                     } else if !sending_finished {
                         match packet_iter.next() {
                             Some((packet, ip)) => {
@@ -349,7 +430,7 @@ impl LocalScanner {
             ledger: Ledger::new(RETRY_POLICY, target_count),
             due: Vec::new(),
             retries: VecDeque::new(),
-            solicited_at: None,
+            solicitation: Solicitation::default(),
             dns_tx,
             mac_to_ip: HashMap::new(),
             scope,
@@ -366,11 +447,35 @@ impl LocalScanner {
     /// answer and so nothing to retire.
     fn record_probe(&mut self, ip: IpAddr, now: Instant) {
         if Some(ip) == self.identity.link_local_ipv6.map(IpAddr::V6) {
-            self.solicited_at = Some(now);
+            self.solicitation.record_sent(now);
             return;
         }
 
         self.ledger.arm(ip, ip, (), now);
+    }
+
+    /// Sends the all-nodes solicitation again.
+    ///
+    /// Unlike an ARP request this is never retired by an answer, so it is simply
+    /// repeated a fixed number of times: a neighbour that missed the last one,
+    /// or was asleep when it arrived, gets another chance to hear it.
+    fn send_solicitation(&mut self, now: Instant) {
+        let Some(link_local) = self.identity.link_local_ipv6 else {
+            return;
+        };
+
+        match protocol::icmp::create_all_nodes_echo_request_v6(&self.identity.mac, &link_local) {
+            Ok(packet) => {
+                self.eth_handle.tx.send_to(&packet, None);
+                self.solicitation.record_sent(now);
+            }
+            Err(e) => {
+                error!(verbosity = 1, "Failed to rebuild all-nodes solicitation: {e}");
+                // Recorded anyway, so a solicitation that cannot be built stops
+                // being owed instead of holding the sweep open forever.
+                self.solicitation.record_sent(now);
+            }
+        }
     }
 
     /// Rebuilds and sends the ARP request for `target`.
@@ -416,19 +521,23 @@ impl LocalScanner {
     }
 
     /// Whether the sweep has nothing left to send and nothing left to wait for.
-    fn idle(&self) -> bool {
-        self.retries.is_empty() && self.ledger.is_empty()
+    fn idle(&self, now: Instant) -> bool {
+        self.retries.is_empty() && self.ledger.is_empty() && !self.solicitation.window_open(now)
     }
 
     /// How long the loop may sleep once it has stopped sending: until the
-    /// sweep's next checkpoint, or until the next address is due to be asked
-    /// again, whichever comes first.
+    /// sweep's next checkpoint, until the next address is due to be asked again,
+    /// or until the solicitation's schedule next needs attention - whichever
+    /// comes first.
     fn tick_delay(&self, now: Instant) -> Duration {
-        let until_deadline_tick = self.deadline.time_until_next_tick();
-        match self.ledger.next_due() {
-            Some(due) => until_deadline_tick.min(due.saturating_duration_since(now)),
-            None => until_deadline_tick,
+        let mut delay = self.deadline.time_until_next_tick();
+        for wakeup in [self.ledger.next_due(), self.solicitation.next_wakeup()]
+            .into_iter()
+            .flatten()
+        {
+            delay = delay.min(wakeup.saturating_duration_since(now));
         }
+        delay
     }
 
     /// Validates an incoming frame, then handles a discovery reply in two steps:
@@ -460,14 +569,24 @@ impl LocalScanner {
                 .ledger
                 .resolve(&source_addr, None, now)
                 .and_then(|resolution| resolution.rtt),
-            // Measured against the one solicitation, which stays outstanding for
-            // every other neighbour that may still answer it. A reply with no
-            // solicitation on record means one was never sent, so there is
-            // nothing this frame can be a reply to.
-            ProtocolMatch::AllNodes => match self.solicited_at {
-                Some(sent_at) => Some(now.saturating_duration_since(sent_at)),
-                None => return Err(LocalScannerError::UnmappedRttSource(source_addr).into()),
-            },
+            // Proof the neighbour is there, and nothing more. The elapsed time
+            // since the solicitation is not a round trip: that probe goes to the
+            // whole segment, and each neighbour answers it on a schedule of its
+            // own - spreading replies so the segment does not answer at once, or
+            // simply waking up first. On a live segment those replies land a
+            // second or two out and vary by as much between runs, while the same
+            // hosts answer ARP in single-digit milliseconds. Recording the
+            // former as latency would put a number in front of a user that
+            // describes the neighbour's politeness rather than the network.
+            //
+            // A reply with no solicitation on record means one was never sent,
+            // so there is nothing this frame can be an answer to.
+            ProtocolMatch::AllNodes => {
+                if self.solicitation.sent == 0 {
+                    return Err(LocalScannerError::UnmappedRttSource(source_addr).into());
+                }
+                None
+            }
         };
 
         if self.ip_set.contains(&source_addr) {

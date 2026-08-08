@@ -47,7 +47,7 @@
 
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::fake_lan::{FakeLan, LanHost, LanProbe};
 use common::fake_net::{FakeNet, Layer4, Policy};
@@ -68,6 +68,13 @@ use zond_engine::system::interface::RoutedTarget;
 /// the tests below only require that it is greater than one, except where the
 /// exact ceiling is the point.
 const ATTEMPTS: usize = 3;
+
+/// How many times a sweep should put the all-nodes solicitation on the segment.
+///
+/// Separate from [`ATTEMPTS`] because it is not a retry budget: nothing resolves
+/// this probe and nothing gives up on it. It is one question asked of everyone,
+/// repeated so a neighbour that missed it once still hears it.
+const SOLICITATION_ATTEMPTS: usize = 3;
 
 /// The fixed source port the simulated UDP scans probe from.
 const UDP_SRC_PORT: u16 = 54_321;
@@ -414,4 +421,58 @@ async fn an_empty_address_is_probed_a_bounded_number_of_times() {
             .all(|p| matches!(p, LanProbe::Arp { .. })),
         "a targeted run must not emit an all-nodes solicitation"
     );
+}
+
+/// The all-nodes solicitation is the entire IPv6 half of a sweep: a neighbour
+/// with no address in the scanned IPv4 range is found through this probe and
+/// nothing else. Sending it once left that half of discovery with no redundancy
+/// at all, and it showed on a real segment - the IPv4 hosts came back
+/// identically on every run while the IPv6-only ones came and went.
+#[tokio::test]
+async fn the_all_nodes_solicitation_is_repeated_and_spaced() {
+    let lan = FakeLan::new();
+
+    let mut ips = IpSet::new();
+    ips.insert(TARGET);
+    ips.canonicalize();
+
+    let (_session, ctx) = ScanSession::new();
+    let scanner = LocalScanner::with_handle(
+        scanner_interface(),
+        ips,
+        ctx,
+        None,
+        Scope::Sweep,
+        lan.handle(),
+    )
+    .expect("scanner builds over the simulated segment");
+    Box::new(scanner)
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    let sent: Vec<Instant> = lan
+        .probes()
+        .iter()
+        .filter_map(|probe| match probe {
+            LanProbe::Solicitation { at } => Some(*at),
+            LanProbe::Arp { .. } => None,
+        })
+        .collect();
+
+    assert_eq!(
+        sent.len(),
+        SOLICITATION_ATTEMPTS,
+        "a sweep should ask the segment {SOLICITATION_ATTEMPTS} times"
+    );
+
+    // Repeating it back to back would be pointless: a neighbour that missed the
+    // first would still be asleep for the second.
+    for pair in sent.windows(2) {
+        let gap = pair[1].duration_since(pair[0]);
+        assert!(
+            gap >= Duration::from_millis(100),
+            "solicitations {gap:?} apart are one burst, not a repeat"
+        );
+    }
 }

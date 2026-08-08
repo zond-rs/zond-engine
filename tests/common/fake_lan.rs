@@ -119,8 +119,9 @@ pub enum LanProbe {
         /// scanner too, which is the property being tested.
         dropped: bool,
     },
-    /// The ICMPv6 all-nodes solicitation, which is sent once for the whole
-    /// sweep rather than per target, and so is logged on its own terms.
+    /// An ICMPv6 all-nodes solicitation. Put to the whole segment rather than
+    /// to one address, so it is logged on its own terms: seeing several is a
+    /// sweep repeating the question, not a sweep retrying a target.
     Solicitation { at: Instant },
 }
 
