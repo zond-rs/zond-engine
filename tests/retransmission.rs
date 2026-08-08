@@ -58,7 +58,8 @@ use zond_engine::core::models::port::PortState;
 use zond_engine::core::session::ScanSession;
 use zond_engine::scanner::NetworkExplorer;
 use zond_engine::scanner::local::{LocalScanner, Scope};
-use zond_engine::scanner::routed::{SynPortScanner, UdpPortScanner};
+use zond_engine::scanner::routed::{RoutedScanner, SynPortScanner, UdpPortScanner};
+use zond_engine::system::interface::RoutedTarget;
 
 /// How many times a probe should be sent before the engine concludes the target
 /// is silent. One initial attempt plus retries.
@@ -202,6 +203,94 @@ async fn a_late_reply_plus_its_retry_resolves_the_port_once() {
         1,
         "one port should be recorded once, however many replies arrived"
     );
+}
+
+// ── Routed host discovery ──────────────────────────────────────────────────
+
+/// The discovery counterpart of the SYN port case, and the one with the
+/// bluntest consequence: a sweep that gives up after one unanswered probe does
+/// not report a degraded result for that host, it reports no host at all.
+#[tokio::test]
+async fn a_lost_discovery_syn_is_retried_and_the_host_is_still_found() {
+    let net = FakeNet::new(Layer4::Tcp).host(TARGET, 443, Policy::open().drop_first(1));
+
+    let (session, ctx) = ScanSession::new();
+    let scanner = RoutedScanner::with_transport(
+        vec![RoutedTarget {
+            target: TARGET,
+            source: SCANNER_V4.into(),
+        }],
+        ctx,
+        None,
+        net.transport(),
+    );
+    Box::new(scanner)
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    assert!(
+        session.store.contains_key(&TARGET),
+        "a host that answered the second SYN is still a live host"
+    );
+    assert!(
+        net.probe_count(TARGET, 443) > 1,
+        "the lost probe should have been retried"
+    );
+}
+
+/// An address with nothing on it must not be probed indefinitely, and a sweep
+/// of a mostly-empty range has to terminate.
+#[tokio::test]
+async fn a_silent_address_is_probed_a_bounded_number_of_times() {
+    let net = FakeNet::new(Layer4::Tcp);
+
+    let (session, ctx) = ScanSession::new();
+    let scanner = RoutedScanner::with_transport(
+        vec![RoutedTarget {
+            target: TARGET,
+            source: SCANNER_V4.into(),
+        }],
+        ctx,
+        None,
+        net.transport(),
+    );
+    Box::new(scanner)
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    assert!(!session.store.contains_key(&TARGET), "nothing answered");
+    assert_eq!(
+        net.probe_count(TARGET, 443),
+        ATTEMPTS,
+        "a silent address should be probed exactly {ATTEMPTS} times"
+    );
+}
+
+/// A host that answers the first probe is not asked again. On a sweep of a
+/// live range this is the difference between one packet per host and three.
+#[tokio::test]
+async fn a_discovered_host_is_not_probed_again() {
+    let net = FakeNet::new(Layer4::Tcp).host(TARGET, 443, Policy::open());
+
+    let (session, ctx) = ScanSession::new();
+    let scanner = RoutedScanner::with_transport(
+        vec![RoutedTarget {
+            target: TARGET,
+            source: SCANNER_V4.into(),
+        }],
+        ctx,
+        None,
+        net.transport(),
+    );
+    Box::new(scanner)
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    assert!(session.store.contains_key(&TARGET));
+    assert_eq!(net.probe_count(TARGET, 443), 1);
 }
 
 // ── UDP ────────────────────────────────────────────────────────────────────

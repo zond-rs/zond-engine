@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use crate::core::config::SendMode;
 use crate::core::models::deadline::AdaptiveDeadline;
 use crate::core::models::port::{PortState, Protocol};
-use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
+use crate::core::models::retry::{Due, ProbeLedger};
 use crate::core::models::target::Target;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
@@ -39,36 +39,13 @@ use crate::system::interface::SourceResolver;
 // Port scanning and routed discovery send the same kind of raw TCP SYN over the
 // same kind of network path, so they share one adaptive-deadline profile rather
 // than keeping two copies in step.
-use super::{DEADLINE_CONFIG, SynToken, send_syn};
+use super::{DEADLINE_CONFIG, RETRY_POLICY, SynToken, send_syn};
 
 /// The probe a reply refers to: the `(address, port)` it was sent to.
 type ProbeTarget = (IpAddr, u16);
 
 /// Outstanding probes and the schedule they are retried on.
 type Ledger = ProbeLedger<ProbeTarget, SynToken>;
-
-/// How a SYN probe is retransmitted.
-///
-/// Three attempts is where the useful range starts and stops paying: two is the
-/// least that distinguishes a lost packet from a filtered one, and beyond three
-/// the marginal probe recovers little on any path healthy enough to be worth
-/// scanning.
-///
-/// The floor is deliberately far below the starting timeout. Before anything has
-/// been measured the network is unknown and 200 ms of patience is cheap
-/// insurance; once a host has answered even once, its own round trip governs,
-/// and on a local path that collapses to the floor - so a filtered port on the
-/// same segment is settled in well under a second rather than in the seconds a
-/// fixed timeout would cost.
-const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
-    3,
-    Duration::from_millis(200),
-    Duration::from_millis(25),
-    Duration::from_secs(2),
-    2.0,
-    0.2,
-    Some(SilentHostPolicy::new(32, 2)),
-);
 
 /// The most probes left outstanding at once.
 ///

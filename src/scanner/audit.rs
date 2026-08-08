@@ -55,6 +55,12 @@ pub(crate) enum StopReason {
     Aborted,
     /// Every target answered.
     AllResponded,
+    /// Nothing is left outstanding: every target either answered or was asked
+    /// as many times as the retry budget allows. Like
+    /// [`AllResponded`](StopReason::AllResponded) this is a scan that finished
+    /// rather than one that ran out of time, and waiting longer could not have
+    /// changed what it found.
+    AttemptsSpent,
     /// The adaptive deadline expired: either the hard budget ran out or the
     /// silence tolerance did.
     DeadlineExpired,

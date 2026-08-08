@@ -27,6 +27,7 @@ use std::{
 use crate::core::config::SendMode;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::ip::set::IpSet;
+use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
 use crate::core::models::timer::ScanBudget;
 use crate::core::session::ScanContext;
 use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
@@ -82,6 +83,32 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     Duration::from_secs(3),
     4.0,
     20,
+);
+
+/// How a SYN probe is retransmitted, shared by both scanners here for the same
+/// reason they share a deadline profile: it is the same probe over the same kind
+/// of path.
+///
+/// Three attempts is where the useful range begins and stops paying. Two is the
+/// least that distinguishes a lost packet from a silent one; beyond three, the
+/// marginal probe recovers little on any path healthy enough to be worth
+/// scanning, and every extra attempt is paid on every unanswered target.
+///
+/// The floor sits far below the starting timeout, and the gap between them is
+/// the point. Before anything has been measured the network is unknown rather
+/// than known to be fast, so 200 ms of patience is cheap insurance against
+/// tripling the traffic of a scan that crosses an ocean. Once a target has
+/// answered, its own round trip governs, and on a local path that collapses
+/// toward the floor - so silence is settled in a fraction of a second where a
+/// fixed timeout would have spent the whole budget waiting.
+const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
+    3,
+    Duration::from_millis(200),
+    Duration::from_millis(25),
+    Duration::from_secs(2),
+    2.0,
+    0.2,
+    Some(SilentHostPolicy::new(32, 2)),
 );
 
 type SeqNum = u32;
@@ -197,11 +224,12 @@ pub struct RoutedScanner {
     /// Shared state (host store, event channel, abort signal) for the scan
     /// this explorer is part of.
     ctx: ScanContext,
-    /// The targets to probe, each paired with the source address to send from.
-    /// Drained when the probes are sent.
-    targets: Vec<RoutedTarget>,
-    /// Membership-and-count view of `targets`, used to filter incoming replies
-    /// and to size the adaptive deadline.
+    /// The source address to probe each target from. Kept for the whole sweep
+    /// rather than consumed by the first pass, since a retry has to leave from
+    /// the same place the probe it repeats did.
+    sources: HashMap<IpAddr, IpAddr>,
+    /// Membership-and-count view of the targets, used to filter incoming
+    /// replies and to size the adaptive deadline.
     ips: IpSet,
     /// Transport used to send SYN probes and receive replies.
     transport: ProbeTransport,
@@ -211,9 +239,12 @@ pub struct RoutedScanner {
     /// Where to forward newly discovered addresses for hostname
     /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
-    /// Outstanding probes, keyed by destination and the sequence number
-    /// they were sent with.
-    rtt_map: HashMap<(IpAddr, SeqNum), Instant>,
+    /// Probes sent but not yet answered, and when each is next due to be
+    /// resent or given up on.
+    ledger: ProbeLedger<IpAddr, SynToken>,
+    /// Scratch space for the probes coming due on one iteration, reused so a
+    /// quiet tick allocates nothing.
+    due: Vec<Due<IpAddr>>,
     /// How many distinct addresses have responded so far.
     responded_count: usize,
     /// Per-run counters, so a sweep that finds fewer hosts than it should can be
@@ -233,6 +264,9 @@ impl NetworkExplorer for RoutedScanner {
         // The loop yields why it stopped, so the audit cannot report a reason
         // the code never actually took.
         let reason = loop {
+            let now = Instant::now();
+            self.service_retries(now);
+
             let all_responded = self.ips.len() == self.responded_count as u128;
             if self.ctx.handle.should_stop() {
                 break StopReason::Aborted;
@@ -240,28 +274,36 @@ impl NetworkExplorer for RoutedScanner {
             if all_responded {
                 break StopReason::AllResponded;
             }
-            if self.deadline.has_expired() {
+            // Nothing outstanding means every target has either answered or
+            // been asked as many times as it is going to be. Waiting longer
+            // cannot change the result, where previously the sweep sat out the
+            // rest of its budget on the chance that it might.
+            if self.ledger.is_empty() {
+                break StopReason::AttemptsSpent;
+            }
+            if self.deadline.hard_deadline_passed() {
                 break StopReason::DeadlineExpired;
             }
+
+            let tick = self.tick_delay(now);
 
             tokio::select! {
                 res = self.transport.rx.recv() => {
                     match res {
                         Some(reply) => {
                             self.audit.record_segment();
-                            self.handle_discovery_reply(reply.source, &reply.bytes);
+                            self.handle_discovery_reply(reply.source, &reply.bytes, Instant::now());
                         }
                         None => break StopReason::StreamClosed,
                     }
                 },
-                // Wakes periodically so the checks above are re-evaluated even
-                // when no further responses arrive.
-                _ = tokio::time::sleep(self.deadline.time_until_next_tick()) => {}
+                // Wakes when the next probe is due, so a retry goes out on time
+                // even though nothing is arriving to wake the loop otherwise.
+                _ = tokio::time::sleep(tick) => {}
             }
         };
 
         self.audit.report("routed-discovery", self.ips.len(), reason);
-        self.rtt_map.clear();
         Ok(())
     }
 }
@@ -291,21 +333,27 @@ impl RoutedScanner {
         transport: ProbeTransport,
     ) -> Self {
         let mut ips = IpSet::new();
-        for target in &targets {
-            ips.insert(target.target);
+        let mut sources = HashMap::with_capacity(targets.len());
+        for RoutedTarget { target, source } in targets {
+            ips.insert(target);
+            sources.insert(target, source);
         }
         ips.canonicalize();
 
-        let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, targets.len());
+        let target_count = sources.len();
+        // The sweep has to outlive its own retry schedule, or probes are given
+        // up on having never been fully asked.
+        let deadline_config = DEADLINE_CONFIG.allowing_for(RETRY_POLICY.worst_case_probe_lifetime());
 
         Self {
             ctx,
-            targets,
+            sources,
             ips,
             transport,
-            deadline,
+            deadline: AdaptiveDeadline::new(deadline_config, target_count),
             dns_tx,
-            rtt_map: HashMap::new(),
+            ledger: ProbeLedger::new(RETRY_POLICY, target_count),
+            due: Vec::new(),
             responded_count: 0,
             audit: ProbeAudit::new(),
         }
@@ -314,13 +362,13 @@ impl RoutedScanner {
     /// Records a raw TCP reply from `ip` as evidence the host is alive,
     /// crediting it with a round-trip time if the reply's acknowledgement
     /// number matches an outstanding probe.
-    fn handle_discovery_reply(&mut self, ip: IpAddr, bytes: &[u8]) {
+    fn handle_discovery_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
         if !self.ips.contains(&ip) {
             self.audit.record_off_target();
             return;
         }
 
-        let rtt = self.correlate_rtt(ip, bytes);
+        let rtt = self.resolve_probe(ip, bytes, now);
         if rtt.is_none() {
             self.audit.record_reply_without_rtt();
         }
@@ -350,35 +398,90 @@ impl RoutedScanner {
         }
     }
 
-    /// Matches a reply's acknowledgement number against the sequence
-    /// number an earlier probe to `ip` was sent with, returning the
-    /// elapsed time since that probe if they correspond.
-    fn correlate_rtt(&mut self, ip: IpAddr, bytes: &[u8]) -> Option<Duration> {
-        let tcp_packet = TcpPacket::new(bytes)?;
-        let original_seq = tcp_packet.get_acknowledgement().wrapping_sub(1);
-        let sent_at = self.rtt_map.remove(&(ip, original_seq))?;
-        Some(sent_at.elapsed())
+    /// Retires the probe to `ip` and reports the round trip it revealed.
+    ///
+    /// Correlation is attempted twice on purpose. The first pass matches the
+    /// segment against the exact attempt it acknowledges, which is what yields a
+    /// true round trip even for a target that had to be asked more than once.
+    /// The second accepts the reply on its own terms: for discovery the question
+    /// is only whether something is there, and a TCP segment from a probed
+    /// address answers that whether or not it can be tied to a particular
+    /// attempt. Retiring the probe either way is what stops a host that has
+    /// already proved it exists from being asked again.
+    fn resolve_probe(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) -> Option<Duration> {
+        let token = TcpPacket::new(bytes).map(|tcp| SynToken {
+            seq: tcp.get_acknowledgement().wrapping_sub(1),
+            src_port: tcp.get_destination(),
+        });
+
+        let resolution = token
+            .and_then(|token| self.ledger.resolve(&ip, Some(token), now))
+            .or_else(|| self.ledger.resolve(&ip, None, now))?;
+
+        resolution.rtt
+    }
+
+    /// Resends every probe that has gone unanswered long enough.
+    ///
+    /// A probe that runs out of attempts needs nothing recorded: a host that
+    /// never answered is simply one this sweep does not report, and the ledger
+    /// emptying is what tells the loop the sweep is finished.
+    fn service_retries(&mut self, now: Instant) {
+        self.ledger.drain_due(now, &mut self.due);
+
+        // Taken so the sends below can borrow `self` mutably; the buffer itself
+        // is reused, so this costs no allocation.
+        let due = std::mem::take(&mut self.due);
+        for event in &due {
+            if let Due::Retry { key, .. } = *event {
+                self.probe(key, now);
+            }
+        }
+        self.due = due;
+        self.due.clear();
+    }
+
+    /// How long the loop may sleep: until the sweep's next checkpoint, or until
+    /// the next probe is due, whichever comes first.
+    fn tick_delay(&self, now: Instant) -> Duration {
+        let until_deadline_tick = self.deadline.time_until_next_tick();
+        match self.ledger.next_due() {
+            Some(due) => until_deadline_tick.min(due.saturating_duration_since(now)),
+            None => until_deadline_tick,
+        }
     }
 
     fn send_discovery_packets(&mut self) -> anyhow::Result<()> {
-        let dst_port: u16 = 443;
+        // Collected so the send loop can mutate `self` while iterating; the
+        // source map itself is kept, since a retry leaves from the same address.
+        let targets: Vec<IpAddr> = self.sources.keys().copied().collect();
 
-        // Taken so the send loop can mutate `self` while iterating them.
-        let targets = std::mem::take(&mut self.targets);
-
-        for RoutedTarget { target, source } in targets {
-            self.send_tcp_packet(source, target, dst_port);
+        let now = Instant::now();
+        for target in targets {
+            self.probe(target, now);
         }
 
         Ok(())
     }
 
-    fn send_tcp_packet(&mut self, src_addr: IpAddr, dst_addr: IpAddr, dst_port: u16) {
-        let token = send_syn(self.transport.tx.as_ref(), src_addr, dst_addr, dst_port);
+    /// Sends one SYN at `target` and records the attempt.
+    ///
+    /// Used for the first attempt and every retry alike. A probe that cannot be
+    /// sent is not armed; the ledger has already charged the attempt by the time
+    /// a retry reaches here, so an unroutable target still runs out of attempts
+    /// on schedule.
+    fn probe(&mut self, target: IpAddr, now: Instant) {
+        const DST_PORT: u16 = 443;
+
+        let Some(&source) = self.sources.get(&target) else {
+            return;
+        };
+
+        let token = send_syn(self.transport.tx.as_ref(), source, target, DST_PORT);
         self.audit.record_send(token.is_some());
 
         if let Some(token) = token {
-            self.rtt_map.insert((dst_addr, token.seq), Instant::now());
+            self.ledger.arm(target, target, token, now);
         }
     }
 }
