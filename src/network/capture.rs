@@ -30,6 +30,8 @@ use std::thread::{self, JoinHandle};
 
 use pcap::{Active, Capture, Device};
 use pnet::packet::ip::IpNextHeaderProtocol;
+#[cfg(not(windows))]
+use std::os::unix::io::AsRawFd;
 use tokio::sync::mpsc;
 
 use crate::network::frame::{self, LinkType};
@@ -39,9 +41,11 @@ use crate::{error, info, warn};
 /// snapping generously costs nothing and avoids ever truncating one.
 const SNAP_LEN: i32 = 65_535;
 
-/// `libpcap` read timeout. In immediate mode this bounds how long a reader
-/// thread blocks before it can observe the stop flag, so shutdown is prompt
-/// without busy-looping.
+/// How long a reader thread waits for a frame before looping back to check the
+/// stop flag. Bounds shutdown latency without busy-looping.
+///
+/// On Unix this is the timeout of the [`wait_readable`] poll rather than
+/// `libpcap`'s own read timeout, which cannot be relied on: see [`open`].
 const READ_TIMEOUT_MS: i32 = 100;
 
 /// One reply lifted off the wire: the Layer-4 segment, who sent it, and which
@@ -142,14 +146,26 @@ pub fn start(interfaces: &[String], filter: &str) -> anyhow::Result<(CaptureStre
 
 /// Opens and activates a single filtered capture, returning it alongside the
 /// [`LinkType`] its frames must be parsed as.
+///
+/// On Unix the capture is put into non-blocking mode and the reader waits on the
+/// descriptor itself. `libpcap`'s read timeout is not a usable substitute:
+/// Linux's memory-mapped `TPACKET` path treats it only as the timeout of its own
+/// internal `poll`, and loops back to poll again instead of returning to the
+/// caller, so a blocking read on an interface seeing no matching frames never
+/// returns and the stop flag is never observed. BSD's `BPF` (macOS) does return
+/// on timeout, but relying on that would leave Linux broken.
 fn open(name: &str, filter: &str) -> anyhow::Result<(Capture<Active>, LinkType)> {
     let device = Device::from(name);
-    let mut capture = Capture::from_device(device)?
+    let capture = Capture::from_device(device)?
         .immediate_mode(true)
         .snaplen(SNAP_LEN)
         .timeout(READ_TIMEOUT_MS)
         .open()?;
 
+    #[cfg(not(windows))]
+    let capture = capture.setnonblock()?;
+
+    let mut capture = capture;
     let link = LinkType::from_dlt(capture.get_datalink().0);
     if let LinkType::Unsupported(dlt) = link {
         anyhow::bail!("unsupported data-link type {dlt}");
@@ -162,15 +178,18 @@ fn open(name: &str, filter: &str) -> anyhow::Result<(Capture<Active>, LinkType)>
     Ok((capture, link))
 }
 
-/// Blocking read loop for one capture: parse each frame down to its Layer-4
-/// segment and forward it, until the stop flag is set or the consumer hangs
-/// up. Read timeouts are the normal idle case, not an error.
+/// Read loop for one capture: parse each frame down to its Layer-4 segment and
+/// forward it, until the stop flag is set or the consumer hangs up. Having no
+/// frame ready is the normal idle case, not an error.
 fn reader_loop(
     mut capture: Capture<Active>,
     link: LinkType,
     tx: mpsc::UnboundedSender<CapturedSegment>,
     stop: Arc<AtomicBool>,
 ) {
+    #[cfg(not(windows))]
+    let fd = capture.as_raw_fd();
+
     while !stop.load(Ordering::Relaxed) {
         match capture.next_packet() {
             Ok(packet) => {
@@ -186,7 +205,10 @@ fn reader_loop(
                     break;
                 }
             }
-            Err(pcap::Error::TimeoutExpired) => continue,
+            Err(pcap::Error::TimeoutExpired) => {
+                #[cfg(not(windows))]
+                wait_readable(fd);
+            }
             Err(pcap::Error::NoMorePackets) => break,
             Err(e) => {
                 error!("Capture read error: {e}");
@@ -194,4 +216,21 @@ fn reader_loop(
             }
         }
     }
+}
+
+/// Waits for `fd` to have a frame ready, giving up after [`READ_TIMEOUT_MS`] so
+/// the caller can re-check its stop flag. Poll failures are not reported: the
+/// caller's next read reports anything genuinely wrong, and an interrupted poll
+/// simply costs one extra loop.
+#[cfg(not(windows))]
+fn wait_readable(fd: std::os::unix::io::RawFd) {
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+
+    // SAFETY: `poll_fd` is a single initialized `pollfd` and the count says so;
+    // `poll` reads it and writes only `revents`.
+    unsafe { libc::poll(&mut poll_fd, 1, READ_TIMEOUT_MS) };
 }
