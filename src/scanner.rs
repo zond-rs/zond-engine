@@ -61,10 +61,14 @@ use routed::RoutedScanner;
 mod composite;
 mod connect;
 pub mod dispatcher;
-mod local;
 mod payload;
 mod pool;
 mod service;
+
+#[cfg(not(feature = "test-support"))]
+mod local;
+#[cfg(feature = "test-support")]
+pub mod local;
 
 // The raw scanners and the hostname resolver stay implementation details of
 // [`scan`] and [`discover`] by default; under `test-support` they are reachable

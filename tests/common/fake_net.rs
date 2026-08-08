@@ -726,21 +726,22 @@ fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8]) -> Option<Vec<u8>> {
 const DEFAULT_SEED: u64 = 0x5EED_1234_5EED_1234;
 
 /// SplitMix64: a small, fast generator with a fixed, documented output
-/// sequence.
+/// sequence. Shared with the link-layer simulator in
+/// [`fake_lan`](super::fake_lan), so both tiers reproduce the same way.
 ///
 /// Owned here rather than pulled from `rand` on purpose. `rand` does not
 /// promise the same seed yields the same stream across releases, so a
 /// dependency bump would quietly change which packets a "reproducible" test
 /// drops - and a test whose seed no longer reproduces its failure is worse than
 /// no test. Ten lines of arithmetic buys permanent stability.
-struct SplitMix64(u64);
+pub struct SplitMix64(u64);
 
 impl SplitMix64 {
-    fn new(seed: u64) -> Self {
+    pub fn new(seed: u64) -> Self {
         Self(seed)
     }
 
-    fn next_u64(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -750,7 +751,7 @@ impl SplitMix64 {
 
     /// A uniform draw from `[0, 1)`, using the 53 bits an `f64` represents
     /// exactly.
-    fn next_unit(&mut self) -> f64 {
+    pub fn next_unit(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 }

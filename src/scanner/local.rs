@@ -231,6 +231,26 @@ impl LocalScanner {
         scope: Scope,
     ) -> anyhow::Result<Self> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
+        Self::with_handle(intf, ip_set, ctx, dns_tx, scope, eth_handle)
+    }
+
+    /// Builds a scanner around an already-opened Ethernet channel, so the caller
+    /// decides how frames reach the wire and where replies come from.
+    ///
+    /// The addressing identity is still resolved from `intf`, since a probe has
+    /// to be sent from some MAC and address, but nothing here touches the
+    /// interface itself. Paired with a synthetic channel
+    /// (`EthernetHandle::from_parts`, behind the `test-support` feature) and a
+    /// hand-built [`NetworkInterface`], this is the seam that lets ARP and NDP
+    /// discovery be driven against a simulated segment with no privileges.
+    pub fn with_handle(
+        intf: NetworkInterface,
+        ip_set: IpSet,
+        ctx: ScanContext,
+        dns_tx: Option<UnboundedSender<IpAddr>>,
+        scope: Scope,
+        eth_handle: EthernetHandle,
+    ) -> anyhow::Result<Self> {
         let identity = SourceIdentity::resolve(&intf, &ip_set)?;
 
         let target_count = ip_set.len() as usize;

@@ -14,9 +14,37 @@ use tokio::sync::mpsc;
 
 const READ_TIMEOUT_MS: u64 = 50;
 
+/// A live Ethernet channel: somewhere to put frames, and a stream of the frames
+/// that arrived.
+///
+/// This is the link-layer counterpart to
+/// [`ProbeTransport`](crate::network::probe::ProbeTransport), and deliberately
+/// not the same type. A probe transport carries Layer-4 segments with the link
+/// and IP headers already stripped, which is all the SYN and UDP scanners need.
+/// Local discovery needs the whole frame: it identifies a neighbour by the
+/// Ethernet source MAC, which a capture would have thrown away long before the
+/// segment reached it.
 pub struct EthernetHandle {
     pub tx: Box<dyn DataLinkSender>,
     pub rx: mpsc::UnboundedReceiver<Vec<u8>>,
+}
+
+impl EthernetHandle {
+    /// Builds a handle over a caller-supplied sender and frame stream, opening
+    /// no channel and starting no listener thread.
+    ///
+    /// The link-layer twin of
+    /// [`ProbeTransport::from_parts`](crate::network::probe::ProbeTransport::from_parts):
+    /// `tx` observes the frames a scanner emits, and whatever is pushed onto the
+    /// sending half of `rx` arrives as though it had been captured off the
+    /// interface. That is what lets ARP and NDP discovery be tested without an
+    /// interface or the privileges to open one.
+    ///
+    /// Requires the `test-support` feature outside this crate.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_parts(tx: Box<dyn DataLinkSender>, rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
+        Self { tx, rx }
+    }
 }
 
 pub fn start_capture(intf: &NetworkInterface) -> anyhow::Result<EthernetHandle> {
