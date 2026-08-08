@@ -4,16 +4,16 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-//! The retransmission contract, written before the feature exists.
+//! The retransmission contract, written before the feature existed.
 //!
-//! Every test in this file is `#[ignore]`d, because the engine sends each probe
-//! exactly once today. They are not aspirational notes: they run, they fail for
-//! the right reason, and removing the `#[ignore]` is what "retransmission is
-//! done" means.
+//! Each test here was `#[ignore]`d until the path it covers retransmitted, and
+//! removing that attribute is what "retransmission is done" means for that path.
+//! The Layer 4 paths - SYN port scanning, routed discovery, UDP - run today. The
+//! link-layer ones are still ignored.
 //!
 //! # Why this matters more than it looks
 //!
-//! A single lost probe is currently indistinguishable from a firewall. The SYN
+//! Without it, a single lost probe is indistinguishable from a firewall. The SYN
 //! path reports `Filtered`, the UDP path reports `OpenFiltered`, and local
 //! discovery reports the host as absent. All three are wrong, and none of them
 //! look wrong: the scan completes, reports a plausible answer, and gives no hint
@@ -33,14 +33,13 @@
 //! 5. Retrying never invents a result. A target that is truly silent still ends
 //!    up `Filtered`, just later, and a closed port stays `Closed`.
 //!
-//! # Where it should live
+//! # Where it lives
 //!
-//! All three probing paths need this, and all three already keep the state it
-//! needs: a `pending` map from target to the time its probe was sent. That
-//! argues for one shared retry policy sitting beside `AdaptiveDeadline` rather
-//! than three separate implementations that drift apart. These tests are written
-//! against observable behaviour and do not assume that, so they stay honest
-//! whichever way it is built.
+//! Every probing path needs this and every one of them already kept the state it
+//! requires, which argued for one shared retry policy beside `AdaptiveDeadline`
+//! rather than several implementations drifting apart. It landed that way, in
+//! `core::models::retry`. These tests assert on observable behaviour and assume
+//! none of it, so they stay honest regardless of how it is built.
 //!
 //! The one number they do assume is the attempt count, kept in [`ATTEMPTS`]
 //! below. Change it in one place if the policy lands on a different budget.
@@ -298,7 +297,6 @@ async fn a_discovered_host_is_not_probed_again() {
 /// UDP has no handshake, so a lost probe is even more costly: there is no
 /// second signal to fall back on, and the result degrades to `OpenFiltered`.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn a_lost_udp_probe_is_retried_and_the_port_still_reads_open() {
     let net = FakeNet::new(Layer4::Udp).host(TARGET, 53, Policy::open().drop_first(1));
 
@@ -321,7 +319,6 @@ async fn a_lost_udp_probe_is_retried_and_the_port_still_reads_open() {
 /// A lost ICMP port-unreachable must be recovered too, so a closed UDP port is
 /// reported closed rather than left ambiguous.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn a_lost_icmp_error_is_retried_and_the_port_still_reads_closed() {
     let net = FakeNet::new(Layer4::Udp).host(TARGET, 161, Policy::closed().drop_first(1));
 
