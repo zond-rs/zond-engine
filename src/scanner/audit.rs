@@ -160,6 +160,7 @@ impl ProbeAudit {
     /// its own answers.
     pub(crate) fn report(&self, scanner: &str, targets: u128, reason: StopReason) {
         crate::info!(
+            verbosity = 1,
             "audit[{scanner}] {found}/{targets} hosts in {elapsed:.0?}, stopped: {reason:?} \
              | sent {sent} (failed {failed}) \
              | captured {seen} (off-target {off}, no-rtt {no_rtt}) \
