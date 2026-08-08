@@ -86,6 +86,30 @@ impl HostnameResolver {
     /// the raw receiver used to sniff DNS and mDNS traffic.
     pub fn new(dns_rx: UnboundedReceiver<IpAddr>) -> anyhow::Result<Self> {
         let dns_socket = get_dns_server_socket()?;
+        let transport = ProbeTransport::open_receiver(ProbeKind::UdpResolve)?;
+        Self::with_transport(dns_rx, transport, dns_socket)
+    }
+
+    /// Builds a resolver that queries `dns_socket` and sniffs through
+    /// `transport`, rather than discovering both from the host.
+    ///
+    /// Both of `new`'s environmental dependencies are parameters here. That
+    /// matters for testing: reading the system's DNS configuration gives a
+    /// different answer on every machine and fails outright on some CI images,
+    /// and the raw receiver needs privileges that a test runner does not have.
+    /// Pointing this at a DNS server on loopback and a synthetic transport
+    /// (`ProbeTransport::from_parts`, behind the `test-support` feature)
+    /// exercises the PTR exchange and the sniffing path with neither.
+    ///
+    /// The PTR socket is still a real one, bound to an ephemeral port in
+    /// `dns_socket`'s address family. It needs no privileges, and keeping it
+    /// real is the point: the query and reply handling under test is the same
+    /// code that runs in production.
+    pub fn with_transport(
+        dns_rx: UnboundedReceiver<IpAddr>,
+        transport: ProbeTransport,
+        dns_socket: SocketAddr,
+    ) -> anyhow::Result<Self> {
         let bind_addr = match dns_socket {
             SocketAddr::V4(_) => "0.0.0.0:0",
             SocketAddr::V6(_) => "[::]:0",
@@ -95,7 +119,7 @@ impl HostnameResolver {
         let tokio_socket = tokio::net::UdpSocket::from_std(std_socket)?;
 
         Ok(Self {
-            transport: ProbeTransport::open_receiver(ProbeKind::UdpResolve)?,
+            transport,
             std_socket: std::sync::Arc::new(tokio_socket),
             dns_map: HashMap::new(),
             mdns_cache: HashMap::new(),
