@@ -214,16 +214,40 @@ impl UdpPortScanner {
             },
             send_mode,
         )?;
-        let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, target_count);
 
-        Ok(Self {
+        Ok(Self::with_transport(
             resolver,
             ctx,
             transport,
-            deadline,
+            target_count,
+            src_port,
+        ))
+    }
+
+    /// Builds a scanner around an already-opened transport, so the caller
+    /// decides how probes reach the wire and where replies come from.
+    ///
+    /// `src_port` must be the port the transport's capture filter was built
+    /// around, since it is what both halves use to recognize this scan's own
+    /// traffic - see the module documentation. Paired with a synthetic
+    /// transport (`ProbeTransport::from_parts`, behind the `test-support`
+    /// feature) this is the seam that lets classification be driven against a
+    /// simulated network rather than a real one.
+    pub fn with_transport(
+        resolver: SourceResolver,
+        ctx: ScanContext,
+        transport: ProbeTransport,
+        target_count: usize,
+        src_port: u16,
+    ) -> Self {
+        Self {
+            resolver,
+            ctx,
+            transport,
+            deadline: AdaptiveDeadline::new(DEADLINE_CONFIG, target_count),
             pending: PendingProbes::new(),
             src_port,
-        })
+        }
     }
 
     fn send_probe(&mut self, target: Target) {
@@ -545,7 +569,6 @@ mod tests {
     use pnet::packet::icmpv6::MutableIcmpv6Packet;
 
     use crate::core::session::ScanSession;
-    use crate::network::capture::CaptureGuard;
     use crate::network::probe::{MockSender, ProbeTransport};
     use crate::protocols::{ip, udp};
 
@@ -579,21 +602,10 @@ mod tests {
     fn scanner_with_mock() -> (UdpPortScanner, ScanSession) {
         let (session, ctx) = ScanSession::new();
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
-        let transport = ProbeTransport::from_parts(
-            Box::new(MockSender::default()),
-            reply_rx,
-            CaptureGuard::noop(),
-        );
+        let transport = ProbeTransport::from_parts(Box::new(MockSender::default()), reply_rx);
         let resolver = SourceResolver::from_interfaces(&[on_link_interface()]);
 
-        let scanner = UdpPortScanner {
-            resolver,
-            ctx,
-            transport,
-            deadline: AdaptiveDeadline::new(DEADLINE_CONFIG, 8),
-            pending: PendingProbes::new(),
-            src_port: SCAN_SRC_PORT,
-        };
+        let scanner = UdpPortScanner::with_transport(resolver, ctx, transport, 8, SCAN_SRC_PORT);
         (scanner, session)
     }
 
@@ -1164,16 +1176,14 @@ mod tests {
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
         let sender = MockSender::default();
         let sent = sender.sent.clone();
-        let transport =
-            ProbeTransport::from_parts(Box::new(sender), reply_rx, CaptureGuard::noop());
-        let mut scanner = UdpPortScanner {
-            resolver: SourceResolver::from_interfaces(&[on_link_interface()]),
+        let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
+        let mut scanner = UdpPortScanner::with_transport(
+            SourceResolver::from_interfaces(&[on_link_interface()]),
             ctx,
             transport,
-            deadline: AdaptiveDeadline::new(DEADLINE_CONFIG, 8),
-            pending: PendingProbes::new(),
-            src_port: SCAN_SRC_PORT,
-        };
+            8,
+            SCAN_SRC_PORT,
+        );
 
         for port in [53, 161, 123] {
             probe(&mut scanner, TARGET, port);

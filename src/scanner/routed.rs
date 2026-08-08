@@ -217,7 +217,22 @@ impl RoutedScanner {
         send_mode: SendMode,
     ) -> anyhow::Result<Self> {
         let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, send_mode)?;
+        Ok(Self::with_transport(targets, ctx, dns_tx, transport))
+    }
 
+    /// Builds a sweep around an already-opened transport, so the caller decides
+    /// how probes reach the wire and where replies come from.
+    ///
+    /// Paired with a synthetic transport (`ProbeTransport::from_parts`, behind
+    /// the `test-support` feature) this is the seam that lets liveness
+    /// detection and RTT correlation be driven against a simulated network
+    /// rather than a real one.
+    pub fn with_transport(
+        targets: Vec<RoutedTarget>,
+        ctx: ScanContext,
+        dns_tx: Option<UnboundedSender<IpAddr>>,
+        transport: ProbeTransport,
+    ) -> Self {
         let mut ips = IpSet::new();
         for target in &targets {
             ips.insert(target.target);
@@ -226,7 +241,7 @@ impl RoutedScanner {
 
         let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, targets.len());
 
-        Ok(Self {
+        Self {
             ctx,
             targets,
             ips,
@@ -235,7 +250,7 @@ impl RoutedScanner {
             dns_tx,
             rtt_map: HashMap::new(),
             responded_count: 0,
-        })
+        }
     }
 
     /// Records a raw TCP reply from `ip` as evidence the host is alive,

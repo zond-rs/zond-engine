@@ -76,22 +76,17 @@ impl SynPortScanner {
         send_mode: SendMode,
     ) -> anyhow::Result<Self> {
         let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, send_mode)?;
-        let deadline = AdaptiveDeadline::new(DEADLINE_CONFIG, target_count);
-
-        Ok(Self {
-            resolver,
-            ctx,
-            transport,
-            deadline,
-            pending: PendingProbes::new(),
-        })
+        Ok(Self::with_transport(resolver, ctx, transport, target_count))
     }
 
-    /// Builds a scanner around an already-constructed transport, opening no
-    /// sockets. This is the seam that lets tests drive probe and reply
-    /// correlation with a mock sender and synthesized replies.
-    #[cfg(test)]
-    pub(crate) fn with_transport(
+    /// Builds a scanner around an already-opened transport, so the caller
+    /// decides how probes reach the wire and where replies come from.
+    ///
+    /// Paired with a synthetic transport (`ProbeTransport::from_parts`, behind
+    /// the `test-support` feature) this is the seam that lets probe and reply
+    /// correlation be driven against a simulated network rather than a real
+    /// one, with no privileges and no interface.
+    pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
         transport: ProbeTransport,
@@ -252,7 +247,6 @@ mod tests {
     use pnet::packet::tcp::MutableTcpPacket;
 
     use crate::core::session::ScanSession;
-    use crate::network::capture::CaptureGuard;
     use crate::network::probe::{MockSender, ProbeTransport};
 
     const SYN: u8 = 1 << 1;
@@ -294,11 +288,7 @@ mod tests {
     fn scanner_with_mock() -> (SynPortScanner, ScanSession) {
         let (session, ctx) = ScanSession::new();
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
-        let transport = ProbeTransport::from_parts(
-            Box::new(MockSender::default()),
-            reply_rx,
-            CaptureGuard::noop(),
-        );
+        let transport = ProbeTransport::from_parts(Box::new(MockSender::default()), reply_rx);
         let resolver = SourceResolver::from_interfaces(&[on_link_interface()]);
         let scanner = SynPortScanner::with_transport(resolver, ctx, transport, 8);
         (scanner, session)

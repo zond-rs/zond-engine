@@ -6,6 +6,15 @@ license = "MPL-2.0"
 repository = "https://github.com/zond-rs/zond-engine"
 description = "A lightweight, fast, and highly concurrent networking backend for packet crafting, protocol fingerprinting, and host discovery."
 
+[features]
+default = []
+# Exposes `ProbeTransport::from_parts`, which builds a transport over a caller-
+# supplied sender and reply stream instead of a socket and a capture. That is
+# what lets an integration test outside this crate drive a scanner against a
+# synthetic network. It adds no dependencies and changes no behaviour, but it is
+# not part of the supported API: enable it for tests only, never for a release.
+test-support = []
+
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.91"
@@ -19,7 +28,6 @@ rayon = "1.12.0"
 tracing = "0.1.44"
 tokio = { version = "1.53.0", features = ["full"] }
 hickory-resolver = { version = "0.26.1", features = ["tokio"] }
-libc = "0.2"
 dashmap = "6.1.0"
 windows-sys = { version = "0.61.2", features = ["Win32_NetworkManagement_IpHelper", "Win32_Foundation", "Win32_Networking_WinSock", "Win32_NetworkManagement_Ndis", "Win32_Security", "Win32_System_Threading"] }
 mac_oui = { version = "0.4.11", features = ["with-db"] }
@@ -37,6 +45,11 @@ x509-parser = "0.18.1"
 
 [dev-dependencies]
 proptest = "1.6.0"
+# A dev-dependency on this crate itself, which is how the integration tests in
+# `tests/` get a build of the library with `test-support` turned on. Cargo
+# unifies it with the library target, so nothing is compiled twice and the
+# feature stays off for every downstream consumer.
+zond-engine = { path = ".", features = ["test-support"] }
 
 [build-dependencies]
 bincode = "1.3.3"

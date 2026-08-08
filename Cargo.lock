@@ -2478,4 +2478,5 @@ dependencies = [
  "tracing",
  "windows-sys 0.61.2",
  "x509-parser",
+ "zond-engine",
 ]

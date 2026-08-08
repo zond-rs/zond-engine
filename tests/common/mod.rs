@@ -22,6 +22,8 @@
 // so unused helpers are expected per-crate.
 #![allow(dead_code)]
 
+pub mod fake_net;
+
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 

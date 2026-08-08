@@ -258,15 +258,22 @@ impl ProbeTransport {
         })
     }
 
-    /// Builds a transport from an explicit sender and receive stream, without
-    /// opening any socket or capture. For tests that drive scanner logic with
-    /// synthesized replies.
-    #[cfg(test)]
-    pub fn from_parts(tx: Box<dyn ProbeSender>, rx: CaptureStream, capture: CaptureGuard) -> Self {
+    /// Builds a transport from an explicit sender and receive stream, opening
+    /// no socket and no capture.
+    ///
+    /// This is the seam that lets a test stand a scanner up against a synthetic
+    /// network: `tx` observes the probes the scanner emits, and whatever is
+    /// pushed onto the sending half of `rx` arrives as though it had been
+    /// captured off the wire. Because no capture threads exist, the transport
+    /// holds an inert [`CaptureGuard`] and dropping it stops nothing.
+    ///
+    /// Requires the `test-support` feature outside this crate.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_parts(tx: Box<dyn ProbeSender>, rx: CaptureStream) -> Self {
         Self {
             tx,
             rx,
-            _capture: capture,
+            _capture: CaptureGuard::noop(),
         }
     }
 }
@@ -317,14 +324,13 @@ mod tests {
 
     #[tokio::test]
     async fn transport_forwards_sends_and_delivers_replies() {
-        use crate::network::capture::{CaptureGuard, CapturedSegment};
+        use crate::network::capture::CapturedSegment;
         use std::net::Ipv4Addr;
 
         let mock = MockSender::default();
         let recorded = mock.sent.clone();
         let (reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut transport =
-            ProbeTransport::from_parts(Box::new(mock), reply_rx, CaptureGuard::noop());
+        let mut transport = ProbeTransport::from_parts(Box::new(mock), reply_rx);
 
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let dst = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));

@@ -91,10 +91,14 @@ impl Drop for CaptureGuard {
 }
 
 impl CaptureGuard {
-    /// A guard owning no capture threads, for tests that supply a synthetic
-    /// receive stream instead of a live capture.
-    #[cfg(test)]
-    pub fn noop() -> Self {
+    /// A guard owning no capture threads, for a transport whose receive stream
+    /// is supplied directly rather than read off an interface. Reached from
+    /// outside the crate only through [`ProbeTransport::from_parts`], which
+    /// builds one on the caller's behalf.
+    ///
+    /// [`ProbeTransport::from_parts`]: crate::network::probe::ProbeTransport::from_parts
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn noop() -> Self {
         Self {
             stop: Arc::new(AtomicBool::new(true)),
             handles: Vec::new(),

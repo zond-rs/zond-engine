@@ -65,8 +65,17 @@ mod local;
 mod payload;
 mod pool;
 mod resolver;
-mod routed;
 mod service;
+
+// The raw scanners stay an implementation detail of [`scan`] and [`discover`]
+// by default; under `test-support` they are reachable directly, which is what
+// lets an out-of-crate test build one over a synthetic transport. Splitting the
+// declaration is the only way to vary an item's visibility by feature, and it
+// keeps the default public API exactly what it was.
+#[cfg(not(feature = "test-support"))]
+mod routed;
+#[cfg(feature = "test-support")]
+pub mod routed;
 mod tuning;
 
 /// An error returned when a scan fails to run to completion.
@@ -244,7 +253,7 @@ pub async fn scan(
 /// happens exactly once, so an implementation can move out of its own state
 /// rather than pretend, through `&mut self`, that it might run again.
 #[async_trait]
-trait NetworkExplorer {
+pub trait NetworkExplorer {
     async fn discover_hosts(self: Box<Self>) -> anyhow::Result<()>;
 }
 
@@ -260,7 +269,7 @@ trait NetworkExplorer {
 /// [`PortScanner::scan`] reports only whether the run completed.
 /// [`run_port_scan`] relies on that to treat both strategies identically.
 #[async_trait]
-trait PortScanner: Send {
+pub trait PortScanner: Send {
     /// Identifies the strategy, used to tag a [`ScanEvent::ScannerFailed`] when
     /// a run fails.
     fn kind(&self) -> ScannerKind;
