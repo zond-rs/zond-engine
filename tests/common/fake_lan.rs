@@ -417,35 +417,3 @@ fn icmpv6_reply(
     frame.resize(MIN_ETH_FRAME, 0);
     Some(frame)
 }
-
-/// A [`NetworkInterface`] describing the host the scanner probes from.
-///
-/// `LocalScanner` still resolves its own MAC and addresses from an interface
-/// even when its channel is synthetic, since a probe has to claim some source.
-/// Nothing here is opened or looked up, so any plausible values will do.
-pub fn fake_interface(
-    mac: MacAddr,
-    v4: Ipv4Addr,
-    prefix: u8,
-    v6: Option<Ipv6Addr>,
-) -> NetworkInterface {
-    use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
-
-    let mut ips = vec![IpNetwork::V4(
-        Ipv4Network::new(v4, prefix).expect("valid v4 prefix"),
-    )];
-    if let Some(v6) = v6 {
-        ips.push(IpNetwork::V6(
-            Ipv6Network::new(v6, 64).expect("valid v6 prefix"),
-        ));
-    }
-
-    NetworkInterface {
-        name: "fake0".to_string(),
-        description: String::new(),
-        index: 0,
-        mac: Some(mac),
-        ips,
-        flags: 0,
-    }
-}

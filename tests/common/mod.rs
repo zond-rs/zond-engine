@@ -4,7 +4,11 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-//! Shared helpers for the portable (Tier 1) integration tests.
+//! Shared helpers for the integration tests.
+//!
+//! Most of this file serves the portable Tier 1 tests described below. The
+//! fixtures at the bottom serve Tier 2 instead, standing up the simulated host
+//! that [`fake_net`] and [`fake_lan`] probe from.
 //!
 //! These tests drive the *public* scanning API - [`scanner::scan`] and
 //! [`scanner::discover`] - end to end against real protocol servers on
@@ -26,10 +30,12 @@
 pub mod fake_lan;
 pub mod fake_net;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use pnet::datalink::{MacAddr, NetworkInterface};
+use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -37,10 +43,11 @@ use tokio::task::JoinHandle;
 use zond_engine::core::config::ZondConfig;
 use zond_engine::core::models::host::Host;
 use zond_engine::core::models::ip::set::IpSet;
-use zond_engine::core::models::port::{PortSet, PortState};
-use zond_engine::core::models::target::{TargetMap, TargetSet};
+use zond_engine::core::models::port::{PortSet, PortState, Protocol};
+use zond_engine::core::models::target::{Target, TargetMap, TargetSet};
 use zond_engine::core::session::{ScanEvent, ScanSession};
-use zond_engine::scanner::{self, ScanTask};
+use zond_engine::scanner::{self, PortScanner, ScanTask};
+use zond_engine::system::interface::SourceResolver;
 
 /// The loopback address every portable test targets.
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -217,4 +224,99 @@ async fn drive(mut session: ScanSession, task: ScanTask) -> Outcome {
     }
 
     Outcome { store, events }
+}
+
+// ── Tier 2 fixtures ────────────────────────────────────────────────────────
+//
+// The simulated tiers need a host to probe *from*: a MAC and a set of addresses
+// the scanners resolve their probe sources against. Nothing here touches the
+// machine running the test, so these values are free to be whatever is most
+// convenient, as long as every simulated target is on-link with one of them.
+
+/// The MAC the simulated scanner host presents on the wire.
+pub const SCANNER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
+
+/// The simulated scanner host's own addresses.
+pub const SCANNER_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 50);
+pub const SCANNER_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x50);
+/// The link-local address, which is what local discovery probes from and what
+/// an ICMPv6 neighbour must address its reply to.
+pub const SCANNER_LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
+
+/// The target every simulated scan is pointed at, on-link with the addresses
+/// above so a source always resolves.
+pub const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+pub const TARGET_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x200));
+
+/// The interface the simulated scanner host probes from.
+///
+/// It carries a link-local *and* a global IPv6 address because a real one does,
+/// and because the two paths want different ones: local discovery sends from the
+/// link-local, while the routed scanners resolve a source by longest matching
+/// prefix and so need a subnet the v6 targets actually sit in.
+pub fn scanner_interface() -> NetworkInterface {
+    let ips = vec![
+        IpNetwork::V4(Ipv4Network::new(SCANNER_V4, 24).expect("valid v4 prefix")),
+        IpNetwork::V6(Ipv6Network::new(SCANNER_LINK_LOCAL, 64).expect("valid v6 prefix")),
+        IpNetwork::V6(Ipv6Network::new(SCANNER_V6, 64).expect("valid v6 prefix")),
+    ];
+
+    NetworkInterface {
+        name: "sim0".to_string(),
+        description: String::new(),
+        index: 0,
+        mac: Some(SCANNER_MAC),
+        ips,
+        flags: 0,
+    }
+}
+
+/// A source resolver over [`scanner_interface`], as the routed scanners expect.
+pub fn scanner_resolver() -> SourceResolver {
+    SourceResolver::from_interfaces(&[scanner_interface()])
+}
+
+/// Feeds `targets` to `scanner` and drives it to completion.
+///
+/// The channel is closed before the scan is awaited, which is the signal a
+/// [`PortScanner`] uses to know no more targets are coming. Without that it
+/// would wait out its full deadline on every test.
+pub async fn run_port_scanner<S: PortScanner + ?Sized>(scanner: &mut S, targets: Vec<Target>) {
+    let (tx, rx) = tokio::sync::mpsc::channel(targets.len().max(1));
+    for target in targets {
+        tx.send(target).await.expect("queue target");
+    }
+    drop(tx);
+
+    scanner.scan(rx).await.expect("scanner runs to completion");
+}
+
+/// A TCP target, as a port scanner expects one.
+pub fn tcp(ip: IpAddr, port: u16) -> Target {
+    Target {
+        ip,
+        port,
+        protocol: Protocol::Tcp,
+    }
+}
+
+/// A UDP target, as a port scanner expects one.
+pub fn udp(ip: IpAddr, port: u16) -> Target {
+    Target {
+        ip,
+        port,
+        protocol: Protocol::Udp,
+    }
+}
+
+/// The state recorded for `ip:port` in a session's store.
+///
+/// The Tier 1 counterpart on [`Outcome`] reads a finished scan's snapshot; this
+/// reads the live store a simulated scanner wrote into directly, since Tier 2
+/// drives a single scanner rather than the whole `scan` pipeline.
+pub fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortState> {
+    session
+        .store
+        .get(&ip)
+        .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
 }

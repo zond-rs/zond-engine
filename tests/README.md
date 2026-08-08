@@ -41,7 +41,11 @@ the fallback call `is_privileged()` and skip rather than flake.
 
 ## Tier 2: the simulated network
 
-Harness: `common/fake_net.rs`.
+Harnesses: `common/fake_net.rs` simulates a Layer 4 network, `common/fake_lan.rs`
+simulates an Ethernet segment, and the fixtures at the bottom of `common/mod.rs`
+stand up the host they are probed from.
+
+Files: `probe_classification.rs`, `lan_discovery.rs`, `retransmission.rs`.
 
 This is where the behaviour that actually distinguishes a scanner gets tested:
 what it does when probes are lost, answered late, answered twice, answered by a
@@ -54,9 +58,26 @@ capture would. There are no sockets, no privileges and no interfaces involved, s
 these tests run on every platform CI covers, in milliseconds, without depending
 on the machine's network.
 
-All three raw scanners can be driven this way through their `with_transport`
+All three Layer 4 scanners can be driven this way through their `with_transport`
 constructors: `SynPortScanner`, `UdpPortScanner`, and `RoutedScanner` for
-discovery.
+discovery. `LocalScanner` takes an `EthernetHandle` instead of a probe transport,
+because it identifies a neighbour by the Ethernet source MAC that a capture-fed
+transport has already stripped, so it gets `FakeLan` and
+`LocalScanner::with_handle`.
+
+### Tests that are meant to fail
+
+`retransmission.rs` is written against a feature the engine does not have yet.
+Every test in it is `#[ignore]`d, they fail for the right reason when run with
+`--ignored`, and removing the attribute is the definition of done. The same
+convention marks a known bug: `lan_discovery.rs` carries one ignored test
+reproducing a sweep that drops queued IPv6 replies.
+
+An ignored test is a claim, so check it still fails for the reason it says:
+
+```sh
+cargo test -- --ignored
+```
 
 ### Writing one
 
