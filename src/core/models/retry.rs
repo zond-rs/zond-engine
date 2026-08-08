@@ -616,6 +616,11 @@ where
         self.records.is_empty()
     }
 
+    /// Whether `key` is currently outstanding.
+    pub fn contains(&self, key: &K) -> bool {
+        self.records.contains_key(key)
+    }
+
     /// The smoothed round trip observed for `host`, if it has answered.
     pub fn host_rtt(&self, host: &IpAddr) -> Option<Duration> {
         self.hosts.get(host)?.estimator.smoothed

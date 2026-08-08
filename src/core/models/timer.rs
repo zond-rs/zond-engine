@@ -94,6 +94,17 @@ impl ScanTimer {
         now > self.min_runtime && time_since_last >= max_silence
     }
 
+    /// Whether the absolute deadline has passed, regardless of silence.
+    ///
+    /// Separate from [`has_expired`](Self::has_expired) because the two answer
+    /// different questions. Silence is evidence that nothing more is coming,
+    /// which a caller with work still outstanding is entitled to disagree with;
+    /// the hard deadline is not evidence of anything, it is the guarantee that a
+    /// scan terminates, and nothing may override it.
+    pub fn hard_deadline_passed(&self) -> bool {
+        Instant::now() > self.hard_deadline
+    }
+
     /// Helper to decide if a socket timeout is fatal or if the scan should continue.
     ///
     /// Returns `true` if the minimum runtime has been met, indicating that a timeout
@@ -129,6 +140,19 @@ impl ScanBudget {
             base,
             per_target,
             ceiling,
+        }
+    }
+
+    /// The same budget with its base widened to at least `minimum`.
+    ///
+    /// For deriving one limit from another rather than restating it: a scan
+    /// whose probes are retransmitted has to outlive its own retry schedule, and
+    /// expressing that as a floor on the base keeps the two from drifting apart
+    /// when either is tuned.
+    pub fn with_base_at_least(self, minimum: Duration) -> Self {
+        Self {
+            base: self.base.max(minimum),
+            ..self
         }
     }
 

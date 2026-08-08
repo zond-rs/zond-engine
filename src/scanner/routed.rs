@@ -86,16 +86,33 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 
 type SeqNum = u32;
 
+/// What identifies one SYN attempt on the wire.
+///
+/// Both halves earn their place. The sequence number comes back in the reply's
+/// acknowledgement, and the source port is where the reply is addressed, so
+/// together they establish that a segment answers *this probe* rather than
+/// merely that it came from the right port on the right host.
+///
+/// A fresh pair per attempt is also what makes a retried probe measurable. TCP
+/// itself must discard round-trip samples from retransmissions because it
+/// cannot tell which transmission an acknowledgement answers; a scanner picks a
+/// new sequence number every time, so the reply names the attempt it belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SynToken {
+    pub seq: SeqNum,
+    pub src_port: u16,
+}
+
 /// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port` through
-/// `sender` and logs the outcome. On success it returns the randomly chosen
-/// sequence number the packet was sent with, so the caller can record it and
-/// correlate a later reply.
+/// `sender` and logs the outcome. On success it returns the [`SynToken`] the
+/// packet went out carrying, so the caller can record it and recognize a later
+/// reply as answering this attempt.
 fn send_syn(
     sender: &dyn ProbeSender,
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
-) -> Option<SeqNum> {
+) -> Option<SynToken> {
     let src_port: u16 = rand::random_range(50_000..u16::MAX);
     let seq_num: u32 = rand::random_range(0..=u32::MAX);
 
@@ -114,7 +131,10 @@ fn send_syn(
     match sender.send(&packet, src_addr, dst_addr) {
         Ok(_) => {
             success!(verbosity = 2, "Sent SYN probe to {dst_addr}:{dst_port}");
-            Some(seq_num)
+            Some(SynToken {
+                seq: seq_num,
+                src_port,
+            })
         }
         Err(e) => {
             error!(
@@ -354,11 +374,11 @@ impl RoutedScanner {
     }
 
     fn send_tcp_packet(&mut self, src_addr: IpAddr, dst_addr: IpAddr, dst_port: u16) {
-        let seq_num = send_syn(self.transport.tx.as_ref(), src_addr, dst_addr, dst_port);
-        self.audit.record_send(seq_num.is_some());
+        let token = send_syn(self.transport.tx.as_ref(), src_addr, dst_addr, dst_port);
+        self.audit.record_send(token.is_some());
 
-        if let Some(seq_num) = seq_num {
-            self.rtt_map.insert((dst_addr, seq_num), Instant::now());
+        if let Some(token) = token {
+            self.rtt_map.insert((dst_addr, token.seq), Instant::now());
         }
     }
 }

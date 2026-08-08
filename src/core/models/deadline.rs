@@ -59,6 +59,26 @@ impl AdaptiveDeadlineConfig {
             rtt_window_capacity,
         }
     }
+
+    /// The same configuration, guaranteed to outlast a probe that is retried.
+    ///
+    /// A scan whose probes are retransmitted has two limits that must not
+    /// disagree: how long a single probe may keep trying, and how long the scan
+    /// as a whole is allowed to run. If the second is shorter, probes are
+    /// written off as unanswered having never been fully asked, and the scan
+    /// reports a verdict it did not earn. Deriving the hard budget from the
+    /// retry schedule keeps that from happening when either is tuned.
+    ///
+    /// Only the hard budget is widened. The minimum runtime governs when
+    /// *silence* may end a scan, and silence is not evidence while probes are
+    /// still outstanding, so it is the caller's loop that has to honour that
+    /// rather than the clock.
+    pub fn allowing_for(self, probe_lifetime: Duration) -> Self {
+        Self {
+            max_budget: self.max_budget.with_base_at_least(probe_lifetime),
+            ..self
+        }
+    }
 }
 
 /// Decides when a discovery sweep should stop, adapting to how quickly and
@@ -120,6 +140,16 @@ impl AdaptiveDeadline {
     /// happened for longer than the current silence tolerance justifies.
     pub fn has_expired(&self) -> bool {
         self.timer.has_expired(self.silence_tolerance())
+    }
+
+    /// Whether the absolute deadline has passed, regardless of silence.
+    ///
+    /// A loop with work still outstanding may reasonably ignore
+    /// [`has_expired`](Self::has_expired), since silence means nothing while
+    /// probes are still waiting to be answered or retried. It may not ignore
+    /// this one: it is what guarantees the scan terminates at all.
+    pub fn hard_deadline_passed(&self) -> bool {
+        self.timer.hard_deadline_passed()
     }
 
     /// How long a caller should wait before checking [`has_expired`](Self::has_expired) again.

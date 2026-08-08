@@ -77,7 +77,6 @@ const PEER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 
 /// The core case. An open port whose first SYN is lost must still be found.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn a_lost_syn_is_retried_and_the_port_still_reads_open() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 80, Policy::open().drop_first(1));
 
@@ -100,7 +99,6 @@ async fn a_lost_syn_is_retried_and_the_port_still_reads_open() {
 /// A closed port whose RST is lost must still read `Closed`, not `Filtered`.
 /// Retrying has to recover the true answer, not merely find open ports.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn a_lost_rst_is_retried_and_the_port_still_reads_closed() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 81, Policy::closed().drop_first(1));
 
@@ -114,7 +112,6 @@ async fn a_lost_rst_is_retried_and_the_port_still_reads_closed() {
 /// Retrying must be bounded. A silent target is still filtered, and the engine
 /// must not sit there resending forever.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn a_silent_port_is_filtered_after_a_bounded_number_of_attempts() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 82, Policy::silent());
 
@@ -160,7 +157,6 @@ async fn an_answered_probe_is_never_retried() {
 /// millisecond is not retransmission, it is a burst, and it makes a congested
 /// path worse at the moment it is least able to cope.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn retries_are_spaced_out_rather_than_burst() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 82, Policy::silent());
 
@@ -187,7 +183,6 @@ async fn retries_are_spaced_out_rather_than_burst() {
 /// probe once, not twice. Duplicate resolution would corrupt the RTT samples
 /// the adaptive deadline is steering on.
 #[tokio::test]
-#[ignore = "retransmission not yet implemented"]
 async fn a_late_reply_plus_its_retry_resolves_the_port_once() {
     let net = FakeNet::new(Layer4::Tcp).host(
         TARGET,

@@ -67,11 +67,18 @@ transport has already stripped, so it gets `FakeLan` and
 
 ### Tests that are meant to fail
 
-`retransmission.rs` is written against a feature the engine does not have yet.
-Every test in it is `#[ignore]`d, they fail for the right reason when run with
-`--ignored`, and removing the attribute is the definition of done. The same
-convention marks a known bug: `lan_discovery.rs` carries one ignored test
-reproducing a sweep that drops queued IPv6 replies.
+`retransmission.rs` was written against a feature the engine did not have. Each
+test in it is `#[ignore]`d until the path it covers retransmits, they fail for
+the right reason when run with `--ignored`, and removing the attribute is the
+definition of done for that path. The TCP SYN half runs today; the UDP and ARP
+tests are still ignored. The same convention marks a known bug:
+`lan_discovery.rs` carries one ignored test reproducing a sweep that drops
+queued IPv6 replies.
+
+This file is also the one place in Tier 2 that takes seconds rather than
+milliseconds, because a bounded retry schedule is exactly what it is asserting
+on: a probe that is meant to go unanswered has to actually wait out every
+attempt before the verdict it produces means anything.
 
 An ignored test is a claim, so check it still fails for the reason it says:
 
