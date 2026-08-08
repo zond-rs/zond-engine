@@ -3,6 +3,31 @@ name = "dns"
 default_ports = [53]
 description = "Domain Name System"
 
+# A DNS query for `version.bind` in the CHAOS class: the conventional "who are
+# you" question, which a nameserver answers from its own configuration. A server
+# that hides its version still answers - with REFUSED, or an empty response -
+# and for a port scan any answer at all is the result.
+#
+# Chosen over a normal lookup for two reasons. It draws a ~58-byte reply, where
+# a root-NS query returns ~500 bytes to a 17-byte question and would make the
+# scanner an amplifier pointed at a third party. And it costs the server
+# nothing: a recursive query would send it out to the internet on our behalf,
+# once per probe.
+#
+#   00 00        transaction ID
+#   01 00        flags: standard query, recursion desired
+#   00 01        QDCOUNT: one question
+#   00 00 x3     ANCOUNT / NSCOUNT / ARCOUNT
+#   07 version   QNAME, length-prefixed labels
+#   04 bind
+#   00           end of name
+#   00 10        QTYPE: TXT
+#   00 03        QCLASS: CH (CHAOS)
+[[probe]]
+name = "dns_version_bind"
+payload = '\x00\x00\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03'
+protocol = "udp"
+
 # For TCP DNS, we can send a simple query or just check for the port.
 # DNS over TCP is often used for large responses.
 [[match]]

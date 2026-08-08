@@ -1,0 +1,13 @@
+[service]
+name = "mdns"
+default_ports = [5353]
+description = "Multicast DNS"
+
+# mDNS speaks the DNS wire format on its own port, so the same `version.bind`
+# question works as a liveness probe. Kept as its own service rather than an
+# extra port on `dns`, because what listens on 5353 is a responder (Avahi,
+# mDNSResponder), not a nameserver, and only the framing is shared.
+[[probe]]
+name = "mdns_version_bind"
+payload = '\x00\x00\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03'
+protocol = "udp"

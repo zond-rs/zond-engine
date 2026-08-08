@@ -1,0 +1,17 @@
+[service]
+name = "ntp"
+default_ports = [123]
+description = "Network Time Protocol"
+
+# An SNTP client request (RFC 4330). Every field may be zero except the first
+# byte, which carries the leap indicator, version and mode; a server replies
+# with its own timestamps, so a 48-byte packet of zeros is enough to prove the
+# port is open.
+#
+#   23           LI = 0 (no warning), VN = 4, Mode = 3 (client)
+#   00 x47       stratum, poll, precision, root delay/dispersion, reference ID,
+#                and the four timestamps - all optional in a client request
+[[probe]]
+name = "ntp_client_request"
+payload = '\x23\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+protocol = "udp"

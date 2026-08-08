@@ -26,6 +26,7 @@ use crate::core::models::port::Protocol;
 use crate::core::models::target::Target;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::scanner::PortScanner;
+use crate::warn;
 
 /// A port scanner that multiplexes targets by protocol.
 pub struct CompositePortScanner {
@@ -70,13 +71,14 @@ impl PortScanner for CompositePortScanner {
         for mut scanner in self.scanners.drain(..) {
             let (tx, rx) = mpsc::channel(1024);
             let supported_protocols = scanner.supported_protocols();
+            let kind = scanner.kind();
 
             let handle = tokio::spawn(async move {
                 let res = scanner.scan(rx).await;
                 (scanner, res)
             });
 
-            handles.push(handle);
+            handles.push((kind, handle));
             routes.push(Route {
                 supported_protocols,
                 tx,
@@ -84,13 +86,33 @@ impl PortScanner for CompositePortScanner {
         }
 
         // Route targets from the unified stream to the first scanner that claims support.
+        // A target that finds no route, or whose scanner has already stopped
+        // listening, is counted rather than dropped in silence: either means
+        // ports the caller asked about are missing from the results, and a scan
+        // that quietly answers a narrower question than it was asked is worse
+        // than one that says so.
+        let mut unroutable = 0usize;
+        let mut undeliverable = 0usize;
+
         while let Some(target) = targets.recv().await {
-            for route in &routes {
-                if route.supported_protocols.contains(&target.protocol) {
-                    let _ = route.tx.send(target).await;
-                    break;
+            match routes
+                .iter()
+                .find(|route| route.supported_protocols.contains(&target.protocol))
+            {
+                Some(route) => {
+                    if route.tx.send(target).await.is_err() {
+                        undeliverable += 1;
+                    }
                 }
+                None => unroutable += 1,
             }
+        }
+
+        if unroutable > 0 {
+            warn!("{unroutable} targets had no scanner for their protocol and went unprobed");
+        }
+        if undeliverable > 0 {
+            warn!("{undeliverable} targets arrived after their scanner had already finished");
         }
 
         // Drop the sender ends to signal EOF to the underlying scanners.
@@ -98,14 +120,36 @@ impl PortScanner for CompositePortScanner {
 
         // Wait for all scanners to finish and restore them so they can be
         // interrogated for service detection.
-        for handle in handles {
-            if let Ok((scanner, res)) = handle.await {
-                self.scanners.push(scanner);
-                res?;
+        //
+        // Every handle is awaited before any failure is returned. Bailing on
+        // the first one would leave the remaining scanners unrestored, so the
+        // service-detection pass would skip strategies that ran perfectly well,
+        // and their tasks would be left running against a store the scan has
+        // already moved on from.
+        let mut failure: Option<anyhow::Error> = None;
+
+        for (kind, handle) in handles {
+            match handle.await {
+                Ok((scanner, res)) => {
+                    self.scanners.push(scanner);
+                    if let Err(e) = res {
+                        failure.get_or_insert(e);
+                    }
+                }
+                // The composite never aborts its tasks, so a `JoinError` only
+                // ever means the scanner panicked - a bug, and one that would
+                // otherwise vanish along with the scanner it took down.
+                Err(e) => {
+                    failure
+                        .get_or_insert_with(|| anyhow::anyhow!("{kind:?} scanner panicked: {e}"));
+                }
             }
         }
 
-        Ok(())
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     async fn detect_services(&mut self, ctx: &ScanContext) {
@@ -130,18 +174,37 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::{Arc, Mutex};
 
+    /// How a [`MockPortScanner`] behaves once it starts scanning.
+    enum Behaviour {
+        /// Drain the target stream, recording everything that arrives.
+        Collect,
+        /// Fail immediately, as a scanner whose transport died would.
+        Fail(&'static str),
+        /// Panic immediately, as a scanner with a bug in it would.
+        Panic,
+    }
+
     struct MockPortScanner {
         supported: Vec<Protocol>,
         received: Arc<Mutex<Vec<Target>>>,
+        behaviour: Behaviour,
     }
 
     impl MockPortScanner {
         fn new(supported: Vec<Protocol>) -> (Self, Arc<Mutex<Vec<Target>>>) {
+            Self::with_behaviour(supported, Behaviour::Collect)
+        }
+
+        fn with_behaviour(
+            supported: Vec<Protocol>,
+            behaviour: Behaviour,
+        ) -> (Self, Arc<Mutex<Vec<Target>>>) {
             let received = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
                     supported,
                     received: received.clone(),
+                    behaviour,
                 },
                 received,
             )
@@ -159,11 +222,37 @@ mod tests {
         }
 
         async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+            match self.behaviour {
+                Behaviour::Fail(reason) => return Err(anyhow::anyhow!(reason)),
+                Behaviour::Panic => panic!("scanner bug"),
+                Behaviour::Collect => {}
+            }
+
             while let Some(t) = targets.recv().await {
                 self.received.lock().unwrap().push(t);
             }
             Ok(())
         }
+    }
+
+    fn target(protocol: Protocol, port: u16) -> Target {
+        Target {
+            ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port,
+            protocol,
+        }
+    }
+
+    /// Feeds `targets` through a composite over `scanners` and returns what the
+    /// run reported.
+    async fn run(scanners: Vec<Box<dyn PortScanner>>, targets: Vec<Target>) -> anyhow::Result<()> {
+        let mut composite = CompositePortScanner::new(scanners);
+        let (tx, rx) = mpsc::channel(16);
+        for t in targets {
+            tx.send(t).await.unwrap();
+        }
+        drop(tx);
+        composite.scan(rx).await
     }
 
     #[tokio::test]
@@ -204,5 +293,66 @@ mod tests {
         let udp_received = udp_rx.lock().unwrap();
         assert_eq!(udp_received.len(), 1);
         assert_eq!(udp_received[0].protocol, Protocol::Udp);
+    }
+
+    /// A scanner that fails must not take its siblings' results with it: every
+    /// scanner is restored for the service-detection pass regardless.
+    #[tokio::test]
+    async fn a_failing_scanner_is_reported_without_losing_the_others() {
+        let (failing, _) =
+            MockPortScanner::with_behaviour(vec![Protocol::Tcp], Behaviour::Fail("transport died"));
+        let (working, udp_rx) = MockPortScanner::new(vec![Protocol::Udp]);
+        let mut composite = CompositePortScanner::new(vec![Box::new(failing), Box::new(working)]);
+
+        let (tx, rx) = mpsc::channel(16);
+        tx.send(target(Protocol::Udp, 53)).await.unwrap();
+        drop(tx);
+
+        let err = composite.scan(rx).await.expect_err("the failure surfaces");
+
+        assert!(err.to_string().contains("transport died"));
+        assert_eq!(udp_rx.lock().unwrap().len(), 1, "sibling still ran");
+        assert_eq!(composite.scanners.len(), 2, "both scanners restored");
+    }
+
+    /// A panicking scanner used to vanish along with its task, leaving the run
+    /// looking clean. It has to surface as a failure like any other.
+    #[tokio::test]
+    async fn a_panicking_scanner_surfaces_as_a_failure() {
+        let (panicking, _) = MockPortScanner::with_behaviour(vec![Protocol::Tcp], Behaviour::Panic);
+        let (working, udp_rx) = MockPortScanner::new(vec![Protocol::Udp]);
+
+        let err = run(
+            vec![Box::new(panicking), Box::new(working)],
+            vec![target(Protocol::Udp, 53)],
+        )
+        .await
+        .expect_err("a panic is a failure");
+
+        assert!(err.to_string().contains("panicked"), "got: {err}");
+        assert_eq!(udp_rx.lock().unwrap().len(), 1, "sibling still ran");
+    }
+
+    /// Targets nothing claims are counted and warned about, not silently
+    /// discarded - a scan that answers a narrower question than it was asked
+    /// has to say so.
+    #[tokio::test]
+    async fn targets_with_no_route_do_not_stop_the_run() {
+        let (tcp_scanner, tcp_rx) = MockPortScanner::new(vec![Protocol::Tcp]);
+
+        run(
+            vec![Box::new(tcp_scanner)],
+            vec![
+                target(Protocol::Tcp, 80),
+                target(Protocol::Udp, 53),
+                target(Protocol::Sctp, 9),
+            ],
+        )
+        .await
+        .expect("unroutable targets are not a failure");
+
+        let received = tcp_rx.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].protocol, Protocol::Tcp);
     }
 }

@@ -1,0 +1,32 @@
+[service]
+name = "snmp"
+default_ports = [161]
+description = "Simple Network Management Protocol"
+
+# An SNMPv1 GetRequest for sysDescr.0 with the default `public` community. SNMP
+# has no text form, so this is BER: nested tag/length/value triples, where a
+# length that disagrees with the bytes after it is discarded by the agent
+# without a word. The build validates every length here rather than trusting
+# them (see `build.rs`), because that failure is indistinguishable on the wire
+# from a filtered port.
+#
+# An agent configured with a different community still answers - with an error
+# PDU - so guessing `public` costs nothing for a port scan: the reply is the
+# result.
+#
+#   30 29                   SEQUENCE, 41 bytes: the message
+#     02 01 00              INTEGER version = 0 (SNMPv1)
+#     04 06 "public"        OCTET STRING community
+#     a0 1c                 GetRequest PDU, 28 bytes
+#       02 04 "zond"        INTEGER request ID
+#       02 01 00            INTEGER error-status = noError
+#       02 01 00            INTEGER error-index = 0
+#       30 0e               SEQUENCE OF, 14 bytes: variable bindings
+#         30 0c             SEQUENCE, 12 bytes: one binding
+#           06 08 2b ...    OID 1.3.6.1.2.1.1.1.0 (sysDescr.0); the first two
+#                           arcs pack into one byte, 1*40 + 3 = 0x2b
+#           05 00           NULL: the value being asked for
+[[probe]]
+name = "snmp_v1_get_sysdescr"
+payload = '\x30\x29\x02\x01\x00\x04\x06public\xa0\x1c\x02\x04zond\x02\x01\x00\x02\x01\x00\x30\x0e\x30\x0c\x06\x08\x2b\x06\x01\x02\x01\x01\x01\x00\x05\x00'
+protocol = "udp"

@@ -1,0 +1,26 @@
+[service]
+name = "netbios-ns"
+default_ports = [137]
+description = "NetBIOS Name Service"
+
+# A node status request for the wildcard name `*` - the query nbtscan and
+# friends use to make a Windows or Samba host list its registered names.
+#
+# The name is carried in NetBIOS first-level encoding, which splits each byte of
+# a 16-byte name into two nibbles and adds 'A' to each. So `*` (0x2A) becomes
+# "CK", and the 15 trailing spaces (0x20) become "AA" thirty times, giving the
+# 32-byte encoded form below.
+#
+#   80 f0        transaction ID
+#   00 10        flags: query, broadcast
+#   00 01        QDCOUNT: one question
+#   00 00 x3     ANCOUNT / NSCOUNT / ARCOUNT
+#   20           QNAME length: 32 encoded bytes
+#   CKAA...AA    the encoded wildcard name
+#   00           end of name
+#   00 21        QTYPE: NBSTAT
+#   00 01        QCLASS: IN
+[[probe]]
+name = "netbios_node_status"
+payload = '\x80\xf0\x00\x10\x00\x01\x00\x00\x00\x00\x00\x00\x20CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x00\x00\x21\x00\x01'
+protocol = "udp"

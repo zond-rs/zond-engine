@@ -139,8 +139,8 @@ impl HostnameResolver {
                         }
                 }
                 pkt = self.transport.rx.recv() => {
-                    if let Some((bytes, _addr)) = pkt {
-                        match self.process_udp_packets(&bytes) {
+                    if let Some(reply) = pkt {
+                        match self.process_udp_packets(&reply.bytes) {
                             Ok(_) => {},
                             Err(e) => error!(verbosity = 1, "UDP packet processing failed: {e}")
                         }
@@ -162,8 +162,8 @@ impl HostnameResolver {
                                 }
                         }
                         pkt = self.transport.rx.recv() => {
-                            if let Some((bytes, _addr)) = pkt {
-                                let _ = self.process_udp_packets(&bytes);
+                            if let Some(reply) = pkt {
+                                let _ = self.process_udp_packets(&reply.bytes);
                             }
                         }
                     }

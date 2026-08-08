@@ -25,6 +25,11 @@
 //! `AF_INET6` is 30, FreeBSD 28, NetBSD/OpenBSD 24), and reading the IP
 //! header directly sidesteps that entirely.
 //!
+//! The same parse is reused for the IP packet *quoted inside* an ICMP error,
+//! which is how a UDP scan learns which probe an unreachable message answers.
+//! That path parses bytes chosen by a remote host, so every length here is
+//! taken from the packet and bounds-checked rather than assumed.
+//!
 //! ## Send
 //!
 //! [`build_ethernet_frame`] wraps an already-built Layer-4 segment in IP and
@@ -43,7 +48,7 @@ use pnet::util::MacAddr;
 
 use crate::protocols::ethernet;
 use crate::protocols::ip;
-use crate::protocols::utils::ETH_HDR_LEN;
+use crate::protocols::utils::{ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN};
 
 /// The subset of `pcap` data-link types this crate knows how to strip down to
 /// an IP packet. Anything else is [`LinkType::Unsupported`] and the caller
@@ -123,34 +128,75 @@ fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
     }
 }
 
-/// Extracts the source IP address and the Layer-4 segment from an IP packet,
+/// One parsed IP packet: its endpoints, the Layer-4 protocol it carries, and
+/// that Layer-4 segment.
+///
+/// The protocol travels with the bytes because a Layer-4 segment is *not*
+/// self-describing. `UdpPacket::new` succeeds on any eight bytes, so an ICMP
+/// error read as UDP yields a header full of plausible nonsense - a reader
+/// that has to guess will eventually guess wrong. Carrying the IP header's
+/// answer removes the guess.
+///
+/// Both endpoints are kept, not just the source. A reply's source is who sent
+/// it, but an ICMP error's *quoted* packet identifies the probe by its
+/// destination - and the router that reports the error is not the host the
+/// probe was aimed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpSegment<'a> {
+    /// Who sent the packet.
+    pub source: IpAddr,
+    /// Who it was addressed to.
+    pub destination: IpAddr,
+    /// The Layer-4 protocol [`payload`](Self::payload) is, read from the IPv4
+    /// protocol field or the IPv6 next-header field.
+    pub protocol: IpNextHeaderProtocol,
+    /// The Layer-4 segment: the bytes after the IP header.
+    pub payload: &'a [u8],
+}
+
+/// Parses an IP packet into its endpoints, protocol, and Layer-4 segment,
 /// dispatching on the version nibble so it works regardless of how the link
 /// layer labeled the packet.
 ///
-/// Returns `None` for a truncated packet or an unrecognized IP version.
-/// IPv6 extension headers are not walked - the probes this parses replies to
-/// never elicit them - so the returned slice is the bytes immediately after
-/// the fixed IPv6 header.
-pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<(IpAddr, &[u8])> {
+/// Returns `None` for a truncated packet, an implausible header length, or an
+/// unrecognized IP version. IPv6 extension headers are not walked - the probes
+/// this parses replies to never elicit them - so the payload is the bytes
+/// immediately after the fixed IPv6 header, and `protocol` is the next-header
+/// value verbatim.
+pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
     match ip_bytes.first()? >> 4 {
         4 => {
             let packet = Ipv4Packet::new(ip_bytes)?;
+            // IHL is four bits of remote-chosen data. Anything below the fixed
+            // header size would slice back into the header itself, so reject it
+            // rather than hand out a payload that overlaps the addresses.
             let header_len = packet.get_header_length() as usize * 4;
-            let segment = ip_bytes.get(header_len..)?;
-            Some((IpAddr::V4(packet.get_source()), segment))
+            if header_len < IP_V4_HDR_LEN {
+                return None;
+            }
+            Some(IpSegment {
+                source: IpAddr::V4(packet.get_source()),
+                destination: IpAddr::V4(packet.get_destination()),
+                protocol: packet.get_next_level_protocol(),
+                payload: ip_bytes.get(header_len..)?,
+            })
         }
         6 => {
             let packet = Ipv6Packet::new(ip_bytes)?;
-            let segment = ip_bytes.get(crate::protocols::utils::IP_V6_HDR_LEN..)?;
-            Some((IpAddr::V6(packet.get_source()), segment))
+            Some(IpSegment {
+                source: IpAddr::V6(packet.get_source()),
+                destination: IpAddr::V6(packet.get_destination()),
+                protocol: packet.get_next_header(),
+                payload: ip_bytes.get(IP_V6_HDR_LEN..)?,
+            })
         }
         _ => None,
     }
 }
 
 /// Convenience over [`strip_to_ip`] + [`parse_ip_segment`]: takes a captured
-/// frame and its link type and yields `(source_ip, layer4_segment)`.
-pub fn parse_captured_segment(link: LinkType, frame: &[u8]) -> Option<(IpAddr, &[u8])> {
+/// frame and its link type and yields the [`IpSegment`] within.
+pub fn parse_captured_segment(link: LinkType, frame: &[u8]) -> Option<IpSegment<'_>> {
     parse_ip_segment(strip_to_ip(link, frame)?)
 }
 
@@ -225,32 +271,47 @@ mod tests {
     }
 
     #[test]
-    fn parses_source_and_segment_from_ipv4() {
+    fn parses_endpoints_protocol_and_segment_from_ipv4() {
         let payload = [0xDE, 0xAD, 0xBE, 0xEF];
         let src = Ipv4Addr::new(203, 0, 113, 7);
         let packet = ipv4_packet(src, &payload);
 
-        let (parsed_src, segment) = parse_ip_segment(&packet).unwrap();
-        assert_eq!(parsed_src, IpAddr::V4(src));
-        assert_eq!(segment, &payload);
+        let parsed = parse_ip_segment(&packet).unwrap();
+        assert_eq!(parsed.source, IpAddr::V4(src));
+        assert_eq!(parsed.destination, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(parsed.protocol, TCP);
+        assert_eq!(parsed.payload, &payload);
     }
 
     #[test]
-    fn parses_source_and_segment_from_ipv6() {
+    fn parses_endpoints_protocol_and_segment_from_ipv6() {
         let payload = [1, 2, 3, 4];
         let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
         let header = ip::create_ipv6_header(
             src,
             Ipv6Addr::LOCALHOST,
             payload.len() as u16,
-            IpNextHeaderProtocols::Tcp,
+            IpNextHeaderProtocols::Udp,
         )
         .unwrap();
         let packet: Vec<u8> = header.into_iter().chain(payload).collect();
 
-        let (parsed_src, segment) = parse_ip_segment(&packet).unwrap();
-        assert_eq!(parsed_src, IpAddr::V6(src));
-        assert_eq!(segment, &payload);
+        let parsed = parse_ip_segment(&packet).unwrap();
+        assert_eq!(parsed.source, IpAddr::V6(src));
+        assert_eq!(parsed.destination, IpAddr::V6(Ipv6Addr::LOCALHOST));
+        assert_eq!(parsed.protocol, IpNextHeaderProtocols::Udp);
+        assert_eq!(parsed.payload, &payload);
+    }
+
+    /// A header length below the fixed 20 bytes would slice back into the
+    /// header itself. Remote hosts choose this field inside a quoted ICMP
+    /// packet, so it is rejected rather than trusted.
+    #[test]
+    fn implausible_ipv4_header_length_is_rejected() {
+        let mut packet = ipv4_packet(Ipv4Addr::new(10, 0, 0, 1), &[1, 2, 3, 4]);
+        // Version 4, IHL 3 (12 bytes - shorter than the fixed header).
+        packet[0] = 0x43;
+        assert!(parse_ip_segment(&packet).is_none());
     }
 
     #[test]
@@ -261,9 +322,9 @@ mod tests {
         let mut framed = vec![2, 0, 0, 0];
         framed.extend_from_slice(&packet);
 
-        let (src, segment) = parse_captured_segment(LinkType::NullLoop, &framed).unwrap();
-        assert_eq!(src, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
-        assert_eq!(segment, &payload);
+        let parsed = parse_captured_segment(LinkType::NullLoop, &framed).unwrap();
+        assert_eq!(parsed.source, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        assert_eq!(parsed.payload, &payload);
     }
 
     #[test]
@@ -284,9 +345,10 @@ mod tests {
         // header inside carries a different total length than `ip_packet`'s
         // only if lengths diverge; here they match, so compare the segment.
         let _ = ip_packet;
-        let (src, segment) = parse_captured_segment(LinkType::Ethernet, &frame).unwrap();
-        assert_eq!(src, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)));
-        assert_eq!(segment, &payload);
+        let parsed = parse_captured_segment(LinkType::Ethernet, &frame).unwrap();
+        assert_eq!(parsed.source, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)));
+        assert_eq!(parsed.destination, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        assert_eq!(parsed.payload, &payload);
     }
 
     #[test]
@@ -309,9 +371,9 @@ mod tests {
         frame.extend_from_slice(&[0x08, 0x00]); // inner EtherType IPv4
         frame.extend_from_slice(&inner);
 
-        let (src, segment) = parse_captured_segment(LinkType::Ethernet, &frame).unwrap();
-        assert_eq!(src, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)));
-        assert_eq!(segment, &payload);
+        let parsed = parse_captured_segment(LinkType::Ethernet, &frame).unwrap();
+        assert_eq!(parsed.source, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)));
+        assert_eq!(parsed.payload, &payload);
     }
 
     #[test]
