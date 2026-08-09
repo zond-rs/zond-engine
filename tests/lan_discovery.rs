@@ -24,6 +24,7 @@ use std::time::Duration;
 use common::fake_lan::{FakeLan, LanHost, LanProbe};
 use common::*;
 use pnet::datalink::MacAddr;
+use zond_engine::core::models::host::HostStatus;
 use zond_engine::core::models::ip::set::IpSet;
 use zond_engine::core::session::ScanSession;
 use zond_engine::scanner::NetworkExplorer;
@@ -70,6 +71,53 @@ async fn an_answering_host_is_discovered_with_its_mac() {
         host.mac().map(|m| m.to_string()),
         Some(PEER_A.to_string()),
         "the MAC must come from the ARP reply"
+    );
+}
+
+/// A discovered host records *why* it is considered alive, from the scan rather
+/// than from a fixture.
+///
+/// This is the assertion the engine went without: for as long as no scanner
+/// wrote a status, every host in every report came back `unknown` and
+/// `hosts_alive` was always `0`, while the tests that should have caught it
+/// compared a summary against the hosts in the same report - `0 == 0` - or set
+/// the status themselves on a hand-built host. An ARP reply is the strongest
+/// liveness evidence obtainable, so if anything is ever `Up`, this is.
+#[tokio::test]
+async fn an_answering_host_records_what_proved_it_alive() {
+    let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A));
+    let session = sweep(&lan, &[v4(10)], Scope::Targeted).await;
+
+    let host = session.store.get(&v4(10)).expect("host discovered");
+    assert_eq!(host.status(), HostStatus::Up);
+    assert!(host.is_alive());
+    assert_eq!(status_protocols(&session, v4(10)), vec!["Arp".to_string()]);
+    assert!(
+        host.reasons().iter().all(|reason| reason.source.is_none()),
+        "the host answered for itself, so no reason may name another sender"
+    );
+}
+
+/// The IPv6 half of the same contract, and the reason `StatusProtocol` gained an
+/// `Ndp` variant: half the devices on a real segment are found this way, and
+/// exporting them as `custom:ndp` would misreport a first-class protocol as a
+/// script result.
+#[tokio::test]
+async fn an_ipv6_neighbour_is_alive_by_neighbour_discovery() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let lan = FakeLan::new()
+        .host(v4(10), LanHost::at(PEER_A))
+        .host(peer_v6, LanHost::at(PEER_B));
+
+    let targets: Vec<IpAddr> = (10..=20).map(v4).collect();
+    let session = sweep(&lan, &targets, Scope::Sweep).await;
+
+    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    assert_eq!(host.status(), HostStatus::Up);
+    assert_eq!(
+        status_protocols(&session, peer_v6),
+        vec!["Ndp".to_string()],
+        "a neighbour found over IPv6 must say so, not report itself as ARP"
     );
 }
 

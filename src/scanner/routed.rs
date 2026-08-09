@@ -26,6 +26,7 @@ use std::{
 
 use crate::core::config::ProbeTuning;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
 use crate::core::models::timer::ScanBudget;
@@ -513,11 +514,21 @@ impl RoutedScanner {
         // `write_host`, so the deadline and DNS follow-ups below never run under
         // the store lock.
         let is_new = self.ctx.write_host(ip, |host| {
+            // A TCP segment from a probed address is proof of a live stack
+            // whichever flags it carries: a SYN+ACK and a RST both require the
+            // host to have received the probe and answered it. Discovery already
+            // treats either as an answer; this records what the answer proved.
+            let was_up = host.status().is_up();
+            host.record_evidence(
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::TcpSyn, "tcp reply to a discovery probe"),
+            );
+
             if let Some(rtt) = rtt {
                 host.add_rtt(rtt);
                 return true;
             }
-            false
+            !was_up
         });
 
         if is_new {

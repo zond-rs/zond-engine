@@ -22,7 +22,7 @@
 use super::dispatcher::Dispatcher;
 use super::pool::ProbePool;
 use super::{NetworkExplorer, PortScanner, payload, tuning};
-use crate::core::models::host::Host;
+use crate::core::models::host::{Host, HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
@@ -67,11 +67,27 @@ impl NetworkExplorer for ConnectScanner {
     }
 }
 
-/// The outcome of one finished [`port_prober`] task: the port it classified, or
-/// `None` when the port was closed or the target was not probed at all. A probe
-/// never fails, since every network outcome maps to a port state or to `None`, so
-/// this is a plain [`Option`] rather than a `Result`.
-type ProbedPort = Option<(IpAddr, Port)>;
+/// What one finished prober task learned. A probe never fails, since every
+/// network outcome maps to some combination of the fields below, so this is a
+/// plain [`Option`] rather than a `Result`.
+///
+/// `None` means the target was not probed at all.
+struct Probed {
+    /// The address probed.
+    ip: IpAddr,
+    /// The port verdict, where there is one worth recording. A refusal proves
+    /// the port is closed but is deliberately not filed, which is why this is
+    /// separate from [`Probed::answered`].
+    port: Option<Port>,
+    /// Whether the host answered. The kernel hands back a completed handshake or
+    /// a `ConnectionRefused` only when a segment came back from the target, so
+    /// either one proves a live stack - a refusal is a RST the kernel
+    /// translated. A timeout proves nothing and never sets this.
+    answered: bool,
+}
+
+/// The outcome of one finished [`port_prober`] task.
+type ProbedPort = Option<Probed>;
 
 /// Adapts the unprivileged [`scan`] engine to [`PortScanner`], so
 /// [`crate::scanner::scan`] can drive it through the same path as the privileged
@@ -175,11 +191,32 @@ pub async fn scan(
     Ok(())
 }
 
-/// Folds one finished probe into the store, if it classified a non-closed port.
+/// Folds one finished probe into the store: the port it classified, if it
+/// classified one worth keeping, and what the exchange proved about the host.
+///
+/// A refused connection reaches here with no port and `answered` set, which is
+/// the case worth noticing: this strategy declines to file closed ports, but the
+/// RST behind the refusal still proves the host is there, and that evidence
+/// would otherwise be dropped along with the port verdict.
 fn absorb_probe(ctx: &ScanContext, probed: ProbedPort) {
-    if let Some((ip, port)) = probed {
-        ctx.update_host(ip, |host| host.add_port(port));
+    let Some(probed) = probed else {
+        return;
+    };
+    if probed.port.is_none() && !probed.answered {
+        return;
     }
+
+    ctx.update_host(probed.ip, |host| {
+        if let Some(port) = probed.port.clone() {
+            host.add_port(port);
+        }
+        if probed.answered {
+            host.record_evidence(
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::TcpSyn, "tcp connect answered by the host"),
+            );
+        }
+    });
 }
 
 /// Probes a single [`Target`] over a full TCP connect handshake and classifies
@@ -208,29 +245,46 @@ async fn port_prober(target: Target) -> ProbedPort {
             let port =
                 crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Open);
             let port = crate::fingerprinting::fingerprint_tcp(stream, port).await;
-            Some((target.ip, port))
+            Some(Probed {
+                ip: target.ip,
+                port: Some(port),
+                answered: true,
+            })
         }
         Ok(Err(e)) => {
             use std::io::ErrorKind;
             match e.kind() {
-                // A refusal is a definite "closed"; report nothing to record.
-                ErrorKind::ConnectionRefused => None,
-                // Anything else reached the host but didn't complete: filtered.
-                _ => Some((
-                    target.ip,
-                    crate::fingerprinting::baseline_port(
+                // A refusal is a definite "closed"; no port is recorded, but the
+                // RST the kernel translated into it proves the host is up.
+                ErrorKind::ConnectionRefused => Some(Probed {
+                    ip: target.ip,
+                    port: None,
+                    answered: true,
+                }),
+                // Anything else failed without the target having answered - a
+                // local routing failure, an exhausted resource - so the port is
+                // filtered and the host has proved nothing.
+                _ => Some(Probed {
+                    ip: target.ip,
+                    port: Some(crate::fingerprinting::baseline_port(
                         target.port,
                         Protocol::Tcp,
                         PortState::Filtered,
-                    ),
-                )),
+                    )),
+                    answered: false,
+                }),
             }
         }
         // Timeout: the probe was silently dropped, the classic firewall signature.
-        Err(_) => Some((
-            target.ip,
-            crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Filtered),
-        )),
+        Err(_) => Some(Probed {
+            ip: target.ip,
+            port: Some(crate::fingerprinting::baseline_port(
+                target.port,
+                Protocol::Tcp,
+                PortState::Filtered,
+            )),
+            answered: false,
+        }),
     }
 }
 
@@ -266,11 +320,24 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
     }
 
     let socket_addr = SocketAddr::new(target.ip, target.port);
-    let record = |state| {
-        Some((
-            target.ip,
-            crate::fingerprinting::baseline_port(target.port, Protocol::Udp, state),
-        ))
+    // `answered` is set only where the kernel vouches for who sent the packet.
+    // A datagram arriving on a connected socket came from the peer, so `Open`
+    // proves the host. A refusal does not: it is an ICMP error the kernel
+    // matched to this socket by the datagram it quotes, and the error's own
+    // source address - a router's, or the target's - is not surfaced through
+    // this API at all. The privileged scanner reads that address and can tell
+    // the two apart; here the port verdict stands on its own and no claim is
+    // made about the host.
+    let record = |state, answered| {
+        Some(Probed {
+            ip: target.ip,
+            port: Some(crate::fingerprinting::baseline_port(
+                target.port,
+                Protocol::Udp,
+                state,
+            )),
+            answered,
+        })
     };
 
     let socket = match tokio::net::UdpSocket::bind(wildcard_for(target.ip)).await {
@@ -296,7 +363,7 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
         // A refusal can surface here rather than on the receive: the kernel
         // reports a queued ICMP error on whichever operation comes next.
         return match e.kind() {
-            ErrorKind::ConnectionRefused => record(PortState::Closed),
+            ErrorKind::ConnectionRefused => record(PortState::Closed, false),
             _ => {
                 error!(
                     verbosity = 2,
@@ -310,19 +377,19 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
     let mut buf = [0u8; 1024];
     match timeout(tuning::CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
         // Something answered, so something is listening.
-        Ok(Ok(_)) => record(PortState::Open),
+        Ok(Ok(_)) => record(PortState::Open, true),
         // An ICMP Port Unreachable, surfaced against the connected peer.
-        Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => record(PortState::Closed),
+        Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => record(PortState::Closed, false),
         // Any other failure leaves the port as unknown as silence does.
         Ok(Err(e)) => {
             error!(
                 verbosity = 2,
                 "UDP probe to {socket_addr} failed after sending: {e}"
             );
-            record(PortState::OpenFiltered)
+            record(PortState::OpenFiltered, false)
         }
         // No error and no reply: open but silent, or filtered. UDP cannot tell.
-        Err(_) => record(PortState::OpenFiltered),
+        Err(_) => record(PortState::OpenFiltered, false),
     }
 }
 
@@ -431,7 +498,17 @@ async fn prober(target: Target, found_set: Arc<DashSet<IpAddr>>) -> ProbedHost {
     // `insert` returns false if a parallel probe already claimed this host, so
     // exactly the first prober to reach it emits the record; the rest fold to None.
     if alive && found_set.insert(target.ip) {
-        Some(Host::new(target.ip).with_rtt(start.elapsed()))
+        let mut host = Host::new(target.ip).with_rtt(start.elapsed());
+        // Every outcome that reaches here with `alive` set required a segment
+        // from the target: a completed handshake, or a reset the kernel surfaced
+        // as one of the connection errors above. `Host::merge` keeps the
+        // stronger status, so this survives being folded into an entry another
+        // strategy created first.
+        host.record_evidence(
+            HostStatus::Up,
+            StatusReason::new(StatusProtocol::TcpSyn, "tcp connect answered by the host"),
+        );
+        Some(host)
     } else {
         None
     }
@@ -484,8 +561,9 @@ mod tests {
 
         let probed = udp_port_prober(udp_target(ip, port)).await;
 
-        let (probed_ip, probed_port) = probed.expect("an IPv6 target must produce a verdict");
-        assert_eq!(probed_ip, ip);
+        let probed = probed.expect("an IPv6 target must produce a verdict");
+        let probed_port = probed.port.expect("a closed port is still a verdict");
+        assert_eq!(probed.ip, ip);
         assert_eq!(probed_port.number(), port);
         assert_eq!(probed_port.state(), PortState::Closed);
     }
@@ -497,7 +575,13 @@ mod tests {
 
         let probed = udp_port_prober(udp_target(ip, port)).await;
 
-        assert_eq!(probed.expect("a verdict").1.state(), PortState::Closed);
+        assert_eq!(
+            probed
+                .and_then(|probed| probed.port)
+                .expect("a verdict")
+                .state(),
+            PortState::Closed
+        );
     }
 
     /// A listener that answers is `Open` over either family.
@@ -519,7 +603,10 @@ mod tests {
             let probed = udp_port_prober(udp_target(ip, port)).await;
 
             assert_eq!(
-                probed.expect("a verdict").1.state(),
+                probed
+                    .and_then(|probed| probed.port)
+                    .expect("a verdict")
+                    .state(),
                 PortState::Open,
                 "a live {ip} listener must read as open"
             );

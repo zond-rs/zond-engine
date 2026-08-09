@@ -35,6 +35,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::retry::{Due, ProbeLedger, RetryConfig, RetryPolicy};
 use crate::core::models::timer::ScanBudget;
@@ -595,7 +596,13 @@ impl LocalScanner {
             return Err(LocalScannerError::AddressOutOfRange(source_addr).into());
         }
 
-        let rtt = match self.interpret_response(&eth_frame) {
+        let Some((matched, protocol)) = self.interpret_response(&eth_frame) else {
+            return Ok(());
+        };
+
+        let rtt = match matched {
+            // `interpret_response` returns `None` rather than this, so the arm
+            // exists only to satisfy the match.
             ProtocolMatch::Unhandled => return Ok(()),
             // The reply retires this address's own request, and measures it if
             // the ledger can say which attempt was answered.
@@ -626,7 +633,7 @@ impl LocalScanner {
         if self.ip_set.contains(&source_addr) {
             self.responded.insert(source_addr);
         }
-        self.record_response(source_mac, source_addr, rtt);
+        self.record_response(source_mac, source_addr, rtt, protocol);
 
         Ok(())
     }
@@ -641,33 +648,51 @@ impl LocalScanner {
 
     /// Tries each configured [`DiscoveryProtocol`] against `frame` in turn.
     ///
-    /// Returns [`ProtocolMatch::Unhandled`] when no protocol recognized the frame
-    /// as a discovery response, or when one recognized it but failed to interpret
-    /// it. Either way the frame carries no reliable information about who sent it
-    /// and must not be attributed to any host. Seeing a frame that no protocol
+    /// Returns the claiming protocol's verdict together with the evidence it
+    /// counts as, or `None` when no protocol recognized the frame as a discovery
+    /// response, or when one recognized it but failed to interpret it. Either
+    /// way the frame carries no reliable information about who sent it and must
+    /// not be attributed to any host. Seeing a frame that no protocol
     /// claims is common in promiscuous mode: it may be LAN traffic between other
     /// hosts, or traffic forwarded through a router rather than sent directly,
     /// whose Ethernet source is the router itself and not the host the IP packet
     /// originated from.
-    fn interpret_response(&mut self, frame: &EthernetPacket) -> ProtocolMatch {
+    fn interpret_response(
+        &mut self,
+        frame: &EthernetPacket,
+    ) -> Option<(ProtocolMatch, StatusProtocol)> {
         for protocol in &self.protocols {
             match protocol.interpret(frame) {
                 Ok(ProtocolMatch::Unhandled) => continue,
-                Ok(matched) => return matched,
+                Ok(matched) => return Some((matched, protocol.status_protocol())),
                 Err(e) => {
                     error!(verbosity = 1, "Failed to interpret discovery response: {e}");
-                    return ProtocolMatch::Unhandled;
+                    return None;
                 }
             }
         }
 
-        ProtocolMatch::Unhandled
+        None
     }
 
     /// Applies a discovery response to shared scan state. It creates or updates
-    /// the responding host, feeds the adaptive deadline, and notifies both the
-    /// scan's event channel and the hostname resolver of anything new.
-    fn record_response(&mut self, source_mac: MacAddr, source_addr: IpAddr, rtt: Option<Duration>) {
+    /// the responding host, records what the reply proves about its liveness,
+    /// feeds the adaptive deadline, and notifies both the scan's event channel
+    /// and the hostname resolver of anything new.
+    ///
+    /// `protocol` is the evidence the claiming [`DiscoveryProtocol`] stands
+    /// behind. Every frame reaching here came off the local segment with the
+    /// host's own MAC as its Ethernet source, which is the strongest liveness
+    /// evidence the engine can obtain: the host is provably present, so the
+    /// status is [`HostStatus::Up`] regardless of which protocol claimed it and
+    /// regardless of whether the reply could be timed.
+    fn record_response(
+        &mut self,
+        source_mac: MacAddr,
+        source_addr: IpAddr,
+        rtt: Option<Duration>,
+        protocol: StatusProtocol,
+    ) {
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
 
         // Host mutation only. `write_host` owns the guard, the drop-before-emit
@@ -683,7 +708,14 @@ impl LocalScanner {
                 host.set_mac(source_mac.into_core());
             }
 
-            let mut changed = rtt.is_some();
+            // The protocol name is the whole of the evidence here - a reply came
+            // off the segment carrying this host's own MAC - so there is nothing
+            // a details string would add that `arp` or `ndp` does not already
+            // say.
+            let was_up = host.status().is_up();
+            host.record_evidence(HostStatus::Up, StatusReason::basic(protocol.clone()));
+
+            let mut changed = rtt.is_some() || !was_up;
             if let Some(rtt) = rtt {
                 host.add_rtt(rtt);
             }

@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use common::fake_net::{FakeNet, Layer4, Policy, Unreachable};
 use common::*;
+use zond_engine::core::models::host::HostStatus;
 use zond_engine::core::models::port::PortState;
 use zond_engine::core::session::ScanSession;
 use zond_engine::scanner::routed::{SynPortScanner, UdpPortScanner};
@@ -166,6 +167,36 @@ async fn udp_classifies_open_closed_and_silence() {
     );
 }
 
+/// A RST proves the host even though it is a negative verdict on the port.
+///
+/// This is the row of the liveness mapping most easily lost: a closed port and a
+/// live host arrive in the same segment, and a scanner reading only the port
+/// half reports a machine that answered as never having been heard from.
+#[tokio::test]
+async fn a_closed_port_still_proves_its_host_is_up() {
+    let (session, _net) = syn_scan(&[(80, Policy::closed())]).await;
+
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Closed));
+    assert_eq!(host_status(&session, TARGET), Some(HostStatus::Up));
+}
+
+/// The complement, and the invariant the whole design rests on: a port that
+/// answers nothing leaves the host exactly as unknown as it was. `Filtered` here
+/// is reached by exhausting the retry budget, and a status inferred from silence
+/// would make `is_alive()` true for a host that never sent a packet - the
+/// original defect in a new place.
+#[tokio::test]
+async fn a_silent_port_leaves_its_host_unknown() {
+    let (session, _net) = syn_scan(&[(80, Policy::silent())]).await;
+
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Filtered));
+    assert_eq!(host_status(&session, TARGET), Some(HostStatus::Unknown));
+    assert!(
+        status_protocols(&session, TARGET).is_empty(),
+        "silence must leave no audit trail"
+    );
+}
+
 /// The classic UDP scanning error, guarded. An administratively prohibited
 /// message says a filter refused the probe, so the port's real state was never
 /// observed. Reading it as `Closed` reports a firewalled port as definitively
@@ -181,12 +212,21 @@ async fn an_administratively_prohibited_port_is_filtered_not_closed() {
     );
 }
 
-/// A host-unreachable describes the path, not the port, so it is filtered too.
+/// A host-unreachable describes the address, not the port. It is the engine's
+/// only source of [`HostStatus::Down`], and it deliberately leaves the port
+/// alone: a router that could not deliver the datagram never learned anything
+/// about the port it was addressed to, so the probe retires by exhaustion like
+/// any other unanswered one.
 #[tokio::test]
-async fn a_host_unreachable_error_is_filtered() {
+async fn a_host_unreachable_error_is_a_verdict_on_the_host() {
     let (session, _net) = udp_scan(TARGET, &[(123, Policy::unreachable(Unreachable::Host))]).await;
 
-    assert_eq!(port_state(&session, TARGET, 123), Some(PortState::Filtered));
+    assert_eq!(host_status(&session, TARGET), Some(HostStatus::Down));
+    assert_eq!(
+        port_state(&session, TARGET, 123),
+        Some(PortState::OpenFiltered),
+        "the port was never reported on, so it ends where silence leaves it"
+    );
 }
 
 /// The same reasons over IPv6, which numbers them differently. Port-unreachable

@@ -2,3 +2,8 @@
 **/*.rs.bk
 *.swp
 .idea/
+
+# Internal working notes: design records, measurement logs and open defects,
+# written for whoever is working on the engine. Not user-facing documentation,
+# and deliberately not shipped.
+/docs/

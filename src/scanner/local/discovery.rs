@@ -15,6 +15,7 @@
 
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 
+use crate::core::models::host::StatusProtocol;
 use crate::protocols::ip;
 
 /// What a [`DiscoveryProtocol`] found when asked to interpret one received frame.
@@ -47,6 +48,14 @@ pub enum ProtocolMatch {
 /// pure function of the bytes in front of it.
 pub trait DiscoveryProtocol: Send {
     fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch>;
+
+    /// The evidence this protocol produces, for the liveness record of whichever
+    /// host it claims a frame from.
+    ///
+    /// Each implementation names its own evidence rather than the receive loop
+    /// inferring it from the frame, so a new discovery mechanism stays one more
+    /// implementation in this module — the same reason `interpret` lives here.
+    fn status_protocol(&self) -> StatusProtocol;
 }
 
 /// Recognizes ARP replies as discovery responses.
@@ -65,6 +74,10 @@ impl DiscoveryProtocol for ArpProtocol {
         }
 
         Ok(ProtocolMatch::Solicited)
+    }
+
+    fn status_protocol(&self) -> StatusProtocol {
+        StatusProtocol::Arp
     }
 }
 
@@ -88,6 +101,10 @@ impl DiscoveryProtocol for Icmpv6Protocol {
         }
 
         Ok(ProtocolMatch::AllNodes)
+    }
+
+    fn status_protocol(&self) -> StatusProtocol {
+        StatusProtocol::Ndp
     }
 }
 

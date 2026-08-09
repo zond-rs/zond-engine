@@ -228,6 +228,32 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
+    /// Records one piece of liveness evidence: the status it establishes, and
+    /// the reason it establishes it.
+    ///
+    /// This is how scanners report what they saw, and it is deliberately the
+    /// only such entry point. The status is **promoted, never lowered**, on the
+    /// semantic ordering of [`HostStatus`] — the same rule
+    /// [`Host::merge`](Host::merge) applies between two records of one host, for
+    /// the same reason: a scan learns about a host from several probes arriving
+    /// in an order nobody controls, and an ICMP unreachable from a router that
+    /// happens to land after an ARP reply must not overwrite proof the host
+    /// answered for itself.
+    ///
+    /// The reason is kept whether or not the status moved. A host that is
+    /// already `Up` still gains the audit trail of everything else that saw it,
+    /// which is the whole purpose of [`StatusReason`].
+    ///
+    /// Callers must only pass evidence backed by a received packet. Silence is
+    /// not evidence and has no status to record; see [`HostStatus::Unknown`].
+    pub fn record_evidence(&mut self, status: HostStatus, reason: StatusReason) {
+        if status > self.status {
+            self.status = status;
+        }
+        self.reasons.insert(reason);
+        self.last_seen = SystemTime::now();
+    }
+
     /// Sets the OS fingerprint and bumps `last_seen`.
     pub fn set_os(&mut self, os: OsFingerprint) {
         self.os = Some(Box::new(os));

@@ -13,6 +13,7 @@
 //! allowing disparate scan results to be merged deterministically by prioritizing
 //! the most definitive evidence of a host's state.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 /// The high-level reachability state of a network host.
@@ -23,25 +24,57 @@ use std::sync::Arc;
 /// This ordering is critical for the [`Host::merge`](crate::core::models::Host::merge) logic:
 /// if one scan identifies a host as `Down` but a concurrent high-fidelity scan
 /// identifies it as `Up`, the `Up` status will prevail.
+///
+/// The ordering is only defensible because of the rule below, which every
+/// producer of a status obeys: **silence never moves the status.** Each variant
+/// other than `Unknown` is backed by a packet the engine received, so ranking by
+/// aliveness also ranks by strength of evidence. Were a timeout allowed to
+/// produce `Filtered`, a host nobody ever heard from would outrank an explicit
+/// unreachable, and this ordering would invert the evidence it claims to rank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostStatus {
-    /// Reachability has not yet been determined or the scan results were inconclusive.
+    /// Nothing was received that says anything about this host. This is what a
+    /// timeout means, and it is deliberately not [`HostStatus::Down`]: an
+    /// address that answers nothing is indistinguishable from one that was never
+    /// reachable in the first place, and the engine declines to guess between
+    /// them.
     Unknown,
-    /// The host is explicitly confirmed to be offline or unreachable (e.g., ICMP Host Unreachable).
+    /// An intermediary reported this address unreachable — an ICMP host
+    /// unreachable, no route, or address unreachable, quoting a probe this scan
+    /// sent. Never inferred from silence.
     Down,
-    /// The host exists on the network, but active probes are being dropped or rejected by a firewall.
+    /// An intermediary explicitly rejected traffic to this address by policy, so
+    /// something is enforcing a perimeter around it even though the host itself
+    /// has not answered. Distinct from an address nothing answers for, which is
+    /// [`HostStatus::Unknown`].
     Filtered,
-    /// The host is confirmed to be online and fully responding to probes.
+    /// The host answered for itself. Any packet sourced by the host proves this,
+    /// including ones that are negative about the port they report on: a TCP RST
+    /// and an ICMP port unreachable each require a live stack to produce.
     Up,
 }
 
 /// Known protocols or events that provide evidence of host reachability.
+///
+/// Marked `#[non_exhaustive]`: probe types are added as the engine learns to
+/// speak them, and a consumer matching on this enum should pay for that with a
+/// recompile rather than a major version.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum StatusProtocol {
     /// Discovered via Address Resolution Protocol (Layer 2). Usually confirms local adjacency.
     Arp,
+    /// Discovered via IPv6 Neighbor Discovery (Layer 2) — a neighbor
+    /// advertisement, solicited or in answer to an all-nodes solicitation. The
+    /// IPv6 counterpart of [`StatusProtocol::Arp`], and equally conclusive:
+    /// the reply came off the local segment.
+    Ndp,
     /// Discovered via ICMP Echo Request/Reply.
     IcmpEcho,
+    /// Discovered via an ICMP Destination Unreachable quoting one of this scan's
+    /// probes. What it proves depends on who sent it and which code it carried,
+    /// which is why [`StatusReason::source`] exists.
+    IcmpUnreachable,
     /// Discovered via a successful TCP 3-way handshake on an open port.
     TcpSyn,
     /// Discovered via a valid application-level response over UDP.
@@ -55,9 +88,25 @@ pub enum StatusProtocol {
 /// `StatusReason` pairs a protocol event with optional human-readable or machine-parsable
 /// details to provide a transparent "audit trail" for host discovery.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct StatusReason {
     /// The specific protocol-level event that triggered this status.
     pub protocol: StatusProtocol,
+
+    /// The address that sent this evidence, when it is **not** the host the
+    /// evidence is about.
+    ///
+    /// An ICMP error names two addresses: the router or firewall that generated
+    /// it, and the destination of the datagram it quotes. They are different
+    /// claims. A port unreachable sourced by the target proves the target is
+    /// alive; the same message from a middlebox proves only that something in
+    /// the path speaks for that address, and recording the two identically would
+    /// let a NAT answering on another host's behalf be reported as that host
+    /// being up.
+    ///
+    /// `None` means the host answered for itself, which is the common case and
+    /// the one needing no qualification.
+    pub source: Option<IpAddr>,
 
     /// Extended details about the response (e.g., "Received TCP RST", "TTL Exceeded in transit").
     ///
@@ -71,6 +120,7 @@ impl StatusReason {
     pub fn new(protocol: StatusProtocol, details: impl Into<Arc<str>>) -> Self {
         Self {
             protocol,
+            source: None,
             details: Some(details.into()),
         }
     }
@@ -79,8 +129,19 @@ impl StatusReason {
     pub fn basic(protocol: StatusProtocol) -> Self {
         Self {
             protocol,
+            source: None,
             details: None,
         }
+    }
+
+    /// Attributes this evidence to the address that actually sent it.
+    ///
+    /// Only call this when `source` is not the host the reason is recorded
+    /// against — an unqualified reason already means the host answered for
+    /// itself.
+    pub fn from_source(mut self, source: IpAddr) -> Self {
+        self.source = Some(source);
+        self
     }
 }
 

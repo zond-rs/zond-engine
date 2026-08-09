@@ -26,6 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::core::config::ProbeTuning;
 use crate::core::models::deadline::AdaptiveDeadline;
+use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy};
 use crate::core::models::target::Target;
@@ -263,9 +264,36 @@ impl SynPortScanner {
         }
     }
 
+    /// Files a port verdict and, when that verdict came from a segment the host
+    /// sent, records what it proves about the host itself.
+    ///
+    /// The two are decided together because in this scanner the port state names
+    /// its own evidence: `Open` can only come from a SYN+ACK and `Closed` only
+    /// from a RST, each of which requires a live stack at the other end. A
+    /// closed port is the row most easily forgotten, since the port verdict is
+    /// negative while the host verdict is not.
+    ///
+    /// `Filtered` is the exception and deliberately records nothing. It is
+    /// produced by a spent attempt budget - by silence - and silence is not
+    /// evidence about a host. Promoting it would make `is_alive()` true for a
+    /// host that has never sent a packet.
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState) {
         let port = crate::fingerprinting::baseline_port(port_num, Protocol::Tcp, state);
-        self.ctx.update_host(ip, |host| host.add_port(port));
+        let evidence = match state {
+            PortState::Open => Some("syn-ack from a probed port"),
+            PortState::Closed => Some("rst from a probed port"),
+            _ => None,
+        };
+
+        self.ctx.update_host(ip, |host| {
+            host.add_port(port);
+            if let Some(details) = evidence {
+                host.record_evidence(
+                    HostStatus::Up,
+                    StatusReason::new(StatusProtocol::TcpSyn, details),
+                );
+            }
+        });
     }
 }
 

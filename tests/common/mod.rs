@@ -41,7 +41,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use zond_engine::core::config::ZondConfig;
-use zond_engine::core::models::host::Host;
+use zond_engine::core::models::host::{Host, HostStatus};
 use zond_engine::core::models::ip::set::IpSet;
 use zond_engine::core::models::port::{PortSet, PortState, Protocol};
 use zond_engine::core::models::target::{Target, TargetMap, TargetSet};
@@ -325,4 +325,27 @@ pub fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortSt
         .store
         .get(&ip)
         .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
+}
+
+/// The liveness verdict recorded for `ip`, or `None` if no host was recorded at
+/// all. The two are worth distinguishing: a host present with
+/// [`HostStatus::Unknown`] was probed and stayed silent, which is a different
+/// outcome from never having been probed.
+pub fn host_status(session: &ScanSession, ip: IpAddr) -> Option<HostStatus> {
+    session.store.get(&ip).map(|host| host.status())
+}
+
+/// Every protocol name recorded as evidence for `ip`'s status, sorted so a test
+/// can assert on them without depending on set iteration order.
+pub fn status_protocols(session: &ScanSession, ip: IpAddr) -> Vec<String> {
+    let Some(host) = session.store.get(&ip) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = host
+        .reasons()
+        .iter()
+        .map(|reason| format!("{:?}", reason.protocol))
+        .collect();
+    names.sort();
+    names
 }

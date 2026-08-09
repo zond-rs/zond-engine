@@ -211,7 +211,9 @@ pub fn scan_effort_name(effort: ScanEffort) -> &'static str {
 pub fn status_protocol_name(protocol: &StatusProtocol) -> Cow<'_, str> {
     match protocol {
         StatusProtocol::Arp => Cow::Borrowed("arp"),
+        StatusProtocol::Ndp => Cow::Borrowed("ndp"),
         StatusProtocol::IcmpEcho => Cow::Borrowed("icmp_echo"),
+        StatusProtocol::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
         StatusProtocol::TcpSyn => Cow::Borrowed("tcp_syn"),
         StatusProtocol::Udp => Cow::Borrowed("udp"),
         StatusProtocol::Custom(name) => Cow::Owned(format!("custom:{name}")),
@@ -943,7 +945,12 @@ impl<'a> HostDto<'a> {
         let redaction = options.redaction;
 
         let mut reasons: Vec<ReasonDto<'a>> = host.reasons().iter().map(ReasonDto::new).collect();
-        reasons.sort_by(|a, b| a.protocol.cmp(&b.protocol).then(a.details.cmp(&b.details)));
+        reasons.sort_by(|a, b| {
+            a.protocol
+                .cmp(&b.protocol)
+                .then(a.source_ip.cmp(&b.source_ip))
+                .then(a.details.cmp(&b.details))
+        });
 
         let mut roles: Vec<&'static str> = host
             .network_roles()
@@ -990,6 +997,13 @@ impl<'a> HostDto<'a> {
 pub struct ReasonDto<'a> {
     /// The protocol event that produced the evidence.
     pub protocol: Cow<'a, str>,
+    /// The address that sent the evidence, when it was not the host itself.
+    ///
+    /// Present only for second-hand evidence — an ICMP error from a router or
+    /// firewall about the probed address. `null` means the host answered for
+    /// itself, which is the stronger claim, so a consumer weighing how much to
+    /// trust a status can do it from this field alone.
+    pub source_ip: Option<String>,
     /// What was observed, where the strategy recorded it.
     pub details: Option<&'a str>,
 }
@@ -999,6 +1013,7 @@ impl<'a> ReasonDto<'a> {
     pub fn new(reason: &'a StatusReason) -> Self {
         Self {
             protocol: status_protocol_name(&reason.protocol),
+            source_ip: reason.source.map(|ip| ip.to_string()),
             details: reason.details.as_deref(),
         }
     }

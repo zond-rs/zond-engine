@@ -53,6 +53,7 @@ use tokio::sync::mpsc;
 
 use crate::core::config::ProbeTuning;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
 use crate::core::models::target::Target;
@@ -172,6 +173,10 @@ const ICMPV6_ADMIN_PROHIBITED: Icmpv6Code = Icmpv6Code(1);
 const ICMPV6_INGRESS_EGRESS_POLICY: Icmpv6Code = Icmpv6Code(5);
 /// Code 6: the route to the destination is a reject route.
 const ICMPV6_REJECT_ROUTE: Icmpv6Code = Icmpv6Code(6);
+/// Code 0: no route to destination - the v6 counterpart of host unreachable.
+const ICMPV6_NO_ROUTE: Icmpv6Code = Icmpv6Code(0);
+/// Code 3: the address itself is unreachable, whatever the port.
+const ICMPV6_ADDR_UNREACHABLE: Icmpv6Code = Icmpv6Code(3);
 
 /// The four unused bytes between an ICMPv6 Destination Unreachable header and
 /// the packet it quotes (RFC 4443 §3.1).
@@ -333,15 +338,43 @@ impl UdpPortScanner {
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
         let classified = match reply.protocol {
             IpNextHeaderProtocols::Udp => answering_probe(&reply.bytes, self.src_port)
-                .map(|port| ((reply.source, port), PortState::Open)),
+                .map(|port| ((reply.source, port), Verdict::Port(PortState::Open))),
             IpNextHeaderProtocols::Icmp => quoted_by_icmpv4(&reply.bytes, self.src_port),
             IpNextHeaderProtocols::Icmpv6 => quoted_by_icmpv6(&reply.bytes, self.src_port),
             _ => None,
         };
 
-        if let Some((target, state)) = classified {
-            self.resolve_probe(target, state, now);
+        match classified {
+            Some((target, Verdict::Port(state))) => {
+                self.resolve_probe(target, state, reply.source, now)
+            }
+            // The probe is deliberately left outstanding. This message reports
+            // that the address could not be reached at all, so it carries no
+            // verdict on the port it happened to quote, and the probe should
+            // retire on its own schedule like any other unanswered one.
+            Some((target, Verdict::Host)) => self.record_host_down(target.0, reply.source),
+            None => {}
         }
+    }
+
+    /// Records that a router could not reach this address.
+    ///
+    /// The engine's only producer of [`HostStatus::Down`], and the reason the
+    /// UDP scanner is the only path that can report it: it is the only one whose
+    /// capture filter admits ICMP at all.
+    ///
+    /// The evidence is second-hand by definition - the host cannot report its
+    /// own unreachability - so the reason names the router that sent it. Being
+    /// the lowest non-`Unknown` status, it never overwrites evidence that the
+    /// host answered for itself, whichever order the two arrive in.
+    fn record_host_down(&mut self, ip: IpAddr, sender: IpAddr) {
+        self.ctx.update_host(ip, |host| {
+            host.record_evidence(
+                HostStatus::Down,
+                StatusReason::new(StatusProtocol::IcmpUnreachable, "destination unreachable")
+                    .from_source(sender),
+            );
+        });
     }
 
     /// Retires one outstanding probe with the state its reply established,
@@ -354,7 +387,13 @@ impl UdpPortScanner {
     /// The round trip is whatever the ledger is willing to youch for. A probe
     /// that was sent once is unambiguous; one that was retried is not, since
     /// the two datagrams are identical on the wire, and no sample is taken.
-    fn resolve_probe(&mut self, target: ProbeTarget, state: PortState, now: Instant) {
+    fn resolve_probe(
+        &mut self,
+        target: ProbeTarget,
+        state: PortState,
+        sender: IpAddr,
+        now: Instant,
+    ) {
         let Some(resolution) = self.ledger.resolve(&target, None, now) else {
             return;
         };
@@ -363,7 +402,7 @@ impl UdpPortScanner {
         if let Some(rtt) = resolution.rtt {
             self.deadline.record_rtt(rtt);
         }
-        self.record_port(target.0, target.1, state);
+        self.record_port(target.0, target.1, state, Some(sender));
     }
 
     /// Resends every probe that has gone unanswered long enough, and writes off
@@ -388,7 +427,9 @@ impl UdpPortScanner {
                 Due::Retry {
                     key: (ip, port), ..
                 } => self.probe(ip, port, now),
-                Due::Exhausted((ip, port)) => self.record_port(ip, port, PortState::OpenFiltered),
+                Due::Exhausted((ip, port)) => {
+                    self.record_port(ip, port, PortState::OpenFiltered, None)
+                }
             }
         }
         self.due = due;
@@ -405,7 +446,7 @@ impl UdpPortScanner {
     /// the scan's own deadline ran out.
     fn resolve_remaining_as_filtered(&mut self) {
         for (ip, port) in self.ledger.drain_unresolved() {
-            self.record_port(ip, port, PortState::OpenFiltered);
+            self.record_port(ip, port, PortState::OpenFiltered, None);
         }
     }
 
@@ -424,9 +465,68 @@ impl UdpPortScanner {
         }
     }
 
-    fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState) {
+    /// Files a port verdict and whatever the reply that produced it proves about
+    /// the host.
+    ///
+    /// `sender` is the address the reply actually came from, or `None` when the
+    /// verdict came from a spent attempt budget rather than from a packet.
+    /// Everything here turns on comparing it against `ip`, because an ICMP error
+    /// names two addresses - the hop that generated it, and the destination of
+    /// the datagram it quotes - and they are different claims:
+    ///
+    /// - **The target answered.** Any reply the host sent proves it is up, and
+    ///   that includes ones negative about the port: a port unreachable is
+    ///   emitted by the host's own IP stack, and an administrative rejection
+    ///   from the host itself is a host that exists and is policing its traffic.
+    /// - **A middlebox rejected the probe by policy.** Something is enforcing a
+    ///   perimeter around this address, which is [`HostStatus::Filtered`] - the
+    ///   variant's documented meaning, and materially different from an address
+    ///   nothing answers for.
+    /// - **A middlebox reported the port closed.** The port verdict stands,
+    ///   since the message reports on the port, but no host status is recorded:
+    ///   the address that answered is not the address that was asked, and a NAT
+    ///   answering on another host's behalf must not be read as that host being
+    ///   up.
+    /// - **Nothing answered.** `OpenFiltered` from exhaustion records nothing.
+    ///   Silence is not evidence about a host.
+    fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState, sender: Option<IpAddr>) {
         let port = crate::fingerprinting::baseline_port(port_num, Protocol::Udp, state);
-        self.ctx.update_host(ip, |host| host.add_port(port));
+        let evidence = match (state, sender) {
+            (PortState::Open, _) => Some((
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::Udp, "udp reply from a probed port"),
+            )),
+            (PortState::Closed, Some(sender)) if sender == ip => Some((
+                HostStatus::Up,
+                StatusReason::new(
+                    StatusProtocol::IcmpUnreachable,
+                    "port unreachable from the host",
+                ),
+            )),
+            (PortState::Filtered, Some(sender)) if sender == ip => Some((
+                HostStatus::Up,
+                StatusReason::new(
+                    StatusProtocol::IcmpUnreachable,
+                    "administratively prohibited by the host",
+                ),
+            )),
+            (PortState::Filtered, Some(sender)) => Some((
+                HostStatus::Filtered,
+                StatusReason::new(
+                    StatusProtocol::IcmpUnreachable,
+                    "administratively prohibited in path",
+                )
+                .from_source(sender),
+            )),
+            _ => None,
+        };
+
+        self.ctx.update_host(ip, |host| {
+            host.add_port(port);
+            if let Some((status, reason)) = evidence {
+                host.record_evidence(status, reason);
+            }
+        });
     }
 }
 
@@ -446,23 +546,44 @@ fn answering_probe(bytes: &[u8], src_port: u16) -> Option<u16> {
     Some(udp.get_source())
 }
 
-/// What an ICMPv4 Destination Unreachable code says about the port that
-/// provoked it, or `None` if it says nothing usable.
+/// What a reply is a statement about: the port that was probed, or the address
+/// as a whole.
+///
+/// The distinction is not cosmetic. A reply reporting on the port resolves the
+/// probe that provoked it; one reporting on the host says nothing about any
+/// particular port, and the probe is left outstanding to time out on its own
+/// rather than being given a verdict its evidence does not support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// The probed port is in this state. Covers both a direct UDP reply and
+    /// every ICMP code that reports on a port rather than on the path.
+    Port(PortState),
+    /// The address itself could not be reached. The only evidence in the engine
+    /// that produces [`HostStatus::Down`].
+    Host,
+}
+
+/// What an ICMPv4 Destination Unreachable code establishes, or `None` if it says
+/// nothing usable.
 ///
 /// Only "port unreachable" reports on the port itself: something received the
-/// datagram, looked for a listener, and found none. The rest describe the
-/// *path* - a filter, a routing failure, a policy - and prove only that the
-/// probe did not arrive, which is [`PortState::Filtered`]. The remaining codes
-/// (network unknown, fragmentation needed, source route failed) are neither,
-/// and leave the probe outstanding to time out on its own.
-fn icmpv4_verdict(code: IcmpCode) -> Option<PortState> {
+/// datagram, looked for a listener, and found none. The administrative codes
+/// describe the *path* - a filter, a policy - and prove only that the probe did
+/// not arrive, which is [`PortState::Filtered`]. "Host unreachable" is neither:
+/// a router could not deliver to the address at all, which is a statement about
+/// the host and not about the port that happened to be asked for. The remaining
+/// codes (network unknown, fragmentation needed, source route failed) say
+/// nothing either way.
+fn icmpv4_verdict(code: IcmpCode) -> Option<Verdict> {
     match code {
-        IcmpCodes::DestinationPortUnreachable => Some(PortState::Closed),
-        IcmpCodes::DestinationHostUnreachable
-        | IcmpCodes::DestinationProtocolUnreachable
+        IcmpCodes::DestinationPortUnreachable => Some(Verdict::Port(PortState::Closed)),
+        IcmpCodes::DestinationProtocolUnreachable
         | IcmpCodes::NetworkAdministrativelyProhibited
         | IcmpCodes::HostAdministrativelyProhibited
-        | IcmpCodes::CommunicationAdministrativelyProhibited => Some(PortState::Filtered),
+        | IcmpCodes::CommunicationAdministrativelyProhibited => {
+            Some(Verdict::Port(PortState::Filtered))
+        }
+        IcmpCodes::DestinationHostUnreachable => Some(Verdict::Host),
         _ => None,
     }
 }
@@ -471,15 +592,17 @@ fn icmpv4_verdict(code: IcmpCode) -> Option<PortState> {
 ///
 /// Code 4 is the port-unreachable equivalent. Codes 1, 5, and 6 are explicit
 /// refusals by policy, so they read as filtered on the same reasoning as their
-/// v4 counterparts. Codes 0, 2, and 3 (no route, beyond scope, address
-/// unreachable) describe an unreachable *host* rather than a blocked probe, and
-/// are deliberately left unclassified rather than guessed at.
-fn icmpv6_verdict(code: Icmpv6Code) -> Option<PortState> {
+/// v4 counterparts. Codes 0 and 3 - no route to destination, address
+/// unreachable - are the counterparts of v4 host unreachable. Code 2 (beyond
+/// scope of source address) describes the *sender's* address selection rather
+/// than the target's reachability, and is deliberately left unclassified.
+fn icmpv6_verdict(code: Icmpv6Code) -> Option<Verdict> {
     match code {
-        ICMPV6_PORT_UNREACHABLE => Some(PortState::Closed),
+        ICMPV6_PORT_UNREACHABLE => Some(Verdict::Port(PortState::Closed)),
         ICMPV6_ADMIN_PROHIBITED | ICMPV6_INGRESS_EGRESS_POLICY | ICMPV6_REJECT_ROUTE => {
-            Some(PortState::Filtered)
+            Some(Verdict::Port(PortState::Filtered))
         }
+        ICMPV6_NO_ROUTE | ICMPV6_ADDR_UNREACHABLE => Some(Verdict::Host),
         _ => None,
     }
 }
@@ -489,24 +612,24 @@ fn icmpv6_verdict(code: Icmpv6Code) -> Option<PortState> {
 ///
 /// `None` if it is some other ICMP message, carries a code that reports on
 /// neither the port nor the path, or quotes a datagram this scan did not send.
-fn quoted_by_icmpv4(bytes: &[u8], src_port: u16) -> Option<(ProbeTarget, PortState)> {
+fn quoted_by_icmpv4(bytes: &[u8], src_port: u16) -> Option<(ProbeTarget, Verdict)> {
     let unreachable = DestinationUnreachablePacket::new(bytes)?;
     if unreachable.get_icmp_type() != IcmpTypes::DestinationUnreachable {
         return None;
     }
-    let state = icmpv4_verdict(unreachable.get_icmp_code())?;
-    Some((quoted_probe(unreachable.payload(), src_port)?, state))
+    let verdict = icmpv4_verdict(unreachable.get_icmp_code())?;
+    Some((quoted_probe(unreachable.payload(), src_port)?, verdict))
 }
 
 /// The ICMPv6 counterpart of [`quoted_by_icmpv4`].
-fn quoted_by_icmpv6(bytes: &[u8], src_port: u16) -> Option<(ProbeTarget, PortState)> {
+fn quoted_by_icmpv6(bytes: &[u8], src_port: u16) -> Option<(ProbeTarget, Verdict)> {
     let unreachable = Icmpv6Packet::new(bytes)?;
     if unreachable.get_icmpv6_type() != Icmpv6Types::DestinationUnreachable {
         return None;
     }
-    let state = icmpv6_verdict(unreachable.get_icmpv6_code())?;
+    let verdict = icmpv6_verdict(unreachable.get_icmpv6_code())?;
     let quoted = unreachable.payload().get(ICMPV6_UNUSED_LEN..)?;
-    Some((quoted_probe(quoted, src_port)?, state))
+    Some((quoted_probe(quoted, src_port)?, verdict))
 }
 
 /// Identifies the probe quoted inside an ICMP error.
@@ -704,6 +827,10 @@ mod tests {
         });
     }
 
+    fn host_status(session: &ScanSession, ip: IpAddr) -> Option<HostStatus> {
+        session.store.get(&ip).map(|host| host.status())
+    }
+
     fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortState> {
         session
             .store
@@ -884,6 +1011,134 @@ mod tests {
         assert_eq!(port_state(&session, ROUTER, 53), None);
     }
 
+    /// Host unreachable reports on the address, not on the port that happened to
+    /// be quoted. Recording it as a port verdict - which is what this scanner
+    /// did before liveness had anywhere to go - invents a fact about a port
+    /// nothing ever answered for.
+    #[test]
+    fn host_unreachable_is_a_host_verdict_and_not_a_port_one() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+
+        scanner.handle_reply(
+            &icmpv4_error(
+                ROUTER,
+                IcmpCodes::DestinationHostUnreachable,
+                TARGET,
+                SCAN_SRC_PORT,
+                53,
+            ),
+            Instant::now(),
+        );
+
+        assert_eq!(host_status(&session, TARGET), Some(HostStatus::Down));
+        assert_eq!(
+            port_state(&session, TARGET, 53),
+            None,
+            "the port has no verdict yet and the probe must be left to retire on its own"
+        );
+        assert_eq!(
+            scanner.ledger.len(),
+            1,
+            "an unreachable address says nothing about the probe's fate"
+        );
+    }
+
+    /// The distinction the whole host-status design turns on: an ICMP error
+    /// names the hop that sent it as well as the address it is about, and only
+    /// the first tells you whether the target is alive.
+    #[test]
+    fn a_port_unreachable_proves_the_host_only_when_the_host_sent_it() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+        scanner.handle_reply(
+            &icmpv4_error(
+                TARGET,
+                IcmpCodes::DestinationPortUnreachable,
+                TARGET,
+                SCAN_SRC_PORT,
+                53,
+            ),
+            Instant::now(),
+        );
+        assert_eq!(host_status(&session, TARGET), Some(HostStatus::Up));
+
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+        scanner.handle_reply(
+            &icmpv4_error(
+                ROUTER,
+                IcmpCodes::DestinationPortUnreachable,
+                TARGET,
+                SCAN_SRC_PORT,
+                53,
+            ),
+            Instant::now(),
+        );
+        assert_eq!(
+            host_status(&session, TARGET),
+            Some(HostStatus::Unknown),
+            "a middlebox answering for an address does not make that address alive"
+        );
+        assert_eq!(
+            port_state(&session, TARGET, 53),
+            Some(PortState::Closed),
+            "the port verdict still stands: the message does report on the port"
+        );
+    }
+
+    /// A policy rejection from a middlebox proves a perimeter, not a host - but
+    /// a perimeter is still more than nothing, which is what separates
+    /// `Filtered` from `Unknown`.
+    #[test]
+    fn an_in_path_policy_rejection_is_filtered_rather_than_up() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+
+        scanner.handle_reply(
+            &icmpv4_error(
+                ROUTER,
+                IcmpCodes::CommunicationAdministrativelyProhibited,
+                TARGET,
+                SCAN_SRC_PORT,
+                53,
+            ),
+            Instant::now(),
+        );
+
+        assert_eq!(host_status(&session, TARGET), Some(HostStatus::Filtered));
+    }
+
+    /// Silence is the one thing that must never move a host's status, however
+    /// many probes it swallows. `OpenFiltered` is a port verdict reached by
+    /// exhaustion, and a host that has sent nothing has proved nothing.
+    #[test]
+    fn exhausting_every_attempt_leaves_the_host_unknown() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+
+        let mut now = Instant::now();
+        for _ in 0..8 {
+            now += Duration::from_secs(10);
+            scanner.service_retries(now);
+        }
+
+        assert_eq!(
+            port_state(&session, TARGET, 53),
+            Some(PortState::OpenFiltered)
+        );
+        assert_eq!(host_status(&session, TARGET), Some(HostStatus::Unknown));
+        assert!(
+            session
+                .store
+                .get(&TARGET)
+                .expect("the port verdict created the host")
+                .reasons()
+                .is_empty(),
+            "silence is not evidence and must leave no audit trail"
+        );
+    }
+
     /// An unreachable quoting a datagram this scan never sent - a different
     /// source port - belongs to someone else's traffic.
     #[test]
@@ -912,7 +1167,6 @@ mod tests {
     #[test]
     fn administratively_prohibited_icmp_is_filtered() {
         for code in [
-            IcmpCodes::DestinationHostUnreachable,
             IcmpCodes::DestinationProtocolUnreachable,
             IcmpCodes::NetworkAdministrativelyProhibited,
             IcmpCodes::HostAdministrativelyProhibited,
@@ -1109,7 +1363,7 @@ mod tests {
             quoted_by_icmpv4(&reply.bytes, src_port),
             Some((
                 (IpAddr::V4(Ipv4Addr::LOCALHOST), closed_port),
-                PortState::Closed
+                Verdict::Port(PortState::Closed)
             )),
             "a real ICMP error must name the exact probe that caused it",
         );

@@ -521,14 +521,27 @@
     "reason": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocol", "details"],
+      "required": ["protocol", "source_ip", "details"],
       "properties": {
         "protocol": {
           "description": "The protocol event that produced the evidence. A strategy-supplied name is prefixed `custom:`, so it can never be mistaken for a built-in.",
           "anyOf": [
-            { "enum": ["arp", "icmp_echo", "tcp_syn", "udp"] },
+            {
+              "enum": [
+                "arp",
+                "ndp",
+                "icmp_echo",
+                "icmp_unreachable",
+                "tcp_syn",
+                "udp"
+              ]
+            },
             { "type": "string", "pattern": "^custom:" }
           ]
+        },
+        "source_ip": {
+          "description": "The address that sent the evidence, when it was not the host itself - an ICMP error from a router or firewall about the probed address. `null` means the host answered for itself, which is the stronger claim.",
+          "type": ["string", "null"]
         },
         "details": { "type": ["string", "null"] }
       }

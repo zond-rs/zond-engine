@@ -17,6 +17,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
+use zond_engine::core::models::host::HostStatus;
 use zond_engine::core::models::port::{PortState, Protocol};
 use zond_engine::core::report::{ENGINE_VERSION, ScanKind};
 use zond_engine::scanner;
@@ -85,6 +86,44 @@ async fn the_report_snapshots_every_host_the_store_holds() {
             .expect("loopback is in the report")
             .port_count(),
         1
+    );
+}
+
+/// A host the scan actually found is counted as alive, against an absolute
+/// expectation rather than against the report's own hosts.
+///
+/// The distinction is the whole point of this test. Every existing check
+/// compared a summary against the hosts in the same report, so while no scanner
+/// wrote a status the comparison read `0 == 0` and passed for as long as the
+/// defect existed - an instrument sharing the error of the thing it measures.
+/// The number below is fixed in advance: one host answered, so one host is
+/// alive, and `hosts_by_status` must place it under `Up` rather than under
+/// `Unknown`.
+#[tokio::test]
+async fn a_found_host_is_counted_alive() {
+    if is_privileged() {
+        eprintln!("SKIP: relies on the connect path finding the loopback listener");
+        return;
+    }
+
+    let server = spawn_banner_server(b"hi\r\n").await;
+    let outcome = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    let summary = outcome.report.summary();
+    let counted = |status| summary.hosts_by_status.get(&status).copied().unwrap_or(0);
+    assert_eq!(summary.hosts_alive, 1);
+    assert_eq!(counted(HostStatus::Up), 1);
+    assert_eq!(counted(HostStatus::Unknown), 0);
+
+    let host = outcome.host(LOOPBACK).expect("loopback was scanned");
+    assert!(host.is_alive());
+    assert!(
+        !host.reasons().is_empty(),
+        "a host reported alive must say what proved it"
     );
 }
 
