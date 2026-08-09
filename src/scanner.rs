@@ -440,7 +440,14 @@ async fn spawn_explorers(
             continue;
         }
         info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
-        match LocalScanner::new(intf.clone(), local_ips, ctx.clone(), dns_tx.clone(), scope, tuning.retry) {
+        match LocalScanner::new(
+            intf.clone(),
+            local_ips,
+            ctx.clone(),
+            dns_tx.clone(),
+            scope,
+            tuning.retry,
+        ) {
             Ok(scanner) => explorers.push((ScannerKind::Local, Box::new(scanner))),
             Err(e) => {
                 report_scanner_failure(ctx, ScannerKind::Local, format!("{}: {e}", intf.name))

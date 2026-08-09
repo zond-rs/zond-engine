@@ -257,7 +257,14 @@ impl UdpPortScanner {
         target_count: usize,
         src_port: u16,
     ) -> Self {
-        Self::build(resolver, ctx, transport, target_count, src_port, RETRY_POLICY)
+        Self::build(
+            resolver,
+            ctx,
+            transport,
+            target_count,
+            src_port,
+            RETRY_POLICY,
+        )
     }
 
     /// The common constructor, taking the retry schedule as an argument because
@@ -308,7 +315,15 @@ impl UdpPortScanner {
             return;
         };
 
-        if send_udp(self.transport.tx.as_ref(), self.src_port, src_addr, ip, port).is_some() {
+        if send_udp(
+            self.transport.tx.as_ref(),
+            self.src_port,
+            src_addr,
+            ip,
+            port,
+        )
+        .is_some()
+        {
             self.ledger.arm(ip, (ip, port), (), now);
         }
     }
@@ -370,10 +385,10 @@ impl UdpPortScanner {
         let due = std::mem::take(&mut self.due);
         for event in &due {
             match *event {
-                Due::Retry { key: (ip, port), .. } => self.probe(ip, port, now),
-                Due::Exhausted((ip, port)) => {
-                    self.record_port(ip, port, PortState::OpenFiltered)
-                }
+                Due::Retry {
+                    key: (ip, port), ..
+                } => self.probe(ip, port, now),
+                Due::Exhausted((ip, port)) => self.record_port(ip, port, PortState::OpenFiltered),
             }
         }
         self.due = due;
@@ -789,7 +804,10 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        scanner.handle_reply(&udp_reply(53, SCAN_SRC_PORT.wrapping_add(1)), Instant::now());
+        scanner.handle_reply(
+            &udp_reply(53, SCAN_SRC_PORT.wrapping_add(1)),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, TARGET, 53), None);
         assert_eq!(scanner.ledger.len(), 1);
@@ -800,13 +818,16 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        scanner.handle_reply(&icmpv4_error(
-            TARGET,
-            IcmpCodes::DestinationPortUnreachable,
-            TARGET,
-            SCAN_SRC_PORT,
-            53,
-        ), Instant::now());
+        scanner.handle_reply(
+            &icmpv4_error(
+                TARGET,
+                IcmpCodes::DestinationPortUnreachable,
+                TARGET,
+                SCAN_SRC_PORT,
+                53,
+            ),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Closed));
         assert!(scanner.ledger.is_empty());
@@ -823,13 +844,16 @@ mod tests {
         probe(&mut scanner, TARGET, 161);
         probe(&mut scanner, TARGET, 123);
 
-        scanner.handle_reply(&icmpv4_error(
-            TARGET,
-            IcmpCodes::DestinationPortUnreachable,
-            TARGET,
-            SCAN_SRC_PORT,
-            161,
-        ), Instant::now());
+        scanner.handle_reply(
+            &icmpv4_error(
+                TARGET,
+                IcmpCodes::DestinationPortUnreachable,
+                TARGET,
+                SCAN_SRC_PORT,
+                161,
+            ),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, TARGET, 161), Some(PortState::Closed));
         assert_eq!(port_state(&session, TARGET, 53), None);
@@ -845,13 +869,16 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        scanner.handle_reply(&icmpv4_error(
-            ROUTER,
-            IcmpCodes::DestinationPortUnreachable,
-            TARGET,
-            SCAN_SRC_PORT,
-            53,
-        ), Instant::now());
+        scanner.handle_reply(
+            &icmpv4_error(
+                ROUTER,
+                IcmpCodes::DestinationPortUnreachable,
+                TARGET,
+                SCAN_SRC_PORT,
+                53,
+            ),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Closed));
         assert_eq!(port_state(&session, ROUTER, 53), None);
@@ -864,13 +891,16 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        scanner.handle_reply(&icmpv4_error(
-            TARGET,
-            IcmpCodes::DestinationPortUnreachable,
-            TARGET,
-            SCAN_SRC_PORT.wrapping_add(1),
-            53,
-        ), Instant::now());
+        scanner.handle_reply(
+            &icmpv4_error(
+                TARGET,
+                IcmpCodes::DestinationPortUnreachable,
+                TARGET,
+                SCAN_SRC_PORT.wrapping_add(1),
+                53,
+            ),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, TARGET, 53), None);
         assert_eq!(scanner.ledger.len(), 1);
@@ -891,7 +921,10 @@ mod tests {
             let (mut scanner, session) = scanner_with_mock();
             probe(&mut scanner, TARGET, 53);
 
-            scanner.handle_reply(&icmpv4_error(TARGET, code, TARGET, SCAN_SRC_PORT, 53), Instant::now());
+            scanner.handle_reply(
+                &icmpv4_error(TARGET, code, TARGET, SCAN_SRC_PORT, 53),
+                Instant::now(),
+            );
 
             assert_eq!(
                 port_state(&session, TARGET, 53),
@@ -913,7 +946,10 @@ mod tests {
             let (mut scanner, session) = scanner_with_mock();
             probe(&mut scanner, TARGET, 53);
 
-            scanner.handle_reply(&icmpv4_error(TARGET, code, TARGET, SCAN_SRC_PORT, 53), Instant::now());
+            scanner.handle_reply(
+                &icmpv4_error(TARGET, code, TARGET, SCAN_SRC_PORT, 53),
+                Instant::now(),
+            );
 
             assert_eq!(port_state(&session, TARGET, 53), None, "code {code:?}");
             assert_eq!(scanner.ledger.len(), 1, "code {code:?}");
@@ -930,7 +966,10 @@ mod tests {
             let (mut scanner, session) = scanner_with_mock();
             probe(&mut scanner, TARGET_V6, 53);
 
-            scanner.handle_reply(&icmpv6_error(code, TARGET_V6, SCAN_SRC_PORT, 53), Instant::now());
+            scanner.handle_reply(
+                &icmpv6_error(code, TARGET_V6, SCAN_SRC_PORT, 53),
+                Instant::now(),
+            );
 
             assert_eq!(
                 port_state(&session, TARGET_V6, 53),
@@ -950,13 +989,16 @@ mod tests {
         probe(&mut scanner, TARGET, 771);
         probe(&mut scanner, TARGET, 53);
 
-        scanner.handle_reply(&icmpv4_error(
-            TARGET,
-            IcmpCodes::DestinationPortUnreachable,
-            TARGET,
-            SCAN_SRC_PORT,
-            53,
-        ), Instant::now());
+        scanner.handle_reply(
+            &icmpv4_error(
+                TARGET,
+                IcmpCodes::DestinationPortUnreachable,
+                TARGET,
+                SCAN_SRC_PORT,
+                53,
+            ),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, TARGET, 771), None);
         assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Closed));
@@ -967,12 +1009,10 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET_V6, 53);
 
-        scanner.handle_reply(&icmpv6_error(
-            ICMPV6_PORT_UNREACHABLE,
-            TARGET_V6,
-            SCAN_SRC_PORT,
-            53,
-        ), Instant::now());
+        scanner.handle_reply(
+            &icmpv6_error(ICMPV6_PORT_UNREACHABLE, TARGET_V6, SCAN_SRC_PORT, 53),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, TARGET_V6, 53), Some(PortState::Closed));
         assert!(scanner.ledger.is_empty());
@@ -984,7 +1024,10 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET_V6, 53);
 
-        scanner.handle_reply(&icmpv6_error(Icmpv6Code(0), TARGET_V6, SCAN_SRC_PORT, 53), Instant::now());
+        scanner.handle_reply(
+            &icmpv6_error(Icmpv6Code(0), TARGET_V6, SCAN_SRC_PORT, 53),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, TARGET_V6, 53), None);
         assert_eq!(scanner.ledger.len(), 1);

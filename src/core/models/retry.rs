@@ -466,7 +466,10 @@ impl<T: Copy> Record<T> {
             .find(|(_, attempt)| attempt.token == *token)
             .map(|(slot, attempt)| {
                 let back_from_newest = (tracked - 1 - slot) as u8;
-                (self.recorded.saturating_sub(back_from_newest), attempt.sent_at)
+                (
+                    self.recorded.saturating_sub(back_from_newest),
+                    attempt.sent_at,
+                )
             })
     }
 
@@ -1158,7 +1161,10 @@ mod tests {
         assert!(matches!(due.as_slice(), [Due::Retry { .. }]));
         let second = ledger.next_due().unwrap();
 
-        assert_eq!(first.saturating_duration_since(t0), Duration::from_millis(100));
+        assert_eq!(
+            first.saturating_duration_since(t0),
+            Duration::from_millis(100)
+        );
         assert_eq!(
             second.saturating_duration_since(first),
             Duration::from_millis(200)
@@ -1414,8 +1420,7 @@ mod tests {
 
         for seed in 0..64u64 {
             let t0 = Instant::now();
-            let mut ledger: ProbeLedger<(IpAddr, u16), u32> =
-                ProbeLedger::seeded(policy, 4, seed);
+            let mut ledger: ProbeLedger<(IpAddr, u16), u32> = ProbeLedger::seeded(policy, 4, seed);
             ledger.arm(HOST, (HOST, 80), 1, t0);
 
             let due = ledger.next_due().unwrap().saturating_duration_since(t0);
@@ -1452,7 +1457,10 @@ mod tests {
             due.len() < 64,
             "every probe came due at once despite jitter"
         );
-        assert!(!due.is_empty(), "jitter delayed everything past its own bound");
+        assert!(
+            !due.is_empty(),
+            "jitter delayed everything past its own bound"
+        );
     }
 
     // ── The silent-host rule ───────────────────────────────────────────────
@@ -1516,7 +1524,11 @@ mod tests {
         ledger.arm(HOST, (HOST, 22), 9, t0);
         ledger.resolve(&(HOST, 22), Some(9), t0 + Duration::from_millis(3));
 
-        assert_eq!(spend(&mut ledger, HOST, 82), 3, "the host proved it is there");
+        assert_eq!(
+            spend(&mut ledger, HOST, 82),
+            3,
+            "the host proved it is there"
+        );
     }
 
     #[test]

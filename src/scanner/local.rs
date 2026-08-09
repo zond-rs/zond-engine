@@ -195,8 +195,10 @@ impl Solicitation {
 
     /// When this next needs the loop's attention.
     fn next_wakeup(&self) -> Option<Instant> {
-        self.next_due
-            .or_else(|| self.last_sent_at.map(|sent_at| sent_at + SOLICITATION_WINDOW))
+        self.next_due.or_else(|| {
+            self.last_sent_at
+                .map(|sent_at| sent_at + SOLICITATION_WINDOW)
+        })
     }
 }
 
@@ -496,7 +498,10 @@ impl LocalScanner {
                 self.solicitation.record_sent(now);
             }
             Err(e) => {
-                error!(verbosity = 1, "Failed to rebuild all-nodes solicitation: {e}");
+                error!(
+                    verbosity = 1,
+                    "Failed to rebuild all-nodes solicitation: {e}"
+                );
                 // Recorded anyway, so a solicitation that cannot be built stops
                 // being owed instead of holding the sweep open forever.
                 self.solicitation.record_sent(now);
@@ -528,7 +533,10 @@ impl LocalScanner {
             // Not armed, so the ledger's charge for this attempt stands and the
             // address runs out of attempts on schedule rather than waiting
             // outstanding forever.
-            Err(e) => error!(verbosity = 1, "Failed to rebuild ARP request for {target}: {e}"),
+            Err(e) => error!(
+                verbosity = 1,
+                "Failed to rebuild ARP request for {target}: {e}"
+            ),
         }
     }
 
@@ -711,5 +719,4 @@ impl LocalScanner {
             let _ = tx.send(source_addr);
         }
     }
-
 }

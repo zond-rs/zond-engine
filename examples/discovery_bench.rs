@@ -150,7 +150,10 @@ async fn main() {
         .init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let positional: Vec<&String> = args.iter().take_while(|arg| !arg.starts_with("--")).collect();
+    let positional: Vec<&String> = args
+        .iter()
+        .take_while(|arg| !arg.starts_with("--"))
+        .collect();
 
     let targets = positional
         .first()
@@ -244,7 +247,8 @@ fn summarize(
     let stable = seen_in.values().filter(|seen| **seen == runs).count();
     let flaky = union - stable;
 
-    println!("\n  hosts   min {} / median {} / max {} (of {total})",
+    println!(
+        "\n  hosts   min {} / median {} / max {} (of {total})",
         counts[0],
         counts[counts.len() / 2],
         counts[counts.len() - 1],

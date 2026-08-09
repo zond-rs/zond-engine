@@ -232,7 +232,9 @@ impl SynPortScanner {
         let due = std::mem::take(&mut self.due);
         for event in &due {
             match *event {
-                Due::Retry { key: (ip, port), .. } => self.probe(ip, port, now),
+                Due::Retry {
+                    key: (ip, port), ..
+                } => self.probe(ip, port, now),
                 Due::Exhausted((ip, port)) => self.record_port(ip, port, PortState::Filtered),
             }
         }
@@ -499,7 +501,11 @@ mod tests {
             src_port: token.src_port.wrapping_add(1),
             ..token
         };
-        scanner.handle_reply(TARGET, &tcp_segment(83, elsewhere, SYN | ACK), Instant::now());
+        scanner.handle_reply(
+            TARGET,
+            &tcp_segment(83, elsewhere, SYN | ACK),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 83), None);
         assert!(scanner.ledger.contains(&(TARGET, 83)));

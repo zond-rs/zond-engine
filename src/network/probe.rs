@@ -229,11 +229,7 @@ impl ProbeTransport {
     pub fn open_on(kind: ProbeKind, interfaces: &[String]) -> anyhow::Result<Self> {
         let (rx, capture) = capture::start(interfaces, &kind.filter())?;
         let tx: Box<dyn ProbeSender> = Box::new(RawIpSender::open(kind)?);
-        Ok(Self {
-            tx,
-            rx,
-            capture,
-        })
+        Ok(Self { tx, rx, capture })
     }
 
     /// Opens a transport whose send half builds and emits Ethernet frames
