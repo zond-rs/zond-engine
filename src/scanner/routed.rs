@@ -27,7 +27,7 @@ use std::{
 use crate::core::config::ProbeTuning;
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::ip::set::IpSet;
-use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
+use crate::core::models::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
 use crate::core::models::timer::ScanBudget;
 use crate::core::session::ScanContext;
 use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
@@ -386,7 +386,8 @@ impl RoutedScanner {
             return;
         }
 
-        let rtt = self.resolve_probe(ip, bytes, now);
+        let resolution = self.resolve_probe(ip, bytes, now);
+        let rtt = resolution.and_then(|resolution| resolution.rtt);
         if rtt.is_none() {
             self.audit.record_reply_without_rtt();
         }
@@ -404,7 +405,8 @@ impl RoutedScanner {
 
         if is_new {
             self.responded_count += 1;
-            self.audit.record_host_found();
+            self.audit
+                .record_host_found(resolution.and_then(|resolution| resolution.answered_attempt));
             self.deadline.mark_activity();
             if let Some(dns) = &self.dns_tx {
                 let _ = dns.send(ip);
@@ -416,7 +418,7 @@ impl RoutedScanner {
         }
     }
 
-    /// Retires the probe to `ip` and reports the round trip it revealed.
+    /// Retires the probe to `ip` and reports what resolving it revealed.
     ///
     /// Correlation is attempted twice on purpose. The first pass matches the
     /// segment against the exact attempt it acknowledges, which is what yields a
@@ -426,17 +428,15 @@ impl RoutedScanner {
     /// address answers that whether or not it can be tied to a particular
     /// attempt. Retiring the probe either way is what stops a host that has
     /// already proved it exists from being asked again.
-    fn resolve_probe(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) -> Option<Duration> {
+    fn resolve_probe(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) -> Option<Resolution> {
         let token = TcpPacket::new(bytes).map(|tcp| SynToken {
             seq: tcp.get_acknowledgement().wrapping_sub(1),
             src_port: tcp.get_destination(),
         });
 
-        let resolution = token
+        token
             .and_then(|token| self.ledger.resolve(&ip, Some(token), now))
-            .or_else(|| self.ledger.resolve(&ip, None, now))?;
-
-        resolution.rtt
+            .or_else(|| self.ledger.resolve(&ip, None, now))
     }
 
     /// Resends every probe that has gone unanswered long enough.

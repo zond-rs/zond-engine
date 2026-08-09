@@ -32,10 +32,17 @@
 //! Raw sockets and `libpcap` both need root:
 //!
 //! ```text
-//! sudo -E cargo run --release --example discovery_bench -- <targets> [runs] [effort]
+//! sudo -E cargo run --release --example discovery_bench -- <targets> [runs] [effort] [flags]
 //! sudo -E cargo run --release --example discovery_bench -- 1.1.1.0/24 5
 //! sudo -E cargo run --release --example discovery_bench -- 1.1.1.0/22 5 thorough
 //! ```
+//!
+//! `--attempts N` and `--timeout-scale F` override the effort's own numbers.
+//! An effort level moves both at once, which is convenient for choosing one and
+//! useless for attributing a result to either; these separate them. The pair
+//! that matters most is `--attempts 1 --timeout-scale 8`, one probe per target
+//! and the patience to wait for it: whatever that finds was never a question of
+//! retransmission.
 //!
 //! Compare against, on the same network and at the same time of day:
 //!
@@ -90,6 +97,37 @@ fn effort_from(name: &str) -> Option<ScanEffort> {
     }
 }
 
+/// The value of `--name`, if it was given.
+///
+/// A flag present but unparseable ends the run. Silently ignoring it would
+/// report the default configuration's numbers under a label describing the one
+/// that was asked for, which is worse than no measurement at all.
+fn flag<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
+    let position = args.iter().position(|arg| arg == name)?;
+    match args.get(position + 1).and_then(|value| value.parse().ok()) {
+        Some(value) => Some(value),
+        None => fail(&format!("{name} needs a value")),
+    }
+}
+
+/// Names the overrides in the run header, so a scrollback of results says which
+/// configuration produced each one.
+fn describe_overrides(max_attempts: Option<u8>, timeout_scale: Option<f64>) -> String {
+    let mut out = String::new();
+    if let Some(attempts) = max_attempts {
+        out.push_str(&format!(", attempts {attempts}"));
+    }
+    if let Some(scale) = timeout_scale {
+        out.push_str(&format!(", timeouts x{scale}"));
+    }
+    out
+}
+
+fn fail(message: &str) -> ! {
+    eprintln!("{message}");
+    std::process::exit(2);
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -98,25 +136,32 @@ async fn main() {
         .without_time()
         .init();
 
-    let mut args = std::env::args().skip(1);
-    let targets = args.next().unwrap_or_else(|| "1.1.1.0/24".to_string());
-    let runs: usize = args
-        .next()
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let positional: Vec<&String> = args.iter().take_while(|arg| !arg.starts_with("--")).collect();
+
+    let targets = positional
+        .first()
+        .map(|arg| arg.to_string())
+        .unwrap_or_else(|| "1.1.1.0/24".to_string());
+    let runs: usize = positional
+        .get(1)
         .and_then(|n| n.parse().ok())
         .unwrap_or(5)
         .max(1);
-    let effort = match args.next() {
-        Some(name) => match effort_from(&name) {
+    let effort = match positional.get(2) {
+        Some(name) => match effort_from(name) {
             Some(effort) => effort,
             // Defaulting on a name that was meant to change the experiment
             // would report the wrong effort's numbers under the right label.
-            None => {
-                eprintln!("unknown effort `{name}`: expected single, fast, balanced, or thorough");
-                std::process::exit(2);
-            }
+            None => fail(&format!(
+                "unknown effort `{name}`: expected single, fast, balanced, or thorough"
+            )),
         },
         None => ScanEffort::default(),
     };
+
+    let max_attempts: Option<u8> = flag(&args, "--attempts");
+    let timeout_scale: Option<f64> = flag(&args, "--timeout-scale");
 
     let ips = to_ipset(&[targets.as_str()], None).expect("target expression parses");
     let total = ips.len();
@@ -129,13 +174,16 @@ async fn main() {
         disable_input: true,
         retry: RetryConfig {
             effort,
+            max_attempts,
+            timeout_scale,
             ..Default::default()
         },
         ..Default::default()
     };
 
     println!(
-        "\ndiscovery benchmark: {targets} ({total} addresses), {runs} runs, effort {effort:?}\n"
+        "\ndiscovery benchmark: {targets} ({total} addresses), {runs} runs, effort {effort:?}{overrides}\n",
+        overrides = describe_overrides(max_attempts, timeout_scale),
     );
 
     let mut results: Vec<(usize, Duration)> = Vec::with_capacity(runs);

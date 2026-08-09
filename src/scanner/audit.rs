@@ -47,6 +47,14 @@ use crate::network::capture::CaptureCounts;
 /// answer in one bucket.
 const BUCKET_BOUNDS_MS: [u64; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1_000];
 
+/// How many attempts are counted separately before the rest are lumped together.
+///
+/// Sized past the largest budget any path runs (five, under
+/// [`ScanEffort::Thorough`](crate::core::models::retry::ScanEffort)), so the
+/// distribution is reported in full for every configuration that ships and a
+/// hand-raised budget still has somewhere to land.
+const ATTEMPTS_COUNTED: usize = 6;
+
 /// Why a scanner's receive loop stopped.
 ///
 /// This is the single most informative field in an audit: a run that ends in
@@ -104,6 +112,20 @@ pub(crate) struct ProbeAudit {
     /// is judged on.
     pub(crate) hosts_found: u64,
 
+    /// Found hosts by the attempt whose reply revealed them, `[0]` being the
+    /// first send. The last slot absorbs anything beyond
+    /// [`ATTEMPTS_COUNTED`].
+    ///
+    /// This is what says whether retransmission is earning its traffic. A host
+    /// found on its first attempt needed only for the scan to still be
+    /// listening; one found on its third needed the packet to be sent again.
+    /// The two call for opposite fixes - patience against repetition - and the
+    /// host count alone cannot tell them apart.
+    answered_on: [u64; ATTEMPTS_COUNTED],
+    /// Found hosts whose reply named no attempt: it arrived after the probe was
+    /// written off, or carried nothing to match against.
+    answered_unattributed: u64,
+
     first_reply: Option<Duration>,
     last_reply: Option<Duration>,
     buckets: [u64; BUCKET_BOUNDS_MS.len() + 1],
@@ -120,6 +142,8 @@ impl ProbeAudit {
             segments_off_target: 0,
             replies_without_rtt: 0,
             hosts_found: 0,
+            answered_on: [0; ATTEMPTS_COUNTED],
+            answered_unattributed: 0,
             first_reply: None,
             last_reply: None,
             buckets: [0; BUCKET_BOUNDS_MS.len() + 1],
@@ -151,9 +175,21 @@ impl ProbeAudit {
     }
 
     /// Records a target credited as alive for the first time, timestamped
-    /// against the start of the run.
-    pub(crate) fn record_host_found(&mut self) {
+    /// against the start of the run and attributed to the attempt that revealed
+    /// it where the reply named one.
+    pub(crate) fn record_host_found(&mut self, answered_attempt: Option<u8>) {
         self.hosts_found += 1;
+
+        match answered_attempt {
+            Some(attempt) => {
+                // Attempts are numbered from one; a zero would mean the ledger
+                // credited a send that never happened, so it is folded into the
+                // first rather than indexing out of the array's meaning.
+                let index = usize::from(attempt.saturating_sub(1));
+                self.answered_on[index.min(ATTEMPTS_COUNTED - 1)] += 1;
+            }
+            None => self.answered_unattributed += 1,
+        }
 
         let offset = self.started.elapsed();
         self.first_reply.get_or_insert(offset);
@@ -190,6 +226,7 @@ impl ProbeAudit {
             "audit[{scanner}] {found}/{targets} hosts in {elapsed:.0?}, stopped: {reason:?} \
              | sent {sent} (failed {failed}) \
              | captured {seen} (off-target {off}, no-rtt {no_rtt}){kernel} \
+             | found on {attempts} \
              | first {first}, last {last} \
              | latency {histogram}",
             found = self.hosts_found,
@@ -200,10 +237,45 @@ impl ProbeAudit {
             off = self.segments_off_target,
             no_rtt = self.replies_without_rtt,
             kernel = format_capture(capture),
+            attempts = self.attempt_distribution(),
             first = format_offset(self.first_reply),
             last = format_offset(self.last_reply),
             histogram = self.histogram(),
         );
+    }
+
+    /// Found hosts by the attempt that revealed them, empty attempts omitted.
+    ///
+    /// Rendered as `attempt:count` so the shape is readable at a glance:
+    /// everything on `1` means the retries this run sent bought nothing, and a
+    /// tail on `2` and `3` is retransmission doing the work it exists for.
+    fn attempt_distribution(&self) -> String {
+        let mut out = String::new();
+        for (index, count) in self.answered_on.iter().enumerate() {
+            if *count == 0 {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            if index == ATTEMPTS_COUNTED - 1 {
+                out.push_str(&format!("{}+:{count}", ATTEMPTS_COUNTED));
+            } else {
+                out.push_str(&format!("{}:{count}", index + 1));
+            }
+        }
+
+        if self.answered_unattributed > 0 {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&format!("unattributed:{}", self.answered_unattributed));
+        }
+
+        if out.is_empty() {
+            out.push_str("(none)");
+        }
+        out
     }
 
     /// The reply-latency histogram, empty buckets omitted.
@@ -309,12 +381,41 @@ mod tests {
         let mut audit = ProbeAudit::new();
         assert!(audit.first_reply.is_none());
 
-        audit.record_host_found();
-        audit.record_host_found();
+        audit.record_host_found(Some(1));
+        audit.record_host_found(Some(2));
 
         assert_eq!(audit.hosts_found, 2);
         assert!(audit.first_reply.is_some());
         assert!(audit.last_reply >= audit.first_reply);
+    }
+
+    /// The distribution the retry policy is judged on: everything on the first
+    /// attempt means the retries a run sent bought nothing.
+    #[test]
+    fn hosts_are_counted_against_the_attempt_that_revealed_them() {
+        let mut audit = ProbeAudit::new();
+        audit.record_host_found(Some(1));
+        audit.record_host_found(Some(1));
+        audit.record_host_found(Some(3));
+        audit.record_host_found(None);
+
+        assert_eq!(audit.attempt_distribution(), "1:2 3:1 unattributed:1");
+    }
+
+    /// A budget raised past what the line reports still has to land somewhere,
+    /// and it must be the final slot rather than an index out of range.
+    #[test]
+    fn an_attempt_beyond_the_reported_range_falls_into_the_last_slot() {
+        let mut audit = ProbeAudit::new();
+        audit.record_host_found(Some(ATTEMPTS_COUNTED as u8));
+        audit.record_host_found(Some(200));
+
+        assert_eq!(audit.attempt_distribution(), "6+:2");
+    }
+
+    #[test]
+    fn a_run_that_found_nothing_says_so_rather_than_rendering_blank() {
+        assert_eq!(ProbeAudit::new().attempt_distribution(), "(none)");
     }
 
     /// A transport with no capture behind it has no kernel buffer, and printing

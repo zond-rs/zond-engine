@@ -390,6 +390,14 @@ struct Record<T> {
     /// How many sends this probe has had, which may exceed the number of
     /// tokens retained.
     sends: u8,
+    /// How many sends actually reached the wire and were recorded here.
+    ///
+    /// Deliberately separate from [`sends`](Self::sends), which is charged when
+    /// a retry is *scheduled* so that a probe nobody manages to send still
+    /// exhausts on time. Numbering the tracked attempts off that count would
+    /// misname them by however many were charged and never emitted, so the
+    /// numbering follows the wire instead.
+    recorded: u8,
     /// The budget in force, resolved when the probe was first armed and again
     /// on every retry, so a host that comes to life mid-scan lifts the
     /// restriction on probes still outstanding against it.
@@ -407,6 +415,7 @@ impl<T: Copy> Record<T> {
             host,
             attempts: [None; MAX_TRACKED_ATTEMPTS],
             sends: 1,
+            recorded: 0,
             budget,
             generation,
         }
@@ -420,6 +429,8 @@ impl<T: Copy> Record<T> {
     /// retry rather than when the caller gets around to sending it, so a retry
     /// that is never actually emitted still exhausts on schedule.
     fn record_attempt(&mut self, token: T, sent_at: Instant) {
+        self.recorded = self.recorded.saturating_add(1);
+
         if self.attempts[MAX_TRACKED_ATTEMPTS - 1].is_some() {
             self.attempts.rotate_left(1);
             self.attempts[MAX_TRACKED_ATTEMPTS - 1] = Some(Attempt { token, sent_at });
@@ -434,16 +445,29 @@ impl<T: Copy> Record<T> {
         self.attempts[slot] = Some(Attempt { token, sent_at });
     }
 
-    /// When the attempt carrying `token` was sent, if it is still tracked.
-    fn sent_at(&self, token: &T) -> Option<Instant>
+    /// The attempt carrying `token`: which send it was, counting the first as
+    /// 1, and when it left.
+    ///
+    /// Only the last few attempts are tracked, so the ordinal is counted back
+    /// from the newest rather than read off the slot. A probe retried more than
+    /// [`MAX_TRACKED_ATTEMPTS`] times has forgotten its earliest tokens
+    /// entirely, and a reply to one of those is unrecognizable rather than
+    /// misnumbered.
+    fn attempt_of(&self, token: &T) -> Option<(u8, Instant)>
     where
         T: PartialEq,
     {
+        let tracked = self.attempts.iter().flatten().count();
+
         self.attempts
             .iter()
             .flatten()
-            .find(|attempt| attempt.token == *token)
-            .map(|attempt| attempt.sent_at)
+            .enumerate()
+            .find(|(_, attempt)| attempt.token == *token)
+            .map(|(slot, attempt)| {
+                let back_from_newest = (tracked - 1 - slot) as u8;
+                (self.recorded.saturating_sub(back_from_newest), attempt.sent_at)
+            })
     }
 
     /// The only tracked attempt's send time, or `None` if there is more than
@@ -524,6 +548,16 @@ pub struct Resolution {
     pub rtt: Option<Duration>,
     /// How many times the probe had been sent.
     pub attempts: u8,
+    /// Which send the reply answered, the first being 1, or `None` where
+    /// nothing in the reply named one.
+    ///
+    /// This is what separates a probe that needed repeating from one that
+    /// merely needed waiting for. Both look identical in a count of hosts
+    /// found: a host credited after three attempts may have answered the third,
+    /// or answered the first from a path slow enough that two more went out
+    /// meanwhile. Only the token says which, and the difference decides whether
+    /// coverage is bought with more packets or with more patience.
+    pub answered_attempt: Option<u8>,
 }
 
 /// The outstanding probes of one scanner, and the schedule on which they are
@@ -625,12 +659,18 @@ where
     pub fn resolve(&mut self, key: &K, token: Option<T>, now: Instant) -> Option<Resolution> {
         let record = self.records.get(key)?;
 
-        let sent_at = match token {
+        let attributed = match token {
             // A token naming no attempt we made is someone else's packet, so
             // the probe is left outstanding rather than resolved by it.
-            Some(token) => Some(record.sent_at(&token)?),
-            None => record.unambiguous_sent_at(),
+            Some(token) => Some(record.attempt_of(&token)?),
+            // Karn's rule leaves the sample unusable with several sends
+            // outstanding, but a probe sent once has nothing to confuse its
+            // reply with: it answered the first attempt by elimination.
+            None => record.unambiguous_sent_at().map(|sent_at| (1, sent_at)),
         };
+
+        let answered_attempt = attributed.map(|(ordinal, _)| ordinal);
+        let sent_at = attributed.map(|(_, sent_at)| sent_at);
 
         let attempts = record.sends;
         let host = record.host;
@@ -646,7 +686,11 @@ where
             self.global.record(rtt);
         }
 
-        Some(Resolution { rtt, attempts })
+        Some(Resolution {
+            rtt,
+            attempts,
+            answered_attempt,
+        })
     }
 
     /// Appends every probe whose timer has fired to `out`.
@@ -875,6 +919,138 @@ mod tests {
         let mut out = Vec::new();
         ledger.drain_due(now, &mut out);
         out
+    }
+
+    // ── Attributing a reply to an attempt ──────────────────────────────────
+
+    /// The distinction the whole attribution exists for. A host found after
+    /// three sends may have answered the third - retransmission earning its
+    /// traffic - or answered the first from a path slow enough that two more
+    /// went out while the reply was in flight. Only the token tells them apart,
+    /// and they call for opposite fixes.
+    #[test]
+    fn a_reply_names_the_attempt_it_answers_not_the_number_sent() {
+        let t0 = Instant::now();
+        let mut ledger = ledger(policy());
+
+        ledger.arm(HOST, (HOST, 80), 1, t0);
+        let t1 = t0 + Duration::from_millis(100);
+        due_at(&mut ledger, t1);
+        ledger.arm(HOST, (HOST, 80), 2, t1);
+        let t2 = t1 + Duration::from_millis(100);
+        due_at(&mut ledger, t2);
+        ledger.arm(HOST, (HOST, 80), 3, t2);
+
+        // The first attempt's token, answered long after two more went out.
+        let resolution = ledger
+            .resolve(&(HOST, 80), Some(1), t2 + Duration::from_millis(50))
+            .expect("a live token resolves");
+
+        assert_eq!(resolution.answered_attempt, Some(1));
+        assert_eq!(resolution.attempts, 3, "three sends had been charged");
+        assert_eq!(resolution.rtt, Some(Duration::from_millis(250)));
+    }
+
+    #[test]
+    fn a_reply_to_the_latest_attempt_is_numbered_by_it() {
+        let t0 = Instant::now();
+        let mut ledger = ledger(policy());
+
+        ledger.arm(HOST, (HOST, 80), 1, t0);
+        let t1 = t0 + Duration::from_millis(100);
+        due_at(&mut ledger, t1);
+        ledger.arm(HOST, (HOST, 80), 2, t1);
+
+        let resolution = ledger
+            .resolve(&(HOST, 80), Some(2), t1 + Duration::from_millis(5))
+            .expect("a live token resolves");
+
+        assert_eq!(resolution.answered_attempt, Some(2));
+    }
+
+    /// A probe sent once has nothing its reply could be confused with, so an
+    /// untokened reply answers the first attempt by elimination. With several
+    /// outstanding, Karn's rule applies and nothing may be claimed.
+    #[test]
+    fn an_untokened_reply_is_attributed_only_when_one_send_has_happened() {
+        let t0 = Instant::now();
+        let mut once = ledger(policy());
+        once.arm(HOST, (HOST, 80), 1, t0);
+
+        let single = once
+            .resolve(&(HOST, 80), None, t0 + Duration::from_millis(10))
+            .expect("resolves");
+        assert_eq!(single.answered_attempt, Some(1));
+
+        let mut twice = ledger(policy());
+        twice.arm(OTHER, (OTHER, 80), 1, t0);
+        let t1 = t0 + Duration::from_millis(100);
+        due_at(&mut twice, t1);
+        twice.arm(OTHER, (OTHER, 80), 2, t1);
+
+        let retried = twice
+            .resolve(&(OTHER, 80), None, t1 + Duration::from_millis(10))
+            .expect("resolves");
+        assert_eq!(retried.answered_attempt, None);
+        assert_eq!(retried.rtt, None);
+    }
+
+    /// Only the last few attempts keep their tokens, and the ordinal is counted
+    /// back from the newest rather than read off the slot - so a probe that has
+    /// outlived its earliest tokens still numbers the surviving ones correctly
+    /// rather than restarting at one.
+    #[test]
+    fn attempts_stay_correctly_numbered_after_the_oldest_tokens_are_evicted() {
+        // Six sends against four retained tokens, so attempts 1 and 2 have been
+        // forgotten and 3 through 6 survive.
+        let sends = 6;
+        let t0 = Instant::now();
+        let generous = RetryPolicy::new(
+            8,
+            Duration::from_millis(100),
+            Duration::from_millis(10),
+            Duration::from_secs(2),
+            1.0,
+            0.0,
+            None,
+        );
+
+        let sent_six = |t0: Instant| {
+            let mut ledger = ledger(generous);
+            ledger.arm(HOST, (HOST, 80), 1, t0);
+            let mut now = t0;
+            for token in 2..=sends {
+                now += Duration::from_millis(100);
+                due_at(&mut ledger, now);
+                ledger.arm(HOST, (HOST, 80), token, now);
+            }
+            (ledger, now)
+        };
+
+        let (mut ledger, now) = sent_six(t0);
+        let newest = ledger
+            .resolve(&(HOST, 80), Some(sends), now + Duration::from_millis(5))
+            .expect("resolves");
+        assert_eq!(newest.answered_attempt, Some(6));
+
+        let (mut ledger, now) = sent_six(t0);
+        let oldest_retained = ledger
+            .resolve(&(HOST, 80), Some(3), now + Duration::from_millis(5))
+            .expect("resolves");
+        assert_eq!(
+            oldest_retained.answered_attempt,
+            Some(3),
+            "numbering counts back from the newest, not from the first slot"
+        );
+
+        // A token evicted along the way names no attempt, so the probe stays
+        // outstanding rather than being resolved by an unrecognizable reply.
+        let (mut ledger, now) = sent_six(t0);
+        assert!(
+            ledger
+                .resolve(&(HOST, 80), Some(1), now + Duration::from_millis(5))
+                .is_none()
+        );
     }
 
     // ── The schedule ───────────────────────────────────────────────────────
