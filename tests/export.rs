@@ -27,7 +27,8 @@ use common::*;
 use serde_json::Value;
 use zond_engine::core::report::ScanReport;
 use zond_engine::export::{
-    CsvExporter, ExportFormat, ExportOptions, Exporter, JsonExporter, JsonLinesExporter, Redaction,
+    CsvExporter, ExportFormat, ExportOptions, Exporter, HtmlExporter, JsonExporter,
+    JsonLinesExporter, Redaction,
 };
 
 /// The schemas shipped in `assets/`, which are what a consumer validates
@@ -283,6 +284,15 @@ fn every_extension_resolves_to_the_format_that_claims_it() {
         ExportFormat::from_path(Path::new("report.csv")),
         Some(ExportFormat::Csv)
     );
+    assert_eq!(
+        ExportFormat::from_path(Path::new("report.html")),
+        Some(ExportFormat::Html)
+    );
+    // The same format under the name a system that shortens extensions gives it.
+    assert_eq!(
+        ExportFormat::from_path(Path::new("report.htm")),
+        Some(ExportFormat::Html)
+    );
 
     for format in ExportFormat::all() {
         assert_eq!(
@@ -452,4 +462,125 @@ async fn a_discovery_sweep_exports_more_than_a_header() {
         1 + outcome.report.host_count(),
         "a header and one row per host"
     );
+}
+
+/// Walks the page and returns the first structural fault it finds.
+///
+/// Hand-written rather than delegated to an HTML parser: a parser's job is to
+/// recover from broken markup, which is exactly the failure this has to report.
+/// Browsers recover too, each in its own way - a table that never closes is a
+/// different document in every one of them.
+fn unbalanced_tag(page: &str) -> Option<String> {
+    // The elements that have no closing tag. The exporter writes these three
+    // and no others.
+    const VOID: [&str; 3] = ["meta", "input", "br"];
+
+    let mut open: Vec<&str> = Vec::new();
+    let mut rest = page;
+
+    while let Some(index) = rest.find('<') {
+        rest = &rest[index + 1..];
+
+        // The doctype, which opens nothing.
+        if rest.starts_with('!') {
+            continue;
+        }
+
+        let end = rest.find('>')?;
+        let tag = &rest[..end];
+        rest = &rest[end..];
+
+        let closing = tag.starts_with('/');
+        let name = tag
+            .trim_start_matches('/')
+            .split([' ', '\n', '\t'])
+            .next()
+            .unwrap_or_default();
+
+        if VOID.contains(&name) {
+            continue;
+        }
+
+        if closing {
+            match open.pop() {
+                Some(expected) if expected == name => {}
+                Some(expected) => return Some(format!("</{name}> closes <{expected}>")),
+                None => return Some(format!("</{name}> closes nothing")),
+            }
+        } else {
+            open.push(name);
+        }
+    }
+
+    open.pop().map(|name| format!("<{name}> is never closed"))
+}
+
+/// A page a browser has to guess at is a page every browser guesses at
+/// differently.
+#[tokio::test]
+async fn a_real_scan_exports_a_page_that_closes_every_tag() {
+    let server = spawn_banner_server(b"SSH-2.0-OpenSSH_8.9p1\r\n").await;
+    let closed = closed_loopback_port().await;
+    let ports = format!("{},{}", server.port, closed);
+
+    let outcome = run_scan(target_map(LOOPBACK, &ports), &test_config()).await;
+
+    let mut bytes = Vec::new();
+    HtmlExporter::new(ExportOptions::new())
+        .export(&outcome.report, &mut bytes)
+        .expect("the export succeeds");
+
+    let page = String::from_utf8(bytes).expect("utf-8");
+
+    assert_eq!(unbalanced_tag(&page), None);
+    assert!(page.starts_with("<!doctype html>"));
+    assert!(page.trim_end().ends_with("</html>"));
+
+    // Every host the report holds is on the page. A report that renders a
+    // subset of itself is worse than one that fails to render.
+    for host in outcome.report.hosts() {
+        let ip = host.primary_ip().to_string();
+        assert!(page.contains(&ip), "{ip} is missing from the page");
+    }
+}
+
+/// The page and the document are two renderings of one report, and the page is
+/// the one somebody acts on.
+#[tokio::test]
+async fn the_page_and_the_document_agree_about_the_findings() {
+    let server = spawn_banner_server(b"SSH-2.0-OpenSSH_8.9p1\r\n").await;
+    let outcome = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    let document = export(&outcome.report, ExportOptions::new());
+
+    let mut bytes = Vec::new();
+    HtmlExporter::new(ExportOptions::new())
+        .export(&outcome.report, &mut bytes)
+        .expect("the export succeeds");
+    let page = String::from_utf8(bytes).expect("utf-8");
+
+    let summary = &document["summary"];
+    assert!(page.contains(&format!(
+        "<div class=\"tile-value\">{}</div><div class=\"tile-label\">hosts</div>",
+        summary["hosts_total"]
+    )));
+    assert!(page.contains(&format!(
+        "<div class=\"tile-value\">{}</div><div class=\"tile-label\">open ports</div>",
+        summary["ports_open"]
+    )));
+
+    for host in document["hosts"].as_array().expect("a host array") {
+        for port in host["ports"].as_array().expect("a port array") {
+            let number = port["port"].as_u64().expect("a port number");
+            let protocol = port["protocol"].as_str().expect("a protocol");
+            assert!(
+                page.contains(&format!("{number}/{protocol}")),
+                "{number}/{protocol} is in the document and not on the page"
+            );
+        }
+    }
 }

@@ -1,0 +1,884 @@
+/*
+ * The stylesheet embedded in every HTML report the engine writes.
+ *
+ * It is inlined into the document at export time, so a report is one file with
+ * no network dependency of any kind. Nothing here loads a font, an image or a
+ * script: a scan report is opened from a ticket, an email attachment or a
+ * read-only share, and each of those is a place where a request to a CDN either
+ * fails or tells somebody that the report was read.
+ *
+ * Two palettes are written out in full below rather than derived from each
+ * other. A dark theme that is an inverted light theme is a light theme with
+ * the contrast wrong; the values are chosen against the surface they sit on.
+ */
+
+/* ------------------------------------------------------------------ *
+ * Palette
+ *
+ * The system preference decides, and the switch in the masthead flips
+ * whatever it decided. That is why each palette appears twice: once as a
+ * preference default and once as what the switch asks for from the other
+ * side. A browser without :has() support keeps the first two rules, so the
+ * system preference still works and only the manual flip is missing - which
+ * is why the switch hides itself where it would not function.
+ * ------------------------------------------------------------------ */
+
+:root {
+  color-scheme: light;
+
+  --bg: #f6f7f4;
+  --surface: #ffffff;
+  --surface-alt: #f2f4ef;
+  --border: #dfe4d9;
+  --rule: #ecefe8;
+  --text: #131612;
+  --muted: #5c665a;
+  --faint: #7e887c;
+  --accent: #b83a00;
+  --accent-soft: rgba(184, 58, 0, 0.10);
+  --shadow: 0 1px 2px rgba(19, 22, 18, 0.05);
+
+  --found: #0d7a37;
+  --found-soft: rgba(13, 122, 55, 0.12);
+  --partial: #8a5a00;
+  --partial-soft: rgba(138, 90, 0, 0.12);
+  --inert: #6b7269;
+  --inert-soft: rgba(107, 114, 105, 0.12);
+  --none: #9aa298;
+  --none-soft: rgba(154, 162, 152, 0.14);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --bg: #0b0e0a;
+    --surface: #11150f;
+    --surface-alt: #161b13;
+    --border: #232c1f;
+    --rule: #1b2318;
+    --text: #dde6da;
+    --muted: #93a190;
+    --faint: #78866f;
+    --accent: #ff6a1f;
+    --accent-soft: rgba(255, 106, 31, 0.14);
+    --shadow: none;
+
+    --found: #4fe07d;
+    --found-soft: rgba(79, 224, 125, 0.14);
+    --partial: #e2b155;
+    --partial-soft: rgba(226, 177, 85, 0.14);
+    --inert: #7e8c7b;
+    --inert-soft: rgba(126, 140, 123, 0.16);
+    --none: #6b7768;
+    --none-soft: rgba(107, 119, 104, 0.18);
+  }
+}
+
+/* The switch inverts whatever the two rules above settled on. */
+:root:has(.theme-switch:checked) {
+  color-scheme: dark;
+
+  --bg: #0b0e0a;
+  --surface: #11150f;
+  --surface-alt: #161b13;
+  --border: #232c1f;
+  --rule: #1b2318;
+  --text: #dde6da;
+  --muted: #93a190;
+  --faint: #78866f;
+  --accent: #ff6a1f;
+  --accent-soft: rgba(255, 106, 31, 0.14);
+  --shadow: none;
+
+  --found: #4fe07d;
+  --found-soft: rgba(79, 224, 125, 0.14);
+  --partial: #e2b155;
+  --partial-soft: rgba(226, 177, 85, 0.14);
+  --inert: #7e8c7b;
+  --inert-soft: rgba(126, 140, 123, 0.16);
+  --none: #6b7768;
+  --none-soft: rgba(107, 119, 104, 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:has(.theme-switch:checked) {
+    color-scheme: light;
+
+    --bg: #f6f7f4;
+    --surface: #ffffff;
+    --surface-alt: #f2f4ef;
+    --border: #dfe4d9;
+    --rule: #ecefe8;
+    --text: #131612;
+    --muted: #5c665a;
+    --faint: #7e887c;
+    --accent: #b83a00;
+    --accent-soft: rgba(184, 58, 0, 0.10);
+    --shadow: 0 1px 2px rgba(19, 22, 18, 0.05);
+
+    --found: #0d7a37;
+    --found-soft: rgba(13, 122, 55, 0.12);
+    --partial: #8a5a00;
+    --partial-soft: rgba(138, 90, 0, 0.12);
+    --inert: #6b7269;
+    --inert-soft: rgba(107, 114, 105, 0.12);
+    --none: #9aa298;
+    --none-soft: rgba(154, 162, 152, 0.14);
+  }
+}
+
+:root {
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+/* ------------------------------------------------------------------ *
+ * Page
+ * ------------------------------------------------------------------ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+.sheet {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+dl,
+dd,
+dt,
+p,
+ul {
+  margin: 0;
+}
+
+ul {
+  padding: 0;
+  list-style: none;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.dim {
+  color: var(--muted);
+}
+
+/* Script output is the one value in the report with a shape of its own. */
+.pre {
+  white-space: pre-wrap;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* A control character in a hostname or a banner, shown as its code point.
+   Never as itself: U+202E and its neighbours reorder the text around them,
+   which is how a report is made to read one address while carrying another. */
+.ctl {
+  font-family: var(--font-mono);
+  font-size: 0.75em;
+  padding: 0 0.25em;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ *
+ * Masthead
+ * ------------------------------------------------------------------ */
+
+.masthead {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-family: var(--font-mono);
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding-top: 0.1rem;
+}
+
+.brand-mark {
+  color: var(--accent);
+}
+
+.masthead-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.masthead-title h1 {
+  font-size: 1.3rem;
+  letter-spacing: -0.01em;
+}
+
+.subtitle {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+/* Focusable but never rendered: the label is the visible control. */
+.theme-switch {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.theme-label {
+  display: none;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Without :has() the switch cannot do anything, so it does not appear. The
+   system preference still decides, in every browser. */
+@supports selector(:root:has(*)) {
+  .theme-label {
+    display: inline-flex;
+  }
+}
+
+.theme-label:hover {
+  color: var(--text);
+  border-color: var(--faint);
+}
+
+.theme-switch:focus-visible + .sheet .theme-label {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-icon {
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+
+/* ------------------------------------------------------------------ *
+ * Notices
+ * ------------------------------------------------------------------ */
+
+.notices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1.1rem;
+}
+
+.notice {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 0.78rem;
+}
+
+.notice-key {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.notice-alert {
+  border-color: var(--partial);
+  background: var(--partial-soft);
+}
+
+.notice-alert .notice-key {
+  color: var(--partial);
+}
+
+/* ------------------------------------------------------------------ *
+ * Headline figures
+ * ------------------------------------------------------------------ */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.9rem;
+  margin-top: 1.5rem;
+}
+
+.tile {
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.tile-value {
+  font-family: var(--font-mono);
+  font-size: 2rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.tile-label {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tile-note {
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+
+/* ------------------------------------------------------------------ *
+ * Distributions
+ * ------------------------------------------------------------------ */
+
+.distributions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 0.9rem;
+  margin-top: 0.9rem;
+}
+
+.dist {
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.dist-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.meter {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  margin: 0.7rem 0 0.8rem;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--surface-alt);
+}
+
+.meter-empty {
+  background: var(--surface-alt);
+}
+
+.seg {
+  height: 100%;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  font-size: 0.82rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.swatch {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 2px;
+  flex: none;
+}
+
+.legend-label {
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
+.legend-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.legend-zero .legend-value,
+.legend-zero .legend-label {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+/* ------------------------------------------------------------------ *
+ * State colours
+ *
+ * Four tones, not one per state name. A state's name is always printed
+ * beside its colour, so the colour carries how much the finding is worth
+ * looking at rather than which of six values it holds.
+ *
+ * The two uncertain tones are hatched as well as coloured. Green against
+ * amber is the pair colour-blind readers lose first, and a report is
+ * routinely printed in greyscale; the hatch survives both.
+ * ------------------------------------------------------------------ */
+
+.s-found {
+  --tone: var(--found);
+  --tone-soft: var(--found-soft);
+}
+
+.s-partial {
+  --tone: var(--partial);
+  --tone-soft: var(--partial-soft);
+}
+
+.s-inert {
+  --tone: var(--inert);
+  --tone-soft: var(--inert-soft);
+}
+
+.s-none {
+  --tone: var(--none);
+  --tone-soft: var(--none-soft);
+}
+
+.seg,
+.swatch {
+  background: var(--tone);
+}
+
+.seg.s-partial,
+.seg.s-none,
+.swatch.s-partial,
+.swatch.s-none {
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.45) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.tag {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--tone, var(--border));
+  border-radius: 3px;
+  background: var(--tone-soft, transparent);
+  color: var(--tone, var(--muted));
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.tag-role {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ *
+ * Sections
+ * ------------------------------------------------------------------ */
+
+.section {
+  margin-top: 2.5rem;
+}
+
+.section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+}
+
+.section-count {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.empty {
+  padding: 0.6rem 0;
+  color: var(--faint);
+  font-size: 0.85rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * Facts
+ *
+ * A definition list rendered as label/value rows. Only what the scan
+ * established appears: the JSON keeps every field so that a parser never
+ * has to tell absent from empty, and a page keeps only what was found
+ * because a reader's attention is the scarce resource.
+ * ------------------------------------------------------------------ */
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.2rem 1rem;
+  font-size: 0.86rem;
+}
+
+.facts dt {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--faint);
+  letter-spacing: 0.02em;
+}
+
+.facts dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ *
+ * Hosts
+ * ------------------------------------------------------------------ */
+
+.host {
+  margin-top: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.host-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface-alt);
+}
+
+.host-ip {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.host-name {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.host-body {
+  padding: 0.85rem 1.1rem;
+}
+
+.host-body .facts + .scroll {
+  margin-top: 0.9rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * Tables
+ * ------------------------------------------------------------------ */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.table th {
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: baseline;
+  overflow-wrap: anywhere;
+}
+
+.table tr:last-child td {
+  border-bottom: 0;
+}
+
+.table th:first-child,
+.table td:first-child {
+  padding-left: 0;
+}
+
+.table th:last-child,
+.table td:last-child {
+  padding-right: 0;
+}
+
+/* A wide table scrolls inside its own box rather than pushing the page
+   sideways. The vertical axis is pinned because a box that scrolls on one axis
+   makes the other `auto`, which is how a table that fits its height acquires a
+   scrollbar it has no use for. */
+.scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.port-detail td {
+  padding-top: 0;
+  padding-bottom: 0.6rem;
+  color: var(--muted);
+}
+
+.port-detail .facts {
+  font-size: 0.8rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * Scan detail
+ * ------------------------------------------------------------------ */
+
+.phase {
+  margin-top: 0.9rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.phase-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.7rem;
+}
+
+.phase-kind {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.block {
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+}
+
+.block-title {
+  margin-bottom: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hist {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.hist th {
+  width: 1%;
+  padding: 0.12rem 0.6rem 0.12rem 0;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.hist td {
+  padding: 0.12rem 0;
+}
+
+.hist .num {
+  width: 1%;
+  padding-left: 0.6rem;
+}
+
+.bar-track {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-alt);
+}
+
+.bar {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 4px;
+  background: var(--accent);
+}
+
+.bar-zero {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------------ *
+ * Colophon
+ * ------------------------------------------------------------------ */
+
+.colophon {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ *
+ * Print
+ *
+ * The reason there is no PDF exporter: this is what a browser prints.
+ * Ink-cheap colours, nothing that only exists to be clicked, and no host
+ * split across a page boundary.
+ * ------------------------------------------------------------------ */
+
+@media print {
+  :root,
+  :root:has(.theme-switch:checked) {
+    color-scheme: light;
+
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-alt: #f4f4f2;
+    --border: #b9bdb5;
+    --rule: #dcdfd8;
+    --text: #000000;
+    --muted: #3d423b;
+    --faint: #5b6058;
+    --accent: #8f2d00;
+    --accent-soft: transparent;
+    --shadow: none;
+
+    --found: #14602f;
+    --found-soft: transparent;
+    --partial: #6b4600;
+    --partial-soft: transparent;
+    --inert: #55594f;
+    --inert-soft: transparent;
+    --none: #82877f;
+    --none-soft: transparent;
+  }
+
+  @page {
+    margin: 14mm;
+  }
+
+  body {
+    font-size: 10pt;
+  }
+
+  .sheet {
+    max-width: none;
+    padding: 0;
+  }
+
+  .theme-label,
+  .theme-switch {
+    display: none;
+  }
+
+  .host,
+  .phase,
+  .tile,
+  .dist {
+    break-inside: avoid;
+  }
+
+  .section-title,
+  .host-head,
+  .phase-head {
+    break-after: avoid;
+  }
+
+  .table thead {
+    display: table-header-group;
+  }
+
+  .scroll {
+    overflow-x: visible;
+  }
+}

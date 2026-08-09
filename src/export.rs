@@ -83,6 +83,9 @@ pub mod jsonl;
 #[cfg(feature = "export-csv")]
 pub mod csv;
 
+#[cfg(feature = "export-html")]
+pub mod html;
+
 #[cfg(test)]
 mod fixture;
 
@@ -106,6 +109,9 @@ pub use jsonl::JsonLinesExporter;
 
 #[cfg(feature = "export-csv")]
 pub use csv::CsvExporter;
+
+#[cfg(feature = "export-html")]
+pub use html::HtmlExporter;
 
 /// What went wrong while writing a report out.
 #[non_exhaustive]
@@ -260,6 +266,11 @@ pub enum ExportFormat {
     /// spreadsheet and compliance audience.
     #[cfg(feature = "export-csv")]
     Csv,
+
+    /// A single self-contained page: everything the report holds, laid out to
+    /// be read rather than parsed, and to print.
+    #[cfg(feature = "export-html")]
+    Html,
 }
 
 impl ExportFormat {
@@ -278,6 +289,10 @@ impl ExportFormat {
             "jsonl" | "ndjson" => Some(ExportFormat::JsonLines),
             #[cfg(feature = "export-csv")]
             "csv" => Some(ExportFormat::Csv),
+            // Both spellings, because a caller who wrote `report.htm` on a
+            // system that still shortens extensions means this.
+            #[cfg(feature = "export-html")]
+            "html" | "htm" => Some(ExportFormat::Html),
             _ => None,
         }
     }
@@ -302,6 +317,8 @@ impl ExportFormat {
             ExportFormat::JsonLines => "jsonl",
             #[cfg(feature = "export-csv")]
             ExportFormat::Csv => "csv",
+            #[cfg(feature = "export-html")]
+            ExportFormat::Html => "html",
         }
     }
 
@@ -317,6 +334,8 @@ impl ExportFormat {
             ExportFormat::JsonLines,
             #[cfg(feature = "export-csv")]
             ExportFormat::Csv,
+            #[cfg(feature = "export-html")]
+            ExportFormat::Html,
         ]
     }
 
@@ -336,6 +355,8 @@ impl ExportFormat {
             ExportFormat::JsonLines => Box::new(JsonLinesExporter::new(options)),
             #[cfg(feature = "export-csv")]
             ExportFormat::Csv => Box::new(CsvExporter::new(options)),
+            #[cfg(feature = "export-html")]
+            ExportFormat::Html => Box::new(HtmlExporter::new(options)),
         }
     }
 }

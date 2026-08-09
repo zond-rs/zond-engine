@@ -368,6 +368,23 @@ impl Serialize for ReportHeaderDto<'_> {
     }
 }
 
+/// How long a scan took, as the document reports it.
+///
+/// The sum of the phases *as rendered*, not the truncation of the underlying
+/// sum. Each phase's figure is truncated to whole microseconds independently, so
+/// a total taken from the durations behind them can exceed the sum of the
+/// numbers printed beside it - the document would then contradict itself by a
+/// microsecond, which is a real question for a consumer to ask and a fraction of
+/// nothing to answer it with.
+///
+/// Public because every rendering of a report has to agree about this number,
+/// including one written outside this crate.
+pub fn total_elapsed_us(phases: &[PhaseDto<'_>]) -> u64 {
+    phases
+        .iter()
+        .fold(0u64, |total, phase| total.saturating_add(phase.elapsed_us))
+}
+
 /// How many fields [`write_header`] emits.
 const HEADER_FIELDS: usize = 8;
 
@@ -378,16 +395,7 @@ fn write_header<S: serde::ser::SerializeStruct>(
     generated_at: SystemTime,
 ) -> Result<(), S::Error> {
     let phases: Vec<PhaseDto<'_>> = report.phases().iter().map(PhaseDto::new).collect();
-
-    // Summed from the rendered phases rather than from the report's own
-    // durations. Each phase's figure is truncated to whole microseconds
-    // independently, so a total taken from the underlying `Duration`s can
-    // exceed the sum of the numbers printed beside it - the document would then
-    // contradict itself by a microsecond, which is a real question for a
-    // consumer to ask and a fraction of nothing to answer it with.
-    let elapsed_us = phases
-        .iter()
-        .fold(0u64, |total, phase| total.saturating_add(phase.elapsed_us));
+    let elapsed_us = total_elapsed_us(&phases);
 
     doc.serialize_field("schema_version", &SCHEMA_VERSION)?;
     doc.serialize_field(

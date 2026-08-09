@@ -27,9 +27,16 @@ export-jsonl = ["dep:serde_json"]
 # it saves.
 export-csv = []
 
+# A single self-contained page, for the person who is going to read the report
+# rather than parse it, and for the browser that prints it. Adds no dependency:
+# the stylesheet is a file in `assets/` and the markup is written directly to
+# the destination, because a templating crate for one document costs more than
+# it saves.
+export-html = []
+
 # Every format this crate ships. A convenience for a front end that wants to
-# offer the user a choice, rather than a fourth format.
-export-all = ["export-json", "export-jsonl", "export-csv"]
+# offer the user a choice, rather than a fifth format.
+export-all = ["export-json", "export-jsonl", "export-csv", "export-html"]
 
 # Exposes `ProbeTransport::from_parts`, which builds a transport over a caller-
 # supplied sender and reply stream instead of a socket and a capture. That is
