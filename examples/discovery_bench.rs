@@ -214,8 +214,16 @@ async fn main() {
         let (session, task) = scanner::discover(ips.clone(), &cfg)
             .await
             .expect("discovery starts");
-        task.await.expect("discovery finishes");
+        let report = task.await.expect("discovery finishes");
         let elapsed = started.elapsed();
+
+        // The bench keeps timing the run itself, so its numbers stay comparable
+        // with every baseline recorded before reports existed. What the report
+        // adds is the reason a run came back short: a strategy that never
+        // started reads as a quiet network in the host count alone.
+        for failure in report.failures() {
+            println!("  run {run:>2}: DEGRADED - {failure}");
+        }
 
         let found: BTreeSet<Device> = session.store.iter().map(|entry| identity(&entry)).collect();
         for device in &found {

@@ -45,6 +45,7 @@ use zond_engine::core::models::host::Host;
 use zond_engine::core::models::ip::set::IpSet;
 use zond_engine::core::models::port::{PortSet, PortState, Protocol};
 use zond_engine::core::models::target::{Target, TargetMap, TargetSet};
+use zond_engine::core::report::ScanReport;
 use zond_engine::core::session::{ScanEvent, ScanSession};
 use zond_engine::scanner::{self, PortScanner, ScanTask};
 use zond_engine::system::interface::SourceResolver;
@@ -169,11 +170,12 @@ pub fn ip_set(ip: IpAddr) -> IpSet {
     set
 }
 
-/// The outcome of driving a scan to completion: the final host store plus every
-/// event emitted along the way.
+/// The outcome of driving a scan to completion: the final host store, every
+/// event emitted along the way, and the report the engine produced.
 pub struct Outcome {
     pub store: Arc<DashMap<IpAddr, Host>>,
     pub events: Vec<ScanEvent>,
+    pub report: ScanReport,
 }
 
 impl Outcome {
@@ -215,7 +217,7 @@ pub async fn run_discover(targets: IpSet, cfg: &ZondConfig) -> Outcome {
 /// channel. Because the task has finished, every event has already been sent, so
 /// a non-blocking drain captures all of them.
 async fn drive(mut session: ScanSession, task: ScanTask) -> Outcome {
-    task.join().await.expect("scan task runs to completion");
+    let report = task.join().await.expect("scan task runs to completion");
 
     let store = session.store.clone();
     let mut events = Vec::new();
@@ -223,7 +225,11 @@ async fn drive(mut session: ScanSession, task: ScanTask) -> Outcome {
         events.push(event);
     }
 
-    Outcome { store, events }
+    Outcome {
+        store,
+        events,
+        report,
+    }
 }
 
 // ── Tier 2 fixtures ────────────────────────────────────────────────────────

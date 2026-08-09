@@ -100,7 +100,13 @@ async fn main() {
         ..Default::default()
     };
     let (session, task) = scanner::scan(target_map, &cfg).await.expect("scan started");
-    task.await.expect("scan finished");
+    let report = task.await.expect("scan finished");
+
+    // A verification run that lost a scanner would otherwise print the same
+    // "Filtered" as a genuinely filtered port.
+    for failure in report.failures() {
+        println!("  !! {failure}");
+    }
 
     let state_of = |ip: IpAddr, port: u16| -> Option<PortState> {
         session

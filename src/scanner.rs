@@ -50,7 +50,8 @@ use crate::core::models::{
     port::Protocol,
     target::{Target, TargetMap},
 };
-use crate::core::session::{ScanContext, ScanEvent, ScanSession, ScannerKind};
+use crate::core::report::{PhaseRecorder, ScanKind, ScanReport, TargetScope};
+use crate::core::session::{ScanContext, ScanSession, ScannerKind};
 use crate::scanner::resolver::HostnameResolver;
 use crate::system::interface;
 use crate::system::privilege::is_elevated;
@@ -100,29 +101,35 @@ pub enum ScanError {
 /// A handle to a running scan.
 ///
 /// Discovered hosts arrive live through the paired [`ScanSession`]. Await this
-/// handle, or call [`ScanTask::join`], to wait for the whole scan to finish. To
-/// stop a scan early, call
+/// handle, or call [`ScanTask::join`], to wait for the whole scan to finish and
+/// receive the [`ScanReport`] describing it. To stop a scan early, call
 /// [`ScanHandle::abort`](crate::core::handle::ScanHandle::abort) on the
-/// session's handle.
+/// session's handle; the report still arrives, describing however far the scan
+/// got.
 pub struct ScanTask {
-    handle: JoinHandle<()>,
+    handle: JoinHandle<ScanReport>,
 }
 
 impl ScanTask {
-    fn new(handle: JoinHandle<()>) -> Self {
+    fn new(handle: JoinHandle<ScanReport>) -> Self {
         Self { handle }
     }
 
-    /// Waits for the scan to finish. This fails only when the scan did not run
-    /// to completion; per-target failures are reported through the
-    /// [`ScanSession`] event stream instead.
-    pub async fn join(self) -> Result<(), ScanError> {
+    /// Waits for the scan to finish and returns its report.
+    ///
+    /// This fails only when the scan did not run to completion at all. A
+    /// strategy that failed part way through is recorded in the report's
+    /// [`failures`](ScanReport::failures) - and announced live on the
+    /// [`ScanSession`] event stream - rather than returned as an error here,
+    /// because the hosts the surviving strategies found are still results worth
+    /// having.
+    pub async fn join(self) -> Result<ScanReport, ScanError> {
         self.handle.await.map_err(|_| ScanError::TaskFailed)
     }
 }
 
 impl IntoFuture for ScanTask {
-    type Output = Result<(), ScanError>;
+    type Output = Result<ScanReport, ScanError>;
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
@@ -149,15 +156,21 @@ impl IntoFuture for ScanTask {
 /// privileged or active reverse lookups otherwise, without slowing discovery.
 ///
 /// The returned [`ScanTask`] resolves once every scanning strategy, and the
-/// resolver if one was started, has finished. To stop a scan early, call
+/// resolver if one was started, has finished, and yields the [`ScanReport`] for
+/// the sweep. To stop a scan early, call
 /// [`crate::core::handle::ScanHandle::abort`] on the session's handle. Both
 /// phases check for that signal regularly rather than only between targets.
 pub async fn discover(
-    targets: IpSet,
+    mut targets: IpSet,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::new();
     let caps = ScanCapabilities::resolve(cfg);
+
+    // Recorded before `targets` moves into a strategy: what the sweep was asked
+    // to cover is only knowable here.
+    let scope = TargetScope::from_ip_set(&mut targets);
+    let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privileged, scope, cfg);
 
     // Unprivileged discovery has no raw enrichment strategies to spawn. It runs
     // the connect-based sweep itself and then the same DNS tail. The early
@@ -165,9 +178,10 @@ pub async fn discover(
     if !caps.privileged {
         let handle = tokio::spawn(async move {
             if let Err(e) = connect::discover(targets, ctx.clone()).await {
-                report_scanner_failure(&ctx, ScannerKind::Connect, e.to_string());
+                ctx.record_failure(ScannerKind::Connect, e.to_string());
             }
             finish_enrichment(None, caps, &ctx).await;
+            recorder.finish(&ctx)
         });
         return Ok((session, ScanTask::new(handle)));
     }
@@ -176,6 +190,7 @@ pub async fn discover(
 
     let handle = tokio::spawn(async move {
         finish_enrichment(Some(enrichment), caps, &ctx).await;
+        recorder.finish(&ctx)
     });
 
     Ok((session, ScanTask::new(handle)))
@@ -203,6 +218,10 @@ pub async fn scan(
     let caps = ScanCapabilities::resolve(cfg);
     let ips = target_ips(&target_map);
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
+
+    // Recorded before `target_map` moves into the dispatcher.
+    let scope = TargetScope::from_target_map(&mut target_map);
+    let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, cfg);
 
     let (syn_scanner, udp_scanner) = if caps.privileged {
         (
@@ -243,6 +262,7 @@ pub async fn scan(
 
         run_port_scan(scanner, rx, &ctx).await;
         finish_enrichment(enrichment, caps, &ctx).await;
+        recorder.finish(&ctx)
     });
 
     Ok((session, ScanTask::new(handle)))
@@ -390,8 +410,8 @@ impl Enrichment {
         for (kind, handle) in self.scanners {
             match handle.await {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => report_scanner_failure(ctx, kind, e.to_string()),
-                Err(e) => report_scanner_failure(ctx, kind, format!("panicked: {e}")),
+                Ok(Err(e)) => ctx.record_failure(kind, e.to_string()),
+                Err(e) => ctx.record_failure(kind, format!("panicked: {e}")),
             }
         }
 
@@ -449,9 +469,7 @@ async fn spawn_explorers(
             tuning.retry,
         ) {
             Ok(scanner) => explorers.push((ScannerKind::Local, Box::new(scanner))),
-            Err(e) => {
-                report_scanner_failure(ctx, ScannerKind::Local, format!("{}: {e}", intf.name))
-            }
+            Err(e) => ctx.record_failure(ScannerKind::Local, format!("{}: {e}", intf.name)),
         }
     }
 
@@ -464,7 +482,7 @@ async fn spawn_explorers(
         );
         match RoutedScanner::new(routed, ctx.clone(), dns_tx.clone(), tuning) {
             Ok(scanner) => explorers.push((ScannerKind::Routed, Box::new(scanner))),
-            Err(e) => report_scanner_failure(ctx, ScannerKind::Routed, e.to_string()),
+            Err(e) => ctx.record_failure(ScannerKind::Routed, e.to_string()),
         }
     }
 
@@ -602,7 +620,7 @@ async fn run_port_scan(
                 scanner.detect_services(ctx).await;
             }
         }
-        Err(e) => report_scanner_failure(ctx, kind, e.to_string()),
+        Err(e) => ctx.record_failure(kind, e.to_string()),
     }
 }
 
@@ -663,15 +681,6 @@ async fn spawn_resolver(dns_rx: UnboundedReceiver<IpAddr>) -> JoinHandle<Option<
             }
         }
     })
-}
-
-/// Logs a scanner failure and announces it on the event stream, so a consumer
-/// watching a scan can tell that it ran degraded rather than clean.
-fn report_scanner_failure(ctx: &ScanContext, scanner: ScannerKind, reason: String) {
-    error!("Scanner {scanner:?} failed: {reason}");
-    let _ = ctx
-        .events_tx
-        .send(ScanEvent::ScannerFailed { scanner, reason });
 }
 
 // ╔════════════════════════════════════════════╗

@@ -23,7 +23,10 @@ pub use service::Service;
 pub use set::{PortSet, PortSetParseError};
 
 /// Supported transport layer protocols.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Ordered so that a set of protocols has one canonical rendering, which is what
+/// keeps two scans of the same targets producing byte-identical reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
     Tcp,
     Udp,

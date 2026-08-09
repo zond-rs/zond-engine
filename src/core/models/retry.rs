@@ -165,7 +165,11 @@ pub enum ScanEffort {
 
 /// User control over retransmission, applied on top of each scanner's own
 /// profile.
-#[derive(Debug, Clone, Copy)]
+///
+/// Comparable so a report can state whether two runs were asked for the same
+/// effort. Not [`Eq`]: `timeout_scale` is a float, and a scale nobody can write
+/// down exactly is not a scale two runs should be claimed to share.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryConfig {
     pub effort: ScanEffort,
     /// Replaces the attempt budget outright, whatever `effort` implies. One
