@@ -48,6 +48,10 @@ Fixes # (issue)
 - [ ] I have added/updated documentation.
 - [ ] I did not read any of this, just clicking for the green button.
 - [ ] **(If adding a fingerprint)** The regex/logic is as specific as possible to avoid false positives.
+- [ ] I have read and agree to the [Contributor License Agreement](../CLA.md).
 
 ---
-*By submitting this PR, I agree to the project's license terms.*
+*Zond Engine is licensed under the GNU AGPL v3 or later. By submitting this pull
+request you agree to license your contribution under those terms and to the
+[Contributor License Agreement](../CLA.md). The CLA Assistant bot will ask you to
+sign on your first contribution — it only takes a comment.*

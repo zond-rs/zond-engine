@@ -1,8 +1,10 @@
 // Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors
 //
-// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
-// If a copy of the MPL was not distributed with this file, You can obtain one at
-// https://mozilla.org/MPL/2.0/.
+// This file is part of Zond Engine, licensed under the GNU Affero General
+// Public License, version 3 or later. See the LICENSE file for details, or
+// <https://www.gnu.org/licenses/agpl-3.0.html>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::net::{IpAddr, Ipv6Addr};
 
