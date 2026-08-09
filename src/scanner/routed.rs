@@ -38,8 +38,10 @@ use async_trait::async_trait;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::audit::{ProbeAudit, StopReason};
+use super::audit::ProbeAudit;
 use super::{NetworkExplorer, payload};
+use crate::core::report::StopReason;
+use crate::core::session::ScannerKind;
 
 pub use port_scan::SynPortScanner;
 pub use udp_scan::UdpPortScanner;
@@ -384,8 +386,15 @@ impl NetworkExplorer for RoutedScanner {
         // Read before the transport is dropped, since the counters live with
         // the capture threads it keeps alive.
         let capture = self.transport.capture_counts();
+        let targets = self.ips.len();
         self.audit
-            .report("routed-discovery", self.ips.len(), reason, capture);
+            .report("routed-discovery", targets, reason, capture);
+        self.ctx.record_probe_stats(self.audit.stats(
+            ScannerKind::Routed,
+            targets,
+            reason,
+            capture,
+        ));
         Ok(())
     }
 }

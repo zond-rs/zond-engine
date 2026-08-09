@@ -6,7 +6,7 @@ use tracing::error;
 
 use crate::core::handle::ScanHandle;
 use crate::core::models::host::Host;
-use crate::core::report::ScannerFailure;
+use crate::core::report::{ProbeStats, ScannerFailure};
 
 /// Which scanning strategy a [`ScanEvent::ScannerFailed`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +60,37 @@ pub struct ScanSession {
     pub handle: ScanHandle,
 }
 
+/// Where an instrumented scanner leaves its counters for the final
+/// [`ScanReport`](crate::core::report::ScanReport).
+///
+/// A scanner reports its audit as its receive loop exits, which is well before
+/// the phase that spawned it knows the scan is over, and the strategy is
+/// consumed by then. This is where those counters wait in the meantime.
+#[derive(Debug, Default)]
+pub(crate) struct ProbeStatsLog {
+    entries: Mutex<Vec<ProbeStats>>,
+}
+
+impl ProbeStatsLog {
+    fn push(&self, stats: ProbeStats) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.push(stats);
+    }
+
+    fn drain(&self) -> Vec<ProbeStats> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn snapshot(&self) -> Vec<ProbeStats> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
 /// Where strategy failures accumulate for the final
 /// [`ScanReport`](crate::core::report::ScanReport).
 ///
@@ -106,6 +137,7 @@ pub struct ScanContext {
     pub store: Arc<DashMap<IpAddr, Host>>,
     pub events_tx: mpsc::UnboundedSender<ScanEvent>,
     pub(crate) failures: Arc<FailureLog>,
+    pub(crate) probe_stats: Arc<ProbeStatsLog>,
 }
 
 impl ScanContext {
@@ -158,6 +190,32 @@ impl ScanContext {
             .send(ScanEvent::ScannerFailed { scanner, reason });
     }
 
+    /// Files what an instrumented scanner observed about its own run.
+    ///
+    /// Called once per scanner, as its receive loop exits. Unlike a failure this
+    /// is not announced on the event stream: it describes the run rather than
+    /// changing what the scan found, and a live consumer has nothing to do with
+    /// it mid-scan.
+    pub(crate) fn record_probe_stats(&self, stats: ProbeStats) {
+        self.probe_stats.push(stats);
+    }
+
+    /// Takes the probe counters recorded so far, leaving the log empty.
+    pub(crate) fn take_probe_stats(&self) -> Vec<ProbeStats> {
+        self.probe_stats.drain()
+    }
+
+    /// The probe counters filed so far, left in place.
+    ///
+    /// Not part of the supported API. A test that drives one scanner directly
+    /// over a synthetic transport never reaches the phase that would drain
+    /// these into a report, and this is how it reads what the scanner filed.
+    /// Enable `test-support` for tests only, never for a release.
+    #[cfg(feature = "test-support")]
+    pub fn probe_stats_snapshot(&self) -> Vec<ProbeStats> {
+        self.probe_stats.snapshot()
+    }
+
     /// Takes the failures recorded so far, leaving the log empty.
     ///
     /// Called once, when a phase assembles its report. Draining rather than
@@ -196,6 +254,7 @@ impl ScanSession {
             store,
             events_tx,
             failures: Arc::new(FailureLog::default()),
+            probe_stats: Arc::new(ProbeStatsLog::default()),
         };
 
         (session, ctx)

@@ -56,7 +56,7 @@ use common::*;
 use pnet::datalink::MacAddr;
 use zond_engine::core::models::ip::set::IpSet;
 use zond_engine::core::models::port::PortState;
-use zond_engine::core::session::ScanSession;
+use zond_engine::core::session::{ScanSession, ScannerKind};
 use zond_engine::scanner::NetworkExplorer;
 use zond_engine::scanner::local::{LocalScanner, Scope};
 use zond_engine::scanner::routed::{RoutedScanner, SynPortScanner, UdpPortScanner};
@@ -223,6 +223,7 @@ async fn a_lost_discovery_syn_is_retried_and_the_host_is_still_found() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 443, Policy::open().drop_first(1));
 
     let (session, ctx) = ScanSession::new();
+    let audit_ctx = ctx.clone();
     let scanner = RoutedScanner::with_transport(
         vec![RoutedTarget {
             target: TARGET,
@@ -244,6 +245,32 @@ async fn a_lost_discovery_syn_is_retried_and_the_host_is_still_found() {
     assert!(
         net.probe_count(TARGET, 443) > 1,
         "the lost probe should have been retried"
+    );
+
+    // The counters the sweep files must say the same thing the store does, and
+    // say it precisely: this host cost a retry. A report that credited it to the
+    // first attempt would make retransmission look like traffic buying nothing.
+    let stats = audit_ctx.probe_stats_snapshot();
+    assert_eq!(stats.len(), 1, "the sweep files exactly one audit");
+
+    let stats = &stats[0];
+    assert_eq!(stats.scanner(), ScannerKind::Routed);
+    assert_eq!(stats.targets(), 1);
+    assert_eq!(stats.hosts_found(), 1);
+    assert_eq!(
+        stats.answered_on()[0],
+        0,
+        "the first attempt was dropped, so nothing may be credited to it"
+    );
+    assert_eq!(
+        stats.answered_on()[1],
+        1,
+        "the host answered on its second attempt"
+    );
+    assert!(stats.sends_attempted() > 1);
+    assert!(
+        stats.stop_reason().is_complete(),
+        "every target answered, so the sweep was not cut short"
     );
 }
 

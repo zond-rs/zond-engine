@@ -35,60 +35,9 @@
 
 use std::time::{Duration, Instant};
 
+use crate::core::report::{ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, StopReason};
+use crate::core::session::ScannerKind;
 use crate::network::capture::CaptureCounts;
-
-/// Upper bounds, in milliseconds, of the discovery-time histogram buckets. A
-/// final bucket catches everything later than the last bound.
-///
-/// These measure how far into the run a host was first credited, **not** its
-/// round trip. The two diverge exactly where it matters: a host found at 700 ms
-/// because its third attempt went out at 690 ms has a 10 ms round trip, and
-/// reading the bucket as latency turns a retry schedule into an imaginary slow
-/// path. Round trips are reported per host, not here.
-///
-/// Spaced roughly logarithmically because the question being asked spans three
-/// orders of magnitude: a same-segment reply lands under a millisecond, a
-/// healthy internet round trip in the tens, and a host recovered by a late
-/// retry in the hundreds. A linear scale would put every interesting answer in
-/// one bucket.
-const BUCKET_BOUNDS_MS: [u64; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1_000];
-
-/// How many attempts are counted separately before the rest are lumped together.
-///
-/// Sized past the largest budget any path runs (five, under
-/// [`ScanEffort::Thorough`](crate::core::models::retry::ScanEffort)), so the
-/// distribution is reported in full for every configuration that ships and a
-/// hand-raised budget still has somewhere to land.
-const ATTEMPTS_COUNTED: usize = 6;
-
-/// Why a scanner's receive loop stopped.
-///
-/// This is the single most informative field in an audit: a run that ends in
-/// [`AllResponded`](StopReason::AllResponded) was not cut short by anything, and
-/// one that ends in [`DeadlineExpired`](StopReason::DeadlineExpired) with
-/// replies still arriving near the end almost certainly was.
-///
-/// There is deliberately no "still running" variant. A scan loop yields its
-/// reason as the value it breaks with, so every exit path has to name one and
-/// the audit cannot report a reason the code never took.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StopReason {
-    /// The caller aborted the scan through the scan handle.
-    Aborted,
-    /// Every target answered.
-    AllResponded,
-    /// Nothing is left outstanding: every target either answered or was asked
-    /// as many times as the retry budget allows. Like
-    /// [`AllResponded`](StopReason::AllResponded) this is a scan that finished
-    /// rather than one that ran out of time, and waiting longer could not have
-    /// changed what it found.
-    AttemptsSpent,
-    /// The adaptive deadline expired: either the hard budget ran out or the
-    /// silence tolerance did.
-    DeadlineExpired,
-    /// The capture stream closed underneath the scanner.
-    StreamClosed,
-}
 
 /// Per-run counters for one raw scanner.
 ///
@@ -206,6 +155,39 @@ impl ProbeAudit {
     /// How long the run has been going.
     pub(crate) fn elapsed(&self) -> Duration {
         self.started.elapsed()
+    }
+
+    /// The exported view of this run, for the scan's report.
+    ///
+    /// Separate from [`report`](Self::report) rather than derived from it: the
+    /// log line is a rendering tuned for a human reading one scan, while this is
+    /// the record something else will compute against. Tying the two together
+    /// would mean a change to either format silently altering the other.
+    pub(crate) fn stats(
+        &self,
+        scanner: ScannerKind,
+        targets: u128,
+        reason: StopReason,
+        capture: Option<CaptureCounts>,
+    ) -> ProbeStats {
+        ProbeStats {
+            scanner,
+            targets,
+            stop_reason: reason,
+            elapsed: self.elapsed(),
+            sends_attempted: self.sends_attempted,
+            sends_failed: self.sends_failed,
+            segments_seen: self.segments_seen,
+            segments_off_target: self.segments_off_target,
+            replies_without_rtt: self.replies_without_rtt,
+            hosts_found: self.hosts_found,
+            answered_on: self.answered_on,
+            answered_unattributed: self.answered_unattributed,
+            first_reply: self.first_reply,
+            last_reply: self.last_reply,
+            found_at: self.buckets,
+            capture,
+        }
     }
 
     /// Emits the run's summary as a single log line.
@@ -422,6 +404,66 @@ mod tests {
     #[test]
     fn a_run_that_found_nothing_says_so_rather_than_rendering_blank() {
         assert_eq!(ProbeAudit::new().attempt_distribution(), "(none)");
+    }
+
+    /// The exported stats and the log line are two renderings of one run, so
+    /// every counter has to survive the crossing intact. A field dropped here
+    /// would leave the log telling the truth and the report not.
+    #[test]
+    fn exported_stats_carry_every_counter_the_run_recorded() {
+        let mut audit = ProbeAudit::new();
+        audit.record_send(true);
+        audit.record_send(true);
+        audit.record_send(false);
+        audit.record_segment();
+        audit.record_segment();
+        audit.record_off_target();
+        audit.record_reply_without_rtt();
+        audit.record_host_found(Some(1));
+        audit.record_host_found(Some(3));
+        audit.record_host_found(None);
+
+        let capture = CaptureCounts {
+            received: 40,
+            dropped: 2,
+            if_dropped: 0,
+        };
+        let stats = audit.stats(
+            ScannerKind::Routed,
+            256,
+            StopReason::DeadlineExpired,
+            Some(capture),
+        );
+
+        assert_eq!(stats.scanner(), ScannerKind::Routed);
+        assert_eq!(stats.targets(), 256);
+        assert_eq!(stats.stop_reason(), StopReason::DeadlineExpired);
+        assert_eq!(stats.sends_attempted(), 3);
+        assert_eq!(stats.sends_failed(), 1);
+        assert_eq!(stats.segments_seen(), 2);
+        assert_eq!(stats.segments_off_target(), 1);
+        assert_eq!(stats.replies_without_rtt(), 1);
+        assert_eq!(stats.hosts_found(), 3);
+        assert_eq!(stats.answered_on()[0], 1);
+        assert_eq!(stats.answered_on()[2], 1);
+        assert_eq!(stats.answered_unattributed(), 1);
+        assert!(stats.first_reply().is_some());
+        assert!(stats.last_reply() >= stats.first_reply());
+        assert_eq!(stats.capture(), Some(capture));
+        // Three hosts were credited, so the discovery histogram accounts for
+        // three however they were spread across the buckets.
+        assert_eq!(stats.found_at().iter().sum::<u64>(), 3);
+    }
+
+    /// A run driven by a synthetic stream has no kernel buffer to ask, and a
+    /// zeroed capture in the report would read as a receive path measured and
+    /// found clean.
+    #[test]
+    fn exported_stats_keep_an_absent_capture_absent() {
+        let stats = ProbeAudit::new().stats(ScannerKind::Routed, 1, StopReason::AllResponded, None);
+
+        assert_eq!(stats.capture(), None);
+        assert!(stats.stop_reason().is_complete());
     }
 
     /// A transport with no capture behind it has no kernel buffer, and printing

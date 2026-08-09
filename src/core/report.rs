@@ -34,6 +34,17 @@
 //! single-phase report is simply the common case of that shape, not a different
 //! type.
 //!
+//! ## Findings and instrumentation
+//!
+//! A phase carries two different kinds of record and they must not be read as
+//! one. The hosts and their ports are findings *about the network*. The
+//! [`ProbeStats`] a raw scanner files are measurements *about the scan* - how
+//! many probes went out, how many segments came back, why the loop stopped -
+//! and they exist to bound how much the findings can be trusted. A sweep that
+//! stopped on [`StopReason::DeadlineExpired`] while replies were still arriving
+//! found fewer hosts than the network holds, and nothing in the host list says
+//! so.
+//!
 //! ## What is stored and what is derived
 //!
 //! Only measurements are stored. Every count a consumer might want - hosts up,
@@ -57,6 +68,7 @@ use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::retry::RetryConfig;
 use crate::core::models::target::TargetMap;
 use crate::core::session::{ScanContext, ScannerKind};
+use crate::network::capture::CaptureCounts;
 
 /// The version of the engine that produced a report.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -222,6 +234,237 @@ impl From<&ZondConfig> for ScanSettings {
     }
 }
 
+/// Upper bounds, in milliseconds, of the discovery-time histogram buckets in
+/// [`ProbeStats::found_at`]. A final bucket catches everything later than the
+/// last bound.
+///
+/// These measure how far into the run a host was first credited, **not** its
+/// round trip. The two diverge exactly where it matters: a host found at 700 ms
+/// because its third attempt went out at 690 ms has a 10 ms round trip, and
+/// reading the bucket as latency turns a retry schedule into an imaginary slow
+/// path. Round trips are reported per host, not here.
+///
+/// Spaced roughly logarithmically because the question being asked spans three
+/// orders of magnitude: a same-segment reply lands under a millisecond, a
+/// healthy internet round trip in the tens, and a host recovered by a late
+/// retry in the hundreds. A linear scale would put every interesting answer in
+/// one bucket.
+pub const BUCKET_BOUNDS_MS: [u64; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1_000];
+
+/// How many attempts [`ProbeStats::answered_on`] counts separately before the
+/// rest are lumped together.
+///
+/// Sized past the largest budget any path runs (five, under
+/// [`ScanEffort::Thorough`](crate::core::models::retry::ScanEffort)), so the
+/// distribution is reported in full for every configuration that ships and a
+/// hand-raised budget still has somewhere to land.
+pub const ATTEMPTS_COUNTED: usize = 6;
+
+/// Why a scanner's receive loop stopped.
+///
+/// This is the single most informative field in an audit: a run that ends in
+/// [`AllResponded`](StopReason::AllResponded) was not cut short by anything, and
+/// one that ends in [`DeadlineExpired`](StopReason::DeadlineExpired) with
+/// replies still arriving near the end almost certainly was.
+///
+/// There is deliberately no "still running" variant. A scan loop yields its
+/// reason as the value it breaks with, so every exit path has to name one and
+/// the audit cannot report a reason the code never took.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StopReason {
+    /// The caller aborted the scan through the scan handle.
+    Aborted,
+    /// Every target answered.
+    AllResponded,
+    /// Nothing is left outstanding: every target either answered or was asked
+    /// as many times as the retry budget allows. Like
+    /// [`AllResponded`](StopReason::AllResponded) this is a scan that finished
+    /// rather than one that ran out of time, and waiting longer could not have
+    /// changed what it found.
+    AttemptsSpent,
+    /// The adaptive deadline expired: either the hard budget ran out or the
+    /// silence tolerance did.
+    DeadlineExpired,
+    /// The capture stream closed underneath the scanner.
+    StreamClosed,
+}
+
+impl StopReason {
+    /// Whether the loop stopped because it had nothing left to do, rather than
+    /// because something cut it short.
+    ///
+    /// A run that ends complete found everything it was ever going to find;
+    /// waiting longer or sending more could not have changed it. One that does
+    /// not is a result with a known upper bound on its own trustworthiness.
+    pub fn is_complete(&self) -> bool {
+        matches!(self, StopReason::AllResponded | StopReason::AttemptsSpent)
+    }
+}
+
+impl fmt::Display for StopReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            StopReason::Aborted => "aborted by the caller",
+            StopReason::AllResponded => "every target answered",
+            StopReason::AttemptsSpent => "attempts spent",
+            StopReason::DeadlineExpired => "deadline expired",
+            StopReason::StreamClosed => "capture stream closed",
+        };
+        f.write_str(text)
+    }
+}
+
+/// What one raw scanner observed about its own run.
+///
+/// A host count on its own cannot say why a sweep came back short, and the three
+/// possible answers call for opposite fixes. Probes or replies may have been
+/// **lost**, which is what retransmission exists for; replies may have arrived
+/// after the scan had already **stopped**, which makes the deadline wrong rather
+/// than the network; or they may have arrived and gone **unrecognized**, which
+/// no amount of extra time or extra packets would help.
+///
+/// These counters separate those. [`sends_attempted`](Self::sends_attempted)
+/// against [`segments_seen`](Self::segments_seen) bounds the first,
+/// [`stop_reason`](Self::stop_reason) against
+/// [`last_reply`](Self::last_reply) bounds the second, and
+/// [`segments_off_target`](Self::segments_off_target) with
+/// [`replies_without_rtt`](Self::replies_without_rtt) bounds the third.
+///
+/// One bound is not measurable from inside a scanner at all: a reply the kernel
+/// discards because the capture buffer was full never reaches any counter here,
+/// so loss on the receive path and loss on the network read identically.
+/// [`capture`](Self::capture) is carried for that reason - it is the only place
+/// the difference is visible.
+///
+/// This is instrumentation about the scan, not a finding about the network.
+/// Nothing here changes what a scan reports about a host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeStats {
+    // Written by `ProbeAudit`, which lives in another module and so cannot use
+    // private fields. Read-only to the outside world through the accessors
+    // below: a consumer must never be able to edit a measurement.
+    pub(crate) scanner: ScannerKind,
+    pub(crate) targets: u128,
+    pub(crate) stop_reason: StopReason,
+    pub(crate) elapsed: Duration,
+    pub(crate) sends_attempted: u64,
+    pub(crate) sends_failed: u64,
+    pub(crate) segments_seen: u64,
+    pub(crate) segments_off_target: u64,
+    pub(crate) replies_without_rtt: u64,
+    pub(crate) hosts_found: u64,
+    pub(crate) answered_on: [u64; ATTEMPTS_COUNTED],
+    pub(crate) answered_unattributed: u64,
+    pub(crate) first_reply: Option<Duration>,
+    pub(crate) last_reply: Option<Duration>,
+    pub(crate) found_at: [u64; BUCKET_BOUNDS_MS.len() + 1],
+    pub(crate) capture: Option<CaptureCounts>,
+}
+
+impl ProbeStats {
+    /// The strategy these counters belong to.
+    pub fn scanner(&self) -> ScannerKind {
+        self.scanner
+    }
+
+    /// How many targets this scanner owned.
+    pub fn targets(&self) -> u128 {
+        self.targets
+    }
+
+    /// Why the receive loop stopped.
+    pub fn stop_reason(&self) -> StopReason {
+        self.stop_reason
+    }
+
+    /// How long the scanner ran.
+    pub fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
+    /// Probes the scanner tried to put on the wire.
+    pub fn sends_attempted(&self) -> u64 {
+        self.sends_attempted
+    }
+
+    /// Of those, ones the sender refused. A non-zero count means the shortfall
+    /// starts at home, before the network is implicated at all.
+    pub fn sends_failed(&self) -> u64 {
+        self.sends_failed
+    }
+
+    /// Segments the capture handed up, before any of the scanner's own checks.
+    pub fn segments_seen(&self) -> u64 {
+        self.segments_seen
+    }
+
+    /// Segments from an address outside this scan's target set. Expected to be
+    /// small; a large count means the capture filter is admitting other traffic.
+    pub fn segments_off_target(&self) -> u64 {
+        self.segments_off_target
+    }
+
+    /// In-set replies that answered no outstanding probe, so they proved a host
+    /// alive but yielded no round-trip sample. Duplicates land here, and so does
+    /// a correlation bug.
+    pub fn replies_without_rtt(&self) -> u64 {
+        self.replies_without_rtt
+    }
+
+    /// Targets credited as alive for the first time.
+    pub fn hosts_found(&self) -> u64 {
+        self.hosts_found
+    }
+
+    /// Found hosts by the attempt whose reply revealed them.
+    ///
+    /// Index `i` counts hosts answered on attempt `i + 1`; the last slot counts
+    /// attempt [`ATTEMPTS_COUNTED`] *or later*, so a hand-raised retry budget
+    /// still has somewhere to land.
+    ///
+    /// This is what says whether retransmission is earning its traffic. A host
+    /// found on its first attempt needed only for the scan to still be
+    /// listening; one found on its third needed the packet to be sent again.
+    pub fn answered_on(&self) -> &[u64] {
+        &self.answered_on
+    }
+
+    /// Found hosts whose reply named no attempt: it arrived after the probe had
+    /// been written off, or carried nothing to match against.
+    pub fn answered_unattributed(&self) -> u64 {
+        self.answered_unattributed
+    }
+
+    /// How far into the run the first host was credited.
+    pub fn first_reply(&self) -> Option<Duration> {
+        self.first_reply
+    }
+
+    /// How far into the run the last host was credited. Close to
+    /// [`elapsed`](Self::elapsed) on a run that stopped for
+    /// [`DeadlineExpired`](StopReason::DeadlineExpired) means the scan was still
+    /// finding hosts when it ran out of time.
+    pub fn last_reply(&self) -> Option<Duration> {
+        self.last_reply
+    }
+
+    /// Hosts by how far into the run they were credited, bucketed by
+    /// [`BUCKET_BOUNDS_MS`]. Index `i` counts hosts found at or under
+    /// `BUCKET_BOUNDS_MS[i]` milliseconds; the final slot counts everything
+    /// later than the last bound.
+    pub fn found_at(&self) -> &[u64] {
+        &self.found_at
+    }
+
+    /// What the kernel capture reported, where there was one to ask. A scanner
+    /// driven by a synthetic receive stream has no kernel buffer, and reports
+    /// `None` rather than a clean-looking zero.
+    pub fn capture(&self) -> Option<CaptureCounts> {
+        self.capture
+    }
+}
+
 /// A scanning strategy that did not run to completion.
 ///
 /// A scan continues with whatever strategies remain when one of them fails, so
@@ -277,35 +520,10 @@ pub struct ScanPhase {
     targets: TargetScope,
     settings: ScanSettings,
     failures: Vec<ScannerFailure>,
+    probes: Vec<ProbeStats>,
 }
 
 impl ScanPhase {
-    /// Assembles a phase record from its measurements.
-    ///
-    /// `elapsed` is expected to come from a monotonic clock rather than from the
-    /// difference between two [`SystemTime`] readings: a wall clock that steps
-    /// mid-scan would otherwise produce a duration that never happened, and on
-    /// a long sweep it is exactly the kind of correction that lands mid-scan.
-    pub fn new(
-        kind: ScanKind,
-        started_at: SystemTime,
-        elapsed: Duration,
-        privileged: bool,
-        targets: TargetScope,
-        settings: ScanSettings,
-        failures: Vec<ScannerFailure>,
-    ) -> Self {
-        Self {
-            kind,
-            started_at,
-            elapsed,
-            privileged,
-            targets,
-            settings,
-            failures,
-        }
-    }
-
     /// Which entry point this phase records.
     pub fn kind(&self) -> ScanKind {
         self.kind
@@ -341,6 +559,15 @@ impl ScanPhase {
     /// Strategies that did not run to completion.
     pub fn failures(&self) -> &[ScannerFailure] {
         &self.failures
+    }
+
+    /// What each instrumented scanner observed about its own run.
+    ///
+    /// Empty where no strategy in this phase carries instrumentation, which is
+    /// not the same as a phase whose scanners saw nothing. Only the raw paths
+    /// count packets; the TCP-connect fallback has no capture to audit.
+    pub fn probe_stats(&self) -> &[ProbeStats] {
+        &self.probes
     }
 }
 
@@ -389,15 +616,19 @@ impl PhaseRecorder {
     /// Called once, from the end of the spawned scan task, so the snapshot is
     /// taken after every strategy has stopped writing.
     pub(crate) fn finish(self, ctx: &ScanContext) -> ScanReport {
-        let phase = ScanPhase::new(
-            self.kind,
-            self.started_at,
-            self.started.elapsed(),
-            self.privileged,
-            self.targets,
-            self.settings,
-            ctx.take_failures(),
-        );
+        let phase = ScanPhase {
+            kind: self.kind,
+            started_at: self.started_at,
+            // Measured monotonically rather than as the difference between two
+            // wall-clock readings: a clock correction during a long sweep would
+            // otherwise report a duration that never elapsed.
+            elapsed: self.started.elapsed(),
+            privileged: self.privileged,
+            targets: self.targets,
+            settings: self.settings,
+            failures: ctx.take_failures(),
+            probes: ctx.take_probe_stats(),
+        };
 
         let hosts = ctx.store.iter().map(|entry| entry.value().clone());
         ScanReport::new(phase, hosts)
@@ -520,6 +751,11 @@ impl ScanReport {
         self.phases.iter().flat_map(ScanPhase::failures)
     }
 
+    /// Every instrumented scanner's counters, across all phases.
+    pub fn probe_stats(&self) -> impl Iterator<Item = &ProbeStats> {
+        self.phases.iter().flat_map(ScanPhase::probe_stats)
+    }
+
     /// Whether any strategy failed to run to completion. A `true` here means
     /// the results are narrower than the caller asked for.
     pub fn is_partial(&self) -> bool {
@@ -598,15 +834,16 @@ mod tests {
     }
 
     fn phase(kind: ScanKind) -> ScanPhase {
-        ScanPhase::new(
+        ScanPhase {
             kind,
-            SystemTime::UNIX_EPOCH,
-            Duration::from_millis(500),
-            true,
-            TargetScope::from_ip_set(&mut IpSet::new()),
-            ScanSettings::from(&ZondConfig::default()),
-            Vec::new(),
-        )
+            started_at: SystemTime::UNIX_EPOCH,
+            elapsed: Duration::from_millis(500),
+            privileged: true,
+            targets: TargetScope::from_ip_set(&mut IpSet::new()),
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            probes: Vec::new(),
+        }
     }
 
     fn ip_set(spec: &str) -> IpSet {
@@ -757,6 +994,69 @@ mod tests {
 
         assert!(report.is_partial());
         assert_eq!(report.failures().count(), 1);
+    }
+
+    /// The counters a scanner files mid-scan have to reach the phase that
+    /// finishes afterwards, and reach exactly the one that was running.
+    #[test]
+    fn probe_stats_filed_during_a_scan_land_in_its_phase() {
+        let (_session, ctx) = crate::core::session::ScanSession::new();
+        let recorder = PhaseRecorder::start(
+            ScanKind::Discovery,
+            true,
+            TargetScope::from_ip_set(&mut IpSet::new()),
+            &ZondConfig::default(),
+        );
+
+        ctx.record_probe_stats(ProbeStats {
+            scanner: ScannerKind::Routed,
+            targets: 256,
+            stop_reason: StopReason::AllResponded,
+            elapsed: Duration::from_millis(40),
+            sends_attempted: 300,
+            sends_failed: 0,
+            segments_seen: 250,
+            segments_off_target: 1,
+            replies_without_rtt: 2,
+            hosts_found: 9,
+            answered_on: [7, 2, 0, 0, 0, 0],
+            answered_unattributed: 0,
+            first_reply: Some(Duration::from_millis(1)),
+            last_reply: Some(Duration::from_millis(30)),
+            found_at: [0; BUCKET_BOUNDS_MS.len() + 1],
+            capture: None,
+        });
+
+        let report = recorder.finish(&ctx);
+        let stats = report.phases()[0].probe_stats();
+
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].scanner(), ScannerKind::Routed);
+        assert_eq!(stats[0].hosts_found(), 9);
+        assert_eq!(stats[0].answered_on()[1], 2);
+        assert_eq!(report.probe_stats().count(), 1);
+
+        // Draining is what stops a second phase inheriting the first's counters.
+        assert!(ctx.take_probe_stats().is_empty());
+    }
+
+    /// A phase whose scanners carry no instrumentation reports no counters,
+    /// which must not be confused with a scanner that measured zero.
+    #[test]
+    fn an_uninstrumented_phase_reports_no_probe_stats() {
+        let report = ScanReport::new(phase(ScanKind::PortScan), []);
+
+        assert!(report.phases()[0].probe_stats().is_empty());
+        assert_eq!(report.probe_stats().count(), 0);
+    }
+
+    #[test]
+    fn a_stop_reason_knows_whether_the_run_finished() {
+        assert!(StopReason::AllResponded.is_complete());
+        assert!(StopReason::AttemptsSpent.is_complete());
+        assert!(!StopReason::DeadlineExpired.is_complete());
+        assert!(!StopReason::Aborted.is_complete());
+        assert!(!StopReason::StreamClosed.is_complete());
     }
 
     #[test]
