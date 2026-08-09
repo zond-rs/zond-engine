@@ -32,7 +32,9 @@
 //! Raw sockets and `libpcap` both need root:
 //!
 //! ```text
+//! sudo -E cargo run --release --example discovery_bench -- <targets> [runs] [effort]
 //! sudo -E cargo run --release --example discovery_bench -- 1.1.1.0/24 5
+//! sudo -E cargo run --release --example discovery_bench -- 1.1.1.0/22 5 thorough
 //! ```
 //!
 //! Compare against, on the same network and at the same time of day:
@@ -46,6 +48,7 @@ use std::time::{Duration, Instant};
 
 use zond_engine::core::config::ZondConfig;
 use zond_engine::core::models::host::Host;
+use zond_engine::core::models::retry::{RetryConfig, ScanEffort};
 use zond_engine::core::parse::to_ipset;
 use zond_engine::scanner;
 
@@ -69,6 +72,24 @@ fn identity(host: &Host) -> Device {
     }
 }
 
+/// The retry profile the sweep runs under, so one range can be measured at more
+/// than one effort without rebuilding.
+///
+/// This is what makes attempt budget a variable rather than a constant of the
+/// experiment. A range that falls short at `balanced` and completes at
+/// `thorough` is short of attempts or of patience; one that lands in the same
+/// place at both is losing packets somewhere repetition does not reach, and
+/// `single` says how much of that loss the very first pass already suffered.
+fn effort_from(name: &str) -> Option<ScanEffort> {
+    match name {
+        "single" => Some(ScanEffort::Single),
+        "fast" => Some(ScanEffort::Fast),
+        "balanced" => Some(ScanEffort::Balanced),
+        "thorough" => Some(ScanEffort::Thorough),
+        _ => None,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -84,6 +105,18 @@ async fn main() {
         .and_then(|n| n.parse().ok())
         .unwrap_or(5)
         .max(1);
+    let effort = match args.next() {
+        Some(name) => match effort_from(&name) {
+            Some(effort) => effort,
+            // Defaulting on a name that was meant to change the experiment
+            // would report the wrong effort's numbers under the right label.
+            None => {
+                eprintln!("unknown effort `{name}`: expected single, fast, balanced, or thorough");
+                std::process::exit(2);
+            }
+        },
+        None => ScanEffort::default(),
+    };
 
     let ips = to_ipset(&[targets.as_str()], None).expect("target expression parses");
     let total = ips.len();
@@ -94,10 +127,16 @@ async fn main() {
         no_banner: true,
         no_dns: true,
         disable_input: true,
+        retry: RetryConfig {
+            effort,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
-    println!("\ndiscovery benchmark: {targets} ({total} addresses), {runs} runs\n");
+    println!(
+        "\ndiscovery benchmark: {targets} ({total} addresses), {runs} runs, effort {effort:?}\n"
+    );
 
     let mut results: Vec<(usize, Duration)> = Vec::with_capacity(runs);
     // How many runs each device was found in, which is what separates one that

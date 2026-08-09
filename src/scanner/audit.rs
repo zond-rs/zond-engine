@@ -24,10 +24,18 @@
 //! the off-target and no-RTT counts bound the third. All of it is per scanner
 //! run, held by the scanner itself, and reported once when the loop exits.
 //!
+//! One of those bounds cannot be measured from inside the scanner. A reply the
+//! kernel discards because the capture buffer was full never reaches any counter
+//! here, so loss on the receive path and loss on the network read identically —
+//! both are silence. [`CaptureCounts`] is reported alongside for that reason: it
+//! is the only place the difference is visible.
+//!
 //! This is instrumentation, not telemetry: nothing here reaches the host store
 //! or the event stream, and none of it changes what a scan does.
 
 use std::time::{Duration, Instant};
+
+use crate::network::capture::CaptureCounts;
 
 /// Upper bounds, in milliseconds, of the reply-latency histogram buckets. A
 /// final bucket catches everything slower than the last bound.
@@ -162,14 +170,26 @@ impl ProbeAudit {
     ///
     /// One line rather than several because the fields are only meaningful
     /// against each other: `sent` versus `captured` says whether packets went
-    /// missing, and the stop reason versus `last` says whether the scan outlived
-    /// its own answers.
-    pub(crate) fn report(&self, scanner: &str, targets: u128, reason: StopReason) {
+    /// missing, `captured` versus `kernel` says which side of the capture they
+    /// went missing on, and the stop reason versus `last` says whether the scan
+    /// outlived its own answers.
+    ///
+    /// `capture` is what the scanner's own transport reports, or `None` where
+    /// there is no capture to ask - a scan driven by a synthetic receive stream
+    /// has no kernel buffer, and the segment is omitted rather than rendered as
+    /// a clean one.
+    pub(crate) fn report(
+        &self,
+        scanner: &str,
+        targets: u128,
+        reason: StopReason,
+        capture: Option<CaptureCounts>,
+    ) {
         crate::info!(
             verbosity = 1,
             "audit[{scanner}] {found}/{targets} hosts in {elapsed:.0?}, stopped: {reason:?} \
              | sent {sent} (failed {failed}) \
-             | captured {seen} (off-target {off}, no-rtt {no_rtt}) \
+             | captured {seen} (off-target {off}, no-rtt {no_rtt}){kernel} \
              | first {first}, last {last} \
              | latency {histogram}",
             found = self.hosts_found,
@@ -179,6 +199,7 @@ impl ProbeAudit {
             seen = self.segments_seen,
             off = self.segments_off_target,
             no_rtt = self.replies_without_rtt,
+            kernel = format_capture(capture),
             first = format_offset(self.first_reply),
             last = format_offset(self.last_reply),
             histogram = self.histogram(),
@@ -222,6 +243,26 @@ fn format_offset(offset: Option<Duration>) -> String {
     match offset {
         Some(offset) => format!("{:.0?}", offset),
         None => "-".to_string(),
+    }
+}
+
+/// The kernel-capture segment of the audit line, empty where there was no
+/// capture to report on.
+///
+/// `received` is deliberately kept next to `dropped` rather than reported
+/// alone. The filter admits traffic this scan did not cause, so the count is
+/// not the scan's replies; what it gives is the scale the drops happened at,
+/// and a drop count without one says nothing about how close the receive path
+/// came to keeping up.
+fn format_capture(capture: Option<CaptureCounts>) -> String {
+    match capture {
+        Some(counts) => format!(
+            " | kernel {received} (dropped {dropped}, if-dropped {if_dropped})",
+            received = counts.received,
+            dropped = counts.dropped,
+            if_dropped = counts.if_dropped,
+        ),
+        None => String::new(),
     }
 }
 
@@ -274,6 +315,27 @@ mod tests {
         assert_eq!(audit.hosts_found, 2);
         assert!(audit.first_reply.is_some());
         assert!(audit.last_reply >= audit.first_reply);
+    }
+
+    /// A transport with no capture behind it has no kernel buffer, and printing
+    /// zeroes for one would read as a receive path measured and found clean.
+    #[test]
+    fn an_absent_capture_contributes_nothing_to_the_line() {
+        assert_eq!(format_capture(None), "");
+    }
+
+    #[test]
+    fn capture_counts_are_reported_next_to_the_scale_they_happened_at() {
+        let counts = CaptureCounts {
+            received: 881,
+            dropped: 17,
+            if_dropped: 0,
+        };
+
+        assert_eq!(
+            format_capture(Some(counts)),
+            " | kernel 881 (dropped 17, if-dropped 0)"
+        );
     }
 
     #[test]

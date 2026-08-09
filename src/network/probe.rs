@@ -37,7 +37,7 @@ use pnet::packet::Packet;
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 
 use crate::core::config::SendMode;
-use crate::network::capture::{self, CaptureGuard, CaptureStream};
+use crate::network::capture::{self, CaptureCounts, CaptureGuard, CaptureStream};
 use crate::network::ethernet::EthernetSender;
 use crate::network::transport::{self, TransportSenderHandle, TransportType};
 
@@ -175,11 +175,23 @@ pub struct ProbeTransport {
     /// Parsed replies ([`capture::CapturedSegment`]), merged across every
     /// captured interface.
     pub rx: CaptureStream,
-    /// Keeps the capture threads alive for this transport's lifetime.
-    _capture: CaptureGuard,
+    /// Keeps the capture threads alive for this transport's lifetime, and holds
+    /// the counters they publish.
+    capture: CaptureGuard,
 }
 
 impl ProbeTransport {
+    /// What the receive path's kernel buffers have done so far, summed over
+    /// every interface this transport captures on.
+    ///
+    /// A scanner reports this alongside its own counters because the two answer
+    /// different halves of the same question. The scanner knows how many replies
+    /// it saw; only this knows how many arrived and were thrown away before it
+    /// could. `None` for a transport with no capture behind it, so a synthetic
+    /// receive stream never reports a clean receive path it never had.
+    pub fn capture_counts(&self) -> Option<CaptureCounts> {
+        self.capture.counts()
+    }
     /// Opens a transport for `kind` with the platform-default send backend
     /// ([`SendMode::Auto`]).
     pub fn open(kind: ProbeKind) -> anyhow::Result<Self> {
@@ -220,7 +232,7 @@ impl ProbeTransport {
         Ok(Self {
             tx,
             rx,
-            _capture: capture,
+            capture,
         })
     }
 
@@ -238,7 +250,7 @@ impl ProbeTransport {
         Ok(Self {
             tx: Box::new(sender),
             rx,
-            _capture: capture,
+            capture,
         })
     }
 
@@ -254,7 +266,7 @@ impl ProbeTransport {
         Ok(Self {
             tx: Box::new(NoopSender),
             rx,
-            _capture: capture,
+            capture,
         })
     }
 
@@ -273,7 +285,7 @@ impl ProbeTransport {
         Self {
             tx,
             rx,
-            _capture: CaptureGuard::noop(),
+            capture: CaptureGuard::noop(),
         }
     }
 }

@@ -303,7 +303,11 @@ impl NetworkExplorer for RoutedScanner {
             }
         };
 
-        self.audit.report("routed-discovery", self.ips.len(), reason);
+        // Read before the transport is dropped, since the counters live with
+        // the capture threads it keeps alive.
+        let capture = self.transport.capture_counts();
+        self.audit
+            .report("routed-discovery", self.ips.len(), reason, capture);
         Ok(())
     }
 }
