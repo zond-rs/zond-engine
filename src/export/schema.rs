@@ -316,33 +316,8 @@ impl Serialize for ReportDto<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
 
-        let phases: Vec<PhaseDto<'_>> = self.report.phases().iter().map(PhaseDto::new).collect();
-
-        // Summed from the rendered phases rather than from the report's own
-        // durations. Each phase's figure is truncated to whole microseconds
-        // independently, so a total taken from the underlying `Duration`s can
-        // exceed the sum of the numbers printed beside it - the document would
-        // then contradict itself by a microsecond, which is a real question for
-        // a consumer to ask and a fraction of nothing to answer it with.
-        let elapsed_us = phases
-            .iter()
-            .fold(0u64, |total, phase| total.saturating_add(phase.elapsed_us));
-
-        let mut doc = serializer.serialize_struct("Report", 9)?;
-        doc.serialize_field("schema_version", &SCHEMA_VERSION)?;
-        doc.serialize_field(
-            "engine",
-            &EngineDto {
-                name: ENGINE_NAME,
-                version: self.report.engine_version(),
-            },
-        )?;
-        doc.serialize_field("generated_at", &rfc3339(self.generated_at))?;
-        doc.serialize_field("started_at", &rfc3339(self.report.started_at()))?;
-        doc.serialize_field("elapsed_us", &elapsed_us)?;
-        doc.serialize_field("partial", &self.report.is_partial())?;
-        doc.serialize_field("summary", &SummaryDto::new(&self.report.summary()))?;
-        doc.serialize_field("phases", &phases)?;
+        let mut doc = serializer.serialize_struct("Report", HEADER_FIELDS + 1)?;
+        write_header(&mut doc, self.report, self.generated_at)?;
         // Serialized straight from the iterator so the whole host set is never
         // resident at once.
         doc.serialize_field(
@@ -354,6 +329,82 @@ impl Serialize for ReportDto<'_> {
         )?;
         doc.end()
     }
+}
+
+/// Everything a report says about itself, without the hosts.
+///
+/// The same fields [`ReportDto`] emits before its `hosts` array, and in the same
+/// order. A record-per-line format writes this once and then the hosts one at a
+/// time; splitting the document that way must not change what the header says,
+/// so both are rendered by the same code.
+#[derive(Debug)]
+pub struct ReportHeaderDto<'a> {
+    report: &'a ScanReport,
+    generated_at: SystemTime,
+}
+
+impl<'a> ReportHeaderDto<'a> {
+    /// Describes a report's header, stamped with the current time.
+    pub fn new(report: &'a ScanReport) -> Self {
+        Self::generated_at(report, SystemTime::now())
+    }
+
+    /// Describes a report's header with an explicit generation time.
+    pub fn generated_at(report: &'a ScanReport, generated_at: SystemTime) -> Self {
+        Self {
+            report,
+            generated_at,
+        }
+    }
+}
+
+impl Serialize for ReportHeaderDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        let mut doc = serializer.serialize_struct("ReportHeader", HEADER_FIELDS)?;
+        write_header(&mut doc, self.report, self.generated_at)?;
+        doc.end()
+    }
+}
+
+/// How many fields [`write_header`] emits.
+const HEADER_FIELDS: usize = 8;
+
+/// Emits the fields every rendering of a report starts with.
+fn write_header<S: serde::ser::SerializeStruct>(
+    doc: &mut S,
+    report: &ScanReport,
+    generated_at: SystemTime,
+) -> Result<(), S::Error> {
+    let phases: Vec<PhaseDto<'_>> = report.phases().iter().map(PhaseDto::new).collect();
+
+    // Summed from the rendered phases rather than from the report's own
+    // durations. Each phase's figure is truncated to whole microseconds
+    // independently, so a total taken from the underlying `Duration`s can
+    // exceed the sum of the numbers printed beside it - the document would then
+    // contradict itself by a microsecond, which is a real question for a
+    // consumer to ask and a fraction of nothing to answer it with.
+    let elapsed_us = phases
+        .iter()
+        .fold(0u64, |total, phase| total.saturating_add(phase.elapsed_us));
+
+    doc.serialize_field("schema_version", &SCHEMA_VERSION)?;
+    doc.serialize_field(
+        "engine",
+        &EngineDto {
+            name: ENGINE_NAME,
+            version: report.engine_version(),
+        },
+    )?;
+    doc.serialize_field("generated_at", &rfc3339(generated_at))?;
+    doc.serialize_field("started_at", &rfc3339(report.started_at()))?;
+    doc.serialize_field("elapsed_us", &elapsed_us)?;
+    doc.serialize_field("partial", &report.is_partial())?;
+    doc.serialize_field("summary", &SummaryDto::new(&report.summary()))?;
+    doc.serialize_field("phases", &phases)?;
+
+    Ok(())
 }
 
 /// The report's hosts, serialized one at a time.

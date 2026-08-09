@@ -61,7 +61,10 @@
     "hosts": {
       "description": "Every host recorded, ordered by primary address.",
       "type": "array",
-      "items": { "$ref": "#/$defs/host" }
+      "items": {
+        "$ref": "#/$defs/host",
+        "unevaluatedProperties": false
+      }
     }
   },
 
@@ -446,9 +449,8 @@
     },
 
     "host": {
-      "description": "Everything the scan established about one host.",
+      "description": "Everything the scan established about one host. Deliberately not closed here: `zond-lines-v1.schema.json` reuses this definition and adds a `type` field to it, and a definition that closes itself cannot be reused that way. Each use site closes it instead — see `hosts` in this file.",
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "primary_ip",
         "ips",

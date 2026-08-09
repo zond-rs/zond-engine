@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zond.rs/schema/zond-lines-v1.schema.json",
+  "title": "Zond scan report record",
+  "description": "One line of a zond JSON Lines export. This schema describes a single record, not the file: a JSON Lines file is not one JSON document, so validate it line by line. Every record carries a `type` naming what it is; the rest of its fields are exactly what the same thing has in the single-document format, so `zond-report-v1.schema.json` is the source of every definition here and the two formats never drift apart. A file holds one `report` record followed by one `host` record per host, but nothing depends on that order — a record means the same thing wherever it appears, which is what lets these files be split, filtered and concatenated with ordinary text tools.",
+  "oneOf": [
+    { "$ref": "#/$defs/report_record" },
+    { "$ref": "#/$defs/host_record" }
+  ],
+
+  "$defs": {
+    "report_record": {
+      "description": "Everything the single-document format says about the scan, except the hosts. Written first, so a consumer reading progressively knows what it is reading before it reads it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "engine",
+        "generated_at",
+        "started_at",
+        "elapsed_us",
+        "partial",
+        "summary",
+        "phases"
+      ],
+      "properties": {
+        "type": { "const": "report" },
+        "schema_version": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/schema_version"
+        },
+        "engine": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/engine"
+        },
+        "generated_at": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/timestamp"
+        },
+        "started_at": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/timestamp"
+        },
+        "elapsed_us": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/duration_us"
+        },
+        "partial": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/partial"
+        },
+        "summary": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/summary"
+        },
+        "phases": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/phases"
+        }
+      }
+    },
+
+    "host_record": {
+      "description": "One host. Strip the `type` field and what remains is byte-identical to an element of the single-document format's `hosts` array, so one parser reads both formats.",
+      "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/host",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "host" }
+      },
+      "unevaluatedProperties": false
+    }
+  }
+}

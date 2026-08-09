@@ -26,13 +26,18 @@ use boon::{Compiler, Schemas};
 use common::*;
 use serde_json::Value;
 use zond_engine::core::report::ScanReport;
-use zond_engine::export::{ExportFormat, ExportOptions, Exporter, JsonExporter, Redaction};
+use zond_engine::export::{
+    CsvExporter, ExportFormat, ExportOptions, Exporter, JsonExporter, JsonLinesExporter, Redaction,
+};
 
-/// The schema shipped in `assets/`, which is what a consumer validates against.
+/// The schemas shipped in `assets/`, which are what a consumer validates
+/// against.
 const SCHEMA: &str = include_str!("../assets/schema/zond-report-v1.schema.json");
+const LINES_SCHEMA: &str = include_str!("../assets/schema/zond-lines-v1.schema.json");
 
-/// The identifier the schema declares for itself.
+/// The identifiers the schemas declare for themselves.
 const SCHEMA_URL: &str = "https://zond.rs/schema/zond-report-v1.schema.json";
+const LINES_SCHEMA_URL: &str = "https://zond.rs/schema/zond-lines-v1.schema.json";
 
 /// Exports a report as JSON and parses it back.
 fn export(report: &ScanReport, options: ExportOptions) -> Value {
@@ -47,19 +52,34 @@ fn export(report: &ScanReport, options: ExportOptions) -> Value {
 /// Validates a document against the published schema, failing with the path of
 /// whatever did not match.
 fn assert_matches_schema(document: &Value) {
-    let schema: Value = serde_json::from_str(SCHEMA).expect("the schema file is valid JSON");
+    assert_valid_against(SCHEMA_URL, document);
+}
 
+/// Validates one JSON Lines record against the record schema.
+fn assert_matches_lines_schema(record: &Value) {
+    assert_valid_against(LINES_SCHEMA_URL, record);
+}
+
+/// Compiles both published schemas and validates against one of them. The lines
+/// schema is written in terms of the report schema's definitions, so neither
+/// resolves without the other.
+fn assert_valid_against(url: &str, document: &Value) {
     let mut schemas = Schemas::new();
     let mut compiler = Compiler::new();
-    compiler
-        .add_resource(SCHEMA_URL, schema)
-        .expect("the schema file is a usable resource");
+
+    for (id, text) in [(SCHEMA_URL, SCHEMA), (LINES_SCHEMA_URL, LINES_SCHEMA)] {
+        let schema: Value = serde_json::from_str(text).expect("the schema file is valid JSON");
+        compiler
+            .add_resource(id, schema)
+            .expect("the schema file is a usable resource");
+    }
+
     let index = compiler
-        .compile(SCHEMA_URL, &mut schemas)
+        .compile(url, &mut schemas)
         .expect("the schema file compiles");
 
     if let Err(error) = schemas.validate(document, index) {
-        panic!("a real scan produced a document the schema rejects:\n{error:#}");
+        panic!("a real scan produced output the schema rejects:\n{error:#}");
     }
 }
 
@@ -240,14 +260,196 @@ async fn redacting_a_real_report_changes_nothing_but_the_masked_fields() {
     }
 }
 
-/// The format a front end resolves from `-o report.json` has to be the one the
-/// engine writes, or the two disagree about what a file extension means.
+/// Every format a front end can resolve from `-o report.<ext>` has to be one
+/// the engine writes, or the two disagree about what an extension means.
 #[test]
-fn the_json_format_is_advertised_and_resolvable() {
+fn every_extension_resolves_to_the_format_that_claims_it() {
+    use std::path::Path;
+
     assert_eq!(
-        ExportFormat::from_path(std::path::Path::new("report.json")),
+        ExportFormat::from_path(Path::new("report.json")),
         Some(ExportFormat::Json)
     );
-    assert!(ExportFormat::all().contains(&ExportFormat::Json));
-    assert_eq!(ExportFormat::Json.extension(), "json");
+    assert_eq!(
+        ExportFormat::from_path(Path::new("report.jsonl")),
+        Some(ExportFormat::JsonLines)
+    );
+    // The same format under the name half the ecosystem knows it by.
+    assert_eq!(
+        ExportFormat::from_path(Path::new("report.ndjson")),
+        Some(ExportFormat::JsonLines)
+    );
+    assert_eq!(
+        ExportFormat::from_path(Path::new("report.csv")),
+        Some(ExportFormat::Csv)
+    );
+
+    for format in ExportFormat::all() {
+        assert_eq!(
+            ExportFormat::from_extension(format.extension()),
+            Some(*format)
+        );
+    }
+}
+
+/// Every line of a real scan's JSON Lines export has to validate on its own.
+#[tokio::test]
+async fn a_real_scan_exports_lines_the_schema_accepts() {
+    let server = spawn_banner_server(b"SSH-2.0-OpenSSH_8.9p1\r\n").await;
+    let outcome = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    let mut bytes = Vec::new();
+    JsonLinesExporter::new(ExportOptions::new())
+        .export(&outcome.report, &mut bytes)
+        .expect("the export succeeds");
+
+    let text = String::from_utf8(bytes).expect("utf-8");
+    let mut hosts = 0;
+    for (index, line) in text.lines().enumerate() {
+        let record: Value = serde_json::from_str(line).expect("a line parses on its own");
+        assert_matches_lines_schema(&record);
+
+        if index == 0 {
+            assert_eq!(record["type"], "report");
+        } else {
+            assert_eq!(record["type"], "host");
+            hosts += 1;
+        }
+    }
+
+    assert_eq!(hosts, outcome.report.host_count());
+}
+
+/// The two JSON formats are two renderings of one report and must agree about
+/// every host in it.
+#[tokio::test]
+async fn the_document_and_the_line_stream_describe_the_same_hosts() {
+    let server = spawn_banner_server(b"hi\r\n").await;
+    let outcome = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    let document = export(&outcome.report, ExportOptions::new());
+
+    let mut bytes = Vec::new();
+    JsonLinesExporter::new(ExportOptions::new())
+        .export(&outcome.report, &mut bytes)
+        .expect("the export succeeds");
+    let text = String::from_utf8(bytes).expect("utf-8");
+
+    for (index, line) in text.lines().skip(1).enumerate() {
+        let mut record: Value = serde_json::from_str(line).expect("a line parses");
+        record
+            .as_object_mut()
+            .expect("an object")
+            .remove("type")
+            .expect("a tag");
+
+        assert_eq!(record, document["hosts"][index]);
+    }
+}
+
+/// Splits a CSV document into rows of fields, honouring quoting.
+///
+/// Splitting on `,` and `\n` would pass here by luck - loopback has no MAC, so
+/// nothing gets quoted - and fail the first time a vendor string like
+/// `Arris Group, Inc` appears. A test that only works on the network it was
+/// written against is not a test of the writer.
+fn csv_rows(text: &str) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut characters = text.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        match character {
+            '"' if !quoted && field.is_empty() => quoted = true,
+            '"' if quoted => {
+                if characters.peek() == Some(&'"') {
+                    characters.next();
+                    field.push('"');
+                } else {
+                    quoted = false;
+                }
+            }
+            ',' if !quoted => row.push(std::mem::take(&mut field)),
+            '\n' if !quoted => {
+                row.push(std::mem::take(&mut field));
+                rows.push(std::mem::take(&mut row));
+            }
+            other => field.push(other),
+        }
+    }
+
+    assert!(!quoted, "the document ended inside a quoted field");
+    assert!(
+        field.is_empty() && row.is_empty(),
+        "the document did not end with a line break"
+    );
+    rows
+}
+
+/// A real scan's CSV has to be a rectangle. A row with the wrong column count
+/// shifts every value after it, silently, in whatever spreadsheet opens it.
+#[tokio::test]
+async fn a_real_scan_exports_a_rectangular_table() {
+    let server = spawn_banner_server(b"SSH-2.0-OpenSSH_8.9p1\r\n").await;
+    let closed = closed_loopback_port().await;
+    let ports = format!("{},{}", server.port, closed);
+
+    let outcome = run_scan(target_map(LOOPBACK, &ports), &test_config()).await;
+
+    let mut bytes = Vec::new();
+    CsvExporter::new(ExportOptions::new())
+        .export(&outcome.report, &mut bytes)
+        .expect("the export succeeds");
+
+    let rows = csv_rows(&String::from_utf8(bytes).expect("utf-8"));
+
+    assert_eq!(rows[0][0], "ip");
+    assert_eq!(rows[0][1], "hostname");
+
+    let columns = rows[0].len();
+    for (number, row) in rows.iter().enumerate().skip(1) {
+        assert_eq!(
+            row.len(),
+            columns,
+            "row {number} has the wrong column count: {row:?}"
+        );
+    }
+
+    // Every host contributes at least one row, and a host with ports
+    // contributes one per port.
+    let expected: usize = outcome
+        .report
+        .hosts()
+        .map(|host| host.port_count().max(1))
+        .sum();
+    assert_eq!(rows.len(), 1 + expected);
+}
+
+/// A discovery sweep finds hosts and no ports. If port-less hosts had no rows,
+/// that entire scan would export as a header and nothing else.
+#[tokio::test]
+async fn a_discovery_sweep_exports_more_than_a_header() {
+    let outcome = run_discover(ip_set(LOOPBACK), &test_config()).await;
+
+    let mut bytes = Vec::new();
+    CsvExporter::new(ExportOptions::new())
+        .export(&outcome.report, &mut bytes)
+        .expect("the export succeeds");
+
+    let rows = csv_rows(&String::from_utf8(bytes).expect("utf-8"));
+    assert_eq!(
+        rows.len(),
+        1 + outcome.report.host_count(),
+        "a header and one row per host"
+    );
 }

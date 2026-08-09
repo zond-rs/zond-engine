@@ -77,6 +77,12 @@ pub mod time;
 #[cfg(feature = "export-json")]
 pub mod json;
 
+#[cfg(feature = "export-jsonl")]
+pub mod jsonl;
+
+#[cfg(feature = "export-csv")]
+pub mod csv;
+
 #[cfg(test)]
 mod fixture;
 
@@ -94,6 +100,12 @@ use crate::core::report::ScanReport;
 
 #[cfg(feature = "export-json")]
 pub use json::JsonExporter;
+
+#[cfg(feature = "export-jsonl")]
+pub use jsonl::JsonLinesExporter;
+
+#[cfg(feature = "export-csv")]
+pub use csv::CsvExporter;
 
 /// What went wrong while writing a report out.
 #[non_exhaustive]
@@ -238,6 +250,16 @@ pub enum ExportFormat {
     /// holds, in the schema described by [`schema`].
     #[cfg(feature = "export-json")]
     Json,
+
+    /// The same data as [`Json`](Self::Json), one record per line. Streamable,
+    /// and a file cut off part way through is still readable.
+    #[cfg(feature = "export-jsonl")]
+    JsonLines,
+
+    /// A flat table, one row per host and port. Lossy by design, for the
+    /// spreadsheet and compliance audience.
+    #[cfg(feature = "export-csv")]
+    Csv,
 }
 
 impl ExportFormat {
@@ -250,6 +272,12 @@ impl ExportFormat {
         match extension.to_ascii_lowercase().as_str() {
             #[cfg(feature = "export-json")]
             "json" => Some(ExportFormat::Json),
+            // `ndjson` is the other name the same format goes by, and a caller
+            // who writes it means this. The canonical spelling stays `jsonl`.
+            #[cfg(feature = "export-jsonl")]
+            "jsonl" | "ndjson" => Some(ExportFormat::JsonLines),
+            #[cfg(feature = "export-csv")]
+            "csv" => Some(ExportFormat::Csv),
             _ => None,
         }
     }
@@ -270,6 +298,10 @@ impl ExportFormat {
         match self {
             #[cfg(feature = "export-json")]
             ExportFormat::Json => "json",
+            #[cfg(feature = "export-jsonl")]
+            ExportFormat::JsonLines => "jsonl",
+            #[cfg(feature = "export-csv")]
+            ExportFormat::Csv => "csv",
         }
     }
 
@@ -281,6 +313,10 @@ impl ExportFormat {
         &[
             #[cfg(feature = "export-json")]
             ExportFormat::Json,
+            #[cfg(feature = "export-jsonl")]
+            ExportFormat::JsonLines,
+            #[cfg(feature = "export-csv")]
+            ExportFormat::Csv,
         ]
     }
 
@@ -296,6 +332,10 @@ impl ExportFormat {
         match self {
             #[cfg(feature = "export-json")]
             ExportFormat::Json => Box::new(JsonExporter::new(options)),
+            #[cfg(feature = "export-jsonl")]
+            ExportFormat::JsonLines => Box::new(JsonLinesExporter::new(options)),
+            #[cfg(feature = "export-csv")]
+            ExportFormat::Csv => Box::new(CsvExporter::new(options)),
         }
     }
 }
