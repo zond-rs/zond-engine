@@ -33,11 +33,14 @@ pub enum SendMode {
 ///
 /// Not every strategy reads every field: local discovery builds its own
 /// Ethernet frames and so has no use for [`SendMode`], while every strategy that
-/// sends a probe at all has a use for [`RetryConfig`].
+/// sends a probe at all has a use for [`RetryConfig`]. `max_probe_rate` is read
+/// by routed host discovery; the other paths pace themselves by other means or,
+/// where they burst, have not been measured to need it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProbeTuning {
     pub send_mode: SendMode,
     pub retry: RetryConfig,
+    pub max_probe_rate: Option<u32>,
 }
 
 /// Global configuration options for the scanner execution.
@@ -103,6 +106,17 @@ pub struct ZondConfig {
     /// override it only to force Layer-2 sends for host-stack-bypass scanning.
     pub send_mode: SendMode,
 
+    /// The fastest routed discovery may put probes on the wire, in probes per
+    /// second. `None` leaves the scanner's own default in force.
+    ///
+    /// This is a coverage control before it is a politeness one. A probe's
+    /// chance of being answered falls as the rate rises: on a policed path a
+    /// burst loses most of its first attempt and the loss is recovered, if at
+    /// all, by retransmitting into a quieter moment. Lowering the rate buys
+    /// coverage on the first attempt instead, and raising it trades coverage
+    /// for the time a large range takes to emit.
+    pub max_probe_rate: Option<u32>,
+
     /// How hard the scan tries before accepting silence as an answer.
     ///
     /// Every probing path has its own schedule, tuned to what its protocol
@@ -118,6 +132,7 @@ impl ZondConfig {
         ProbeTuning {
             send_mode: self.send_mode,
             retry: self.retry,
+            max_probe_rate: self.max_probe_rate,
         }
     }
 }

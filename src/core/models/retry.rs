@@ -951,8 +951,16 @@ mod tests {
         assert_eq!(resolution.rtt, Some(Duration::from_millis(250)));
     }
 
+    /// A round trip is measured from the attempt that was answered, never from
+    /// when the probe was first armed and never from when the scan began.
+    ///
+    /// The three coincide only for a probe sent once, which is why the error is
+    /// easy to introduce and invisible afterwards: it would report a fast host
+    /// recovered by a late retry as a slow one, and feed that invented latency
+    /// to every estimator downstream - the adaptive deadline and the retry
+    /// schedule both.
     #[test]
-    fn a_reply_to_the_latest_attempt_is_numbered_by_it() {
+    fn a_reply_to_the_latest_attempt_is_numbered_and_measured_by_it() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
 
@@ -966,6 +974,11 @@ mod tests {
             .expect("a live token resolves");
 
         assert_eq!(resolution.answered_attempt, Some(2));
+        assert_eq!(
+            resolution.rtt,
+            Some(Duration::from_millis(5)),
+            "measured from the second attempt, not the 105ms since the first"
+        );
     }
 
     /// A probe sent once has nothing its reply could be confused with, so an

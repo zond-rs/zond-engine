@@ -37,14 +37,20 @@ use std::time::{Duration, Instant};
 
 use crate::network::capture::CaptureCounts;
 
-/// Upper bounds, in milliseconds, of the reply-latency histogram buckets. A
-/// final bucket catches everything slower than the last bound.
+/// Upper bounds, in milliseconds, of the discovery-time histogram buckets. A
+/// final bucket catches everything later than the last bound.
+///
+/// These measure how far into the run a host was first credited, **not** its
+/// round trip. The two diverge exactly where it matters: a host found at 700 ms
+/// because its third attempt went out at 690 ms has a 10 ms round trip, and
+/// reading the bucket as latency turns a retry schedule into an imaginary slow
+/// path. Round trips are reported per host, not here.
 ///
 /// Spaced roughly logarithmically because the question being asked spans three
 /// orders of magnitude: a same-segment reply lands under a millisecond, a
-/// healthy internet round trip in the tens, and a reply that arrived just before
-/// the deadline in the hundreds. A linear scale would put every interesting
-/// answer in one bucket.
+/// healthy internet round trip in the tens, and a host recovered by a late
+/// retry in the hundreds. A linear scale would put every interesting answer in
+/// one bucket.
 const BUCKET_BOUNDS_MS: [u64; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1_000];
 
 /// How many attempts are counted separately before the rest are lumped together.
@@ -228,7 +234,7 @@ impl ProbeAudit {
              | captured {seen} (off-target {off}, no-rtt {no_rtt}){kernel} \
              | found on {attempts} \
              | first {first}, last {last} \
-             | latency {histogram}",
+             | found-at {histogram}",
             found = self.hosts_found,
             elapsed = self.elapsed(),
             sent = self.sends_attempted,
@@ -278,7 +284,7 @@ impl ProbeAudit {
         out
     }
 
-    /// The reply-latency histogram, empty buckets omitted.
+    /// The discovery-time histogram, empty buckets omitted.
     fn histogram(&self) -> String {
         let mut out = String::new();
         for (index, count) in self.buckets.iter().enumerate() {

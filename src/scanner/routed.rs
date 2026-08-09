@@ -19,7 +19,7 @@ mod port_scan;
 mod udp_scan;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::IpAddr,
     time::{Duration, Instant},
 };
@@ -89,10 +89,18 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 /// reason they share a deadline profile: it is the same probe over the same kind
 /// of path.
 ///
-/// Three attempts is where the useful range begins and stops paying. Two is the
-/// least that distinguishes a lost packet from a silent one; beyond three, the
-/// marginal probe recovers little on any path healthy enough to be worth
-/// scanning, and every extra attempt is paid on every unanswered target.
+/// Three attempts is what a paced sweep needs and what an unpaced one cannot be
+/// rescued by. Two is the least that distinguishes a lost packet from a silent
+/// one, and the third still earns its place: on a large range it is the
+/// attempt that recovers the last few percent.
+///
+/// The budget is bounded here rather than raised because the loss it would be
+/// compensating for is not the kind repetition fixes. Sending faster than a path
+/// absorbs costs coverage on every attempt alike, so a scan that answers it with
+/// more attempts pays the full budget on every dead address to buy back what
+/// [`PROBE_RATE_PER_SEC`] gives away for nothing. On a range with nothing on it,
+/// which is the ordinary case, each attempt is the whole range's worth of
+/// packets and recovers no host at all.
 ///
 /// The floor sits far below the starting timeout, and the gap between them is
 /// the point. Before anything has been measured the network is unknown rather
@@ -110,6 +118,50 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     0.2,
     Some(SilentHostPolicy::new(32, 2)),
 );
+
+/// The fastest a routed sweep puts probes on the wire, in probes per second.
+///
+/// A probe's chance of being answered is not a constant of the path; it falls
+/// as the rate rises. Unpaced, a sweep of a large range loses most of its first
+/// attempt, and the hosts behind those packets are recovered only by
+/// retransmitting into a quieter moment - coverage bought at several times the
+/// traffic, and only where the attempt budget happens to outlast the policer.
+///
+/// So the rate is set below where that loss sets in rather than at whatever the
+/// socket will accept. Measured against a /22 where every address answers, the
+/// first attempt alone finds a sixth to a third of the range unpaced and around
+/// three quarters of it at this rate, and the sweep needs roughly half the
+/// packets to finish. Loss becomes visible again several times higher.
+///
+/// What it costs is the time a large range takes to emit, which grows linearly:
+/// a /22 leaves in a quarter of a second, a /16 in sixteen. That is the trade,
+/// and it is the right way round - a probe not yet sent and a probe dropped by a
+/// policer are equally invisible, and only the first is under our control.
+const PROBE_RATE_PER_SEC: u32 = 4_000;
+
+/// The shortest interval the send ticker is asked to keep.
+///
+/// A tokio interval cannot be relied on much below a millisecond, so a rate
+/// faster than one probe per tick is expressed by releasing several per tick
+/// rather than by ticking faster. Below that the tick lengthens instead - see
+/// [`pacing_for`], where getting this wrong is silent.
+const MIN_SEND_TICK: Duration = Duration::from_millis(1);
+
+/// How often to wake and how many probes to release each time, for a sweep
+/// paced at `rate_per_sec`.
+///
+/// The batch is chosen first and the interval derived from it, so the product
+/// is the rate that was asked for rather than something near it. Fixing the
+/// interval and rounding the batch instead is the obvious way to write this and
+/// it is wrong in a way nothing reports: a batch cannot be less than one probe,
+/// so every rate below one probe per tick collapses to the same value and a
+/// sweep configured for 500 probes a second quietly runs at 1000.
+fn pacing_for(rate_per_sec: u32) -> (Duration, usize) {
+    let rate = f64::from(rate_per_sec.max(1));
+    let batch = (rate * MIN_SEND_TICK.as_secs_f64()).round().max(1.0);
+
+    (Duration::from_secs_f64(batch / rate), batch as usize)
+}
 
 type SeqNum = u32;
 
@@ -245,6 +297,20 @@ pub struct RoutedScanner {
     /// Scratch space for the probes coming due on one iteration, reused so a
     /// quiet tick allocates nothing.
     due: Vec<Due<IpAddr>>,
+    /// Targets whose first probe has not left yet, released by the send ticker.
+    pending: std::vec::IntoIter<IpAddr>,
+    /// Targets due for another attempt, released by the same ticker and ahead
+    /// of anything in `pending`.
+    ///
+    /// A retry is an obligation the sweep already owns, where the next unprobed
+    /// address is only work it intends to do. Draining them first is also what
+    /// keeps the schedule honest: a retry queued behind thousands of first
+    /// attempts would be sent long after the moment it was scheduled for.
+    retries: VecDeque<IpAddr>,
+    /// How often the send ticker fires, and how many probes it releases each
+    /// time. Together they are the configured rate; see [`pacing_for`].
+    send_tick: Duration,
+    batch: usize,
     /// How many distinct addresses have responded so far.
     responded_count: usize,
     /// Per-run counters, so a sweep that finds fewer hosts than it should can be
@@ -256,10 +322,11 @@ pub struct RoutedScanner {
 #[async_trait]
 impl NetworkExplorer for RoutedScanner {
     async fn discover_hosts(mut self: Box<Self>) -> anyhow::Result<()> {
-        match self.send_discovery_packets() {
-            Ok(_) => success!("Discovery packets sent successfully"),
-            Err(e) => error!("Sending discovery packets failed: {e}"),
-        }
+        let mut send_tick = tokio::time::interval(self.send_tick);
+        // Without this, a ticker that went unpolled while the loop was busy with
+        // replies hands back every missed tick at once, and the pacing it exists
+        // to impose evaporates exactly when the queue is longest.
+        send_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         // The loop yields why it stopped, so the audit cannot report a reason
         // the code never actually took.
@@ -274,17 +341,21 @@ impl NetworkExplorer for RoutedScanner {
             if all_responded {
                 break StopReason::AllResponded;
             }
-            // Nothing outstanding means every target has either answered or
-            // been asked as many times as it is going to be. Waiting longer
-            // cannot change the result, where previously the sweep sat out the
-            // rest of its budget on the chance that it might.
-            if self.ledger.is_empty() {
+            // Nothing outstanding and nothing left to send means every target
+            // has either answered or been asked as many times as it is going
+            // to be. Waiting longer cannot change the result.
+            //
+            // Both queues have to be checked, not just the ledger: at the first
+            // iteration the ledger is empty because no probe has left yet, and
+            // stopping there would end the sweep before it began.
+            if self.nothing_left_to_send() && self.ledger.is_empty() {
                 break StopReason::AttemptsSpent;
             }
             if self.deadline.hard_deadline_passed() {
                 break StopReason::DeadlineExpired;
             }
 
+            let sending = !self.nothing_left_to_send();
             let tick = self.tick_delay(now);
 
             tokio::select! {
@@ -297,9 +368,16 @@ impl NetworkExplorer for RoutedScanner {
                         None => break StopReason::StreamClosed,
                     }
                 },
-                // Wakes when the next probe is due, so a retry goes out on time
+
+                _ = send_tick.tick(), if sending => {
+                    self.send_allowance(Instant::now());
+                }
+
+                // Wakes when the next probe is due, so a retry is queued on time
                 // even though nothing is arriving to wake the loop otherwise.
-                _ = tokio::time::sleep(tick) => {}
+                // Only while idle: with probes still to send, the ticker above
+                // is what governs how often the loop comes round.
+                _ = tokio::time::sleep(tick), if !sending => {}
             }
         };
 
@@ -320,7 +398,14 @@ impl RoutedScanner {
         tuning: ProbeTuning,
     ) -> anyhow::Result<Self> {
         let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, tuning.send_mode)?;
-        Ok(Self::build(targets, ctx, dns_tx, transport, RETRY_POLICY.configured(tuning.retry)))
+        Ok(Self::build(
+            targets,
+            ctx,
+            dns_tx,
+            transport,
+            RETRY_POLICY.configured(tuning.retry),
+            tuning.max_probe_rate.unwrap_or(PROBE_RATE_PER_SEC).max(1),
+        ))
     }
 
     /// Builds a sweep around an already-opened transport, so the caller decides
@@ -337,31 +422,50 @@ impl RoutedScanner {
         dns_tx: Option<UnboundedSender<IpAddr>>,
         transport: ProbeTransport,
     ) -> Self {
-        Self::build(targets, ctx, dns_tx, transport, RETRY_POLICY)
+        Self::build(
+            targets,
+            ctx,
+            dns_tx,
+            transport,
+            RETRY_POLICY,
+            PROBE_RATE_PER_SEC,
+        )
     }
 
-    /// The common constructor, taking the retry schedule as an argument because
-    /// the sweep's own deadline is derived from it and so has to be settled
-    /// before anything is built.
+    /// The common constructor, taking the retry schedule and the send rate as
+    /// arguments because the sweep's own deadline is derived from both and so
+    /// has to be settled before anything is built.
     fn build(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
         transport: ProbeTransport,
         retry: RetryPolicy,
+        rate_per_sec: u32,
     ) -> Self {
         let mut ips = IpSet::new();
+        let mut order = Vec::with_capacity(targets.len());
         let mut sources = HashMap::with_capacity(targets.len());
         for RoutedTarget { target, source } in targets {
             ips.insert(target);
-            sources.insert(target, source);
+            if sources.insert(target, source).is_none() {
+                order.push(target);
+            }
         }
         ips.canonicalize();
 
         let target_count = sources.len();
-        // The sweep has to outlive its own retry schedule, or probes are given
-        // up on having never been fully asked.
-        let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
+
+        // The sweep has to outlive both of the limits it sets itself: its own
+        // retry schedule, or probes are given up on having never been fully
+        // asked, and its own send rate, or the sweep is cut off mid-send. The
+        // second fails invisibly - an address never probed is indistinguishable
+        // from one with nothing on it - which is why it is derived here rather
+        // than left to a constant that has to be remembered.
+        let (send_tick, batch) = pacing_for(rate_per_sec);
+        let send_duration = Duration::from_secs_f64(target_count as f64 / f64::from(rate_per_sec));
+        let deadline_config =
+            DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime() + send_duration);
 
         Self {
             ctx,
@@ -372,6 +476,10 @@ impl RoutedScanner {
             dns_tx,
             ledger: ProbeLedger::new(retry, target_count),
             due: Vec::new(),
+            pending: order.into_iter(),
+            retries: VecDeque::new(),
+            send_tick,
+            batch,
             responded_count: 0,
             audit: ProbeAudit::new(),
         }
@@ -439,7 +547,12 @@ impl RoutedScanner {
             .or_else(|| self.ledger.resolve(&ip, None, now))
     }
 
-    /// Resends every probe that has gone unanswered long enough.
+    /// Queues every probe that has gone unanswered long enough.
+    ///
+    /// Queued rather than sent, so a retry leaves through the same paced ticker
+    /// a first attempt does. Sending them here would put the whole of one
+    /// attempt on the wire in a single iteration - which is the burst this
+    /// scanner exists to avoid, arriving one round later.
     ///
     /// A probe that runs out of attempts needs nothing recorded: a host that
     /// never answered is simply one this sweep does not report, and the ledger
@@ -447,16 +560,31 @@ impl RoutedScanner {
     fn service_retries(&mut self, now: Instant) {
         self.ledger.drain_due(now, &mut self.due);
 
-        // Taken so the sends below can borrow `self` mutably; the buffer itself
-        // is reused, so this costs no allocation.
-        let due = std::mem::take(&mut self.due);
-        for event in &due {
-            if let Due::Retry { key, .. } = *event {
-                self.probe(key, now);
+        for event in self.due.drain(..) {
+            if let Due::Retry { key, .. } = event {
+                self.retries.push_back(key);
             }
         }
-        self.due = due;
-        self.due.clear();
+    }
+
+    /// Whether every probe this sweep intends to send has left.
+    fn nothing_left_to_send(&self) -> bool {
+        self.retries.is_empty() && self.pending.len() == 0
+    }
+
+    /// Releases one tick's worth of probes: retries first, then targets not yet
+    /// asked.
+    fn send_allowance(&mut self, now: Instant) {
+        for _ in 0..self.batch {
+            let target = match self.retries.pop_front() {
+                Some(target) => target,
+                None => match self.pending.next() {
+                    Some(target) => target,
+                    None => return,
+                },
+            };
+            self.probe(target, now);
+        }
     }
 
     /// How long the loop may sleep: until the sweep's next checkpoint, or until
@@ -467,19 +595,6 @@ impl RoutedScanner {
             Some(due) => until_deadline_tick.min(due.saturating_duration_since(now)),
             None => until_deadline_tick,
         }
-    }
-
-    fn send_discovery_packets(&mut self) -> anyhow::Result<()> {
-        // Collected so the send loop can mutate `self` while iterating; the
-        // source map itself is kept, since a retry leaves from the same address.
-        let targets: Vec<IpAddr> = self.sources.keys().copied().collect();
-
-        let now = Instant::now();
-        for target in targets {
-            self.probe(target, now);
-        }
-
-        Ok(())
     }
 
     /// Sends one SYN at `target` and records the attempt.
@@ -501,5 +616,63 @@ impl RoutedScanner {
         if let Some(token) = token {
             self.ledger.arm(target, target, token, now);
         }
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The rate a sweep actually paces itself at, which is what the pair has
+    /// to reproduce however it is split between the two.
+    fn effective_rate(rate_per_sec: u32) -> f64 {
+        let (tick, batch) = pacing_for(rate_per_sec);
+        batch as f64 / tick.as_secs_f64()
+    }
+
+    #[test]
+    fn a_fast_rate_is_expressed_as_a_batch_on_the_shortest_tick() {
+        assert_eq!(pacing_for(2_000), (MIN_SEND_TICK, 2));
+        assert_eq!(pacing_for(100_000), (MIN_SEND_TICK, 100));
+    }
+
+    /// The failure this pair exists to prevent. A batch cannot be less than one
+    /// probe, so holding the tick fixed collapses every rate below one probe
+    /// per tick onto the same value - and a sweep asked for 500 a second runs
+    /// at 1000 without saying so.
+    #[test]
+    fn a_slow_rate_lengthens_the_tick_rather_than_doubling_the_rate() {
+        assert_eq!(pacing_for(500), (Duration::from_millis(2), 1));
+        assert_eq!(pacing_for(100), (Duration::from_millis(10), 1));
+    }
+
+    #[test]
+    fn every_rate_is_paced_at_the_rate_it_asked_for() {
+        for rate in [1, 100, 500, 999, 1_000, 1_500, 2_000, 4_000, 16_000] {
+            let effective = effective_rate(rate);
+            let error = (effective - f64::from(rate)).abs() / f64::from(rate);
+            assert!(
+                error < 0.01,
+                "{rate}/s is paced at {effective}/s, off by {:.0}%",
+                error * 100.0
+            );
+        }
+    }
+
+    /// A rate of zero is a caller error, not an instruction to stall forever.
+    #[test]
+    fn a_zero_rate_still_sends() {
+        let (tick, batch) = pacing_for(0);
+        assert_eq!(batch, 1);
+        assert!(tick <= Duration::from_secs(1));
     }
 }

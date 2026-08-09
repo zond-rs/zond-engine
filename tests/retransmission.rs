@@ -47,6 +47,7 @@
 
 mod common;
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
 use common::fake_lan::{FakeLan, LanHost, LanProbe};
@@ -298,6 +299,78 @@ async fn a_discovered_host_is_not_probed_again() {
 
     assert!(session.store.contains_key(&TARGET));
     assert_eq!(net.probe_count(TARGET, 443), 1);
+}
+
+/// Every target of a paced sweep is probed, and none of them at once.
+///
+/// Pacing turned the send loop inside out: probes used to be emitted in full
+/// before the scanner read a single reply, and are now released a batch at a
+/// time from inside the receive loop. Two things could go wrong silently there,
+/// and both look exactly like an empty network afterwards - the sweep deciding
+/// it is finished before it has sent anything, since the ledger is empty at the
+/// first iteration, and the sweep ending with targets still queued.
+///
+/// So this asserts the whole range was asked, not that a particular one was.
+#[tokio::test]
+async fn a_paced_sweep_probes_every_target_without_bursting_them() {
+    const TARGETS: usize = 64;
+
+    let net = FakeNet::new(Layer4::Tcp);
+    let targets: Vec<RoutedTarget> = (0..TARGETS)
+        .map(|n| RoutedTarget {
+            target: IpAddr::V4(Ipv4Addr::new(198, 51, 100, n as u8)),
+            source: SCANNER_V4.into(),
+        })
+        .collect();
+
+    let (_session, ctx) = ScanSession::new();
+    let scanner = RoutedScanner::with_transport(targets.clone(), ctx, None, net.transport());
+    Box::new(scanner)
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    for RoutedTarget { target, .. } in &targets {
+        assert_eq!(
+            net.probe_count(*target, 443),
+            ATTEMPTS,
+            "{target} should have been asked exactly {ATTEMPTS} times"
+        );
+    }
+
+    // The point of the restructure: a first attempt that leaves over an
+    // interval rather than in one burst. Without pacing every one of these
+    // shares an instant.
+    let mut first_attempts: Vec<Instant> = net
+        .probes()
+        .into_iter()
+        .fold(std::collections::HashMap::new(), |mut earliest, probe| {
+            earliest
+                .entry(probe.target)
+                .and_modify(|at| {
+                    if probe.at < *at {
+                        *at = probe.at;
+                    }
+                })
+                .or_insert(probe.at);
+            earliest
+        })
+        .into_values()
+        .collect();
+    first_attempts.sort_unstable();
+
+    // Asserted against a floor rather than against nonzero: an unpaced burst
+    // also spans some nanoseconds, so only a span on the order the rate implies
+    // distinguishes pacing from a loop that happened to take a moment.
+    let span = first_attempts
+        .last()
+        .expect("targets were probed")
+        .duration_since(first_attempts[0]);
+    assert!(
+        span >= Duration::from_millis(10),
+        "{TARGETS} first attempts left within {span:?}, which is a burst rather \
+         than a paced send"
+    );
 }
 
 // ── UDP ────────────────────────────────────────────────────────────────────

@@ -37,6 +37,12 @@
 //! sudo -E cargo run --release --example discovery_bench -- 1.1.1.0/22 5 thorough
 //! ```
 //!
+//! `--rate N` caps how fast routed discovery emits probes, in probes per
+//! second. It is the one knob that changes what the network sees rather than
+//! how long we wait for it: sweeping it maps the rate at which a path starts
+//! dropping probes, which is the number the retry budget has been compensating
+//! for.
+//!
 //! `--attempts N` and `--timeout-scale F` override the effort's own numbers.
 //! An effort level moves both at once, which is convenient for choosing one and
 //! useless for attributing a result to either; these separate them. The pair
@@ -112,13 +118,20 @@ fn flag<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
 
 /// Names the overrides in the run header, so a scrollback of results says which
 /// configuration produced each one.
-fn describe_overrides(max_attempts: Option<u8>, timeout_scale: Option<f64>) -> String {
+fn describe_overrides(
+    max_attempts: Option<u8>,
+    timeout_scale: Option<f64>,
+    max_probe_rate: Option<u32>,
+) -> String {
     let mut out = String::new();
     if let Some(attempts) = max_attempts {
         out.push_str(&format!(", attempts {attempts}"));
     }
     if let Some(scale) = timeout_scale {
         out.push_str(&format!(", timeouts x{scale}"));
+    }
+    if let Some(rate) = max_probe_rate {
+        out.push_str(&format!(", rate {rate}/s"));
     }
     out
 }
@@ -162,6 +175,7 @@ async fn main() {
 
     let max_attempts: Option<u8> = flag(&args, "--attempts");
     let timeout_scale: Option<f64> = flag(&args, "--timeout-scale");
+    let max_probe_rate: Option<u32> = flag(&args, "--rate");
 
     let ips = to_ipset(&[targets.as_str()], None).expect("target expression parses");
     let total = ips.len();
@@ -172,6 +186,7 @@ async fn main() {
         no_banner: true,
         no_dns: true,
         disable_input: true,
+        max_probe_rate,
         retry: RetryConfig {
             effort,
             max_attempts,
@@ -183,7 +198,7 @@ async fn main() {
 
     println!(
         "\ndiscovery benchmark: {targets} ({total} addresses), {runs} runs, effort {effort:?}{overrides}\n",
-        overrides = describe_overrides(max_attempts, timeout_scale),
+        overrides = describe_overrides(max_attempts, timeout_scale, max_probe_rate),
     );
 
     let mut results: Vec<(usize, Duration)> = Vec::with_capacity(runs);
