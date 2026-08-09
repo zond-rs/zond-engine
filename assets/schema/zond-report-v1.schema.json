@@ -1,0 +1,800 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zond.rs/schema/zond-report-v1.schema.json",
+  "title": "Zond scan report",
+  "description": "The document a zond engine writes when a scan finishes. Version 1. Timestamps are RFC 3339 in UTC to microsecond precision; durations are integer microseconds in fields named `*_us`; counts that can exceed 2^53 are decimal strings so no consumer silently rounds them. This file is strict on purpose: it validates exactly what the engine it ships with emits, so a field added to the engine without being described here fails the engine's own tests. A consumer wanting to accept documents from newer engines should relax `additionalProperties` rather than reject unknown fields, per the compatibility rule in `schema_version`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "engine",
+    "generated_at",
+    "started_at",
+    "elapsed_us",
+    "partial",
+    "summary",
+    "phases",
+    "hosts"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "The structure version. Bumped only when a consumer written against the previous version would misread this one. Adding a field, an enum string or an optional block does not bump it.",
+      "const": 1
+    },
+    "engine": {
+      "description": "Which build produced the report.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "zond-engine" },
+        "version": {
+          "description": "The engine's crate version.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "generated_at": {
+      "description": "When this document was written. The only field that moves between two exports of the same report.",
+      "$ref": "#/$defs/timestamp"
+    },
+    "started_at": {
+      "description": "When the earliest phase began.",
+      "$ref": "#/$defs/timestamp"
+    },
+    "elapsed_us": {
+      "description": "Time the engine spent scanning: exactly the sum of the phases' own `elapsed_us`, so the document never contradicts itself. Not the wall-clock span from first phase to last - whatever the caller did between phases is not scan time. For that span, take the difference between `started_at` and the end of the last phase.",
+      "$ref": "#/$defs/duration_us"
+    },
+    "partial": {
+      "description": "True if any strategy failed to run to completion, meaning the findings are narrower than the caller asked for. An empty network and a scan whose raw scanner never started look identical in `hosts`; this is what tells them apart.",
+      "type": "boolean"
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "phases": {
+      "description": "The engine calls that contributed to this report, in the order they ran. Discovery followed by a port scan is one job of two phases.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/phase" }
+    },
+    "hosts": {
+      "description": "Every host recorded, ordered by primary address.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/host" }
+    }
+  },
+
+  "$defs": {
+    "timestamp": {
+      "description": "An RFC 3339 instant in UTC, to microsecond precision. Fixed width, so these sort as text in the order they sort in time.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    },
+    "duration_us": {
+      "description": "A duration in whole microseconds.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "count_string": {
+      "description": "A count that can exceed what a JSON number holds exactly, written in decimal. An IPv6 sweep's address count is the reason.",
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "percentage": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "ttl": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 255
+    },
+
+    "summary": {
+      "description": "Counts derived from the hosts, so they cannot disagree with the data they describe. Every category is present whether or not anything landed in it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hosts_total",
+        "hosts_alive",
+        "hosts_by_status",
+        "ports_total",
+        "ports_open",
+        "ports_by_state",
+        "services_identified"
+      ],
+      "properties": {
+        "hosts_total": { "$ref": "#/$defs/count" },
+        "hosts_alive": {
+          "description": "Hosts confirmed present: up or filtered.",
+          "$ref": "#/$defs/count"
+        },
+        "hosts_by_status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["up", "filtered", "down", "unknown"],
+          "properties": {
+            "up": { "$ref": "#/$defs/count" },
+            "filtered": { "$ref": "#/$defs/count" },
+            "down": { "$ref": "#/$defs/count" },
+            "unknown": { "$ref": "#/$defs/count" }
+          }
+        },
+        "ports_total": { "$ref": "#/$defs/count" },
+        "ports_open": { "$ref": "#/$defs/count" },
+        "ports_by_state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "open",
+            "open_filtered",
+            "closed",
+            "unfiltered",
+            "filtered",
+            "closed_filtered"
+          ],
+          "properties": {
+            "open": { "$ref": "#/$defs/count" },
+            "open_filtered": { "$ref": "#/$defs/count" },
+            "closed": { "$ref": "#/$defs/count" },
+            "unfiltered": { "$ref": "#/$defs/count" },
+            "filtered": { "$ref": "#/$defs/count" },
+            "closed_filtered": { "$ref": "#/$defs/count" }
+          }
+        },
+        "services_identified": { "$ref": "#/$defs/count" }
+      }
+    },
+
+    "phase": {
+      "description": "One call into the engine.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "started_at",
+        "elapsed_us",
+        "privileged",
+        "targets",
+        "settings",
+        "failures",
+        "probe_stats"
+      ],
+      "properties": {
+        "kind": {
+          "description": "Which entry point this phase records.",
+          "enum": ["discovery", "port_scan"]
+        },
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "elapsed_us": {
+          "description": "How long the phase ran, measured monotonically rather than as a difference of wall-clock readings.",
+          "$ref": "#/$defs/duration_us"
+        },
+        "privileged": {
+          "description": "Whether the engine held the privileges its raw strategies need. An unprivileged phase reached its targets over plain TCP connect attempts, which see less and are more visible to the target.",
+          "type": "boolean"
+        },
+        "targets": { "$ref": "#/$defs/scope" },
+        "settings": { "$ref": "#/$defs/settings" },
+        "failures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/failure" }
+        },
+        "probe_stats": {
+          "description": "What each instrumented scanner observed about its own run. Empty where no strategy in this phase carries instrumentation, which is not the same as a scanner that measured zero.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/probe_stats" }
+        }
+      }
+    },
+
+    "scope": {
+      "description": "What a phase was asked to cover, after overlapping arguments were merged.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ranges", "addresses", "probes", "protocols"],
+      "properties": {
+        "ranges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/range" }
+        },
+        "addresses": {
+          "description": "How many distinct addresses were in scope.",
+          "$ref": "#/$defs/count_string"
+        },
+        "probes": {
+          "description": "How many address/port/protocol combinations were in scope. Null on a discovery phase, which has no port dimension, and on a target set too large to count - the phase `kind` tells the two apart.",
+          "oneOf": [{ "$ref": "#/$defs/count_string" }, { "type": "null" }]
+        },
+        "protocols": {
+          "description": "Transport protocols in scope, ascending. Empty on a discovery phase, whose probes are chosen by the strategy rather than by the caller.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/protocol" }
+        }
+      }
+    },
+
+    "range": {
+      "description": "One inclusive address range.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "start", "end"],
+      "properties": {
+        "family": { "enum": ["ipv4", "ipv6"] },
+        "start": { "type": "string", "minLength": 1 },
+        "end": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "settings": {
+      "description": "The settings that shaped what a phase put on the wire. A deliberate subset of the engine's configuration: what changed the packets and how long the engine waited. Presentation settings are absent, so a quieter terminal never reads as a different scan.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "send_mode",
+        "retry",
+        "max_probe_rate",
+        "dns_enabled",
+        "redact"
+      ],
+      "properties": {
+        "send_mode": {
+          "description": "How raw probes were placed on the wire.",
+          "enum": ["auto", "raw_socket", "ethernet"]
+        },
+        "retry": { "$ref": "#/$defs/retry" },
+        "max_probe_rate": {
+          "description": "The probe-rate ceiling in probes per second, or null if the scanner's own default applied.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "dns_enabled": {
+          "description": "Whether name resolution was permitted to generate traffic.",
+          "type": "boolean"
+        },
+        "redact": {
+          "description": "Whether the caller asked the scan to mask identifying detail. Distinct from export redaction, which is chosen when the report is written and is visible in what this document actually contains.",
+          "type": "boolean"
+        }
+      }
+    },
+
+    "retry": {
+      "description": "The retransmission budget a phase ran under.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effort",
+        "max_attempts",
+        "timeout_scale",
+        "dampen_silent_hosts"
+      ],
+      "properties": {
+        "effort": { "enum": ["single", "fast", "balanced", "thorough"] },
+        "max_attempts": {
+          "description": "An attempt budget set by the caller, overriding what `effort` implies.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "timeout_scale": {
+          "description": "A multiplier on how long the scan was willing to wait. Null when the caller set none, and when the value set was not a finite number.",
+          "type": ["number", "null"]
+        },
+        "dampen_silent_hosts": {
+          "description": "Whether a host that answered nothing could have its budget cut short.",
+          "type": "boolean"
+        }
+      }
+    },
+
+    "failure": {
+      "description": "A strategy that did not run to completion. The scan continued with whatever strategies remained, so a report carrying failures still carries results - just narrower ones.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scanner", "reason", "at"],
+      "properties": {
+        "scanner": { "$ref": "#/$defs/scanner_kind" },
+        "reason": { "type": "string" },
+        "at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+
+    "probe_stats": {
+      "description": "What one raw scanner observed about its own run. Instrumentation about the scan, not a finding about the network: it exists to bound how far the findings can be trusted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scanner",
+        "targets",
+        "stop_reason",
+        "complete",
+        "elapsed_us",
+        "sends_attempted",
+        "sends_failed",
+        "segments_seen",
+        "segments_off_target",
+        "replies_without_rtt",
+        "hosts_found",
+        "answered_on",
+        "answered_unattributed",
+        "first_reply_us",
+        "last_reply_us",
+        "found_at",
+        "capture"
+      ],
+      "properties": {
+        "scanner": { "$ref": "#/$defs/scanner_kind" },
+        "targets": {
+          "description": "How many targets this scanner owned.",
+          "$ref": "#/$defs/count_string"
+        },
+        "stop_reason": {
+          "description": "Why the receive loop stopped. The single most informative field here: a run ending in `deadline_expired` with `last_reply_us` close to `elapsed_us` was still finding hosts when it ran out of time.",
+          "enum": [
+            "aborted",
+            "all_responded",
+            "attempts_spent",
+            "deadline_expired",
+            "stream_closed"
+          ]
+        },
+        "complete": {
+          "description": "Whether the loop stopped because it had nothing left to do rather than because something cut it short. Derived from `stop_reason`, so a consumer need not encode which reasons mean finished.",
+          "type": "boolean"
+        },
+        "elapsed_us": { "$ref": "#/$defs/duration_us" },
+        "sends_attempted": { "$ref": "#/$defs/count" },
+        "sends_failed": {
+          "description": "Probes the sender refused. Non-zero means the shortfall starts at home, before the network is implicated at all.",
+          "$ref": "#/$defs/count"
+        },
+        "segments_seen": {
+          "description": "Segments the capture handed up, before any of the scanner's own checks.",
+          "$ref": "#/$defs/count"
+        },
+        "segments_off_target": {
+          "description": "Segments from an address outside the target set. A large count means the capture filter is admitting other traffic.",
+          "$ref": "#/$defs/count"
+        },
+        "replies_without_rtt": {
+          "description": "In-set replies that answered no outstanding probe: they proved a host alive but yielded no round-trip sample.",
+          "$ref": "#/$defs/count"
+        },
+        "hosts_found": { "$ref": "#/$defs/count" },
+        "answered_on": {
+          "description": "Found hosts by the attempt whose reply revealed them. This is what says whether retransmission is earning its traffic.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/attempt_count" }
+        },
+        "answered_unattributed": {
+          "description": "Found hosts whose reply named no attempt: it arrived after the probe had been written off, or carried nothing to match against.",
+          "$ref": "#/$defs/count"
+        },
+        "first_reply_us": {
+          "description": "How far into the run the first host was credited.",
+          "oneOf": [{ "$ref": "#/$defs/duration_us" }, { "type": "null" }]
+        },
+        "last_reply_us": {
+          "description": "How far into the run the last host was credited.",
+          "oneOf": [{ "$ref": "#/$defs/duration_us" }, { "type": "null" }]
+        },
+        "found_at": {
+          "description": "Hosts by how far into the run they were credited. This is discovery time, not round trip: a host found at 700 ms because its third attempt went out at 690 ms has a 10 ms round trip. Round trips are per host, under `telemetry`.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/bucket" }
+        },
+        "capture": {
+          "description": "What the kernel capture reported, where there was one to ask. The only place loss on the receive path is distinguishable from loss on the network. Null for a scanner driven by a synthetic receive stream, rather than a clean-looking zero.",
+          "oneOf": [{ "$ref": "#/$defs/capture" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "attempt_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "or_later", "count"],
+      "properties": {
+        "attempt": {
+          "description": "The attempt number, counting from one.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "or_later": {
+          "description": "Whether this entry also absorbs every later attempt. True on the last entry only, so a hand-raised retry budget still has somewhere to land.",
+          "type": "boolean"
+        },
+        "count": { "$ref": "#/$defs/count" }
+      }
+    },
+
+    "bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["le_ms", "count"],
+      "properties": {
+        "le_ms": {
+          "description": "The bucket's inclusive upper bound in milliseconds, or null for the final open-ended bucket.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "count": { "$ref": "#/$defs/count" }
+      }
+    },
+
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["received", "dropped", "if_dropped"],
+      "properties": {
+        "received": { "$ref": "#/$defs/count" },
+        "dropped": {
+          "description": "Frames discarded because the buffer was full when they arrived.",
+          "$ref": "#/$defs/count"
+        },
+        "if_dropped": {
+          "description": "Frames discarded by the interface or driver before the capture saw them. Not every platform reports this, so a zero is weaker evidence here than in `dropped`.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+
+    "host": {
+      "description": "Everything the scan established about one host.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_ip",
+        "ips",
+        "hostname",
+        "status",
+        "alive",
+        "reasons",
+        "roles",
+        "os",
+        "hardware",
+        "telemetry",
+        "ports",
+        "first_seen",
+        "last_seen",
+        "scripts"
+      ],
+      "properties": {
+        "primary_ip": {
+          "description": "The address the host is keyed by, stable across a merge.",
+          "type": "string",
+          "minLength": 1
+        },
+        "ips": {
+          "description": "Every address known for this host, ascending. Multi-homed and dual-stack hosts have more than one.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "hostname": {
+          "description": "The resolved hostname, masked under export redaction.",
+          "type": ["string", "null"]
+        },
+        "status": { "enum": ["unknown", "down", "filtered", "up"] },
+        "alive": {
+          "description": "Whether the host is confirmed present. True for `up` and `filtered`; carried so a consumer need not know that a filtered host is still a host.",
+          "type": "boolean"
+        },
+        "reasons": {
+          "description": "The evidence behind the status, sorted.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/reason" }
+        },
+        "roles": {
+          "type": "array",
+          "items": { "enum": ["gateway", "dhcp", "dns", "tarpit"] }
+        },
+        "os": {
+          "oneOf": [{ "$ref": "#/$defs/os" }, { "type": "null" }]
+        },
+        "hardware": {
+          "oneOf": [{ "$ref": "#/$defs/hardware" }, { "type": "null" }]
+        },
+        "telemetry": { "$ref": "#/$defs/telemetry" },
+        "ports": {
+          "description": "Discovered ports, ascending by number.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/port" }
+        },
+        "first_seen": { "$ref": "#/$defs/timestamp" },
+        "last_seen": { "$ref": "#/$defs/timestamp" },
+        "scripts": {
+          "description": "Host-level script results, keyed by script name.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "details"],
+      "properties": {
+        "protocol": {
+          "description": "The protocol event that produced the evidence. A strategy-supplied name is prefixed `custom:`, so it can never be mistaken for a built-in.",
+          "anyOf": [
+            { "enum": ["arp", "icmp_echo", "tcp_syn", "udp"] },
+            { "type": "string", "pattern": "^custom:" }
+          ]
+        },
+        "details": { "type": ["string", "null"] }
+      }
+    },
+
+    "os": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "family", "generation", "vendor", "accuracy", "cpe"],
+      "properties": {
+        "name": { "type": "string" },
+        "family": { "type": ["string", "null"] },
+        "generation": { "type": ["string", "null"] },
+        "vendor": { "type": ["string", "null"] },
+        "accuracy": {
+          "description": "Confidence in this identification, as a percentage.",
+          "$ref": "#/$defs/percentage"
+        },
+        "cpe": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "hardware": {
+      "description": "Physical hardware identity. The engine's per-address last-seen readings are monotonic and mean nothing outside the scanning process, so they are not exported.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mac", "macs", "vendor"],
+      "properties": {
+        "mac": {
+          "description": "The most recently observed address, which is the one currently on the network. Masked to its OUI under export redaction.",
+          "type": ["string", "null"]
+        },
+        "macs": {
+          "description": "Every address observed, sorted. More than one means a multi-NIC host or a device rotating a randomized address.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "vendor": {
+          "description": "The vendor resolved from the OUI. Survives redaction, which preserves the OUI, so naming it reveals nothing the masked address does not.",
+          "type": ["string", "null"]
+        }
+      }
+    },
+
+    "telemetry": {
+      "description": "Network path measurements. The individual samples are not exported: they are timestamped with monotonic readings that mean nothing outside the scanning process, and these aggregates are what the samples were kept for.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rtt_min_us",
+        "rtt_median_us",
+        "rtt_avg_us",
+        "rtt_max_us",
+        "jitter_us",
+        "samples",
+        "ttl",
+        "distance_hops"
+      ],
+      "properties": {
+        "rtt_min_us": {
+          "oneOf": [{ "$ref": "#/$defs/duration_us" }, { "type": "null" }]
+        },
+        "rtt_median_us": {
+          "description": "The best single summary of typical latency: one retransmit or scheduling hiccup barely moves it.",
+          "oneOf": [{ "$ref": "#/$defs/duration_us" }, { "type": "null" }]
+        },
+        "rtt_avg_us": {
+          "oneOf": [{ "$ref": "#/$defs/duration_us" }, { "type": "null" }]
+        },
+        "rtt_max_us": {
+          "oneOf": [{ "$ref": "#/$defs/duration_us" }, { "type": "null" }]
+        },
+        "jitter_us": {
+          "description": "Mean absolute difference between consecutive samples. High relative to the average often means congestion or bufferbloat.",
+          "oneOf": [{ "$ref": "#/$defs/duration_us" }, { "type": "null" }]
+        },
+        "samples": {
+          "description": "How many samples the figures above are drawn from.",
+          "$ref": "#/$defs/count"
+        },
+        "ttl": { "$ref": "#/$defs/ttl" },
+        "distance_hops": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
+    },
+
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "protocol",
+        "state",
+        "service",
+        "security",
+        "discovery",
+        "scripts"
+      ],
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "state": {
+          "enum": [
+            "closed_filtered",
+            "filtered",
+            "unfiltered",
+            "closed",
+            "open_filtered",
+            "open"
+          ]
+        },
+        "service": {
+          "oneOf": [{ "$ref": "#/$defs/service" }, { "type": "null" }]
+        },
+        "security": {
+          "oneOf": [{ "$ref": "#/$defs/security" }, { "type": "null" }]
+        },
+        "discovery": {
+          "oneOf": [{ "$ref": "#/$defs/discovery" }, { "type": "null" }]
+        },
+        "scripts": {
+          "description": "Port-level script results, keyed by script name. Scripts produce arbitrary nested data, so this is the one place in the document without a fixed shape. A non-finite float, which JSON cannot express, is emitted as null.",
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "confidence",
+        "product",
+        "vendor",
+        "version",
+        "extrainfo",
+        "cpe"
+      ],
+      "properties": {
+        "name": {
+          "description": "The high-level protocol name, such as `ssh` or `http`.",
+          "type": "string"
+        },
+        "confidence": {
+          "description": "Certainty of this identification. A table lookup by port number scores near zero; a completed protocol handshake scores near 100.",
+          "$ref": "#/$defs/percentage"
+        },
+        "product": { "type": ["string", "null"] },
+        "vendor": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "extrainfo": { "type": ["string", "null"] },
+        "cpe": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tls_version", "cipher_suite", "alpn", "certificate"],
+      "properties": {
+        "tls_version": { "type": ["string", "null"] },
+        "cipher_suite": { "type": ["string", "null"] },
+        "alpn": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "certificate": {
+          "oneOf": [{ "$ref": "#/$defs/certificate" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "certificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "common_name",
+        "sans",
+        "issuer",
+        "validity_start",
+        "validity_end",
+        "pubkey_type",
+        "pubkey_bits",
+        "fingerprint_sha256"
+      ],
+      "properties": {
+        "common_name": {
+          "description": "The subject Common Name, masked under export redaction: an internal CA issues certificates naming people and machines.",
+          "type": "string"
+        },
+        "sans": {
+          "description": "Subject Alternative Names, masked under export redaction for the same reason.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "issuer": { "type": "string" },
+        "validity_start": { "$ref": "#/$defs/timestamp" },
+        "validity_end": { "$ref": "#/$defs/timestamp" },
+        "pubkey_type": { "type": "string" },
+        "pubkey_bits": { "$ref": "#/$defs/count" },
+        "fingerprint_sha256": {
+          "description": "The SHA-256 fingerprint of the DER-encoded certificate.",
+          "type": "string"
+        }
+      }
+    },
+
+    "discovery": {
+      "description": "How a port's state was established.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "timestamp", "rtt_us", "ttl", "source_ip"],
+      "properties": {
+        "reason": {
+          "description": "The packet response that decided the state. A strategy-supplied name is prefixed `custom:`.",
+          "anyOf": [
+            {
+              "enum": [
+                "tcp_syn_ack",
+                "tcp_rst",
+                "udp_response",
+                "no_response",
+                "icmp_unreachable",
+                "icmp_prohibited"
+              ]
+            },
+            { "type": "string", "pattern": "^custom:" }
+          ]
+        },
+        "timestamp": { "$ref": "#/$defs/timestamp" },
+        "rtt_us": {
+          "oneOf": [{ "$ref": "#/$defs/duration_us" }, { "type": "null" }]
+        },
+        "ttl": { "$ref": "#/$defs/ttl" },
+        "source_ip": {
+          "description": "The local interface address the probe was answered on. Relevant on multi-homed hosts, where port states differ by path.",
+          "type": ["string", "null"]
+        }
+      }
+    },
+
+    "protocol": { "enum": ["tcp", "udp", "sctp"] },
+
+    "scanner_kind": {
+      "description": "A scanning strategy. Which ones ran is a property of the host and its privileges, not of what the caller asked for.",
+      "enum": [
+        "local",
+        "routed",
+        "syn_port",
+        "connect",
+        "udp_port",
+        "composite"
+      ]
+    }
+  }
+}
