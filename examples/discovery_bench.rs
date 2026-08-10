@@ -274,6 +274,21 @@ async fn main() {
         overrides = describe_overrides(max_attempts, timeout_scale, max_probe_rate),
     );
 
+    // Said out loud, because the alternative is a run that looks complete and
+    // is not. Given a local range spelled out rather than the `lan` keyword,
+    // this measures a *targeted* run: no all-nodes echo, no neighbour-table
+    // candidates, and therefore no IPv6 at all - which prints as
+    // `family 0 answered at an IPv6 address` and reads exactly like an IPv6
+    // half that has regressed. It cost a round of chasing a coverage question
+    // that the invocation had already answered.
+    if !segment_sweep {
+        println!(
+            "  note  targeted run: no all-nodes echo and no neighbour-table\n\
+             \x20       candidates, so the IPv6 half is not measured here.\n\
+             \x20       Use `lan` as the target expression to sweep the segment.\n"
+        );
+    }
+
     let mut results: Vec<(usize, Duration)> = Vec::with_capacity(runs);
     // What every run learned about each device. The run count is what separates
     // one that is reliably discovered from one that is discovered by luck; the

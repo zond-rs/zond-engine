@@ -96,23 +96,45 @@ impl HostTelemetry {
         &self.rtt_history
     }
 
-    /// The samples every statistic is computed from: the direct ones if this
-    /// host has any, and otherwise the segment-wide ones.
+    /// The samples every statistic is computed from.
     ///
     /// A host is described by the best evidence it produced, not by the average
     /// of good evidence and bad. One direct reply is a better account of the
-    /// path than a dozen broadcast ones, so a single sample is enough to retire
-    /// the whole weaker class.
-    fn ranked(&self) -> impl Iterator<Item = Duration> + '_ {
-        let has_direct = self
+    /// path than a dozen broadcast ones, so a single direct sample retires the
+    /// whole weaker class, and what remains is a set of ordinary round trips
+    /// that the usual statistics describe properly.
+    ///
+    /// With nothing but segment-wide samples the set collapses to its
+    /// **smallest**, because those are not round trips to average. Each one is
+    /// the path plus however long the responder held its reply back, and that
+    /// hold-off is deliberate and unbounded — so the smallest is the tightest
+    /// bound available on the path, and every other summary of them describes
+    /// the responder's manners instead.
+    ///
+    /// Not a refinement. A real run recorded a neighbour answering the same
+    /// scan's echo at 104 ms and again at 1549 ms, and the median of the two
+    /// was reported as its latency: **827 ms**, a figure neither sample
+    /// supports and the segment never produced. Every host that answered both
+    /// requests reported within a few milliseconds of that same midpoint, since
+    /// they shared the two requests it was derived from.
+    fn ranked(&self) -> Vec<Duration> {
+        let direct: Vec<Duration> = self
             .rtt_history
             .iter()
-            .any(|sample| sample.source == RttSource::Direct);
+            .filter(|sample| sample.source == RttSource::Direct)
+            .map(|sample| sample.rtt)
+            .collect();
+
+        if !direct.is_empty() {
+            return direct;
+        }
 
         self.rtt_history
             .iter()
-            .filter(move |sample| !has_direct || sample.source == RttSource::Direct)
             .map(|sample| sample.rtt)
+            .min()
+            .into_iter()
+            .collect()
     }
 
     /// Adds a new RTT measurement at the current system time.
@@ -156,17 +178,17 @@ impl HostTelemetry {
 
     /// Returns the Last-Added Round-Trip Time (LARTT).
     pub fn lartt(&self) -> Option<Duration> {
-        self.ranked().last()
+        self.ranked().last().copied()
     }
 
     /// Returns the minimum (fastest) RTT recorded in the current window.
     pub fn min_rtt(&self) -> Option<Duration> {
-        self.ranked().min()
+        self.ranked().into_iter().min()
     }
 
     /// Returns the maximum (slowest) RTT recorded in the current window.
     pub fn max_rtt(&self) -> Option<Duration> {
-        self.ranked().max()
+        self.ranked().into_iter().max()
     }
 
     /// Returns the median RTT across all samples in the current window.
@@ -179,7 +201,7 @@ impl HostTelemetry {
     ///
     /// Returns `None` if no samples have been recorded yet.
     pub fn median_rtt(&self) -> Option<Duration> {
-        let mut sorted: Vec<Duration> = self.ranked().collect();
+        let mut sorted: Vec<Duration> = self.ranked();
         if sorted.is_empty() {
             return None;
         }
@@ -196,12 +218,12 @@ impl HostTelemetry {
 
     /// Calculates the arithmetic mean RTT from all samples in the window.
     pub fn average_rtt(&self) -> Option<Duration> {
-        let count = self.ranked().count();
-        if count == 0 {
+        let ranked = self.ranked();
+        if ranked.is_empty() {
             return None;
         }
-        let sum: Duration = self.ranked().sum();
-        Some(sum / count as u32)
+        let sum: Duration = ranked.iter().sum();
+        Some(sum / ranked.len() as u32)
     }
 
     /// Calculates the network jitter as the **Average Absolute Difference**
@@ -210,7 +232,7 @@ impl HostTelemetry {
     /// Jitter provides a measure of network stability. A high jitter relative
     /// to the average RTT often indicates network congestion or bufferbloat.
     pub fn jitter(&self) -> Option<Duration> {
-        let ranked: Vec<Duration> = self.ranked().collect();
+        let ranked = self.ranked();
         if ranked.len() < 2 {
             return None;
         }
@@ -355,9 +377,52 @@ mod tests {
         t.add_segment_wide_rtt(Duration::from_millis(219));
 
         assert_eq!(t.min_rtt(), Some(Duration::from_millis(72)));
-        assert_eq!(t.max_rtt(), Some(Duration::from_millis(219)));
         assert!(t.average_rtt().is_some());
-        assert!(t.jitter().is_some());
+    }
+
+    /// Upper bounds are not averaged, they are tightened.
+    ///
+    /// The numbers are from a real run: one neighbour answered the same scan's
+    /// all-nodes echo at 104 ms and again at 1549 ms, and the reported latency
+    /// came out as the median of the two - 827 ms, which neither reply
+    /// supports. Every host answering both requests landed within a few
+    /// milliseconds of that same midpoint, because they shared the pair it was
+    /// derived from, so a whole segment appeared to sit at 810-880 ms.
+    ///
+    /// A segment-wide sample is the path plus a hold-off the responder chose,
+    /// so the smallest is the only one that says anything about the path.
+    #[test]
+    fn segment_wide_samples_report_the_tightest_bound_not_their_midpoint() {
+        let mut t = HostTelemetry::new(10);
+        t.add_segment_wide_rtt(Duration::from_millis(104));
+        t.add_segment_wide_rtt(Duration::from_millis(1_549));
+
+        assert_eq!(
+            t.median_rtt(),
+            Some(Duration::from_millis(104)),
+            "the reported figure has to be a reply the segment actually gave"
+        );
+        assert_eq!(t.max_rtt(), Some(Duration::from_millis(104)));
+        assert_eq!(t.average_rtt(), Some(Duration::from_millis(104)));
+        assert_eq!(
+            t.history().len(),
+            2,
+            "both replies stay on record; only the summary of them narrows"
+        );
+    }
+
+    /// The collapse applies to the weaker class only. Genuine round trips are
+    /// still summarized as round trips, where an outlier is noise to be
+    /// smoothed rather than a hold-off to be discarded.
+    #[test]
+    fn direct_samples_are_still_summarized_by_the_median() {
+        let mut t = HostTelemetry::new(10);
+        t.add_rtt(Duration::from_millis(5));
+        t.add_rtt(Duration::from_millis(7));
+        t.add_rtt(Duration::from_millis(200));
+
+        assert_eq!(t.median_rtt(), Some(Duration::from_millis(7)));
+        assert_eq!(t.max_rtt(), Some(Duration::from_millis(200)));
     }
 
     #[test]

@@ -411,23 +411,26 @@ async fn a_sweep_waits_for_the_confirmation_it_sent() {
 
 /// A solicited neighbour answering on IPv6's timescale is timed, not written off.
 ///
-/// The measurement this exists for, taken from a capture of a real sweep. Three
-/// solicitations to one address left within **75 milliseconds** of each other and
-/// the advertisement arrived **670 ms to 1.7 s later**: every attempt spent, the
-/// probe written off, and the answer landing to find no record of the question.
-/// The same segment answers ARP in six milliseconds, and that is exactly the
-/// problem — the retry schedule was derived from a round-trip estimate ARP
-/// dominates, so it collapsed to its floor and dragged the IPv6 probe down with
-/// it.
+/// A neighbour on wifi answers far slower than ARP's six milliseconds, and the
+/// solicitation schedule has to outlast that: every attempt spent before the
+/// advertisement lands means the answer arrives to find no record of the
+/// question, and a second identical solicitation would make it unattributable
+/// even if it did.
 ///
-/// 700 ms is inside the range those replies actually landed in, and comfortably
-/// past anything ARP's schedule would have waited.
+/// **The delay here is 400 ms because that is what the segment does.** It was
+/// 700 ms, chosen from an interval measured between a first solicitation and an
+/// answer the *second* one had provoked — real, but not a round trip. Asking one
+/// address at a time (`examples/ndp_pace.rs`) puts the true spread at 5–408 ms,
+/// which is what `NDP_RETRY_POLICY`'s 800 ms first timeout is now sized against.
+/// Left at 700 ms this test sat inside the schedule's own jitter and failed
+/// about one run in five — the schedule and the fixture disagreeing about what
+/// a slow neighbour is.
 #[tokio::test]
 async fn a_solicited_neighbour_answering_slowly_is_still_timed() {
     let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
     let lan = FakeLan::new().host(
         peer_v6,
-        LanHost::at(PEER_B).delay(Duration::from_millis(700)),
+        LanHost::at(PEER_B).delay(Duration::from_millis(400)),
     );
 
     let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
@@ -435,7 +438,8 @@ async fn a_solicited_neighbour_answering_slowly_is_still_timed() {
     let host = session.store.get(&peer_v6).expect("neighbour discovered");
     assert!(
         host.min_rtt().is_some(),
-        "an answer at 700ms is what an IPv6 neighbour on wifi does, not a timeout"
+        "the slowest answer ever measured on a real segment is 408ms, so a \
+         schedule that cannot time one at 400ms is not sized for its own network"
     );
     assert_eq!(
         lan.probes()
