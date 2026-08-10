@@ -49,7 +49,7 @@ use crate::scanner::NetworkExplorer;
 use crate::system::interface::NetworkInterfaceExtension;
 use crate::{error, info};
 
-use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6Protocol, ProtocolMatch};
+use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6EchoProtocol, ProtocolMatch};
 
 /// Outstanding ARP requests and the schedule they are retried on.
 ///
@@ -457,7 +457,7 @@ impl LocalScanner {
             identity,
             eth_handle,
             deadline,
-            protocols: vec![Box::new(ArpProtocol), Box::new(Icmpv6Protocol)],
+            protocols: vec![Box::new(ArpProtocol), Box::new(Icmpv6EchoProtocol)],
             ledger: Ledger::new(retry, target_count),
             due: Vec::new(),
             retries: VecDeque::new(),

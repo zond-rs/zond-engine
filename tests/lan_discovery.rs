@@ -100,12 +100,19 @@ async fn an_answering_host_records_what_proved_it_alive() {
     );
 }
 
-/// The IPv6 half of the same contract, and the reason `StatusProtocol` gained an
-/// `Ndp` variant: half the devices on a real segment are found this way, and
-/// exporting them as `custom:ndp` would misreport a first-class protocol as a
-/// script result.
+/// The IPv6 half of the same contract: an IPv6 neighbour is alive on its own
+/// evidence, and that evidence names the probe that actually found it.
+///
+/// The probe is an ICMPv6 echo request to the all-nodes group, so what comes
+/// back is an echo reply and `icmp_echo` is what a report has to say. Recording
+/// it as `Ndp` - which the engine did, and which every export and every
+/// benchmark then repeated - claims a neighbor advertisement nobody sent, over a
+/// protocol the engine does not yet speak. It is the difference between a
+/// measurement of IPv6 coverage and a label, and it matters most at the moment
+/// NDP does arrive: with both credited to `ndp`, no before-and-after could tell
+/// the two mechanisms apart.
 #[tokio::test]
-async fn an_ipv6_neighbour_is_alive_by_neighbour_discovery() {
+async fn an_ipv6_neighbour_is_alive_by_the_probe_that_found_it() {
     let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
     let lan = FakeLan::new()
         .host(v4(10), LanHost::at(PEER_A))
@@ -118,8 +125,8 @@ async fn an_ipv6_neighbour_is_alive_by_neighbour_discovery() {
     assert_eq!(host.status(), HostStatus::Up);
     assert_eq!(
         status_protocols(&session, peer_v6),
-        vec!["Ndp".to_string()],
-        "a neighbour found over IPv6 must say so, not report itself as ARP"
+        vec!["IcmpEcho".to_string()],
+        "an echo reply is evidence of an echo probe, not of neighbour discovery"
     );
 }
 

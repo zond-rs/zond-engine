@@ -39,6 +39,8 @@ use pnet::datalink::{DataLinkSender, MacAddr, NetworkInterface};
 use pnet::packet::Packet;
 use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::icmpv6::Icmpv6Types;
+use pnet::packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -52,6 +54,9 @@ use super::fake_net::{Loss, SplitMix64};
 /// padded, so the simulated replies are too.
 const ARP_LEN: usize = 28;
 const MIN_ETH_FRAME: usize = 60;
+
+/// An ICMPv6 echo header: type, code, checksum, identifier, sequence number.
+const ICMPV6_ECHO_LEN: usize = 8;
 
 /// The default seed, so a segment built with [`FakeLan::new`] still reproduces.
 const DEFAULT_SEED: u64 = 0x1A9E_5EED_1A9E_5EED;
@@ -325,7 +330,7 @@ impl FakeSegment {
             if self.admit(IpAddr::V6(host_ip), host.loss) {
                 continue;
             }
-            if let Some(reply) = icmpv6_reply(host.mac, host_ip, scanner_mac, scanner_ip) {
+            if let Some(reply) = icmpv6_echo_reply(host.mac, host_ip, scanner_mac, scanner_ip) {
                 self.deliver(reply, host.delay);
             }
         }
@@ -402,21 +407,44 @@ fn arp_reply(
     Some(frame)
 }
 
-/// An IPv6 frame from `host_mac`/`host_ip` addressed to the scanner's
-/// link-local address, which is what marks it as an answer to the solicitation.
-fn icmpv6_reply(
+/// An ICMPv6 echo reply from `host_mac`/`host_ip` to the scanner's link-local
+/// address: what a neighbour actually sends back when it answers the all-nodes
+/// echo request.
+///
+/// The body is built rather than omitted, and that is the whole point of this
+/// function. A frame carrying only an IPv6 header with nothing after it is not
+/// an echo reply, not a neighbor advertisement, and not any message a neighbour
+/// would ever emit - so a simulation that sent one could only ever be answered
+/// by a scanner that had stopped reading at the IP header. The engine did, this
+/// fake did, and between them they agreed on a reply neither had inspected.
+fn icmpv6_echo_reply(
     host_mac: MacAddr,
     host_ip: Ipv6Addr,
     scanner_mac: MacAddr,
     scanner_ip: Ipv6Addr,
 ) -> Option<Vec<u8>> {
+    let mut body = vec![0u8; ICMPV6_ECHO_LEN];
+    {
+        let mut echo = MutableEchoReplyPacket::new(&mut body)?;
+        echo.set_icmpv6_type(Icmpv6Types::EchoReply);
+        echo.set_icmpv6_code(Icmpv6Codes::NoCode);
+        echo.set_identifier(0);
+        echo.set_sequence_number(0);
+    }
+
     let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6).ok()?;
-    let ipv6 =
-        ip::create_ipv6_header(host_ip, scanner_ip, 0, IpNextHeaderProtocols::Icmpv6).ok()?;
+    let ipv6 = ip::create_ipv6_header(
+        host_ip,
+        scanner_ip,
+        body.len() as u16,
+        IpNextHeaderProtocols::Icmpv6,
+    )
+    .ok()?;
 
     let mut frame = Vec::with_capacity(MIN_ETH_FRAME);
     frame.extend_from_slice(&header);
     frame.extend_from_slice(&ipv6);
+    frame.extend_from_slice(&body);
     frame.resize(MIN_ETH_FRAME, 0);
     Some(frame)
 }

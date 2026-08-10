@@ -12,7 +12,8 @@ use crate::protocols::utils::{IP_V4_HDR_LEN, IP_V6_HDR_LEN};
 use anyhow::Context;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::EthernetPacket;
-use pnet::packet::ip::IpNextHeaderProtocol;
+use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Type};
+use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet, checksum};
 use pnet::packet::ipv6::{Ipv6Packet, MutableIpv6Packet};
 
@@ -94,6 +95,23 @@ pub fn get_ipv6_dst_addr_from_eth(frame: &EthernetPacket) -> anyhow::Result<Ipv6
         frame.payload().len()
     ))?;
     Ok(ipv6_packet.get_destination())
+}
+
+/// The ICMPv6 message type an Ethernet-framed IPv6 packet carries, or `None` if
+/// it is not ICMPv6 or is too short to say.
+///
+/// Reads the fixed header's next-header field rather than walking the extension
+/// chain, so a packet carrying one is reported as not-ICMPv6. That is the safe
+/// direction to be wrong in for a discovery check - it declines to credit a
+/// frame it cannot read rather than guessing at its type - and the probes this
+/// interprets replies to elicit no extension headers.
+pub fn icmpv6_type_from_eth(frame: &EthernetPacket) -> Option<Icmpv6Type> {
+    let packet = Ipv6Packet::new(frame.payload())?;
+    if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
+        return None;
+    }
+
+    Some(Icmpv6Packet::new(packet.payload())?.get_icmpv6_type())
 }
 
 pub fn get_ipv4_addr_from_eth(frame: &EthernetPacket) -> anyhow::Result<Ipv4Addr> {

@@ -16,6 +16,7 @@
 //! writing one more implementation here instead of touching the receive loop.
 
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::icmpv6::Icmpv6Types;
 
 use crate::core::models::host::StatusProtocol;
 use crate::protocols::ip;
@@ -83,30 +84,48 @@ impl DiscoveryProtocol for ArpProtocol {
     }
 }
 
-/// Recognizes inbound IPv6 traffic addressed directly to this host as a reply to
-/// the single ICMPv6 all-nodes probe sent at the start of a sweep.
+/// Recognizes ICMPv6 echo replies as answers to the all-nodes echo request sent
+/// at the start of a sweep.
 ///
-/// Unlike ARP, that probe is not sent per target: it is one multicast
-/// solicitation any IPv6 neighbour may answer, so it is measured against every
+/// Unlike ARP, that probe is not sent per target: it is one multicast echo
+/// request any IPv6 neighbour may answer, so it is measured against every
 /// qualifying reply rather than being consumed by the first.
-pub struct Icmpv6Protocol;
+///
+/// The reply has to be an echo reply, and the check is not a formality. An
+/// Ethernet frame from a neighbour proves the neighbour exists whatever it
+/// carries, but the *evidence* recorded for it has to name what was actually
+/// observed: crediting a segment of unrelated IPv6 traffic to the echo probe
+/// attributes a host to a mechanism that had nothing to do with finding it, and
+/// a coverage measurement built on that cannot tell a working probe from a
+/// chatty network. Traffic this does not recognize is left for another
+/// [`DiscoveryProtocol`] to claim - which is where a neighbor advertisement will
+/// be handled when NDP exists, as its own implementation reporting
+/// [`StatusProtocol::Ndp`].
+pub struct Icmpv6EchoProtocol;
 
-impl DiscoveryProtocol for Icmpv6Protocol {
+impl DiscoveryProtocol for Icmpv6EchoProtocol {
     fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
         if frame.get_ethertype() != EtherTypes::Ipv6 {
             return Ok(ProtocolMatch::Unhandled);
         }
 
+        // The probe leaves from this host's link-local address, so an answer to
+        // it comes back to one. Not proof the frame is addressed to *us* - that
+        // needs an address this trait deliberately does not have - but it rules
+        // out the multicast and global traffic a promiscuous capture also sees.
         let destination = ip::get_ipv6_dst_addr_from_eth(frame)?;
         if !destination.is_unicast_link_local() {
             return Ok(ProtocolMatch::Unhandled);
         }
 
-        Ok(ProtocolMatch::AllNodes)
+        match ip::icmpv6_type_from_eth(frame) {
+            Some(Icmpv6Types::EchoReply) => Ok(ProtocolMatch::AllNodes),
+            _ => Ok(ProtocolMatch::Unhandled),
+        }
     }
 
     fn status_protocol(&self) -> StatusProtocol {
-        StatusProtocol::Ndp
+        StatusProtocol::IcmpEcho
     }
 }
 
@@ -124,18 +143,23 @@ mod tests {
     use super::*;
     use crate::protocols::{arp, ethernet, ip as ip_protocol};
     use pnet::datalink::MacAddr;
-    use pnet::packet::ip::IpNextHeaderProtocol;
+    use pnet::packet::icmpv6::MutableIcmpv6Packet;
+    use pnet::packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
+    use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     const LOCAL_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
     const PEER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x02);
+    const ICMPV6_ECHO_LEN: usize = 8;
 
     fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
         arp::create_packet(&PEER_MAC, LOCAL_MAC, &sender_ip, Ipv4Addr::new(10, 0, 0, 1))
             .expect("failed to build ARP test frame")
     }
 
-    fn ipv6_frame(destination: Ipv6Addr) -> Vec<u8> {
+    /// An Ethernet-framed IPv6 packet to `destination`, carrying `body` as
+    /// `protocol`.
+    fn ipv6_frame(destination: Ipv6Addr, protocol: IpNextHeaderProtocol, body: &[u8]) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
         let eth_header = ethernet::make_header(
             PEER_MAC,
@@ -143,20 +167,38 @@ mod tests {
             pnet::packet::ethernet::EtherTypes::Ipv6,
         )
         .expect("failed to build Ethernet header");
-        let ip_header = ip_protocol::create_ipv6_header(
-            source,
-            destination,
-            0,
-            IpNextHeaderProtocol::new(58), // ICMPv6, payload contents are irrelevant here
-        )
-        .expect("failed to build IPv6 header");
+        let ip_header =
+            ip_protocol::create_ipv6_header(source, destination, body.len() as u16, protocol)
+                .expect("failed to build IPv6 header");
 
-        [eth_header, ip_header].concat()
+        [eth_header, ip_header, body.to_vec()].concat()
+    }
+
+    /// The frame a neighbour actually sends back when it answers the all-nodes
+    /// echo request.
+    fn echo_reply_frame(destination: Ipv6Addr) -> Vec<u8> {
+        let mut body = vec![0u8; ICMPV6_ECHO_LEN];
+        {
+            let mut echo = MutableEchoReplyPacket::new(&mut body).expect("echo reply buffer");
+            echo.set_icmpv6_type(Icmpv6Types::EchoReply);
+            echo.set_icmpv6_code(Icmpv6Codes::NoCode);
+        }
+        ipv6_frame(destination, IpNextHeaderProtocols::Icmpv6, &body)
+    }
+
+    /// A neighbor solicitation body: ICMPv6, but not an answer to our probe.
+    fn neighbor_solicitation_body() -> Vec<u8> {
+        let mut body = vec![0u8; MutableIcmpv6Packet::minimum_packet_size() + 20];
+        {
+            let mut icmp = MutableIcmpv6Packet::new(&mut body).expect("icmpv6 buffer");
+            icmp.set_icmpv6_type(Icmpv6Types::NeighborSolicit);
+        }
+        body
     }
 
     #[test]
     fn arp_protocol_ignores_non_arp_frames() {
-        let frame_bytes = ipv6_frame(Ipv6Addr::LOCALHOST);
+        let frame_bytes = echo_reply_frame(Ipv6Addr::LOCALHOST);
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
 
         let result = ArpProtocol.interpret(&frame);
@@ -181,32 +223,68 @@ mod tests {
         let frame_bytes = arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2));
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
 
-        let result = Icmpv6Protocol.interpret(&frame);
+        let result = Icmpv6EchoProtocol.interpret(&frame);
 
         assert!(matches!(result.unwrap(), ProtocolMatch::Unhandled));
     }
 
     #[test]
     fn icmpv6_protocol_ignores_traffic_not_addressed_to_a_link_local_unicast() {
-        let frame_bytes = ipv6_frame(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)); // multicast
+        let frame_bytes = echo_reply_frame(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)); // multicast
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
 
-        let result = Icmpv6Protocol.interpret(&frame);
+        let result = Icmpv6EchoProtocol.interpret(&frame);
 
         assert!(matches!(result.unwrap(), ProtocolMatch::Unhandled));
     }
 
-    /// IPv6 traffic aimed at this host answers the all-nodes solicitation, and
+    /// An echo reply aimed at this host answers the all-nodes echo request, and
     /// every neighbour may answer the same one - so the match must not imply
     /// that any single probe has been used up.
     #[test]
-    fn icmpv6_protocol_claims_link_local_traffic_for_the_all_nodes_probe() {
-        let frame_bytes = ipv6_frame(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
+    fn icmpv6_protocol_claims_an_echo_reply_for_the_all_nodes_probe() {
+        let frame_bytes = echo_reply_frame(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
         let frame = EthernetPacket::new(&frame_bytes).unwrap();
 
         for _ in 0..2 {
-            let result = Icmpv6Protocol.interpret(&frame).unwrap();
+            let result = Icmpv6EchoProtocol.interpret(&frame).unwrap();
             assert!(matches!(result, ProtocolMatch::AllNodes));
+        }
+        assert_eq!(
+            Icmpv6EchoProtocol.status_protocol(),
+            StatusProtocol::IcmpEcho
+        );
+    }
+
+    /// The regression guard for a scanner crediting its echo probe with finding
+    /// a host that never answered it.
+    ///
+    /// A promiscuous capture on a live segment sees a great deal of IPv6 between
+    /// other hosts, and a bare header with no ICMPv6 message behind it is not an
+    /// answer to anything. Claiming either as a reply attributes a host to a
+    /// mechanism that did not find it, which is invisible in a host count and
+    /// fatal to any measurement of what the IPv6 probe contributes.
+    #[test]
+    fn icmpv6_protocol_ignores_ipv6_traffic_that_is_not_an_echo_reply() {
+        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+
+        for frame_bytes in [
+            // A TCP segment between two neighbours.
+            ipv6_frame(link_local, IpNextHeaderProtocols::Tcp, &[0u8; 20]),
+            // ICMPv6, but a neighbor solicitation rather than an echo reply.
+            ipv6_frame(
+                link_local,
+                IpNextHeaderProtocols::Icmpv6,
+                &neighbor_solicitation_body(),
+            ),
+            // An IPv6 header with nothing behind it at all.
+            ipv6_frame(link_local, IpNextHeaderProtocols::Icmpv6, &[]),
+        ] {
+            let frame = EthernetPacket::new(&frame_bytes).unwrap();
+            assert!(matches!(
+                Icmpv6EchoProtocol.interpret(&frame).unwrap(),
+                ProtocolMatch::Unhandled
+            ));
         }
     }
 }
