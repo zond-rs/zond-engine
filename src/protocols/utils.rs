@@ -15,4 +15,7 @@ pub const IP_V6_HDR_LEN: usize = 40;
 // Data Link Layer
 pub const ARP_LEN: usize = 28;
 pub const ETH_HDR_LEN: usize = 14;
+
+/// Source port, destination port, length, checksum.
+pub const UDP_HDR_LEN: usize = 8;
 pub const MIN_ETH_FRAME_NO_FCS: usize = 60;

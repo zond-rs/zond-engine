@@ -507,12 +507,17 @@ async fn spawn_explorers(
     // the host itself. A targeted run may not.
     let mut local = local;
     if matches!(scope, Scope::Sweep) {
+        include_swept_link(&mut local);
         seed_from_neighbor_table(&mut local);
     }
 
     // Local scanner (ARP/ICMP) for hosts on the same physical segment.
     for (intf, local_ips) in local {
-        if local_ips.is_empty() {
+        // A sweep's link earns a scanner whether or not any address mapped to
+        // it, because its most important probe is not addressed to anyone: the
+        // all-nodes echo is one packet the whole segment may answer. A targeted
+        // run has nothing to send without targets.
+        if local_ips.is_empty() && matches!(scope, Scope::Targeted) {
             continue;
         }
         info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
@@ -590,6 +595,38 @@ async fn spawn_explorers(
 /// Nothing seeded here is treated as a discovered host. Every entry is an
 /// address that answered *once*, from a table that goes stale, so each becomes a
 /// probe like any other and earns its place in the report by answering now.
+/// Makes sure the link a sweep is about is among the links to be scanned, even
+/// when no address mapped to it.
+///
+/// Mapping targets to interfaces can only ever produce interfaces some target
+/// named, and the whole point of a sweep is the probe that names nobody. A link
+/// addressed only in IPv6 resolves to no target list at all — a `/64` cannot be
+/// enumerated and there is no IPv4 range to walk — so it mapped to nothing, no
+/// scanner was built for it, and the all-nodes echo that would have found its
+/// entire segment was never sent. The scan reported an empty network and looked
+/// like it had worked.
+///
+/// Matching by name rather than by value: `map_ips_to_interfaces` and this both
+/// read the platform's interface list, but a `NetworkInterface` compares on
+/// every field, and being wrong here means scanning one link twice.
+fn include_swept_link(
+    local: &mut std::collections::HashMap<pnet::datalink::NetworkInterface, IpSet>,
+) {
+    let Ok(Some(link)) = interface::get_lan_link() else {
+        return;
+    };
+
+    if local.keys().any(|intf| intf.name == link.interface.name) {
+        return;
+    }
+
+    info!(
+        verbosity = 1,
+        "Sweeping {} for IPv6 neighbours; it has no IPv4 range to walk", link.interface.name
+    );
+    local.insert(link.interface, IpSet::new());
+}
+
 fn seed_from_neighbor_table(
     local: &mut std::collections::HashMap<pnet::datalink::NetworkInterface, IpSet>,
 ) {

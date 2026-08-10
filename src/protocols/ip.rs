@@ -8,10 +8,10 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::protocols::utils::{IP_V4_HDR_LEN, IP_V6_HDR_LEN};
+use crate::protocols::utils::{IP_V4_HDR_LEN, IP_V6_HDR_LEN, UDP_HDR_LEN};
 use anyhow::Context;
 use pnet::packet::Packet;
-use pnet::packet::ethernet::EthernetPacket;
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::icmpv6::echo_reply::EchoReplyPacket;
 use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Type, Icmpv6Types};
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
@@ -172,6 +172,43 @@ pub fn icmpv6_echo_token_from_eth(frame: &EthernetPacket) -> Option<(u16, u16)> 
     }
 
     Some((reply.get_identifier(), reply.get_sequence_number()))
+}
+
+/// The payload of a UDP datagram carried in `frame` and sent from `port`, over
+/// either address family, or `None` if the frame is not that.
+///
+/// Reads the fixed IPv6 header's next-header field rather than walking the
+/// extension chain, and the IPv4 header's protocol field without reassembling
+/// fragments — both the same conservative direction as
+/// [`icmpv6_type_from_eth`]: a frame that cannot be read plainly is declined
+/// rather than guessed at.
+pub fn udp_payload_from_eth<'a>(frame: &'a EthernetPacket<'a>, port: u16) -> Option<&'a [u8]> {
+    let packet = frame.payload();
+
+    // Offsets rather than `packet.payload()`, because a pnet view owns the
+    // slice it hands back and the caller needs one borrowed from the frame.
+    let (header_len, next) = match frame.get_ethertype() {
+        EtherTypes::Ipv6 => (IP_V6_HDR_LEN, Ipv6Packet::new(packet)?.get_next_header()),
+        EtherTypes::Ipv4 => {
+            let ipv4 = Ipv4Packet::new(packet)?;
+            (
+                ipv4.get_header_length() as usize * WORD_LEN,
+                ipv4.get_next_level_protocol(),
+            )
+        }
+        _ => return None,
+    };
+    if next != IpNextHeaderProtocols::Udp {
+        return None;
+    }
+
+    let datagram = packet.get(header_len..)?;
+    let source = u16::from_be_bytes([*datagram.first()?, *datagram.get(1)?]);
+    if source != port {
+        return None;
+    }
+
+    datagram.get(UDP_HDR_LEN..)
 }
 
 pub fn get_ipv4_addr_from_eth(frame: &EthernetPacket) -> anyhow::Result<Ipv4Addr> {

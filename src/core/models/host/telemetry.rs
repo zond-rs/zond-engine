@@ -24,15 +24,14 @@ use std::{
 /// time is the round trip and nothing else. A probe put to the whole segment is
 /// not: implementations deliberately spread their replies to keep every
 /// neighbour from answering at once, and a device asleep on wifi answers when it
-/// next wakes. Measured on one segment, five neighbours answered the same
-/// all-nodes echo within a millisecond of each other at 72 ms, and four more at
-/// 219 ms, while the same devices answered a question addressed to them alone in
-/// four to six.
+/// next wakes. Observed on a wireless segment, that difference is an order of
+/// magnitude — and it shows up as several neighbours reporting the same figure
+/// to the millisecond, which is the giveaway that it describes the probe rather
+/// than any of them.
 ///
-/// So the two are not comparable and must not be pooled: mixing them moved a
-/// router that answers in 5 ms to a reported 37 ms. Both are kept, and the
-/// weaker one is used only where there is nothing better - for the neighbour
-/// that answers the segment-wide probe and no other, an upper bound is the only
+/// So the two are not comparable and must not be pooled. Both are kept, and the
+/// weaker one is used only where there is nothing better: for the neighbour that
+/// answers the segment-wide probe and no other, an upper bound is the only
 /// latency there is, and it beats a blank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RttSource {
@@ -111,12 +110,12 @@ impl HostTelemetry {
     /// bound available on the path, and every other summary of them describes
     /// the responder's manners instead.
     ///
-    /// Not a refinement. A real run recorded a neighbour answering the same
-    /// scan's echo at 104 ms and again at 1549 ms, and the median of the two
-    /// was reported as its latency: **827 ms**, a figure neither sample
-    /// supports and the segment never produced. Every host that answered both
-    /// requests reported within a few milliseconds of that same midpoint, since
-    /// they shared the two requests it was derived from.
+    /// Not a refinement. A neighbour that answers one echo request promptly and
+    /// a later one after a wake contributes two samples an order of magnitude
+    /// apart, and their median is a figure neither reply supports. Every host
+    /// answering both requests lands on the same midpoint, since they share the
+    /// pair it is derived from — so a whole segment reports a latency nothing
+    /// on it produced.
     fn ranked(&self) -> Vec<Duration> {
         let direct: Vec<Duration> = self
             .rtt_history
@@ -365,11 +364,10 @@ mod tests {
         assert_eq!(early.median_rtt(), Some(Duration::from_millis(5)));
     }
 
-    /// With nothing better, the upper bound is the only latency there is, and
-    /// it beats a blank: this is the neighbour that answers the all-nodes echo
-    /// and no solicitation at all - a TV, a console - which the run reported
-    /// with a MAC, a vendor and an empty space where every IPv4 host had a
-    /// number.
+    /// With nothing better, the upper bound is the only latency there is, and it
+    /// beats a blank: this is the neighbour that answers the all-nodes echo and
+    /// no solicitation at all, which would otherwise be reported with a MAC, a
+    /// vendor and an empty space where every IPv4 host has a number.
     #[test]
     fn a_host_with_only_segment_wide_samples_still_reports_latency() {
         let mut t = HostTelemetry::new(10);
@@ -382,12 +380,11 @@ mod tests {
 
     /// Upper bounds are not averaged, they are tightened.
     ///
-    /// The numbers are from a real run: one neighbour answered the same scan's
-    /// all-nodes echo at 104 ms and again at 1549 ms, and the reported latency
-    /// came out as the median of the two - 827 ms, which neither reply
-    /// supports. Every host answering both requests landed within a few
-    /// milliseconds of that same midpoint, because they shared the pair it was
-    /// derived from, so a whole segment appeared to sit at 810-880 ms.
+    /// A neighbour answering one echo request promptly and a later one after a
+    /// wake gives two samples an order of magnitude apart, whose median is a
+    /// figure neither reply supports — and every host answering both requests
+    /// lands on the same midpoint, so a whole segment reports a latency nothing
+    /// on it produced.
     ///
     /// A segment-wide sample is the path plus a hold-off the responder chose,
     /// so the smallest is the only one that says anything about the path.

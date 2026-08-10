@@ -665,6 +665,26 @@ pub struct ScanSummary {
     pub ports_by_state: BTreeMap<PortState, usize>,
     /// Ports whose service was identified by fingerprinting.
     pub services_identified: usize,
+    /// How many hosts were reachable at an IPv4 address, at an IPv6 one, and at
+    /// both.
+    ///
+    /// Counted per host rather than per address, and the three do not sum to
+    /// [`hosts_total`](Self::hosts_total): a dual-stack host appears in
+    /// `ipv4`, in `ipv6` and in `dual_stack`. That is what makes the numbers
+    /// answer the question they are asked — "how much of this network did I see
+    /// over IPv6" — where a partition into three would answer a different one.
+    pub hosts_by_family: FamilyCounts,
+}
+
+/// Hosts counted by the address families they answered at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FamilyCounts {
+    /// Hosts with at least one IPv4 address.
+    pub ipv4: usize,
+    /// Hosts with at least one IPv6 address.
+    pub ipv6: usize,
+    /// Hosts with both, counted again here.
+    pub dual_stack: usize,
 }
 
 /// Everything known about a completed scan.
@@ -774,6 +794,12 @@ impl ScanReport {
                 summary.hosts_alive += 1;
             }
             *summary.hosts_by_status.entry(host.status()).or_default() += 1;
+
+            let v4 = host.ips().iter().any(IpAddr::is_ipv4);
+            let v6 = host.ips().iter().any(IpAddr::is_ipv6);
+            summary.hosts_by_family.ipv4 += usize::from(v4);
+            summary.hosts_by_family.ipv6 += usize::from(v6);
+            summary.hosts_by_family.dual_stack += usize::from(v4 && v6);
 
             for port in host.ports() {
                 summary.ports_total += 1;
@@ -1097,5 +1123,29 @@ mod tests {
             scope.ranges()[0].start_addr(),
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))
         );
+    }
+
+    /// A dual-stack host is one host, counted under both families.
+    ///
+    /// These counts answer "how much of this network did I see over IPv6",
+    /// which is a different question from "how do the hosts partition" — so
+    /// they deliberately do not sum to `hosts_total`, and a test that asserted
+    /// they did would be pinning the wrong contract.
+    #[test]
+    fn family_counts_record_a_dual_stack_host_under_both() {
+        let mut dual = Host::new(ip(1));
+        dual.add_ip(IpAddr::from_str("2001:db8::1").unwrap());
+        let v6_only = Host::new(IpAddr::from_str("2001:db8::2").unwrap());
+
+        let report = ScanReport::new(
+            phase(ScanKind::Discovery),
+            [dual, Host::new(ip(2)), v6_only],
+        );
+
+        let summary = report.summary();
+        assert_eq!(summary.hosts_total, 3);
+        assert_eq!(summary.hosts_by_family.ipv4, 2);
+        assert_eq!(summary.hosts_by_family.ipv6, 2);
+        assert_eq!(summary.hosts_by_family.dual_stack, 1);
     }
 }

@@ -279,8 +279,7 @@ async fn main() {
     // this measures a *targeted* run: no all-nodes echo, no neighbour-table
     // candidates, and therefore no IPv6 at all - which prints as
     // `family 0 answered at an IPv6 address` and reads exactly like an IPv6
-    // half that has regressed. It cost a round of chasing a coverage question
-    // that the invocation had already answered.
+    // half that has regressed.
     if !segment_sweep {
         println!(
             "  note  targeted run: no all-nodes echo and no neighbour-table\n\

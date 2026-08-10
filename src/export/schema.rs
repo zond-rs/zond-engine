@@ -471,6 +471,23 @@ pub struct SummaryDto {
     pub ports_by_state: PortStateCounts,
     /// Ports whose service was identified by fingerprinting.
     pub services_identified: usize,
+    /// Hosts counted by the address families they answered at.
+    pub hosts_by_family: FamilyCounts,
+}
+
+/// Hosts counted by the address families they answered at.
+///
+/// A dual-stack host is counted in all three, so these do not partition
+/// `hosts_total`. The question a consumer asks of them is "how much of this
+/// network did I see over IPv6", and a partition would answer something else.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct FamilyCounts {
+    /// Hosts with at least one IPv4 address.
+    pub ipv4: usize,
+    /// Hosts with at least one IPv6 address.
+    pub ipv6: usize,
+    /// Hosts with both.
+    pub dual_stack: usize,
 }
 
 impl SummaryDto {
@@ -511,6 +528,11 @@ impl SummaryDto {
                 closed_filtered: state(PortState::ClosedFiltered),
             },
             services_identified: summary.services_identified,
+            hosts_by_family: FamilyCounts {
+                ipv4: summary.hosts_by_family.ipv4,
+                ipv6: summary.hosts_by_family.ipv6,
+                dual_stack: summary.hosts_by_family.dual_stack,
+            },
         }
     }
 }
@@ -913,6 +935,21 @@ pub struct HostDto<'a> {
     /// Every address known for this host, ascending. Multi-homed and dual-stack
     /// hosts have more than one.
     pub ips: Vec<String>,
+    /// The interface `primary_ip` is valid on, when the host was found at the
+    /// link layer.
+    ///
+    /// Carried separately rather than folded into the addresses, so a consumer
+    /// parsing `ips` still gets addresses. It is not decoration: an IPv6
+    /// link-local names a different machine on every segment, and a socket
+    /// cannot be opened to one without it — a record with `fe80::…` and no zone
+    /// describes a host nothing can reach.
+    pub zone: Option<&'a str>,
+    /// The address families this host answered at: `ipv4`, `ipv6`, or both.
+    ///
+    /// Derivable from `ips`, and stated anyway, because "which half of the
+    /// network did I see over IPv6" is a question consumers ask constantly and
+    /// should not have to re-derive by parsing addresses.
+    pub families: Vec<&'static str>,
     /// The resolved hostname, masked under redaction.
     pub hostname: Option<Cow<'a, str>>,
     /// The reachability status: `up`, `filtered`, `down` or `unknown`.
@@ -946,6 +983,14 @@ impl<'a> HostDto<'a> {
     pub fn new(host: &'a Host, options: &ExportOptions) -> Self {
         let redaction = options.redaction;
 
+        let mut families: Vec<&'static str> = Vec::with_capacity(2);
+        if host.ips().iter().any(std::net::IpAddr::is_ipv4) {
+            families.push("ipv4");
+        }
+        if host.ips().iter().any(std::net::IpAddr::is_ipv6) {
+            families.push("ipv6");
+        }
+
         let mut reasons: Vec<ReasonDto<'a>> = host.reasons().iter().map(ReasonDto::new).collect();
         reasons.sort_by(|a, b| {
             a.protocol
@@ -965,6 +1010,8 @@ impl<'a> HostDto<'a> {
         Self {
             primary_ip: host.primary_ip().to_string(),
             ips: host.ips().iter().map(IpAddr::to_string).collect(),
+            zone: host.zone().map(|zone| zone.name()),
+            families,
             hostname: host.hostname().map(|name| redaction.hostname(name)),
             status: host_status_name(host.status()),
             alive: host.is_alive(),

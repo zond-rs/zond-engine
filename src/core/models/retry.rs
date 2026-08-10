@@ -958,15 +958,16 @@ mod tests {
     /// A fast answer from one host must not shorten an unmeasured host's first
     /// timeout when the policy says the two are unrelated.
     ///
-    /// This is the defect that hid an entire retry schedule. `NDP_RETRY_POLICY`
-    /// declared a two-second first timeout and a packet capture showed every
-    /// retry firing 804-1201 ms after its first attempt, because one neighbour
-    /// answering in six milliseconds seeded the scan-wide estimate, which was
-    /// then clamped up to the floor - so the floor, not the declared value, was
-    /// the schedule. On a segment where a router answers in 5 ms and a sleeping
-    /// phone in 400, that retransmits to the phone before it could have replied,
-    /// and two solicitations are indistinguishable on the wire, so the round
-    /// trip is lost rather than merely delayed.
+    /// This is the defect that can hide an entire retry schedule: one fast
+    /// neighbour seeds the scan-wide estimate, the estimate is clamped up to
+    /// [`min_rto`](RetryPolicy::min_rto), and the floor rather than the declared
+    /// timeout becomes what the scan actually runs on.
+    ///
+    /// It matters most where the two populations differ by orders of magnitude,
+    /// as they do on a segment carrying both mains-powered and sleeping devices.
+    /// Retransmitting to the slow one before it could have replied does not just
+    /// waste a packet: where a protocol's attempts are indistinguishable on the
+    /// wire, it discards the measurement.
     #[test]
     fn one_hosts_round_trip_does_not_time_another_when_the_policy_forbids_it() {
         let policy = RetryPolicy::new(

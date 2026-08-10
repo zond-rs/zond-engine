@@ -110,7 +110,8 @@
         "ports_total",
         "ports_open",
         "ports_by_state",
-        "services_identified"
+        "services_identified",
+        "hosts_by_family"
       ],
       "properties": {
         "hosts_total": { "$ref": "#/$defs/count" },
@@ -151,7 +152,18 @@
             "closed_filtered": { "$ref": "#/$defs/count" }
           }
         },
-        "services_identified": { "$ref": "#/$defs/count" }
+        "services_identified": { "$ref": "#/$defs/count" },
+        "hosts_by_family": {
+          "description": "Hosts counted by the address families they answered at. A dual-stack host is counted in all three, so these do not partition hosts_total: the question they answer is how much of the network was seen over each family.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ipv4", "ipv6", "dual_stack"],
+          "properties": {
+            "ipv4": { "$ref": "#/$defs/count" },
+            "ipv6": { "$ref": "#/$defs/count" },
+            "dual_stack": { "$ref": "#/$defs/count" }
+          }
+        }
       }
     },
 
@@ -465,7 +477,9 @@
         "ports",
         "first_seen",
         "last_seen",
-        "scripts"
+        "scripts",
+        "zone",
+        "families"
       ],
       "properties": {
         "primary_ip": {
@@ -477,6 +491,16 @@
           "description": "Every address known for this host, ascending. Multi-homed and dual-stack hosts have more than one.",
           "type": "array",
           "items": { "type": "string" }
+        },
+        "zone": {
+          "description": "The interface primary_ip is valid on, when the host was found at the link layer. Null otherwise. An IPv6 link-local address names a different machine on every segment and cannot be connected to without this, so a record carrying fe80::… and no zone describes a host nothing can reach.",
+          "type": ["string", "null"]
+        },
+        "families": {
+          "description": "The address families this host answered at, ascending: ipv4, ipv6, or both. Derivable from ips and stated anyway, so a consumer asking how much of a network was seen over IPv6 does not have to parse addresses.",
+          "type": "array",
+          "items": { "enum": ["ipv4", "ipv6"] },
+          "uniqueItems": true
         },
         "hostname": {
           "description": "The resolved hostname, masked under export redaction.",

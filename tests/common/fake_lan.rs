@@ -43,6 +43,7 @@ use pnet::packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
 use pnet::packet::icmpv6::ndp::{MutableNeighborAdvertPacket, NeighborSolicitPacket};
 use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::udp::{MutableUdpPacket, ipv6_checksum as udp_ipv6_checksum};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use zond_engine::network::channel::EthernetHandle;
@@ -55,6 +56,12 @@ use super::fake_net::{Loss, SplitMix64};
 /// padded, so the simulated replies are too.
 const ARP_LEN: usize = 28;
 const MIN_ETH_FRAME: usize = 60;
+
+/// Source port, destination port, length, checksum.
+const UDP_HDR_LEN: usize = 8;
+
+/// The port multicast DNS is spoken on.
+const MDNS_PORT: u16 = 5353;
 
 /// Pads `frame` out to the minimum Ethernet payload, leaving anything already
 /// longer alone.
@@ -156,11 +163,10 @@ impl LanHost {
     ///
     /// The difference is real and it is large. A node answering a probe put to
     /// the whole segment holds its reply back so the segment does not answer at
-    /// once, and a device asleep on wifi answers when it next wakes: measured on
-    /// a live segment, five neighbours answered the same echo within a
-    /// millisecond of each other at 72 ms while answering a solicitation
-    /// addressed to them in four to six. A fake with one delay for both cannot
-    /// express the host that made the distinction matter.
+    /// once, and a device asleep on wifi answers when it next wakes — an order
+    /// of magnitude slower than the same device answers a question addressed to
+    /// it alone. A fake with one delay for both cannot express that host, and it
+    /// is the one the ranking in `HostTelemetry` exists for.
     pub fn echo_delay(mut self, delay: Duration) -> Self {
         self.echo_delay = Some(delay);
         self
@@ -211,6 +217,10 @@ pub struct FakeLan {
     /// harness could only produce neighbours that answer our own probes, which
     /// is the minority of what a real sweep actually finds.
     unsolicited: Vec<Ipv6Addr>,
+    /// Names announced over mDNS, as `(hostname, address, announcer)`. A real
+    /// segment shouts these constantly, and they name addresses no probe of
+    /// ours has ever been answered for.
+    announcements: Vec<(String, Ipv6Addr, MacAddr)>,
     seed: u64,
     state: Arc<Mutex<State>>,
 }
@@ -234,6 +244,7 @@ impl FakeLan {
         Self {
             hosts: HashMap::new(),
             unsolicited: Vec::new(),
+            announcements: Vec::new(),
             seed,
             state: Arc::new(Mutex::new(State {
                 rng: SplitMix64::new(seed),
@@ -258,6 +269,23 @@ impl FakeLan {
         self
     }
 
+    /// Makes `announcer` shout `hostname` and `address` over mDNS once, as soon
+    /// as the scanner puts anything on the wire.
+    ///
+    /// The address need not belong to the announcer and need not be a declared
+    /// host: that is the case worth covering, since a responder answers with
+    /// whatever else it knows and the record is a claim rather than a reply.
+    pub fn announcing_over_mdns(
+        mut self,
+        hostname: &str,
+        address: Ipv6Addr,
+        announcer: MacAddr,
+    ) -> Self {
+        self.announcements
+            .push((hostname.to_string(), address, announcer));
+        self
+    }
+
     /// The seed this segment's probabilistic policies draw from. Print it from
     /// a failing test so the run can be reproduced.
     pub fn seed(&self) -> u64 {
@@ -271,6 +299,7 @@ impl FakeLan {
         let link = FakeSegment {
             hosts: self.hosts.clone(),
             unsolicited: self.unsolicited.clone(),
+            announcements: self.announcements.clone(),
             state: Arc::clone(&self.state),
             frames,
         };
@@ -307,6 +336,8 @@ struct FakeSegment {
     /// Addresses that advertise themselves once, unprompted, the first time the
     /// scanner sends anything.
     unsolicited: Vec<Ipv6Addr>,
+    /// Names announced over mDNS, as `(hostname, address, announcer)`.
+    announcements: Vec<(String, Ipv6Addr, MacAddr)>,
     state: Arc<Mutex<State>>,
     frames: UnboundedSender<Vec<u8>>,
 }
@@ -327,6 +358,7 @@ impl DataLinkSender for FakeSegment {
         };
 
         self.emit_unsolicited(&frame);
+        self.emit_announcements(&frame);
 
         match frame.get_ethertype() {
             EtherTypes::Arp => self.answer_arp(&frame),
@@ -420,6 +452,26 @@ impl FakeSegment {
                 neighbor_advertisement(host.mac, address, address, scanner_mac, scanner_ip)
             {
                 self.deliver(advert, host.delay);
+            }
+        }
+    }
+
+    /// Emits each declared mDNS announcement once, as soon as the scanner has
+    /// put a frame on the wire.
+    fn emit_announcements(&mut self, frame: &EthernetPacket) {
+        if self.announcements.is_empty() || frame.get_ethertype() != EtherTypes::Ipv6 {
+            return;
+        }
+        let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
+            return;
+        };
+        let scanner_mac = frame.get_source();
+
+        for (hostname, address, announcer) in std::mem::take(&mut self.announcements) {
+            if let Some(message) =
+                mdns_response(announcer, scanner_mac, scanner_ip, &hostname, address)
+            {
+                self.deliver(message, Duration::ZERO);
             }
         }
     }
@@ -613,6 +665,73 @@ fn neighbor_advertisement(
     frame.extend_from_slice(&header);
     frame.extend_from_slice(&ipv6);
     frame.extend_from_slice(&body);
+    pad_to_min_frame(&mut frame);
+    Some(frame)
+}
+
+/// An mDNS response announcing `hostname` at `address`, framed as it arrives on
+/// the wire: Ethernet, IPv6, UDP from port 5353, then a DNS message carrying one
+/// AAAA answer.
+///
+/// Built rather than hand-waved for the reason every other frame here is: a
+/// simulator that emits what the parser happens to accept proves only that the
+/// parser accepts it. The UDP checksum is computed, even though nothing in the
+/// engine currently reads it, so this stays a message a real responder could
+/// have sent.
+fn mdns_response(
+    announcer: MacAddr,
+    scanner_mac: MacAddr,
+    scanner_ip: Ipv6Addr,
+    hostname: &str,
+    address: Ipv6Addr,
+) -> Option<Vec<u8>> {
+    let mut dns = Vec::new();
+    dns.extend_from_slice(&0u16.to_be_bytes()); // id: zero in an mDNS response
+    dns.extend_from_slice(&0x8400u16.to_be_bytes()); // response, authoritative
+    dns.extend_from_slice(&0u16.to_be_bytes()); // questions
+    dns.extend_from_slice(&1u16.to_be_bytes()); // answers
+    dns.extend_from_slice(&0u16.to_be_bytes()); // authority
+    dns.extend_from_slice(&0u16.to_be_bytes()); // additional
+
+    for label in hostname.split('.') {
+        dns.push(u8::try_from(label.len()).ok()?);
+        dns.extend_from_slice(label.as_bytes());
+    }
+    dns.push(0); // root label
+    dns.extend_from_slice(&28u16.to_be_bytes()); // AAAA
+    dns.extend_from_slice(&1u16.to_be_bytes()); // IN
+    dns.extend_from_slice(&120u32.to_be_bytes()); // ttl
+    dns.extend_from_slice(&16u16.to_be_bytes()); // rdlength
+    dns.extend_from_slice(&address.octets());
+
+    // Multicast DNS goes to ff02::fb, but this segment hands frames straight to
+    // the scanner's capture, which is promiscuous and sees them either way.
+    let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xFF);
+    let mut udp = vec![0u8; UDP_HDR_LEN + dns.len()];
+    {
+        let mut datagram = MutableUdpPacket::new(&mut udp)?;
+        datagram.set_source(MDNS_PORT);
+        datagram.set_destination(MDNS_PORT);
+        datagram.set_length(u16::try_from(UDP_HDR_LEN + dns.len()).ok()?);
+        datagram.set_payload(&dns);
+        let sum = udp_ipv6_checksum(&datagram.to_immutable(), &source, &scanner_ip);
+        datagram.set_checksum(sum);
+    }
+
+    let header = ethernet::make_header(announcer, scanner_mac, EtherTypes::Ipv6).ok()?;
+    let ipv6 = ip::create_ipv6_header(
+        source,
+        scanner_ip,
+        u16::try_from(udp.len()).ok()?,
+        IpNextHeaderProtocols::Udp,
+        ip::HOP_LIMIT_ON_LINK,
+    )
+    .ok()?;
+
+    let mut frame = Vec::with_capacity(MIN_ETH_FRAME);
+    frame.extend_from_slice(&header);
+    frame.extend_from_slice(&ipv6);
+    frame.extend_from_slice(&udp);
     pad_to_min_frame(&mut frame);
     Some(frame)
 }

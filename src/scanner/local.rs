@@ -106,32 +106,24 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// IPv6 neighbour's hundreds pulls the estimate to whichever protocol answered
 /// more often and mis-times the other.
 ///
-/// The measurement that sizes it has to come from solicitations sent **one per
-/// address**, since any other kind cannot say which attempt was answered.
-/// Asked that way on a live segment (`examples/ndp_pace.rs`): 5 ms for
-/// mains-powered neighbours, 26–222 ms for devices asleep on wifi, 408 ms for
-/// the slowest ever observed. 800 ms is that worst case with room to spare, and
-/// the sweep's own runs agree - answers to a first solicitation arrive at 2, 6
-/// and 197 ms.
-///
-/// An earlier version of this used 2 s on the belief that neighbours answer in
-/// 670 ms to 1.7 s. That interval was real and was not a round trip: it was
-/// measured from a first solicitation that the burst had already destroyed, to
-/// an answer the *second* one provoked.
+/// Sizing it needs solicitations sent **one per address**, since any other kind
+/// cannot say which attempt was answered. Measured that way on a wireless
+/// segment (`examples/ndp_pace.rs`), neighbours answer in single-digit
+/// milliseconds when mains-powered and up to roughly 400 ms when asleep, so
+/// 800 ms covers the worst case with room to spare.
 ///
 /// [`without_cross_host_estimate`](RetryPolicy::without_cross_host_estimate) is
-/// what makes these numbers mean anything. Without it the scan's own fast
-/// answers pull an unmeasured neighbour's first timeout down to
-/// [`min_rto`](RetryPolicy::min_rto), and the floor becomes the real schedule:
-/// a capture showed every retry firing 804–1201 ms after its first attempt
-/// while this constant claimed 2 s. A neighbour's own estimate cannot fill the
-/// gap either, since an address is asked once per sweep and its estimate exists
-/// only after the probe it would have timed is already resolved.
+/// what makes those numbers mean anything. Without it, one fast neighbour seeds
+/// the scan-wide estimate, an unmeasured neighbour's first timeout is pulled
+/// down to [`min_rto`](RetryPolicy::min_rto), and the floor silently becomes the
+/// real schedule. A per-host estimate cannot fill the gap either: an address is
+/// asked once per sweep, so its own estimate exists only after the probe it
+/// would have timed has already resolved.
 ///
-/// **The cost of getting this wrong is the sweep's whole duration**, not just a
-/// retransmit: [`DEADLINE_CONFIG`] is widened to outlive the longest probe, so
-/// a 2 s first timeout was holding every LAN sweep open for six seconds of
-/// worst-case probe lifetime before it could conclude anything.
+/// **Slack here is charged to every scan**, not just to a retransmit:
+/// [`DEADLINE_CONFIG`] is widened to outlive the longest probe, so a first
+/// timeout set too generously holds every sweep open whether or not any IPv6
+/// neighbour is slow.
 const NDP_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     2,
     Duration::from_millis(800),
@@ -189,38 +181,20 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 
 /// How long to leave between probes.
 ///
-/// A thousand frames a second is nothing to a switch. On wifi it is not nothing
-/// at all — both first-attempt probes here are group-addressed, and
-/// group-addressed frames are the expensive case there — and slowing down does
-/// measurably help *first* attempts. Measured on a live wifi segment with
-/// `examples/ndp_pace.rs`, three sweeps of the same 253 addresses and 27
-/// neighbour-table candidates at each spacing, counting only replies to a first
-/// attempt:
+/// Slowing this down measurably raises the share of *first* attempts that get
+/// answered on a wireless segment, where both of this scanner's first-attempt
+/// probes are group-addressed and group-addressed frames are the expensive
+/// case. It is deliberately not slowed down anyway: a first attempt that goes
+/// unanswered is recovered by [`RETRY_POLICY`], so the gain is a better
+/// *attributed* round trip on a few hosts rather than more hosts, and it is
+/// bought at several times the scan duration — the send phase drags the
+/// adaptive deadline along behind it, so the cost compounds rather than adds.
 ///
-/// ```text
-/// interval   solicitations answered   ARP requests answered
-///   1 ms         5, 3, 2 of 27              3, 3, 3 of 253
-///   5 ms         4, 7, 5 of 27              6, 5, 4 of 253
-///  10 ms        10, 7, 6 of 27              7, 5, 4 of 253
-/// ```
-///
-/// **That gain was not worth having, and this stays at a millisecond because of
-/// it.** A 10 ms wireless pace was tried and reverted: a LAN sweep went from
-/// 3.5 s to 9.6 s and found the same ten hosts. First-attempt answers are an
-/// input to *timing*, not to coverage — an address missed on the first attempt
-/// is recovered by the second or third, which is what
-/// [`RETRY_POLICY`] is for — so the whole gain was a better-attributed round
-/// trip on a couple of hosts, bought at three times the scan. The send phase
-/// also pushes the adaptive deadline out ahead of it, so the cost compounds
-/// rather than adding.
-///
-/// Two things to know before trying this again. Re-measured at 1, 2 and 3 ms
-/// the difference is inside the run-to-run noise, and the noise is large: two
-/// blocks an hour apart disagreed on the 1 ms arm by 3.3 against 6.0
-/// solicitations answered, because the segment's devices sleep and wake. And
-/// any future attempt has to be measured on *hosts found and hosts timed per
-/// second of scan*, which is the thing being traded, rather than on
-/// first-attempt rate, which is not.
+/// `examples/ndp_pace.rs` measures the trade if it is revisited. Two cautions
+/// from the last attempt: the run-to-run variance on a segment of sleeping
+/// wireless devices is large enough to swamp small differences, so arms are
+/// only comparable within one block; and the number to judge it on is hosts
+/// found and hosts timed *per second of scan*, not first-attempt rate.
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
 
 /// How many times the all-nodes solicitation is sent.
@@ -863,6 +837,58 @@ impl LocalScanner {
         }
     }
 
+    /// Takes the IPv6 addresses an overheard mDNS message names as leads,
+    /// returning whether the frame was one.
+    ///
+    /// A segment announces itself constantly and this scanner's capture is
+    /// promiscuous, so these addresses already arrive here.
+    /// The hostname resolver caches mDNS records too, but applies them to hosts
+    /// *already in the store* — a record naming an address nothing has answered
+    /// for goes nowhere there.
+    ///
+    /// They arrive as candidates, never as hosts. An mDNS record is a claim
+    /// somebody else made, possibly some time ago and possibly about an address
+    /// that has since moved — the same standing as a neighbour-table entry, and
+    /// it earns its place in the report the same way, by answering a
+    /// solicitation now. [`confirm`](Self::confirm) is that mechanism and
+    /// already bounds itself to one solicitation per address.
+    ///
+    /// The sender is deliberately not credited either. A frame off the segment
+    /// does prove its sender exists, but crediting a host to "was chatty on
+    /// mDNS" attributes it to a mechanism that did not find it, which is the
+    /// distinction [`Icmpv6EchoProtocol`] is careful about for the same reason.
+    ///
+    /// Nothing is taken once the sweep has run its course. Each confirmation
+    /// holds the run open for a reply, so a segment that keeps talking could
+    /// otherwise keep extending it — and a lead that arrives after the sweep
+    /// would have ended belongs to the next scan.
+    fn absorb_mdns(&mut self, frame: &EthernetPacket) -> bool {
+        let Some(payload) = protocol::ip::udp_payload_from_eth(frame, protocol::mdns::PORT) else {
+            return false;
+        };
+        if self.deadline.has_expired() {
+            return true;
+        }
+
+        let Ok(hosts) = protocol::mdns::extract_hosts(payload) else {
+            return true;
+        };
+
+        for host in hosts {
+            for ip in host.ips {
+                if ip.is_ipv6() && !self.solicited.contains(&ip) {
+                    info!(
+                        verbosity = 2,
+                        "mDNS named {ip} as {}, which nothing has answered for", host.hostname
+                    );
+                    self.confirm(ip);
+                }
+            }
+        }
+
+        true
+    }
+
     /// Queues everything due to be asked again.
     ///
     /// An address that has run out of attempts needs nothing recorded: a host
@@ -972,6 +998,10 @@ impl LocalScanner {
         }
 
         let source_addr: IpAddr = protocol::get_ip_addr_from_eth(&eth_frame)?;
+
+        if self.absorb_mdns(&eth_frame) {
+            return Ok(());
+        }
 
         let Some((matched, protocol)) = self.interpret_response(&eth_frame) else {
             return Ok(());
@@ -1108,12 +1138,23 @@ impl LocalScanner {
         Ok(())
     }
 
-    /// Whether every target address has answered. This is only meaningful for a
-    /// [`Scope::Targeted`] run. A sweep's range is far larger than the set of
-    /// live hosts, so the check effectively never trips and the sweep runs to
-    /// its deadline.
+    /// Whether every target address has answered, which is a question only a
+    /// [`Scope::Targeted`] run can ask.
+    ///
+    /// A sweep counts only in-range IPv4 addresses as responders — an IPv6
+    /// neighbour found through the all-nodes echo was never in the range — so
+    /// comparing that count against the whole target set asks whether the IPv4
+    /// half is done and then stops the IPv6 half on the answer. On a wide range
+    /// it never trips and the bug stays hidden; on a handful of addresses that
+    /// all answer, the sweep exits with advertisements still in the receive
+    /// queue.
+    ///
+    /// It is also the difference between a sweep of a link with no IPv4 at all
+    /// and no sweep whatsoever: with an empty target set the comparison is
+    /// `0 >= 0`, true on the first iteration, so the run ends before the echo it
+    /// exists to send can be answered.
     fn all_targets_responded(&self) -> bool {
-        self.responded.len() as u128 >= self.ip_set.len()
+        matches!(self.scope, Scope::Targeted) && self.responded.len() as u128 >= self.ip_set.len()
     }
 
     /// Tries each configured [`DiscoveryProtocol`] against `frame` in turn.
@@ -1198,13 +1239,12 @@ impl LocalScanner {
                 None => {}
             }
 
-            is_new_ip = host.add_ip(source_addr);
-            changed |= is_new_ip;
-
-            if source_addr.is_ipv4() && host.primary_ip().is_ipv6() {
-                host.set_primary_ip(source_addr);
-                changed = true;
-            }
+            is_new_ip = !host.ips().contains(&source_addr);
+            // The rule for which address names a dual-stack host lives on the
+            // host, not here: this scanner is one of several that learn a new
+            // address for one, and a rule spread across their receive loops is
+            // one each of them can disagree about.
+            changed |= host.consider_primary_ip(source_addr) || is_new_ip;
 
             changed
         });
@@ -1214,10 +1254,10 @@ impl LocalScanner {
         }
 
         if let Some((rtt, source)) = rtt {
-            // Named in the log, because five neighbours reporting the same
+            // Named in the log, because several neighbours reporting the same
             // figure to the millisecond is a property of the probe rather than
-            // of the network, and a reader who cannot tell which kind of sample
-            // this is has no way to know that.
+            // of the network, and a reader who cannot tell the two kinds of
+            // sample apart has no way to know that.
             let asked = match source {
                 RttSource::Direct => "",
                 RttSource::SegmentWide => " to the all-nodes echo",
@@ -1257,10 +1297,10 @@ impl LocalScanner {
 mod tests {
     use super::*;
 
-    /// The slowest answer to a *first* solicitation ever measured on a real
+    /// The slowest answer to a *first* solicitation measured on a wireless
     /// segment, asking one address at a time so the attribution is certain
-    /// (`examples/ndp_pace.rs`). Everything about this schedule is sized from
-    /// it, so it is stated once here rather than implied by the constants.
+    /// (`examples/ndp_pace.rs`). The schedule is sized from it, so it is stated
+    /// once here rather than left implied by the constants.
     const SLOWEST_MEASURED_ANSWER: Duration = Duration::from_millis(408);
 
     /// The solicitation schedule has to outlast the replies without the sweep
@@ -1269,10 +1309,9 @@ mod tests {
     /// Too short and a first attempt is retransmitted before the neighbour
     /// could have answered, which does not merely waste a packet: two
     /// solicitations are identical on the wire, so the round trip is discarded
-    /// rather than delayed. Too long and every sweep pays, because
-    /// `DEADLINE_CONFIG` is widened to outlive the longest probe - the 2 s
-    /// version of this constant was holding every LAN sweep open for six
-    /// seconds of worst-case probe lifetime before it could conclude anything.
+    /// rather than delayed. Too long and every sweep pays for it, because
+    /// [`DEADLINE_CONFIG`] is widened to outlive the longest probe whether or
+    /// not any IPv6 neighbour turns out to be slow.
     #[test]
     fn the_solicitation_schedule_outlasts_the_replies_without_the_sweep_paying_for_it() {
         assert!(
@@ -1295,10 +1334,10 @@ mod tests {
     /// A neighbour with no measurement of its own must be timed by the policy,
     /// never by what some other neighbour on the segment answered in.
     ///
-    /// The two populations on one wifi link differ by two orders of magnitude -
-    /// a mains-powered router at 5 ms against a sleeping phone at 400 - so the
-    /// scan-wide estimate describes neither. This is the guard for the defect
-    /// that made a declared 2 s timeout fire at 804-1201 ms in a capture.
+    /// The two populations on one wireless link differ by orders of magnitude —
+    /// a mains-powered device against a sleeping one — so a scan-wide estimate
+    /// describes neither, and inheriting the fast one silently replaces the
+    /// declared schedule with the floor.
     #[test]
     fn a_neighbours_schedule_is_not_inherited_from_a_faster_one() {
         let router: IpAddr = "fe80::1".parse().unwrap();

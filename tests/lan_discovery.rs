@@ -417,14 +417,11 @@ async fn a_sweep_waits_for_the_confirmation_it_sent() {
 /// question, and a second identical solicitation would make it unattributable
 /// even if it did.
 ///
-/// **The delay here is 400 ms because that is what the segment does.** It was
-/// 700 ms, chosen from an interval measured between a first solicitation and an
-/// answer the *second* one had provoked — real, but not a round trip. Asking one
-/// address at a time (`examples/ndp_pace.rs`) puts the true spread at 5–408 ms,
-/// which is what `NDP_RETRY_POLICY`'s 800 ms first timeout is now sized against.
-/// Left at 700 ms this test sat inside the schedule's own jitter and failed
-/// about one run in five — the schedule and the fixture disagreeing about what
-/// a slow neighbour is.
+/// **The delay is 400 ms because that is roughly the slowest a real neighbour
+/// answers**, measured one address at a time with `examples/ndp_pace.rs`, and
+/// what `NDP_RETRY_POLICY`'s first timeout is sized against. Keep it clear of
+/// that timeout's jitter: a fixture set close to the schedule makes this test
+/// fail intermittently while saying nothing about the behaviour.
 #[tokio::test]
 async fn a_solicited_neighbour_answering_slowly_is_still_timed() {
     let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
@@ -619,17 +616,12 @@ async fn a_neighbour_answering_only_the_all_nodes_echo_is_timed() {
 /// A host that answers both an addressed probe and the segment-wide echo
 /// reports the addressed probe's round trip, not a blend of the two.
 ///
-/// The regression guard for what timing the echo cost on its first real run.
-/// A router answering ARP in 7 ms and a solicitation in 5 was reported at
-/// 37 ms, because its two echo replies at 71 and 72 ms had joined the same
-/// sample window and pulled the median between them. Every device on the
-/// segment moved the same way: the latency figure got worse the moment IPv6
-/// started contributing to it.
-///
 /// A node answering a question put to the whole segment waits before it
-/// answers - implementations spread their replies deliberately - so the
+/// answers — implementations spread their replies deliberately — so that
 /// interval is an upper bound rather than a round trip, however precisely the
-/// echoed token attributes it.
+/// echoed token attributes it. Pooling the two made every host on a segment
+/// report a latency an order of magnitude above what it answers a directed
+/// probe in.
 #[tokio::test]
 async fn a_directed_probe_outranks_the_segment_wide_one_for_latency() {
     let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
@@ -684,26 +676,137 @@ async fn a_directed_probe_outranks_the_segment_wide_one_for_latency() {
     );
 }
 
-/// A sweep whose IPv4 targets have all answered stops before draining IPv6
-/// replies that are already queued, losing them.
+/// An address mDNS announces, and nothing has answered for, is asked about.
 ///
-/// `all_targets_responded` compares the count of responders against the size of
-/// the address range, but under [`Scope::Sweep`] only in-range IPv4 addresses
-/// are ever counted as responders. An IPv6 neighbour can therefore have answered
-/// the solicitation, with its reply sitting in the receive queue, at the moment
-/// the sweep decides it is finished.
+/// The segment names itself constantly and the scanner's capture already sees
+/// all of it, so these addresses arrive whether or not anything asks for them.
+/// The hostname resolver caches mDNS records too, but applies them to hosts
+/// *already in the store*, so a record about an address nothing has answered
+/// for goes nowhere there.
 ///
-/// The comment at the check says it "effectively never trips" for a sweep, which
-/// holds for a /24 and does not hold for a sweep of a handful of addresses. That
-/// is the case reproduced here: one IPv4 target that answers, and one IPv6
-/// neighbour that is silently dropped.
+/// The lead is worth exactly one solicitation. An mDNS record is a claim
+/// somebody else made — the address may have moved on, and the announcer is
+/// often speaking for a different machine entirely — which is the same standing
+/// a neighbour-table entry has, and it earns its report the same way.
 #[tokio::test]
-#[ignore = "known bug: a fully-answered sweep drops queued IPv6 replies"]
+async fn an_address_only_mdns_knows_about_is_asked_about() {
+    let announced = std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0x4b);
+    let announcer = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
+
+    // Declared as a host so it can answer, but named by *another* machine's
+    // announcement — nothing else in the sweep would ever ask about it.
+    let lan = FakeLan::new()
+        .host(IpAddr::V6(announced), LanHost::at(PEER_B))
+        .announcing_over_mdns("tv.local", announced, announcer);
+
+    let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
+
+    assert!(
+        lan.probes().iter().any(|probe| matches!(
+            probe,
+            LanProbe::Solicit { target, .. } if *target == announced
+        )),
+        "an announced address nothing has answered for is a lead worth one probe"
+    );
+    let host = session
+        .store
+        .get(&IpAddr::V6(announced))
+        .expect("it answered the solicitation, so it is a host");
+    assert!(
+        host.min_rtt().is_some(),
+        "one solicitation is unambiguous, so the answer yields a round trip"
+    );
+}
+
+/// Announcing over mDNS is not what makes the announcer a host.
+///
+/// A frame off the segment does prove its sender exists, but crediting a host
+/// to "was chatty on mDNS" files it under a mechanism that did not find it —
+/// the same distinction `Icmpv6EchoProtocol` is careful about, and the reason a
+/// coverage measurement can tell a working probe from a talkative network.
+#[tokio::test]
+async fn announcing_over_mdns_does_not_make_the_announcer_a_host() {
+    let announced = std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0x4b);
+    let announcer = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
+
+    // The announcer is not a declared host, so it answers nothing.
+    let lan = FakeLan::new().announcing_over_mdns("tv.local", announced, announcer);
+
+    let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
+
+    assert!(
+        session.store.is_empty(),
+        "nothing answered a probe, so nothing is a discovered host"
+    );
+}
+
+/// A sweep with no target addresses at all still finds the segment.
+///
+/// This is what a link addressed only in IPv6 resolves to: a `/64` cannot be
+/// enumerated and there is no IPv4 range to walk, so nothing goes in the target
+/// set — and the sweep's most important probe does not need one. The all-nodes
+/// echo is a single packet the whole segment may answer, and on such a link it
+/// is the only thing that finds anything.
+///
+/// Two separate defects had to be fixed for this to hold, and either alone
+/// makes it fail: `spawn_explorers` skipped an interface whose target set was
+/// empty, so no scanner was built at all; and `all_targets_responded` compared
+/// `0 >= 0`, ending the run on its first iteration if one had been.
+#[tokio::test]
+async fn a_sweep_with_no_targets_still_finds_the_segment() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    // Answers late enough that the reply cannot win a race against the sweep
+    // deciding it is finished. Without the delay this passes either way, which
+    // is worse than failing: the run ends at a couple of milliseconds and the
+    // reply happens to already be in the queue.
+    let lan = FakeLan::new().host(
+        peer_v6,
+        LanHost::at(PEER_B).echo_delay(Duration::from_millis(300)),
+    );
+
+    let session = sweep(&lan, &[], Scope::Sweep).await;
+
+    assert!(
+        lan.probes()
+            .iter()
+            .any(|probe| matches!(probe, LanProbe::Solicitation { .. })),
+        "a sweep with nothing to address still owes the segment an echo"
+    );
+    assert!(
+        session.store.contains_key(&peer_v6),
+        "the neighbour answered it, so it is a discovered host"
+    );
+}
+
+/// A sweep whose IPv4 targets have all answered must not stop before draining
+/// the IPv6 replies already queued behind them.
+///
+/// `all_targets_responded` compared the count of responders against the size of
+/// the address range, but under [`Scope::Sweep`] only in-range IPv4 addresses
+/// are ever counted as responders — an IPv6 neighbour found through the
+/// all-nodes echo was never in the range. So the check asked whether the IPv4
+/// half was done and stopped the IPv6 half on the answer, with advertisements
+/// sitting in the receive queue.
+///
+/// It hid because the comment at the check was true of the case anyone ran: on
+/// a /24 the count never reaches the range size, so the sweep runs to its
+/// deadline and the bug never fires. It takes a sweep of a handful of addresses
+/// that all answer, which is what this reproduces — and the same arithmetic,
+/// `0 >= 0`, ended a sweep of a link with no IPv4 targets at all before its
+/// echo could be answered.
+///
+/// Asking the question only under [`Scope::Targeted`], where it means something,
+/// is the fix.
+#[tokio::test]
 async fn a_small_sweep_does_not_drop_ipv6_neighbours() {
     let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
-    let lan = FakeLan::new()
-        .host(v4(10), LanHost::at(PEER_A))
-        .host(peer_v6, LanHost::at(PEER_B));
+    // The IPv4 target answers at once and the neighbour a moment later, which
+    // is the order that matters: the sweep must not treat "every address I was
+    // given has answered" as "there is nothing left to hear".
+    let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A)).host(
+        peer_v6,
+        LanHost::at(PEER_B).echo_delay(Duration::from_millis(300)),
+    );
 
     let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
 

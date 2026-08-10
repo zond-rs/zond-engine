@@ -38,6 +38,22 @@ This crate contains the following core modules:
 * **Supported Platforms:** Linux, macOS
 * **Unsupported:** Windows is not currently supported.
 
+### Address families
+
+|                                   | IPv4                | IPv6                                                                             |
+| --------------------------------- | ------------------- | -------------------------------------------------------------------------------- |
+| Local-segment discovery           | ARP sweep           | all-nodes echo, neighbor discovery, the host's own neighbour cache, mDNS records |
+| TCP port scanning (SYN, connect)  | yes                 | yes                                                                              |
+| UDP port scanning                 | yes                 | yes                                                                              |
+| Sweeping a whole network by range | yes                 | no — see below                                                                   |
+
+An IPv6 network is **searched, not enumerated.** A `/64` holds 2^64 addresses,
+so there is no equivalent of walking a `/24`: `zond d lan` finds IPv6 neighbours
+through multicast probes and the addresses the host already knows, and a routed
+IPv6 prefix too large to probe one address at a time is refused rather than
+silently sampled. Results found on a local segment carry the interface they were
+found on, since a link-local address names a different machine on every link.
+
 ## Contributing
 
 Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first — it

@@ -9,7 +9,8 @@
 use super::os::{is_physical, is_wireless};
 use crate::info;
 use pnet::datalink::NetworkInterface;
-use pnet::ipnetwork::{IpNetwork, Ipv4Network};
+use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
+use std::net::Ipv6Addr;
 
 /// Errors arising from network validation constraints during LAN interface selection.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -28,18 +29,67 @@ pub enum ViabilityError {
     NoValidLanIp,
 }
 
+/// The link a LAN scan runs on: the interface itself and how it is addressed in
+/// both families.
+///
+/// The selection picks a *link*, and until this existed it returned an
+/// `Ipv4Network` — so everything the link knew about itself was thrown away at
+/// the moment it was chosen. The interface identity is what
+/// [`Zone`](crate::core::models::ip::scoped::Zone) needs to make a link-local
+/// address usable, and the IPv6 prefixes are what say which addresses are on
+/// this segment at all.
+///
+/// `ipv4` is optional because a viable LAN link need not have one. An interface
+/// carrying only a link-local IPv6 address is perfectly scannable — the
+/// all-nodes echo and neighbour discovery both work — and treating that as "no
+/// network found" is what the shape of the old return value forced.
+#[derive(Debug, Clone)]
+pub struct LanLink {
+    pub interface: NetworkInterface,
+    /// The private IPv4 network to sweep, when the link has one.
+    pub ipv4: Option<Ipv4Network>,
+    /// Every IPv6 network the link is addressed in, link-local included.
+    pub ipv6: Vec<Ipv6Network>,
+}
+
+impl LanLink {
+    /// The link-local address probes leave from, if it has one.
+    pub fn link_local(&self) -> Option<Ipv6Addr> {
+        self.ipv6
+            .iter()
+            .map(|net| net.ip())
+            .find(Ipv6Addr::is_unicast_link_local)
+    }
+}
+
 /// Identifies the best local area network (LAN) connected to the current host context.
 ///
 /// Under the hood, this iterates over `pnet::datalink::interfaces()` directly.
-pub fn get_lan_network() -> anyhow::Result<Option<Ipv4Network>> {
+pub fn get_lan_link() -> anyhow::Result<Option<LanLink>> {
     let interfaces: Vec<NetworkInterface> = pnet::datalink::interfaces();
-    get_lan_network_with(interfaces)
+    get_lan_link_with(interfaces, is_physical)
+}
+
+/// The IPv4 half of [`get_lan_link`], for callers that only sweep IPv4.
+///
+/// Kept because it is the engine's published surface and a front end builds
+/// against it; new work inside the engine wants the link, since half of what a
+/// LAN scan now does is IPv6.
+pub fn get_lan_network() -> anyhow::Result<Option<Ipv4Network>> {
+    Ok(get_lan_link()?.and_then(|link| link.ipv4))
 }
 
 /// Core LAN selection logic, decoupled from OS interface dependencies for testing.
-pub(crate) fn get_lan_network_with(
+///
+/// `is_physical` is injected for the same reason
+/// [`is_viable_lan_interface`] takes it: on a real host it asks the platform
+/// which interfaces are hardware, and a hand-built interface is not one — so
+/// without the seam this function can only be exercised against whatever the
+/// machine running the tests happens to have plugged in.
+pub(crate) fn get_lan_link_with(
     interfaces: Vec<NetworkInterface>,
-) -> anyhow::Result<Option<Ipv4Network>> {
+    is_physical: impl Fn(&NetworkInterface) -> bool + Copy,
+) -> anyhow::Result<Option<LanLink>> {
     let interfaces_str: &str = match interfaces.len() {
         1 => "interface",
         _ => "interfaces",
@@ -72,11 +122,24 @@ pub(crate) fn get_lan_network_with(
         } else {
             anyhow::bail!("No interfaces available for LAN discovery");
         };
-    let private_v4_net: Option<Ipv4Network> = interface.ips.iter().find_map(|net| match net {
+    let ipv4: Option<Ipv4Network> = interface.ips.iter().find_map(|net| match net {
         IpNetwork::V4(v4) if v4.ip().is_private() => Some(*v4),
         _ => None,
     });
-    Ok(private_v4_net)
+    let ipv6: Vec<Ipv6Network> = interface
+        .ips
+        .iter()
+        .filter_map(|net| match net {
+            IpNetwork::V6(v6) => Some(*v6),
+            IpNetwork::V4(_) => None,
+        })
+        .collect();
+
+    Ok(Some(LanLink {
+        interface,
+        ipv4,
+        ipv6,
+    }))
 }
 
 fn is_viable_lan_interface(
@@ -191,6 +254,77 @@ mod tests {
                 flags
             },
         }
+    }
+
+    /// A link addressed only in IPv6 is viable, and the selection has to be
+    /// able to say so.
+    ///
+    /// These two agreed on which interfaces were usable and disagreed about
+    /// what a usable one produced: `is_viable_lan_interface` accepts an
+    /// interface carrying only a link-local IPv6 address, and the selection
+    /// then searched it for a private IPv4 network and returned `None` — which
+    /// `resolve_lan` reported as "No active network interface found", after
+    /// logging the name of the interface it had just chosen. The same happened
+    /// on any segment whose IPv4 is not RFC1918.
+    #[test]
+    fn a_link_with_only_ipv6_is_still_a_lan_link() {
+        let mut intf = mock_interface(true, true, true, false, false, false);
+        intf.ips = vec![IpNetwork::V6(
+            Ipv6Network::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64).unwrap(),
+        )];
+
+        assert_eq!(is_viable_lan_interface(&intf, |_| true), Ok(()));
+
+        let link = get_lan_link_with(vec![intf], |_| true)
+            .expect("selection succeeds")
+            .expect("a viable link is selected");
+
+        assert!(
+            link.ipv4.is_none(),
+            "there is no private IPv4 network here, and saying so is the point"
+        );
+        assert_eq!(
+            link.link_local(),
+            Some(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            "the address probes would leave from has to survive selection"
+        );
+        assert_eq!(link.interface.name, "test0");
+    }
+
+    /// The link carries both families, so a dual-stack segment does not have to
+    /// choose which half of itself to be described by.
+    #[test]
+    fn a_dual_stack_link_carries_both_families() {
+        let mut intf = mock_interface(true, true, true, false, false, true);
+        intf.ips.push(IpNetwork::V6(
+            Ipv6Network::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64).unwrap(),
+        ));
+
+        let link = get_lan_link_with(vec![intf], |_| true)
+            .expect("selection succeeds")
+            .expect("a viable link is selected");
+
+        assert_eq!(
+            link.ipv4.map(|net| net.ip()),
+            Some(Ipv4Addr::new(192, 168, 1, 100))
+        );
+        assert_eq!(link.ipv6.len(), 1);
+    }
+
+    /// The published IPv4-only entry point keeps answering exactly as it did,
+    /// since a front end outside this repo builds against it.
+    #[test]
+    fn the_ipv4_view_of_a_link_is_unchanged() {
+        let intf = mock_interface(true, true, true, false, false, true);
+
+        let link = get_lan_link_with(vec![intf], |_| true)
+            .expect("selection succeeds")
+            .expect("a viable link is selected");
+
+        assert_eq!(
+            link.ipv4,
+            Some(Ipv4Network::new(Ipv4Addr::new(192, 168, 1, 100), 24).unwrap())
+        );
     }
 
     #[test]

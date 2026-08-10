@@ -118,6 +118,19 @@ pub struct Host {
     ports: BTreeMap<u16, Port>,
 }
 
+/// How well an address identifies the host holding it: lower leads.
+///
+/// The ordering behind [`Host::consider_primary_ip`], kept beside it as a free
+/// function so the comparison is one expression rather than a branch that grows
+/// a case each time a family is added.
+fn identity_rank(ip: &IpAddr) -> u8 {
+    match ip {
+        IpAddr::V4(_) => 0,
+        IpAddr::V6(v6) if v6.is_unicast_link_local() => 2,
+        IpAddr::V6(_) => 1,
+    }
+}
+
 impl Host {
     /// Creates a new `Host` centered around a primary IP address.
     ///
@@ -239,6 +252,42 @@ impl Host {
         self.primary_ip = ip;
         self.ips.insert(ip);
         self.last_seen = SystemTime::now();
+    }
+
+    /// Offers `candidate` as the address this host is reported under, taking it
+    /// only if it identifies the host better than the current one.
+    ///
+    /// Returns whether the primary address changed.
+    ///
+    /// **The rule, in one place.** A dual-stack host answers at several
+    /// addresses and something has to choose which one names it. Left to
+    /// whichever probe replied first, the same machine is reported under its
+    /// IPv4 address on one run and its link-local on the next. For an inventory
+    /// that is worse than an ugly address: it is one device appearing as two.
+    ///
+    /// So addresses are ranked, and the ranking only ever moves upward:
+    ///
+    /// 1. **IPv4**, because it is what a person recognises and types.
+    /// 2. **Globally scoped IPv6** — global unicast or unique-local — which
+    ///    names the host from anywhere and needs nothing else to be usable.
+    /// 3. **Link-local IPv6**, which names a different machine on every segment
+    ///    and is meaningless without the zone that
+    ///    [`scoped_ip`](Self::scoped_ip) supplies.
+    ///
+    /// Ties keep the incumbent, so a host with two global addresses does not
+    /// flip between them as replies arrive. Nothing is discarded either way:
+    /// every address stays in [`ips`](Self::ips), and this decides only which
+    /// one leads.
+    pub fn consider_primary_ip(&mut self, candidate: IpAddr) -> bool {
+        self.add_ip(candidate);
+
+        if identity_rank(&candidate) >= identity_rank(&self.primary_ip) {
+            return false;
+        }
+
+        self.primary_ip = candidate;
+        self.last_seen = SystemTime::now();
+        true
     }
 
     /// Adds a new IP address to the host's record and bumps `last_seen`.
@@ -582,5 +631,74 @@ mod tests {
         h1.merge(h2);
         assert_eq!(h1.port_count(), MAX_PORTS_PER_HOST);
         assert!(h1.network_roles.contains(&NetworkRole::Tarpit));
+    }
+
+    /// The address a dual-stack host is reported under must not depend on which
+    /// probe happened to answer first, or one machine is reported as two across
+    /// consecutive runs of the same scan.
+    #[test]
+    fn the_address_a_host_leads_with_does_not_depend_on_reply_order() {
+        let v4: IpAddr = "192.0.2.10".parse().unwrap();
+        let gua: IpAddr = "2001:db8::10".parse().unwrap();
+        let lla: IpAddr = "fe80::10".parse().unwrap();
+
+        // Every order the three replies could arrive in.
+        for order in [
+            [v4, gua, lla],
+            [v4, lla, gua],
+            [gua, v4, lla],
+            [gua, lla, v4],
+            [lla, v4, gua],
+            [lla, gua, v4],
+        ] {
+            let mut host = Host::new(order[0]);
+            for ip in order {
+                host.consider_primary_ip(ip);
+            }
+
+            assert_eq!(
+                host.primary_ip(),
+                v4,
+                "arrival order {order:?} must not change which address leads"
+            );
+            assert_eq!(host.ips().len(), 3, "and none of them is discarded");
+        }
+    }
+
+    /// Without IPv4, a globally scoped address leads over a link-local one: it
+    /// names the host from anywhere, where `fe80::…` names a different machine
+    /// on every segment.
+    #[test]
+    fn a_global_address_leads_over_a_link_local_one() {
+        let gua: IpAddr = "2001:db8::10".parse().unwrap();
+        let lla: IpAddr = "fe80::10".parse().unwrap();
+
+        let mut from_lla = Host::new(lla);
+        from_lla.consider_primary_ip(gua);
+        assert_eq!(from_lla.primary_ip(), gua);
+
+        let mut from_gua = Host::new(gua);
+        from_gua.consider_primary_ip(lla);
+        assert_eq!(
+            from_gua.primary_ip(),
+            gua,
+            "and the ranking never moves back down"
+        );
+    }
+
+    /// A tie keeps the incumbent, so a host with several equally good addresses
+    /// does not flip between them as replies arrive.
+    #[test]
+    fn an_equally_good_address_does_not_displace_the_current_one() {
+        let first: IpAddr = "2001:db8::1".parse().unwrap();
+        let second: IpAddr = "2001:db8::2".parse().unwrap();
+
+        let mut host = Host::new(first);
+        assert!(!host.consider_primary_ip(second));
+        assert_eq!(host.primary_ip(), first);
+        assert!(
+            host.ips().contains(&second),
+            "it is still an address it has"
+        );
     }
 }

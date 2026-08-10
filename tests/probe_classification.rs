@@ -37,18 +37,26 @@ use zond_engine::system::interface::RoutedTarget;
 /// The fixed source port the simulated UDP scans probe from.
 const UDP_SRC_PORT: u16 = 54_321;
 
-/// Runs one SYN scan over the given policies and returns the session to assert
-/// against, together with the network that served it.
+/// Runs one SYN scan against [`TARGET`] over the given policies and returns the
+/// session to assert against, together with the network that served it.
 async fn syn_scan(ports: &[(u16, Policy)]) -> (ScanSession, FakeNet) {
+    syn_scan_on(TARGET, ports).await
+}
+
+/// [`syn_scan`] against an explicit address, so the same policies can be put to
+/// either family. The UDP half has taken a target since the ICMPv6 codes needed
+/// covering; the SYN half had not, which is why nothing here scanned a port over
+/// IPv6 at all.
+async fn syn_scan_on(target: std::net::IpAddr, ports: &[(u16, Policy)]) -> (ScanSession, FakeNet) {
     let mut net = FakeNet::new(Layer4::Tcp);
     for (port, policy) in ports {
-        net = net.host(TARGET, *port, *policy);
+        net = net.host(target, *port, *policy);
     }
 
     let (session, ctx) = ScanSession::new();
     let mut scanner =
         SynPortScanner::with_transport(scanner_resolver(), ctx, net.transport(), ports.len());
-    let targets = ports.iter().map(|(port, _)| tcp(TARGET, *port)).collect();
+    let targets = ports.iter().map(|(port, _)| tcp(target, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;
 
     (session, net)
@@ -175,6 +183,73 @@ async fn established_traffic_does_not_discover_a_host() {
     assert!(
         !session.store.contains_key(&TARGET_V6),
         "an ACK from an established connection is not evidence of discovery"
+    );
+}
+
+/// A SYN scan over IPv6 classifies a port, which nothing here previously
+/// checked.
+///
+/// The engine reaches this conclusion through code that is almost all
+/// family-agnostic — `RoutedScanner` contains no IPv6 branch at all — so the
+/// belief that IPv6 port scanning works rested on the parts rather than on a
+/// run: the TCP checksum has an IPv6 pseudo-header arm, the transport picks a v6
+/// socket, and the capture filter admits v6 answers. Each is tested alone. This
+/// is the first test that puts a SYN on the wire over IPv6 and reads a port
+/// state back.
+///
+/// Both answers in one scan, because the failure worth catching is not "IPv6
+/// finds nothing" — that would be obvious — but a family whose replies are
+/// admitted and then classified the same way regardless of what came back.
+#[tokio::test]
+async fn a_syn_scan_over_ipv6_tells_open_from_closed() {
+    let (session, _net) =
+        syn_scan_on(TARGET_V6, &[(443, Policy::open()), (444, Policy::closed())]).await;
+
+    assert_eq!(
+        port_state(&session, TARGET_V6, 443),
+        Some(PortState::Open),
+        "a SYN/ACK over IPv6 is an open port"
+    );
+    assert_eq!(
+        port_state(&session, TARGET_V6, 444),
+        Some(PortState::Closed),
+        "a RST over IPv6 is a closed one"
+    );
+}
+
+/// Silence over IPv6 is filtered, not closed.
+///
+/// The distinction the whole scanner rests on, asserted for the family where
+/// the capture admits more traffic: with the filter unable to narrow TCP flags
+/// over IPv6, a scanner that treated any admitted segment as an answer would
+/// turn silence into a verdict.
+#[tokio::test]
+async fn silence_over_ipv6_is_filtered() {
+    let (session, _net) = syn_scan_on(TARGET_V6, &[(443, Policy::silent())]).await;
+
+    assert_eq!(
+        port_state(&session, TARGET_V6, 443),
+        Some(PortState::Filtered)
+    );
+}
+
+/// A bare ACK over IPv6 answers no probe — and this is the family where that
+/// check has to hold.
+///
+/// Its IPv4 twin above passes partly for free: the kernel drops an established
+/// connection's segments before a scanner sees them. Over IPv6 libpcap cannot
+/// narrow on TCP flags, so the segment reaches userspace and the *only* thing
+/// standing between it and a wrong verdict is the scanner's own flag check.
+/// Discovery already guards this over v6; port classification did not.
+#[tokio::test]
+async fn established_traffic_over_ipv6_is_not_an_answer_to_a_probe() {
+    let (session, _net) = syn_scan_on(TARGET_V6, &[(443, Policy::established())]).await;
+
+    assert_eq!(
+        port_state(&session, TARGET_V6, 443),
+        Some(PortState::Filtered),
+        "somebody else's session must not classify a port on the one family \
+         whose traffic reaches us"
     );
 }
 

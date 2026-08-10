@@ -32,6 +32,9 @@ use std::{
 
 use crate::protocols::dns;
 
+/// The port multicast DNS is spoken on, in both directions.
+pub const PORT: u16 = 5353;
+
 /// One host as an mDNS message described it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct MdnsHost {

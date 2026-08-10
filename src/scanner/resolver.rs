@@ -57,7 +57,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::network::probe::{ProbeKind, ProbeTransport};
 
 const DNS_PORT: u16 = 53;
-const MDNS_PORT: u16 = 5353;
+use crate::protocols::mdns::PORT as MDNS_PORT;
 
 /// Largest reply worth reading off the query socket. A PTR answer is tiny, but
 /// EDNS lets a server return up to this much and a truncated read would be

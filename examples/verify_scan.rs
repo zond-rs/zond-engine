@@ -16,10 +16,18 @@
 //! * a **Closed** port - a free loopback port with nothing behind it (the
 //!   kernel answers our SYN with a RST),
 //! * an external **Open** port on 1.1.1.1, to cover the off-link/VPN send path
-//!   in addition to loopback.
+//!   in addition to loopback,
+//! * the same **Open** and **Closed** pair over **IPv6** on `[::1]`.
 //!
 //! The loopback targets also cover the `DLT_NULL` link-layer parse, distinct
 //! from Ethernet.
+//!
+//! The IPv6 pair is the only check anywhere that puts a real SYN on a real
+//! socket over IPv6 and reads a port state back. `tests/probe_classification.rs`
+//! covers the same classifications deterministically, but against a simulated
+//! network that replaces the whole `ProbeTransport` — so it never exercises the
+//! v6 socket, the route, or the capture. Loopback keeps this half dependency
+//! free: no IPv6 connectivity and no router required.
 //!
 //! Run as root (raw socket + pcap both require it):
 //!
@@ -65,7 +73,27 @@ async fn main() {
         probe.local_addr().unwrap().port()
     };
 
+    // The IPv6 twin of the pair above. This is the only check anywhere that
+    // puts a real SYN on a real socket over IPv6 and reads a port state back:
+    // the simulated-network tests replace the whole `ProbeTransport`, so they
+    // exercise probe construction and classification but never the v6 socket,
+    // the route, or the capture. Loopback keeps it dependency-free — no IPv6
+    // connectivity, no router, nothing outside this machine.
+    let open_v6 = TcpListener::bind("[::1]:0").ok().map(|listener| {
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                drop(stream);
+            }
+        });
+        port
+    });
+    let closed_v6 = TcpListener::bind("[::1]:0")
+        .ok()
+        .map(|probe| probe.local_addr().unwrap().port());
+
     let localhost: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let localhost_v6: IpAddr = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
     let external: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 
     // Ethernet mode builds frames itself and can't reach loopback (no
@@ -83,6 +111,13 @@ async fn main() {
         let local_ports =
             PortSet::try_from(format!("{open_port}, {closed_port}").as_str()).unwrap();
         target_map.add_unit(TargetSet::new(local_ips, local_ports));
+    }
+
+    if !ethernet && let (Some(open), Some(closed)) = (open_v6, closed_v6) {
+        let mut v6_ips = IpSet::new();
+        v6_ips.insert(localhost_v6);
+        let v6_ports = PortSet::try_from(format!("{open}, {closed}").as_str()).unwrap();
+        target_map.add_unit(TargetSet::new(v6_ips, v6_ports));
     }
 
     let mut ext_ips = IpSet::new();
@@ -128,6 +163,19 @@ async fn main() {
             "  127.0.0.1:{closed_port:<5} -> {:?}   (want Closed)",
             state_of(localhost, closed_port)
         );
+        match (open_v6, closed_v6) {
+            (Some(open), Some(closed)) => {
+                println!(
+                    "  [::1]:{open:<9} -> {:?}   (want Open)",
+                    state_of(localhost_v6, open)
+                );
+                println!(
+                    "  [::1]:{closed:<9} -> {:?}   (want Closed)",
+                    state_of(localhost_v6, closed)
+                );
+            }
+            _ => println!("  [::1]           -> skipped (no IPv6 loopback)"),
+        }
     }
     println!("  1.1.1.1:443     -> {external_open:?}   (want Open)");
     if let Some(gw) = gateway {
@@ -151,6 +199,14 @@ async fn main() {
     if !ethernet {
         pass &= state_of(localhost, open_port) == Some(PortState::Open)
             && state_of(localhost, closed_port) == Some(PortState::Closed);
+
+        // Required on the same terms as the IPv4 pair, and skipped only where
+        // the host genuinely has no IPv6 loopback. Reporting the v6 result
+        // without letting it decide the verdict would be a check nobody reads.
+        if let (Some(open), Some(closed)) = (open_v6, closed_v6) {
+            pass &= state_of(localhost_v6, open) == Some(PortState::Open)
+                && state_of(localhost_v6, closed) == Some(PortState::Closed);
+        }
     }
 
     if pass {
