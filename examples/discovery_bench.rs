@@ -26,6 +26,22 @@
 //! Devices are counted by [`identity`], not by store key, so a neighbour that
 //! keys differently between runs is not mistaken for an unreliable one.
 //!
+//! ## Address family and evidence
+//!
+//! Two devices found is not two devices found *the same way*, and a total alone
+//! cannot say whether the IPv6 half of a scan contributes anything. So the
+//! summary also splits the union by address family - how many devices were seen
+//! at an IPv6 address, and how many were seen at *only* an IPv6 address, which
+//! is the set no IPv4 sweep would have reported at all - and tallies which
+//! probe proved each device alive.
+//!
+//! That tally is what makes an IPv6 change measurable. A device credited to
+//! `arp` was found by the IPv4 path whatever else also saw it; one credited to
+//! `icmp_echo` or `ndp` was found by the IPv6 path and by nothing else. A change
+//! that moves the host total by nothing and moves this breakdown is still a
+//! change, and one that claims to add IPv6 coverage while every device stays
+//! credited to `arp` has added none.
+//!
 //! Each run also prints the scanner's own audit line (see
 //! [`scanner::audit`](../src/scanner/audit.rs)), which says whether a shortfall
 //! came from packets that went missing, a deadline that fired too early, or
@@ -52,20 +68,36 @@
 //! and the patience to wait for it: whatever that finds was never a question of
 //! retransmission.
 //!
+//! `--roster` prints every device the union contains, with its addresses and
+//! the evidence for it. That is the output to compare against something outside
+//! this engine, which is the only comparison that can catch an error the engine
+//! and its tests both make.
+//!
 //! Compare against, on the same network and at the same time of day:
 //!
 //! ```text
 //! sudo nmap -sn -n --max-retries 2 1.1.1.0/24
+//! sudo nmap -6 -sn -n fe80::/64            # what nmap finds over IPv6
+//! ndp -an                                  # macOS: the host's own neighbours
+//! ip -6 neigh show                         # Linux: the same
 //! ```
+//!
+//! The neighbour table is the strongest external reference available for the
+//! IPv6 half: every entry in it is a device that has spoken IPv6 on this segment
+//! recently, keyed by the same MAC this program keys by, and it is populated by
+//! the operating system rather than by anything under test here.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use zond_engine::core::config::ZondConfig;
 use zond_engine::core::models::host::Host;
 use zond_engine::core::models::retry::{RetryConfig, ScanEffort};
 use zond_engine::core::parse::to_ipset;
+use zond_engine::export::schema::status_protocol_name;
 use zond_engine::scanner;
+use zond_engine::system::interface;
 
 /// What counts as "the same thing found twice".
 ///
@@ -85,6 +117,21 @@ fn identity(host: &Host) -> Device {
         Some(mac) => format!("mac {mac}"),
         None => format!("ip {}", host.primary_ip()),
     }
+}
+
+/// Everything known about one device across every run: how often it was found,
+/// where it answered, and what proved it was there.
+///
+/// Accumulated across runs rather than per run, because that is the question
+/// being asked. A device answering ARP on one run and the all-nodes
+/// solicitation on the next was found by both mechanisms, and a per-run view
+/// would report it as two half-reliable findings instead of one device with two
+/// independent proofs.
+#[derive(Default)]
+struct DeviceRecord {
+    runs: usize,
+    addresses: BTreeSet<IpAddr>,
+    evidence: BTreeSet<String>,
 }
 
 /// The retry profile the sweep runs under, so one range can be measured at more
@@ -181,8 +228,15 @@ async fn main() {
     let max_attempts: Option<u8> = flag(&args, "--attempts");
     let timeout_scale: Option<f64> = flag(&args, "--timeout-scale");
     let max_probe_rate: Option<u32> = flag(&args, "--rate");
+    let roster = args.iter().any(|arg| arg == "--roster");
 
-    let ips = to_ipset(&[targets.as_str()], None).expect("target expression parses");
+    // The keyword resolver is what turns `lan` into this host's own segment. It
+    // has to be supplied here rather than defaulted inside the parser, because
+    // resolving a keyword means reading the host's interfaces and the parser is
+    // deliberately free of that dependency - so a caller that omits it gets an
+    // error rather than a silently different target set.
+    let ips = to_ipset(&[targets.as_str()], Some(interface::resolve::resolve))
+        .unwrap_or_else(|e| fail(&format!("target expression `{targets}`: {e}")));
     let total = ips.len();
 
     // No DNS: a reverse lookup would add latency that has nothing to do with
@@ -207,9 +261,10 @@ async fn main() {
     );
 
     let mut results: Vec<(usize, Duration)> = Vec::with_capacity(runs);
-    // How many runs each device was found in, which is what separates one that
-    // is reliably discovered from one that is discovered by luck.
-    let mut seen_in: HashMap<Device, usize> = HashMap::new();
+    // What every run learned about each device. The run count is what separates
+    // one that is reliably discovered from one that is discovered by luck; the
+    // addresses and evidence are what say which half of the engine found it.
+    let mut devices: HashMap<Device, DeviceRecord> = HashMap::new();
 
     for run in 1..=runs {
         let started = Instant::now();
@@ -227,9 +282,22 @@ async fn main() {
             println!("  run {run:>2}: DEGRADED - {failure}");
         }
 
-        let found: BTreeSet<Device> = session.store.iter().map(|entry| identity(&entry)).collect();
-        for device in &found {
-            *seen_in.entry(device.clone()).or_insert(0) += 1;
+        let mut found: BTreeSet<Device> = BTreeSet::new();
+        for host in session.store.iter() {
+            let device = identity(&host);
+            let record = devices.entry(device.clone()).or_default();
+            // Counted once per run however many store entries a device has: two
+            // keys for one device is a fact about the store, not a second
+            // sighting.
+            if found.insert(device) {
+                record.runs += 1;
+            }
+            record.addresses.extend(host.ips().iter().copied());
+            record.evidence.extend(
+                host.reasons()
+                    .iter()
+                    .map(|reason| status_protocol_name(&reason.protocol).into_owned()),
+            );
         }
 
         println!(
@@ -239,22 +307,28 @@ async fn main() {
         results.push((found.len(), elapsed));
     }
 
-    summarize(total, runs, &results, &seen_in);
+    summarize(total, runs, &results, &devices);
+    if roster {
+        print_roster(&devices);
+    }
 }
 
 fn summarize(
     total: u128,
     runs: usize,
     results: &[(usize, Duration)],
-    seen_in: &HashMap<Device, usize>,
+    devices: &HashMap<Device, DeviceRecord>,
 ) {
     let mut counts: Vec<usize> = results.iter().map(|(found, _)| *found).collect();
     let mut times: Vec<Duration> = results.iter().map(|(_, elapsed)| *elapsed).collect();
     counts.sort_unstable();
     times.sort_unstable();
 
-    let union = seen_in.len();
-    let stable = seen_in.values().filter(|seen| **seen == runs).count();
+    let union = devices.len();
+    let stable = devices
+        .values()
+        .filter(|record| record.runs == runs)
+        .count();
     let flaky = union - stable;
 
     println!(
@@ -280,6 +354,9 @@ fn summarize(
         }
     );
 
+    summarize_families(devices);
+    summarize_evidence(devices);
+
     // The honest headline: the worst run is what a user actually experiences,
     // measured against the best evidence of what is really out there.
     if union > 0 {
@@ -288,4 +365,80 @@ fn summarize(
             (counts[0] as f64 / union as f64) * 100.0
         );
     }
+}
+
+/// Splits the union by the address families a device answered at.
+///
+/// `v6 only` is the line that matters. Those are devices no IPv4 sweep would
+/// have reported at all, so it is the direct measure of what the IPv6 half of
+/// discovery contributes - and, run before a change to that half, the number
+/// that change has to move.
+fn summarize_families(devices: &HashMap<Device, DeviceRecord>) {
+    let mut v4 = 0;
+    let mut v6 = 0;
+    let mut v6_only = 0;
+
+    for record in devices.values() {
+        let has_v4 = record.addresses.iter().any(IpAddr::is_ipv4);
+        let has_v6 = record.addresses.iter().any(IpAddr::is_ipv6);
+        v4 += usize::from(has_v4);
+        v6 += usize::from(has_v6);
+        v6_only += usize::from(has_v6 && !has_v4);
+    }
+
+    println!("  family  {v4} answered at an IPv4 address, {v6} at an IPv6 address");
+    println!("          {v6_only} answered only over IPv6");
+}
+
+/// Tallies how many devices each protocol proved alive.
+///
+/// A device can appear under more than one protocol, and that is the useful
+/// case rather than a defect in the count: it means two independent mechanisms
+/// found it, and removing either would still leave it discovered. The protocols
+/// nothing is credited to are the ones contributing nothing.
+fn summarize_evidence(devices: &HashMap<Device, DeviceRecord>) {
+    let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
+    for record in devices.values() {
+        for protocol in &record.evidence {
+            *tally.entry(protocol.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    let rendered: Vec<String> = tally
+        .iter()
+        .map(|(protocol, count)| format!("{protocol} {count}"))
+        .collect();
+
+    println!(
+        "  proof   {}",
+        if rendered.is_empty() {
+            "nothing recorded any evidence".to_string()
+        } else {
+            rendered.join(", ")
+        }
+    );
+}
+
+/// Prints every device the union holds, for comparison against a source outside
+/// this engine - `ndp -an`, `arp -an`, or an nmap run.
+///
+/// Keyed by MAC wherever one is known, which is what makes the comparison
+/// possible: the neighbour table and this program then agree on what a device
+/// is, and a device present in one and absent from the other is a real
+/// difference rather than two names for the same box.
+fn print_roster(devices: &HashMap<Device, DeviceRecord>) {
+    let sorted: BTreeMap<&Device, &DeviceRecord> = devices.iter().collect();
+
+    println!("  roster");
+    for (device, record) in sorted {
+        let addresses: Vec<String> = record.addresses.iter().map(|ip| ip.to_string()).collect();
+        let evidence: Vec<&str> = record.evidence.iter().map(String::as_str).collect();
+        println!(
+            "    {device:<24} seen {:>2}x  {:<48} [{}]",
+            record.runs,
+            addresses.join(", "),
+            evidence.join(", ")
+        );
+    }
+    println!();
 }

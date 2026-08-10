@@ -384,3 +384,219 @@ mod tests {
         assert_eq!(filter, "icmp or icmp6 or (udp and dst port 54321)");
     }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Filter conformance
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// What each [`ProbeKind`]'s filter actually admits, judged by `libpcap` rather
+/// than by reading the expression.
+///
+/// These are the only tests in the crate that exercise the receive path's real
+/// gatekeeper. Every scanner test drives a synthetic transport through
+/// [`ProbeTransport::from_parts`], which opens no capture and therefore compiles
+/// no filter: a reply pushed onto that stream arrives whatever the filter would
+/// have done with it. So a scanner test can pass against a simulated network
+/// while the same scan on a real one sees nothing at all, and the only way to
+/// tell is to compile the expression and put a frame through it.
+///
+/// The evaluation is `libpcap`'s own `pcap_offline_filter` running the compiled
+/// program - the same program the kernel is handed - over a frame built by this
+/// crate's own packet builders. Nothing here re-implements a filter or a parser,
+/// which is the point: an instrument that made the same assumptions as the code
+/// it measures would confirm whatever the code already believed.
+#[cfg(test)]
+mod filter_conformance {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Types, MutableIcmpv6Packet};
+    use pnet::packet::ip::IpNextHeaderProtocols;
+    use pnet::packet::tcp::MutableTcpPacket;
+    use pnet::util::MacAddr;
+
+    use super::ProbeKind;
+    use crate::network::frame::build_ethernet_frame;
+    use crate::protocols::udp;
+
+    const SRC_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+    const DST_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+    const SRC_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10));
+    const DST_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x20));
+
+    const SYN: u8 = 1 << 1;
+    const RST: u8 = 1 << 2;
+    const ACK: u8 = 1 << 4;
+
+    const TCP_HDR_LEN: usize = 20;
+    const ICMPV6_UNUSED_LEN: usize = 4;
+
+    /// Whether `filter`, compiled for an Ethernet link, admits `frame`.
+    ///
+    /// A dead capture is a compiler with no interface behind it, so this needs
+    /// neither privileges nor a network.
+    fn admits(filter: &str, frame: &[u8]) -> bool {
+        let capture = pcap::Capture::dead(pcap::Linktype::ETHERNET)
+            .expect("opening a dead capture for the Ethernet link type");
+        let program = capture
+            .compile(filter, true)
+            .unwrap_or_else(|e| panic!("compiling `{filter}`: {e}"));
+        program.filter(frame)
+    }
+
+    /// An Ethernet-framed TCP segment carrying `flags`, over whichever family
+    /// `src` and `dst` are.
+    fn tcp_frame(src: IpAddr, dst: IpAddr, flags: u8) -> Vec<u8> {
+        let mut segment = vec![0u8; TCP_HDR_LEN];
+        {
+            let mut tcp = MutableTcpPacket::new(&mut segment).expect("TCP header buffer");
+            tcp.set_source(443);
+            tcp.set_destination(50_000);
+            tcp.set_data_offset((TCP_HDR_LEN / 4) as u8);
+            tcp.set_flags(flags);
+            tcp.set_window(1024);
+        }
+        frame(src, dst, IpNextHeaderProtocols::Tcp, &segment)
+    }
+
+    /// An Ethernet-framed UDP datagram between the given ports.
+    fn udp_frame(src: IpAddr, dst: IpAddr, src_port: u16, dst_port: u16) -> Vec<u8> {
+        let segment = udp::create_packet(&src, &dst, src_port, dst_port, vec![0u8; 4])
+            .expect("building a UDP datagram");
+        frame(src, dst, IpNextHeaderProtocols::Udp, &segment)
+    }
+
+    /// An Ethernet-framed ICMPv6 destination-unreachable, the shape a UDP probe
+    /// draws from a closed port over IPv6.
+    fn icmpv6_error_frame(src: IpAddr, dst: IpAddr) -> Vec<u8> {
+        let mut segment = vec![0u8; MutableIcmpv6Packet::minimum_packet_size() + ICMPV6_UNUSED_LEN];
+        {
+            let mut icmp = MutableIcmpv6Packet::new(&mut segment).expect("ICMPv6 header buffer");
+            icmp.set_icmpv6_type(Icmpv6Types::DestinationUnreachable);
+            icmp.set_icmpv6_code(Icmpv6Code(4));
+        }
+        frame(src, dst, IpNextHeaderProtocols::Icmpv6, &segment)
+    }
+
+    fn frame(
+        src: IpAddr,
+        dst: IpAddr,
+        protocol: pnet::packet::ip::IpNextHeaderProtocol,
+        segment: &[u8],
+    ) -> Vec<u8> {
+        build_ethernet_frame(
+            MacAddr::new(0x02, 0, 0, 0, 0, 0x02),
+            MacAddr::new(0x02, 0, 0, 0, 0, 0x01),
+            src,
+            dst,
+            protocol,
+            segment,
+        )
+        .expect("building an Ethernet frame")
+    }
+
+    // ─── TCP SYN ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_syn_filter_admits_the_two_answers_a_syn_probe_draws_over_ipv4() {
+        let filter = ProbeKind::TcpSyn.filter();
+
+        assert!(
+            admits(&filter, &tcp_frame(SRC_V4, DST_V4, SYN | ACK)),
+            "a SYN+ACK is an open port and must reach the scanner"
+        );
+        assert!(
+            admits(&filter, &tcp_frame(SRC_V4, DST_V4, RST | ACK)),
+            "a RST is a closed port and must reach the scanner"
+        );
+    }
+
+    /// The filter exists to keep unrelated traffic out of userspace, so an
+    /// established connection's segments must not reach the scanner.
+    #[test]
+    fn the_syn_filter_rejects_established_traffic_over_ipv4() {
+        assert!(!admits(
+            &ProbeKind::TcpSyn.filter(),
+            &tcp_frame(SRC_V4, DST_V4, ACK)
+        ));
+    }
+
+    /// The gap this module was written to expose.
+    ///
+    /// `tcp[tcpflags]` is `proto[x]` indexing, which `libpcap` cannot compile
+    /// over IPv6 - the next-header chain makes the offset non-constant. It does
+    /// not report that; it silently narrows the whole expression to IPv4, and
+    /// the compiled program jumps straight to `ret #0` on EtherType `0x86dd`.
+    /// Since the capture is the only receive path, routed IPv6 discovery and
+    /// IPv6 SYN port scanning currently see no replies whatsoever.
+    ///
+    /// Ignored rather than deleted: the assertion is what the fix has to make
+    /// true, and a filter that admits IPv6 is the whole of phase 1 in
+    /// `docs/ipv6.md`.
+    #[test]
+    #[ignore = "known gap: the SYN filter is IPv4-only; see docs/ipv6.md phase 1"]
+    fn the_syn_filter_admits_the_same_answers_over_ipv6() {
+        let filter = ProbeKind::TcpSyn.filter();
+
+        assert!(admits(&filter, &tcp_frame(SRC_V6, DST_V6, SYN | ACK)));
+        assert!(admits(&filter, &tcp_frame(SRC_V6, DST_V6, RST | ACK)));
+    }
+
+    /// Why the test above cannot be fixed by asking for IPv6 explicitly, and
+    /// the constraint any replacement expression has to work around.
+    ///
+    /// This is the standing record of a `libpcap` limitation the engine has to
+    /// design around rather than a choice it made. Should a future `libpcap`
+    /// learn to index into IPv6, this test is what notices.
+    #[test]
+    fn libpcap_cannot_narrow_tcp_flags_over_ipv6() {
+        let narrowed = "ip6 and tcp and (tcp[tcpflags] & (tcp-syn|tcp-rst)) != 0";
+        let capture = pcap::Capture::dead(pcap::Linktype::ETHERNET).expect("dead capture");
+
+        let admits_a_syn_ack = capture
+            .compile(narrowed, true)
+            .map(|program| program.filter(&tcp_frame(SRC_V6, DST_V6, SYN | ACK)))
+            .unwrap_or(false);
+
+        assert!(
+            !admits_a_syn_ack,
+            "libpcap now narrows TCP flags over IPv6; the split filter is no longer needed"
+        );
+    }
+
+    // ─── UDP ─────────────────────────────────────────────────────────────────
+
+    /// The resolver's filter is family-agnostic, and has to stay that way: a
+    /// DNS or mDNS answer over IPv6 names hosts just as well as one over IPv4.
+    #[test]
+    fn the_resolve_filter_admits_dns_answers_over_both_families() {
+        let filter = ProbeKind::UdpResolve.filter();
+
+        assert!(admits(&filter, &udp_frame(SRC_V4, DST_V4, 53, 40_000)));
+        assert!(admits(&filter, &udp_frame(SRC_V6, DST_V6, 53, 40_000)));
+        assert!(admits(&filter, &udp_frame(SRC_V6, DST_V6, 5353, 5353)));
+        assert!(
+            !admits(&filter, &udp_frame(SRC_V6, DST_V6, 12_345, 40_000)),
+            "traffic from an unrelated source port is not an answer to anything"
+        );
+    }
+
+    /// Both answers a UDP probe can draw, over both families. `icmp6` is what
+    /// carries the IPv6 half here, and it is the reason UDP port scanning is the
+    /// one raw path that already works over IPv6.
+    #[test]
+    fn the_udp_probe_filter_admits_direct_replies_and_icmp_errors_over_both_families() {
+        const REPLY_PORT: u16 = 40_000;
+        let filter = ProbeKind::UdpProbe {
+            reply_port: REPLY_PORT,
+        }
+        .filter();
+
+        assert!(admits(&filter, &udp_frame(SRC_V4, DST_V4, 53, REPLY_PORT)));
+        assert!(admits(&filter, &udp_frame(SRC_V6, DST_V6, 53, REPLY_PORT)));
+        assert!(admits(&filter, &icmpv6_error_frame(SRC_V6, DST_V6)));
+        assert!(
+            !admits(&filter, &udp_frame(SRC_V6, DST_V6, 53, REPLY_PORT + 1)),
+            "a datagram to a port this scan never sent from is somebody else's"
+        );
+    }
+}
