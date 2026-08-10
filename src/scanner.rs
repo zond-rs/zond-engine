@@ -46,7 +46,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::core::config::{ProbeTuning, ZondConfig};
-use crate::core::models::ip::range::IpRange;
+use crate::core::models::ip::range::{IpRange, Ipv6Range};
 use crate::core::models::{
     ip::set::IpSet,
     port::Protocol,
@@ -56,6 +56,7 @@ use crate::core::report::{PhaseRecorder, ScanKind, ScanReport, TargetScope};
 use crate::core::session::{ScanContext, ScanSession, ScannerKind};
 use crate::scanner::resolver::HostnameResolver;
 use crate::system::interface;
+use crate::system::neighbors;
 use crate::system::privilege::is_elevated;
 use crate::{error, info, success, warn};
 use local::{LocalScanner, Scope};
@@ -502,6 +503,13 @@ async fn spawn_explorers(
         );
     }
 
+    // A sweep may probe addresses nobody named, so it may also take leads from
+    // the host itself. A targeted run may not.
+    let mut local = local;
+    if matches!(scope, Scope::Sweep) {
+        seed_from_neighbor_table(&mut local);
+    }
+
     // Local scanner (ARP/ICMP) for hosts on the same physical segment.
     for (intf, local_ips) in local {
         if local_ips.is_empty() {
@@ -555,6 +563,90 @@ async fn spawn_explorers(
                 tokio::spawn(async move { explorer.discover_hosts().await }),
             )
         })
+        .collect()
+}
+
+/// Adds the addresses in this host's IPv6 neighbour table to the targets of
+/// whichever interface each belongs to.
+///
+/// This is the only source the engine has for an IPv6 address nobody named. A
+/// neighbor solicitation is the mandatory probe, and it can only be aimed at an
+/// address someone already holds; the all-nodes echo produces addresses but is
+/// optional to answer and draws only link-local ones, since it goes out from a
+/// link-local source. The operating system's own table has been accumulating
+/// both for as long as the machine has been running, at no cost in packets — on
+/// the segment this was written against it holds fifteen global and unique-local
+/// addresses the engine could not otherwise learn at all.
+///
+/// Three exclusions, each for its own reason:
+///
+/// - **Other interfaces' entries.** A neighbour on `en1` is not reachable
+///   through `en0`, and the entry says which it belongs to.
+/// - **This host's own addresses.** The table lists them too, and a scan that
+///   reported the machine running it as a discovered neighbour would be wrong in
+///   a way nobody would think to check.
+/// - **Loopback and the unspecified address**, which name nothing on a segment.
+///
+/// Nothing seeded here is treated as a discovered host. Every entry is an
+/// address that answered *once*, from a table that goes stale, so each becomes a
+/// probe like any other and earns its place in the report by answering now.
+fn seed_from_neighbor_table(
+    local: &mut std::collections::HashMap<pnet::datalink::NetworkInterface, IpSet>,
+) {
+    let table = neighbors::ipv6_neighbors();
+    if !table.is_empty() {
+        seed_from_neighbor_table_with(local, &table);
+    }
+}
+
+/// [`seed_from_neighbor_table`] against an explicit table, so the exclusions can
+/// be tested without a host that happens to have the right neighbours.
+fn seed_from_neighbor_table_with(
+    local: &mut std::collections::HashMap<pnet::datalink::NetworkInterface, IpSet>,
+    table: &[neighbors::Neighbor],
+) {
+    for (intf, targets) in local.iter_mut() {
+        let mut seeded = 0usize;
+        for addr in candidates_for(intf, table) {
+            let IpAddr::V6(addr) = addr else { continue };
+            // The zone matters for exactly the addresses that cannot be probed
+            // without one, and is dropped for the rest for the reason
+            // `ScopedIp` drops it: the same global address through two
+            // interfaces is one address, not two.
+            let zone = addr.is_unicast_link_local().then_some(intf.index);
+            if let Ok(range) = Ipv6Range::scoped(addr, addr, zone) {
+                targets.insert_range(IpRange::V6(range));
+                seeded += 1;
+            }
+        }
+
+        if seeded > 0 {
+            targets.canonicalize();
+            info!(
+                verbosity = 1,
+                "Took {seeded} IPv6 address(es) from the neighbour table as candidates on {}",
+                intf.name
+            );
+        }
+    }
+}
+
+/// The neighbour-table addresses worth probing on `intf`, in table order.
+fn candidates_for(
+    intf: &pnet::datalink::NetworkInterface,
+    table: &[neighbors::Neighbor],
+) -> Vec<IpAddr> {
+    let own: std::collections::HashSet<IpAddr> = intf.ips.iter().map(|net| net.ip()).collect();
+
+    table
+        .iter()
+        .filter(|entry| entry.interface_index == intf.index)
+        .filter(|entry| !own.contains(&entry.ip))
+        .filter(|entry| match entry.ip {
+            IpAddr::V6(addr) => !addr.is_loopback() && !addr.is_unspecified(),
+            IpAddr::V4(_) => false,
+        })
+        .map(|entry| entry.ip)
         .collect()
 }
 
@@ -798,6 +890,85 @@ mod tests {
         assert!(
             protocols.contains(&Protocol::Udp),
             "UDP targets would be silently dropped"
+        );
+    }
+
+    fn v6(addr: &str) -> IpAddr {
+        addr.parse().unwrap()
+    }
+
+    fn interface_with(
+        index: u32,
+        name: &str,
+        own: Vec<IpAddr>,
+    ) -> pnet::datalink::NetworkInterface {
+        use pnet::ipnetwork::{IpNetwork, Ipv6Network};
+        pnet::datalink::NetworkInterface {
+            name: name.to_string(),
+            description: String::new(),
+            index,
+            mac: None,
+            ips: own
+                .into_iter()
+                .map(|ip| match ip {
+                    IpAddr::V6(v6) => IpNetwork::V6(Ipv6Network::new(v6, 64).unwrap()),
+                    IpAddr::V4(_) => unreachable!("test uses v6 only"),
+                })
+                .collect(),
+            flags: 0,
+        }
+    }
+
+    fn entry(ip: &str, index: u32) -> neighbors::Neighbor {
+        neighbors::Neighbor {
+            ip: v6(ip),
+            mac: None,
+            interface_index: index,
+        }
+    }
+
+    /// The three entries that must never become targets, each wrong in its own
+    /// way: another interface's neighbour is not reachable through this one,
+    /// this host would be reported as a discovered neighbour of itself, and
+    /// loopback names nothing on a segment.
+    #[test]
+    fn seeding_skips_other_interfaces_our_own_addresses_and_loopback() {
+        let own = v6("2001:db8::50");
+        let intf = interface_with(7, "en0", vec![own]);
+        let table = vec![
+            entry("2001:db8::aa", 7),
+            entry("fe80::bb", 7),
+            entry("2001:db8::cc", 9),
+            entry("2001:db8::50", 7),
+            entry("::1", 7),
+        ];
+
+        let seeded = candidates_for(&intf, &table);
+
+        assert_eq!(seeded, vec![v6("2001:db8::aa"), v6("fe80::bb")]);
+    }
+
+    /// A link-local candidate carries the interface it came from, because it
+    /// cannot be probed without one. A global address does not, for the reason
+    /// `ScopedIp` drops it: the same address through two interfaces is one
+    /// address.
+    #[test]
+    fn a_seeded_link_local_keeps_its_interface_and_a_global_does_not() {
+        let intf = interface_with(7, "en0", Vec::new());
+        let table = vec![entry("fe80::bb", 7), entry("2001:db8::aa", 7)];
+        let mut local = std::collections::HashMap::from([(intf, IpSet::new())]);
+
+        seed_from_neighbor_table_with(&mut local, &table);
+
+        let targets = local.into_values().next().unwrap();
+        let zones: Vec<Option<u32>> = targets.v6().iter().map(|range| range.zone).collect();
+        assert!(
+            zones.contains(&Some(7)),
+            "the link-local needs its interface"
+        );
+        assert!(
+            zones.contains(&None),
+            "the global address needs no interface"
         );
     }
 

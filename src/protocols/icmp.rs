@@ -23,9 +23,26 @@ const TOTAL_LEN: usize = ETH_HDR_LEN + IP_V6_HDR_LEN + ICMP_V6_ECHO_REQ_LEN;
 const PAYLOAD_LENGTH: u16 = ICMP_V6_ECHO_REQ_LEN as u16;
 const NEXT_PROTOCOL: IpNextHeaderProtocol = IpNextHeaderProtocols::Icmpv6;
 
+/// Builds the all-nodes echo request every IPv6 neighbour on the segment may
+/// answer.
+///
+/// `identifier` and `sequence` are the caller's, not this function's, because
+/// they are what makes an answer measurable. RFC 4443 requires an echo reply to
+/// carry back both unchanged, so a scanner that remembers which values it sent
+/// and when can tell one of its own requests from another, and tell both from
+/// somebody else's ping. That is the whole difference between a reply that
+/// yields a round trip and a reply that only proves the neighbour exists —
+/// and it is the one thing a neighbor solicitation, identical on the wire from
+/// one attempt to the next, can never offer.
+///
+/// The convention that makes them useful: one `identifier` for the whole scan,
+/// the `sequence` counting the attempts. Then a matching identifier means the
+/// reply is ours and the sequence names which request it answers.
 pub fn create_all_nodes_echo_request_v6(
     src_mac: &MacAddr,
     src_addr: &Ipv6Addr,
+    identifier: u16,
+    sequence: u16,
 ) -> anyhow::Result<Vec<u8>> {
     let dst_mac: MacAddr = MacAddr::new(0x33, 0x33, 0, 0, 0, 1);
     let dst_addr: Ipv6Addr = Ipv6Addr::new(0xff02, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1);
@@ -45,8 +62,8 @@ pub fn create_all_nodes_echo_request_v6(
                 .context("failed to create echo request packet")?;
         icmp.set_icmpv6_type(Icmpv6Types::EchoRequest);
         icmp.set_icmpv6_code(Icmpv6Codes::NoCode);
-        icmp.set_identifier(rand::random());
-        icmp.set_sequence_number(0);
+        icmp.set_identifier(identifier);
+        icmp.set_sequence_number(sequence);
         let icmp_imm: EchoRequestPacket = icmp.to_immutable();
         let icmp_pkt: Icmpv6Packet =
             Icmpv6Packet::new(icmp_imm.packet()).context("failed to create ICMPv6 packet")?;

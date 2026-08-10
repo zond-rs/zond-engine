@@ -12,7 +12,8 @@ use crate::protocols::utils::{IP_V4_HDR_LEN, IP_V6_HDR_LEN};
 use anyhow::Context;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::EthernetPacket;
-use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Type};
+use pnet::packet::icmpv6::echo_reply::EchoReplyPacket;
+use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Type, Icmpv6Types};
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet, checksum};
 use pnet::packet::ipv6::{Ipv6Packet, MutableIpv6Packet};
@@ -150,6 +151,27 @@ pub fn icmpv6_type_from_eth(frame: &EthernetPacket) -> Option<Icmpv6Type> {
     }
 
     Some(Icmpv6Packet::new(packet.payload())?.get_icmpv6_type())
+}
+
+/// The identifier and sequence number an Ethernet-framed ICMPv6 echo reply
+/// carries back, or `None` if the frame is not one or is too short to say.
+///
+/// RFC 4443 requires a reply to echo both fields from the request unchanged,
+/// which is what lets a scanner recognize the answer to a particular probe of
+/// its own. Without them an echo reply proves only that its sender exists;
+/// with them it also says when the question was asked.
+pub fn icmpv6_echo_token_from_eth(frame: &EthernetPacket) -> Option<(u16, u16)> {
+    let packet = Ipv6Packet::new(frame.payload())?;
+    if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
+        return None;
+    }
+
+    let reply = EchoReplyPacket::new(packet.payload())?;
+    if reply.get_icmpv6_type() != Icmpv6Types::EchoReply {
+        return None;
+    }
+
+    Some((reply.get_identifier(), reply.get_sequence_number()))
 }
 
 pub fn get_ipv4_addr_from_eth(frame: &EthernetPacket) -> anyhow::Result<Ipv4Addr> {

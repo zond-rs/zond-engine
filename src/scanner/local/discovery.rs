@@ -15,8 +15,9 @@
 //! against every frame it receives. Supporting a new discovery mechanism means
 //! writing one more implementation here instead of touching the receive loop.
 
+use std::net::IpAddr;
+
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use pnet::packet::icmpv6::Icmpv6Types;
 
 use crate::core::models::host::StatusProtocol;
 use crate::protocols::{ip, ndp};
@@ -32,13 +33,32 @@ pub enum ProtocolMatch {
     /// The protocol does not recognize this frame. Another protocol may still
     /// claim it.
     Unhandled,
-    /// A reply to the unicast probe aimed at this frame's own source address,
-    /// so it answers exactly one outstanding probe and retires it.
-    Solicited,
-    /// A reply to the single all-nodes solicitation. That probe is not consumed
-    /// by any one reply, because every neighbour on the segment may answer the
-    /// same packet.
-    AllNodes,
+    /// A reply to a probe aimed at one address, so it answers exactly one
+    /// outstanding probe and retires it.
+    ///
+    /// The address is carried because the frame's source is not always it. A
+    /// neighbor advertisement names the address it is about in its own target
+    /// field, and a host with several addresses answers from whichever its stack
+    /// prefers rather than from the one that was asked about — measured on a
+    /// real segment, a phone solicited at `2a02:…::21e9` answered from
+    /// `2a02:…:14f0:ca99:5818:74ee`. Keyed on the source, that reply retires no
+    /// probe, yields no round trip, and files the host under an address nobody
+    /// asked about.
+    ///
+    /// `None` where the frame's source *is* the address, which is ARP's case:
+    /// the sender protocol address is the whole content of the reply.
+    Solicited(Option<IpAddr>),
+    /// A reply to the all-nodes echo request, carrying the identifier and
+    /// sequence number it echoed back.
+    ///
+    /// That probe is not consumed by any one reply, because every neighbour on
+    /// the segment may answer the same packet — but unlike a neighbor
+    /// solicitation it is still *attributable*. RFC 4443 requires the reply to
+    /// return the request's identifier and sequence unchanged, so the token
+    /// names exactly which of the scan's echo requests was answered, and the
+    /// round trip follows. Karn's rule costs NDP its measurement because two
+    /// solicitations are identical on the wire; two echo requests are not.
+    AllNodes { identifier: u16, sequence: u16 },
 }
 
 /// A wire-level protocol capable of recognizing discovery responses.
@@ -76,7 +96,7 @@ impl DiscoveryProtocol for ArpProtocol {
             return Ok(ProtocolMatch::Unhandled);
         }
 
-        Ok(ProtocolMatch::Solicited)
+        Ok(ProtocolMatch::Solicited(None))
     }
 
     fn status_protocol(&self) -> StatusProtocol {
@@ -102,7 +122,7 @@ pub struct NdpProtocol;
 impl DiscoveryProtocol for NdpProtocol {
     fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
         match ndp::advertised_target(frame) {
-            Some(_) => Ok(ProtocolMatch::Solicited),
+            Some(target) => Ok(ProtocolMatch::Solicited(Some(IpAddr::V6(target)))),
             None => Ok(ProtocolMatch::Unhandled),
         }
     }
@@ -126,9 +146,13 @@ impl DiscoveryProtocol for NdpProtocol {
 /// attributes a host to a mechanism that had nothing to do with finding it, and
 /// a coverage measurement built on that cannot tell a working probe from a
 /// chatty network. Traffic this does not recognize is left for another
-/// [`DiscoveryProtocol`] to claim - which is where a neighbor advertisement will
-/// be handled when NDP exists, as its own implementation reporting
-/// [`StatusProtocol::Ndp`].
+/// [`DiscoveryProtocol`] to claim - a neighbor advertisement being handled by
+/// [`NdpProtocol`].
+///
+/// The identifier and sequence come back with the match rather than being
+/// checked here, because this trait sees bytes and not the scan that sent them.
+/// Deciding whether those values name one of *our* requests, and which, is the
+/// scanner's job for the same reason attribution always is.
 pub struct Icmpv6EchoProtocol;
 
 impl DiscoveryProtocol for Icmpv6EchoProtocol {
@@ -146,9 +170,12 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
             return Ok(ProtocolMatch::Unhandled);
         }
 
-        match ip::icmpv6_type_from_eth(frame) {
-            Some(Icmpv6Types::EchoReply) => Ok(ProtocolMatch::AllNodes),
-            _ => Ok(ProtocolMatch::Unhandled),
+        match ip::icmpv6_echo_token_from_eth(frame) {
+            Some((identifier, sequence)) => Ok(ProtocolMatch::AllNodes {
+                identifier,
+                sequence,
+            }),
+            None => Ok(ProtocolMatch::Unhandled),
         }
     }
 
@@ -171,8 +198,8 @@ mod tests {
     use super::*;
     use crate::protocols::{arp, ethernet, ip as ip_protocol};
     use pnet::datalink::MacAddr;
-    use pnet::packet::icmpv6::MutableIcmpv6Packet;
     use pnet::packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
+    use pnet::packet::icmpv6::{Icmpv6Types, MutableIcmpv6Packet};
     use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -208,15 +235,22 @@ mod tests {
     }
 
     /// The frame a neighbour actually sends back when it answers the all-nodes
-    /// echo request.
-    fn echo_reply_frame(destination: Ipv6Addr) -> Vec<u8> {
+    /// echo request, echoing the request's identifier and sequence as RFC 4443
+    /// requires.
+    fn echo_reply_frame_with(destination: Ipv6Addr, identifier: u16, sequence: u16) -> Vec<u8> {
         let mut body = vec![0u8; ICMPV6_ECHO_LEN];
         {
             let mut echo = MutableEchoReplyPacket::new(&mut body).expect("echo reply buffer");
             echo.set_icmpv6_type(Icmpv6Types::EchoReply);
             echo.set_icmpv6_code(Icmpv6Codes::NoCode);
+            echo.set_identifier(identifier);
+            echo.set_sequence_number(sequence);
         }
         ipv6_frame(destination, IpNextHeaderProtocols::Icmpv6, &body)
+    }
+
+    fn echo_reply_frame(destination: Ipv6Addr) -> Vec<u8> {
+        echo_reply_frame_with(destination, 0, 0)
     }
 
     /// A neighbor solicitation body: ICMPv6, but not an answer to our probe.
@@ -248,7 +282,7 @@ mod tests {
 
         let result = ArpProtocol.interpret(&frame).unwrap();
 
-        assert!(matches!(result, ProtocolMatch::Solicited));
+        assert!(matches!(result, ProtocolMatch::Solicited(None)));
     }
 
     #[test]
@@ -281,12 +315,33 @@ mod tests {
 
         for _ in 0..2 {
             let result = Icmpv6EchoProtocol.interpret(&frame).unwrap();
-            assert!(matches!(result, ProtocolMatch::AllNodes));
+            assert!(matches!(result, ProtocolMatch::AllNodes { .. }));
         }
         assert_eq!(
             Icmpv6EchoProtocol.status_protocol(),
             StatusProtocol::IcmpEcho
         );
+    }
+
+    /// The identifier and sequence have to survive interpretation, because they
+    /// are the whole of what makes an echo reply measurable: they name which
+    /// request was answered, where two neighbor solicitations never can.
+    /// Dropping them here is what left every IPv6 neighbour with no round trip.
+    #[test]
+    fn icmpv6_protocol_carries_the_echoed_token_back() {
+        let frame_bytes =
+            echo_reply_frame_with(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 0x5ac5, 2);
+        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+
+        let result = Icmpv6EchoProtocol.interpret(&frame).unwrap();
+
+        assert!(matches!(
+            result,
+            ProtocolMatch::AllNodes {
+                identifier: 0x5ac5,
+                sequence: 2
+            }
+        ));
     }
 
     /// The regression guard for a scanner crediting its echo probe with finding

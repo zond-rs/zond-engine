@@ -294,6 +294,24 @@ impl IpSet {
         v4_len + v6_len
     }
 
+    /// How many addresses the IPv4 ranges cover, and how many the IPv6 ones do.
+    ///
+    /// Counted per family rather than as one total because a caller that emits
+    /// a different probe per family needs to know the ratio between them - a
+    /// sweep interleaving ARP with neighbor solicitation has to space each
+    /// against the other's volume. Overlapping ranges are counted twice, as
+    /// they are in [`len_canonical`](Self::len_canonical) before merging: these
+    /// steer pacing, and a pacing decision does not warrant canonicalizing a
+    /// clone of the set.
+    pub fn v4_len(&self) -> u128 {
+        self.v4.iter().map(|r| r.len() as u128).sum()
+    }
+
+    /// The IPv6 half of [`v4_len`](Self::v4_len).
+    pub fn v6_len(&self) -> u128 {
+        self.v6.iter().map(|r| r.len()).sum()
+    }
+
     /// Returns the underlying IPv4 ranges. If dirty, these ranges may be overlapping and un-merged.
     pub fn v4(&self) -> &[Ipv4Range] {
         &self.v4

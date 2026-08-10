@@ -94,6 +94,7 @@ use std::time::{Duration, Instant};
 use zond_engine::core::config::ZondConfig;
 use zond_engine::core::models::host::Host;
 use zond_engine::core::models::retry::{RetryConfig, ScanEffort};
+use zond_engine::core::parse::IS_LAN_SCAN;
 use zond_engine::core::parse::ip::to_set_with as to_ipset_with;
 use zond_engine::export::schema::status_protocol_name;
 use zond_engine::scanner;
@@ -245,7 +246,16 @@ async fn main() {
 
     // No DNS: a reverse lookup would add latency that has nothing to do with
     // what is being measured, and the nmap run compared against uses -n.
+    // A sweep is what `lan` means, and the parser is what knows the keyword was
+    // used. Without this the benchmark measures a targeted run of the IPv4 range
+    // the keyword expanded to - no all-nodes echo, no neighbour-table
+    // candidates - and reports the missing IPv6 half as a network with nothing
+    // on it. A front end has to make the same connection; see
+    // `ZondConfig::segment_sweep`.
+    let segment_sweep = IS_LAN_SCAN.load(std::sync::atomic::Ordering::Relaxed);
+
     let cfg = ZondConfig {
+        segment_sweep,
         no_banner: true,
         no_dns: true,
         disable_input: true,

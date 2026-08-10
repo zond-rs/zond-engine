@@ -93,6 +93,7 @@ pub struct LanHost {
     mac: MacAddr,
     loss: Loss,
     delay: Duration,
+    answers_from: Option<Ipv6Addr>,
 }
 
 impl LanHost {
@@ -102,7 +103,21 @@ impl LanHost {
             mac,
             loss: Loss::None,
             delay: Duration::ZERO,
+            answers_from: None,
         }
+    }
+
+    /// Answers a neighbor solicitation from `address` rather than from the one
+    /// that was asked about.
+    ///
+    /// Not perverse: a host with several IPv6 addresses answers from whichever
+    /// its stack prefers, and on a real segment a phone solicited at
+    /// `2a02:…::21e9` answered from `2a02:…:14f0:ca99:5818:74ee`. The
+    /// advertisement still names the address it is about in its target field,
+    /// which is the only thing tying the reply to the question.
+    pub fn answering_from(mut self, address: Ipv6Addr) -> Self {
+        self.answers_from = Some(address);
+        self
     }
 
     /// Swallows the first `n` probes to this host. On a real segment ARP is
@@ -164,6 +179,14 @@ pub enum LanProbe {
 /// segment saw.
 pub struct FakeLan {
     hosts: HashMap<IpAddr, LanHost>,
+    /// Addresses that advertise themselves without being asked.
+    ///
+    /// A real segment is full of this — neighbours resolving each other,
+    /// announcing a new address, answering somebody else's solicitation — and a
+    /// promiscuous capture sees all of it. Without a way to express it here the
+    /// harness could only produce neighbours that answer our own probes, which
+    /// is the minority of what a real sweep actually finds.
+    unsolicited: Vec<Ipv6Addr>,
     seed: u64,
     state: Arc<Mutex<State>>,
 }
@@ -186,6 +209,7 @@ impl FakeLan {
     pub fn seeded(seed: u64) -> Self {
         Self {
             hosts: HashMap::new(),
+            unsolicited: Vec::new(),
             seed,
             state: Arc::new(Mutex::new(State {
                 rng: SplitMix64::new(seed),
@@ -201,6 +225,15 @@ impl FakeLan {
         self
     }
 
+    /// Makes `address` advertise itself once, unprompted, as soon as the
+    /// scanner puts anything on the wire.
+    pub fn advertising_unsolicited(mut self, address: IpAddr) -> Self {
+        if let IpAddr::V6(v6) = address {
+            self.unsolicited.push(v6);
+        }
+        self
+    }
+
     /// The seed this segment's probabilistic policies draw from. Print it from
     /// a failing test so the run can be reproduced.
     pub fn seed(&self) -> u64 {
@@ -213,6 +246,7 @@ impl FakeLan {
         let (frames, rx) = mpsc::unbounded_channel();
         let link = FakeSegment {
             hosts: self.hosts.clone(),
+            unsolicited: self.unsolicited.clone(),
             state: Arc::clone(&self.state),
             frames,
         };
@@ -246,6 +280,9 @@ impl Default for FakeLan {
 /// The send half of a [`FakeLan`]: the scanner's view of the wire.
 struct FakeSegment {
     hosts: HashMap<IpAddr, LanHost>,
+    /// Addresses that advertise themselves once, unprompted, the first time the
+    /// scanner sends anything.
+    unsolicited: Vec<Ipv6Addr>,
     state: Arc<Mutex<State>>,
     frames: UnboundedSender<Vec<u8>>,
 }
@@ -264,6 +301,8 @@ impl DataLinkSender for FakeSegment {
         let Some(frame) = EthernetPacket::new(packet) else {
             return Some(Ok(()));
         };
+
+        self.emit_unsolicited(&frame);
 
         match frame.get_ethertype() {
             EtherTypes::Arp => self.answer_arp(&frame),
@@ -338,6 +377,29 @@ impl FakeSegment {
         }
     }
 
+    /// Emits each declared unsolicited advertisement once, as soon as the
+    /// scanner has put a frame on the wire and named an address to send it to.
+    fn emit_unsolicited(&mut self, frame: &EthernetPacket) {
+        if self.unsolicited.is_empty() || frame.get_ethertype() != EtherTypes::Ipv6 {
+            return;
+        }
+        let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
+            return;
+        };
+        let scanner_mac = frame.get_source();
+
+        for address in std::mem::take(&mut self.unsolicited) {
+            let Some(host) = self.hosts.get(&IpAddr::V6(address)).copied() else {
+                continue;
+            };
+            if let Some(advert) =
+                neighbor_advertisement(host.mac, address, address, scanner_mac, scanner_ip)
+            {
+                self.deliver(advert, host.delay);
+            }
+        }
+    }
+
     /// Answers a neighbor solicitation, if the address it asks about is one of
     /// this segment's declared hosts.
     ///
@@ -366,7 +428,9 @@ impl FakeSegment {
         if self.admit(IpAddr::V6(target), host.loss) {
             return;
         }
-        if let Some(reply) = neighbor_advertisement(host.mac, target, scanner_mac, scanner_ip) {
+        let from = host.answers_from.unwrap_or(target);
+        if let Some(reply) = neighbor_advertisement(host.mac, target, from, scanner_mac, scanner_ip)
+        {
             self.deliver(reply, host.delay);
         }
     }
@@ -378,6 +442,11 @@ impl FakeSegment {
     /// any neighbour may answer, so every declared IPv6 host gets the chance to.
     fn answer_all_nodes_echo(&mut self, frame: &EthernetPacket) {
         let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
+            return;
+        };
+        // Read off the request rather than assumed, so a neighbour answers the
+        // question it was actually asked and the scanner can tell which.
+        let Some((identifier, sequence)) = echo_request_token(frame) else {
             return;
         };
         let scanner_mac = frame.get_source();
@@ -396,7 +465,14 @@ impl FakeSegment {
             if self.admit(IpAddr::V6(host_ip), host.loss) {
                 continue;
             }
-            if let Some(reply) = icmpv6_echo_reply(host.mac, host_ip, scanner_mac, scanner_ip) {
+            if let Some(reply) = icmpv6_echo_reply(
+                host.mac,
+                host_ip,
+                scanner_mac,
+                scanner_ip,
+                identifier,
+                sequence,
+            ) {
                 self.deliver(reply, host.delay);
             }
         }
@@ -484,6 +560,7 @@ fn solicited_target(frame: &EthernetPacket) -> Option<Ipv6Addr> {
 fn neighbor_advertisement(
     host_mac: MacAddr,
     target: Ipv6Addr,
+    from: Ipv6Addr,
     scanner_mac: MacAddr,
     scanner_ip: Ipv6Addr,
 ) -> Option<Vec<u8>> {
@@ -500,7 +577,7 @@ fn neighbor_advertisement(
 
     let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6).ok()?;
     let ipv6 = ip::create_ipv6_header(
-        target,
+        from,
         scanner_ip,
         body.len() as u16,
         IpNextHeaderProtocols::Icmpv6,
@@ -516,6 +593,14 @@ fn neighbor_advertisement(
     Some(frame)
 }
 
+/// The identifier and sequence number an echo *request* carries, which the
+/// reply has to return unchanged.
+fn echo_request_token(frame: &EthernetPacket) -> Option<(u16, u16)> {
+    let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
+    let request = pnet::packet::icmpv6::echo_request::EchoRequestPacket::new(packet.payload())?;
+    Some((request.get_identifier(), request.get_sequence_number()))
+}
+
 /// An ICMPv6 echo reply from `host_mac`/`host_ip` to the scanner's link-local
 /// address: what a neighbour actually sends back when it answers the all-nodes
 /// echo request.
@@ -526,19 +611,27 @@ fn neighbor_advertisement(
 /// would ever emit - so a simulation that sent one could only ever be answered
 /// by a scanner that had stopped reading at the IP header. The engine did, this
 /// fake did, and between them they agreed on a reply neither had inspected.
+///
+/// `identifier` and `sequence` come from the request being answered, which RFC
+/// 4443 requires and which a scanner needs in order to time the reply. A fake
+/// that returned zeros would have every neighbour answering a request nobody
+/// sent - untimed here, and no way to tell that from a real segment where the
+/// timing works.
 fn icmpv6_echo_reply(
     host_mac: MacAddr,
     host_ip: Ipv6Addr,
     scanner_mac: MacAddr,
     scanner_ip: Ipv6Addr,
+    identifier: u16,
+    sequence: u16,
 ) -> Option<Vec<u8>> {
     let mut body = vec![0u8; ICMPV6_ECHO_LEN];
     {
         let mut echo = MutableEchoReplyPacket::new(&mut body)?;
         echo.set_icmpv6_type(Icmpv6Types::EchoReply);
         echo.set_icmpv6_code(Icmpv6Codes::NoCode);
-        echo.set_identifier(0);
-        echo.set_sequence_number(0);
+        echo.set_identifier(identifier);
+        echo.set_sequence_number(sequence);
     }
 
     let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6).ok()?;

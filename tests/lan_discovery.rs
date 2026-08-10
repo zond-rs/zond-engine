@@ -245,6 +245,208 @@ async fn a_lost_solicitation_is_retried_and_the_neighbour_is_still_found() {
     );
 }
 
+/// A neighbour that answers from a different address than the one asked about is
+/// still credited to the address that was asked about, with a round trip.
+///
+/// This is the shape a real segment produced. A host with several IPv6 addresses
+/// answers a solicitation from whichever its stack prefers, so a phone solicited
+/// at `…::21e9` replied from `…:14f0:ca99:5818:74ee`. Keyed on the frame's
+/// source, that reply retires no probe — the ledger is holding one for the
+/// address that was solicited — so it yields no round trip and files the host
+/// under an address the scan never asked about. Measured on the real network:
+/// only the router, whose advertisement happened to come from the solicited
+/// address, produced a latency at all.
+///
+/// The advertisement's target field is what ties the reply to the question, and
+/// reading it is the difference between a host with a measurement and a host
+/// with a blank where one belongs.
+#[tokio::test]
+async fn a_neighbour_answering_from_another_address_is_still_measured() {
+    let solicited = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x21e9);
+    let preferred = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0x14f0, 0xca99, 0x5818, 0x74ee);
+    let lan = FakeLan::new().host(
+        IpAddr::V6(solicited),
+        LanHost::at(PEER_B).answering_from(preferred),
+    );
+
+    let session = sweep(&lan, &[IpAddr::V6(solicited)], Scope::Targeted).await;
+
+    let host = session
+        .store
+        .get(&IpAddr::V6(solicited))
+        .expect("the host must be keyed by the address that was asked about");
+    assert!(
+        host.min_rtt().is_some(),
+        "an advertisement answering our solicitation is a round trip we can measure"
+    );
+    assert!(
+        host.ips().contains(&IpAddr::V6(preferred)),
+        "the address it answered from belongs to the same host and is worth recording"
+    );
+    assert_eq!(
+        status_protocols(&session, IpAddr::V6(solicited)),
+        vec!["Ndp".to_string()]
+    );
+}
+
+/// A neighbour found by overhearing is asked directly, so it arrives with a
+/// round trip rather than a blank.
+///
+/// Measured on a real segment: nearly every IPv6 host a sweep reported came from
+/// an advertisement nobody had solicited — neighbours resolving each other,
+/// announcing an address, answering somebody else's question, all of it visible
+/// to a promiscuous capture. That is genuine evidence the host exists, and it is
+/// evidence of a conversation we were not part of, so there was no probe to
+/// measure against and every one of those hosts arrived with no latency at all.
+///
+/// One packet settles it. The address came off the wire seconds ago, so a
+/// solicitation to it is answered by the host itself, which both times the path
+/// and proves the neighbour is answering now rather than having answered someone
+/// else a moment earlier.
+#[tokio::test]
+async fn an_overheard_neighbour_is_asked_directly_and_then_measured() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    // Declared on the segment but never a target, so the only way it is heard of
+    // first is the unsolicited advertisement the fake sends on its own.
+    let lan = FakeLan::new()
+        .host(peer_v6, LanHost::at(PEER_B))
+        .advertising_unsolicited(peer_v6);
+
+    let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
+
+    let host = session
+        .store
+        .get(&peer_v6)
+        .expect("an overheard advertisement is still a discovered host");
+    assert!(
+        host.min_rtt().is_some(),
+        "an overheard neighbour must be asked directly so its path can be measured"
+    );
+
+    let solicits = lan
+        .probes()
+        .iter()
+        .filter(|probe| matches!(probe, LanProbe::Solicit { target, .. } if IpAddr::V6(*target) == peer_v6))
+        .count();
+    assert_eq!(
+        solicits, 1,
+        "asked exactly once: a second solicitation is identical on the wire, so an \
+         advertisement answering either could not say which - and the measurement \
+         this exists for would be discarded, having already cost a packet"
+    );
+}
+
+/// A neighbour slow to answer its confirmation is still measured.
+///
+/// This is the case that broke on a real segment. The retry schedule is sized
+/// from whatever the scan has been measuring, and on a LAN that is ARP replies
+/// arriving in single-digit milliseconds — so a solicitation is retried within
+/// tens of milliseconds, long before a device on wifi rouses itself to answer.
+/// Two solicitations are identical on the wire, so the advertisement cannot say
+/// which it answers, Karn's rule discards the sample, and the host arrives with
+/// a blank where its latency belongs. Every wifi neighbour on the test segment
+/// landed exactly there: `answered over Ndp after 2 attempts, so it is not
+/// timed`.
+///
+/// A confirmation is not retried, so the reply is unambiguous however long it
+/// takes. The host was already known to exist — only the measurement was ever at
+/// stake, and retrying is what loses it.
+#[tokio::test]
+async fn a_slow_confirmation_is_still_measured() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let lan = FakeLan::new()
+        .host(
+            peer_v6,
+            LanHost::at(PEER_B).delay(Duration::from_millis(400)),
+        )
+        .advertising_unsolicited(peer_v6);
+
+    let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
+
+    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    assert!(
+        host.min_rtt().is_some(),
+        "a reply slower than the retry schedule is still the answer to the one \
+         solicitation that was sent"
+    );
+    assert_eq!(
+        lan.probes()
+            .iter()
+            .filter(|probe| matches!(probe, LanProbe::Solicit { target, .. } if IpAddr::V6(*target) == peer_v6))
+            .count(),
+        1,
+        "waiting is what makes the sample usable; asking again is what destroys it"
+    );
+}
+
+/// A sweep does not stop listening for a confirmation it has just paid a packet
+/// for.
+///
+/// The confirmation is deliberately outside the retry ledger, and the ledger is
+/// what keeps the loop alive for every other outstanding probe — so without a
+/// window of its own the sweep sends a solicitation and then exits, which is a
+/// strange thing to spend a packet on. The delay here is longer than the sweep
+/// would otherwise run for.
+#[tokio::test]
+async fn a_sweep_waits_for_the_confirmation_it_sent() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let lan = FakeLan::new()
+        .host(
+            peer_v6,
+            LanHost::at(PEER_B).delay(Duration::from_millis(900)),
+        )
+        .advertising_unsolicited(peer_v6);
+
+    let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
+
+    assert!(
+        session
+            .store
+            .get(&peer_v6)
+            .is_some_and(|host| host.min_rtt().is_some()),
+        "the answer arrived within the window a neighbour is allowed to take"
+    );
+}
+
+/// A solicited neighbour answering on IPv6's timescale is timed, not written off.
+///
+/// The measurement this exists for, taken from a capture of a real sweep. Three
+/// solicitations to one address left within **75 milliseconds** of each other and
+/// the advertisement arrived **670 ms to 1.7 s later**: every attempt spent, the
+/// probe written off, and the answer landing to find no record of the question.
+/// The same segment answers ARP in six milliseconds, and that is exactly the
+/// problem — the retry schedule was derived from a round-trip estimate ARP
+/// dominates, so it collapsed to its floor and dragged the IPv6 probe down with
+/// it.
+///
+/// 700 ms is inside the range those replies actually landed in, and comfortably
+/// past anything ARP's schedule would have waited.
+#[tokio::test]
+async fn a_solicited_neighbour_answering_slowly_is_still_timed() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let lan = FakeLan::new().host(
+        peer_v6,
+        LanHost::at(PEER_B).delay(Duration::from_millis(700)),
+    );
+
+    let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
+
+    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    assert!(
+        host.min_rtt().is_some(),
+        "an answer at 700ms is what an IPv6 neighbour on wifi does, not a timeout"
+    );
+    assert_eq!(
+        lan.probes()
+            .iter()
+            .filter(|probe| matches!(probe, LanProbe::Solicit { .. }))
+            .count(),
+        1,
+        "the first attempt must still be outstanding when the answer arrives, or \
+         two identical solicitations make the sample unattributable"
+    );
+}
+
 /// An address with nothing on it produces no host. Discovery must not invent a
 /// neighbour from silence.
 #[tokio::test]
@@ -369,6 +571,43 @@ async fn a_sweep_discovers_ipv6_neighbours_through_the_solicitation() {
     assert!(
         session.store.contains_key(&peer_v6),
         "an IPv6 neighbour answering the solicitation is a discovered host"
+    );
+}
+
+/// A neighbour found only by the all-nodes echo still arrives with a round trip.
+///
+/// This is the common case and it reported no latency at all: a device that
+/// answers the segment-wide echo but never a neighbor solicitation — a TV, a
+/// console — was recorded as up, with a MAC, a vendor and a hostname, and an
+/// empty space where every IPv4 host had a number. The reason given was that a
+/// multicast probe cannot be attributed, since every neighbour may answer the
+/// same packet on a schedule of its own.
+///
+/// That is true of *which host* answers and false of *which request* was
+/// answered. RFC 4443 requires an echo reply to carry back the identifier and
+/// sequence number it was asked with, so unlike two neighbor solicitations —
+/// identical on the wire, and unmeasurable for exactly that reason — the echo
+/// names its own request. The scan sends three; a neighbour that wakes in time
+/// for the third is measured against the third.
+#[tokio::test]
+async fn a_neighbour_answering_only_the_all_nodes_echo_is_timed() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let lan = FakeLan::new()
+        .host(v4(10), LanHost::at(PEER_A))
+        .host(peer_v6, LanHost::at(PEER_B));
+
+    let targets: Vec<IpAddr> = (10..=20).map(v4).collect();
+    let session = sweep(&lan, &targets, Scope::Sweep).await;
+
+    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    assert_eq!(
+        status_protocols(&session, peer_v6),
+        vec!["IcmpEcho".to_string()],
+        "the echo is what found it, so the echo is what has to be timed"
+    );
+    assert!(
+        host.min_rtt().is_some(),
+        "an echo reply names the request it answers, so it yields a round trip"
     );
 }
 
