@@ -43,7 +43,7 @@ use std::net::IpAddr;
 
 use anyhow::Context;
 use pnet::packet::ethernet::{EtherType, EtherTypes};
-use pnet::packet::ip::IpNextHeaderProtocol;
+use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::ipv6::Ipv6Packet;
 use pnet::util::MacAddr;
@@ -160,11 +160,9 @@ pub struct IpSegment<'a> {
 /// dispatching on the version nibble so it works regardless of how the link
 /// layer labeled the packet.
 ///
-/// Returns `None` for a truncated packet, an implausible header length, or an
-/// unrecognized IP version. IPv6 extension headers are not walked - the probes
-/// this parses replies to never elicit them - so the payload is the bytes
-/// immediately after the fixed IPv6 header, and `protocol` is the next-header
-/// value verbatim.
+/// Returns `None` for a truncated packet, an implausible header length, an
+/// unrecognized IP version, or an IPv6 chain that names no Layer-4 segment at
+/// all (see [`walk_ipv6_headers`]).
 pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
     match ip_bytes.first()? >> 4 {
         4 => {
@@ -185,15 +183,89 @@ pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
         }
         6 => {
             let packet = Ipv6Packet::new(ip_bytes)?;
+            let (protocol, offset) =
+                walk_ipv6_headers(ip_bytes, packet.get_next_header(), IP_V6_HDR_LEN)?;
             Some(IpSegment {
                 source: IpAddr::V6(packet.get_source()),
                 destination: IpAddr::V6(packet.get_destination()),
-                protocol: packet.get_next_header(),
-                payload: ip_bytes.get(IP_V6_HDR_LEN..)?,
+                protocol,
+                payload: ip_bytes.get(offset..)?,
             })
         }
         _ => None,
     }
+}
+
+/// How many extension headers to walk before giving up.
+///
+/// A chain this long is not a packet anyone sends; it is someone seeing how long
+/// this loop will run. Eight is past anything legitimate and bounds the work per
+/// frame at a constant.
+const MAX_EXTENSION_HEADERS: usize = 8;
+
+/// Follows an IPv6 next-header chain from `protocol` at `offset`, returning the
+/// Layer-4 protocol and the offset its segment starts at.
+///
+/// The fixed header's next-header field is not the transport protocol; it is
+/// only the first link of a chain, and each extension header names the next.
+/// Reading it as the transport protocol hands out an extension header as though
+/// it were a TCP or ICMPv6 segment - a header full of plausible nonsense that
+/// parses cleanly and means nothing.
+///
+/// `None` where there is no Layer-4 segment to point at: a chain that runs past
+/// the end of the packet, one longer than [`MAX_EXTENSION_HEADERS`], an explicit
+/// no-next-header, or a non-initial fragment, whose bytes are the middle of
+/// somebody's datagram rather than the start of a header. Every length here is
+/// read from the packet and bounds-checked, because these bytes are chosen by a
+/// remote host - and by a hostile one, in the packet quoted inside an ICMP
+/// error.
+fn walk_ipv6_headers(
+    bytes: &[u8],
+    protocol: IpNextHeaderProtocol,
+    offset: usize,
+) -> Option<(IpNextHeaderProtocol, usize)> {
+    use IpNextHeaderProtocols as Protocols;
+
+    let mut protocol = protocol;
+    let mut offset = offset;
+
+    for _ in 0..MAX_EXTENSION_HEADERS {
+        let length = match protocol {
+            // Explicitly nothing follows, so there is no segment to return.
+            Protocols::Ipv6NoNxt => return None,
+            // The common shape: a next-header byte, a length in 8-octet units
+            // not counting the first, then options.
+            Protocols::Hopopt | Protocols::Ipv6Route | Protocols::Ipv6Opts => {
+                (usize::from(*bytes.get(offset + 1)?) + 1) * 8
+            }
+            // The authentication header counts in 4-octet units, not 8, and
+            // excludes two rather than one.
+            Protocols::Ah => (usize::from(*bytes.get(offset + 1)?) + 2) * 4,
+            // Fixed at eight bytes. Only the first fragment carries the Layer-4
+            // header the caller is looking for; in any other the offset field is
+            // non-zero and what follows is payload.
+            Protocols::Ipv6Frag => {
+                let fragment_offset =
+                    u16::from_be_bytes([*bytes.get(offset + 2)?, *bytes.get(offset + 3)?]) >> 3;
+                if fragment_offset != 0 {
+                    return None;
+                }
+                8
+            }
+            // Anything else is the Layer-4 protocol, including the payloads
+            // (ESP) this cannot see past.
+            transport => return Some((transport, offset)),
+        };
+
+        protocol = IpNextHeaderProtocol::new(*bytes.get(offset)?);
+        offset = offset.checked_add(length)?;
+        // A header that claims to end past the packet describes nothing.
+        if offset > bytes.len() {
+            return None;
+        }
+    }
+
+    None
 }
 
 /// Convenience over [`strip_to_ip`] + [`parse_ip_segment`]: takes a captured
@@ -382,5 +454,111 @@ mod tests {
     fn unsupported_link_yields_nothing() {
         let frame = [0u8; 32];
         assert!(parse_captured_segment(LinkType::Unsupported(42), &frame).is_none());
+    }
+
+    // ─── IPv6 extension headers ──────────────────────────────────────────────
+
+    /// An IPv6 packet whose fixed header names `first`, followed by `chain`
+    /// (already-encoded extension headers) and then `segment`.
+    fn ipv6_chain(first: IpNextHeaderProtocol, chain: &[u8], segment: &[u8]) -> Vec<u8> {
+        let payload_len = (chain.len() + segment.len()) as u16;
+        ip::create_ipv6_header(
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
+            Ipv6Addr::LOCALHOST,
+            payload_len,
+            first,
+        )
+        .unwrap()
+        .into_iter()
+        .chain(chain.iter().copied())
+        .chain(segment.iter().copied())
+        .collect()
+    }
+
+    /// One extension header in the common shape: next protocol, length in
+    /// 8-octet units past the first, then padding to that length.
+    fn extension(next: IpNextHeaderProtocol, units_past_first: u8) -> Vec<u8> {
+        let mut header = vec![0u8; (usize::from(units_past_first) + 1) * 8];
+        header[0] = next.0;
+        header[1] = units_past_first;
+        header
+    }
+
+    /// The defect this walking exists to prevent. Read as the transport
+    /// protocol, the fixed header's next-header field hands a destination-options
+    /// header to a caller expecting TCP - and `TcpPacket::new` accepts it, so
+    /// nothing downstream can notice.
+    #[test]
+    fn a_chain_of_extension_headers_yields_the_transport_behind_it() {
+        let segment = [0xAB, 0xCD, 0xEF, 0x01];
+        let chain = [
+            extension(IpNextHeaderProtocols::Ipv6Route, 0),
+            extension(IpNextHeaderProtocols::Tcp, 2),
+        ]
+        .concat();
+        let packet = ipv6_chain(IpNextHeaderProtocols::Ipv6Opts, &chain, &segment);
+
+        let parsed = parse_ip_segment(&packet).unwrap();
+        assert_eq!(parsed.protocol, TCP);
+        assert_eq!(parsed.payload, &segment);
+    }
+
+    /// The first fragment carries the Layer-4 header, so it parses.
+    #[test]
+    fn the_first_fragment_yields_its_transport_header() {
+        let segment = [1, 2, 3, 4];
+        let mut fragment = vec![0u8; 8];
+        fragment[0] = IpNextHeaderProtocols::Tcp.0;
+        // Offset zero, more-fragments set.
+        fragment[3] = 1;
+        let packet = ipv6_chain(IpNextHeaderProtocols::Ipv6Frag, &fragment, &segment);
+
+        let parsed = parse_ip_segment(&packet).unwrap();
+        assert_eq!(parsed.protocol, TCP);
+        assert_eq!(parsed.payload, &segment);
+    }
+
+    /// A later fragment does not. Its bytes are the middle of somebody's
+    /// datagram, and handing them over as a TCP header invents a segment.
+    #[test]
+    fn a_later_fragment_yields_nothing() {
+        let mut fragment = vec![0u8; 8];
+        fragment[0] = IpNextHeaderProtocols::Tcp.0;
+        // Fragment offset 185, in 8-octet units, shifted past the flag bits.
+        fragment[2..4].copy_from_slice(&(185u16 << 3).to_be_bytes());
+        let packet = ipv6_chain(IpNextHeaderProtocols::Ipv6Frag, &fragment, &[1, 2, 3, 4]);
+
+        assert!(parse_ip_segment(&packet).is_none());
+    }
+
+    /// Remote-chosen lengths, so each of these has to be refused rather than
+    /// trusted: a header claiming to extend past the packet, a chain long enough
+    /// to be a denial of service, and an explicit end with nothing after it.
+    #[test]
+    fn implausible_extension_chains_are_refused() {
+        let overrunning = ipv6_chain(
+            IpNextHeaderProtocols::Ipv6Opts,
+            &[IpNextHeaderProtocols::Tcp.0, 200, 0, 0, 0, 0, 0, 0],
+            &[],
+        );
+        assert!(parse_ip_segment(&overrunning).is_none());
+
+        let endless: Vec<u8> = (0..MAX_EXTENSION_HEADERS + 2)
+            .flat_map(|_| extension(IpNextHeaderProtocols::Ipv6Opts, 0))
+            .collect();
+        let too_long = ipv6_chain(IpNextHeaderProtocols::Ipv6Opts, &endless, &[1, 2, 3, 4]);
+        assert!(parse_ip_segment(&too_long).is_none());
+
+        let nothing_follows = ipv6_chain(IpNextHeaderProtocols::Ipv6NoNxt, &[], &[]);
+        assert!(parse_ip_segment(&nothing_follows).is_none());
+    }
+
+    /// A payload this cannot see past is reported as itself, not guessed at.
+    #[test]
+    fn an_encrypted_payload_is_reported_as_esp() {
+        let packet = ipv6_chain(IpNextHeaderProtocols::Esp, &[], &[9, 9, 9, 9]);
+
+        let parsed = parse_ip_segment(&packet).unwrap();
+        assert_eq!(parsed.protocol, IpNextHeaderProtocols::Esp);
     }
 }

@@ -125,6 +125,17 @@ pub enum Reply {
     /// be classified from it and nothing should panic on it - the probe stays
     /// outstanding as though the reply had never arrived.
     Truncated,
+    /// A bare ACK: traffic from an established connection to this host, not an
+    /// answer to any probe.
+    ///
+    /// This exists because the kernel filter no longer keeps it out. libpcap
+    /// cannot narrow TCP by flags over IPv6, so the SYN transport admits every
+    /// IPv6 TCP segment on every captured interface, and a scan of an address
+    /// the host is already talking to will see its traffic. Over IPv4 the
+    /// kernel drops it and this reply never reaches a scanner at all - which is
+    /// the asymmetry worth testing, since the two families must still conclude
+    /// the same thing.
+    Established,
 }
 
 /// Why a Destination Unreachable message was sent, named by meaning rather
@@ -247,6 +258,12 @@ impl Policy {
     /// A port whose reply arrives unparseable. See [`Reply::Truncated`].
     pub fn truncated() -> Self {
         Self::answering(Reply::Truncated)
+    }
+
+    /// A host that sends a bare ACK rather than answering the probe. See
+    /// [`Reply::Established`].
+    pub fn established() -> Self {
+        Self::answering(Reply::Established)
     }
 
     fn answering(reply: Reply) -> Self {
@@ -532,9 +549,13 @@ impl FakeLink {
     ) -> Vec<CapturedSegment> {
         let segment = match (self.layer4, reply) {
             (_, Reply::Silent) => None,
+            // UDP has no connection to be established on, so there is no
+            // equivalent segment to send and the probe simply goes unanswered.
+            (Layer4::Udp, Reply::Established) => None,
 
             (Layer4::Tcp, Reply::Open) => self.tcp_reply(probe, scanner, target, SYN | ACK),
             (Layer4::Tcp, Reply::Closed) => self.tcp_reply(probe, scanner, target, RST | ACK),
+            (Layer4::Tcp, Reply::Established) => self.tcp_reply(probe, scanner, target, ACK),
             // The SYN path's capture filter admits only TCP, so an ICMP error
             // aimed at a SYN probe would never reach the scanner at all.
             // Answering with silence keeps the simulation honest.

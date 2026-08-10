@@ -277,6 +277,17 @@ fn send_udp(
     }
 }
 
+/// Whether `bytes` is one of the two segments a SYN probe can draw.
+///
+/// A SYN+ACK and a RST each require the target to have received the probe and
+/// answered it, and nothing else a SYN elicits sets either flag. Anything else
+/// from the same address is traffic that happens to share a host with the scan.
+fn answers_a_syn_probe(bytes: &[u8]) -> bool {
+    TcpPacket::new(bytes)
+        .and_then(|tcp| protocol::tcp::classify_probe_response(&tcp))
+        .is_some()
+}
+
 pub struct RoutedScanner {
     /// Shared state (host store, event channel, abort signal) for the scan
     /// this explorer is part of.
@@ -502,6 +513,21 @@ impl RoutedScanner {
     /// number matches an outstanding probe.
     fn handle_discovery_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
         if !self.ips.contains(&ip) {
+            self.audit.record_off_target();
+            return;
+        }
+
+        // Not every TCP segment from a probed address answers a probe, and over
+        // IPv6 the kernel no longer guarantees otherwise: `tcp[tcpflags]` does
+        // not compile for that family, so the transport admits established
+        // traffic too and the narrowing has to happen here.
+        //
+        // Checking it is what keeps the two families held to one standard. The
+        // IPv4 half has only ever seen SYN+ACK and RST because the filter
+        // dropped the rest; without the same test, an ACK from an IPv6 host the
+        // user happens to be connected to would credit a discovery this scan did
+        // not make, on evidence the IPv4 path has never accepted.
+        if !answers_a_syn_probe(bytes) {
             self.audit.record_off_target();
             return;
         }

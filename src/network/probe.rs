@@ -94,7 +94,27 @@ impl ProbeKind {
         match self {
             // SYN+ACK (open) and RST (closed) both set at least one of the
             // SYN/RST flag bits; nothing else a SYN probe can elicit does.
-            ProbeKind::TcpSyn => "tcp and (tcp[tcpflags] & (tcp-syn|tcp-rst)) != 0".to_string(),
+            //
+            // The two families are narrowed differently because only one of
+            // them can be. `tcp[tcpflags]` is `proto[x]` indexing, and an IPv6
+            // next-header chain puts the transport header at no fixed offset,
+            // so libpcap cannot compile it - and does not say so. Written as one
+            // unqualified `tcp`, the expression is silently restricted to IPv4
+            // and every IPv6 frame is rejected at the EtherType, which is what
+            // made routed IPv6 discovery and IPv6 SYN port scanning find nothing
+            // whatsoever. Writing `ip6` in front of the same test does not help;
+            // it fails to compile outright.
+            //
+            // So the IPv6 half is admitted unnarrowed and the flags are checked
+            // in userspace instead. The cost is that every IPv6 TCP segment on
+            // every captured interface is copied up, not only the two a probe
+            // can draw: on a host with live IPv6 connections that is real
+            // traffic, and it lands in the audit's `off-target` count where it
+            // can be seen. It buys the only IPv6 receive path there is.
+            ProbeKind::TcpSyn => {
+                "(ip and tcp and (tcp[tcpflags] & (tcp-syn|tcp-rst)) != 0) or (ip6 and tcp)"
+                    .to_string()
+            }
             // DNS (53) and mDNS (5353) responses, by source port.
             ProbeKind::UdpResolve => "udp and (src port 53 or src port 5353)".to_string(),
             // A UDP probe draws two kinds of answer. A direct UDP reply comes
@@ -520,25 +540,45 @@ mod filter_conformance {
         ));
     }
 
-    /// The gap this module was written to expose.
+    /// The gap this module was written to expose, and the assertion that says
+    /// it is closed.
     ///
     /// `tcp[tcpflags]` is `proto[x]` indexing, which `libpcap` cannot compile
     /// over IPv6 - the next-header chain makes the offset non-constant. It does
-    /// not report that; it silently narrows the whole expression to IPv4, and
-    /// the compiled program jumps straight to `ret #0` on EtherType `0x86dd`.
-    /// Since the capture is the only receive path, routed IPv6 discovery and
-    /// IPv6 SYN port scanning currently see no replies whatsoever.
-    ///
-    /// Ignored rather than deleted: the assertion is what the fix has to make
-    /// true, and a filter that admits IPv6 is the whole of phase 1 in
-    /// `docs/ipv6.md`.
+    /// not report that; written unqualified it silently narrows the whole
+    /// expression to IPv4, and the compiled program jumps straight to `ret #0`
+    /// on EtherType `0x86dd`. Since the capture is the only receive path, that
+    /// left routed IPv6 discovery and IPv6 SYN port scanning seeing no replies
+    /// whatsoever.
     #[test]
-    #[ignore = "known gap: the SYN filter is IPv4-only; see docs/ipv6.md phase 1"]
     fn the_syn_filter_admits_the_same_answers_over_ipv6() {
         let filter = ProbeKind::TcpSyn.filter();
 
         assert!(admits(&filter, &tcp_frame(SRC_V6, DST_V6, SYN | ACK)));
         assert!(admits(&filter, &tcp_frame(SRC_V6, DST_V6, RST | ACK)));
+    }
+
+    /// What admitting the IPv6 half unnarrowed actually costs, stated as a
+    /// property rather than discovered later in a packet count.
+    ///
+    /// An established IPv6 connection's segments reach userspace, where the
+    /// IPv4 equivalent is dropped by the kernel. Nothing can be done about that
+    /// at the filter - see [`libpcap_cannot_narrow_tcp_flags_over_ipv6`] - so
+    /// the scanners re-check the flags themselves, and this test exists so that
+    /// asymmetry is written down where the filter is, not inferred from a
+    /// scanner three modules away.
+    #[test]
+    fn the_ipv6_half_of_the_syn_filter_is_not_narrowed_to_probe_replies() {
+        let filter = ProbeKind::TcpSyn.filter();
+
+        assert!(
+            !admits(&filter, &tcp_frame(SRC_V4, DST_V4, ACK)),
+            "the IPv4 half is narrowed by the kernel"
+        );
+        assert!(
+            admits(&filter, &tcp_frame(SRC_V6, DST_V6, ACK)),
+            "the IPv6 half cannot be, so userspace has to do it"
+        );
     }
 
     /// Why the test above cannot be fixed by asking for IPv6 explicitly, and

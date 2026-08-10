@@ -57,8 +57,14 @@ pub(crate) struct ProbeAudit {
     /// Segments the capture handed up, before any of the scanner's own checks.
     /// Bounded above by what the kernel BPF filter admitted.
     pub(crate) segments_seen: u64,
-    /// Segments whose source is not in this scan's target set. Expected to be
-    /// small; a large count means the filter is admitting other traffic.
+    /// Segments whose source is not in this scan's target set.
+    ///
+    /// Small on an IPv4 scan, where the kernel filter admits only the two
+    /// segments a probe can draw. Not necessarily small once IPv6 is in play:
+    /// libpcap cannot narrow TCP by flags over IPv6, so the SYN transport
+    /// admits every IPv6 TCP segment crossing any captured interface and this
+    /// is where the host's own connections land. Read it against
+    /// `segments_seen` as the receive path's load, not as a fault.
     pub(crate) segments_off_target: u64,
     /// In-set replies that answered no outstanding probe, so they proved the
     /// host alive but yielded no round-trip sample. Duplicates and

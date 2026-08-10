@@ -30,7 +30,9 @@ use common::*;
 use zond_engine::core::models::host::HostStatus;
 use zond_engine::core::models::port::PortState;
 use zond_engine::core::session::ScanSession;
-use zond_engine::scanner::routed::{SynPortScanner, UdpPortScanner};
+use zond_engine::scanner::NetworkExplorer;
+use zond_engine::scanner::routed::{RoutedScanner, SynPortScanner, UdpPortScanner};
+use zond_engine::system::interface::RoutedTarget;
 
 /// The fixed source port the simulated UDP scans probe from.
 const UDP_SRC_PORT: u16 = 54_321;
@@ -122,6 +124,57 @@ async fn a_duplicated_reply_records_the_port_once() {
     assert_eq!(
         host.ports().find(|p| p.number() == 80).map(|p| p.state()),
         Some(PortState::Open)
+    );
+}
+
+/// Traffic from a probed host that answers no probe must not classify its port.
+///
+/// This became reachable when the SYN transport learned to admit IPv6. libpcap
+/// cannot narrow TCP by flags over IPv6 - `tcp[tcpflags]` is `proto[x]`
+/// indexing, which an extension-header chain makes uncompilable - so the filter
+/// admits every IPv6 TCP segment and the narrowing moved into userspace. Over
+/// IPv4 the kernel still drops this segment before anyone sees it.
+///
+/// What must not change is the conclusion. A scan of an address the user happens
+/// to be connected to sees that connection's ACKs, and if a bare ACK were read
+/// as an answer, every such port would report `Open` or `Closed` on the strength
+/// of somebody else's session - a wrong result, arrived at confidently, on one
+/// address family only.
+#[tokio::test]
+async fn established_traffic_is_not_an_answer_to_a_probe() {
+    let (session, _net) = syn_scan(&[(80, Policy::established())]).await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 80),
+        Some(PortState::Filtered),
+        "a bare ACK answers no probe, so the probe went unanswered"
+    );
+}
+
+/// The same segment, and the same conclusion, for host discovery: a host is
+/// credited only by a reply to a probe this scan actually sent.
+#[tokio::test]
+async fn established_traffic_does_not_discover_a_host() {
+    let net = FakeNet::new(Layer4::Tcp).host(TARGET_V6, 443, Policy::established());
+    let (session, ctx) = ScanSession::new();
+
+    let scanner = RoutedScanner::with_transport(
+        vec![RoutedTarget {
+            target: TARGET_V6,
+            source: SCANNER_V6.into(),
+        }],
+        ctx,
+        None,
+        net.transport(),
+    );
+    Box::new(scanner)
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    assert!(
+        !session.store.contains_key(&TARGET_V6),
+        "an ACK from an established connection is not evidence of discovery"
     );
 }
 
