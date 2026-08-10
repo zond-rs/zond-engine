@@ -93,6 +93,9 @@ pub struct LanHost {
     mac: MacAddr,
     loss: Loss,
     delay: Duration,
+    /// How long before answering the all-nodes echo, when that differs from
+    /// [`delay`](Self::delay). See [`echo_delay`](Self::echo_delay).
+    echo_delay: Option<Duration>,
     answers_from: Option<Ipv6Addr>,
 }
 
@@ -103,6 +106,7 @@ impl LanHost {
             mac,
             loss: Loss::None,
             delay: Duration::ZERO,
+            echo_delay: None,
             answers_from: None,
         }
     }
@@ -145,6 +149,26 @@ impl LanHost {
     pub fn delay(mut self, delay: Duration) -> Self {
         self.delay = delay;
         self
+    }
+
+    /// Waits `delay` before answering the all-nodes echo specifically, however
+    /// fast this host answers a question addressed to it.
+    ///
+    /// The difference is real and it is large. A node answering a probe put to
+    /// the whole segment holds its reply back so the segment does not answer at
+    /// once, and a device asleep on wifi answers when it next wakes: measured on
+    /// a live segment, five neighbours answered the same echo within a
+    /// millisecond of each other at 72 ms while answering a solicitation
+    /// addressed to them in four to six. A fake with one delay for both cannot
+    /// express the host that made the distinction matter.
+    pub fn echo_delay(mut self, delay: Duration) -> Self {
+        self.echo_delay = Some(delay);
+        self
+    }
+
+    /// How long this host waits before answering the all-nodes echo.
+    fn echo_wait(&self) -> Duration {
+        self.echo_delay.unwrap_or(self.delay)
     }
 }
 
@@ -473,7 +497,7 @@ impl FakeSegment {
                 identifier,
                 sequence,
             ) {
-                self.deliver(reply, host.delay);
+                self.deliver(reply, host.echo_wait());
             }
         }
     }

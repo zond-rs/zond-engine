@@ -137,6 +137,23 @@ pub struct RetryPolicy {
     pub jitter: f64,
     /// How the budget is cut for hosts that never answer, if at all.
     pub silent_host: Option<SilentHostPolicy>,
+    /// Whether one host's round trip is evidence about another's, which decides
+    /// if a target with no measurement of its own inherits the scan's.
+    ///
+    /// True for anything whose timing is dominated by the *path*: on a routed
+    /// scan every probe crosses the same links, so the first host to answer has
+    /// told the scan roughly what the rest will cost, and starting a fresh
+    /// target from first principles wastes the knowledge.
+    ///
+    /// False where the timing is dominated by the *responder*. Neighbor
+    /// discovery on a segment is the case that forced this: a mains-powered
+    /// router answers a solicitation in five milliseconds and a phone asleep on
+    /// wifi takes four hundred, over the same link at the same moment. One
+    /// number does not describe both populations, and inheriting the fast one
+    /// retransmits to the slow one before it could possibly have answered -
+    /// which, for a probe whose attempts are indistinguishable on the wire,
+    /// destroys the measurement rather than merely wasting a packet.
+    pub cross_host_estimate: bool,
 }
 
 /// How much effort a scan spends before accepting silence as an answer.
@@ -219,6 +236,20 @@ impl RetryPolicy {
             backoff,
             jitter,
             silent_host,
+            cross_host_estimate: true,
+        }
+    }
+
+    /// This policy with each target timed on its own evidence only.
+    ///
+    /// A builder rather than an eighth argument, so the protocols for which one
+    /// neighbour predicts the next - which is most of them - keep declaring
+    /// themselves in one call, and the exception says why it is one.
+    /// See [`cross_host_estimate`](Self::cross_host_estimate).
+    pub const fn without_cross_host_estimate(self) -> Self {
+        Self {
+            cross_host_estimate: false,
+            ..self
         }
     }
 
@@ -813,7 +844,12 @@ where
             .hosts
             .get(&host)
             .and_then(|state| state.estimator.timeout())
-            .or_else(|| self.global.timeout());
+            .or_else(|| {
+                self.policy
+                    .cross_host_estimate
+                    .then(|| self.global.timeout())
+                    .flatten()
+            });
 
         // Held to the floor whichever it came from. The starting value is a
         // guess about an unknown path and may be tuned down freely, but not
@@ -917,6 +953,87 @@ mod tests {
 
     fn ledger(policy: RetryPolicy) -> ProbeLedger<(IpAddr, u16), u32> {
         ProbeLedger::seeded(policy, 8, 0x5EED)
+    }
+
+    /// A fast answer from one host must not shorten an unmeasured host's first
+    /// timeout when the policy says the two are unrelated.
+    ///
+    /// This is the defect that hid an entire retry schedule. `NDP_RETRY_POLICY`
+    /// declared a two-second first timeout and a packet capture showed every
+    /// retry firing 804-1201 ms after its first attempt, because one neighbour
+    /// answering in six milliseconds seeded the scan-wide estimate, which was
+    /// then clamped up to the floor - so the floor, not the declared value, was
+    /// the schedule. On a segment where a router answers in 5 ms and a sleeping
+    /// phone in 400, that retransmits to the phone before it could have replied,
+    /// and two solicitations are indistinguishable on the wire, so the round
+    /// trip is lost rather than merely delayed.
+    #[test]
+    fn one_hosts_round_trip_does_not_time_another_when_the_policy_forbids_it() {
+        let policy = RetryPolicy::new(
+            2,
+            Duration::from_millis(800),
+            Duration::from_millis(50),
+            Duration::from_secs(3),
+            1.5,
+            0.0,
+            None,
+        )
+        .without_cross_host_estimate();
+
+        let fast: IpAddr = "10.0.0.1".parse().unwrap();
+        let unmeasured: IpAddr = "10.0.0.2".parse().unwrap();
+        let start = Instant::now();
+
+        let mut ledger = ledger(policy);
+        ledger.arm(fast, (fast, 0), 1, start);
+        // The fast neighbour answers in six milliseconds, seeding whatever
+        // scan-wide estimate the ledger keeps.
+        let resolved = ledger
+            .resolve(&(fast, 0), Some(1), start + Duration::from_millis(6))
+            .expect("the fast host resolves");
+        assert_eq!(resolved.rtt, Some(Duration::from_millis(6)));
+
+        ledger.arm(unmeasured, (unmeasured, 0), 1, start);
+        let due = ledger.next_due().expect("a timer for the unmeasured host");
+
+        assert_eq!(
+            due.saturating_duration_since(start),
+            Duration::from_millis(800),
+            "the unmeasured host must be timed by the policy's own initial              timeout, not by what a different host happened to answer in"
+        );
+    }
+
+    /// The default is the opposite, and deliberately so: where every probe
+    /// crosses the same path, the first host to answer has told the scan what
+    /// the rest will cost, and a fresh target should not start from first
+    /// principles.
+    #[test]
+    fn one_hosts_round_trip_times_another_by_default() {
+        let policy = RetryPolicy::new(
+            2,
+            Duration::from_millis(800),
+            Duration::from_millis(50),
+            Duration::from_secs(3),
+            1.5,
+            0.0,
+            None,
+        );
+
+        let fast: IpAddr = "10.0.0.1".parse().unwrap();
+        let unmeasured: IpAddr = "10.0.0.2".parse().unwrap();
+        let start = Instant::now();
+
+        let mut ledger = ledger(policy);
+        ledger.arm(fast, (fast, 0), 1, start);
+        ledger.resolve(&(fast, 0), Some(1), start + Duration::from_millis(6));
+
+        ledger.arm(unmeasured, (unmeasured, 0), 1, start);
+        let due = ledger.next_due().expect("a timer for the unmeasured host");
+
+        assert!(
+            due.saturating_duration_since(start) < Duration::from_millis(800),
+            "a measured path should shorten the wait for a target that has not              answered yet"
+        );
     }
 
     /// The keys due at `now`, for the tests that only care about which probes

@@ -331,6 +331,16 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
+    /// Adds a round trip measured against a probe the whole segment was asked,
+    /// which this host will report only if it produced no better sample.
+    ///
+    /// See [`RttSource`](crate::core::models::host::telemetry::RttSource) for
+    /// why the two are kept apart.
+    pub fn add_segment_wide_rtt(&mut self, rtt: std::time::Duration) {
+        self.telemetry.add_segment_wide_rtt(rtt);
+        self.last_seen = SystemTime::now();
+    }
+
     /// Builder method to add a single RTT measurement and return Self.
     pub fn with_rtt(mut self, rtt: std::time::Duration) -> Self {
         self.add_rtt(rtt);

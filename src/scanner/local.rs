@@ -37,6 +37,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::core::models::host::telemetry::RttSource;
 use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::ip::scoped::Zone;
 use crate::core::models::ip::set::IpSet;
@@ -105,25 +106,42 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// IPv6 neighbour's hundreds pulls the estimate to whichever protocol answered
 /// more often and mis-times the other.
 ///
-/// **These numbers are owed a re-tune and are known to be too large.** They were
-/// set against advertisements observed 670 ms to 1.7 s after the first
-/// solicitation, which was not a round trip: the first solicitation had been
-/// destroyed by the burst it was sent in, and the interval measured was to an
-/// answer the *second* one provoked. Asked one at a time, this segment answers
-/// in 5 ms to 408 ms (`examples/ndp_pace.rs`). The right first timeout is
-/// therefore nearer 800 ms than 2 s, and [`min_rto`](RetryPolicy::min_rto)
-/// should not be holding a floor of a second — but the numbers stay put until a
-/// sweep that no longer bursts its solicitations has been measured, since
-/// tuning them against the old behaviour is what produced them.
+/// The measurement that sizes it has to come from solicitations sent **one per
+/// address**, since any other kind cannot say which attempt was answered.
+/// Asked that way on a live segment (`examples/ndp_pace.rs`): 5 ms for
+/// mains-powered neighbours, 26–222 ms for devices asleep on wifi, 408 ms for
+/// the slowest ever observed. 800 ms is that worst case with room to spare, and
+/// the sweep's own runs agree - answers to a first solicitation arrive at 2, 6
+/// and 197 ms.
+///
+/// An earlier version of this used 2 s on the belief that neighbours answer in
+/// 670 ms to 1.7 s. That interval was real and was not a round trip: it was
+/// measured from a first solicitation that the burst had already destroyed, to
+/// an answer the *second* one provoked.
+///
+/// [`without_cross_host_estimate`](RetryPolicy::without_cross_host_estimate) is
+/// what makes these numbers mean anything. Without it the scan's own fast
+/// answers pull an unmeasured neighbour's first timeout down to
+/// [`min_rto`](RetryPolicy::min_rto), and the floor becomes the real schedule:
+/// a capture showed every retry firing 804–1201 ms after its first attempt
+/// while this constant claimed 2 s. A neighbour's own estimate cannot fill the
+/// gap either, since an address is asked once per sweep and its estimate exists
+/// only after the probe it would have timed is already resolved.
+///
+/// **The cost of getting this wrong is the sweep's whole duration**, not just a
+/// retransmit: [`DEADLINE_CONFIG`] is widened to outlive the longest probe, so
+/// a 2 s first timeout was holding every LAN sweep open for six seconds of
+/// worst-case probe lifetime before it could conclude anything.
 const NDP_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     2,
-    Duration::from_millis(2_000),
-    Duration::from_millis(1_000),
+    Duration::from_millis(800),
+    Duration::from_millis(400),
     Duration::from_secs(3),
     1.5,
     0.2,
     None,
-);
+)
+.without_cross_host_estimate();
 
 /// Errors specific to local-network scanning, covering interface setup problems
 /// and packets that fail the sanity checks a discovery reply is expected to pass.
@@ -169,6 +187,40 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     20,
 );
 
+/// How long to leave between probes.
+///
+/// A thousand frames a second is nothing to a switch. On wifi it is not nothing
+/// at all — both first-attempt probes here are group-addressed, and
+/// group-addressed frames are the expensive case there — and slowing down does
+/// measurably help *first* attempts. Measured on a live wifi segment with
+/// `examples/ndp_pace.rs`, three sweeps of the same 253 addresses and 27
+/// neighbour-table candidates at each spacing, counting only replies to a first
+/// attempt:
+///
+/// ```text
+/// interval   solicitations answered   ARP requests answered
+///   1 ms         5, 3, 2 of 27              3, 3, 3 of 253
+///   5 ms         4, 7, 5 of 27              6, 5, 4 of 253
+///  10 ms        10, 7, 6 of 27              7, 5, 4 of 253
+/// ```
+///
+/// **That gain was not worth having, and this stays at a millisecond because of
+/// it.** A 10 ms wireless pace was tried and reverted: a LAN sweep went from
+/// 3.5 s to 9.6 s and found the same ten hosts. First-attempt answers are an
+/// input to *timing*, not to coverage — an address missed on the first attempt
+/// is recovered by the second or third, which is what
+/// [`RETRY_POLICY`] is for — so the whole gain was a better-attributed round
+/// trip on a couple of hosts, bought at three times the scan. The send phase
+/// also pushes the adaptive deadline out ahead of it, so the cost compounds
+/// rather than adding.
+///
+/// Two things to know before trying this again. Re-measured at 1, 2 and 3 ms
+/// the difference is inside the run-to-run noise, and the noise is large: two
+/// blocks an hour apart disagreed on the 1 ms arm by 3.3 against 6.0
+/// solicitations answered, because the segment's devices sleep and wake. And
+/// any future attempt has to be measured on *hosts found and hosts timed per
+/// second of scan*, which is the thing being traded, rather than on
+/// first-attempt rate, which is not.
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
 
 /// How many times the all-nodes solicitation is sent.
@@ -977,14 +1029,16 @@ impl LocalScanner {
                             self.since_first_asked(&subject, now)
                         );
                     }
-                    resolution.rtt
+                    resolution.rtt.map(|rtt| (rtt, RttSource::Direct))
                 }
                 // Not in the ledger, so either it answers the one confirmation
                 // an overheard address gets - unambiguous, because there is only
                 // ever one - or it is a neighbour talking to somebody else,
                 // which is worth asking about directly.
                 None => match self.confirmed_at.remove(&subject) {
-                    Some(sent_at) => Some(now.saturating_duration_since(sent_at)),
+                    Some(sent_at) => {
+                        Some((now.saturating_duration_since(sent_at), RttSource::Direct))
+                    }
                     None => {
                         info!(
                             verbosity = 2,
@@ -996,14 +1050,20 @@ impl LocalScanner {
                     }
                 },
             },
-            // Timed against the exact request it answers, which the echoed
-            // identifier and sequence name outright. This is the one IPv6 probe
-            // whose answers can be attributed: a neighbour that answers the
-            // third request rather than the first is measured against the third,
-            // so what comes out is a round trip and not the neighbour's sleep
-            // schedule. Several neighbours answering the same request each get
-            // their own measurement from it, because a segment-wide question is
-            // not used up by whoever replies first.
+            // Measured against the exact request it answers, which the echoed
+            // identifier and sequence name outright. That is what a neighbor
+            // advertisement can never do, and it is why this probe is timed at
+            // all: a neighbour that wakes in time for the third request is
+            // measured against the third rather than the first. Several
+            // neighbours answering the same request each get their own
+            // measurement from it, because a segment-wide question is not used
+            // up by whoever replies first.
+            //
+            // Recorded as [`RttSource::SegmentWide`], because knowing *which*
+            // request was answered does not make the interval a clean round
+            // trip: a node answering the whole segment waits before it does, so
+            // this is an upper bound and is reported only by a host that
+            // produced nothing better.
             //
             // A token this scan never sent belongs to somebody else's ping, and
             // a reply with no request on record cannot be an answer to one of
@@ -1016,7 +1076,10 @@ impl LocalScanner {
                     return Err(LocalScannerError::UnmappedRttSource(subject).into());
                 }
                 match self.solicitation.sent_at(identifier, sequence) {
-                    Some(sent_at) => Some(now.saturating_duration_since(sent_at)),
+                    Some(sent_at) => Some((
+                        now.saturating_duration_since(sent_at),
+                        RttSource::SegmentWide,
+                    )),
                     None => {
                         info!(
                             verbosity = 2,
@@ -1093,11 +1156,16 @@ impl LocalScanner {
     /// evidence the engine can obtain: the host is provably present, so the
     /// status is [`HostStatus::Up`] regardless of which protocol claimed it and
     /// regardless of whether the reply could be timed.
+    ///
+    /// `rtt` carries what kind of question produced it, because the host is what
+    /// ranks the two: a reply to a segment-wide probe is an upper bound rather
+    /// than a round trip, and pooling it with a directed probe's answer is what
+    /// reported a router that answers in 5 ms as answering in 37.
     fn record_response(
         &mut self,
         source_mac: MacAddr,
         source_addr: IpAddr,
-        rtt: Option<Duration>,
+        rtt: Option<(Duration, RttSource)>,
         protocol: StatusProtocol,
     ) {
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
@@ -1124,8 +1192,10 @@ impl LocalScanner {
             host.record_evidence(HostStatus::Up, StatusReason::basic(protocol.clone()));
 
             let mut changed = rtt.is_some() || !was_up;
-            if let Some(rtt) = rtt {
-                host.add_rtt(rtt);
+            match rtt {
+                Some((rtt, RttSource::Direct)) => host.add_rtt(rtt),
+                Some((rtt, RttSource::SegmentWide)) => host.add_segment_wide_rtt(rtt),
+                None => {}
             }
 
             is_new_ip = host.add_ip(source_addr);
@@ -1143,13 +1213,26 @@ impl LocalScanner {
             self.deadline.mark_activity();
         }
 
-        if let Some(rtt) = rtt {
+        if let Some((rtt, source)) = rtt {
+            // Named in the log, because five neighbours reporting the same
+            // figure to the millisecond is a property of the probe rather than
+            // of the network, and a reader who cannot tell which kind of sample
+            // this is has no way to know that.
+            let asked = match source {
+                RttSource::Direct => "",
+                RttSource::SegmentWide => " to the all-nodes echo",
+            };
             info!(
                 incoming,
                 verbosity = 2,
-                "{source_addr} responded in {}ms",
+                "{source_addr} responded in {}ms{asked}",
                 rtt.as_millis()
             );
+            // Both kinds steer the deadline, which is asking a different
+            // question from the one a reported latency answers: how long this
+            // sweep should keep listening. A neighbour that takes 200 ms to
+            // answer the segment is 200 ms this scan has to stay open for,
+            // whatever inflated it.
             self.deadline.record_rtt(rtt);
         }
 
@@ -1157,6 +1240,99 @@ impl LocalScanner {
             && let Some(tx) = &self.dns_tx
         {
             let _ = tx.send(source_addr);
+        }
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The slowest answer to a *first* solicitation ever measured on a real
+    /// segment, asking one address at a time so the attribution is certain
+    /// (`examples/ndp_pace.rs`). Everything about this schedule is sized from
+    /// it, so it is stated once here rather than implied by the constants.
+    const SLOWEST_MEASURED_ANSWER: Duration = Duration::from_millis(408);
+
+    /// The solicitation schedule has to outlast the replies without the sweep
+    /// paying for the slack, and both halves of that are easy to lose.
+    ///
+    /// Too short and a first attempt is retransmitted before the neighbour
+    /// could have answered, which does not merely waste a packet: two
+    /// solicitations are identical on the wire, so the round trip is discarded
+    /// rather than delayed. Too long and every sweep pays, because
+    /// `DEADLINE_CONFIG` is widened to outlive the longest probe - the 2 s
+    /// version of this constant was holding every LAN sweep open for six
+    /// seconds of worst-case probe lifetime before it could conclude anything.
+    #[test]
+    fn the_solicitation_schedule_outlasts_the_replies_without_the_sweep_paying_for_it() {
+        assert!(
+            NDP_RETRY_POLICY.initial_rto > SLOWEST_MEASURED_ANSWER,
+            "a first attempt must outlast the slowest answer measured, or the \
+             retry lands first and Karn's rule discards the sample"
+        );
+        assert!(
+            NDP_RETRY_POLICY.min_rto >= SLOWEST_MEASURED_ANSWER / 2,
+            "the floor is the schedule for every neighbour with no measurement \
+             of its own, so it cannot sit far below where the answers are"
+        );
+        assert!(
+            NDP_RETRY_POLICY.worst_case_probe_lifetime() < Duration::from_secs(3),
+            "the sweep's deadline is sized from this, so slack here is charged \
+             to every scan whether or not any IPv6 neighbour is slow"
+        );
+    }
+
+    /// A neighbour with no measurement of its own must be timed by the policy,
+    /// never by what some other neighbour on the segment answered in.
+    ///
+    /// The two populations on one wifi link differ by two orders of magnitude -
+    /// a mains-powered router at 5 ms against a sleeping phone at 400 - so the
+    /// scan-wide estimate describes neither. This is the guard for the defect
+    /// that made a declared 2 s timeout fire at 804-1201 ms in a capture.
+    #[test]
+    fn a_neighbours_schedule_is_not_inherited_from_a_faster_one() {
+        let router: IpAddr = "fe80::1".parse().unwrap();
+        let sleeper: IpAddr = "fe80::2".parse().unwrap();
+
+        // The largest wait the floor could ever produce. Anything at or below
+        // it means the scan's own fast answer was applied to a neighbour that
+        // has told it nothing, which is the whole defect.
+        let floor = NDP_RETRY_POLICY
+            .min_rto
+            .mul_f64(1.0 + NDP_RETRY_POLICY.jitter);
+
+        // Across seeds, because the schedule is jittered and one draw is not
+        // evidence about the rule.
+        for seed in [1, 0x5EED, 0xC0FFEE, u64::MAX] {
+            let mut ledger: Ledger = ProbeLedger::seeded(NDP_RETRY_POLICY, 4, seed);
+            let start = Instant::now();
+
+            ledger.arm(router, router, (), start);
+            ledger.resolve(&router, None, start + Duration::from_millis(5));
+
+            ledger.arm(sleeper, sleeper, (), start);
+            let due = ledger.next_due().expect("the sleeper has a timer");
+
+            assert!(
+                due.saturating_duration_since(start) > floor,
+                "a router answering in 5 ms must not schedule the retry for a \
+                 neighbour that has not answered at all (seed {seed})"
+            );
+            assert!(
+                due.saturating_duration_since(start) > SLOWEST_MEASURED_ANSWER,
+                "and the wait must still outlast the slowest answer measured \
+                 (seed {seed})"
+            );
         }
     }
 }

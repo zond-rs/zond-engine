@@ -27,6 +27,7 @@ use common::fake_lan::{FakeLan, LanHost, LanProbe};
 use common::*;
 use pnet::datalink::MacAddr;
 use zond_engine::core::models::host::HostStatus;
+use zond_engine::core::models::host::telemetry::RttSource;
 use zond_engine::core::models::ip::set::IpSet;
 use zond_engine::core::session::ScanSession;
 use zond_engine::scanner::NetworkExplorer;
@@ -608,6 +609,74 @@ async fn a_neighbour_answering_only_the_all_nodes_echo_is_timed() {
     assert!(
         host.min_rtt().is_some(),
         "an echo reply names the request it answers, so it yields a round trip"
+    );
+}
+
+/// A host that answers both an addressed probe and the segment-wide echo
+/// reports the addressed probe's round trip, not a blend of the two.
+///
+/// The regression guard for what timing the echo cost on its first real run.
+/// A router answering ARP in 7 ms and a solicitation in 5 was reported at
+/// 37 ms, because its two echo replies at 71 and 72 ms had joined the same
+/// sample window and pulled the median between them. Every device on the
+/// segment moved the same way: the latency figure got worse the moment IPv6
+/// started contributing to it.
+///
+/// A node answering a question put to the whole segment waits before it
+/// answers - implementations spread their replies deliberately - so the
+/// interval is an upper bound rather than a round trip, however precisely the
+/// echoed token attributes it.
+#[tokio::test]
+async fn a_directed_probe_outranks_the_segment_wide_one_for_latency() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    // The shape a real device has: prompt when asked directly, and an order of
+    // magnitude slower to answer a question put to the whole segment.
+    let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A)).host(
+        peer_v6,
+        LanHost::at(PEER_B).echo_delay(Duration::from_millis(120)),
+    );
+
+    // The neighbour is in the target set, so it is asked directly *and* hears
+    // the segment-wide echo - which is the case the ranking exists for.
+    let mut targets: Vec<IpAddr> = (10..=20).map(v4).collect();
+    targets.push(peer_v6);
+    let session = sweep(&lan, &targets, Scope::Sweep).await;
+
+    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    let samples = host.telemetry().history();
+
+    // Asserted against the samples themselves rather than a wall-clock bound.
+    // Both replies are delayed by whatever else the machine is doing, so a
+    // threshold like "under 100 ms" measures the test host under load and not
+    // the rule: this passed alone and failed in a full-suite run, reporting
+    // 426 ms for a reply the simulator sent immediately.
+    let direct: Vec<Duration> = samples
+        .iter()
+        .filter(|sample| sample.source == RttSource::Direct)
+        .map(|sample| sample.rtt)
+        .collect();
+    assert!(
+        !direct.is_empty(),
+        "the solicitation this neighbour answered has to be recorded as a \
+         directed sample, or the ranking has nothing to prefer"
+    );
+    assert!(
+        samples
+            .iter()
+            .any(|sample| sample.source == RttSource::SegmentWide),
+        "the neighbour answered the all-nodes echo too, so both kinds must be on \
+         record - a run where only one kind exists would pass either way"
+    );
+
+    let reported = host
+        .median_rtt()
+        .expect("a neighbour that answered is timed");
+    let slowest_direct = direct.iter().max().copied().expect("a directed sample");
+    assert!(
+        reported <= slowest_direct,
+        "the reported latency has to come from the directed samples alone; \
+         {reported:?} exceeds the slowest of them ({slowest_direct:?}), so the \
+         segment-wide reply was blended in"
     );
 }
 

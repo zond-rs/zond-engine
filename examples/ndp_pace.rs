@@ -71,7 +71,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 use pnet::datalink::{MacAddr, NetworkInterface};
-use pnet::packet::ethernet::EthernetPacket;
+use pnet::packet::Packet;
+use pnet::packet::arp::{ArpOperations, ArpPacket};
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use zond_engine::network::channel;
 use zond_engine::protocols::{arp, ndp};
 use zond_engine::system::interface::{NetworkInterfaceExtension, get_prioritized_interfaces};
@@ -274,8 +276,12 @@ async fn main() {
             .max(Duration::from_millis(1)),
     );
     flood_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut flood_host: u8 = 1;
-    let mut flooded: u32 = 0;
+    let mut flood_host: u8 = 0;
+    // Per-address, so the ARP half is a measurement rather than background
+    // noise: the sweep it reproduces asks each address once, and whether that
+    // one request is answered is the same question being asked of solicitation.
+    let mut arp_probes: Vec<(Ipv4Addr, Instant, Option<Instant>)> = Vec::new();
+    let mut arp_index: HashMap<Ipv4Addr, usize> = HashMap::new();
 
     let mut last_sent_at = Instant::now();
     let mut sending = true;
@@ -290,6 +296,13 @@ async fn main() {
                 let Some(bytes) = frame else { break };
                 let now = Instant::now();
                 let Some(frame) = EthernetPacket::new(&bytes) else { continue };
+                if let Some(sender) = arp_reply_sender(&frame)
+                    && let Some(probe) = arp_index.get(&sender).map(|i| &mut arp_probes[*i])
+                    && probe.2.is_none() {
+                    probe.2 = Some(now);
+                    continue;
+                }
+
                 let Some(target) = ndp::advertised_target(&frame) else { continue };
 
                 // Only the first advertisement counts. A neighbour may repeat
@@ -324,17 +337,22 @@ async fn main() {
                 }
             }
 
-            _ = flood_ticker.tick(), if flood_source.is_some() => {
+            _ = flood_ticker.tick(), if flood_source.is_some() && flood_host < 254 => {
                 let Some(from) = flood_source else { continue };
-                // Sequential addresses across the /24, which is what a sweep
-                // emits: one broadcast per address, none of them resolvable
-                // from cache.
-                flood_host = flood_host.wrapping_add(1).max(1);
+                // One request per address across the /24, once, exactly as the
+                // sweep emits them - so "answered" here means answered on the
+                // first attempt, the only attempt a round trip can come from.
+                flood_host += 1;
                 let octets = from.octets();
                 let target = Ipv4Addr::new(octets[0], octets[1], octets[2], flood_host);
+                if target == from {
+                    continue;
+                }
                 if let Ok(packet) = arp::create_packet(&mac, MacAddr::broadcast(), &from, target) {
+                    let now = Instant::now();
                     handle.tx.send_to(&packet, None);
-                    flooded += 1;
+                    arp_index.insert(target, arp_probes.len());
+                    arp_probes.push((target, now, None));
                 }
             }
 
@@ -342,10 +360,28 @@ async fn main() {
         }
     }
 
-    report(&probes, &unasked, interval, flooded);
+    report(&probes, &unasked, interval, &arp_probes, flood);
 }
 
-fn report(probes: &[Probe], unasked: &[Ipv6Addr], interval: Duration, flooded: u32) {
+/// The sender address of an ARP reply, or `None` for any other frame.
+fn arp_reply_sender(frame: &EthernetPacket) -> Option<Ipv4Addr> {
+    if frame.get_ethertype() != EtherTypes::Arp {
+        return None;
+    }
+    let arp = ArpPacket::new(frame.payload())?;
+    if arp.get_operation() != ArpOperations::Reply {
+        return None;
+    }
+    Some(arp.get_sender_proto_addr())
+}
+
+fn report(
+    probes: &[Probe],
+    unasked: &[Ipv6Addr],
+    interval: Duration,
+    arp_probes: &[(Ipv4Addr, Instant, Option<Instant>)],
+    arp_interval: Option<Duration>,
+) {
     println!("{:<46} answered", "address");
     println!("{}", "─".repeat(60));
     for probe in probes {
@@ -363,22 +399,46 @@ fn report(probes: &[Probe], unasked: &[Ipv6Addr], interval: Duration, flooded: u
 
     println!("{}", "─".repeat(60));
     println!(
-        "{} ms apart{}: {} of {} first solicitations answered",
+        "ndp  {:>4} ms apart: {} of {} first solicitations answered",
         interval.as_millis(),
-        match flooded {
-            0 => String::new(),
-            n => format!(" under {n} broadcast ARP"),
-        },
         rtts.len(),
         probes.len(),
     );
     if let (Some(fastest), Some(slowest)) = (rtts.first(), rtts.last()) {
         println!(
-            "round trips: min {:.1} ms, median {:.1} ms, max {:.1} ms",
+            "     round trips: min {:.1} ms, median {:.1} ms, max {:.1} ms",
             millis(*fastest),
             millis(rtts[rtts.len() / 2]),
             millis(*slowest),
         );
+    }
+
+    // The IPv4 half of the same question. The sweep asks each address once at
+    // this spacing, so a request that goes unanswered here is a host the scan
+    // would have to retry for - and a retry is a round trip it cannot report.
+    if let Some(arp_interval) = arp_interval {
+        let mut arp_rtts: Vec<Duration> = arp_probes
+            .iter()
+            .filter_map(|(_, sent, answered)| {
+                answered.map(|at| at.saturating_duration_since(*sent))
+            })
+            .collect();
+        arp_rtts.sort_unstable();
+
+        println!(
+            "arp  {:>4} ms apart: {} of {} first requests answered",
+            arp_interval.as_millis(),
+            arp_rtts.len(),
+            arp_probes.len(),
+        );
+        if let (Some(fastest), Some(slowest)) = (arp_rtts.first(), arp_rtts.last()) {
+            println!(
+                "     round trips: min {:.1} ms, median {:.1} ms, max {:.1} ms",
+                millis(*fastest),
+                millis(arp_rtts[arp_rtts.len() / 2]),
+                millis(*slowest),
+            );
+        }
     }
     println!();
 }
