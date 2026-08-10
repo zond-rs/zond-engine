@@ -28,9 +28,12 @@
 //! runs on them needs a real conversation with the service. Splitting the two lets
 //! each use the transport that suits it.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 
 use tokio::net::TcpStream;
+
+use crate::core::models::ip::scoped::ScopedIp;
+use crate::warn;
 use tokio::time::timeout;
 
 use crate::core::models::port::{Port, PortState, Protocol};
@@ -58,25 +61,30 @@ pub async fn detect(ctx: &ScanContext) {
         }
     });
 
-    for (ip, port) in targets {
+    for (target, port) in targets {
         if ctx.handle.should_stop() {
             break;
         }
-        pool.admit(fingerprint_one(ip, port)).await;
+        pool.admit(fingerprint_one(target, port)).await;
     }
 
     pool.drain().await;
 }
 
-/// Every open TCP `(ip, port)` in the store, snapshotted so the DashMap is not
-/// borrowed across the connections that follow.
-fn open_tcp_ports(ctx: &ScanContext) -> Vec<(IpAddr, u16)> {
+/// Every open TCP `(address, port)` in the store, snapshotted so the DashMap is
+/// not borrowed across the connections that follow.
+///
+/// The address is taken from the host rather than from the store key, because
+/// the key is only the address and a link-local one cannot be connected to
+/// without the interface it was seen on. The host carries that; see
+/// [`Host::scoped_ip`](crate::core::models::host::Host::scoped_ip).
+fn open_tcp_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16)> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
-        let ip = *host.key();
+        let address = host.value().scoped_ip();
         for port in host.value().ports() {
             if port.protocol() == Protocol::Tcp && port.state() == PortState::Open {
-                targets.push((ip, port.number()));
+                targets.push((address.clone(), port.number()));
             }
         }
     }
@@ -86,8 +94,20 @@ fn open_tcp_ports(ctx: &ScanContext) -> Vec<(IpAddr, u16)> {
 /// Connects to one open port and fingerprints it, returning the upgraded [`Port`]
 /// or `None` if the connection could not be established (the port keeps whatever
 /// the discovery phase already recorded).
-async fn fingerprint_one(ip: IpAddr, port_number: u16) -> Option<(IpAddr, Port)> {
-    let addr = SocketAddr::new(ip, port_number);
+///
+/// A link-local address with no interface recorded against it yields no socket
+/// address at all, and is skipped with a word about why. Attempting the
+/// connection anyway would fail with an error describing the network, which is a
+/// claim about the neighbour rather than about what this host knows.
+async fn fingerprint_one(target: ScopedIp, port_number: u16) -> Option<(IpAddr, Port)> {
+    let Some(addr) = target.to_socket_addr(port_number) else {
+        warn!(
+            verbosity = 1,
+            "Cannot fingerprint {target}:{port_number}: no interface recorded for a link-local address"
+        );
+        return None;
+    };
+    let ip = target.addr();
     let stream = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr))
         .await
         .ok()?

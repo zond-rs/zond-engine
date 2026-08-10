@@ -9,6 +9,7 @@
 use std::net::{IpAddr, Ipv6Addr};
 
 pub mod range;
+pub mod scoped;
 pub mod set;
 
 #[derive(Debug, Default)]

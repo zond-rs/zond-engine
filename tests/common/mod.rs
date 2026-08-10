@@ -272,7 +272,10 @@ pub fn scanner_interface() -> NetworkInterface {
     NetworkInterface {
         name: "sim0".to_string(),
         description: String::new(),
-        index: 0,
+        // Non-zero: a scope id of zero is what "no interface" means to the
+        // kernel, so a fixture using it could not tell a recorded zone from a
+        // missing one.
+        index: 7,
         mac: Some(SCANNER_MAC),
         ips,
         flags: 0,

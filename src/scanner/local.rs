@@ -38,6 +38,7 @@ use tokio::time::Interval;
 
 use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
+use crate::core::models::ip::scoped::Zone;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::retry::{Due, ProbeLedger, RetryConfig, RetryPolicy};
 use crate::core::models::timer::ScanBudget;
@@ -224,6 +225,14 @@ struct SourceIdentity {
     mac: MacAddr,
     ipv4: Option<Ipv4Addr>,
     link_local_ipv6: Option<Ipv6Addr>,
+    /// The interface itself, which this scanner is the only kind that knows.
+    ///
+    /// Every neighbour it finds was reached across this one segment, so every
+    /// link-local address it records is valid on this interface and no other.
+    /// Recording that alongside the host is what makes those addresses usable
+    /// by the phases that come after discovery; see
+    /// [`ScopedIp`](crate::core::models::ip::scoped::ScopedIp).
+    zone: Zone,
 }
 
 impl SourceIdentity {
@@ -262,6 +271,7 @@ impl SourceIdentity {
             mac,
             ipv4,
             link_local_ipv6,
+            zone: Zone::new(intf.index, intf.name.clone()),
         })
     }
 }
@@ -709,6 +719,7 @@ impl LocalScanner {
             if host.mac().is_none() {
                 host.set_mac(source_mac.into_core());
             }
+            host.set_zone(self.identity.zone.clone());
 
             // The protocol name is the whole of the evidence here - a reply came
             // off the segment carrying this host's own MAC - so there is nothing

@@ -16,6 +16,7 @@
 //! stages, leveraging high-performance merging logic to collate reachability,
 //! hardware, OS, and service discovery data into a single forensic record.
 
+use crate::core::models::ip::scoped::{ScopedIp, Zone};
 use crate::core::models::port::Port;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -85,6 +86,19 @@ pub struct Host {
     /// physical hardware (MAC) and vendor information.
     hardware: Option<HardwareInfo>,
 
+    /// The interface this host was observed through, when one is known.
+    ///
+    /// Recorded by the strategies that work at the link layer, which are the
+    /// only ones that can know it: a routed probe crosses whatever path the
+    /// kernel chose and says nothing about which interface it left by.
+    ///
+    /// It is not decoration. An IPv6 link-local address is meaningless without
+    /// it — `fe80::1` names a different machine on every segment, and a socket
+    /// cannot be opened to one without the interface's scope id — so this is
+    /// what makes the addresses local discovery finds usable by everything that
+    /// runs after it. See [`ScopedIp`].
+    zone: Option<Zone>,
+
     /// Network performance and path telemetry.
     telemetry: HostTelemetry,
 
@@ -121,6 +135,7 @@ impl Host {
             reasons: HashSet::new(),
             os: None,
             hardware: None,
+            zone: None,
             telemetry: HostTelemetry::default(),
             network_roles: HashSet::new(),
             scripts: None,
@@ -163,6 +178,34 @@ impl Host {
     /// Returns physical hardware information, if any.
     pub fn hardware(&self) -> Option<&HardwareInfo> {
         self.hardware.as_ref()
+    }
+
+    /// Returns the interface this host was observed through, if known.
+    pub fn zone(&self) -> Option<&Zone> {
+        self.zone.as_ref()
+    }
+
+    /// Records the interface this host was observed through.
+    ///
+    /// Only the first is kept. A host reachable through two interfaces is a real
+    /// situation, and picking the earlier sighting is arbitrary but stable —
+    /// where overwriting would make the address a scan reports depend on which
+    /// strategy happened to finish last.
+    pub fn set_zone(&mut self, zone: Zone) {
+        self.zone.get_or_insert(zone);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// This host's primary address, carrying the interface it is valid on.
+    ///
+    /// The address to hand anything that intends to *reach* the host, rather
+    /// than merely name it: [`ScopedIp::to_socket_addr`] refuses rather than
+    /// building a socket address that cannot be connected to.
+    pub fn scoped_ip(&self) -> ScopedIp {
+        match &self.zone {
+            Some(zone) => ScopedIp::scoped(self.primary_ip, zone.clone()),
+            None => ScopedIp::unscoped(self.primary_ip),
+        }
     }
 
     /// Returns network performance and path telemetry.
@@ -418,6 +461,10 @@ impl Host {
             } else {
                 self.hardware = Some(other_hw);
             }
+        }
+
+        if let Some(other_zone) = other.zone {
+            self.zone.get_or_insert(other_zone);
         }
 
         self.telemetry.merge(other.telemetry);

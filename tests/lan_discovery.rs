@@ -130,6 +130,52 @@ async fn an_ipv6_neighbour_is_alive_by_the_probe_that_found_it() {
     );
 }
 
+/// A neighbour found at a link-local address carries the interface it was found
+/// on, and that address can be connected to.
+///
+/// Without it, local discovery hands every later phase an address it cannot use.
+/// `fe80::AA` names a different machine on every segment, and a `SocketAddrV6`
+/// with a zero scope id is refused by the kernel however reachable the neighbour
+/// is — so service detection, fingerprinting and the connect fallback would each
+/// fail against a host discovery had just proved was there, with an error
+/// describing the network rather than the omission.
+///
+/// The local scanner is the only strategy that can supply this. A routed probe
+/// crosses whatever path the kernel chose and never learns which interface it
+/// left by; this one is bound to a segment by construction.
+#[tokio::test]
+async fn an_ipv6_neighbour_carries_the_interface_it_was_found_on() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let lan = FakeLan::new().host(peer_v6, LanHost::at(PEER_B));
+
+    let targets: Vec<IpAddr> = (10..=20).map(v4).collect();
+    let session = sweep(&lan, &targets, Scope::Sweep).await;
+
+    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    let zone = host
+        .zone()
+        .expect("a link-local neighbour needs its interface");
+    assert_eq!(zone.name(), "sim0");
+
+    let address = host.scoped_ip();
+    assert_eq!(address.to_string(), "fe80::aa%sim0");
+    assert!(
+        !address.is_unusable(),
+        "an address discovery found must be one the next phase can open a socket to"
+    );
+    match address
+        .to_socket_addr(443)
+        .expect("a scoped address is usable")
+    {
+        std::net::SocketAddr::V6(v6) => assert_eq!(
+            v6.scope_id(),
+            7,
+            "the scope id is what makes a link-local destination reachable"
+        ),
+        std::net::SocketAddr::V4(_) => panic!("an IPv6 host produced a V4 socket address"),
+    }
+}
+
 /// An address with nothing on it produces no host. Discovery must not invent a
 /// neighbour from silence.
 #[tokio::test]
