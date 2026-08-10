@@ -50,7 +50,7 @@ use crate::scanner::NetworkExplorer;
 use crate::system::interface::NetworkInterfaceExtension;
 use crate::{error, info};
 
-use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6EchoProtocol, ProtocolMatch};
+use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6EchoProtocol, NdpProtocol, ProtocolMatch};
 
 /// Outstanding ARP requests and the schedule they are retried on.
 ///
@@ -374,7 +374,7 @@ impl NetworkExplorer for LocalScanner {
                     // only work it intends to do.
                     let now = Instant::now();
                     if let Some(target) = self.retries.pop_front() {
-                        self.send_arp_request(target, now);
+                        self.send_probe(target, now);
                     } else if self.solicitation.is_due(now) {
                         self.send_solicitation(now);
                     } else if !sending_finished {
@@ -467,7 +467,11 @@ impl LocalScanner {
             identity,
             eth_handle,
             deadline,
-            protocols: vec![Box::new(ArpProtocol), Box::new(Icmpv6EchoProtocol)],
+            protocols: vec![
+                Box::new(ArpProtocol),
+                Box::new(NdpProtocol),
+                Box::new(Icmpv6EchoProtocol),
+            ],
             ledger: Ledger::new(retry, target_count),
             due: Vec::new(),
             retries: VecDeque::new(),
@@ -522,23 +526,39 @@ impl LocalScanner {
         }
     }
 
-    /// Rebuilds and sends the ARP request for `target`.
+    /// Rebuilds and sends the probe for `target`, whichever kind its address
+    /// calls for: an ARP request over IPv4, a neighbor solicitation over IPv6.
     ///
-    /// Nothing about the request is kept between attempts, because nothing needs
-    /// to be: the frame is a function of this scanner's identity and the address
+    /// Nothing about either is kept between attempts, because nothing needs to
+    /// be: the frame is a function of this scanner's identity and the address
     /// being asked about, and rebuilding it is cheaper than holding a copy per
     /// outstanding probe.
-    fn send_arp_request(&mut self, target: IpAddr, now: Instant) {
-        let (IpAddr::V4(target_v4), Some(source_v4)) = (target, self.identity.ipv4) else {
-            return;
+    fn send_probe(&mut self, target: IpAddr, now: Instant) {
+        let packet = match target {
+            IpAddr::V4(target_v4) => {
+                let Some(source_v4) = self.identity.ipv4 else {
+                    return;
+                };
+                protocol::arp::create_packet(
+                    &self.identity.mac,
+                    MacAddr::broadcast(),
+                    &source_v4,
+                    target_v4,
+                )
+            }
+            IpAddr::V6(target_v6) => {
+                let Some(source_v6) = self.identity.link_local_ipv6 else {
+                    return;
+                };
+                protocol::ndp::create_neighbor_solicitation(
+                    &self.identity.mac,
+                    &source_v6,
+                    target_v6,
+                )
+            }
         };
 
-        match protocol::arp::create_packet(
-            &self.identity.mac,
-            MacAddr::broadcast(),
-            &source_v4,
-            target_v4,
-        ) {
+        match packet {
             Ok(packet) => {
                 self.eth_handle.tx.send_to(&packet, None);
                 self.ledger.arm(target, target, (), now);
@@ -546,10 +566,7 @@ impl LocalScanner {
             // Not armed, so the ledger's charge for this attempt stands and the
             // address runs out of attempts on schedule rather than waiting
             // outstanding forever.
-            Err(e) => error!(
-                verbosity = 1,
-                "Failed to rebuild ARP request for {target}: {e}"
-            ),
+            Err(e) => error!(verbosity = 1, "Failed to rebuild probe for {target}: {e}"),
         }
     }
 

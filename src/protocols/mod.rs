@@ -17,7 +17,7 @@ pub mod tcp;
 pub mod udp;
 pub mod utils;
 
-use crate::core::models::ip::range::Ipv4Range;
+use crate::core::models::ip::range::{Ipv4Range, Ipv6Range};
 use crate::core::models::ip::set::IpSet;
 use pnet::datalink::MacAddr;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
@@ -40,6 +40,17 @@ pub fn eth_packet_iter(
         .into_iter()
         .flatten();
 
+    // One solicitation per IPv6 target, the direct counterpart of the ARP
+    // request above. Unlike the all-nodes echo this is not gated on sweeping:
+    // it asks about one address, so a targeted run can send it without waking
+    // the rest of the segment - which is what makes a targeted IPv6 scan
+    // possible at all.
+    let ndp_iter = link_local
+        .as_ref()
+        .map(|v6| create_ndp_iter(local_mac, v6, ip_set))
+        .into_iter()
+        .flatten();
+
     // The ICMPv6 probe is an all-nodes solicitation - it makes every host on
     // the segment answer. That's what discovery wants, but a targeted scan
     // must not sweep, so it's gated here.
@@ -51,7 +62,33 @@ pub fn eth_packet_iter(
         .into_iter()
         .flatten();
 
-    Ok(Box::new(arp_iter.chain(icmp_iter)))
+    Ok(Box::new(arp_iter.chain(ndp_iter).chain(icmp_iter)))
+}
+
+/// One neighbor solicitation per IPv6 address in `ip_set`.
+///
+/// Ranges are expanded the same way ARP's are, and bounded the same way: the
+/// classifier refuses an IPv6 range too large to walk long before it reaches
+/// here, so an unbounded expansion is not reachable through the scan path.
+fn create_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> PacketIter {
+    let local_mac = *local_mac;
+    let src_addr = *src_addr;
+    let ranges: Vec<Ipv6Range> = ip_set.v6().to_vec();
+
+    let iter = ranges
+        .into_iter()
+        .flat_map(|range| {
+            let start: u128 = range.start_addr.into();
+            let end: u128 = range.end_addr.into();
+            (start..=end).map(Ipv6Addr::from)
+        })
+        .filter_map(move |target| {
+            ndp::create_neighbor_solicitation(&local_mac, &src_addr, target)
+                .ok()
+                .map(|packet| (packet, IpAddr::V6(target)))
+        });
+
+    Box::new(iter)
 }
 
 pub fn create_arp_iter(

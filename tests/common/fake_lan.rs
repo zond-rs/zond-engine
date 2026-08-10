@@ -39,8 +39,9 @@ use pnet::datalink::{DataLinkSender, MacAddr, NetworkInterface};
 use pnet::packet::Packet;
 use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use pnet::packet::icmpv6::Icmpv6Types;
 use pnet::packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
+use pnet::packet::icmpv6::ndp::{MutableNeighborAdvertPacket, NeighborSolicitPacket};
+use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -55,8 +56,28 @@ use super::fake_net::{Loss, SplitMix64};
 const ARP_LEN: usize = 28;
 const MIN_ETH_FRAME: usize = 60;
 
+/// Pads `frame` out to the minimum Ethernet payload, leaving anything already
+/// longer alone.
+///
+/// `Vec::resize` is the obvious call here and it is wrong in one direction: it
+/// sets the length rather than raising it, so a frame longer than the minimum is
+/// *truncated*. An ARP reply is 42 bytes and gets padded, which is why that went
+/// unnoticed; a neighbor advertisement is 78 and was being cut to 60, leaving
+/// six bytes where a 24-byte message should be. The scanner then read it as no
+/// advertisement at all — a reply the simulated host had sent and the simulated
+/// wire destroyed.
+fn pad_to_min_frame(frame: &mut Vec<u8>) {
+    if frame.len() < MIN_ETH_FRAME {
+        frame.resize(MIN_ETH_FRAME, 0);
+    }
+}
+
 /// An ICMPv6 echo header: type, code, checksum, identifier, sequence number.
 const ICMPV6_ECHO_LEN: usize = 8;
+
+/// A neighbor advertisement without options: type, code, checksum, flags and
+/// reserved, then the 16-byte target address.
+const NDP_ADVERT_LEN: usize = 24;
 
 /// The default seed, so a segment built with [`FakeLan::new`] still reproduces.
 const DEFAULT_SEED: u64 = 0x1A9E_5EED_1A9E_5EED;
@@ -130,6 +151,10 @@ pub enum LanProbe {
     /// to one address, so it is logged on its own terms: seeing several is a
     /// sweep repeating the question, not a sweep retrying a target.
     Solicitation { at: Instant },
+    /// A neighbor solicitation for one address. The IPv6 counterpart of
+    /// [`LanProbe::Arp`], and counted the same way: more than one for an address
+    /// means the scanner retried.
+    Solicit { target: Ipv6Addr, at: Instant },
 }
 
 /// A simulated Ethernet segment a [`LocalScanner`] can be pointed at.
@@ -242,7 +267,15 @@ impl DataLinkSender for FakeSegment {
 
         match frame.get_ethertype() {
             EtherTypes::Arp => self.answer_arp(&frame),
-            EtherTypes::Ipv6 => self.answer_solicitation(&frame),
+            // The two IPv6 probes are told apart by their ICMPv6 type, not by
+            // the frame: one asks the whole segment, the other asks about one
+            // address, and answering them identically is what let the engine
+            // credit an echo reply to neighbour discovery for as long as it did.
+            EtherTypes::Ipv6 => match ip::icmpv6_type_from_eth(&frame) {
+                Some(Icmpv6Types::NeighborSolicit) => self.answer_neighbor_solicit(&frame),
+                Some(Icmpv6Types::EchoRequest) => self.answer_all_nodes_echo(&frame),
+                _ => {}
+            },
             // Nothing else is a discovery probe, so nothing else is answered.
             _ => {}
         }
@@ -305,12 +338,45 @@ impl FakeSegment {
         }
     }
 
+    /// Answers a neighbor solicitation, if the address it asks about is one of
+    /// this segment's declared hosts.
+    ///
+    /// Unlike the all-nodes echo, exactly one host can answer: the message names
+    /// the address it is about. A host declared here answers whatever it thinks
+    /// of being scanned, which is the property that makes solicitation worth
+    /// sending — replying is not optional in the way replying to a multicast
+    /// echo is.
+    fn answer_neighbor_solicit(&mut self, frame: &EthernetPacket) {
+        let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
+            return;
+        };
+        let Some(target) = solicited_target(frame) else {
+            return;
+        };
+        let scanner_mac = frame.get_source();
+
+        self.log(LanProbe::Solicit {
+            target,
+            at: Instant::now(),
+        });
+
+        let Some(host) = self.hosts.get(&IpAddr::V6(target)).copied() else {
+            return;
+        };
+        if self.admit(IpAddr::V6(target), host.loss) {
+            return;
+        }
+        if let Some(reply) = neighbor_advertisement(host.mac, target, scanner_mac, scanner_ip) {
+            self.deliver(reply, host.delay);
+        }
+    }
+
     /// Answers the ICMPv6 all-nodes solicitation on behalf of every IPv6 host
     /// declared on the segment.
     ///
     /// Unlike ARP this probe is not sent per target: one multicast goes out and
     /// any neighbour may answer, so every declared IPv6 host gets the chance to.
-    fn answer_solicitation(&mut self, frame: &EthernetPacket) {
+    fn answer_all_nodes_echo(&mut self, frame: &EthernetPacket) {
         let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
             return;
         };
@@ -403,7 +469,50 @@ fn arp_reply(
     let mut frame = Vec::with_capacity(MIN_ETH_FRAME);
     frame.extend_from_slice(&header);
     frame.extend_from_slice(&payload);
-    frame.resize(MIN_ETH_FRAME, 0);
+    pad_to_min_frame(&mut frame);
+    Some(frame)
+}
+
+/// The address a neighbor solicitation asks about.
+fn solicited_target(frame: &EthernetPacket) -> Option<Ipv6Addr> {
+    let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
+    Some(NeighborSolicitPacket::new(packet.payload())?.get_target_addr())
+}
+
+/// A neighbor advertisement from `host_mac` announcing `target`, addressed back
+/// to the scanner that asked.
+fn neighbor_advertisement(
+    host_mac: MacAddr,
+    target: Ipv6Addr,
+    scanner_mac: MacAddr,
+    scanner_ip: Ipv6Addr,
+) -> Option<Vec<u8>> {
+    let mut body = vec![0u8; NDP_ADVERT_LEN];
+    {
+        let mut advert = MutableNeighborAdvertPacket::new(&mut body)?;
+        advert.set_icmpv6_type(Icmpv6Types::NeighborAdvert);
+        advert.set_icmpv6_code(Icmpv6Code(0));
+        // Solicited and override, which is what an answer to a solicitation
+        // carries.
+        advert.set_flags(0x60);
+        advert.set_target_addr(target);
+    }
+
+    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6).ok()?;
+    let ipv6 = ip::create_ipv6_header(
+        target,
+        scanner_ip,
+        body.len() as u16,
+        IpNextHeaderProtocols::Icmpv6,
+        ip::HOP_LIMIT_NDP,
+    )
+    .ok()?;
+
+    let mut frame = Vec::with_capacity(MIN_ETH_FRAME);
+    frame.extend_from_slice(&header);
+    frame.extend_from_slice(&ipv6);
+    frame.extend_from_slice(&body);
+    pad_to_min_frame(&mut frame);
     Some(frame)
 }
 
@@ -446,6 +555,6 @@ fn icmpv6_echo_reply(
     frame.extend_from_slice(&header);
     frame.extend_from_slice(&ipv6);
     frame.extend_from_slice(&body);
-    frame.resize(MIN_ETH_FRAME, 0);
+    pad_to_min_frame(&mut frame);
     Some(frame)
 }

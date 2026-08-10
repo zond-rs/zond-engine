@@ -17,4 +17,5 @@
 //! Exposes a clean facade for all host system logic to consumers.
 
 pub mod interface;
+pub mod neighbors;
 pub mod privilege;

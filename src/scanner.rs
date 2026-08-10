@@ -188,7 +188,15 @@ pub async fn discover(
         return Ok((session, ScanTask::new(handle)));
     }
 
-    let enrichment = Enrichment::spawn(targets, &ctx, caps, cfg.probe_tuning(), Scope::Sweep).await;
+    // A sweep is what the caller asked for only when they asked about a
+    // network. Probing addresses nobody named is defensible for `lan` and
+    // surprising for `zond <address>` - see `ZondConfig::segment_sweep`.
+    let scope = if cfg.segment_sweep {
+        Scope::Sweep
+    } else {
+        Scope::Targeted
+    };
+    let enrichment = Enrichment::spawn(targets, &ctx, caps, cfg.probe_tuning(), scope).await;
 
     let handle = tokio::spawn(async move {
         finish_enrichment(Some(enrichment), caps, &ctx).await;

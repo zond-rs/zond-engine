@@ -176,6 +176,75 @@ async fn an_ipv6_neighbour_carries_the_interface_it_was_found_on() {
     }
 }
 
+/// A targeted IPv6 run probes the address it was given.
+///
+/// This is what neighbour discovery buys that the all-nodes echo cannot. That
+/// echo asks the whole segment one question, so a targeted scan must not send it
+/// — scanning one host may not wake its neighbours — and before solicitation
+/// existed that left a targeted IPv6 run sending *no packet at all*: the ARP
+/// iterator is built from the IPv4 targets, the echo is gated off, and the loop
+/// idled to its deadline reporting nothing. A solicitation names one address, so
+/// it can be asked without asking anyone else.
+#[tokio::test]
+async fn a_targeted_ipv6_run_probes_its_target() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let bystander = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xBB));
+    let lan = FakeLan::new()
+        .host(peer_v6, LanHost::at(PEER_B))
+        .host(bystander, LanHost::at(PEER_A));
+
+    let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
+
+    assert!(
+        session.store.contains_key(&peer_v6),
+        "a targeted IPv6 run must probe the address it was given"
+    );
+    assert_eq!(
+        status_protocols(&session, peer_v6),
+        vec!["Ndp".to_string()],
+        "an advertisement is evidence of neighbour discovery, and now there is some"
+    );
+    assert!(
+        !session.store.contains_key(&bystander),
+        "asking about one address must not wake the rest of the segment"
+    );
+    assert!(
+        !lan.probes()
+            .iter()
+            .any(|probe| matches!(probe, LanProbe::Solicitation { .. })),
+        "the all-nodes echo is a sweep's probe, not a targeted run's"
+    );
+}
+
+/// A lost solicitation is retried, so an IPv6 neighbour is not reported absent
+/// because one frame went missing.
+///
+/// The IPv6 half of the contract `retransmission.rs` holds the ARP path to.
+/// Solicitation is what makes it expressible at all: the ledger owns an
+/// outstanding probe per address, which the all-nodes echo — one packet answered
+/// by whoever feels like it — gives it nothing to do with.
+#[tokio::test]
+async fn a_lost_solicitation_is_retried_and_the_neighbour_is_still_found() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let lan = FakeLan::new().host(peer_v6, LanHost::at(PEER_B).drop_first(1));
+
+    let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
+
+    assert!(
+        session.store.contains_key(&peer_v6),
+        "a neighbour that answered the second solicitation is still a live host"
+    );
+    let solicits = lan
+        .probes()
+        .iter()
+        .filter(|probe| matches!(probe, LanProbe::Solicit { .. }))
+        .count();
+    assert!(
+        solicits > 1,
+        "the lost solicitation should have been retried, saw {solicits}"
+    );
+}
+
 /// An address with nothing on it produces no host. Discovery must not invent a
 /// neighbour from silence.
 #[tokio::test]
@@ -230,6 +299,32 @@ async fn two_machines_are_recorded_separately() {
     let session = sweep(&lan, &[v4(10), v4(11)], Scope::Targeted).await;
 
     assert_eq!(session.store.len(), 2);
+}
+
+/// Discovery of a named address does not report the neighbours it never asked
+/// about.
+///
+/// A sweep records every IPv6 neighbour that answers the all-nodes echo, target
+/// set or not, which is what makes `lan` find IPv6-only devices. Applying it to
+/// every discovery made `zond <one-address>` report eight machines — surprising
+/// on your own network and indiscreet on somebody else's. The behaviour still
+/// exists; it now has to be asked for.
+#[tokio::test]
+async fn discovery_of_one_address_does_not_report_the_whole_segment() {
+    let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+    let bystander = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xBB));
+    let lan = FakeLan::new()
+        .host(peer_v6, LanHost::at(PEER_B))
+        .host(bystander, LanHost::at(PEER_A));
+
+    let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
+
+    assert!(session.store.contains_key(&peer_v6));
+    assert_eq!(
+        session.store.len(),
+        1,
+        "only the address that was asked about belongs in the report"
+    );
 }
 
 /// A targeted run must not send the all-nodes solicitation.

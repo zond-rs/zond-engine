@@ -19,7 +19,7 @@ use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::icmpv6::Icmpv6Types;
 
 use crate::core::models::host::StatusProtocol;
-use crate::protocols::ip;
+use crate::protocols::{ip, ndp};
 
 /// What a [`DiscoveryProtocol`] found when asked to interpret one received frame.
 ///
@@ -81,6 +81,34 @@ impl DiscoveryProtocol for ArpProtocol {
 
     fn status_protocol(&self) -> StatusProtocol {
         StatusProtocol::Arp
+    }
+}
+
+/// Recognizes neighbor advertisements as answers to the solicitation sent for
+/// one address.
+///
+/// The IPv6 counterpart of [`ArpProtocol`], and conclusive in the same way: the
+/// reply came off this segment carrying the neighbour's own MAC. Unlike the
+/// all-nodes echo, this answers a probe put to a single address, so it retires
+/// that address's outstanding probe and the retry ledger owns it exactly as it
+/// owns an ARP request.
+///
+/// Every advertisement from an in-range address counts, whether or not it
+/// answers an outstanding solicitation, for the reason [`ArpProtocol`] accepts
+/// every ARP frame: neighbours advertise to each other constantly, and an
+/// advertisement is proof its sender is present however it was provoked.
+pub struct NdpProtocol;
+
+impl DiscoveryProtocol for NdpProtocol {
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
+        match ndp::advertised_target(frame) {
+            Some(_) => Ok(ProtocolMatch::Solicited),
+            None => Ok(ProtocolMatch::Unhandled),
+        }
+    }
+
+    fn status_protocol(&self) -> StatusProtocol {
+        StatusProtocol::Ndp
     }
 }
 

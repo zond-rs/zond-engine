@@ -94,7 +94,7 @@ use std::time::{Duration, Instant};
 use zond_engine::core::config::ZondConfig;
 use zond_engine::core::models::host::Host;
 use zond_engine::core::models::retry::{RetryConfig, ScanEffort};
-use zond_engine::core::parse::to_ipset;
+use zond_engine::core::parse::ip::to_set_with as to_ipset_with;
 use zond_engine::export::schema::status_protocol_name;
 use zond_engine::scanner;
 use zond_engine::system::interface;
@@ -235,8 +235,12 @@ async fn main() {
     // resolving a keyword means reading the host's interfaces and the parser is
     // deliberately free of that dependency - so a caller that omits it gets an
     // error rather than a silently different target set.
-    let ips = to_ipset(&[targets.as_str()], Some(interface::resolve::resolve))
-        .unwrap_or_else(|e| fail(&format!("target expression `{targets}`: {e}")));
+    let ips = to_ipset_with(
+        &[targets.as_str()],
+        Some(interface::resolve::resolve),
+        Some(interface::resolve::resolve_zone),
+    )
+    .unwrap_or_else(|e| fail(&format!("target expression `{targets}`: {e}")));
     let total = ips.len();
 
     // No DNS: a reverse lookup would add latency that has nothing to do with

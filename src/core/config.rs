@@ -69,6 +69,25 @@ pub struct ZondConfig {
     /// processing incoming DNS packets if they were initiated elsewhere.
     pub no_dns: bool,
 
+    /// Whether discovery may probe the whole segment rather than only the
+    /// addresses it was given.
+    ///
+    /// A segment sweep sends the ICMPv6 all-nodes echo, which every IPv6
+    /// neighbour may answer, and records the ones that do even though nobody
+    /// named them. That is the right behaviour for `zond lan` — the caller asked
+    /// about a network, and an IPv6 neighbour with no address in the IPv4 range
+    /// is found through this and nothing else. It is the wrong behaviour for
+    /// `zond <address>`: scanning one host should not wake its neighbours, and a
+    /// report listing eight machines when one was asked about is both surprising
+    /// and, on someone else's network, indiscreet.
+    ///
+    /// Off by default, so the surprising behaviour is the one that has to be
+    /// asked for. Only the front end knows which the user meant — the engine
+    /// receives an already-resolved set of addresses and cannot tell `lan` from
+    /// the range it expanded to — so this has to be set by whoever parsed the
+    /// target expression.
+    pub segment_sweep: bool,
+
     /// Enables privacy mode for sensitive data in the output.
     ///
     /// When enabled, personally identifiable information (PII) or sensitive

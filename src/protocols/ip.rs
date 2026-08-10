@@ -67,6 +67,17 @@ pub fn create_ipv4_header(
 /// from leaking onto the next.
 pub const HOP_LIMIT_ON_LINK: u8 = 1;
 
+/// How far a neighbor discovery message may travel: not at all, verifiably.
+///
+/// RFC 4861 §7.1.1 requires a receiver to **discard** any neighbor discovery
+/// message that did not arrive with a hop limit of 255. Since a router
+/// decrements the field, arriving at the maximum is proof the message was never
+/// forwarded — which is what stops an off-link attacker from injecting neighbour
+/// entries. It is the one on-link case where [`HOP_LIMIT_ON_LINK`] is wrong, and
+/// wrong invisibly: every conformant neighbour ignores the probe, and a segment
+/// full of them is indistinguishable from an empty one.
+pub const HOP_LIMIT_NDP: u8 = 255;
+
 /// How far a packet meant for somewhere else may travel.
 ///
 /// The conventional default, and enough for any path on the public internet:

@@ -558,7 +558,7 @@ async fn the_all_nodes_solicitation_is_repeated_and_spaced() {
         .iter()
         .filter_map(|probe| match probe {
             LanProbe::Solicitation { at } => Some(*at),
-            LanProbe::Arp { .. } => None,
+            LanProbe::Arp { .. } | LanProbe::Solicit { .. } => None,
         })
         .collect();
 
