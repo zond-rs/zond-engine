@@ -875,7 +875,8 @@ mod tests {
                 ip::create_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp).unwrap()
             }
             (IpAddr::V6(s), IpAddr::V6(d)) => {
-                ip::create_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp).unwrap()
+                ip::create_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
+                    .unwrap()
             }
             _ => panic!("IP version mismatch in test fixture"),
         };

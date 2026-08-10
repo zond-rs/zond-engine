@@ -296,7 +296,7 @@ pub fn build_ethernet_frame(
         ),
         (IpAddr::V6(s), IpAddr::V6(d)) => (
             EtherTypes::Ipv6,
-            ip::create_ipv6_header(s, d, payload_len, protocol)?,
+            ip::create_ipv6_header(s, d, payload_len, protocol, ip::HOP_LIMIT_ROUTED)?,
         ),
         _ => anyhow::bail!("IP version mismatch between {src} and {dst}"),
     };
@@ -366,6 +366,7 @@ mod tests {
             Ipv6Addr::LOCALHOST,
             payload.len() as u16,
             IpNextHeaderProtocols::Udp,
+            ip::HOP_LIMIT_ROUTED,
         )
         .unwrap();
         let packet: Vec<u8> = header.into_iter().chain(payload).collect();
@@ -467,6 +468,7 @@ mod tests {
             Ipv6Addr::LOCALHOST,
             payload_len,
             first,
+            ip::HOP_LIMIT_ROUTED,
         )
         .unwrap()
         .into_iter()

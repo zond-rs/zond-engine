@@ -18,11 +18,69 @@ mod common;
 
 use std::time::Duration;
 
+use common::fake_net::unsendable_transport;
 use common::*;
 use zond_engine::core::models::host::HostStatus;
 use zond_engine::core::models::port::{PortState, Protocol};
 use zond_engine::core::report::{ENGINE_VERSION, ScanKind};
+use zond_engine::core::session::{ScanEvent, ScanSession};
 use zond_engine::scanner;
+use zond_engine::scanner::NetworkExplorer;
+use zond_engine::scanner::routed::RoutedScanner;
+use zond_engine::system::interface::RoutedTarget;
+
+/// A sweep whose probes never reached the wire has to say so, and say why.
+///
+/// This is the failure mode with no other signal at all. The host count is zero,
+/// which is also what an empty range produces; no strategy returned an error,
+/// because sending is attempted per probe rather than once; and the audit line
+/// that does record it is a log at verbosity 1, which a library consumer never
+/// sees. Measured against a real host whose VPN held the IPv6 default route
+/// without carrying IPv6, the whole visible result was `0/16 hosts` — a report
+/// indistinguishable from sixteen addresses with nothing on them.
+///
+/// The cause travels with it because the responses differ completely: a host
+/// with no route needs its routing fixed, one refusing raw sockets needs
+/// privileges, and neither is a fact about the target.
+#[tokio::test]
+async fn a_sweep_whose_probes_never_left_reports_why() {
+    let (session, ctx) = ScanSession::new();
+    let scanner = RoutedScanner::with_transport(
+        vec![RoutedTarget {
+            target: TARGET_V6,
+            source: SCANNER_V6.into(),
+        }],
+        ctx,
+        None,
+        unsendable_transport("No route to host (os error 65)"),
+    );
+
+    Box::new(scanner)
+        .discover_hosts()
+        .await
+        .expect("a sweep that cannot send still completes");
+
+    // Read from the live event stream, which is the channel a consumer watching
+    // a scan in progress actually has.
+    let mut events = session.events;
+    let mut reasons = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let ScanEvent::ScannerFailed { reason, .. } = event {
+            reasons.push(reason);
+        }
+    }
+
+    assert_eq!(reasons.len(), 1, "one report, not one per probe");
+    let reason = &reasons[0];
+    assert!(
+        reason.contains("could not be sent"),
+        "the report must distinguish an unsent probe from an unanswered one: {reason}"
+    );
+    assert!(
+        reason.contains("No route to host"),
+        "the operating system's own explanation must survive into the report: {reason}"
+    );
+}
 
 /// A discovery report describes the sweep that produced it: one phase, the
 /// discovery kind, and the address scope the caller asked for.

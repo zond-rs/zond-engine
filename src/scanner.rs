@@ -454,7 +454,29 @@ async fn spawn_explorers(
         local,
         routed,
         unmapped,
+        unenumerable,
     } = interface::map_ips_to_interfaces(targets);
+
+    // Ranges no strategy can take. Reported before anything is spawned, and
+    // reported as a failure rather than logged, because the distinction a caller
+    // has to be able to draw is between "nothing is there" and "nobody looked" -
+    // and only one of those is visible in a host count. A routed IPv6 prefix
+    // cannot be walked (see `MAX_ENUMERABLE_ADDRESSES`), and until discovery
+    // gains a strategy that searches a scope instead of a list, saying so is the
+    // whole of what the engine can honestly do with one.
+    for range in &unenumerable {
+        ctx.record_failure(
+            ScannerKind::Routed,
+            format!(
+                "{}-{} is {} addresses: too large to probe one at a time, and \
+                 routed IPv6 has no other strategy yet. Give specific addresses \
+                 or a smaller prefix.",
+                range.start_addr,
+                range.end_addr,
+                range.len()
+            ),
+        );
+    }
 
     // Local scanner (ARP/ICMP) for hosts on the same physical segment.
     for (intf, local_ips) in local {

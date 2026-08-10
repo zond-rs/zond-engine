@@ -191,11 +191,17 @@ pub struct SynToken {
 /// `sender` and logs the outcome. On success it returns the [`SynToken`] the
 /// packet went out carrying, so the caller can record it and recognize a later
 /// reply as answering this attempt.
+///
+/// `reason` receives the failure when there is one, so a scan whose probes never
+/// reached the wire can say why in its report rather than only in a log line. A
+/// probe that was never sent and a probe nobody answered are indistinguishable
+/// in a host count and could hardly be more different in what they mean.
 fn send_syn(
     sender: &dyn ProbeSender,
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
+    reason: &mut Option<String>,
 ) -> Option<SynToken> {
     let src_port: u16 = rand::random_range(50_000..u16::MAX);
     let seq_num: u32 = rand::random_range(0..=u32::MAX);
@@ -221,10 +227,16 @@ fn send_syn(
             })
         }
         Err(e) => {
+            // `{e:#}` rather than `{e}`: the outer message says which probe
+            // failed, and the chained cause is the operating system's own
+            // explanation - "No route to host" and "Permission denied" call for
+            // completely different responses, and the bare wrapper distinguishes
+            // neither.
             error!(
                 verbosity = 2,
-                "Failed to send SYN probe to {dst_addr}:{dst_port}: {e}"
+                "Failed to send SYN probe to {dst_addr}:{dst_port}: {e:#}"
             );
+            *reason = Some(format!("{e:#}"));
             None
         }
     }
@@ -333,6 +345,13 @@ pub struct RoutedScanner {
     /// attributed to loss, to its own deadline, or to correlation rather than
     /// guessed at. Reported once when the loop exits.
     audit: ProbeAudit,
+    /// Why the first probe that could not be sent failed, if any did.
+    ///
+    /// Kept so the reason survives into the report. The count of failed sends is
+    /// already in the audit, but a count cannot distinguish a host with no route
+    /// to the target from one refusing raw sockets, and those call for opposite
+    /// responses from whoever is reading.
+    send_failure: Option<String>,
 }
 
 #[async_trait]
@@ -396,6 +415,27 @@ impl NetworkExplorer for RoutedScanner {
                 _ = tokio::time::sleep(tick), if !sending => {}
             }
         };
+
+        // A sweep whose probes never left is not a sweep that found nothing, and
+        // the difference is invisible in every number a caller reads: the host
+        // count is zero either way, no strategy errored, and the audit line that
+        // does say so is a log at verbosity 1. So it is recorded as a failure,
+        // which is the one channel a library consumer sees without opting in.
+        //
+        // Reported once with the first cause rather than once per probe. Sixteen
+        // identical "no route to host" lines say nothing the first does not, and
+        // a sweep of a large range would bury everything else in the report.
+        if self.audit.sends_failed > 0 {
+            self.ctx.record_failure(
+                ScannerKind::Routed,
+                format!(
+                    "{} of {} probes could not be sent: {}",
+                    self.audit.sends_failed,
+                    self.audit.sends_attempted,
+                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
+                ),
+            );
+        }
 
         // Read before the transport is dropped, since the counters live with
         // the capture threads it keeps alive.
@@ -505,6 +545,7 @@ impl RoutedScanner {
             batch,
             responded_count: 0,
             audit: ProbeAudit::new(),
+            send_failure: None,
         }
     }
 
@@ -658,7 +699,13 @@ impl RoutedScanner {
             return;
         };
 
-        let token = send_syn(self.transport.tx.as_ref(), source, target, DST_PORT);
+        let token = send_syn(
+            self.transport.tx.as_ref(),
+            source,
+            target,
+            DST_PORT,
+            &mut self.send_failure,
+        );
         self.audit.record_send(token.is_some());
 
         if let Some(token) = token {

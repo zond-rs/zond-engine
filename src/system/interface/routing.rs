@@ -7,8 +7,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::core::models::ip::range::IpRange::{V4, V6};
+use crate::core::models::ip::range::Ipv6Range;
 use crate::core::models::ip::set::IpSet;
-use crate::system::interface::source::{ProbeSockets, probe_route_source, viable_interfaces};
+use crate::system::interface::source::{
+    ProbeSockets, plausible_source, probe_route_source, viable_interfaces,
+};
 use pnet::datalink::NetworkInterface;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -24,6 +27,28 @@ pub struct RoutedTarget {
     pub source: IpAddr,
 }
 
+/// The largest off-link IPv6 range this classifier will turn into addresses.
+///
+/// Sixty-five thousand addresses, the size of an IPv4 `/16` and of an IPv6
+/// `/112`. Enumeration is the only discovery strategy the engine has for an
+/// off-link range, and it is a strategy IPv6 defeats outright rather than
+/// merely slows: a `/64` holds 2^64 addresses, which at the four thousand
+/// probes a second a routed sweep paces itself to is about 146 million years of
+/// scanning, and long before that the expansion into a `Vec<IpAddr>` exhausts
+/// memory. There is no ceiling at which walking a `/64` becomes reasonable, so
+/// the question is only where to stop pretending.
+///
+/// It is deliberately the same number as the largest IPv4 range anyone sweeps
+/// in practice, because the limit is about how many probes a scan can spend
+/// rather than about the address family. Larger IPv6 ranges are not scanned
+/// less thoroughly here; they are refused, loudly, so the caller knows the
+/// engine did not look rather than believing it looked and found nothing.
+///
+/// IPv4 ranges are not bounded by this. Every IPv4 range is finite in a way a
+/// user can reason about — the whole space is 2^32 — and a `/8` is an
+/// unreasonable request rather than an impossible one.
+const MAX_ENUMERABLE_ADDRESSES: u128 = 1 << 16;
+
 /// The result of classifying a set of targets against this host's interfaces
 /// and routing table.
 #[derive(Debug, Default)]
@@ -38,6 +63,14 @@ pub struct RoutedTargets {
     /// Targets that are neither on-link nor have a resolvable route (e.g.
     /// loopback), left to the unprivileged connect fallback.
     pub unmapped: IpSet,
+    /// Off-link IPv6 ranges too large to enumerate, kept whole.
+    ///
+    /// These are not failures of the network and not addresses that went
+    /// unanswered; they were never probed. They are carried out of here rather
+    /// than dropped because the one thing a scanner may never do is stay quiet
+    /// about a target it declined to look at — a caller reading "no hosts
+    /// found" would otherwise take it as evidence about the range.
+    pub unenumerable: Vec<Ipv6Range>,
 }
 
 /// Classifies target IPs by how this host reaches them: on-link (per
@@ -72,6 +105,7 @@ pub(crate) fn map_ips_to_interfaces_with(
     let mut local: HashMap<usize, IpSet> = HashMap::new();
     let mut routed: Vec<RoutedTarget> = Vec::new();
     let mut unmapped = IpSet::new();
+    let mut unenumerable: Vec<Ipv6Range> = Vec::new();
     let mut singles_to_route: Vec<IpAddr> = Vec::new();
 
     // A range wholly inside one interface's subnet is kept intact; anything
@@ -88,7 +122,13 @@ pub(crate) fn map_ips_to_interfaces_with(
         let start = IpAddr::V6(range.start_addr);
         let end = IpAddr::V6(range.end_addr);
         match owning_interface(&interfaces, start, end) {
+            // On-link, so it is kept whole and never expanded here: the local
+            // scanner reaches a segment by multicast rather than by walking it.
             Some(idx) => local.entry(idx).or_default().insert_range(V6(*range)),
+            // Off-link, where the only strategy is to probe each address in
+            // turn. The check comes before `to_iter` because the expansion is
+            // what does the damage, not the probing.
+            None if !is_enumerable(range) => unenumerable.push(*range),
             None => singles_to_route.extend(range.to_iter()),
         }
     }
@@ -103,6 +143,14 @@ pub(crate) fn map_ips_to_interfaces_with(
             if let Some(source) = probe_route_source(target, sockets)
                 && owned_ips.contains(&source)
             {
+                return (target, Classification::Routed(source));
+            }
+
+            // The kernel declined, but this host may still hold an address of
+            // the right scope - see `plausible_source`. Without this a laptop
+            // whose VPN swallowed the IPv6 default route sends no probe at all
+            // and reports the targets as unreachable.
+            if let Some(source) = plausible_source(&interfaces, target) {
                 return (target, Classification::Routed(source));
             }
 
@@ -127,7 +175,14 @@ pub(crate) fn map_ips_to_interfaces_with(
         local,
         routed,
         unmapped,
+        unenumerable,
     }
+}
+
+/// Whether an off-link IPv6 range is small enough to probe one address at a
+/// time. See [`MAX_ENUMERABLE_ADDRESSES`].
+fn is_enumerable(range: &Ipv6Range) -> bool {
+    range.len() <= MAX_ENUMERABLE_ADDRESSES
 }
 
 /// Finds the first interface whose subnet fully contains the inclusive range
@@ -234,6 +289,54 @@ mod tests {
         assert_eq!(result.local.len(), 1);
         let (_, ips) = result.local.into_iter().next().unwrap();
         assert_eq!(ips.len(), 11);
+    }
+
+    /// The boundary of the enumeration ceiling, checked exactly rather than by
+    /// expanding a range: a `/112` is probed, a `/111` is not.
+    #[test]
+    fn the_enumeration_ceiling_is_a_112() {
+        let base = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0);
+        let at_ceiling = Ipv6Range::new(base, Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xffff));
+        let over_ceiling = Ipv6Range::new(base, Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 1, 0));
+
+        let at_ceiling = at_ceiling.unwrap();
+        assert_eq!(at_ceiling.len(), MAX_ENUMERABLE_ADDRESSES);
+        assert!(is_enumerable(&at_ceiling), "a /112 is 65536 addresses");
+        assert!(
+            !is_enumerable(&over_ceiling.unwrap()),
+            "one address more is not"
+        );
+    }
+
+    /// The failure this ceiling exists to prevent: a routed `/64` expanded into
+    /// a `Vec<IpAddr>` is 2^64 allocations, which is not a slow scan but an
+    /// out-of-memory condition reached from a perfectly ordinary target
+    /// expression.
+    ///
+    /// It has to come out as its own category. Silently dropping it would report
+    /// an empty scan of a range nobody probed, and a caller cannot tell that
+    /// from a range with nothing on it.
+    #[test]
+    fn a_routed_v6_prefix_too_large_to_walk_is_refused_rather_than_expanded() {
+        let interfaces = vec![mock_interface(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            24,
+        )];
+        let mut set = IpSet::new();
+        set.insert_range(IpRange::V6(
+            Ipv6Range::new(
+                Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0),
+                Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0xffff, 0xffff, 0xffff, 0xffff),
+            )
+            .unwrap(),
+        ));
+
+        let result = map_ips_to_interfaces_with(set, interfaces);
+
+        assert_eq!(result.unenumerable.len(), 1, "the /64 is reported whole");
+        assert!(result.routed.is_empty());
+        assert!(result.unmapped.is_empty());
+        assert!(result.local.is_empty());
     }
 
     #[test]

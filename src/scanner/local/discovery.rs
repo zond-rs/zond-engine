@@ -167,9 +167,14 @@ mod tests {
             pnet::packet::ethernet::EtherTypes::Ipv6,
         )
         .expect("failed to build Ethernet header");
-        let ip_header =
-            ip_protocol::create_ipv6_header(source, destination, body.len() as u16, protocol)
-                .expect("failed to build IPv6 header");
+        let ip_header = ip_protocol::create_ipv6_header(
+            source,
+            destination,
+            body.len() as u16,
+            protocol,
+            ip_protocol::HOP_LIMIT_ON_LINK,
+        )
+        .expect("failed to build IPv6 header");
 
         [eth_header, ip_header, body.to_vec()].concat()
     }

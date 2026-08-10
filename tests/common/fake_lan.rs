@@ -438,6 +438,7 @@ fn icmpv6_echo_reply(
         scanner_ip,
         body.len() as u16,
         IpNextHeaderProtocols::Icmpv6,
+        ip::HOP_LIMIT_ON_LINK,
     )
     .ok()?;
 

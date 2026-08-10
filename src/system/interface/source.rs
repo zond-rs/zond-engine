@@ -105,6 +105,46 @@ pub struct ProbeSockets {
     v6: Option<UdpSocket>,
 }
 
+/// Picks an address on `interfaces` that could plausibly reach `target` when
+/// the kernel's own route lookup has declined to answer.
+///
+/// A refusal is not always the truth about reachability. A VPN that claims the
+/// IPv6 default route without carrying IPv6 makes every off-link IPv6 lookup
+/// fail while the host still holds a global address on a segment with a working
+/// router — measured on the machine this was written on, where `connect` to
+/// every public resolver returned `No route to host` and the same addresses
+/// answered in 22 ms once a source was named explicitly.
+///
+/// What follows from that is not that the kernel is wrong, but that giving up
+/// here is worse than trying. A probe sourced from an address the host really
+/// holds either reaches the target or does not, and either way the scan reports
+/// what it observed. Giving up produces a scan that reports nothing and blames
+/// the network.
+///
+/// Scope-matched, since an address of the wrong scope cannot reach the target
+/// whatever the routing table says: a global destination needs a global source,
+/// and a link-local destination needs the link-local address of the interface it
+/// is on.
+pub(crate) fn plausible_source(interfaces: &[NetworkInterface], target: IpAddr) -> Option<IpAddr> {
+    let IpAddr::V6(target_v6) = target else {
+        // IPv4 has no equivalent failure worth second-guessing: there is one
+        // scope, and a kernel that cannot route a v4 address is describing a
+        // host with no v4 connectivity.
+        return None;
+    };
+
+    let wants_link_local = target_v6.is_unicast_link_local();
+    interfaces
+        .iter()
+        .flat_map(|iface| iface.ips.iter())
+        .filter_map(|net| match net.ip() {
+            IpAddr::V6(addr) => Some(addr),
+            IpAddr::V4(_) => None,
+        })
+        .find(|addr| addr.is_unicast_link_local() == wants_link_local && !addr.is_loopback())
+        .map(IpAddr::V6)
+}
+
 /// Asks the kernel which local address it would route a packet to `target`
 /// from, by `connect`-ing an unbound UDP socket to it and reading back the
 /// address the routing layer selected. No datagram is ever sent - `connect`
@@ -137,11 +177,17 @@ pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<
 /// does the work, and every later port reuses the cached result.
 ///
 /// On-link destinations are answered from the in-memory [`OnLinkTable`];
-/// everything else falls back to a single [`probe_route_source`] call.
+/// everything else falls back to [`probe_route_source`], and then to
+/// [`plausible_source`] when the kernel declines.
 pub struct SourceResolver {
     onlink: OnLinkTable,
     sockets: ProbeSockets,
     cache: HashMap<IpAddr, Option<IpAddr>>,
+    /// The interfaces themselves, kept for [`plausible_source`]. The
+    /// [`OnLinkTable`] cannot answer for it: that table matches a destination
+    /// against a prefix, and the case this exists for is a destination on no
+    /// prefix this host holds.
+    interfaces: Vec<NetworkInterface>,
 }
 
 impl SourceResolver {
@@ -156,6 +202,7 @@ impl SourceResolver {
             onlink: OnLinkTable::from_interfaces(interfaces),
             sockets: ProbeSockets::default(),
             cache: HashMap::new(),
+            interfaces: interfaces.to_vec(),
         }
     }
 
@@ -166,7 +213,11 @@ impl SourceResolver {
     }
 
     /// Returns the source address to send a probe to `target` from, or `None`
-    /// if no route to it can be found.
+    /// if no address on this host could plausibly reach it.
+    ///
+    /// Three answers in order of authority: this host's own segments, then the
+    /// kernel's routing table, then [`plausible_source`] for the case where the
+    /// kernel refuses but the host visibly holds an address of the right scope.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
         if let Some(cached) = self.cache.get(&target) {
             return *cached;
@@ -175,7 +226,8 @@ impl SourceResolver {
         let source = self
             .onlink
             .source_for(target)
-            .or_else(|| probe_route_source(target, &mut self.sockets));
+            .or_else(|| probe_route_source(target, &mut self.sockets))
+            .or_else(|| plausible_source(&self.interfaces, target));
 
         self.cache.insert(target, source);
         source
@@ -283,5 +335,68 @@ mod tests {
     fn empty_host_has_no_sources() {
         let resolver = SourceResolver::from_interfaces(&[]);
         assert!(!resolver.has_sources());
+    }
+
+    fn v6net(addr: Ipv6Addr, prefix: u8) -> IpNetwork {
+        IpNetwork::V6(Ipv6Network::new(addr, prefix).unwrap())
+    }
+
+    /// The §1.6 case: the kernel refuses to route an off-link IPv6 target - a
+    /// VPN holding the default route without carrying IPv6 - while the host
+    /// plainly has a global address to send from.
+    ///
+    /// Answering `None` here is what made a scan of seven live addresses report
+    /// zero hosts in two milliseconds, having sent nothing. The address chosen
+    /// may not work, and the scan will say so; refusing to try cannot.
+    #[test]
+    fn a_global_target_the_kernel_will_not_route_still_gets_a_global_source() {
+        let global = Ipv6Addr::new(0x2a02, 0x908, 0, 0, 0, 0, 0, 0xb1a0);
+        let intf = mock_interface(vec![
+            v6net(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50), 64),
+            v6net(global, 64),
+        ]);
+
+        let source = plausible_source(
+            std::slice::from_ref(&intf),
+            IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
+        );
+
+        assert_eq!(source, Some(IpAddr::V6(global)));
+    }
+
+    /// Scope is not negotiable in the other direction either: a link-local
+    /// destination is reachable only from a link-local address, so a global one
+    /// must not be offered for it.
+    #[test]
+    fn a_link_local_target_gets_a_link_local_source() {
+        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
+        let intf = mock_interface(vec![
+            v6net(Ipv6Addr::new(0x2a02, 0x908, 0, 0, 0, 0, 0, 1), 64),
+            v6net(link_local, 64),
+        ]);
+
+        let source = plausible_source(
+            std::slice::from_ref(&intf),
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA)),
+        );
+
+        assert_eq!(source, Some(IpAddr::V6(link_local)));
+    }
+
+    /// IPv4 keeps the kernel's answer. It has one scope and no equivalent of a
+    /// tunnel swallowing the default route for a family it does not carry, so
+    /// second-guessing it would invent a source where the host genuinely has
+    /// none.
+    #[test]
+    fn an_unroutable_v4_target_is_not_second_guessed() {
+        let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
+
+        assert_eq!(
+            plausible_source(
+                std::slice::from_ref(&intf),
+                IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
+            ),
+            None
+        );
     }
 }

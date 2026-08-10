@@ -159,7 +159,7 @@ impl NeighborResolver {
                 }
                 IpAddr::V6(_) => {
                     let (gw_ip, mac) = iface.gateway_v6?;
-                    let src = iface.v6.first()?.ip();
+                    let src = routable_v6_source(iface)?;
                     (IpAddr::V6(gw_ip), mac, IpAddr::V6(src))
                 }
             };
@@ -174,6 +174,28 @@ impl NeighborResolver {
             })
         })
     }
+}
+
+/// Picks the IPv6 address on `iface` a packet leaving the segment may be sent
+/// from.
+///
+/// Not simply the first one. An IPv6 interface normally holds several addresses
+/// at once, and they are not interchangeable: a link-local address is valid only
+/// on the segment it was configured for, so a packet aimed past the router and
+/// sourced from `fe80::` is discarded on the way — and the reply, if one were
+/// ever sent, would have nowhere to go. Interface order is whatever the
+/// operating system happened to report, so taking the first address is a coin
+/// flip on a host that has both, which is every host with working IPv6.
+///
+/// Unique local addresses are skipped for the same reason at a larger scale:
+/// they are not routed off site, so a probe sourced from one reaches nothing
+/// beyond it.
+fn routable_v6_source(iface: &InterfaceInfo) -> Option<Ipv6Addr> {
+    iface
+        .v6
+        .iter()
+        .map(|net| net.ip())
+        .find(|addr| !addr.is_unicast_link_local() && !addr.is_unique_local())
 }
 
 /// Converts a `netdev` interface into an [`InterfaceInfo`], returning `None`
@@ -318,6 +340,62 @@ mod tests {
         assert!(
             resolver
                 .resolve(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
+                .is_none()
+        );
+    }
+
+    /// A host with working IPv6 has a link-local address *and* a global one, in
+    /// whatever order the OS reported them. Sourcing an off-link probe from the
+    /// link-local is a packet the first router drops, and picking by position
+    /// makes which of the two happens a matter of luck.
+    #[test]
+    fn an_off_link_v6_probe_is_sourced_from_a_routable_address() {
+        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
+        let global = Ipv6Addr::new(0x2a02, 0x908, 0, 0, 0, 0, 0, 0xb1a0);
+        let unique_local = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
+
+        let iface = InterfaceInfo {
+            name: "en0".to_string(),
+            mac: IFACE_MAC,
+            v4: vec![],
+            // Link-local first, as an interface commonly reports it.
+            v6: vec![
+                Ipv6Network::new(link_local, 64).unwrap(),
+                Ipv6Network::new(unique_local, 64).unwrap(),
+                Ipv6Network::new(global, 64).unwrap(),
+            ],
+            gateway_v4: None,
+            gateway_v6: Some((Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), GW_MAC)),
+        };
+        let resolver = NeighborResolver::from_interfaces(vec![iface]);
+
+        let route = resolver
+            .resolve(IpAddr::V6(Ipv6Addr::new(
+                0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111,
+            )))
+            .expect("a host with a v6 gateway has a route");
+
+        assert_eq!(route.src_ip, IpAddr::V6(global));
+    }
+
+    /// An interface with nothing but link-local IPv6 cannot source an off-link
+    /// probe at all, and saying so is better than sending one that dies at the
+    /// router.
+    #[test]
+    fn an_interface_with_only_link_local_v6_has_no_off_link_source() {
+        let iface = InterfaceInfo {
+            name: "en0".to_string(),
+            mac: IFACE_MAC,
+            v4: vec![],
+            v6: vec![Ipv6Network::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50), 64).unwrap()],
+            gateway_v4: None,
+            gateway_v6: Some((Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), GW_MAC)),
+        };
+        let resolver = NeighborResolver::from_interfaces(vec![iface]);
+
+        assert!(
+            resolver
+                .resolve(IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0, 0, 0, 0, 0, 1)))
                 .is_none()
         );
     }

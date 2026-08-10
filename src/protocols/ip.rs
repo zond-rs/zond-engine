@@ -59,11 +59,38 @@ pub fn create_ipv4_header(
     Ok(buffer.to_vec())
 }
 
+/// How far a packet meant for this segment may travel.
+///
+/// One hop, so a router discards it rather than forwarding it. Link-local
+/// traffic is required to carry this (RFC 4291 §2.5.6), and for the multicast
+/// probes local discovery sends it is also what keeps a sweep of one segment
+/// from leaking onto the next.
+pub const HOP_LIMIT_ON_LINK: u8 = 1;
+
+/// How far a packet meant for somewhere else may travel.
+///
+/// The conventional default, and enough for any path on the public internet:
+/// the longest routes in practice are well under half of it. What matters is
+/// only that it is not [`HOP_LIMIT_ON_LINK`] — a routed probe sent with a hop
+/// limit of one is discarded by the first router, which looks from here exactly
+/// like a host that did not answer.
+pub const HOP_LIMIT_ROUTED: u8 = 64;
+
+/// Builds a 40-byte IPv6 header for a packet carrying `payload_length` bytes of
+/// `next_protocol` from `src_addr` to `dst_addr`.
+///
+/// `hop_limit` is a parameter rather than a constant because the two callers
+/// need opposite values and neither can be inferred from the addresses: local
+/// discovery's multicast probes must not leave the segment, while a routed probe
+/// must survive every router between here and its target. Getting it wrong is
+/// silent in one direction — an on-link probe with a large hop limit still
+/// works — and total in the other.
 pub fn create_ipv6_header(
     src_addr: Ipv6Addr,
     dst_addr: Ipv6Addr,
     payload_length: u16,
     next_protocol: IpNextHeaderProtocol,
+    hop_limit: u8,
 ) -> anyhow::Result<Vec<u8>> {
     let mut buffer: [u8; IP_V6_HDR_LEN] = [0; IP_V6_HDR_LEN];
     {
@@ -74,7 +101,7 @@ pub fn create_ipv6_header(
         ipv6.set_flow_label(rand::random());
         ipv6.set_payload_length(payload_length);
         ipv6.set_next_header(next_protocol);
-        ipv6.set_hop_limit(1);
+        ipv6.set_hop_limit(hop_limit);
         ipv6.set_source(src_addr);
         ipv6.set_destination(dst_addr);
     }

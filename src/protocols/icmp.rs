@@ -30,8 +30,13 @@ pub fn create_all_nodes_echo_request_v6(
     let dst_mac: MacAddr = MacAddr::new(0x33, 0x33, 0, 0, 0, 1);
     let dst_addr: Ipv6Addr = Ipv6Addr::new(0xff02, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1);
     let eth_header: Vec<u8> = ethernet::make_header(*src_mac, dst_mac, EtherTypes::Ipv6)?;
-    let ipv6_header: Vec<u8> =
-        ip::create_ipv6_header(*src_addr, dst_addr, PAYLOAD_LENGTH, NEXT_PROTOCOL)?;
+    let ipv6_header: Vec<u8> = ip::create_ipv6_header(
+        *src_addr,
+        dst_addr,
+        PAYLOAD_LENGTH,
+        NEXT_PROTOCOL,
+        ip::HOP_LIMIT_ON_LINK,
+    )?;
     let mut icmp_packet: [u8; ICMP_V6_ECHO_REQ_LEN] = [0u8; ICMP_V6_ECHO_REQ_LEN];
 
     {

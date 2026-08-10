@@ -85,6 +85,15 @@ pub struct SynPortScanner {
     /// Scratch space for the probes coming due on one iteration, reused so a
     /// quiet tick allocates nothing.
     due: Vec<Due<ProbeTarget>>,
+    /// Why the first probe that could not be sent failed, if any did, and how
+    /// many followed it.
+    ///
+    /// Without this a scan whose probes never reached the wire reports every
+    /// port `Filtered` - the same answer a firewall produces - and says nothing
+    /// about the difference. `Filtered` is a claim about the network; a probe
+    /// that was never sent is a claim about this host.
+    send_failure: Option<String>,
+    sends_failed: u64,
 }
 
 impl SynPortScanner {
@@ -145,6 +154,8 @@ impl SynPortScanner {
             deadline: AdaptiveDeadline::new(deadline_config, target_count),
             ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT)),
             due: Vec::new(),
+            send_failure: None,
+            sends_failed: 0,
         }
     }
 
@@ -172,8 +183,15 @@ impl SynPortScanner {
             return;
         };
 
-        if let Some(token) = send_syn(self.transport.tx.as_ref(), src_addr, ip, port) {
-            self.ledger.arm(ip, (ip, port), token, now);
+        match send_syn(
+            self.transport.tx.as_ref(),
+            src_addr,
+            ip,
+            port,
+            &mut self.send_failure,
+        ) {
+            Some(token) => self.ledger.arm(ip, (ip, port), token, now),
+            None => self.sends_failed += 1,
         }
     }
 
@@ -370,6 +388,21 @@ impl PortScanner for SynPortScanner {
         }
 
         self.resolve_remaining_as_filtered();
+
+        // Reported once with the first cause, for the reason in
+        // `RoutedScanner`: a port scan that could not send is not a port scan
+        // that found everything closed, and only this channel says so.
+        if self.sends_failed > 0 {
+            self.ctx.record_failure(
+                ScannerKind::SynPort,
+                format!(
+                    "{} probes could not be sent, so their ports are reported \
+                     filtered without having been asked: {}",
+                    self.sends_failed,
+                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
+                ),
+            );
+        }
         Ok(())
     }
 

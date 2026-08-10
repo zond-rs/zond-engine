@@ -46,6 +46,7 @@
 
 #![allow(dead_code)]
 
+use anyhow::Context;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -82,6 +83,10 @@ const ICMPV6_UNUSED_LEN: usize = 4;
 /// How many bytes a [`Reply::Truncated`] reply is cut down to - short enough
 /// that no Layer-4 parser can make a header out of it.
 const TRUNCATED_LEN: usize = 4;
+
+/// Hop limit for synthesized IPv6 replies. Immaterial here - the seam sits
+/// above IP and nothing under test reads it - but it has to be some value.
+const HOP_LIMIT: u8 = 64;
 
 /// Which protocol the scanner under test speaks, and therefore how [`FakeNet`]
 /// must read its probes and shape its answers.
@@ -736,7 +741,7 @@ fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8]) -> Option<Vec<u8>> {
             ip::create_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp).ok()?
         }
         (IpAddr::V6(s), IpAddr::V6(d)) => {
-            ip::create_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp).ok()?
+            ip::create_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp, HOP_LIMIT).ok()?
         }
         _ => return None,
     };
@@ -757,6 +762,36 @@ const DEFAULT_SEED: u64 = 0x5EED_1234_5EED_1234;
 /// dependency bump would quietly change which packets a "reproducible" test
 /// drops - and a test whose seed no longer reproduces its failure is worse than
 /// no test. Ten lines of arithmetic buys permanent stability.
+/// A transport whose send half refuses every probe, standing in for a host that
+/// cannot put packets on the wire at all.
+///
+/// Deliberately not a [`FakeNet`] policy. Every policy there is a statement
+/// about the *network* - what a host answers, what the link drops - and
+/// [`FakeLink::send`] never fails on purpose, because a scanner must not be
+/// able to tell a dropped probe from an ignored one. This is the opposite
+/// situation: the probe never reached a network to be dropped by, and the
+/// scanner not only may know but has to say so.
+///
+/// The receive half is a channel nobody ever sends on, which is what a scan with
+/// no probes on the wire would hear.
+pub fn unsendable_transport(reason: &'static str) -> ProbeTransport {
+    /// Holds the receive channel's sending half for as long as the transport
+    /// lives. Dropping it would close the stream, and a scanner reads that as
+    /// its capture dying and stops - before it has tried to send anything, so
+    /// the very failure this exists to produce would never happen. A real
+    /// capture is kept alive by its reader threads.
+    struct Refuses(&'static str, UnboundedSender<CapturedSegment>);
+
+    impl ProbeSender for Refuses {
+        fn send(&self, _segment: &[u8], _src: IpAddr, dst: IpAddr) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("{}", self.0)).context(format!("failed to send to {dst}"))
+        }
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    ProbeTransport::from_parts(Box::new(Refuses(reason, tx)), rx)
+}
+
 pub struct SplitMix64(u64);
 
 impl SplitMix64 {
