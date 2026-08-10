@@ -454,8 +454,24 @@ async fn spawn_explorers(
         local,
         routed,
         unmapped,
+        ambiguous,
         unenumerable,
     } = interface::map_ips_to_interfaces(targets);
+
+    // A link-local target naming no interface. Reported rather than guessed at:
+    // every interface has an `fe80::/64`, so probing the first one that matches
+    // would scan an arbitrary segment and report the address absent when it is
+    // present on another.
+    for range in &ambiguous {
+        ctx.record_failure(
+            ScannerKind::Local,
+            format!(
+                "{} is link-local, so it names a different machine on every \
+                 segment. Say which: {}%<interface>.",
+                range.start_addr, range.start_addr
+            ),
+        );
+    }
 
     // Ranges no strategy can take. Reported before anything is spawned, and
     // reported as a failure rather than logged, because the distinction a caller

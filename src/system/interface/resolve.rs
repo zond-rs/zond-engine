@@ -19,6 +19,18 @@ use crate::core::{
 };
 use crate::system::interface;
 
+/// Looks up an interface by name and returns its scope id, for the
+/// `%interface` suffix on a link-local target.
+///
+/// The engine's answer to [`ZoneResolverFn`](crate::core::parse::ip::ZoneResolverFn):
+/// the parser knows the syntax and this knows the host.
+pub fn resolve_zone(name: &str) -> Option<u32> {
+    pnet::datalink::interfaces()
+        .into_iter()
+        .find(|iface| iface.name == name)
+        .map(|iface| iface.index)
+}
+
 pub fn resolve(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
     match keyword {
         Keyword::Lan => resolve_lan(ip_set),

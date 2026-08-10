@@ -63,6 +63,16 @@ pub struct RoutedTargets {
     /// Targets that are neither on-link nor have a resolvable route (e.g.
     /// loopback), left to the unprivileged connect fallback.
     pub unmapped: IpSet,
+    /// Link-local IPv6 targets with no interface named on them.
+    ///
+    /// Every interface holds an `fe80::/64`, so such a target matches all of
+    /// them and identifies none. Assigning it to whichever the host happened to
+    /// list first probes an arbitrary segment and reports the address absent
+    /// when it is present on another — a wrong answer arrived at silently, and
+    /// on a laptop with two dozen interfaces an unlikely guess. Written
+    /// `fe80::1%en0`, it is unambiguous; written bare, it is a question with no
+    /// answer and is reported as one.
+    pub ambiguous: Vec<Ipv6Range>,
     /// Off-link IPv6 ranges too large to enumerate, kept whole.
     ///
     /// These are not failures of the network and not addresses that went
@@ -106,6 +116,7 @@ pub(crate) fn map_ips_to_interfaces_with(
     let mut routed: Vec<RoutedTarget> = Vec::new();
     let mut unmapped = IpSet::new();
     let mut unenumerable: Vec<Ipv6Range> = Vec::new();
+    let mut ambiguous: Vec<Ipv6Range> = Vec::new();
     let mut singles_to_route: Vec<IpAddr> = Vec::new();
 
     // A range wholly inside one interface's subnet is kept intact; anything
@@ -121,6 +132,24 @@ pub(crate) fn map_ips_to_interfaces_with(
     for range in ip_set.v6() {
         let start = IpAddr::V6(range.start_addr);
         let end = IpAddr::V6(range.end_addr);
+
+        // Checked before any interface is consulted, because consulting them is
+        // exactly the mistake: they all match.
+        if range.is_ambiguous() {
+            ambiguous.push(*range);
+            continue;
+        }
+        // A named interface answers the question outright. The scope id is the
+        // user's own statement about which segment they meant, and it outranks
+        // any prefix match.
+        if let Some(zone) = range.zone {
+            match interfaces.iter().position(|iface| iface.index == zone) {
+                Some(idx) => local.entry(idx).or_default().insert_range(V6(*range)),
+                None => ambiguous.push(*range),
+            }
+            continue;
+        }
+
         match owning_interface(&interfaces, start, end) {
             // On-link, so it is kept whole and never expanded here: the local
             // scanner reaches a segment by multicast rather than by walking it.
@@ -175,6 +204,7 @@ pub(crate) fn map_ips_to_interfaces_with(
         local,
         routed,
         unmapped,
+        ambiguous,
         unenumerable,
     }
 }
@@ -337,6 +367,58 @@ mod tests {
         assert!(result.routed.is_empty());
         assert!(result.unmapped.is_empty());
         assert!(result.local.is_empty());
+    }
+
+    /// The silent wrong answer this refusal exists to prevent.
+    ///
+    /// Every interface holds an `fe80::/64`, so a bare link-local target matches
+    /// all of them and `owning_interface` returns whichever the host listed
+    /// first. On a laptop with two dozen interfaces that is close to a random
+    /// choice: the scan probes one segment, hears nothing, and reports a host
+    /// that was present on another as absent.
+    #[test]
+    fn a_link_local_target_naming_no_interface_is_refused() {
+        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
+        let interfaces = vec![
+            mock_interface(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 64),
+            mock_interface(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2)), 64),
+        ];
+        let mut set = IpSet::new();
+        set.insert(IpAddr::V6(link_local));
+
+        let result = map_ips_to_interfaces_with(set, interfaces);
+
+        assert_eq!(result.ambiguous.len(), 1);
+        assert!(
+            result.local.is_empty(),
+            "guessing an interface is what this prevents"
+        );
+    }
+
+    /// Named, the same target is unambiguous, and the name outranks any prefix
+    /// match — every interface matches the prefix, so a prefix match is no
+    /// evidence at all.
+    #[test]
+    fn a_link_local_target_goes_to_the_interface_it_names() {
+        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
+        let mut first = mock_interface(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 64);
+        first.index = 3;
+        let mut second = mock_interface(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2)), 64);
+        second.index = 9;
+        second.name = "en9".to_string();
+
+        let mut set = IpSet::new();
+        set.insert_range(IpRange::V6(
+            Ipv6Range::scoped(link_local, link_local, Some(9)).unwrap(),
+        ));
+
+        let result = map_ips_to_interfaces_with(set, vec![first, second]);
+
+        assert!(result.ambiguous.is_empty());
+        assert_eq!(result.local.len(), 1);
+        let (intf, ips) = result.local.into_iter().next().unwrap();
+        assert_eq!(intf.name, "en9", "the second interface was the one named");
+        assert_eq!(ips.len(), 1);
     }
 
     #[test]

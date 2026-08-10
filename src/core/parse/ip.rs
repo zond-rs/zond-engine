@@ -79,6 +79,15 @@ pub enum IpParseError {
     /// The provided input resulted in zero valid IP addresses.
     #[error("Target input resulted in an empty set")]
     EmptySet,
+
+    /// An `%interface` suffix was written on a target that cannot use one.
+    #[error("'{0}': only a link-local address is scoped to an interface")]
+    ZoneOnUnscopedTarget(String),
+
+    /// An `%interface` suffix named an interface this host does not have, or
+    /// none could be looked up at all.
+    #[error("No interface named '{0}'")]
+    UnknownInterface(String),
 }
 
 /// Resolves a collection of input strings into a consolidated [`IpSet`].
@@ -108,7 +117,32 @@ pub enum IpParseError {
 /// ```
 pub type ResolverFn = fn(Keyword, &mut IpSet) -> Result<(), IpParseError>;
 
+/// Looks up an interface by name and returns its scope id.
+///
+/// Injected for the same reason [`ResolverFn`] is: resolving a name means
+/// reading the host's interface list, and this module deliberately knows nothing
+/// about the host it runs on. `None` for a name no interface answers to.
+pub type ZoneResolverFn = fn(&str) -> Option<u32>;
+
 pub fn to_set<S>(ips: &[S], resolver: Option<ResolverFn>) -> Result<IpSet, IpParseError>
+where
+    S: AsRef<str>,
+{
+    to_set_with(ips, resolver, None)
+}
+
+/// [`to_set`], additionally able to resolve the `%interface` suffix on a
+/// link-local address.
+///
+/// Separate rather than an extra argument to [`to_set`] so existing callers keep
+/// compiling. A caller that does not supply `zones` cannot express a link-local
+/// target at all, and gets an error saying so rather than a target set that
+/// silently means a different segment.
+pub fn to_set_with<S>(
+    ips: &[S],
+    resolver: Option<ResolverFn>,
+    zones: Option<ZoneResolverFn>,
+) -> Result<IpSet, IpParseError>
 where
     S: AsRef<str>,
 {
@@ -121,7 +155,7 @@ where
         }
 
         for part in s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
-            parse_and_insert(part, &mut set, resolver)?;
+            parse_and_insert(part, &mut set, resolver, zones)?;
         }
     }
 
@@ -141,7 +175,15 @@ fn parse_and_insert(
     s: &str,
     set: &mut IpSet,
     resolver: Option<ResolverFn>,
+    zones: Option<ZoneResolverFn>,
 ) -> Result<(), IpParseError> {
+    // The interface suffix is stripped first and applied to whatever the rest
+    // parses to, so `fe80::1%en0` and `fe80::1-fe80::5%en0` are both expressible
+    // and mean the obvious thing.
+    if let Some((address, zone)) = s.split_once('%') {
+        return parse_scoped(s, address, zone, set, zones);
+    }
+
     if s.contains('/') {
         let range = parse_cidr(s)?;
         set.insert_range(range);
@@ -169,6 +211,43 @@ fn parse_and_insert(
         .map_err(|_| IpParseError::Malformed(s.to_string()))?;
     set.insert(ip);
 
+    Ok(())
+}
+
+/// Parses a target carrying an explicit `%interface` suffix.
+///
+/// The suffix is only meaningful on a link-local address, and only resolvable by
+/// a caller that supplied a lookup. Both failures are reported rather than
+/// papered over: an interface nobody recognizes and a zone written on an address
+/// with no use for one are each a target that does not mean what it says.
+fn parse_scoped(
+    original: &str,
+    address: &str,
+    zone: &str,
+    set: &mut IpSet,
+    zones: Option<ZoneResolverFn>,
+) -> Result<(), IpParseError> {
+    if zone.is_empty() {
+        return Err(IpParseError::Malformed(original.to_string()));
+    }
+
+    let range = address
+        .parse::<IpRange>()
+        .map_err(|_| IpParseError::Malformed(original.to_string()))?;
+    let IpRange::V6(v6) = range else {
+        return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
+    };
+    if !v6.start_addr.is_unicast_link_local() {
+        return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
+    }
+
+    let lookup = zones.ok_or_else(|| IpParseError::UnknownInterface(zone.to_string()))?;
+    let index = lookup(zone).ok_or_else(|| IpParseError::UnknownInterface(zone.to_string()))?;
+
+    let scoped =
+        crate::core::models::ip::range::Ipv6Range::scoped(v6.start_addr, v6.end_addr, Some(index))
+            .map_err(map_range_error)?;
+    set.insert_range(IpRange::V6(scoped));
     Ok(())
 }
 
@@ -299,6 +378,70 @@ mod tests {
         let input = vec!["10.0.0.10-1"];
         let result = to_set(&input, None);
         assert!(matches!(result, Err(IpParseError::InvalidRange(_, _))));
+    }
+
+    /// The interface a link-local target names survives into the target set.
+    ///
+    /// Without it the address is a question with no answer: every interface
+    /// holds an `fe80::/64`, so the scan picks one and probes the wrong segment.
+    #[test]
+    fn a_link_local_target_keeps_the_interface_it_names() {
+        fn zones(name: &str) -> Option<u32> {
+            (name == "en0").then_some(7)
+        }
+
+        let set = to_set_with(&["fe80::aa%en0"], None, Some(zones)).expect("parses");
+
+        assert_eq!(set.v6().len(), 1);
+        assert_eq!(set.v6()[0].zone, Some(7));
+        assert!(!set.v6()[0].is_ambiguous());
+    }
+
+    /// The same address without an interface is accepted but marked as the
+    /// unanswerable question it is, for the classifier to report.
+    #[test]
+    fn a_link_local_target_without_an_interface_is_ambiguous() {
+        let set = to_set(&["fe80::aa"], None).expect("parses");
+
+        assert!(set.v6()[0].is_ambiguous());
+    }
+
+    /// An interface nobody recognizes is a target that does not mean what it
+    /// says, and is refused rather than silently stripped of its scope.
+    #[test]
+    fn an_unknown_interface_is_refused() {
+        fn zones(_: &str) -> Option<u32> {
+            None
+        }
+
+        assert!(matches!(
+            to_set_with(&["fe80::aa%wlan9"], None, Some(zones)),
+            Err(IpParseError::UnknownInterface(_))
+        ));
+        assert!(
+            matches!(
+                to_set(&["fe80::aa%en0"], None),
+                Err(IpParseError::UnknownInterface(_))
+            ),
+            "a caller with no lookup cannot express a scoped target and must be told"
+        );
+    }
+
+    /// A scope on an address that cannot use one is a mistake, not a hint.
+    #[test]
+    fn a_zone_on_a_global_target_is_refused() {
+        fn zones(_: &str) -> Option<u32> {
+            Some(7)
+        }
+
+        assert!(matches!(
+            to_set_with(&["2001:db8::1%en0"], None, Some(zones)),
+            Err(IpParseError::ZoneOnUnscopedTarget(_))
+        ));
+        assert!(matches!(
+            to_set_with(&["192.168.1.1%en0"], None, Some(zones)),
+            Err(IpParseError::ZoneOnUnscopedTarget(_))
+        ));
     }
 
     #[test]

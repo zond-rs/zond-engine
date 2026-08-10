@@ -123,13 +123,28 @@ impl Ipv4Range {
 
 /// A contiguous range of IPv6 addresses defined by a start and end point.
 ///
-/// Both boundaries are inclusive. Stored as two `Ipv6Addr` values (32 bytes total).
+/// Both boundaries are inclusive. Stored as two `Ipv6Addr` values plus the
+/// interface scope, if the addresses need one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ipv6Range {
     /// The inclusive starting address of the range.
     pub start_addr: Ipv6Addr,
     /// The inclusive ending address of the range.
     pub end_addr: Ipv6Addr,
+    /// The interface these addresses are valid on, as a scope id, for a range
+    /// of link-local addresses.
+    ///
+    /// The index alone rather than the whole
+    /// [`Zone`](crate::core::models::ip::scoped::Zone), so this type stays
+    /// `Copy`: a scan expands ranges into millions of targets, and the index is
+    /// all a socket ever needs. The interface *name* is a display concern and
+    /// belongs where a person reads the output.
+    ///
+    /// `None` for every range that does not need one, which is all of them
+    /// except link-local. See
+    /// [`ScopedIp`](crate::core::models::ip::scoped::ScopedIp) for why an
+    /// address that needs a zone and lacks one cannot be probed at all.
+    pub zone: Option<u32>,
 }
 
 impl Ipv6Range {
@@ -139,14 +154,36 @@ impl Ipv6Range {
     ///
     /// Returns [`IpError::InvalidRange`] if `start` is numerically greater than `end`.
     pub fn new(start: Ipv6Addr, end: Ipv6Addr) -> Result<Self, IpError> {
+        Self::scoped(start, end, None)
+    }
+
+    /// Creates an `Ipv6Range` valid on the interface with scope id `zone`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IpError::InvalidRange`] if `start` is numerically greater than
+    /// `end`.
+    pub fn scoped(start: Ipv6Addr, end: Ipv6Addr, zone: Option<u32>) -> Result<Self, IpError> {
         if u128::from(start) <= u128::from(end) {
             Ok(Self {
                 start_addr: start,
                 end_addr: end,
+                zone,
             })
         } else {
             Err(IpError::InvalidRange(IpAddr::V6(start), IpAddr::V6(end)))
         }
+    }
+
+    /// Whether these addresses are meaningless without an interface to
+    /// interpret them against, and none is recorded.
+    ///
+    /// A range spanning link-local addresses without a zone cannot be probed:
+    /// every interface holds an `fe80::/64`, so there is no way to tell which
+    /// segment was meant, and picking one is a guess a scan must not make
+    /// silently.
+    pub fn is_ambiguous(&self) -> bool {
+        self.zone.is_none() && self.start_addr.is_unicast_link_local()
     }
 
     /// Returns an iterator over every [`IpAddr`] within the range.

@@ -130,8 +130,23 @@ impl IpSet {
         self.v4 = merged;
     }
 
+    /// Sorts and merges the IPv6 ranges, keeping ranges on different interfaces
+    /// apart.
+    ///
+    /// Two link-local ranges spanning the same numbers on two interfaces are two
+    /// different sets of machines, and merging them would produce a range that
+    /// means one thing at one end and something else at the other. So adjacency
+    /// alone is not enough to combine two ranges; they have to agree on scope.
+    ///
+    /// The sort stays keyed on the address first and the zone only as a
+    /// tie-break, because [`contains_canonical`](Self::contains_canonical)
+    /// binary-searches this vector by address and would be wrong against any
+    /// other ordering. The cost is that two same-zone ranges separated by a
+    /// differently-zoned one in between are left unmerged - a slightly longer
+    /// vector describing exactly the same addresses, where the alternative is a
+    /// membership test that silently misses.
     fn merge_v6(&mut self) {
-        self.v6.sort_by_key(|r| r.start_addr);
+        self.v6.sort_by_key(|r| (r.start_addr, r.zone));
         let mut merged: Vec<Ipv6Range> = Vec::with_capacity(self.v6.len());
         let mut current = self.v6[0];
 
@@ -139,7 +154,7 @@ impl IpSet {
             let curr_end = u128::from(current.end_addr);
             let next_start = u128::from(next.start_addr);
 
-            if next_start <= curr_end.saturating_add(1) {
+            if next.zone == current.zone && next_start <= curr_end.saturating_add(1) {
                 if next.end_addr > current.end_addr {
                     current.end_addr = next.end_addr;
                 }
@@ -154,7 +169,15 @@ impl IpSet {
 
     // ─── Query API (Lazy) ────────────────────────────────────────────────────
 
-    /// Checks if the set contains the given IP address. Performs lazy merging on a clone if needed.
+    /// Checks if the set contains the given IP address, on any interface.
+    ///
+    /// Deliberately blind to zones: the callers are filtering received replies
+    /// against the targets they asked about, and a reply arrives as a bare
+    /// address with no interface attached to compare. The strategy that receives
+    /// it is bound to one segment already, so the scope is established by which
+    /// scanner is asking rather than by this test.
+    ///
+    /// Performs lazy merging on a clone if needed.
     pub fn contains(&self, ip: &IpAddr) -> bool {
         if !self.v4_dirty && !self.v6_dirty {
             return self.contains_canonical(ip);
