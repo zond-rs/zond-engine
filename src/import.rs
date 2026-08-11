@@ -592,6 +592,12 @@ impl ImportFormat {
         let prefix = buffered.strip_prefix(&UTF8_BOM).unwrap_or(buffered);
         let prefix = prefix.trim_ascii_start();
 
+        // Bound before the arms, because a build with no structured format
+        // compiled in has no arm to read it and an unused binding there is a
+        // warning nobody can act on. Such a build resolves everything to a
+        // list, which is the right answer when no other format exists.
+        let _ = &prefix;
+
         #[cfg(feature = "import-csv")]
         {
             // Recognising this crate's own header is not a heuristic about what

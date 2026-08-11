@@ -88,6 +88,9 @@ pub mod csv;
 #[cfg(feature = "export-html")]
 pub mod html;
 
+#[cfg(feature = "export-nmap")]
+pub mod nmap;
+
 #[cfg(test)]
 pub(crate) mod fixture;
 
@@ -114,6 +117,9 @@ pub use csv::CsvExporter;
 
 #[cfg(feature = "export-html")]
 pub use html::HtmlExporter;
+
+#[cfg(feature = "export-nmap")]
+pub use nmap::NmapXmlExporter;
 
 /// What went wrong while writing a report out.
 #[non_exhaustive]
@@ -273,6 +279,11 @@ pub enum ExportFormat {
     /// be read rather than parsed, and to print.
     #[cfg(feature = "export-html")]
     Html,
+
+    /// Nmap-compatible XML, for the ingest pipelines that already exist. Says
+    /// `scanner="zond"`: it is nmap's format, not a claim to be nmap.
+    #[cfg(feature = "export-nmap")]
+    NmapXml,
 }
 
 impl ExportFormat {
@@ -295,6 +306,8 @@ impl ExportFormat {
             // system that still shortens extensions means this.
             #[cfg(feature = "export-html")]
             "html" | "htm" => Some(ExportFormat::Html),
+            #[cfg(feature = "export-nmap")]
+            "xml" => Some(ExportFormat::NmapXml),
             _ => None,
         }
     }
@@ -321,6 +334,8 @@ impl ExportFormat {
             ExportFormat::Csv => "csv",
             #[cfg(feature = "export-html")]
             ExportFormat::Html => "html",
+            #[cfg(feature = "export-nmap")]
+            ExportFormat::NmapXml => "xml",
         }
     }
 
@@ -338,6 +353,8 @@ impl ExportFormat {
             ExportFormat::Csv,
             #[cfg(feature = "export-html")]
             ExportFormat::Html,
+            #[cfg(feature = "export-nmap")]
+            ExportFormat::NmapXml,
         ]
     }
 
@@ -359,6 +376,8 @@ impl ExportFormat {
             ExportFormat::Csv => Box::new(CsvExporter::new(options)),
             #[cfg(feature = "export-html")]
             ExportFormat::Html => Box::new(HtmlExporter::new(options)),
+            #[cfg(feature = "export-nmap")]
+            ExportFormat::NmapXml => Box::new(NmapXmlExporter::new(options)),
         }
     }
 }

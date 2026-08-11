@@ -34,9 +34,17 @@ export-csv = []
 # it saves.
 export-html = []
 
+# Nmap-compatible XML, for the pipelines that already exist. DefectDojo,
+# Metasploit, Faraday and Dradis all ingest nmap's XML and none of them ingest
+# this crate's JSON, so this is what puts a zond scan into somebody's existing
+# workflow. Adds no dependency: the markup is written directly, as `export-html`
+# already does, and an XML crate for one document shape would cost more than it
+# saves.
+export-nmap = []
+
 # Every format this crate ships. A convenience for a front end that wants to
 # offer the user a choice, rather than a fifth format.
-export-all = ["export-json", "export-jsonl", "export-csv", "export-html"]
+export-all = ["export-json", "export-jsonl", "export-csv", "export-html", "export-nmap"]
 
 # Reading targets out of a table: a report this engine wrote, or a spreadsheet
 # somebody else did. Adds no dependency — the reader is the mirror of the writer
