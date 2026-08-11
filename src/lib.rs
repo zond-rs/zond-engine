@@ -9,6 +9,7 @@
 pub mod core;
 pub mod export;
 pub mod fingerprinting;
+pub mod import;
 pub mod info;
 pub mod network;
 pub mod protocols;

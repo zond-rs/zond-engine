@@ -20,32 +20,25 @@ pub mod ip;
 pub use ip::{IS_LAN_SCAN, IpParseError, to_set as to_ipset};
 
 use crate::core::models::port::PortSet;
-use crate::core::models::target::{TargetMap, TargetSet};
+use crate::core::models::target::TargetMap;
 
 /// Parses a list of target strings (e.g. `["1.1.1.1:80,443", "8.8.8.8"]`) into a `TargetMap`.
 /// Combines per-target specified ports, or falls back to `global_ports`.
+///
+/// The grammar, and the choice of which colon separates an address from its
+/// ports, belong to [`crate::import::target`]; this is the shape of it that
+/// takes a keyword resolver and nothing else. A caller that needs interface
+/// zones or hostnames builds a [`TargetContext`](crate::import::TargetContext)
+/// and calls [`crate::import::target::to_target_map`] directly.
 pub fn to_target_map(
     targets: &[String],
     global_ports: PortSet,
     resolver: Option<ip::ResolverFn>,
 ) -> Result<TargetMap, anyhow::Error> {
-    let mut map = TargetMap::new();
+    let mut ctx = crate::import::TargetContext::new();
+    ctx.keywords = resolver;
 
-    for target in targets {
-        if let Some((ip_str, port_str)) = target.split_once(':') {
-            let ip_set = to_ipset(&[ip_str], resolver)
-                .map_err(|e| anyhow::anyhow!("Invalid IP in '{}': {}", ip_str, e))?;
-            let port_set = PortSet::try_from(port_str)
-                .map_err(|e| anyhow::anyhow!("Invalid Port in '{}': {}", port_str, e))?;
-            map.add_unit(TargetSet::new(ip_set, port_set));
-        } else {
-            let ip_set = to_ipset(&[target.as_str()], resolver)
-                .map_err(|e| anyhow::anyhow!("Invalid IP '{}': {}", target, e))?;
-            map.add_unit(TargetSet::new(ip_set, global_ports.clone()));
-        }
-    }
-
-    Ok(map)
+    crate::import::target::to_target_map(targets, global_ports, &ctx).map_err(anyhow::Error::from)
 }
 
 // ╔════════════════════════════════════════════╗

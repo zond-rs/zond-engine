@@ -208,10 +208,18 @@ impl Ipv6Range {
     }
 
     /// Returns the number of IP addresses in the range.
+    ///
+    /// `::/0` covers 2^128 addresses, which is one more than a `u128` can hold,
+    /// so the count saturates at [`u128::MAX`]. That is an undercount of one
+    /// address in the single case where the range is the entire address space -
+    /// a quantity no caller can act on differently at either value, and the only
+    /// alternative to a wrapping subtraction that reports the whole of IPv6 as
+    /// *nothing*. A budget check is the main reader of this, and reporting zero
+    /// would wave through precisely the target it exists to stop.
     pub fn len(&self) -> u128 {
         let s_u128: u128 = u128::from(self.start_addr);
         let e_u128: u128 = u128::from(self.end_addr);
-        (e_u128 - s_u128) + 1
+        (e_u128 - s_u128).saturating_add(1)
     }
 
     /// Returns true if the range contains no addresses.

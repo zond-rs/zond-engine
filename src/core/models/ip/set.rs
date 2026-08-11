@@ -289,9 +289,7 @@ impl IpSet {
             !self.v4_dirty && !self.v6_dirty,
             "IpSet must be canonicalized before calling len_canonical"
         );
-        let v4_len: u128 = self.v4.iter().map(|r| r.len() as u128).sum();
-        let v6_len: u128 = self.v6.iter().map(|r| r.len()).sum();
-        v4_len + v6_len
+        self.v4_len().saturating_add(self.v6_len())
     }
 
     /// How many addresses the IPv4 ranges cover, and how many the IPv6 ones do.
@@ -303,13 +301,22 @@ impl IpSet {
     /// they are in [`len_canonical`](Self::len_canonical) before merging: these
     /// steer pacing, and a pacing decision does not warrant canonicalizing a
     /// clone of the set.
+    ///
+    /// Saturates rather than wrapping, for the reason
+    /// [`Ipv6Range::len`](crate::core::models::ip::range::Ipv6Range::len) gives:
+    /// a count too large to represent is still enormous, and a wrapped one reads
+    /// as small.
     pub fn v4_len(&self) -> u128 {
-        self.v4.iter().map(|r| r.len() as u128).sum()
+        self.v4
+            .iter()
+            .fold(0u128, |total, r| total.saturating_add(r.len() as u128))
     }
 
     /// The IPv6 half of [`v4_len`](Self::v4_len).
     pub fn v6_len(&self) -> u128 {
-        self.v6.iter().map(|r| r.len()).sum()
+        self.v6
+            .iter()
+            .fold(0u128, |total, r| total.saturating_add(r.len()))
     }
 
     /// Returns the underlying IPv4 ranges. If dirty, these ranges may be overlapping and un-merged.

@@ -155,7 +155,7 @@ where
         }
 
         for part in s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
-            parse_and_insert(part, &mut set, resolver, zones)?;
+            insert_expression(part, &mut set, resolver, zones)?;
         }
     }
 
@@ -170,8 +170,24 @@ where
     Ok(set)
 }
 
-/// Identifies the format of a single target string and inserts it into the set.
-fn parse_and_insert(
+/// Identifies the format of a single address expression and inserts it into an
+/// existing set.
+///
+/// This is the grammar itself, without the list handling and the summary line
+/// [`to_set_with`] wraps around it. A caller that has already tokenized its
+/// input - an importer reading a file of targets, say - wants exactly this: one
+/// expression, inserted into a set it is accumulating, and no log line per
+/// token to show for it.
+///
+/// Nothing is inserted when the expression is refused, so a caller that collects
+/// errors and carries on is left with a set holding only what parsed.
+///
+/// [`IpParseError::Malformed`] is the one error worth treating as a question
+/// rather than an answer: it means the expression matches no address, range or
+/// CIDR form, which is also what a hostname looks like from here. A caller that
+/// accepts hostnames uses it as the signal to try resolving one. Every other
+/// error describes an address that is wrong rather than absent.
+pub fn insert_expression(
     s: &str,
     set: &mut IpSet,
     resolver: Option<ResolverFn>,

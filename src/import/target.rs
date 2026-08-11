@@ -1,0 +1,775 @@
+// Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors
+//
+// This file is part of Zond Engine, licensed under the GNU Affero General
+// Public License, version 3 or later. See the LICENSE file for details, or
+// <https://www.gnu.org/licenses/agpl-3.0.html>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! # Target Expressions
+//!
+//! What a scan target looks like written down, and how a stream of them becomes
+//! a [`TargetMap`].
+//!
+//! Every way of getting targets into the engine - a file, a form field, an
+//! argument list, a previous report - ends here, so the grammar is written once
+//! and the formats above it only decide where the tokens come from.
+//!
+//! ## The grammar
+//!
+//! A target expression is an address expression with an optional port
+//! specification after it:
+//!
+//! | Written | Address | Ports |
+//! |---|---|---|
+//! | `192.168.1.1` | `192.168.1.1` | the caller's default |
+//! | `192.168.1.1:80,443` | `192.168.1.1` | `80,443` |
+//! | `10.0.0.0/24:1-1024` | `10.0.0.0/24` | `1-1024` |
+//! | `2001:db8::1` | `2001:db8::1` | the caller's default |
+//! | `[2001:db8::1]:443` | `2001:db8::1` | `443` |
+//! | `fe80::1%en0` | `fe80::1%en0` | the caller's default |
+//! | `[fe80::1%en0]:22` | `fe80::1%en0` | `22` |
+//! | `scanme.example:22` | `scanme.example` | `22` |
+//!
+//! The address half is handed to [`crate::core::parse::ip`], which already
+//! understands literals, ranges, CIDR blocks, zones and keywords. This module
+//! adds no address grammar of its own; it decides only where the address ends
+//! and the ports begin.
+//!
+//! ## Where the ports begin
+//!
+//! That decision is the entire difficulty, because `:` separates ports from
+//! addresses and also separates an IPv6 address from itself. Three rules settle
+//! it, and they are the rules every other tool in this space uses:
+//!
+//! 1. A token starting with `[` is an address up to the matching `]`,
+//!    optionally followed by `:` and a port specification.
+//! 2. A token with two or more colons and no brackets is an address, with no
+//!    ports. There is no other reading of `2001:db8::1`.
+//! 3. Otherwise the single colon separates address from ports.
+//!
+//! The consequence worth stating plainly: **`2001:db8::1:80` is an address, not
+//! port 80 on `2001:db8::1`.** It is a syntactically valid IPv6 address and
+//! nothing in the token says otherwise. Brackets exist for exactly this, and a
+//! caller that means the port writes `[2001:db8::1]:80`.
+//!
+//! ## Hostnames
+//!
+//! A target list written by a human contains hostnames, and resolving one means
+//! speaking DNS - which this module must not decide to do. Whether a name may
+//! be looked up at all is [`crate::core::config::ZondConfig::no_dns`]'s
+//! business, and how it is looked up belongs to whoever built the resolver.
+//!
+//! So a name goes to a lookup supplied in [`TargetContext`], the same way
+//! keywords and interface zones already do. A caller that supplies none gets an
+//! error naming the hostname rather than a target set quietly missing it: a
+//! scan that does not cover what its input said it covers is a wrong answer
+//! that looks like a right one.
+//!
+//! The lookup is called during parsing and is therefore synchronous. A caller
+//! with enough names for that to matter should parse in two passes - collect
+//! them with [`TargetExpr::parse`], resolve them concurrently, then build with a
+//! lookup that reads the results - which is why the expression grammar is public
+//! separately from the builder.
+//!
+//! ## One unit per port specification
+//!
+//! [`TargetMapBuilder`] groups by port specification rather than emitting a
+//! [`TargetSet`] per input token. A file of sixty-five thousand bare addresses
+//! becomes one unit whose [`IpSet`] merges them into as few ranges as they
+//! describe, instead of sixty-five thousand units of one address each. Ordering
+//! is first-seen and therefore deterministic: two runs over the same input
+//! produce the same scan.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::net::IpAddr;
+
+use thiserror::Error;
+
+use crate::core::models::ip::set::IpSet;
+use crate::core::models::port::{PortSet, PortSetParseError};
+use crate::core::models::target::{TargetMap, TargetSet};
+use crate::core::parse::ip::{IpParseError, ResolverFn, ZoneResolverFn, insert_expression};
+
+/// Looks up the addresses a hostname stands for.
+///
+/// Returning `None` and returning an empty vector mean the same thing to the
+/// caller - there is nothing to scan under that name - and both are reported as
+/// [`TargetParseError::UnknownHost`]. A resolver that distinguishes a lookup
+/// failure from a name that genuinely has no records should say so through its
+/// own channel; from here they are the same target, missing.
+pub type HostLookup<'a> = &'a dyn Fn(&str) -> Option<Vec<IpAddr>>;
+
+/// The lookups a target expression may need, and none of which this module can
+/// perform for itself.
+///
+/// Each is optional, and an expression that needs one the caller did not supply
+/// is refused rather than guessed at. That is the whole reason they are here:
+/// resolving `lan`, `%en0` or a hostname means reading the host this process
+/// runs on, and a parser that does that on its own behalf cannot be embedded
+/// anywhere its author did not anticipate.
+#[derive(Default, Clone, Copy)]
+pub struct TargetContext<'a> {
+    /// Expands keywords such as `lan` into the addresses they stand for.
+    pub keywords: Option<ResolverFn>,
+    /// Resolves the `%interface` suffix on a link-local address to a scope id.
+    pub zones: Option<ZoneResolverFn>,
+    /// Resolves a hostname to addresses.
+    pub hosts: Option<HostLookup<'a>>,
+}
+
+impl<'a> TargetContext<'a> {
+    /// A context that can resolve nothing: literal addresses, ranges and CIDR
+    /// blocks only.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the keyword resolver.
+    pub fn with_keywords(mut self, keywords: ResolverFn) -> Self {
+        self.keywords = Some(keywords);
+        self
+    }
+
+    /// Sets the interface-zone resolver.
+    pub fn with_zones(mut self, zones: ZoneResolverFn) -> Self {
+        self.zones = Some(zones);
+        self
+    }
+
+    /// Sets the hostname lookup.
+    pub fn with_hosts(mut self, hosts: HostLookup<'a>) -> Self {
+        self.hosts = Some(hosts);
+        self
+    }
+}
+
+impl fmt::Debug for TargetContext<'_> {
+    /// Reports which lookups are present rather than trying to describe them,
+    /// since what a caller debugging a refused target needs to know is which
+    /// resolver was missing.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TargetContext")
+            .field("keywords", &self.keywords.is_some())
+            .field("zones", &self.zones.is_some())
+            .field("hosts", &self.hosts.is_some())
+            .finish()
+    }
+}
+
+/// Why a target expression could not be turned into targets.
+///
+/// Every variant carries the expression it is about. An importer reading a file
+/// reports the line as well, and between the two a user can find what to fix
+/// without re-reading their own input.
+#[non_exhaustive]
+#[derive(Debug, Error)]
+pub enum TargetParseError {
+    /// The token was empty or nothing but whitespace.
+    #[error("a target expression cannot be empty")]
+    Empty,
+
+    /// A bracketed address was never closed.
+    #[error("'{0}': a bracketed address must be closed with ']'")]
+    UnbalancedBracket(String),
+
+    /// Something followed the closing bracket other than a port specification.
+    #[error("'{0}': expected ':' and a port specification after ']'")]
+    TrailingText(String),
+
+    /// The separator was there and the port specification was not.
+    #[error("'{0}': the ':' is not followed by a port specification")]
+    EmptyPorts(String),
+
+    /// The address half named nothing scannable.
+    #[error("'{expression}': {source}")]
+    Address {
+        /// The whole expression, as written.
+        expression: String,
+        /// What the address grammar made of it.
+        #[source]
+        source: IpParseError,
+    },
+
+    /// The port half was not a port specification.
+    #[error("'{expression}': {source}")]
+    Ports {
+        /// The whole expression, as written.
+        expression: String,
+        /// What the port grammar made of it.
+        #[source]
+        source: PortSetParseError,
+    },
+
+    /// The address half is a hostname and the caller supplied no lookup.
+    #[error("'{0}': this is a hostname, and no host lookup was supplied to resolve it")]
+    NoHostLookup(String),
+
+    /// The lookup returned nothing for the name.
+    #[error("'{0}': no address could be resolved for this name")]
+    UnknownHost(String),
+}
+
+/// A target expression split into the part that says *what* and the part that
+/// says *where on it*.
+///
+/// Borrows from the token it was parsed out of, so splitting a large file costs
+/// no allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TargetExpr<'a> {
+    /// The address expression: a literal, a range, a CIDR block, a keyword or a
+    /// hostname, carrying its `%zone` suffix if it had one. Brackets, if there
+    /// were any, are stripped.
+    pub address: &'a str,
+    /// The port specification as written, if the expression carried one.
+    pub ports: Option<&'a str>,
+}
+
+impl<'a> TargetExpr<'a> {
+    /// Splits one token.
+    ///
+    /// Surrounding whitespace is trimmed. The halves are *not* validated - this
+    /// decides only where the boundary is, and both sides are checked by the
+    /// grammars that own them when the expression is built into targets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::import::target::TargetExpr;
+    ///
+    /// let bare = TargetExpr::parse("192.168.1.1").unwrap();
+    /// assert_eq!(bare.address, "192.168.1.1");
+    /// assert_eq!(bare.ports, None);
+    ///
+    /// let with_ports = TargetExpr::parse("[2001:db8::1]:443").unwrap();
+    /// assert_eq!(with_ports.address, "2001:db8::1");
+    /// assert_eq!(with_ports.ports, Some("443"));
+    ///
+    /// // A bare IPv6 address is an address, never an address and a port.
+    /// let ambiguous = TargetExpr::parse("2001:db8::1:80").unwrap();
+    /// assert_eq!(ambiguous.address, "2001:db8::1:80");
+    /// assert_eq!(ambiguous.ports, None);
+    /// ```
+    pub fn parse(token: &'a str) -> Result<Self, TargetParseError> {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(TargetParseError::Empty);
+        }
+
+        if let Some(rest) = token.strip_prefix('[') {
+            let close = rest
+                .find(']')
+                .ok_or_else(|| TargetParseError::UnbalancedBracket(token.to_string()))?;
+            let address = &rest[..close];
+            let tail = &rest[close + 1..];
+
+            if address.is_empty() {
+                return Err(TargetParseError::Empty);
+            }
+
+            return match tail.strip_prefix(':') {
+                None if tail.is_empty() => Ok(Self {
+                    address,
+                    ports: None,
+                }),
+                None => Err(TargetParseError::TrailingText(token.to_string())),
+                Some("") => Err(TargetParseError::EmptyPorts(token.to_string())),
+                Some(ports) => Ok(Self {
+                    address,
+                    ports: Some(ports),
+                }),
+            };
+        }
+
+        // Two or more colons can only be an IPv6 address. One colon is a
+        // separator, because no IPv6 address has exactly one.
+        match token.split(':').count() {
+            1 => Ok(Self {
+                address: token,
+                ports: None,
+            }),
+            2 => {
+                let (address, ports) = token.split_once(':').expect("two fields means a separator");
+                if address.is_empty() {
+                    return Err(TargetParseError::Empty);
+                }
+                if ports.is_empty() {
+                    return Err(TargetParseError::EmptyPorts(token.to_string()));
+                }
+                Ok(Self {
+                    address,
+                    ports: Some(ports),
+                })
+            }
+            _ => Ok(Self {
+                address: token,
+                ports: None,
+            }),
+        }
+    }
+}
+
+/// Accumulates target expressions into a [`TargetMap`], one unit per distinct
+/// port specification.
+///
+/// Built incrementally rather than from a slice, so an importer can stream a
+/// file of any size through it and so a caller can decide for itself what to do
+/// with an expression that is refused.
+#[derive(Debug, Clone)]
+pub struct TargetMapBuilder {
+    /// The ports an expression that names none is scanned on.
+    default_ports: PortSet,
+    /// The groups, in the order their port specification was first seen, so
+    /// that two runs over the same input scan in the same order.
+    groups: Vec<(PortSet, IpSet)>,
+    /// Where each port specification's group sits in `groups`.
+    ///
+    /// A map rather than a scan over `groups`, because the number of distinct
+    /// port specifications in a file is not bounded by anything: input nobody
+    /// vouches for should not be able to make this quadratic.
+    index: HashMap<PortSet, usize>,
+}
+
+impl TargetMapBuilder {
+    /// Starts a builder whose expressions take `default_ports` when they name
+    /// no ports of their own.
+    pub fn new(default_ports: PortSet) -> Self {
+        Self {
+            default_ports,
+            groups: Vec::new(),
+            index: HashMap::new(),
+        }
+    }
+
+    /// Parses one target expression and adds what it names.
+    ///
+    /// Nothing is added when the expression is refused, so a caller that logs
+    /// the error and carries on ends up with exactly the targets that parsed.
+    pub fn push(&mut self, token: &str, ctx: &TargetContext<'_>) -> Result<(), TargetParseError> {
+        let expr = TargetExpr::parse(token)?;
+
+        let ports = match expr.ports {
+            Some(spec) => PortSet::try_from(spec).map_err(|source| TargetParseError::Ports {
+                expression: token.trim().to_string(),
+                source,
+            })?,
+            None => self.default_ports.clone(),
+        };
+
+        // Resolved into a set of its own first. A hostname that resolves to
+        // nothing, or an address that does not parse, must leave the builder
+        // exactly as it was rather than half-populating a group.
+        let mut resolved = IpSet::new();
+        match insert_expression(expr.address, &mut resolved, ctx.keywords, ctx.zones) {
+            Ok(()) => {}
+            // The one error that means "this is not an address" rather than
+            // "this address is wrong", and so the one worth trying as a name.
+            Err(IpParseError::Malformed(_)) => {
+                self.resolve_host(expr.address, &mut resolved, ctx)?;
+            }
+            Err(source) => {
+                return Err(TargetParseError::Address {
+                    expression: token.trim().to_string(),
+                    source,
+                });
+            }
+        }
+
+        let slot = match self.index.get(&ports) {
+            Some(&slot) => slot,
+            None => {
+                let slot = self.groups.len();
+                self.index.insert(ports.clone(), slot);
+                self.groups.push((ports, IpSet::new()));
+                slot
+            }
+        };
+
+        let target = &mut self.groups[slot].1;
+        for range in resolved.v4() {
+            target.push_v4_range(*range);
+        }
+        for range in resolved.v6() {
+            target.push_v6_range(*range);
+        }
+
+        Ok(())
+    }
+
+    /// Looks a hostname up through the caller's lookup and records what it
+    /// stands for.
+    fn resolve_host(
+        &self,
+        name: &str,
+        into: &mut IpSet,
+        ctx: &TargetContext<'_>,
+    ) -> Result<(), TargetParseError> {
+        let lookup = ctx
+            .hosts
+            .ok_or_else(|| TargetParseError::NoHostLookup(name.to_string()))?;
+
+        let addresses = lookup(name).unwrap_or_default();
+        if addresses.is_empty() {
+            return Err(TargetParseError::UnknownHost(name.to_string()));
+        }
+
+        for address in addresses {
+            into.insert(address);
+        }
+
+        Ok(())
+    }
+
+    /// How many distinct port specifications have been seen.
+    ///
+    /// This is the number of units [`build`](Self::build) will produce, and it
+    /// is a property of the input's shape rather than of its size.
+    pub fn group_count(&self) -> usize {
+        self.groups.len()
+    }
+
+    /// How many addresses have accumulated across every group, counting an
+    /// address once per group it appears in.
+    ///
+    /// Merges ranges to answer, so an expression naming a block counts what the
+    /// block holds rather than what was written. This is what a caller checks a
+    /// scan-size budget against: `::/0` costs nothing to hold and 2^128
+    /// addresses to scan, and the difference is only visible here.
+    pub fn address_count(&mut self) -> u128 {
+        self.groups
+            .iter_mut()
+            .map(|(_, ips)| {
+                ips.canonicalize();
+                ips.len_canonical()
+            })
+            .fold(0u128, |total, count| total.saturating_add(count))
+    }
+
+    /// Whether anything scannable has accumulated.
+    pub fn is_empty(&self) -> bool {
+        self.groups.iter().all(|(_, ips)| ips.is_empty())
+    }
+
+    /// Finishes the map.
+    ///
+    /// Groups that ended up with no addresses are dropped rather than emitted
+    /// as empty units - a caller that collected errors and carried on should not
+    /// be handed a map padded with the targets that failed.
+    pub fn build(self) -> TargetMap {
+        let mut map = TargetMap::new();
+        for (ports, ips) in self.groups {
+            if ips.is_empty() {
+                continue;
+            }
+            map.add_unit(TargetSet::new(ips, ports));
+        }
+        map
+    }
+}
+
+/// Parses a slice of target expressions into a [`TargetMap`].
+///
+/// The convenience over driving [`TargetMapBuilder`] directly is small, and it
+/// is the right shape for a caller that already has every target in memory and
+/// wants the first error rather than all of them.
+pub fn to_target_map<S>(
+    targets: &[S],
+    default_ports: PortSet,
+    ctx: &TargetContext<'_>,
+) -> Result<TargetMap, TargetParseError>
+where
+    S: AsRef<str>,
+{
+    let mut builder = TargetMapBuilder::new(default_ports);
+    for target in targets {
+        builder.push(target.as_ref(), ctx)?;
+    }
+    Ok(builder.build())
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    fn ports(spec: &str) -> PortSet {
+        PortSet::try_from(spec).expect("test port specification parses")
+    }
+
+    /// The split that the previous implementation got wrong, in every shape it
+    /// occurs in. A first-colon split reads `fe80::1` as host `fe80` on port
+    /// `:1`, which fails to parse and drops the target entirely.
+    #[test]
+    fn an_ipv6_address_is_never_split_at_its_own_colons() {
+        for token in [
+            "fe80::1",
+            "2001:db8::1",
+            "2001:db8::1:80",
+            "fe80::1%en0",
+            "2001:db8::1-2001:db8::5",
+            "::1",
+        ] {
+            let expr = TargetExpr::parse(token).expect("parses");
+            assert_eq!(expr.address, token, "{token} lost part of its address");
+            assert_eq!(expr.ports, None, "{token} acquired ports it does not name");
+        }
+    }
+
+    /// Brackets are the only way to write ports on an IPv6 target, so they have
+    /// to work for every address form that can carry them.
+    #[test]
+    fn brackets_separate_an_ipv6_address_from_its_ports() {
+        let cases = [
+            ("[2001:db8::1]:443", "2001:db8::1", Some("443")),
+            ("[fe80::1%en0]:22", "fe80::1%en0", Some("22")),
+            ("[2001:db8::1]", "2001:db8::1", None),
+            (
+                "[2001:db8::]:80,443,u:53",
+                "2001:db8::",
+                Some("80,443,u:53"),
+            ),
+        ];
+
+        for (token, address, port_spec) in cases {
+            let expr = TargetExpr::parse(token).expect("parses");
+            assert_eq!(expr.address, address);
+            assert_eq!(expr.ports, port_spec);
+        }
+    }
+
+    #[test]
+    fn a_single_colon_separates_ports() {
+        let cases = [
+            ("192.168.1.1:80", "192.168.1.1", Some("80")),
+            ("10.0.0.0/24:1-1024", "10.0.0.0/24", Some("1-1024")),
+            ("10.0.0.1-50:80,443", "10.0.0.1-50", Some("80,443")),
+            ("scanme.example:22", "scanme.example", Some("22")),
+            ("  192.168.1.1:80  ", "192.168.1.1", Some("80")),
+        ];
+
+        for (token, address, port_spec) in cases {
+            let expr = TargetExpr::parse(token).expect("parses");
+            assert_eq!(expr.address, address);
+            assert_eq!(expr.ports, port_spec);
+        }
+    }
+
+    /// A malformed expression has to be refused rather than silently read as
+    /// something narrower - `192.168.1.1:` scanning the default ports would be
+    /// a scan the user did not ask for.
+    #[test]
+    fn a_separator_without_a_port_specification_is_refused() {
+        assert!(matches!(
+            TargetExpr::parse("192.168.1.1:"),
+            Err(TargetParseError::EmptyPorts(_))
+        ));
+        assert!(matches!(
+            TargetExpr::parse("[2001:db8::1]:"),
+            Err(TargetParseError::EmptyPorts(_))
+        ));
+        assert!(matches!(
+            TargetExpr::parse("[2001:db8::1"),
+            Err(TargetParseError::UnbalancedBracket(_))
+        ));
+        assert!(matches!(
+            TargetExpr::parse("[2001:db8::1]443"),
+            Err(TargetParseError::TrailingText(_))
+        ));
+        assert!(matches!(
+            TargetExpr::parse(":80"),
+            Err(TargetParseError::Empty)
+        ));
+        assert!(matches!(
+            TargetExpr::parse("   "),
+            Err(TargetParseError::Empty)
+        ));
+    }
+
+    /// The property the builder exists for. One unit per port specification,
+    /// not one per input token: the difference between a scan iterating a
+    /// vector of one and a vector of two hundred and fifty-six.
+    #[test]
+    fn targets_are_grouped_by_port_specification_not_by_token() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let ctx = TargetContext::new();
+
+        for octet in 0..=255u8 {
+            let target = format!("192.168.1.{octet}");
+            builder.push(&target, &ctx).expect("parses");
+        }
+
+        assert_eq!(builder.group_count(), 1, "one port specification, one unit");
+        assert_eq!(builder.address_count(), 256);
+
+        let mut map = builder.build();
+        assert_eq!(map.units.len(), 1);
+        // 256 contiguous addresses on one port: the IpSet merged them into a
+        // single range on the way in.
+        assert_eq!(map.gross_targets().unwrap(), 256);
+    }
+
+    #[test]
+    fn distinct_port_specifications_get_distinct_units_in_first_seen_order() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let ctx = TargetContext::new();
+
+        builder.push("10.0.0.1:22", &ctx).unwrap();
+        builder.push("10.0.0.2:443", &ctx).unwrap();
+        builder.push("10.0.0.3:22", &ctx).unwrap();
+        builder.push("10.0.0.4", &ctx).unwrap();
+
+        assert_eq!(builder.group_count(), 3, "22, 443, and the default 80");
+
+        let map = builder.build();
+        assert_eq!(map.units[0].ports(), &ports("22"));
+        assert_eq!(map.units[0].ips().len(), 2, "10.0.0.1 and 10.0.0.3");
+        assert_eq!(map.units[1].ports(), &ports("443"));
+        assert_eq!(map.units[2].ports(), &ports("80"));
+    }
+
+    /// Two spellings of one port set are one group, which is what deriving
+    /// `Hash` on the canonicalized `PortSet` buys.
+    #[test]
+    fn port_specifications_group_by_what_they_mean_not_how_they_are_written() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let ctx = TargetContext::new();
+
+        builder.push("10.0.0.1:80,443", &ctx).unwrap();
+        builder.push("10.0.0.2:443,80", &ctx).unwrap();
+        builder.push("10.0.0.3:80-81,443", &ctx).unwrap();
+
+        assert_eq!(
+            builder.group_count(),
+            2,
+            "80 with 443 once, 80 through 81 with 443 once"
+        );
+    }
+
+    /// A hostname with no lookup must be an error. Skipping it would produce a
+    /// scan that covers less than its input said, with nothing to show for it.
+    #[test]
+    fn a_hostname_without_a_lookup_is_refused_rather_than_skipped() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+
+        let err = builder
+            .push("scanme.example", &TargetContext::new())
+            .expect_err("a hostname needs a lookup");
+
+        assert!(
+            matches!(err, TargetParseError::NoHostLookup(ref name) if name == "scanme.example")
+        );
+        assert!(builder.is_empty(), "a refused target left nothing behind");
+    }
+
+    #[test]
+    fn a_hostname_resolves_through_the_callers_lookup() {
+        let lookup = |name: &str| match name {
+            "one.example" => Some(vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))]),
+            "two.example" => Some(vec![
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)),
+            ]),
+            _ => None,
+        };
+        let ctx = TargetContext::new().with_hosts(&lookup);
+
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        builder.push("one.example", &ctx).unwrap();
+        builder.push("two.example:443", &ctx).unwrap();
+
+        assert_eq!(builder.address_count(), 3);
+        assert_eq!(builder.group_count(), 2);
+
+        let err = builder
+            .push("nowhere.example", &ctx)
+            .expect_err("a name with no records is not a target");
+        assert!(matches!(err, TargetParseError::UnknownHost(_)));
+    }
+
+    /// An address that is wrong is not a hostname. Falling through to a lookup
+    /// would turn a typo'd prefix into a DNS query for `192.168.1.1/33`.
+    #[test]
+    fn a_malformed_address_is_reported_as_an_address() {
+        let lookup = |_: &str| -> Option<Vec<IpAddr>> {
+            panic!("a bad prefix must never be offered to a host lookup")
+        };
+        let ctx = TargetContext::new().with_hosts(&lookup);
+
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let err = builder.push("192.168.1.1/33", &ctx).expect_err("refused");
+
+        assert!(matches!(
+            err,
+            TargetParseError::Address {
+                source: IpParseError::InvalidPrefix(33),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_malformed_port_specification_is_reported_as_ports() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let err = builder
+            .push("10.0.0.1:http", &TargetContext::new())
+            .expect_err("refused");
+
+        assert!(matches!(err, TargetParseError::Ports { .. }));
+        assert!(builder.is_empty());
+    }
+
+    /// The zone has to survive the split, or a link-local target with ports
+    /// scans whichever segment the engine happens to pick.
+    #[test]
+    fn a_bracketed_link_local_target_keeps_its_interface() {
+        fn zones(name: &str) -> Option<u32> {
+            (name == "en0").then_some(7)
+        }
+        let ctx = TargetContext::new().with_zones(zones);
+
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        builder.push("[fe80::aa%en0]:22", &ctx).unwrap();
+
+        let map = builder.build();
+        assert_eq!(map.units[0].ips().v6()[0].zone, Some(7));
+        assert_eq!(map.units[0].ports(), &ports("22"));
+    }
+
+    /// A CIDR block is an upper bound on scan size that its written form hides
+    /// completely, and the budget a caller enforces is the only thing between a
+    /// one-line file and a scan of the whole address space.
+    #[test]
+    fn address_count_reports_what_a_block_holds_not_what_was_written() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        builder.push("10.0.0.0/8", &TargetContext::new()).unwrap();
+
+        assert_eq!(builder.address_count(), 16_777_216);
+
+        let mut everything = TargetMapBuilder::new(ports("80"));
+        everything.push("::/0", &TargetContext::new()).unwrap();
+        assert_eq!(everything.address_count(), u128::MAX);
+    }
+
+    #[test]
+    fn overlapping_targets_in_one_group_merge_rather_than_duplicate() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let ctx = TargetContext::new();
+
+        builder.push("10.0.0.0/24", &ctx).unwrap();
+        builder.push("10.0.0.5", &ctx).unwrap();
+        builder.push("10.0.0.128-10.0.1.10", &ctx).unwrap();
+
+        assert_eq!(builder.address_count(), 267, "0.0-1.10, counted once each");
+        assert_eq!(builder.group_count(), 1);
+    }
+}

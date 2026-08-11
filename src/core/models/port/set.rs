@@ -59,7 +59,13 @@ pub enum PortSetParseError {
 /// Under the hood, this stores disjoint ranges. Upon creation, all ranges
 /// are merged and sorted (canonicalized) to ensure `O(log N)` lookup times
 /// via binary search.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Hash` agrees with `Eq` because every construction path canonicalizes and
+/// there is no mutator to undo it: two sets holding the same ports hold
+/// byte-identical range vectors, whatever order or spelling they were written
+/// in. That is what lets a caller group targets by their port specification in
+/// constant time per target rather than by scanning the groups it has so far.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PortSet {
     tcp: Vec<RangeInclusive<u16>>,
     udp: Vec<RangeInclusive<u16>>,
