@@ -75,6 +75,9 @@
 pub mod list;
 pub mod target;
 
+#[cfg(feature = "import-csv")]
+pub mod csv;
+
 use std::fmt;
 use std::io::BufRead;
 use std::path::Path;
@@ -83,6 +86,10 @@ use crate::core::models::port::PortSet;
 use crate::core::models::target::TargetMap;
 
 pub use list::ListImporter;
+
+#[cfg(feature = "import-csv")]
+pub use csv::{CsvColumn, CsvImporter};
+
 pub use target::{
     HostLookup, TargetContext, TargetExpr, TargetMapBuilder, TargetParseError, to_target_map,
 };
@@ -287,12 +294,15 @@ pub struct Imported {
     /// How many expressions were read, refused ones included.
     pub tokens: u64,
     /// How many addresses the targets cover, counted after overlapping
-    /// expressions are merged.
+    /// expressions are merged, and once per unit an address appears in.
     ///
-    /// This is the number of hosts the scan will probe, and it is deliberately
-    /// not the number [`ImportLimits::max_addresses`] is checked against: the
-    /// limit errs high to stay cheap, and this one is exact because a caller
-    /// reports it to a person.
+    /// So a host that was named on two different port specifications counts
+    /// twice, because it is two pieces of work. For the number of probes the
+    /// scan will send, ask [`TargetMap::gross_targets`].
+    ///
+    /// Deliberately not the number [`ImportLimits::max_addresses`] is checked
+    /// against: the limit errs high to stay cheap, and this one is exact because
+    /// a caller reports it to a person.
     pub addresses: u128,
 }
 
@@ -499,6 +509,11 @@ pub enum ImportFormat {
     /// One target expression per line or per run of whitespace, `#` starting a
     /// comment. What `-iL` reads everywhere else, and what a person types.
     List,
+
+    /// A table with a column of addresses: a report this engine wrote, or a
+    /// spreadsheet somebody else did.
+    #[cfg(feature = "import-csv")]
+    Csv,
 }
 
 impl ImportFormat {
@@ -507,14 +522,78 @@ impl ImportFormat {
     /// Returns `None` for an extension no compiled-in format claims. A caller
     /// with an unrecognised extension has not been told what the file is, and
     /// guessing here is how a spreadsheet gets read as a list of hostnames -
-    /// which is why the guessing lives in a named function of its own rather
-    /// than in the fallback of this one.
+    /// which is why the guessing lives in [`sniff`](Self::sniff), where it is
+    /// asked for by name, rather than in the fallback of this one.
     pub fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
             // `lst` is the other spelling in circulation, and `list` is what a
             // person writes when they are not thinking about extensions.
             "txt" | "list" | "lst" => Some(ImportFormat::List),
+            #[cfg(feature = "import-csv")]
+            "csv" => Some(ImportFormat::Csv),
             _ => None,
+        }
+    }
+
+    /// Guesses the format from the start of the input, without consuming it.
+    ///
+    /// For input that arrived with no name: a pipe, a socket, a paste. The bytes
+    /// are read through [`BufRead::fill_buf`], which fills the reader's buffer
+    /// and hands back a view of it, so nothing is taken and the importer that
+    /// runs next still sees the whole document.
+    ///
+    /// ## The rule is deliberately timid
+    ///
+    /// **It only separates a structured format from a list, and anything
+    /// ambiguous is a list.** A document opening with `{` is JSON, one opening
+    /// with `<` is XML, and one whose first row is a header this crate's CSV
+    /// writer emits is that CSV. Everything else is a list - including a
+    /// spreadsheet nobody here has seen before, which will then be refused
+    /// loudly on its first row rather than read as the wrong thing.
+    ///
+    /// Two guesses are deliberately not made. A leading `[` is *not* taken as a
+    /// JSON array, because `[2001:db8::1]:443` is a perfectly ordinary first
+    /// line of a target list and this crate's own JSON is an object. And a
+    /// comma is never evidence of CSV, because `192.168.1.1,192.168.1.2` is a
+    /// list line that means something quite different read as a table.
+    ///
+    /// A caller who knows what it has should name the format and skip all of
+    /// this.
+    pub fn sniff(input: &mut dyn BufRead) -> Result<Self, ImportError> {
+        /// Excel's mark, which says nothing about the format behind it.
+        const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+
+        let buffered = input.fill_buf()?;
+        let prefix = buffered.strip_prefix(&UTF8_BOM).unwrap_or(buffered);
+        let prefix = prefix.trim_ascii_start();
+
+        #[cfg(feature = "import-csv")]
+        {
+            // Recognising this crate's own header is not a heuristic about what
+            // CSV looks like - it is recognising output this crate wrote. No
+            // other table is claimed.
+            let header = crate::export::csv::COLUMNS.join(",");
+            let overlap = prefix.len().min(header.len());
+            if overlap >= 16 && prefix[..overlap] == header.as_bytes()[..overlap] {
+                return Ok(ImportFormat::Csv);
+            }
+        }
+
+        Ok(ImportFormat::List)
+    }
+
+    /// Resolves a format from a path if there is one, and from the input's own
+    /// first bytes if there is not.
+    ///
+    /// The order matters: a name is something the caller was told, and the
+    /// bytes are something this crate worked out. An extension that names no
+    /// format falls through to sniffing rather than failing, because
+    /// `targets.dat` is a name that says nothing rather than a name that is
+    /// wrong.
+    pub fn resolve(path: Option<&Path>, input: &mut dyn BufRead) -> Result<Self, ImportError> {
+        match path.and_then(Self::from_path) {
+            Some(format) => Ok(format),
+            None => Self::sniff(input),
         }
     }
 
@@ -533,18 +612,29 @@ impl ImportFormat {
     pub fn extension(self) -> &'static str {
         match self {
             ImportFormat::List => "txt",
+            #[cfg(feature = "import-csv")]
+            ImportFormat::Csv => "csv",
         }
     }
 
     /// Every format this build can read.
+    ///
+    /// Front ends use this to describe their own capabilities - a help text
+    /// listing formats the binary was not built with is worse than none.
     pub fn all() -> &'static [ImportFormat] {
-        &[ImportFormat::List]
+        &[
+            ImportFormat::List,
+            #[cfg(feature = "import-csv")]
+            ImportFormat::Csv,
+        ]
     }
 
     /// Builds an importer for this format under the given options.
     pub fn importer(self, options: &ImportOptions<'_>) -> Box<dyn Importer> {
         match self {
             ImportFormat::List => Box::new(ListImporter::new(options.limits)),
+            #[cfg(feature = "import-csv")]
+            ImportFormat::Csv => Box::new(CsvImporter::new(options.limits)),
         }
     }
 
@@ -569,6 +659,8 @@ impl fmt::Display for ImportFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             ImportFormat::List => "list",
+            #[cfg(feature = "import-csv")]
+            ImportFormat::Csv => "csv",
         })
     }
 }
@@ -723,5 +815,97 @@ mod tests {
 
         assert_eq!(imported.addresses, 256, "the same block, named twice");
         assert_eq!(imported.tokens, 2);
+    }
+
+    /// The contract that makes sniffing usable on a pipe at all: it looks
+    /// without taking, so whatever runs next reads the whole document.
+    #[test]
+    fn sniffing_leaves_the_input_where_it_found_it() {
+        let file = "10.0.0.1\n10.0.0.2\n10.0.0.3\n";
+        let mut input = Cursor::new(file);
+
+        let format = ImportFormat::sniff(&mut input).expect("sniffs");
+        assert_eq!(format, ImportFormat::List);
+
+        let imported = format.read(&mut input, &options("80")).expect("imports");
+        assert_eq!(imported.addresses, 3, "sniffing consumed part of the input");
+    }
+
+    /// The two guesses deliberately not made, because each would misread a
+    /// perfectly ordinary target list.
+    #[test]
+    fn an_ambiguous_document_is_read_as_a_list() {
+        for file in [
+            // A bracketed IPv6 target, which is not a JSON array.
+            "[2001:db8::1]:443\n",
+            // Comma-separated addresses, which are not a table.
+            "192.168.1.1,192.168.1.2\n",
+            // A table this crate did not write, which is refused loudly by the
+            // list grammar rather than guessed at here.
+            "Server,Location\nweb01,rack 4\n",
+            "",
+            "# just a comment\n",
+        ] {
+            assert_eq!(
+                ImportFormat::sniff(&mut Cursor::new(file)).expect("sniffs"),
+                ImportFormat::List,
+                "{file:?}"
+            );
+        }
+    }
+
+    /// Sniffing a table claims this crate's own output and nothing else, so the
+    /// signature has to be the header the exporter actually writes - not a copy
+    /// of it that can drift.
+    #[cfg(all(feature = "import-csv", feature = "export-csv"))]
+    #[test]
+    fn a_report_this_engine_wrote_is_recognised_and_read_back() {
+        use crate::export::{CsvExporter, ExportOptions, Exporter};
+
+        let report = crate::export::fixture::report();
+        let mut document = Vec::new();
+        CsvExporter::new(ExportOptions::new())
+            .export(&report, &mut document)
+            .expect("the fixture exports");
+
+        let mut input = Cursor::new(document);
+        let format = ImportFormat::sniff(&mut input).expect("sniffs");
+        assert_eq!(
+            format,
+            ImportFormat::Csv,
+            "this crate must recognise its own CSV"
+        );
+
+        let imported = format.read(&mut input, &options("80")).expect("imports");
+        assert!(
+            imported.addresses > 0,
+            "a report with hosts in it read back as no targets"
+        );
+        assert_eq!(
+            imported.refusals.len(),
+            0,
+            "every row of our own output has to parse as a target"
+        );
+    }
+
+    /// A name the caller was told beats bytes this crate worked out, and a name
+    /// that says nothing falls through to the bytes rather than failing.
+    #[test]
+    fn a_path_decides_the_format_and_a_silent_one_defers_to_the_input() {
+        let mut input = Cursor::new("10.0.0.1\n");
+
+        assert_eq!(
+            ImportFormat::resolve(Some(Path::new("scope.txt")), &mut input).unwrap(),
+            ImportFormat::List
+        );
+        assert_eq!(
+            ImportFormat::resolve(Some(Path::new("scope.dat")), &mut input).unwrap(),
+            ImportFormat::List,
+            "an extension that names no format is not an error"
+        );
+        assert_eq!(
+            ImportFormat::resolve(None, &mut input).unwrap(),
+            ImportFormat::List
+        );
     }
 }

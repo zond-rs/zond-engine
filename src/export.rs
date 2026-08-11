@@ -89,7 +89,7 @@ pub mod csv;
 pub mod html;
 
 #[cfg(test)]
-mod fixture;
+pub(crate) mod fixture;
 
 #[cfg(all(test, feature = "export-json"))]
 mod conformance;
