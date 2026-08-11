@@ -72,6 +72,7 @@ use zond_engine::protocols::{ip, udp};
 const TCP_HDR_LEN: usize = 20;
 const TCP_HDR_WORDS: u8 = (TCP_HDR_LEN / 4) as u8;
 
+const FIN: u8 = 1;
 const SYN: u8 = 1 << 1;
 const RST: u8 = 1 << 2;
 const ACK: u8 = 1 << 4;
@@ -104,6 +105,37 @@ pub enum Layer4 {
     Udp,
 }
 
+/// How a virtual host's TCP implementation behaves, where implementations
+/// genuinely disagree.
+///
+/// Only the flag probes are affected. A SYN is answered the same way by
+/// everything that speaks TCP, which is exactly why a SYN scan works against
+/// every stack and these do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Stack {
+    /// RFC 793 §3.4 to the letter: a closed port resets anything that is not a
+    /// reset, and a port in LISTEN ignores a segment carrying neither SYN, ACK
+    /// nor RST - but *does* reset one carrying ACK.
+    ///
+    /// The last clause is why a Maimon scan distinguishes nothing here, and why
+    /// an ACK scan never reports a port open: both probes carry ACK, so both are
+    /// answered identically by open and closed ports alike.
+    #[default]
+    Conformant,
+    /// BSD-derived: as [`Conformant`](Self::Conformant), except that an open
+    /// port drops a `FIN ACK` instead of resetting it. Uriel Maimon's finding,
+    /// and the only stack family against which that technique tells you
+    /// anything.
+    BsdDerived,
+    /// Answers every flag probe with a RST whatever the port state, as Windows,
+    /// many Cisco devices, BSDI and IBM OS/400 do.
+    ///
+    /// Against this a FIN, NULL, Xmas or Maimon scan reports every port closed -
+    /// not merely useless but confidently wrong - which is a documented property
+    /// of those techniques and therefore something to pin rather than to fix.
+    AlwaysResets,
+}
+
 /// What a virtual host says back when a probe reaches it.
 ///
 /// This is the answer the host *would* give; whether the probe survives the
@@ -123,8 +155,12 @@ pub enum Reply {
     Silent,
     /// A specific ICMP Destination Unreachable reason, for the distinctions the
     /// blanket [`Closed`](Self::Closed) hides - an administratively prohibited
-    /// message means filtered, not closed. UDP only; a TCP probe answered this
-    /// way gets silence instead, since the SYN path never inspects ICMP.
+    /// message means filtered, not closed.
+    ///
+    /// A TCP probe draws one of these only where the scanner asked its capture
+    /// for ICMP, which the SYN technique does not: for it, this is silence, as
+    /// it would be on a real network where the kernel filter never let the error
+    /// through.
     Unreachable(Unreachable),
     /// A reply cut short mid-header, which no parser can read. Nothing should
     /// be classified from it and nothing should panic on it - the probe stays
@@ -333,6 +369,10 @@ pub struct Probe {
 /// since retrying is visible only in the probe log.
 pub struct FakeNet {
     layer4: Layer4,
+    /// How the virtual hosts' TCP implementations behave where implementations
+    /// disagree. Per net rather than per host: a test about a stack quirk is
+    /// about the whole machine it is scanning.
+    stack: Stack,
     policies: HashMap<(IpAddr, u16), Policy>,
     /// Applied to any target no explicit policy names. Silence is the right
     /// default: it is what the vast majority of the address space does, and it
@@ -365,6 +405,7 @@ impl FakeNet {
     pub fn seeded(layer4: Layer4, seed: u64) -> Self {
         Self {
             layer4,
+            stack: Stack::default(),
             policies: HashMap::new(),
             fallback: Policy::silent(),
             seed,
@@ -374,6 +415,12 @@ impl FakeNet {
                 log: Vec::new(),
             })),
         }
+    }
+
+    /// Gives every host on this network the TCP behaviour `stack` describes.
+    pub fn stack(mut self, stack: Stack) -> Self {
+        self.stack = stack;
+        self
     }
 
     /// Gives `ip:port` the behaviour `policy` describes.
@@ -406,6 +453,7 @@ impl FakeNet {
         let (replies, rx) = mpsc::unbounded_channel();
         let link = FakeLink {
             layer4: self.layer4,
+            stack: self.stack,
             policies: self.policies.clone(),
             fallback: self.fallback,
             state: Arc::clone(&self.state),
@@ -435,6 +483,7 @@ impl FakeNet {
 /// The send half of a [`FakeNet`]: the scanner's view of the wire.
 struct FakeLink {
     layer4: Layer4,
+    stack: Stack,
     policies: HashMap<(IpAddr, u16), Policy>,
     fallback: Policy,
     state: Arc<Mutex<State>>,
@@ -481,10 +530,14 @@ struct ParsedProbe {
     port: u16,
     /// The port the scanner sent from, which its replies must come back to.
     reply_port: u16,
-    /// The TCP sequence number, which a SYN+ACK or RST has to acknowledge for
-    /// the scanner to accept it as an answer. Zero for UDP, which correlates by
-    /// port instead.
+    /// The TCP sequence number. Zero for UDP, which correlates by port instead.
     seq: u32,
+    /// The TCP acknowledgement number, which a reset answering a probe that
+    /// carried ACK takes as its own sequence number.
+    ack: u32,
+    /// The TCP flags, which decide both how a host answers the probe and how
+    /// its answer has to be shaped. Zero for UDP.
+    flags: u8,
     /// The probe as sent, kept whole because an ICMP error has to quote it.
     bytes: Vec<u8>,
 }
@@ -500,6 +553,8 @@ impl FakeLink {
                     port: tcp.get_destination(),
                     reply_port: tcp.get_source(),
                     seq: tcp.get_sequence(),
+                    ack: tcp.get_acknowledgement(),
+                    flags: tcp.get_flags(),
                     bytes,
                 })
             }
@@ -509,6 +564,8 @@ impl FakeLink {
                     port: datagram.get_destination(),
                     reply_port: datagram.get_source(),
                     seq: 0,
+                    ack: 0,
+                    flags: 0,
                     bytes,
                 })
             }
@@ -558,13 +615,12 @@ impl FakeLink {
             // equivalent segment to send and the probe simply goes unanswered.
             (Layer4::Udp, Reply::Established) => None,
 
-            (Layer4::Tcp, Reply::Open) => self.tcp_reply(probe, scanner, target, SYN | ACK),
-            (Layer4::Tcp, Reply::Closed) => self.tcp_reply(probe, scanner, target, RST | ACK),
+            (Layer4::Tcp, Reply::Open) => self.tcp_answer(probe, scanner, target, true),
+            (Layer4::Tcp, Reply::Closed) => self.tcp_answer(probe, scanner, target, false),
             (Layer4::Tcp, Reply::Established) => self.tcp_reply(probe, scanner, target, ACK),
-            // The SYN path's capture filter admits only TCP, so an ICMP error
-            // aimed at a SYN probe would never reach the scanner at all.
-            // Answering with silence keeps the simulation honest.
-            (Layer4::Tcp, Reply::Unreachable(_)) => None,
+            (Layer4::Tcp, Reply::Unreachable(reason)) => {
+                self.icmp_reply(probe, scanner, target, reason)
+            }
 
             (Layer4::Udp, Reply::Open) => self.udp_reply(probe, scanner, target),
             (Layer4::Udp, Reply::Closed) => {
@@ -578,7 +634,7 @@ impl FakeLink {
                 // Truncate whatever this protocol's open reply would have been,
                 // so the bytes are a plausible prefix rather than noise.
                 let full = match layer4 {
-                    Layer4::Tcp => self.tcp_reply(probe, scanner, target, SYN | ACK),
+                    Layer4::Tcp => self.tcp_answer(probe, scanner, target, true),
                     Layer4::Udp => self.udp_reply(probe, scanner, target),
                 };
                 full.map(|mut s| {
@@ -591,9 +647,88 @@ impl FakeLink {
         segment.into_iter().collect()
     }
 
+    /// What this net's TCP stack sends back when `probe` reaches a port that is
+    /// `listening`, or nothing where the stack is required to stay silent.
+    ///
+    /// This is RFC 793 §3.4 and §3.9 applied to the probe as it arrived, not a
+    /// table of what each scan technique expects. The distinction matters: a
+    /// simulator built from the scanner's expectations agrees with the scanner
+    /// even when both are wrong, and this file has produced exactly that
+    /// mistake before.
+    ///
+    /// - A **SYN** is a connection attempt: a listener accepts with SYN+ACK, a
+    ///   closed port refuses with RST+ACK.
+    /// - A segment **carrying ACK** claims to belong to a connection that does
+    ///   not exist, so the stack resets it - whether or not anything is
+    ///   listening. That single clause is why an ACK scan cannot find open
+    ///   ports and why a Maimon scan tells you nothing about a conformant host.
+    /// - A segment carrying **neither SYN nor ACK nor RST** is ignored by a
+    ///   listener and reset by a closed port, which is the whole basis of the
+    ///   FIN, NULL and Xmas techniques.
+    fn tcp_answer(
+        &self,
+        probe: &ParsedProbe,
+        scanner: IpAddr,
+        target: IpAddr,
+        listening: bool,
+    ) -> Option<CapturedSegment> {
+        let carries = |flag: u8| probe.flags & flag != 0;
+
+        if carries(SYN) {
+            let flags = if listening { SYN | ACK } else { RST | ACK };
+            return self.tcp_reply(probe, scanner, target, flags);
+        }
+
+        // The quirk this exists to model, and the whole of the Maimon finding:
+        // BSD-derived stacks drop a FIN+ACK aimed at an open port where the RFC
+        // has them reset it.
+        if self.stack == Stack::BsdDerived && listening && carries(FIN) && carries(ACK) {
+            return None;
+        }
+
+        let resets = match self.stack {
+            Stack::AlwaysResets => true,
+            _ => !listening || carries(ACK),
+        };
+
+        resets.then(|| self.tcp_reset(probe, scanner, target))?
+    }
+
+    /// The reset a stack sends in answer to a segment for a port it is not
+    /// holding open, shaped as RFC 793 §3.4 requires.
+    ///
+    /// > If the incoming segment has an ACK field, the reset takes its sequence
+    /// > number from the ACK field of the segment; otherwise the reset has
+    /// > sequence number zero and the ACK field is set to the sum of the
+    /// > sequence number and segment length of the incoming segment.
+    ///
+    /// Written out from the RFC rather than from anything the engine does with
+    /// it. A scanner that reads the wrong field, or that forgets a FIN occupies
+    /// an octet of sequence space where a flagless segment does not, must fail
+    /// here rather than be agreed with.
+    fn tcp_reset(
+        &self,
+        probe: &ParsedProbe,
+        scanner: IpAddr,
+        target: IpAddr,
+    ) -> Option<CapturedSegment> {
+        if probe.flags & ACK != 0 {
+            return self.tcp_segment(probe, scanner, target, RST, probe.ack, 0);
+        }
+
+        let segment_len = u32::from(probe.flags & SYN != 0) + u32::from(probe.flags & FIN != 0);
+        self.tcp_segment(
+            probe,
+            scanner,
+            target,
+            RST | ACK,
+            0,
+            probe.seq.wrapping_add(segment_len),
+        )
+    }
+
     /// A TCP segment from the probed port back to the scanner, acknowledging
-    /// the probe's sequence number so the scanner accepts it as an answer to
-    /// that probe rather than a stray packet.
+    /// the probe's sequence number the way an answer to a SYN does.
     fn tcp_reply(
         &self,
         probe: &ParsedProbe,
@@ -601,14 +736,35 @@ impl FakeLink {
         target: IpAddr,
         flags: u8,
     ) -> Option<CapturedSegment> {
+        self.tcp_segment(
+            probe,
+            scanner,
+            target,
+            flags,
+            self.next_u32(),
+            probe.seq.wrapping_add(1),
+        )
+    }
+
+    /// One TCP segment from the probed port back to the scanner's source port,
+    /// carrying the sequence and acknowledgement numbers the caller worked out.
+    fn tcp_segment(
+        &self,
+        probe: &ParsedProbe,
+        scanner: IpAddr,
+        target: IpAddr,
+        flags: u8,
+        sequence: u32,
+        acknowledgement: u32,
+    ) -> Option<CapturedSegment> {
         let mut buffer = vec![0u8; TCP_HDR_LEN];
         {
             let mut tcp = MutableTcpPacket::new(&mut buffer)?;
             tcp.set_source(probe.port);
             tcp.set_destination(probe.reply_port);
             tcp.set_data_offset(TCP_HDR_WORDS);
-            tcp.set_sequence(self.next_u32());
-            tcp.set_acknowledgement(probe.seq.wrapping_add(1));
+            tcp.set_sequence(sequence);
+            tcp.set_acknowledgement(acknowledgement);
             tcp.set_flags(flags);
             tcp.set_window(65_535);
             tcp.set_checksum(0);
@@ -663,7 +819,7 @@ impl FakeLink {
         target: IpAddr,
         reason: Unreachable,
     ) -> Option<CapturedSegment> {
-        let quoted = quote(scanner, target, &probe.bytes)?;
+        let quoted = quote(scanner, target, &probe.bytes, self.layer4)?;
 
         match target {
             IpAddr::V4(_) => {
@@ -734,14 +890,21 @@ impl FakeLink {
 
 /// The probe as an ICMP error would quote it: its IP header followed by the
 /// datagram itself.
-fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8]) -> Option<Vec<u8>> {
+///
+/// The header names the protocol the quoted probe actually is. A scanner checks
+/// that field before believing a word of the quotation, so announcing a TCP
+/// probe as UDP would have every error silently ignored - a simulator bug that
+/// looks exactly like a firewall.
+fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8], layer4: Layer4) -> Option<Vec<u8>> {
     let len = probe.len() as u16;
+    let protocol = match layer4 {
+        Layer4::Tcp => IpNextHeaderProtocols::Tcp,
+        Layer4::Udp => IpNextHeaderProtocols::Udp,
+    };
     let header = match (scanner, target) {
-        (IpAddr::V4(s), IpAddr::V4(d)) => {
-            ip::create_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp).ok()?
-        }
+        (IpAddr::V4(s), IpAddr::V4(d)) => ip::create_ipv4_header(s, d, len, protocol).ok()?,
         (IpAddr::V6(s), IpAddr::V6(d)) => {
-            ip::create_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp, HOP_LIMIT).ok()?
+            ip::create_ipv6_header(s, d, len, protocol, HOP_LIMIT).ok()?
         }
         _ => return None,
     };

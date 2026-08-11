@@ -6,18 +6,22 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # SYN Port Probing
+//! # TCP Port Probing
 //!
-//! Implements the privileged half of [`crate::scanner::scan`]. It probes
-//! specific `(address, port)` pairs with raw TCP SYN packets and classifies each
+//! Implements the privileged TCP half of [`crate::scanner::scan`]. It probes
+//! specific `(address, port)` pairs with raw TCP segments and classifies each
 //! one by whether and how it responds, rather than completing a full TCP
 //! handshake per port the way the unprivileged fallback in
 //! [`crate::scanner::connect`] must.
 //!
-//! A SYN+ACK means the port is open and a RST means it is closed. Silence means
-//! nothing on its own, so it is answered with another probe: only when a port
-//! has spent its whole retry budget in silence is it reported filtered, which is
-//! the difference between observing a firewall and assuming one.
+//! Which segment goes out, and what an answer to it proves, is
+//! [`TcpScanTechnique`]'s business - this drives the same loop whichever of the
+//! six is chosen. Everything that makes a scan work rather than merely run is
+//! shared across them: retransmission, the in-flight ceiling, the adaptive
+//! deadline, source selection, and the rule that silence is only a verdict once
+//! a probe has spent its whole budget on it. That last one is what separates
+//! observing a firewall from assuming one, and it is the same discipline
+//! whether the technique reads silence as filtered or as open-filtered.
 //!
 //! ## Tying a reply to its probe
 //!
@@ -33,11 +37,17 @@
 //! it back ([`tcp::echoed_nonce`]). That is what lets a reply arriving after a
 //! retry has already gone out still name the attempt it belongs to, and so yield
 //! a round trip that is real rather than one measured against the wrong packet.
+//!
+//! An ICMP error is correlated the same way, through the copy of the probe it
+//! quotes rather than through its own header - so an error relayed by a router
+//! still points at the host the probe was aimed at. See
+//! [`icmp_error`](super::icmp_error).
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
@@ -50,6 +60,7 @@ use crate::core::models::target::Target;
 use crate::core::models::technique::TcpScanTechnique;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
+use crate::network::capture::CapturedSegment;
 use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
 use crate::protocols::tcp;
 use crate::scanner::{PortScanner, service};
@@ -59,6 +70,7 @@ use crate::system::interface::SourceResolver;
 // Port scanning and routed discovery send the same kind of raw TCP probe over
 // the same kind of network path, so they share one adaptive-deadline profile
 // rather than keeping two copies in step.
+use super::icmp_error::{self, Unreachable};
 use super::{DEADLINE_CONFIG, RETRY_POLICY};
 
 /// The probe a reply refers to: the `(address, port)` it was sent to.
@@ -92,12 +104,17 @@ type Ledger = ProbeLedger<ProbeTarget, TcpToken>;
 /// resolving them.
 const MAX_IN_FLIGHT: usize = 4_096;
 
-/// Probes specific `(address, port)` pairs with raw TCP SYN packets.
+/// Probes specific `(address, port)` pairs with raw TCP segments, using
+/// whichever [`TcpScanTechnique`] it was built for.
 ///
 /// Unlike [`RoutedScanner`](super::RoutedScanner), which sends one SYN per host
 /// purely to check for a pulse, this sends one per `(address, port)` pair it is
 /// given and reports what each one revealed.
-pub struct SynPortScanner {
+pub struct TcpPortScanner {
+    /// Which segment each probe carries, and so what every answer means. Fixed
+    /// for the life of the scan: a report that mixed techniques could not say
+    /// which one produced a given verdict.
+    technique: TcpScanTechnique,
     /// Resolves the source address to send each target's probe from, consulting
     /// on-link subnets and the kernel routing table. Each answer is cached, so
     /// the many ports probed on one host cost a single lookup.
@@ -132,7 +149,7 @@ pub struct SynPortScanner {
     sends_failed: u64,
 }
 
-impl SynPortScanner {
+impl TcpPortScanner {
     /// Builds a scanner that selects each probe's source via `resolver`, sized
     /// for a scan covering `target_count` `(address, port)` pairs.
     ///
@@ -142,6 +159,7 @@ impl SynPortScanner {
     pub fn new(
         resolver: SourceResolver,
         ctx: ScanContext,
+        technique: TcpScanTechnique,
         target_count: usize,
         tuning: ProbeTuning,
     ) -> anyhow::Result<Self> {
@@ -149,7 +167,7 @@ impl SynPortScanner {
         let transport = ProbeTransport::open_with(
             ProbeKind::TcpProbe {
                 reply_port: src_port,
-                icmp_errors: TcpScanTechnique::Syn.reads_icmp_errors(),
+                icmp_errors: technique.reads_icmp_errors(),
             },
             tuning.send_mode,
         )?;
@@ -157,6 +175,7 @@ impl SynPortScanner {
         Ok(Self::build(
             resolver,
             ctx,
+            technique,
             transport,
             target_count,
             src_port,
@@ -181,12 +200,14 @@ impl SynPortScanner {
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
+        technique: TcpScanTechnique,
         transport: ProbeTransport,
         target_count: usize,
     ) -> Self {
         Self::build(
             resolver,
             ctx,
+            technique,
             transport,
             target_count,
             rand::random_range(50_000..u16::MAX),
@@ -198,9 +219,11 @@ impl SynPortScanner {
     /// it is the one thing the two public ones disagree about - and because the
     /// scan's own deadline is derived from it, so it has to be settled before
     /// anything is built rather than patched in afterwards.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         resolver: SourceResolver,
         ctx: ScanContext,
+        technique: TcpScanTechnique,
         transport: ProbeTransport,
         target_count: usize,
         src_port: u16,
@@ -211,6 +234,7 @@ impl SynPortScanner {
         let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
 
         Self {
+            technique,
             resolver,
             ctx,
             transport,
@@ -230,7 +254,7 @@ impl SynPortScanner {
         self.probe(target.ip, target.port, Instant::now());
     }
 
-    /// Sends one SYN at `(ip, port)` and records the attempt.
+    /// Sends one probe at `(ip, port)` and records the attempt.
     ///
     /// Used for the first attempt and every retry alike. Nothing about the probe
     /// is kept between attempts and none of it needs to be: the packet is built
@@ -249,7 +273,7 @@ impl SynPortScanner {
 
         match send_tcp_probe(
             self.transport.tx.as_ref(),
-            TcpScanTechnique::Syn,
+            self.technique,
             self.src_port,
             src_addr,
             ip,
@@ -261,9 +285,21 @@ impl SynPortScanner {
         }
     }
 
-    /// Matches a reply against an outstanding probe and, if it is one,
-    /// classifies it and records the port's state.
-    fn handle_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
+    /// Routes one captured reply to whichever half of the classification can
+    /// read it.
+    ///
+    /// ICMP only reaches here for a technique that asked for it; see
+    /// [`TcpScanTechnique::reads_icmp_errors`].
+    fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
+        match reply.protocol {
+            IpNextHeaderProtocols::Tcp => self.handle_tcp_reply(reply.source, &reply.bytes, now),
+            _ => self.handle_icmp_error(reply, now),
+        }
+    }
+
+    /// Matches a TCP segment against an outstanding probe and, if it answers
+    /// one, classifies it and records the port's state.
+    fn handle_tcp_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
         let Some(tcp_packet) = TcpPacket::new(bytes) else {
             return;
         };
@@ -280,7 +316,10 @@ impl SynPortScanner {
         let Some(reply) = tcp::classify_probe_response(&tcp_packet) else {
             return;
         };
-        let Some(state) = TcpScanTechnique::Syn.verdict(reply) else {
+        // A segment this technique's probe could not have provoked - a SYN+ACK
+        // answering an ACK scan, say - is somebody else's traffic on this
+        // scan's port, and resolves nothing.
+        let Some(state) = self.technique.verdict(reply) else {
             return;
         };
 
@@ -290,14 +329,73 @@ impl SynPortScanner {
         // recognized - and names which attempt it answered, so the round trip it
         // yields is the real one.
         let token = TcpToken {
-            nonce: tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp_packet),
+            nonce: tcp::echoed_nonce(self.technique, &tcp_packet),
         };
         let key = (ip, tcp_packet.get_source());
+        self.resolve_probe(key, Some(token), state, None, now);
+    }
 
-        // A token matching nothing outstanding is a stray or spoofed segment, a
-        // duplicate of a reply already acted on, or an answer to a probe already
-        // written off. None of those may resolve a port.
-        let Some(resolution) = self.ledger.resolve(&key, Some(token), now) else {
+    /// Reads an ICMP error as a verdict on the probe it quotes.
+    ///
+    /// The quotation is what makes this attributable at all, and it is checked
+    /// as strictly as a TCP reply: it has to be a TCP segment, sent from this
+    /// scan's own port, aimed at a probe still outstanding. What it cannot
+    /// always carry is *which attempt* - eight quoted bytes reach the sequence
+    /// number and no further - so a technique whose nonce lives in the
+    /// acknowledgement field resolves the probe without claiming a round trip
+    /// rather than inventing one.
+    fn handle_icmp_error(&mut self, reply: &CapturedSegment, now: Instant) {
+        let Some(error) = icmp_error::parse(reply) else {
+            return;
+        };
+        if error.quoted.protocol != IpNextHeaderProtocols::Tcp {
+            return;
+        }
+
+        let Some(quoted) = tcp::quoted_probe(error.quoted.payload) else {
+            return;
+        };
+        if quoted.source != self.src_port {
+            return;
+        }
+
+        let key = (error.quoted.destination, quoted.destination);
+        let token = tcp::quoted_nonce(self.technique, &quoted).map(|nonce| TcpToken { nonce });
+
+        match error.reason {
+            // Nobody could reach the address at all, so the message carries no
+            // verdict on the port it happened to quote. The probe is left
+            // outstanding to retire on its own schedule like any other
+            // unanswered one.
+            Unreachable::Host => self.record_host_down(key.0, reply.source),
+            // Everything else is a refusal, and for a TCP probe both kinds read
+            // the same way. An administrative prohibition says so outright. A
+            // *port* unreachable would mean a closed port had it answered a UDP
+            // probe, but no TCP stack emits one - so something in the path
+            // rejected the probe on the host's behalf, which is a filter and
+            // not a closed port.
+            Unreachable::Port | Unreachable::Prohibited => {
+                self.resolve_probe(key, token, PortState::Filtered, Some(reply.source), now);
+            }
+        }
+    }
+
+    /// Retires one outstanding probe with the state its reply established,
+    /// crediting whatever round trip the ledger is willing to vouch for.
+    ///
+    /// `token` names the attempt that was answered, or `None` where the reply
+    /// could not say. A reply matching no live attempt resolves nothing: it is a
+    /// stray or spoofed segment, a duplicate of one already acted on, or an
+    /// answer to a probe already written off.
+    fn resolve_probe(
+        &mut self,
+        key: ProbeTarget,
+        token: Option<TcpToken>,
+        state: PortState,
+        sender: Option<IpAddr>,
+        now: Instant,
+    ) {
+        let Some(resolution) = self.ledger.resolve(&key, token, now) else {
             return;
         };
 
@@ -306,18 +404,35 @@ impl SynPortScanner {
             self.deadline.record_rtt(rtt);
         }
 
-        self.record_port(ip, key.1, state);
+        self.record_port(key.0, key.1, state, sender);
+    }
+
+    /// Records that a router could not reach this address.
+    ///
+    /// The evidence is second-hand by definition - a host cannot report its own
+    /// unreachability - so the reason names the router that sent it. Being the
+    /// lowest non-`Unknown` status, it never overwrites evidence that the host
+    /// answered for itself, whichever order the two arrive in.
+    fn record_host_down(&mut self, ip: IpAddr, sender: IpAddr) {
+        self.ctx.update_host(ip, |host| {
+            host.record_evidence(
+                HostStatus::Down,
+                StatusReason::new(StatusProtocol::IcmpUnreachable, "destination unreachable")
+                    .from_source(sender),
+            );
+        });
     }
 
     /// Resends everything due and writes off everything that has run out of
     /// attempts.
     ///
-    /// Exhaustion is the only thing that produces `Filtered` during a scan, and
-    /// it is what makes the verdict mean something: no SYN+ACK and no RST
-    /// arrived across every attempt, which is the signature of a firewall
-    /// dropping the probe rather than answering it. It is deliberately not
-    /// treated as activity - nothing answered - so it never extends the scan's
-    /// own deadline.
+    /// Exhaustion is what makes a silent verdict mean something: nothing
+    /// arrived across every attempt, rather than nothing arrived once. What that
+    /// silence *is* depends on the technique - a firewall for the two that any
+    /// live stack would have answered, an open port or a firewall for the four
+    /// that an open port is required to ignore - which is
+    /// [`TcpScanTechnique::silence_means`]. It is deliberately not treated as
+    /// activity, so it never extends the scan's own deadline.
     fn service_retries(&mut self, now: Instant) {
         self.ledger.drain_due(now, &mut self.due);
 
@@ -329,21 +444,24 @@ impl SynPortScanner {
                 Due::Retry {
                     key: (ip, port), ..
                 } => self.probe(ip, port, now),
-                Due::Exhausted((ip, port)) => self.record_port(ip, port, PortState::Filtered),
+                Due::Exhausted((ip, port)) => {
+                    self.record_port(ip, port, self.technique.silence_means(), None)
+                }
             }
         }
         self.due = due;
         self.due.clear();
     }
 
-    /// Marks every probe still outstanding when the scan stops as filtered.
+    /// Gives every probe still outstanding when the scan stops the verdict its
+    /// technique reads silence as.
     ///
     /// [`service_retries`](Self::service_retries) retires most probes as their
     /// budgets run out; what reaches here are the ones still mid-schedule when
     /// the scan itself ended.
-    fn resolve_remaining_as_filtered(&mut self) {
+    fn resolve_remaining_as_silent(&mut self) {
         for (ip, port) in self.ledger.drain_unresolved() {
-            self.record_port(ip, port, PortState::Filtered);
+            self.record_port(ip, port, self.technique.silence_means(), None);
         }
     }
 
@@ -357,36 +475,94 @@ impl SynPortScanner {
         }
     }
 
-    /// Files a port verdict and, when that verdict came from a segment the host
-    /// sent, records what it proves about the host itself.
+    /// Files a port verdict and whatever the reply that produced it proves about
+    /// the host.
     ///
-    /// The two are decided together because in this scanner the port state names
-    /// its own evidence: `Open` can only come from a SYN+ACK and `Closed` only
-    /// from a RST, each of which requires a live stack at the other end. A
-    /// closed port is the row most easily forgotten, since the port verdict is
-    /// negative while the host verdict is not.
+    /// `sender` is the address the reply actually came from, or `None` when the
+    /// verdict came from a spent attempt budget rather than from a packet. It
+    /// matters because an ICMP error names two addresses - the hop that
+    /// generated it and the destination of the datagram it quotes - and they are
+    /// different claims:
     ///
-    /// `Filtered` is the exception and deliberately records nothing. It is
-    /// produced by a spent attempt budget - by silence - and silence is not
-    /// evidence about a host. Promoting it would make `is_alive()` true for a
-    /// host that has never sent a packet.
-    fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState) {
+    /// - **The target answered.** Any segment the host sent proves it is up, and
+    ///   that includes the ones negative about the port. A RST is the clearest
+    ///   case: it is the technique's evidence *against* a listener and evidence
+    ///   *for* a live stack at the same time, and it is the row most easily
+    ///   forgotten because the port verdict reads negative while the host
+    ///   verdict does not.
+    /// - **A middlebox rejected the probe by policy.** Something is enforcing a
+    ///   perimeter around this address, which is [`HostStatus::Filtered`] -
+    ///   materially different from an address nothing answers for.
+    /// - **Nothing answered.** A verdict reached from silence records nothing.
+    ///   Silence is not evidence about a host, and promoting it would make
+    ///   `is_alive()` true for a host that has never sent a packet.
+    fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState, sender: Option<IpAddr>) {
         let port = crate::fingerprinting::baseline_port(port_num, Protocol::Tcp, state);
-        let evidence = match state {
-            PortState::Open => Some("syn-ack from a probed port"),
-            PortState::Closed => Some("rst from a probed port"),
+        let evidence = match (state, sender) {
+            (PortState::Open, _) => Some((
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::TcpSyn, "syn-ack from a probed port"),
+            )),
+            // Both verdicts a RST can produce: closed for the techniques that
+            // read it as an absent listener, unfiltered for the ACK scan, which
+            // reads it as a probe that arrived.
+            (PortState::Closed | PortState::Unfiltered, _) => Some((
+                HostStatus::Up,
+                StatusReason::new(self.status_protocol(), rst_evidence(self.technique)),
+            )),
+            (PortState::Filtered, Some(sender)) if sender == ip => Some((
+                HostStatus::Up,
+                StatusReason::new(
+                    StatusProtocol::IcmpUnreachable,
+                    "unreachable for a probed port, from the host",
+                ),
+            )),
+            (PortState::Filtered, Some(sender)) => Some((
+                HostStatus::Filtered,
+                StatusReason::new(
+                    StatusProtocol::IcmpUnreachable,
+                    "unreachable for a probed port, from the path",
+                )
+                .from_source(sender),
+            )),
             _ => None,
         };
 
         self.ctx.update_host(ip, |host| {
             host.add_port(port);
-            if let Some(details) = evidence {
-                host.record_evidence(
-                    HostStatus::Up,
-                    StatusReason::new(StatusProtocol::TcpSyn, details),
-                );
+            if let Some((status, reason)) = evidence {
+                host.record_evidence(status, reason);
             }
         });
+    }
+
+    /// Which protocol a host verdict from this scan is credited to.
+    ///
+    /// [`StatusProtocol::TcpSyn`] means what it has always meant, so a report
+    /// naming it still describes a half-open connection attempt. Every other
+    /// technique credits [`StatusProtocol::Tcp`], with the probe that drew the
+    /// answer named in the reason's details.
+    const fn status_protocol(&self) -> StatusProtocol {
+        match self.technique {
+            TcpScanTechnique::Syn => StatusProtocol::TcpSyn,
+            _ => StatusProtocol::Tcp,
+        }
+    }
+}
+
+/// What a RST proves, said in the terms of the probe that drew it.
+///
+/// Static strings rather than a formatted technique name, because
+/// [`StatusReason`] holds its details in an `Arc<str>` precisely so thousands of
+/// ports reporting the same rationale cost one allocation between them.
+const fn rst_evidence(technique: TcpScanTechnique) -> &'static str {
+    match technique {
+        TcpScanTechnique::Syn => "rst from a probed port",
+        TcpScanTechnique::Fin => "rst to a fin probe",
+        TcpScanTechnique::Null => "rst to a flagless probe",
+        TcpScanTechnique::Xmas => "rst to a fin-psh-urg probe",
+        TcpScanTechnique::Maimon => "rst to a fin-ack probe",
+        TcpScanTechnique::Ack => "rst to an ack probe",
     }
 }
 
@@ -451,20 +627,31 @@ fn send_tcp_probe(
 }
 
 #[async_trait]
-impl PortScanner for SynPortScanner {
+impl PortScanner for TcpPortScanner {
+    /// Names the strategy the way a report has to read it.
+    ///
+    /// A SYN scan keeps [`ScannerKind::SynPort`], which is what every report
+    /// this engine has ever written called it and what consumers already parse.
+    /// The flag-probe techniques are a different question asked of the same
+    /// scanner, and calling their failures `syn_port` would be a plain untruth;
+    /// which of them ran is in the phase's settings.
     fn kind(&self) -> ScannerKind {
-        ScannerKind::SynPort
+        match self.technique {
+            TcpScanTechnique::Syn => ScannerKind::SynPort,
+            _ => ScannerKind::TcpPort,
+        }
     }
 
     fn supported_protocols(&self) -> Vec<Protocol> {
         vec![Protocol::Tcp]
     }
 
-    /// Consumes `targets`, sending a SYN probe for each TCP one, retrying the
+    /// Consumes `targets`, sending one probe for each TCP one, retrying the
     /// ones that go unanswered, and classifying every reply, until each probe
     /// has been resolved or has spent its attempts. UDP and SCTP targets are
-    /// skipped, since this scanner does not support them yet. Anything still
-    /// outstanding when the loop ends is reported as filtered.
+    /// skipped, since this scanner does not support them. Anything still
+    /// outstanding when the loop ends takes the verdict this technique reads
+    /// silence as.
     ///
     /// New targets are admitted only while fewer than [`MAX_IN_FLIGHT`] probes
     /// are outstanding, and retries are serviced before new targets are taken,
@@ -507,9 +694,7 @@ impl PortScanner for SynPortScanner {
 
                 res = self.transport.rx.recv() => {
                     match res {
-                        Some(reply) => {
-                            self.handle_reply(reply.source, &reply.bytes, Instant::now());
-                        }
+                        Some(reply) => self.handle_reply(&reply, Instant::now()),
                         None => break,
                     }
                 }
@@ -520,17 +705,17 @@ impl PortScanner for SynPortScanner {
             }
         }
 
-        self.resolve_remaining_as_filtered();
+        self.resolve_remaining_as_silent();
 
         // Reported once with the first cause, for the reason in
         // `RoutedScanner`: a port scan that could not send is not a port scan
         // that found everything closed, and only this channel says so.
         if self.sends_failed > 0 {
             self.ctx.record_failure(
-                ScannerKind::SynPort,
+                self.kind(),
                 format!(
                     "{} probes could not be sent, so their ports are reported \
-                     filtered without having been asked: {}",
+                     unanswered without having been asked: {}",
                     self.sends_failed,
                     self.send_failure.as_deref().unwrap_or("cause unrecorded"),
                 ),
@@ -539,9 +724,14 @@ impl PortScanner for SynPortScanner {
         Ok(())
     }
 
-    /// Fingerprints every open port the SYN pass found. The raw exchange that
+    /// Fingerprints every open port the scan found. The raw exchange that
     /// classified each port never opened a connection, so this second pass makes
     /// one per open port and runs the shared fingerprint engine over it.
+    ///
+    /// Needs no branch on the technique. Only a SYN scan reports a port
+    /// [`PortState::Open`] (see [`TcpScanTechnique::finds_open_ports`]), so after
+    /// any other one this finds nothing to identify and returns immediately -
+    /// the data already guarantees what a condition here would have enforced.
     async fn detect_services(&mut self, ctx: &ScanContext) {
         service::detect(ctx).await;
     }
@@ -562,15 +752,26 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use pnet::ipnetwork::{IpNetwork, Ipv4Network};
+    use pnet::packet::icmp::destination_unreachable::{
+        DestinationUnreachablePacket, IcmpCodes, MutableDestinationUnreachablePacket,
+    };
+    use pnet::packet::icmp::{IcmpCode, IcmpTypes};
     use pnet::packet::tcp::MutableTcpPacket;
 
     use crate::core::session::ScanSession;
     use crate::network::probe::{MockSender, ProbeTransport};
+    use crate::protocols::ip;
 
     const SYN: u8 = 1 << 1;
     const RST: u8 = 1 << 2;
     const ACK: u8 = 1 << 4;
     const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
+    /// This host's address on [`on_link_interface`], which its probes leave from.
+    const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 50);
+    const LOCAL_IP: IpAddr = IpAddr::V4(LOCAL);
+    /// A router between here and [`TARGET`], which reports errors under its own
+    /// address rather than the target's.
+    const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
     /// An interface whose /24 contains [`TARGET`], so source resolution
     /// answers on-link without a kernel route probe.
@@ -589,44 +790,67 @@ mod tests {
 
     /// Builds a bare 20-byte TCP segment as a captured reply arrives, once the
     /// link and IP headers are stripped: from `from_port` on the target, back to
-    /// `to_port` here, acknowledging the probe's nonce the way a stack answering
-    /// a SYN does.
-    fn segment_to(from_port: u16, to_port: u16, token: TcpToken, flags: u8) -> Vec<u8> {
+    /// `to_port` here, echoing the probe's nonce the way a stack answering
+    /// `technique` would.
+    ///
+    /// The echo rule is written out from RFC 793 §3.4 rather than taken from
+    /// [`tcp::echoed_nonce`], so a wrong rule in the engine fails these tests
+    /// instead of agreeing with itself. A probe carrying ACK hands the reset its
+    /// sequence number; otherwise the reset acknowledges the probe's sequence
+    /// number plus the octet a FIN or SYN occupies, which is why a flagless
+    /// probe is acknowledged unchanged.
+    fn segment_to(
+        from_port: u16,
+        to_port: u16,
+        technique: TcpScanTechnique,
+        token: TcpToken,
+        flags: u8,
+    ) -> Vec<u8> {
         let mut buf = vec![0u8; 20];
         let mut tcp = MutableTcpPacket::new(&mut buf).unwrap();
         tcp.set_source(from_port);
         tcp.set_destination(to_port);
         tcp.set_data_offset(5);
-        tcp.set_acknowledgement(token.nonce.wrapping_add(1));
         tcp.set_flags(flags);
+
+        match technique {
+            TcpScanTechnique::Maimon | TcpScanTechnique::Ack => tcp.set_sequence(token.nonce),
+            TcpScanTechnique::Null => tcp.set_acknowledgement(token.nonce),
+            _ => tcp.set_acknowledgement(token.nonce.wrapping_add(1)),
+        }
         buf
     }
 
     /// [`segment_to`] addressed where a real answer would arrive: the one port
     /// this scan sends from.
     fn tcp_segment(
-        scanner: &SynPortScanner,
+        scanner: &TcpPortScanner,
         from_port: u16,
         token: TcpToken,
         flags: u8,
     ) -> Vec<u8> {
-        segment_to(from_port, scanner.src_port, token, flags)
+        segment_to(from_port, scanner.src_port, scanner.technique, token, flags)
     }
 
     /// The probes a [`MockSender`] recorded, shared with the scanner under test.
     type SentProbes = std::sync::Arc<std::sync::Mutex<Vec<crate::network::probe::SentProbe>>>;
 
-    /// A scanner wired to a recording [`MockSender`] and an idle capture
+    /// A SYN scanner wired to a recording [`MockSender`] and an idle capture
     /// stream, plus the session store to assert against and the probe log to
     /// read tokens back out of.
-    fn scanner_with_mock() -> (SynPortScanner, ScanSession, SentProbes) {
+    fn scanner_with_mock() -> (TcpPortScanner, ScanSession, SentProbes) {
+        scanner_for(TcpScanTechnique::Syn)
+    }
+
+    /// [`scanner_with_mock`] for an explicit technique.
+    fn scanner_for(technique: TcpScanTechnique) -> (TcpPortScanner, ScanSession, SentProbes) {
         let (session, ctx) = ScanSession::new();
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
         let sender = MockSender::default();
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
         let resolver = SourceResolver::from_interfaces(&[on_link_interface()]);
-        let scanner = SynPortScanner::with_transport(resolver, ctx, transport, 8);
+        let scanner = TcpPortScanner::with_transport(resolver, ctx, technique, transport, 8);
         (scanner, session, sent)
     }
 
@@ -635,7 +859,7 @@ mod tests {
     ///
     /// The token is read back off the recording sender rather than out of the
     /// scanner, so what a test answers is what actually reached the wire.
-    fn probe(scanner: &mut SynPortScanner, sent: &SentProbes, port: u16) -> TcpToken {
+    fn probe(scanner: &mut TcpPortScanner, sent: &SentProbes, port: u16) -> TcpToken {
         let before = sent.lock().unwrap().len();
         scanner.send_probe(Target {
             ip: TARGET,
@@ -645,19 +869,26 @@ mod tests {
 
         let sent = sent.lock().unwrap();
         let (segment, _, _) = sent.get(before).expect("probe reached the wire");
+        token_of(scanner.technique, segment)
+    }
+
+    /// The nonce a recorded probe went out carrying, read from whichever field
+    /// its technique writes it to.
+    fn token_of(technique: TcpScanTechnique, segment: &[u8]) -> TcpToken {
         let tcp = TcpPacket::new(segment).expect("probe is a TCP segment");
         TcpToken {
-            nonce: tcp.get_sequence(),
+            nonce: match technique {
+                TcpScanTechnique::Maimon | TcpScanTechnique::Ack => tcp.get_acknowledgement(),
+                _ => tcp.get_sequence(),
+            },
         }
     }
 
     /// The token the most recent probe went out carrying.
-    fn last_probe(sent: &SentProbes) -> TcpToken {
+    fn last_probe(technique: TcpScanTechnique, sent: &SentProbes) -> TcpToken {
         let sent = sent.lock().unwrap();
         let (segment, _, _) = sent.last().expect("a probe reached the wire");
-        TcpToken {
-            nonce: TcpPacket::new(segment).unwrap().get_sequence(),
-        }
+        token_of(technique, segment)
     }
 
     fn port_state(session: &ScanSession, port: u16) -> Option<PortState> {
@@ -673,7 +904,7 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
-        scanner.handle_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 80), Some(PortState::Open));
         assert!(!scanner.ledger.contains(&(TARGET, 80)));
@@ -685,7 +916,7 @@ mod tests {
         let token = probe(&mut scanner, &sent, 81);
 
         let reply = tcp_segment(&scanner, 81, token, RST | ACK);
-        scanner.handle_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 81), Some(PortState::Closed));
     }
@@ -701,7 +932,7 @@ mod tests {
             nonce: token.nonce.wrapping_add(999),
         };
         let reply = tcp_segment(&scanner, 82, stray, SYN | ACK);
-        scanner.handle_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 82), None);
         assert!(scanner.ledger.contains(&(TARGET, 82)));
@@ -717,8 +948,8 @@ mod tests {
         let token = probe(&mut scanner, &sent, 83);
 
         let elsewhere = scanner.src_port.wrapping_add(1);
-        let reply = segment_to(83, elsewhere, token, SYN | ACK);
-        scanner.handle_reply(TARGET, &reply, Instant::now());
+        let reply = segment_to(83, elsewhere, scanner.technique, token, SYN | ACK);
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 83), None);
         assert!(scanner.ledger.contains(&(TARGET, 83)));
@@ -731,7 +962,7 @@ mod tests {
 
         // Same host, but a port we never probed.
         let reply = tcp_segment(&scanner, 1234, token, SYN | ACK);
-        scanner.handle_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 1234), None);
         assert!(scanner.ledger.contains(&(TARGET, 80)));
@@ -742,10 +973,302 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 443);
 
-        scanner.resolve_remaining_as_filtered();
+        scanner.resolve_remaining_as_silent();
 
         assert_eq!(port_state(&session, 443), Some(PortState::Filtered));
         assert!(scanner.ledger.is_empty());
+    }
+
+    // ── Techniques ─────────────────────────────────────────────────────────
+
+    /// The same RST, three verdicts. Getting this table wrong reports a firewall
+    /// map as a list of closed ports, or the reverse.
+    #[test]
+    fn a_rst_is_read_according_to_the_probe_that_drew_it() {
+        for (technique, expected) in [
+            (TcpScanTechnique::Syn, PortState::Closed),
+            (TcpScanTechnique::Fin, PortState::Closed),
+            (TcpScanTechnique::Null, PortState::Closed),
+            (TcpScanTechnique::Xmas, PortState::Closed),
+            (TcpScanTechnique::Maimon, PortState::Closed),
+            (TcpScanTechnique::Ack, PortState::Unfiltered),
+        ] {
+            let (mut scanner, session, sent) = scanner_for(technique);
+            let token = probe(&mut scanner, &sent, 80);
+
+            let reply = tcp_segment(&scanner, 80, token, RST | ACK);
+            scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+
+            assert_eq!(port_state(&session, 80), Some(expected), "{technique}");
+        }
+    }
+
+    /// A RST is negative about the port and positive about the host, whichever
+    /// probe drew it: the row most easily forgotten, since the two verdicts
+    /// point opposite ways.
+    #[test]
+    fn a_rst_proves_the_host_is_up_whatever_it_says_about_the_port() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        let token = probe(&mut scanner, &sent, 80);
+
+        let reply = tcp_segment(&scanner, 80, token, RST | ACK);
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+
+        let host = session.store.get(&TARGET).expect("host recorded");
+        assert!(host.status().is_up());
+    }
+
+    /// Nothing but a SYN can provoke a SYN+ACK, so one arriving mid-FIN-scan
+    /// answered something else and must not be read as an open port.
+    #[test]
+    fn a_syn_ack_resolves_nothing_for_a_flag_probe() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        let token = probe(&mut scanner, &sent, 80);
+
+        let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+
+        assert_eq!(port_state(&session, 80), None);
+        assert!(scanner.ledger.contains(&(TARGET, 80)));
+    }
+
+    /// What silence means is the other half of the difference between the
+    /// families: a SYN or an ACK any live stack would have answered, a flag
+    /// probe an open port is required to ignore.
+    #[test]
+    fn silence_is_filtered_or_open_filtered_by_technique() {
+        for (technique, expected) in [
+            (TcpScanTechnique::Syn, PortState::Filtered),
+            (TcpScanTechnique::Ack, PortState::Filtered),
+            (TcpScanTechnique::Fin, PortState::OpenFiltered),
+            (TcpScanTechnique::Null, PortState::OpenFiltered),
+            (TcpScanTechnique::Xmas, PortState::OpenFiltered),
+            (TcpScanTechnique::Maimon, PortState::OpenFiltered),
+        ] {
+            let (mut scanner, session, sent) = scanner_for(technique);
+            probe(&mut scanner, &sent, 443);
+
+            scanner.resolve_remaining_as_silent();
+
+            assert_eq!(port_state(&session, 443), Some(expected), "{technique}");
+        }
+    }
+
+    /// Silence records nothing about the host, whichever verdict it produces.
+    /// Promoting it would make `is_alive()` true for a host that has never sent
+    /// a packet.
+    #[test]
+    fn an_unanswered_probe_says_nothing_about_the_host() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Xmas);
+        probe(&mut scanner, &sent, 443);
+
+        scanner.resolve_remaining_as_silent();
+
+        let host = session.store.get(&TARGET).expect("the port was recorded");
+        assert!(!host.status().is_up());
+    }
+
+    /// A flag-probe scan and a SYN scan are different strategies as far as a
+    /// report is concerned, even though one scanner runs both.
+    #[test]
+    fn the_reported_strategy_names_the_probe_that_was_sent() {
+        assert_eq!(
+            scanner_for(TcpScanTechnique::Syn).0.kind(),
+            ScannerKind::SynPort
+        );
+        assert_eq!(
+            scanner_for(TcpScanTechnique::Fin).0.kind(),
+            ScannerKind::TcpPort
+        );
+    }
+
+    // ── ICMP errors ────────────────────────────────────────────────────────
+
+    /// An ICMP error as the capture would deliver it, quoting `quoted` back.
+    fn icmp_error_quoting(code: IcmpCode, quoted: &[u8], from: IpAddr) -> CapturedSegment {
+        let quotation = quote(quoted);
+        let mut bytes =
+            vec![0u8; DestinationUnreachablePacket::minimum_packet_size() + quotation.len()];
+        let mut packet = MutableDestinationUnreachablePacket::new(&mut bytes).unwrap();
+        packet.set_icmp_type(IcmpTypes::DestinationUnreachable);
+        packet.set_icmp_code(code);
+        packet.set_payload(&quotation);
+
+        CapturedSegment {
+            source: from,
+            protocol: IpNextHeaderProtocols::Icmp,
+            bytes,
+        }
+    }
+
+    /// The probe under the IP header a router would have echoed back with it.
+    fn quote(probe: &[u8]) -> Vec<u8> {
+        let header = ip::create_ipv4_header(
+            LOCAL,
+            match TARGET {
+                IpAddr::V4(v4) => v4,
+                IpAddr::V6(_) => unreachable!("the fixture is v4"),
+            },
+            probe.len() as u16,
+            IpNextHeaderProtocols::Tcp,
+        )
+        .unwrap();
+        header.into_iter().chain(probe.iter().copied()).collect()
+    }
+
+    /// The most recent probe exactly as it left, for an error to quote.
+    fn last_probe_bytes(sent: &SentProbes) -> Vec<u8> {
+        let sent = sent.lock().unwrap();
+        sent.last().expect("a probe reached the wire").0.clone()
+    }
+
+    /// The near-miss that separates the two scanners: an ICMP *port* unreachable
+    /// means a closed port when it answers a UDP probe, and cannot mean that
+    /// here - no TCP stack emits one - so something in the path rejected the
+    /// probe, which is filtered.
+    #[test]
+    fn a_port_unreachable_about_a_tcp_probe_is_filtered_not_closed() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        probe(&mut scanner, &sent, 80);
+
+        let error = icmp_error_quoting(
+            IcmpCodes::DestinationPortUnreachable,
+            &last_probe_bytes(&sent),
+            ROUTER,
+        );
+        scanner.handle_reply(&error, Instant::now());
+
+        assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
+        assert!(scanner.ledger.is_empty());
+    }
+
+    /// The verdict a flag probe cannot reach from silence, and the whole reason
+    /// these techniques ask for ICMP at all: `Filtered` where an unanswered
+    /// probe would have said open-filtered.
+    #[test]
+    fn an_administrative_rejection_beats_the_silence_verdict() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Xmas);
+        probe(&mut scanner, &sent, 80);
+
+        let error = icmp_error_quoting(
+            IcmpCodes::CommunicationAdministrativelyProhibited,
+            &last_probe_bytes(&sent),
+            ROUTER,
+        );
+        scanner.handle_reply(&error, Instant::now());
+
+        assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
+        assert_ne!(port_state(&session, 80), Some(PortState::OpenFiltered));
+    }
+
+    /// A middlebox refusing on a host's behalf is not the host answering. The
+    /// address is enforcing a perimeter, which is `Filtered`, and reading it as
+    /// `Up` would credit a NAT's reply to the machine behind it.
+    #[test]
+    fn a_rejection_from_the_path_does_not_prove_the_host_is_up() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        probe(&mut scanner, &sent, 80);
+
+        let error = icmp_error_quoting(
+            IcmpCodes::CommunicationAdministrativelyProhibited,
+            &last_probe_bytes(&sent),
+            ROUTER,
+        );
+        scanner.handle_reply(&error, Instant::now());
+
+        let host = session.store.get(&TARGET).expect("host recorded");
+        assert_eq!(host.status(), HostStatus::Filtered);
+    }
+
+    /// The same message from the target itself is a host policing its own
+    /// traffic, which is a host that exists.
+    #[test]
+    fn a_rejection_from_the_host_proves_it_is_up() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        probe(&mut scanner, &sent, 80);
+
+        let error = icmp_error_quoting(
+            IcmpCodes::CommunicationAdministrativelyProhibited,
+            &last_probe_bytes(&sent),
+            TARGET,
+        );
+        scanner.handle_reply(&error, Instant::now());
+
+        let host = session.store.get(&TARGET).expect("host recorded");
+        assert!(host.status().is_up());
+    }
+
+    /// A host unreachable reports on the address, not on the port that happened
+    /// to be quoted - so the probe keeps its remaining attempts rather than
+    /// taking a verdict the message does not support.
+    #[test]
+    fn a_host_unreachable_leaves_the_port_undecided() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        probe(&mut scanner, &sent, 80);
+
+        let error = icmp_error_quoting(
+            IcmpCodes::DestinationHostUnreachable,
+            &last_probe_bytes(&sent),
+            ROUTER,
+        );
+        scanner.handle_reply(&error, Instant::now());
+
+        assert_eq!(port_state(&session, 80), None);
+        assert!(scanner.ledger.contains(&(TARGET, 80)));
+        assert_eq!(
+            session.store.get(&TARGET).map(|host| host.status()),
+            Some(HostStatus::Down)
+        );
+    }
+
+    /// An error quoting a datagram this scan never sent resolves nothing. The
+    /// quoted source port is the only thing that makes it ours, and an ICMP
+    /// filter cannot narrow on ports at all - so every ICMP packet on the host
+    /// reaches this check.
+    #[test]
+    fn an_error_quoting_somebody_elses_probe_is_ignored() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
+        probe(&mut scanner, &sent, 80);
+
+        // Same shape, but sent from a port this scan never used.
+        let theirs = tcp::create_probe(
+            TcpScanTechnique::Fin,
+            &LOCAL_IP,
+            &TARGET,
+            scanner.src_port.wrapping_add(1),
+            80,
+            0xABCD,
+        )
+        .unwrap();
+        let error = icmp_error_quoting(
+            IcmpCodes::CommunicationAdministrativelyProhibited,
+            &theirs,
+            ROUTER,
+        );
+        scanner.handle_reply(&error, Instant::now());
+
+        assert_eq!(port_state(&session, 80), None);
+        assert!(scanner.ledger.contains(&(TARGET, 80)));
+    }
+
+    /// A SYN scan does not ask its capture for ICMP, so nothing here should
+    /// depend on it - but a stray error must still resolve nothing rather than
+    /// panic, since a shared interface can deliver one anyway.
+    #[test]
+    fn a_truncated_error_resolves_nothing() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        probe(&mut scanner, &sent, 80);
+
+        let mut error = icmp_error_quoting(
+            IcmpCodes::DestinationPortUnreachable,
+            &last_probe_bytes(&sent),
+            ROUTER,
+        );
+        error.bytes.truncate(12);
+        scanner.handle_reply(&error, Instant::now());
+
+        assert_eq!(port_state(&session, 80), None);
+        assert!(scanner.ledger.contains(&(TARGET, 80)));
     }
 
     #[test]
@@ -803,7 +1326,7 @@ mod tests {
         let (mut scanner, _session, sent) = scanner_with_mock();
         let token = probe(&mut scanner, &sent, 80);
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
-        scanner.handle_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
 
         scanner.service_retries(Instant::now() + Duration::from_secs(10));
 
@@ -819,14 +1342,14 @@ mod tests {
         let first = probe(&mut scanner, &sent, 80);
 
         scanner.service_retries(Instant::now() + Duration::from_secs(1));
-        let second = last_probe(&sent);
+        let second = last_probe(scanner.technique, &sent);
         assert_ne!(
             first.nonce, second.nonce,
             "each attempt needs its own identity"
         );
 
         let reply = tcp_segment(&scanner, 80, first, SYN | ACK);
-        scanner.handle_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 80), Some(PortState::Open));
     }
@@ -864,8 +1387,8 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
-        scanner.handle_reply(TARGET, &reply, Instant::now());
-        scanner.handle_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
 
         let host = session.store.get(&TARGET).expect("host recorded");
         assert_eq!(host.ports().filter(|p| p.number() == 80).count(), 1);

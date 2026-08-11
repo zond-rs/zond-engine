@@ -557,6 +557,7 @@
                 "icmp_echo",
                 "icmp_unreachable",
                 "tcp_syn",
+                "tcp",
                 "udp"
               ]
             },
@@ -830,6 +831,7 @@
         "local",
         "routed",
         "syn_port",
+        "tcp_port",
         "connect",
         "udp_port",
         "composite"

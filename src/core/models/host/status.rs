@@ -77,8 +77,18 @@ pub enum StatusProtocol {
     /// probes. What it proves depends on who sent it and which code it carried,
     /// which is why [`StatusReason::source`] exists.
     IcmpUnreachable,
-    /// Discovered via a successful TCP 3-way handshake on an open port.
+    /// Discovered via a successful TCP 3-way handshake on an open port, or via
+    /// the SYN+ACK or RST a half-open SYN probe drew.
     TcpSyn,
+    /// Discovered via a TCP segment answering a raw probe that was not a SYN.
+    ///
+    /// Kept apart from [`TcpSyn`](Self::TcpSyn) because the probes differ in
+    /// what they prove and in how visible they are: a RST answering a FIN, a
+    /// flagless segment or a bare ACK says the host's stack is alive and
+    /// nothing more, and it says so about a port that was never asked to accept
+    /// a connection. Which probe drew it is named in
+    /// [`StatusReason::details`](super::StatusReason::details).
+    Tcp,
     /// Discovered via a valid application-level response over UDP.
     Udp,
     /// A custom discovery method initiated by a specialized scanning script.

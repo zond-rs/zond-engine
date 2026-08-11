@@ -59,8 +59,11 @@ these tests run on every platform CI covers, in milliseconds, without depending
 on the machine's network.
 
 All three Layer 4 scanners can be driven this way through their `with_transport`
-constructors: `SynPortScanner`, `UdpPortScanner`, and `RoutedScanner` for
-discovery. `LocalScanner` takes an `EthernetHandle` instead of a probe transport,
+constructors: `TcpPortScanner`, `UdpPortScanner`, and `RoutedScanner` for
+discovery. `TcpPortScanner` takes the `TcpScanTechnique` to probe with, and
+`FakeNet::stack` chooses how the virtual hosts answer it — conformant,
+BSD-derived, or one of the stacks that reset every flag probe whatever the port
+state. `LocalScanner` takes an `EthernetHandle` instead of a probe transport,
 because it identifies a neighbour by the Ethernet source MAC that a capture-fed
 transport has already stripped, so it gets `FakeLan` and
 `LocalScanner::with_handle`.
@@ -99,7 +102,8 @@ let net = FakeNet::new(Layer4::Tcp)
     .host(target, 82, Policy::open().drop_first(1));
 
 let (session, ctx) = ScanSession::new();
-let mut scanner = SynPortScanner::with_transport(resolver, ctx, net.transport(), 3);
+let mut scanner =
+    TcpPortScanner::with_transport(resolver, ctx, TcpScanTechnique::Syn, net.transport(), 3);
 scanner.scan(targets).await?;
 
 assert_eq!(net.probe_count(target, 82), 2, "the lost probe should be retried");

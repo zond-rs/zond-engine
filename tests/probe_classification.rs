@@ -25,13 +25,14 @@ mod common;
 
 use std::time::Duration;
 
-use common::fake_net::{FakeNet, Layer4, Policy, Unreachable};
+use common::fake_net::{FakeNet, Layer4, Policy, Stack, Unreachable};
 use common::*;
 use zond_engine::core::models::host::HostStatus;
 use zond_engine::core::models::port::PortState;
+use zond_engine::core::models::technique::TcpScanTechnique;
 use zond_engine::core::session::ScanSession;
 use zond_engine::scanner::NetworkExplorer;
-use zond_engine::scanner::routed::{RoutedScanner, SynPortScanner, UdpPortScanner};
+use zond_engine::scanner::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
 use zond_engine::system::interface::RoutedTarget;
 
 /// The fixed source port the simulated UDP scans probe from.
@@ -41,6 +42,38 @@ const UDP_SRC_PORT: u16 = 54_321;
 /// session to assert against, together with the network that served it.
 async fn syn_scan(ports: &[(u16, Policy)]) -> (ScanSession, FakeNet) {
     syn_scan_on(TARGET, ports).await
+}
+
+/// Runs one scan of `technique` against [`TARGET`] over the given policies,
+/// against a network whose hosts run `stack`.
+async fn tcp_scan_on(
+    technique: TcpScanTechnique,
+    stack: Stack,
+    ports: &[(u16, Policy)],
+) -> (ScanSession, FakeNet) {
+    let mut net = FakeNet::new(Layer4::Tcp).stack(stack);
+    for (port, policy) in ports {
+        net = net.host(TARGET, *port, *policy);
+    }
+
+    let (session, ctx) = ScanSession::new();
+    let mut scanner = TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        technique,
+        net.transport(),
+        ports.len(),
+    );
+    let targets = ports.iter().map(|(port, _)| tcp(TARGET, *port)).collect();
+    run_port_scanner(&mut scanner, targets).await;
+
+    (session, net)
+}
+
+/// [`tcp_scan_on`] against a stack that follows the RFC, which is the case
+/// every technique is designed for.
+async fn tcp_scan(technique: TcpScanTechnique, ports: &[(u16, Policy)]) -> (ScanSession, FakeNet) {
+    tcp_scan_on(technique, Stack::Conformant, ports).await
 }
 
 /// [`syn_scan`] against an explicit address, so the same policies can be put to
@@ -54,8 +87,13 @@ async fn syn_scan_on(target: std::net::IpAddr, ports: &[(u16, Policy)]) -> (Scan
     }
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner =
-        SynPortScanner::with_transport(scanner_resolver(), ctx, net.transport(), ports.len());
+    let mut scanner = TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        ports.len(),
+    );
     let targets = ports.iter().map(|(port, _)| tcp(target, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;
 
@@ -265,6 +303,202 @@ async fn an_unparseable_reply_is_ignored_rather_than_classified() {
         Some(PortState::Filtered),
         "a reply that could not be read is not evidence of an open port"
     );
+}
+
+// ── TCP flag probes ────────────────────────────────────────────────────────
+
+/// The FIN scan's whole logic in one run, and the inversion that makes it
+/// useful: a reset is the *negative* result here, and silence is as close to a
+/// positive one as the technique gets.
+#[tokio::test]
+async fn a_fin_scan_reads_a_reset_as_closed_and_silence_as_open_filtered() {
+    let (session, _net) = tcp_scan(
+        TcpScanTechnique::Fin,
+        &[
+            (80, Policy::open()),
+            (81, Policy::closed()),
+            (82, Policy::silent()),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 80),
+        Some(PortState::OpenFiltered),
+        "an open port is required to ignore a FIN, so silence is all we get"
+    );
+    assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
+    assert_eq!(
+        port_state(&session, TARGET, 82),
+        Some(PortState::OpenFiltered),
+        "a dropped probe is indistinguishable from an ignored one"
+    );
+}
+
+/// FIN, NULL and Xmas ask the same question with different flags, so they must
+/// reach the same verdicts. This is where an off-by-one in the correlation
+/// shows up: a flagless probe occupies no sequence space and a FIN occupies
+/// one, so reading either with the other's offset rejects every reset and
+/// reports the whole host open-filtered.
+#[tokio::test]
+async fn the_three_flag_probes_agree_on_a_conformant_stack() {
+    for technique in [
+        TcpScanTechnique::Fin,
+        TcpScanTechnique::Null,
+        TcpScanTechnique::Xmas,
+    ] {
+        let (session, _net) =
+            tcp_scan(technique, &[(80, Policy::open()), (81, Policy::closed())]).await;
+
+        assert_eq!(
+            port_state(&session, TARGET, 80),
+            Some(PortState::OpenFiltered),
+            "{technique} on an open port"
+        );
+        assert_eq!(
+            port_state(&session, TARGET, 81),
+            Some(PortState::Closed),
+            "{technique} on a closed port"
+        );
+    }
+}
+
+/// An ACK scan reports on the firewall, not on the ports behind it: a reset
+/// means the probe arrived, whether or not anything was listening, and silence
+/// means it did not.
+#[tokio::test]
+async fn an_ack_scan_maps_the_path_rather_than_the_ports() {
+    let (session, _net) = tcp_scan(
+        TcpScanTechnique::Ack,
+        &[
+            (80, Policy::open()),
+            (81, Policy::closed()),
+            (82, Policy::silent()),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 80),
+        Some(PortState::Unfiltered)
+    );
+    assert_eq!(
+        port_state(&session, TARGET, 81),
+        Some(PortState::Unfiltered),
+        "an ACK scan cannot tell a listener from an empty port, and must not claim to"
+    );
+    assert_eq!(port_state(&session, TARGET, 82), Some(PortState::Filtered));
+}
+
+/// The honest limit of the Maimon technique: RFC 793 has a stack reset any
+/// segment carrying ACK for a port it is not holding open, so on a conformant
+/// host an open port and a closed one answer identically.
+#[tokio::test]
+async fn a_maimon_scan_distinguishes_nothing_on_a_conformant_stack() {
+    let (session, _net) = tcp_scan(
+        TcpScanTechnique::Maimon,
+        &[(80, Policy::open()), (81, Policy::closed())],
+    )
+    .await;
+
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Closed));
+    assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
+}
+
+/// And the stack family it was discovered on, where it works: a BSD-derived
+/// host drops a FIN+ACK aimed at an open port instead of resetting it.
+#[tokio::test]
+async fn a_maimon_scan_separates_open_from_closed_on_a_bsd_stack() {
+    let (session, _net) = tcp_scan_on(
+        TcpScanTechnique::Maimon,
+        Stack::BsdDerived,
+        &[(80, Policy::open()), (81, Policy::closed())],
+    )
+    .await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 80),
+        Some(PortState::OpenFiltered)
+    );
+    assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
+}
+
+/// The documented failure of the whole flag-probe family, pinned rather than
+/// papered over: against a stack that resets everything, a FIN scan reports an
+/// open port closed and is confidently wrong.
+///
+/// Nothing in the engine can detect this from a single scan - the packets are
+/// indistinguishable from a host whose ports really are all closed - so the
+/// only honest response is to document it where the technique is chosen and to
+/// keep this test as the record of what it looks like.
+#[tokio::test]
+async fn a_stack_that_resets_everything_makes_a_flag_probe_confidently_wrong() {
+    let (session, _net) = tcp_scan_on(
+        TcpScanTechnique::Fin,
+        Stack::AlwaysResets,
+        &[(80, Policy::open()), (81, Policy::closed())],
+    )
+    .await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 80),
+        Some(PortState::Closed),
+        "an open port reported closed: the known limitation of this technique"
+    );
+    assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
+}
+
+/// What ICMP buys the flag probes, and the reason they ask their capture for
+/// it: an explicit refusal turns a verdict that would have read `OpenFiltered`
+/// into the `Filtered` it actually is.
+#[tokio::test]
+async fn an_explicit_refusal_is_filtered_rather_than_open_filtered() {
+    let (session, _net) = tcp_scan(
+        TcpScanTechnique::Fin,
+        &[(80, Policy::admin_prohibited()), (81, Policy::silent())],
+    )
+    .await;
+
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Filtered));
+    assert_eq!(
+        port_state(&session, TARGET, 81),
+        Some(PortState::OpenFiltered),
+        "the contrast is the point: only the refusal is evidence of a filter"
+    );
+}
+
+/// An ICMP *port* unreachable answering a TCP probe cannot mean what it means
+/// for UDP - no TCP stack emits one - so it is a middlebox speaking for the
+/// address, which is filtered and not closed. The identical message in a UDP
+/// scan is asserted to be `Closed` a few tests below.
+#[tokio::test]
+async fn a_port_unreachable_about_a_tcp_probe_is_filtered() {
+    let (session, _net) = tcp_scan(
+        TcpScanTechnique::Fin,
+        &[(80, Policy::unreachable(Unreachable::Port))],
+    )
+    .await;
+
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Filtered));
+}
+
+/// A reset says nothing good about the port and everything about the host: it
+/// took a packet and answered it.
+#[tokio::test]
+async fn a_reset_to_a_flag_probe_proves_the_host_is_up() {
+    let (session, _net) = tcp_scan(TcpScanTechnique::Fin, &[(81, Policy::closed())]).await;
+
+    assert_eq!(host_status(&session, TARGET), Some(HostStatus::Up));
+}
+
+/// And silence says nothing at all. A host whose every port reads
+/// `OpenFiltered` has never sent a packet, and must not be reported alive on
+/// the strength of a verdict that only means "we cannot tell".
+#[tokio::test]
+async fn an_open_filtered_port_does_not_make_its_host_alive() {
+    let (session, _net) = tcp_scan(TcpScanTechnique::Xmas, &[(80, Policy::silent())]).await;
+
+    assert_ne!(host_status(&session, TARGET), Some(HostStatus::Up));
 }
 
 // ── UDP ────────────────────────────────────────────────────────────────────

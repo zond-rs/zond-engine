@@ -58,10 +58,11 @@ use common::*;
 use pnet::datalink::MacAddr;
 use zond_engine::core::models::ip::set::IpSet;
 use zond_engine::core::models::port::PortState;
+use zond_engine::core::models::technique::TcpScanTechnique;
 use zond_engine::core::session::{ScanSession, ScannerKind};
 use zond_engine::scanner::NetworkExplorer;
 use zond_engine::scanner::local::{LocalScanner, Scope};
-use zond_engine::scanner::routed::{RoutedScanner, SynPortScanner, UdpPortScanner};
+use zond_engine::scanner::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
 use zond_engine::system::interface::RoutedTarget;
 
 /// How many times a probe should be sent before the engine concludes the target
@@ -92,7 +93,13 @@ async fn a_lost_syn_is_retried_and_the_port_still_reads_open() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 80, Policy::open().drop_first(1));
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner = SynPortScanner::with_transport(scanner_resolver(), ctx, net.transport(), 1);
+    let mut scanner = TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        1,
+    );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 80)]).await;
 
     assert_eq!(
@@ -114,7 +121,13 @@ async fn a_lost_rst_is_retried_and_the_port_still_reads_closed() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 81, Policy::closed().drop_first(1));
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner = SynPortScanner::with_transport(scanner_resolver(), ctx, net.transport(), 1);
+    let mut scanner = TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        1,
+    );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 81)]).await;
 
     assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
@@ -127,7 +140,13 @@ async fn a_silent_port_is_filtered_after_a_bounded_number_of_attempts() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 82, Policy::silent());
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner = SynPortScanner::with_transport(scanner_resolver(), ctx, net.transport(), 1);
+    let mut scanner = TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        1,
+    );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 82)]).await;
 
     assert_eq!(
@@ -154,7 +173,13 @@ async fn an_answered_probe_is_never_retried() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 80, Policy::open());
 
     let (_session, ctx) = ScanSession::new();
-    let mut scanner = SynPortScanner::with_transport(scanner_resolver(), ctx, net.transport(), 1);
+    let mut scanner = TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        1,
+    );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 80)]).await;
 
     assert_eq!(
@@ -172,7 +197,13 @@ async fn retries_are_spaced_out_rather_than_burst() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 82, Policy::silent());
 
     let (_session, ctx) = ScanSession::new();
-    let mut scanner = SynPortScanner::with_transport(scanner_resolver(), ctx, net.transport(), 1);
+    let mut scanner = TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        1,
+    );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 82)]).await;
 
     let probes = net.probes();
@@ -202,7 +233,13 @@ async fn a_late_reply_plus_its_retry_resolves_the_port_once() {
     );
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner = SynPortScanner::with_transport(scanner_resolver(), ctx, net.transport(), 1);
+    let mut scanner = TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        1,
+    );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 80)]).await;
 
     assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Open));

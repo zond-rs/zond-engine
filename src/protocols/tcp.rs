@@ -210,6 +210,60 @@ pub fn echoed_nonce(technique: TcpScanTechnique, reply: &TcpPacket) -> u32 {
     }
 }
 
+/// A probe's header as an ICMP error quotes it back.
+///
+/// Not a [`TcpPacket`], because there may not be one: RFC 792 requires an error
+/// to quote the IP header plus the first **eight** bytes of the offending
+/// segment, and a TCP header is twenty. Those eight bytes are the two ports and
+/// the sequence number, which is enough to say which probe the error is about;
+/// implementations commonly quote more, and the acknowledgement field is
+/// reported when they do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuotedProbe {
+    /// The port the probe was sent from, which is what proves the quoted
+    /// datagram belongs to this scan.
+    pub source: u16,
+    /// The port it was aimed at.
+    pub destination: u16,
+    pub sequence: u32,
+    /// Present only where the quotation ran past the guaranteed eight bytes.
+    pub acknowledgement: Option<u32>,
+}
+
+/// Reads what an ICMP error quoted of a TCP probe, or `None` if the quotation
+/// is too short to name one.
+///
+/// Every byte here was chosen by whatever sent the error, so nothing is assumed
+/// about the length beyond what the RFC guarantees.
+pub fn quoted_probe(quoted: &[u8]) -> Option<QuotedProbe> {
+    let head: &[u8; 8] = quoted.first_chunk()?;
+
+    Some(QuotedProbe {
+        source: u16::from_be_bytes([head[0], head[1]]),
+        destination: u16::from_be_bytes([head[2], head[3]]),
+        sequence: u32::from_be_bytes([head[4], head[5], head[6], head[7]]),
+        acknowledgement: quoted
+            .first_chunk::<12>()
+            .map(|full| u32::from_be_bytes([full[8], full[9], full[10], full[11]])),
+    })
+}
+
+/// The nonce a quoted probe carried, or `None` when the quotation stopped short
+/// of the field this technique put it in.
+///
+/// The four techniques that write their nonce into the sequence number are named
+/// by the guaranteed eight bytes, so an error about one of them can be tied to
+/// the exact attempt it refers to. The two that write it into the acknowledgement
+/// field can only be tied that precisely by a sender generous enough to quote
+/// twelve, and a caller that gets `None` should fall back to resolving the probe
+/// without claiming to know which attempt.
+pub fn quoted_nonce(technique: TcpScanTechnique, quoted: &QuotedProbe) -> Option<u32> {
+    match nonce_field(probe_flags(technique)) {
+        NonceField::Sequence { .. } => Some(quoted.sequence),
+        NonceField::Acknowledgement => quoted.acknowledgement,
+    }
+}
+
 pub fn from_u8(bytes: &'_ [u8]) -> anyhow::Result<TcpPacket<'_>> {
     TcpPacket::new(bytes).context("truncated or invalid TCP packet")
 }
@@ -406,6 +460,42 @@ mod tests {
 
         assert_eq!(null_ack, NONCE);
         assert_eq!(fin_ack, NONCE.wrapping_add(1));
+    }
+
+    // ── Quotation ────────────────────────────────────────────────────────────
+
+    /// The eight bytes an ICMP error is guaranteed to quote name the probe:
+    /// which port on which host, and - for the four techniques that put their
+    /// nonce there - which attempt.
+    #[test]
+    fn eight_quoted_bytes_name_the_probe_and_a_sequence_nonce() {
+        let sent = probe(TcpScanTechnique::Fin);
+        let quoted = quoted_probe(&sent[..8]).expect("eight bytes are enough");
+
+        assert_eq!(quoted.source, 50_000);
+        assert_eq!(quoted.destination, 80);
+        assert_eq!(quoted.acknowledgement, None);
+        assert_eq!(quoted_nonce(TcpScanTechnique::Fin, &quoted), Some(NONCE));
+    }
+
+    /// A technique whose nonce sits in the acknowledgement field is past the
+    /// guaranteed quotation, so a short quote names the probe but not the
+    /// attempt - and says so rather than guessing.
+    #[test]
+    fn an_ack_carrying_probe_needs_a_generous_quotation_to_name_its_attempt() {
+        let sent = probe(TcpScanTechnique::Ack);
+
+        let short = quoted_probe(&sent[..8]).expect("eight bytes are enough");
+        assert_eq!(short.destination, 80, "the probe is still identified");
+        assert_eq!(quoted_nonce(TcpScanTechnique::Ack, &short), None);
+
+        let full = quoted_probe(&sent).expect("a full header parses");
+        assert_eq!(quoted_nonce(TcpScanTechnique::Ack, &full), Some(NONCE));
+    }
+
+    #[test]
+    fn a_quotation_too_short_to_name_a_probe_is_rejected() {
+        assert_eq!(quoted_probe(&probe(TcpScanTechnique::Syn)[..7]), None);
     }
 
     // ── Classification ───────────────────────────────────────────────────────

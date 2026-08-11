@@ -45,10 +45,6 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pnet::packet::Packet;
-use pnet::packet::icmp::destination_unreachable::{DestinationUnreachablePacket, IcmpCodes};
-use pnet::packet::icmp::{IcmpCode, IcmpTypes};
-use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::udp::UdpPacket;
 use tokio::sync::mpsc;
@@ -63,11 +59,11 @@ use crate::core::models::timer::ScanBudget;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
 use crate::network::capture::CapturedSegment;
-use crate::network::frame;
 use crate::network::probe::{ProbeKind, ProbeTransport};
 use crate::scanner::PortScanner;
 use crate::system::interface::SourceResolver;
 
+use super::icmp_error::{self, Unreachable};
 use super::send_udp;
 
 /// The probe a reply refers to: the `(address, port)` it was sent to.
@@ -162,33 +158,6 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// on different hosts. A per-host cap on top of that would constrain something
 /// the target stream has already spread out.
 const MAX_IN_FLIGHT: usize = 512;
-
-// The ICMPv6 Destination Unreachable codes this scanner acts on (RFC 4443
-// §3.1). Spelled out here because `pnet` models ICMPv6 codes as a bare
-// newtype, with no named constants the way it has for ICMPv4.
-//
-/// Code 4: the v6 counterpart of [`IcmpCodes::DestinationPortUnreachable`].
-const ICMPV6_PORT_UNREACHABLE: Icmpv6Code = Icmpv6Code(4);
-/// Code 1: communication with the destination administratively prohibited.
-const ICMPV6_ADMIN_PROHIBITED: Icmpv6Code = Icmpv6Code(1);
-/// Code 5: source address failed an ingress/egress policy.
-const ICMPV6_INGRESS_EGRESS_POLICY: Icmpv6Code = Icmpv6Code(5);
-/// Code 6: the route to the destination is a reject route.
-const ICMPV6_REJECT_ROUTE: Icmpv6Code = Icmpv6Code(6);
-/// Code 0: no route to destination - the v6 counterpart of host unreachable.
-const ICMPV6_NO_ROUTE: Icmpv6Code = Icmpv6Code(0);
-/// Code 3: the address itself is unreachable, whatever the port.
-const ICMPV6_ADDR_UNREACHABLE: Icmpv6Code = Icmpv6Code(3);
-
-/// The four unused bytes between an ICMPv6 Destination Unreachable header and
-/// the packet it quotes (RFC 4443 §3.1).
-///
-/// `pnet` models ICMPv6 only as the generic type/code/checksum header, so its
-/// payload still has these in front of the quoted packet. ICMPv4 needs no
-/// equivalent constant: `pnet` models the Destination Unreachable header
-/// itself, so [`DestinationUnreachablePacket::payload`] already starts at the
-/// quotation.
-const ICMPV6_UNUSED_LEN: usize = 4;
 
 /// Probes specific `(address, port)` pairs with raw UDP packets.
 pub struct UdpPortScanner {
@@ -341,9 +310,10 @@ impl UdpPortScanner {
         let classified = match reply.protocol {
             IpNextHeaderProtocols::Udp => answering_probe(&reply.bytes, self.src_port)
                 .map(|port| ((reply.source, port), Verdict::Port(PortState::Open))),
-            IpNextHeaderProtocols::Icmp => quoted_by_icmpv4(&reply.bytes, self.src_port),
-            IpNextHeaderProtocols::Icmpv6 => quoted_by_icmpv6(&reply.bytes, self.src_port),
-            _ => None,
+            _ => icmp_error::parse(reply).and_then(|error| {
+                let target = quoted_probe(&error, self.src_port)?;
+                Some((target, verdict_of(error.reason)))
+            }),
         };
 
         match classified {
@@ -565,100 +535,39 @@ enum Verdict {
     Host,
 }
 
-/// What an ICMPv4 Destination Unreachable code establishes, or `None` if it says
-/// nothing usable.
+/// What an ICMP error means for the UDP port it was drawn by.
 ///
-/// Only "port unreachable" reports on the port itself: something received the
-/// datagram, looked for a listener, and found none. The administrative codes
-/// describe the *path* - a filter, a policy - and prove only that the probe did
-/// not arrive, which is [`PortState::Filtered`]. "Host unreachable" is neither:
-/// a router could not deliver to the address at all, which is a statement about
-/// the host and not about the port that happened to be asked for. The remaining
-/// codes (network unknown, fragmentation needed, source route failed) say
-/// nothing either way.
-fn icmpv4_verdict(code: IcmpCode) -> Option<Verdict> {
-    match code {
-        IcmpCodes::DestinationPortUnreachable => Some(Verdict::Port(PortState::Closed)),
-        IcmpCodes::DestinationProtocolUnreachable
-        | IcmpCodes::NetworkAdministrativelyProhibited
-        | IcmpCodes::HostAdministrativelyProhibited
-        | IcmpCodes::CommunicationAdministrativelyProhibited => {
-            Some(Verdict::Port(PortState::Filtered))
-        }
-        IcmpCodes::DestinationHostUnreachable => Some(Verdict::Host),
-        _ => None,
+/// A port unreachable is the one unambiguous "closed" a UDP scan ever gets:
+/// the datagram reached a stack, which looked for a listener and found none.
+/// That reading is specific to UDP - the identical message answering a TCP
+/// probe means something else entirely, which is why this mapping lives beside
+/// the scanner it belongs to rather than in [`icmp_error`].
+fn verdict_of(reason: Unreachable) -> Verdict {
+    match reason {
+        Unreachable::Port => Verdict::Port(PortState::Closed),
+        Unreachable::Prohibited => Verdict::Port(PortState::Filtered),
+        Unreachable::Host => Verdict::Host,
     }
 }
 
-/// The ICMPv6 counterpart of [`icmpv4_verdict`] (RFC 4443 §3.1).
+/// The probe an ICMP error is about and what the error says about it.
 ///
-/// Code 4 is the port-unreachable equivalent. Codes 1, 5, and 6 are explicit
-/// refusals by policy, so they read as filtered on the same reasoning as their
-/// v4 counterparts. Codes 0 and 3 - no route to destination, address
-/// unreachable - are the counterparts of v4 host unreachable. Code 2 (beyond
-/// scope of source address) describes the *sender's* address selection rather
-/// than the target's reachability, and is deliberately left unclassified.
-fn icmpv6_verdict(code: Icmpv6Code) -> Option<Verdict> {
-    match code {
-        ICMPV6_PORT_UNREACHABLE => Some(Verdict::Port(PortState::Closed)),
-        ICMPV6_ADMIN_PROHIBITED | ICMPV6_INGRESS_EGRESS_POLICY | ICMPV6_REJECT_ROUTE => {
-            Some(Verdict::Port(PortState::Filtered))
-        }
-        ICMPV6_NO_ROUTE | ICMPV6_ADDR_UNREACHABLE => Some(Verdict::Host),
-        _ => None,
-    }
-}
-
-/// The probe an ICMPv4 Destination Unreachable refers to and what it says about
-/// it, read from the datagram the error quotes.
-///
-/// `None` if it is some other ICMP message, carries a code that reports on
-/// neither the port nor the path, or quotes a datagram this scan did not send.
-fn quoted_by_icmpv4(bytes: &[u8], src_port: u16) -> Option<(ProbeTarget, Verdict)> {
-    let unreachable = DestinationUnreachablePacket::new(bytes)?;
-    if unreachable.get_icmp_type() != IcmpTypes::DestinationUnreachable {
-        return None;
-    }
-    let verdict = icmpv4_verdict(unreachable.get_icmp_code())?;
-    Some((quoted_probe(unreachable.payload(), src_port)?, verdict))
-}
-
-/// The ICMPv6 counterpart of [`quoted_by_icmpv4`].
-fn quoted_by_icmpv6(bytes: &[u8], src_port: u16) -> Option<(ProbeTarget, Verdict)> {
-    let unreachable = Icmpv6Packet::new(bytes)?;
-    if unreachable.get_icmpv6_type() != Icmpv6Types::DestinationUnreachable {
-        return None;
-    }
-    let verdict = icmpv6_verdict(unreachable.get_icmpv6_code())?;
-    let quoted = unreachable.payload().get(ICMPV6_UNUSED_LEN..)?;
-    Some((quoted_probe(quoted, src_port)?, verdict))
-}
-
-/// Identifies the probe quoted inside an ICMP error.
-///
-/// The quotation is an IP header followed by at least the first eight bytes of
-/// the original datagram, which for UDP is the entire header. Its *source* port
-/// is what this scan sent from, so it authenticates the error as answering us;
-/// its destination address and port name the probe to retire. Both come from
-/// the quotation rather than from the error's own header, so an error relayed
-/// by a router still points at the host the probe was aimed at.
-///
-/// Every field here is chosen by a remote host, so nothing is assumed: the
-/// quotation is parsed with the same bounds-checked path as a captured packet
-/// ([`frame::parse_ip_segment`]), and a quotation that is truncated, is not
-/// UDP, or names a different source port yields `None`.
-fn quoted_probe(quoted_packet: &[u8], src_port: u16) -> Option<ProbeTarget> {
-    let quoted = frame::parse_ip_segment(quoted_packet)?;
-    if quoted.protocol != IpNextHeaderProtocols::Udp {
+/// `None` unless the quoted datagram is a UDP probe this scan sent, which its
+/// source port is what proves. Its destination address and port name the probe
+/// to retire, and both come from the quotation rather than from the error's own
+/// header, so an error relayed by a router still points at the host the probe
+/// was aimed at.
+fn quoted_probe(error: &icmp_error::IcmpError<'_>, src_port: u16) -> Option<ProbeTarget> {
+    if error.quoted.protocol != IpNextHeaderProtocols::Udp {
         return None;
     }
 
-    let udp = UdpPacket::new(quoted.payload)?;
+    let udp = UdpPacket::new(error.quoted.payload)?;
     if udp.get_source() != src_port {
         return None;
     }
 
-    Some((quoted.destination, udp.get_destination()))
+    Some((error.quoted.destination, udp.get_destination()))
 }
 
 #[async_trait]
@@ -759,9 +668,16 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
-    use pnet::packet::icmp::IcmpCode;
-    use pnet::packet::icmp::destination_unreachable::MutableDestinationUnreachablePacket;
-    use pnet::packet::icmpv6::MutableIcmpv6Packet;
+    use pnet::packet::icmp::destination_unreachable::{
+        DestinationUnreachablePacket, IcmpCodes, MutableDestinationUnreachablePacket,
+    };
+    use pnet::packet::icmp::{IcmpCode, IcmpTypes};
+    use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
+
+    use super::super::icmp_error::{
+        ICMPV6_ADMIN_PROHIBITED, ICMPV6_INGRESS_EGRESS_POLICY, ICMPV6_NO_ROUTE,
+        ICMPV6_PORT_UNREACHABLE, ICMPV6_REJECT_ROUTE, ICMPV6_UNUSED_LEN,
+    };
 
     use crate::core::session::ScanSession;
     use crate::network::probe::{MockSender, ProbeTransport};
@@ -1282,7 +1198,7 @@ mod tests {
         probe(&mut scanner, TARGET_V6, 53);
 
         scanner.handle_reply(
-            &icmpv6_error(Icmpv6Code(0), TARGET_V6, SCAN_SRC_PORT, 53),
+            &icmpv6_error(ICMPV6_NO_ROUTE, TARGET_V6, SCAN_SRC_PORT, 53),
             Instant::now(),
         );
 
@@ -1362,12 +1278,13 @@ mod tests {
             .expect("capture stream closed");
 
         assert_eq!(reply.protocol, IpNextHeaderProtocols::Icmp);
+        let error = icmp_error::parse(&reply).expect("a real ICMP error parses");
         assert_eq!(
-            quoted_by_icmpv4(&reply.bytes, src_port),
-            Some((
-                (IpAddr::V4(Ipv4Addr::LOCALHOST), closed_port),
+            (quoted_probe(&error, src_port), verdict_of(error.reason)),
+            (
+                Some((IpAddr::V4(Ipv4Addr::LOCALHOST), closed_port)),
                 Verdict::Port(PortState::Closed)
-            )),
+            ),
             "a real ICMP error must name the exact probe that caused it",
         );
     }

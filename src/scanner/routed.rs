@@ -17,6 +17,7 @@
 //!
 //! This scanner requires root privileges to open the raw sockets involved.
 
+mod icmp_error;
 mod port_scan;
 mod udp_scan;
 
@@ -47,7 +48,7 @@ use super::{NetworkExplorer, payload};
 use crate::core::report::StopReason;
 use crate::core::session::ScannerKind;
 
-pub use port_scan::SynPortScanner;
+pub use port_scan::TcpPortScanner;
 pub use udp_scan::UdpPortScanner;
 
 /// How long a routed sweep or port scan runs and how it adapts.
@@ -72,7 +73,7 @@ pub use udp_scan::UdpPortScanner;
 ///
 /// A generous budget costs nothing when a scan succeeds, since both loops exit
 /// as soon as every target is resolved ([`RoutedScanner`] once all targets have
-/// responded, [`SynPortScanner`] once nothing is pending). It is spent only
+/// responded, [`TcpPortScanner`] once nothing is pending). It is spent only
 /// when something is still missing.
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(

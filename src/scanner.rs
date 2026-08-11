@@ -23,7 +23,7 @@
 //! module) handles hosts on the same physical segment over ARP and ICMP, while
 //! [`RoutedScanner`] (in [`routed`]) handles anything reached through a gateway
 //! over TCP SYN. [`scan`] follows the same pattern for ports, where a
-//! privileged caller gets [`routed::SynPortScanner`]. That scanner classifies
+//! privileged caller gets [`routed::TcpPortScanner`]. That scanner classifies
 //! each port from a single raw SYN probe rather than completing a full
 //! handshake. Targets that cannot be mapped to a usable interface, along with
 //! every target when running unprivileged, fall back to plain TCP connect
@@ -47,6 +47,7 @@ use tokio::task::JoinHandle;
 
 use crate::core::config::{ProbeTuning, ZondConfig};
 use crate::core::models::ip::range::{IpRange, Ipv6Range};
+use crate::core::models::technique::TcpScanTechnique;
 use crate::core::models::{
     ip::set::IpSet,
     port::Protocol,
@@ -217,7 +218,7 @@ pub async fn discover(
 ///
 /// With root privileges, every probe is a raw TCP SYN sent from the source
 /// address the host would route each target through, and
-/// [`routed::SynPortScanner`] classifies it from a single reply rather than a
+/// [`routed::TcpPortScanner`] classifies it from a single reply rather than a
 /// completed handshake. Without root, or when the host has no address to probe
 /// from, probes fall back to a plain TCP connect attempt per target through the
 /// [`connect`] module.
@@ -234,9 +235,14 @@ pub async fn scan(
     let scope = TargetScope::from_target_map(&mut target_map);
     let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, cfg);
 
-    let (syn_scanner, udp_scanner) = if caps.privileged {
+    let (tcp_scanner, udp_scanner) = if caps.privileged {
         (
-            build_syn_scanner(ctx.clone(), target_count, cfg.probe_tuning()),
+            build_tcp_scanner(
+                ctx.clone(),
+                TcpScanTechnique::Syn,
+                target_count,
+                cfg.probe_tuning(),
+            ),
             build_udp_scanner(ctx.clone(), target_count, cfg.probe_tuning()),
         )
     } else {
@@ -250,7 +256,7 @@ pub async fn scan(
     // does. The unprivileged fallback cannot ARP, so it settles for active
     // reverse DNS. Keying on `syn_scanner` rather than `caps.privileged` means a
     // privileged host that could not build a SYN scanner still takes the fallback.
-    let enrichment = if syn_scanner.is_some() || udp_scanner.is_some() {
+    let enrichment = if tcp_scanner.is_some() || udp_scanner.is_some() {
         Some(Enrichment::spawn(ips, &ctx, caps, cfg.probe_tuning(), Scope::Targeted).await)
     } else {
         None
@@ -259,7 +265,7 @@ pub async fn scan(
     // Both branches of the privilege fork now sit behind one interface. Pick the
     // strategy here and drive it uniformly below.
     let mut scanners: Vec<Box<dyn PortScanner>> = Vec::new();
-    if let Some(scanner) = syn_scanner {
+    if let Some(scanner) = tcp_scanner {
         scanners.push(Box::new(scanner));
     }
     if let Some(scanner) = udp_scanner {
@@ -303,7 +309,7 @@ pub trait NetworkExplorer {
 /// This is the port-scan counterpart to [`NetworkExplorer`]. Where that trait
 /// lets [`discover`] drive several host-discovery strategies through one loop,
 /// this lets [`scan`] drive whichever port-scan strategy privilege selected,
-/// either the raw [`routed::SynPortScanner`] or the unprivileged [`connect`]
+/// either the raw [`routed::TcpPortScanner`] or the unprivileged [`connect`]
 /// fallback, through a single path. Implementations consume the shuffled
 /// [`Target`] stream that a [`dispatcher::Dispatcher`] produces and write their
 /// findings into the shared [`ScanContext`] they were built with;
@@ -687,9 +693,9 @@ fn candidates_for(
         .collect()
 }
 
-/// Tries to build a privileged raw-socket SYN port scanner, resolving each
-/// probe's source address per target across the host's interfaces and routing
-/// table.
+/// Tries to build a privileged raw-socket TCP port scanner for `technique`,
+/// resolving each probe's source address per target across the host's
+/// interfaces and routing table.
 ///
 /// Called only once privilege is confirmed (see [`ScanCapabilities`]). Returns
 /// `None`, meaning [`scan`] should fall back to TCP connect probes, when the
@@ -697,21 +703,22 @@ fn candidates_for(
 /// for instance because raw sockets could not be opened. Each case is logged
 /// here rather than treated as a hard failure, since the unprivileged path is
 /// always a working substitute.
-fn build_syn_scanner(
+fn build_tcp_scanner(
     ctx: ScanContext,
+    technique: TcpScanTechnique,
     target_count: usize,
     tuning: ProbeTuning,
-) -> Option<routed::SynPortScanner> {
+) -> Option<routed::TcpPortScanner> {
     let resolver = interface::SourceResolver::from_system();
     if !resolver.has_sources() {
         warn!("No usable network interface found; using TCP connect fallback");
         return None;
     }
 
-    match routed::SynPortScanner::new(resolver, ctx, target_count, tuning) {
+    match routed::TcpPortScanner::new(resolver, ctx, technique, target_count, tuning) {
         Ok(scanner) => Some(scanner),
         Err(e) => {
-            error!("Failed to initialize SYN port scanner: {e}");
+            error!("Failed to initialize {technique} port scanner: {e}");
             None
         }
     }

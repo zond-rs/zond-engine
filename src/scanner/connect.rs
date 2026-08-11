@@ -93,7 +93,7 @@ type ProbedPort = Option<Probed>;
 
 /// Adapts the unprivileged [`scan`] engine to [`PortScanner`], so
 /// [`crate::scanner::scan`] can drive it through the same path as the privileged
-/// [`SynPortScanner`](super::routed::SynPortScanner).
+/// [`TcpPortScanner`](super::routed::TcpPortScanner).
 ///
 /// It carries no [`detect_services`](PortScanner::detect_services) override,
 /// because the connect engine fingerprints each port inline over the live stream

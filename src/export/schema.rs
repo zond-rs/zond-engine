@@ -127,6 +127,7 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
         ScannerKind::Local => "local",
         ScannerKind::Routed => "routed",
         ScannerKind::SynPort => "syn_port",
+        ScannerKind::TcpPort => "tcp_port",
         ScannerKind::Connect => "connect",
         ScannerKind::UdpPort => "udp_port",
         ScannerKind::Composite => "composite",
@@ -217,6 +218,7 @@ pub fn status_protocol_name(protocol: &StatusProtocol) -> Cow<'_, str> {
         StatusProtocol::IcmpEcho => Cow::Borrowed("icmp_echo"),
         StatusProtocol::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
         StatusProtocol::TcpSyn => Cow::Borrowed("tcp_syn"),
+        StatusProtocol::Tcp => Cow::Borrowed("tcp"),
         StatusProtocol::Udp => Cow::Borrowed("udp"),
         StatusProtocol::Custom(name) => Cow::Owned(format!("custom:{name}")),
     }

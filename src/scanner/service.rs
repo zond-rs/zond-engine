@@ -15,7 +15,7 @@
 //!
 //! The unprivileged [`connect`](super::connect) scanner already holds a live
 //! `TcpStream` the moment it finds a port open, so it fingerprints inline. The
-//! privileged [`SynPortScanner`](super::routed::SynPortScanner) never completes a
+//! privileged [`TcpPortScanner`](super::routed::TcpPortScanner) never completes a
 //! handshake, since it classifies each port from a single raw SYN/SYN-ACK/RST
 //! exchange, and so it has no connection to fingerprint through. Fingerprinting
 //! does not need raw sockets, it needs a real TCP connection. This phase opens one

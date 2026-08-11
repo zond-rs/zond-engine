@@ -17,6 +17,11 @@ use crate::core::models::host::Host;
 use crate::core::report::{ProbeStats, ScannerFailure};
 
 /// Which scanning strategy a [`ScanEvent::ScannerFailed`] refers to.
+///
+/// Marked `#[non_exhaustive]`: strategies are added as the engine learns to
+/// probe in new ways, and a consumer matching on this enum should pay for that
+/// with a recompile rather than a major version.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScannerKind {
     /// Layer-2 discovery (ARP/NDP) on a local segment.
@@ -28,6 +33,16 @@ pub enum ScannerKind {
     ///
     /// [`Routed`]: ScannerKind::Routed
     SynPort,
+    /// Raw TCP port scanning with a probe that is not a SYN - a FIN, a flagless
+    /// segment, a bare ACK.
+    ///
+    /// The same scanner as [`SynPort`], asking a different question. They are
+    /// named apart because a report saying `syn_port` should mean a half-open
+    /// connection attempt was made, and for these it was not; which technique
+    /// ran is in the phase's settings.
+    ///
+    /// [`SynPort`]: ScannerKind::SynPort
+    TcpPort,
     /// Unprivileged TCP connect fallback.
     Connect,
     /// Privileged raw UDP port scanning.
