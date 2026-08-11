@@ -129,7 +129,10 @@ impl Importer for ListImporter {
 /// Returns `false` at end of input. The read is bounded before it happens rather
 /// than measured after: a file containing no newline at all must not be read
 /// into memory to discover that it is too long.
-fn read_line(
+///
+/// Shared with the record-per-line formats, which need exactly this bound and
+/// exactly these line endings.
+pub(crate) fn read_line(
     input: &mut dyn BufRead,
     buffer: &mut Vec<u8>,
     max_line_bytes: usize,

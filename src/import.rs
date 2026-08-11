@@ -78,6 +78,9 @@ pub mod target;
 #[cfg(feature = "import-csv")]
 pub mod csv;
 
+#[cfg(feature = "import-json")]
+pub mod json;
+
 use std::fmt;
 use std::io::BufRead;
 use std::path::Path;
@@ -89,6 +92,9 @@ pub use list::ListImporter;
 
 #[cfg(feature = "import-csv")]
 pub use csv::{CsvColumn, CsvImporter};
+
+#[cfg(feature = "import-json")]
+pub use json::{JsonImporter, JsonLinesImporter};
 
 pub use target::{
     HostLookup, TargetContext, TargetExpr, TargetMapBuilder, TargetParseError, to_target_map,
@@ -514,6 +520,14 @@ pub enum ImportFormat {
     /// spreadsheet somebody else did.
     #[cfg(feature = "import-csv")]
     Csv,
+
+    /// A report this engine wrote, as a single JSON document.
+    #[cfg(feature = "import-json")]
+    Json,
+
+    /// A report this engine wrote, one record per line.
+    #[cfg(feature = "import-json")]
+    JsonLines,
 }
 
 impl ImportFormat {
@@ -531,6 +545,12 @@ impl ImportFormat {
             "txt" | "list" | "lst" => Some(ImportFormat::List),
             #[cfg(feature = "import-csv")]
             "csv" => Some(ImportFormat::Csv),
+            #[cfg(feature = "import-json")]
+            "json" => Some(ImportFormat::Json),
+            // `ndjson` is the other name the same format goes by, matching what
+            // the exporter accepts in the other direction.
+            #[cfg(feature = "import-json")]
+            "jsonl" | "ndjson" => Some(ImportFormat::JsonLines),
             _ => None,
         }
     }
@@ -563,6 +583,11 @@ impl ImportFormat {
         /// Excel's mark, which says nothing about the format behind it.
         const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
+        /// What a record-per-line report calls its header record. Compact JSON
+        /// has no spaces in it, so this is exactly how the exporter writes it.
+        #[cfg(feature = "import-json")]
+        const REPORT_TAG: &[u8] = br#""type":"report""#;
+
         let buffered = input.fill_buf()?;
         let prefix = buffered.strip_prefix(&UTF8_BOM).unwrap_or(buffered);
         let prefix = prefix.trim_ascii_start();
@@ -577,6 +602,23 @@ impl ImportFormat {
             if overlap >= 16 && prefix[..overlap] == header.as_bytes()[..overlap] {
                 return Ok(ImportFormat::Csv);
             }
+        }
+
+        #[cfg(feature = "import-json")]
+        if prefix.first() == Some(&b'{') {
+            // Both JSON formats open with a brace, and the record-per-line one
+            // names itself in its first record. Looking for that tag rather than
+            // for a line break is what keeps a compact single-line document from
+            // being read as a stream of records.
+            let head = &prefix[..prefix.len().min(256)];
+            let tagged = head
+                .windows(REPORT_TAG.len())
+                .any(|window| window == REPORT_TAG);
+            return Ok(if tagged {
+                ImportFormat::JsonLines
+            } else {
+                ImportFormat::Json
+            });
         }
 
         Ok(ImportFormat::List)
@@ -614,6 +656,10 @@ impl ImportFormat {
             ImportFormat::List => "txt",
             #[cfg(feature = "import-csv")]
             ImportFormat::Csv => "csv",
+            #[cfg(feature = "import-json")]
+            ImportFormat::Json => "json",
+            #[cfg(feature = "import-json")]
+            ImportFormat::JsonLines => "jsonl",
         }
     }
 
@@ -626,6 +672,10 @@ impl ImportFormat {
             ImportFormat::List,
             #[cfg(feature = "import-csv")]
             ImportFormat::Csv,
+            #[cfg(feature = "import-json")]
+            ImportFormat::Json,
+            #[cfg(feature = "import-json")]
+            ImportFormat::JsonLines,
         ]
     }
 
@@ -635,6 +685,10 @@ impl ImportFormat {
             ImportFormat::List => Box::new(ListImporter::new(options.limits)),
             #[cfg(feature = "import-csv")]
             ImportFormat::Csv => Box::new(CsvImporter::new(options.limits)),
+            #[cfg(feature = "import-json")]
+            ImportFormat::Json => Box::new(JsonImporter::new(options.limits)),
+            #[cfg(feature = "import-json")]
+            ImportFormat::JsonLines => Box::new(JsonLinesImporter::new(options.limits)),
         }
     }
 
@@ -661,6 +715,10 @@ impl fmt::Display for ImportFormat {
             ImportFormat::List => "list",
             #[cfg(feature = "import-csv")]
             ImportFormat::Csv => "csv",
+            #[cfg(feature = "import-json")]
+            ImportFormat::Json => "json",
+            #[cfg(feature = "import-json")]
+            ImportFormat::JsonLines => "jsonl",
         })
     }
 }
@@ -886,6 +944,44 @@ mod tests {
             0,
             "every row of our own output has to parse as a target"
         );
+    }
+
+    /// Both report formats open with a brace, so the record-per-line one is
+    /// told apart by the tag it names itself with - not by looking for a line
+    /// break, which a compact single-line document would also fail.
+    #[cfg(all(
+        feature = "import-json",
+        feature = "export-json",
+        feature = "export-jsonl"
+    ))]
+    #[test]
+    fn the_two_report_formats_are_told_apart_by_what_they_call_themselves() {
+        use crate::export::{ExportOptions, Exporter, JsonExporter, JsonLinesExporter};
+
+        let report = crate::export::fixture::report();
+
+        for (exporter, expected) in [
+            (
+                Box::new(JsonExporter::new(ExportOptions::new())) as Box<dyn Exporter>,
+                ImportFormat::Json,
+            ),
+            (
+                Box::new(JsonExporter::new(ExportOptions::new()).compact()),
+                ImportFormat::Json,
+            ),
+            (
+                Box::new(JsonLinesExporter::new(ExportOptions::new())),
+                ImportFormat::JsonLines,
+            ),
+        ] {
+            let mut document = Vec::new();
+            exporter.export(&report, &mut document).expect("exports");
+
+            assert_eq!(
+                ImportFormat::sniff(&mut Cursor::new(document)).expect("sniffs"),
+                expected,
+            );
+        }
     }
 
     /// A name the caller was told beats bytes this crate worked out, and a name

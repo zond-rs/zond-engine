@@ -45,9 +45,17 @@ export-all = ["export-json", "export-jsonl", "export-csv", "export-html"]
 # this crate's own header, which means knowing what that header is.
 import-csv = ["export-csv"]
 
+# Reading a report this engine wrote back in as targets, as a JSON document or
+# one record per line. Shares `serde_json` with the export side, so it costs
+# nothing on top of it. It does *not* reuse the export DTOs: those are borrowing,
+# write-only types and the document root is a streaming adapter over
+# `&ScanReport`, so there is nothing there to deserialize into. The records it
+# reads are written by hand and deliberately narrower — see `import::json`.
+import-json = ["dep:serde_json"]
+
 # Every format this crate can read. The list format is unconditional and is not
 # named here: it needs nothing, and everybody needs it.
-import-all = ["import-csv"]
+import-all = ["import-csv", "import-json"]
 
 # Exposes `ProbeTransport::from_parts`, which builds a transport over a caller-
 # supplied sender and reply stream instead of a socket and a capture. That is
