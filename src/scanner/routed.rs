@@ -31,6 +31,7 @@ use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
+use crate::core::models::technique::TcpScanTechnique;
 use crate::core::models::timer::ScanBudget;
 use crate::core::session::ScanContext;
 use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
@@ -206,17 +207,23 @@ fn send_syn(
     let src_port: u16 = rand::random_range(50_000..u16::MAX);
     let seq_num: u32 = rand::random_range(0..=u32::MAX);
 
-    let packet =
-        match protocol::tcp::create_packet(&src_addr, &dst_addr, src_port, dst_port, seq_num) {
-            Ok(pkt) => pkt,
-            Err(e) => {
-                error!(
-                    verbosity = 2,
-                    "Failed to create SYN packet for {dst_addr}:{dst_port}: {e}"
-                );
-                return None;
-            }
-        };
+    let packet = match protocol::tcp::create_probe(
+        TcpScanTechnique::Syn,
+        &src_addr,
+        &dst_addr,
+        src_port,
+        dst_port,
+        seq_num,
+    ) {
+        Ok(pkt) => pkt,
+        Err(e) => {
+            error!(
+                verbosity = 2,
+                "Failed to create SYN packet for {dst_addr}:{dst_port}: {e}"
+            );
+            return None;
+        }
+    };
 
     match sender.send(&packet, src_addr, dst_addr) {
         Ok(_) => {
@@ -627,7 +634,7 @@ impl RoutedScanner {
     /// already proved it exists from being asked again.
     fn resolve_probe(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) -> Option<Resolution> {
         let token = TcpPacket::new(bytes).map(|tcp| SynToken {
-            seq: tcp.get_acknowledgement().wrapping_sub(1),
+            seq: protocol::tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp),
             src_port: tcp.get_destination(),
         });
 

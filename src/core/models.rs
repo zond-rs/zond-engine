@@ -16,4 +16,5 @@ pub mod port;
 pub mod retry;
 pub mod rtt_window;
 pub mod target;
+pub mod technique;
 pub mod timer;

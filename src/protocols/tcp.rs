@@ -6,41 +6,179 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # TCP Probes
+//!
+//! Builds the segment a port probe puts on the wire and reads the segment that
+//! comes back. What either one *means* is
+//! [`TcpScanTechnique`](crate::core::models::technique::TcpScanTechnique)'s
+//! business; this module knows only what a TCP header is.
+//!
+//! ## The nonce, and why it moves between fields
+//!
+//! Every probe carries a 32-bit value a conformant stack is obliged to echo,
+//! which is what lets a reply be tied to the exact attempt that provoked it -
+//! and what stops an unrelated or forged segment from resolving a port. Where
+//! that value is written, and where it comes back, is decided by RFC 793 §3.4:
+//!
+//! > If the incoming segment has an ACK field, the reset takes its sequence
+//! > number from the ACK field of the segment; otherwise the reset has sequence
+//! > number zero and the ACK field is set to the sum of the sequence number and
+//! > segment length of the incoming segment.
+//!
+//! So a probe carrying ACK - a Maimon or ACK scan - draws a RST that
+//! acknowledges *nothing*, and reading `acknowledgement - 1` from it, the way a
+//! SYN scan does, finds zero and rejects every genuine answer. The value comes
+//! back in the sequence field instead. A probe without ACK is echoed in the
+//! acknowledgement field, offset by the sequence space its control flags
+//! occupy: one for SYN or FIN, none for a bare ACK-less segment with no flags
+//! at all.
+//!
+//! [`nonce_field`] is that rule, derived from the probe's flags rather than
+//! tabulated per technique, so a technique added later inherits it by
+//! construction.
+
 use std::net::IpAddr;
 
 use anyhow::Context;
 use pnet::packet::tcp::{MutableTcpPacket, TcpOption, TcpPacket};
 
-const MIN_TCP_HDR_LEN: usize = 24;
-const WORD_IN_BYTES: usize = 4;
-const SYN_FLAG: u8 = 1 << 1;
-const RST_FLAG: u8 = 1 << 2;
-const ACK_FLAG: u8 = 1 << 4;
+use crate::core::models::technique::{TcpReply, TcpScanTechnique};
 
-pub fn create_packet(
+/// TCP header flag bits, in the order they sit in the header.
+pub mod flags {
+    pub const FIN: u8 = 1;
+    pub const SYN: u8 = 1 << 1;
+    pub const RST: u8 = 1 << 2;
+    pub const PSH: u8 = 1 << 3;
+    pub const ACK: u8 = 1 << 4;
+    pub const URG: u8 = 1 << 5;
+}
+
+/// A header with no options: every probe but the SYN.
+const TCP_HDR_LEN: usize = 20;
+/// A header with room for the MSS option a SYN carries.
+const TCP_HDR_LEN_WITH_MSS: usize = 24;
+const WORD_IN_BYTES: usize = 4;
+
+/// The receive window every probe advertises.
+///
+/// Immaterial to classification - no probe here intends to receive anything -
+/// but it is a field stack fingerprinters read, so it is one value across all
+/// six techniques rather than a per-technique signature.
+const PROBE_WINDOW: u16 = 1024;
+
+/// The maximum segment size advertised on a SYN, sized to clear the common
+/// tunnel overheads without inviting fragmentation.
+const PROBE_MSS: u16 = 1412;
+
+/// The flags each technique's probe carries.
+///
+/// The whole of the difference between the six, on the wire. Everything else -
+/// the header length, the window, the checksum, the retransmission schedule the
+/// scanner runs them on - is identical.
+pub const fn probe_flags(technique: TcpScanTechnique) -> u8 {
+    match technique {
+        TcpScanTechnique::Syn => flags::SYN,
+        TcpScanTechnique::Fin => flags::FIN,
+        // Deliberately empty. A segment with no flags at all is unlike anything
+        // a real connection produces, which is the entire point of the NULL
+        // scan.
+        TcpScanTechnique::Null => 0,
+        TcpScanTechnique::Xmas => flags::FIN | flags::PSH | flags::URG,
+        TcpScanTechnique::Maimon => flags::FIN | flags::ACK,
+        TcpScanTechnique::Ack => flags::ACK,
+    }
+}
+
+/// Which header field carries a probe's nonce, and how a reply gives it back.
+///
+/// Derived from the probe's flags per RFC 793 §3.4; see the module
+/// documentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonceField {
+    /// The nonce is the probe's sequence number, and comes back in the reply's
+    /// acknowledgement field advanced by `span` - the sequence space the
+    /// probe's control flags occupy.
+    Sequence { span: u32 },
+    /// The nonce is the probe's acknowledgement number, and comes back
+    /// unchanged as the reply's sequence number.
+    Acknowledgement,
+}
+
+/// Where `flags` puts a probe's nonce.
+const fn nonce_field(flags: u8) -> NonceField {
+    if flags & flags::ACK != 0 {
+        return NonceField::Acknowledgement;
+    }
+
+    // SYN and FIN each occupy one octet of sequence space (RFC 793's SEG.LEN
+    // "counting SYN and FIN"), and a stack replying to a segment carrying
+    // neither acknowledges the sequence number it was sent unchanged. Getting
+    // this wrong is silent: a NULL scan reading a FIN scan's offset rejects
+    // every RST it receives and reports the whole range open-filtered.
+    let mut span = 0;
+    if flags & flags::SYN != 0 {
+        span += 1;
+    }
+    if flags & flags::FIN != 0 {
+        span += 1;
+    }
+    NonceField::Sequence { span }
+}
+
+/// Builds one probe of `technique` from `src_addr` to `dst_addr:dst_port`,
+/// carrying `nonce` in whichever field the technique's flags call for.
+///
+/// The header's *other* 32-bit field carries no meaning and is filled
+/// accordingly: zero where it is not significant - the acknowledgement field of
+/// a segment without the ACK flag - and a random sequence number where the
+/// segment claims to be acknowledging something, since a Maimon or ACK probe
+/// announcing sequence zero is an oddity a filter can match on.
+pub fn create_probe(
+    technique: TcpScanTechnique,
     src_addr: &IpAddr,
     dst_addr: &IpAddr,
     src_port: u16,
     dst_port: u16,
-    seq_num: u32,
+    nonce: u32,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut buffer: Vec<u8> = vec![0u8; MIN_TCP_HDR_LEN];
+    let flags = probe_flags(technique);
+
+    // Options are for a SYN alone. An MSS announcement on a FIN is meaningless
+    // to the receiver and distinctive to anything watching, and these
+    // techniques are chosen for being unremarkable.
+    let with_mss = flags & flags::SYN != 0;
+    let header_len = if with_mss {
+        TCP_HDR_LEN_WITH_MSS
+    } else {
+        TCP_HDR_LEN
+    };
+
+    let mut buffer: Vec<u8> = vec![0u8; header_len];
     {
         let mut tcp: MutableTcpPacket =
             MutableTcpPacket::new(&mut buffer).context("creating tcp packet")?;
         tcp.set_source(src_port);
         tcp.set_destination(dst_port);
-        tcp.set_data_offset((MIN_TCP_HDR_LEN / WORD_IN_BYTES) as u8);
-        tcp.set_sequence(seq_num);
-        tcp.set_acknowledgement(0);
-        tcp.set_flags(SYN_FLAG);
-        tcp.set_window(1024);
+        tcp.set_data_offset((header_len / WORD_IN_BYTES) as u8);
+        tcp.set_flags(flags);
+        tcp.set_window(PROBE_WINDOW);
         tcp.set_checksum(0);
 
-        let mut tcp_options: Vec<TcpOption> = Vec::new();
-        let mss: TcpOption = TcpOption::mss(1412);
-        tcp_options.push(mss);
-        tcp.set_options(&tcp_options);
+        match nonce_field(flags) {
+            NonceField::Sequence { .. } => {
+                tcp.set_sequence(nonce);
+                tcp.set_acknowledgement(0);
+            }
+            NonceField::Acknowledgement => {
+                tcp.set_sequence(rand::random());
+                tcp.set_acknowledgement(nonce);
+            }
+        }
+
+        if with_mss {
+            tcp.set_options(&[TcpOption::mss(PROBE_MSS)]);
+        }
 
         let tcp_packet: TcpPacket = tcp.to_immutable();
         let checksum = match (src_addr, dst_addr) {
@@ -58,31 +196,41 @@ pub fn create_packet(
     Ok(buffer)
 }
 
+/// The nonce `reply` implies, read from whichever field `technique` expects it
+/// back in.
+///
+/// A caller compares this against the nonces it actually sent: a match names the
+/// attempt that was answered, and anything else is a stray, a duplicate, or a
+/// forgery, none of which may resolve a port. Arithmetic wraps, because sequence
+/// space does.
+pub fn echoed_nonce(technique: TcpScanTechnique, reply: &TcpPacket) -> u32 {
+    match nonce_field(probe_flags(technique)) {
+        NonceField::Sequence { span } => reply.get_acknowledgement().wrapping_sub(span),
+        NonceField::Acknowledgement => reply.get_sequence(),
+    }
+}
+
 pub fn from_u8(bytes: &'_ [u8]) -> anyhow::Result<TcpPacket<'_>> {
     TcpPacket::new(bytes).context("truncated or invalid TCP packet")
 }
 
-/// What a SYN probe's response reveals about the state of the port it was sent to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProbeResponse {
-    /// SYN+ACK: something is listening and accepted the connection attempt.
-    Open,
-    /// RST: the port actively refused the connection attempt.
-    Closed,
-}
-
-/// Classifies a received segment as a response to a SYN probe, if it looks like one.
+/// Classifies a received segment as one of the two answers a port probe can
+/// draw, if it is one.
 ///
-/// Returns `None` for anything that isn't a plain SYN+ACK or RST - established
-/// connection traffic, unrelated flag combinations, and so on - which a caller
-/// should treat as noise rather than a probe result.
-pub fn classify_probe_response(packet: &TcpPacket) -> Option<ProbeResponse> {
+/// Returns `None` for anything else - established connection traffic, unrelated
+/// flag combinations - which a caller should treat as noise. What a classified
+/// segment *proves* is technique-dependent and belongs to
+/// [`TcpScanTechnique::verdict`]: this says only what arrived.
+pub fn classify_probe_response(packet: &TcpPacket) -> Option<TcpReply> {
     let flags = packet.get_flags();
 
-    if flags & RST_FLAG != 0 {
-        Some(ProbeResponse::Closed)
-    } else if flags & SYN_FLAG != 0 && flags & ACK_FLAG != 0 {
-        Some(ProbeResponse::Open)
+    // RST takes priority over the ACK bit: a reset answering a probe legitimately
+    // carries ACK too (RFC 793 §3.4), and reading that as a handshake would turn
+    // every closed port into an open one.
+    if flags & flags::RST != 0 {
+        Some(TcpReply::Rst)
+    } else if flags & flags::SYN != 0 && flags & flags::ACK != 0 {
+        Some(TcpReply::SynAck)
     } else {
         None
     }
@@ -91,49 +239,209 @@ pub fn classify_probe_response(packet: &TcpPacket) -> Option<ProbeResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::tcp::MutableTcpPacket;
+    use pnet::packet::Packet;
+    use std::net::Ipv4Addr;
+
+    const SRC: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+    const DST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+    const NONCE: u32 = 0xDEAD_BEEF;
 
     fn packet_with_flags(flags: u8) -> Vec<u8> {
-        let mut buffer = vec![0u8; MIN_TCP_HDR_LEN];
+        let mut buffer = vec![0u8; TCP_HDR_LEN];
         let mut tcp = MutableTcpPacket::new(&mut buffer).unwrap();
-        tcp.set_data_offset((MIN_TCP_HDR_LEN / WORD_IN_BYTES) as u8);
+        tcp.set_data_offset((TCP_HDR_LEN / WORD_IN_BYTES) as u8);
         tcp.set_flags(flags);
         buffer
     }
 
+    fn probe(technique: TcpScanTechnique) -> Vec<u8> {
+        create_probe(technique, &SRC, &DST, 50_000, 80, NONCE).expect("probe builds")
+    }
+
+    /// The RST a conformant stack sends back, built here from RFC 793 §3.4
+    /// directly rather than from anything in this module - so a wrong rule in
+    /// [`nonce_field`] fails rather than agreeing with itself.
+    ///
+    /// This mirrors Linux's `tcp_v?_send_reset`: an incoming ACK hands the reset
+    /// its sequence number, and otherwise the reset acknowledges the sequence
+    /// number plus the octets SYN and FIN occupy.
+    fn conformant_rst(probe: &[u8]) -> Vec<u8> {
+        let sent = TcpPacket::new(probe).expect("the probe parses");
+        let sent_flags = sent.get_flags();
+
+        let mut buffer = vec![0u8; TCP_HDR_LEN];
+        let mut rst = MutableTcpPacket::new(&mut buffer).unwrap();
+        rst.set_source(sent.get_destination());
+        rst.set_destination(sent.get_source());
+        rst.set_data_offset((TCP_HDR_LEN / WORD_IN_BYTES) as u8);
+
+        if sent_flags & flags::ACK != 0 {
+            rst.set_flags(flags::RST);
+            rst.set_sequence(sent.get_acknowledgement());
+        } else {
+            let control_octets = u32::from(sent_flags & flags::SYN != 0)
+                + u32::from(sent_flags & flags::FIN != 0)
+                + sent.payload().len() as u32;
+            rst.set_flags(flags::RST | flags::ACK);
+            rst.set_sequence(0);
+            rst.set_acknowledgement(sent.get_sequence().wrapping_add(control_octets));
+        }
+        buffer
+    }
+
+    // ── Probe construction ───────────────────────────────────────────────────
+
     #[test]
-    fn classifies_syn_ack_as_open() {
-        let bytes = packet_with_flags(SYN_FLAG | ACK_FLAG);
-        let packet = TcpPacket::new(&bytes).unwrap();
-        assert_eq!(classify_probe_response(&packet), Some(ProbeResponse::Open));
+    fn each_technique_carries_its_own_flags() {
+        use TcpScanTechnique::*;
+        let sent = |technique| TcpPacket::new(&probe(technique)).unwrap().get_flags();
+
+        assert_eq!(sent(Syn), flags::SYN);
+        assert_eq!(sent(Fin), flags::FIN);
+        assert_eq!(sent(Null), 0);
+        assert_eq!(sent(Xmas), flags::FIN | flags::PSH | flags::URG);
+        assert_eq!(sent(Maimon), flags::FIN | flags::ACK);
+        assert_eq!(sent(Ack), flags::ACK);
+    }
+
+    /// Where the nonce goes is the difference between a scan that correlates its
+    /// replies and one that discards every genuine answer it receives.
+    #[test]
+    fn the_nonce_goes_in_the_field_the_reply_will_echo() {
+        use TcpScanTechnique::*;
+
+        for technique in [Syn, Fin, Null, Xmas] {
+            let bytes = probe(technique);
+            let sent = TcpPacket::new(&bytes).unwrap();
+            assert_eq!(sent.get_sequence(), NONCE, "{technique} nonce");
+            assert_eq!(
+                sent.get_acknowledgement(),
+                0,
+                "{technique} must not claim to acknowledge anything"
+            );
+        }
+
+        for technique in [Maimon, Ack] {
+            let bytes = probe(technique);
+            let sent = TcpPacket::new(&bytes).unwrap();
+            assert_eq!(sent.get_acknowledgement(), NONCE, "{technique} nonce");
+        }
+    }
+
+    /// An MSS announcement is meaningful only on a SYN, and distinctive on
+    /// anything else - these techniques are chosen for being unremarkable.
+    #[test]
+    fn only_a_syn_probe_carries_options() {
+        assert_eq!(probe(TcpScanTechnique::Syn).len(), TCP_HDR_LEN_WITH_MSS);
+        for technique in [
+            TcpScanTechnique::Fin,
+            TcpScanTechnique::Null,
+            TcpScanTechnique::Xmas,
+            TcpScanTechnique::Maimon,
+            TcpScanTechnique::Ack,
+        ] {
+            assert_eq!(probe(technique).len(), TCP_HDR_LEN, "{technique}");
+        }
     }
 
     #[test]
-    fn classifies_rst_as_closed() {
-        let bytes = packet_with_flags(RST_FLAG);
-        let packet = TcpPacket::new(&bytes).unwrap();
+    fn a_probe_across_address_families_is_refused_rather_than_mis_checksummed() {
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(create_probe(TcpScanTechnique::Syn, &SRC, &v6, 50_000, 80, NONCE).is_err());
+    }
+
+    // ── Correlation ──────────────────────────────────────────────────────────
+
+    /// The property the whole correlation rests on: for every technique, the RST
+    /// an RFC-conformant stack sends back yields exactly the nonce that went
+    /// out. The two ACK-carrying techniques are the ones that would break under
+    /// the SYN scan's rule, and the NULL/FIN pair are the ones that would break
+    /// under each other's.
+    #[test]
+    fn every_technique_reads_its_nonce_back_out_of_a_conformant_reset() {
+        for technique in TcpScanTechnique::ALL {
+            let sent = probe(technique);
+            let rst = conformant_rst(&sent);
+            let reply = TcpPacket::new(&rst).unwrap();
+
+            assert_eq!(
+                echoed_nonce(technique, &reply),
+                NONCE,
+                "{technique} could not recognize its own answer"
+            );
+        }
+    }
+
+    /// A reply to somebody else's probe must not be readable as one of ours.
+    #[test]
+    fn a_reset_answering_a_different_probe_yields_a_different_nonce() {
+        let ours = probe(TcpScanTechnique::Fin);
+        let theirs = create_probe(
+            TcpScanTechnique::Fin,
+            &SRC,
+            &DST,
+            50_000,
+            80,
+            NONCE ^ 0x1234,
+        )
+        .expect("probe builds");
+        assert_ne!(ours, theirs);
+
+        let reply_bytes = conformant_rst(&theirs);
+        let reply = TcpPacket::new(&reply_bytes).unwrap();
+        assert_ne!(echoed_nonce(TcpScanTechnique::Fin, &reply), NONCE);
+    }
+
+    /// A NULL probe occupies no sequence space and a FIN probe occupies one
+    /// octet. Reading one with the other's offset is off by exactly one and
+    /// rejects every reply, which is the kind of mistake that looks like a
+    /// firewall.
+    #[test]
+    fn a_null_probe_and_a_fin_probe_are_acknowledged_one_apart() {
+        let null = conformant_rst(&probe(TcpScanTechnique::Null));
+        let fin = conformant_rst(&probe(TcpScanTechnique::Fin));
+
+        let null_ack = TcpPacket::new(&null).unwrap().get_acknowledgement();
+        let fin_ack = TcpPacket::new(&fin).unwrap().get_acknowledgement();
+
+        assert_eq!(null_ack, NONCE);
+        assert_eq!(fin_ack, NONCE.wrapping_add(1));
+    }
+
+    // ── Classification ───────────────────────────────────────────────────────
+
+    #[test]
+    fn classifies_syn_ack_and_rst() {
+        let syn_ack = packet_with_flags(flags::SYN | flags::ACK);
+        let rst = packet_with_flags(flags::RST);
+
         assert_eq!(
-            classify_probe_response(&packet),
-            Some(ProbeResponse::Closed)
+            classify_probe_response(&TcpPacket::new(&syn_ack).unwrap()),
+            Some(TcpReply::SynAck)
+        );
+        assert_eq!(
+            classify_probe_response(&TcpPacket::new(&rst).unwrap()),
+            Some(TcpReply::Rst)
         );
     }
 
+    /// A RST replying to a probe legitimately carries ACK too (RFC 793 §3.4),
+    /// and reading that as a handshake would report every closed port open.
     #[test]
-    fn classifies_rst_ack_as_closed() {
-        // A RST replying to our SYN legitimately carries ACK too (RFC 793 §3.4);
-        // RST should take priority over the ACK bit alone.
-        let bytes = packet_with_flags(RST_FLAG | ACK_FLAG);
-        let packet = TcpPacket::new(&bytes).unwrap();
+    fn classifies_rst_ack_as_a_reset() {
+        let bytes = packet_with_flags(flags::RST | flags::ACK);
         assert_eq!(
-            classify_probe_response(&packet),
-            Some(ProbeResponse::Closed)
+            classify_probe_response(&TcpPacket::new(&bytes).unwrap()),
+            Some(TcpReply::Rst)
         );
     }
 
     #[test]
     fn ignores_unrelated_flag_combinations() {
-        let bytes = packet_with_flags(ACK_FLAG);
-        let packet = TcpPacket::new(&bytes).unwrap();
-        assert_eq!(classify_probe_response(&packet), None);
+        let bytes = packet_with_flags(flags::ACK);
+        assert_eq!(
+            classify_probe_response(&TcpPacket::new(&bytes).unwrap()),
+            None
+        );
     }
 }

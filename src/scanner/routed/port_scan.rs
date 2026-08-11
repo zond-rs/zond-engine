@@ -32,10 +32,11 @@ use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy};
 use crate::core::models::target::Target;
+use crate::core::models::technique::TcpScanTechnique;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
 use crate::network::probe::{ProbeKind, ProbeTransport};
-use crate::protocols::tcp::{self, ProbeResponse};
+use crate::protocols::tcp;
 use crate::scanner::{PortScanner, service};
 use crate::system::interface::SourceResolver;
 
@@ -202,7 +203,10 @@ impl SynPortScanner {
             return;
         };
 
-        let Some(response) = tcp::classify_probe_response(&tcp_packet) else {
+        let Some(reply) = tcp::classify_probe_response(&tcp_packet) else {
+            return;
+        };
+        let Some(state) = TcpScanTechnique::Syn.verdict(reply) else {
             return;
         };
 
@@ -212,7 +216,7 @@ impl SynPortScanner {
         // and names which attempt it answered, so the round trip it yields is
         // the real one.
         let token = SynToken {
-            seq: tcp_packet.get_acknowledgement().wrapping_sub(1),
+            seq: tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp_packet),
             src_port: tcp_packet.get_destination(),
         };
         let key = (ip, tcp_packet.get_source());
@@ -229,10 +233,6 @@ impl SynPortScanner {
             self.deadline.record_rtt(rtt);
         }
 
-        let state = match response {
-            ProbeResponse::Open => PortState::Open,
-            ProbeResponse::Closed => PortState::Closed,
-        };
         self.record_port(ip, key.1, state);
     }
 

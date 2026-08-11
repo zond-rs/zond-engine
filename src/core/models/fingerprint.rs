@@ -86,8 +86,9 @@ pub struct Probe {
     pub name: Option<String>,
     pub payload: String,
     pub protocol: String,
-    /// How aggressive/uncommon this probe is, `0..=9`, mirroring nmap's probe
-    /// rarity. A probe is sent only when its rarity is within the scan's
+    /// How aggressive/uncommon this probe is, `0..=9`, on the rarity scale the
+    /// imported signature corpora use. A probe is sent only when its rarity is
+    /// within the scan's
     /// intensity level (`rarity <= intensity`), so low-rarity probes go out on
     /// every scan and high-rarity ones only when explicitly asked for.
     ///
