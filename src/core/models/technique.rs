@@ -41,6 +41,20 @@
 //! report every port closed - not merely useless but confidently wrong. A run
 //! that finds *no* open-filtered port at all has almost certainly met one, and
 //! is worth repeating with [`Syn`](TcpScanTechnique::Syn).
+//!
+//! ## No technique here answers the whole question
+//!
+//! These are not six ways of doing the same thing, and running one of them is
+//! rarely enough. A flag probe cannot tell an open port from a filtered one -
+//! both are silent, and both come back [`PortState::OpenFiltered`]. An
+//! [`Ack`](TcpScanTechnique::Ack) scan tells those two apart and never says
+//! which is open. Only [`Syn`](TcpScanTechnique::Syn) identifies a listener.
+//!
+//! Measured against a router with one open, one filtered and three closed
+//! ports, that plays out exactly: the FIN scan reports the open port and the
+//! filtered port identically, and it takes the ACK scan beside it to separate
+//! them. A caller offering these to a user is offering complementary
+//! instruments, not alternatives.
 
 use std::fmt;
 use std::str::FromStr;
@@ -107,10 +121,20 @@ pub enum TcpScanTechnique {
     /// FIN and ACK together, after Uriel Maimon's finding in *Phrack* 49.
     ///
     /// The one technique whose usefulness is a property of the target rather
-    /// than of the RFC. RFC 793 requires a RST here whether the port is open or
-    /// closed, so on a conformant stack this distinguishes nothing; BSD-derived
-    /// stacks drop the segment when the port is open, and against those it works
-    /// like a FIN scan while looking far more like ordinary connection teardown.
+    /// than of the RFC, and the one to reach for last. BSD-derived stacks drop
+    /// the segment when the port is open, and against those it works like a FIN
+    /// scan while looking far more like ordinary connection teardown.
+    ///
+    /// **Against a conformant stack it is actively misleading.** RFC 793
+    /// requires a reset for any ACK-carrying segment on a connection that does
+    /// not exist, whether or not the port is listening, so an open port answers
+    /// exactly as a closed one does and is reported [`PortState::Closed`].
+    /// That is not a missing result but a wrong one, and nothing in the scan
+    /// distinguishes it from the truth: measured against a router whose port 80
+    /// is open and answers a SYN with SYN+ACK, this technique reported that
+    /// port closed. Use it where a FIN scan has already shown the target does
+    /// *not* reset everything, and read a `Closed` from it against a second
+    /// technique before believing it.
     Maimon,
     /// A lone ACK. Never establishes whether a port is open - it maps the
     /// firewall in front of it.
@@ -159,7 +183,9 @@ impl TcpScanTechnique {
             Self::Fin => "bare FIN; a closed port answers, an open one stays silent",
             Self::Null => "no flags set; like FIN, but unlike any real connection",
             Self::Xmas => "FIN, PSH and URG at once; the most unusual segment of the three",
-            Self::Maimon => "FIN with ACK; distinguishes open ports on BSD-derived stacks only",
+            Self::Maimon => {
+                "FIN with ACK; only meaningful against BSD-derived stacks, misleading elsewhere"
+            }
             Self::Ack => "bare ACK; maps the firewall rather than the ports behind it",
         }
     }

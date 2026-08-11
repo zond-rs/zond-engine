@@ -33,6 +33,39 @@ This crate contains the following core modules:
 * `system`: OS-level utilities (interfaces, firewall status, local processes) for Linux and macOS.
 * `scanner`: The main asynchronous scanner, host resolution, and core orchestration logic.
 
+## TCP scan techniques
+
+A port scan asks a target one question, and the flags on the probe decide which
+question that is. Set `ZondConfig::tcp_technique` to choose; the default is
+`Syn`. All but the default need raw sockets, and asking for one without them is
+reported as a failed strategy rather than silently answered with a connect scan.
+
+| Technique | Probe | What a RST means | What silence means |
+| --------- | ----- | ---------------- | ------------------ |
+| `syn`     | `SYN` | closed (a SYN+ACK means **open**) | filtered |
+| `fin`     | `FIN` | closed | open or filtered |
+| `null`    | no flags | closed | open or filtered |
+| `xmas`    | `FIN PSH URG` | closed | open or filtered |
+| `maimon`  | `FIN ACK` | closed | open or filtered |
+| `ack`     | `ACK` | **unfiltered** — the probe arrived | filtered |
+
+`TcpScanTechnique` parses from a string, renders back to it, and carries a
+one-line summary per variant, so a front end can offer the choice without a
+mapping table of its own.
+
+**None of them answers the whole question alone.** Only `syn` identifies a
+listener. The flag probes report an open port and a filtered one identically,
+since both are silent. An `ack` scan separates those two and never says which is
+open. They are complementary instruments, not alternatives.
+
+**Two limits worth knowing before trusting a result.** Windows, many Cisco
+devices, BSDI and IBM OS/400 answer every flag probe with a RST whatever the
+port state, so `fin`, `null`, `xmas` and `maimon` report every port closed
+against them — a run that finds no open-or-filtered port at all has probably met
+one. And `maimon` only distinguishes anything on BSD-derived stacks: elsewhere an
+open port answers exactly as a closed one does and is reported closed, which is a
+wrong answer rather than a missing one.
+
 ## Compatibility
 
 * **Supported Platforms:** Linux, macOS
