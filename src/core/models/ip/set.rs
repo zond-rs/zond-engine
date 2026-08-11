@@ -218,6 +218,18 @@ impl IpSet {
         self.v4.is_empty() && self.v6.is_empty()
     }
 
+    /// How many addresses the ranges cover, counting overlaps once per range
+    /// they appear in.
+    ///
+    /// [`len`](Self::len) clones and merges the whole set when it is dirty,
+    /// which is the right answer to give a person and the wrong one to ask on
+    /// every insertion. This costs one pass and no allocation, and it is never
+    /// lower than the true count - so a budget checked against it refuses early
+    /// rather than late.
+    pub fn len_gross(&self) -> u128 {
+        self.v4_len().saturating_add(self.v6_len())
+    }
+
     /// Returns an iterator over every individual IP address. Performs lazy merging on a clone if needed.
     pub fn iter(&self) -> Box<dyn Iterator<Item = IpAddr> + Send + '_> {
         if self.v4_dirty || self.v6_dirty {

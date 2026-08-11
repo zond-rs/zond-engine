@@ -308,6 +308,24 @@ impl<'a> TargetExpr<'a> {
             }),
         }
     }
+
+    /// The addresses the expression names, splitting the address half on commas.
+    ///
+    /// A comma is a separator in the address half and part of the specification
+    /// in the port half, and the ambiguity resolves itself once the two are
+    /// apart: `10.0.0.1:80,443` is one host on two ports, while
+    /// `10.0.0.1,10.0.0.2:80` is two hosts on one. Both readings are what the
+    /// author of either expression meant, and neither is reachable by a rule
+    /// applied to the token as a whole.
+    ///
+    /// Empty fields are skipped, so a trailing comma is untidy rather than an
+    /// error.
+    pub fn addresses(&self) -> impl Iterator<Item = &'a str> {
+        self.address
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+    }
 }
 
 /// Accumulates target expressions into a [`TargetMap`], one unit per distinct
@@ -361,19 +379,25 @@ impl TargetMapBuilder {
         // nothing, or an address that does not parse, must leave the builder
         // exactly as it was rather than half-populating a group.
         let mut resolved = IpSet::new();
-        match insert_expression(expr.address, &mut resolved, ctx.keywords, ctx.zones) {
-            Ok(()) => {}
-            // The one error that means "this is not an address" rather than
-            // "this address is wrong", and so the one worth trying as a name.
-            Err(IpParseError::Malformed(_)) => {
-                self.resolve_host(expr.address, &mut resolved, ctx)?;
+        for address in expr.addresses() {
+            match insert_expression(address, &mut resolved, ctx.keywords, ctx.zones) {
+                Ok(()) => {}
+                // The one error that means "this is not an address" rather than
+                // "this address is wrong", and so the one worth trying as a name.
+                Err(IpParseError::Malformed(_)) => {
+                    self.resolve_host(address, &mut resolved, ctx)?;
+                }
+                Err(source) => {
+                    return Err(TargetParseError::Address {
+                        expression: token.trim().to_string(),
+                        source,
+                    });
+                }
             }
-            Err(source) => {
-                return Err(TargetParseError::Address {
-                    expression: token.trim().to_string(),
-                    source,
-                });
-            }
+        }
+
+        if resolved.is_empty() {
+            return Err(TargetParseError::Empty);
         }
 
         let slot = match self.index.get(&ports) {
@@ -444,6 +468,24 @@ impl TargetMapBuilder {
                 ips.len_canonical()
             })
             .fold(0u128, |total, count| total.saturating_add(count))
+    }
+
+    /// How many addresses have accumulated, counted before overlapping
+    /// expressions are merged.
+    ///
+    /// The cheap counterpart to [`address_count`](Self::address_count): it reads
+    /// the ranges as they were inserted rather than merging them, so it costs
+    /// one pass over the ranges and needs no mutable access. A caller checking a
+    /// running budget wants this - re-merging every group on every expression
+    /// would make importing a file quadratic in its length, to refine a number
+    /// that is only ever compared against a ceiling.
+    ///
+    /// Never lower than the true count, so a budget checked against it refuses
+    /// early rather than late.
+    pub fn gross_address_count(&self) -> u128 {
+        self.groups.iter().fold(0u128, |total, (_, ips)| {
+            total.saturating_add(ips.len_gross())
+        })
     }
 
     /// Whether anything scannable has accumulated.
@@ -758,6 +800,28 @@ mod tests {
         let mut everything = TargetMapBuilder::new(ports("80"));
         everything.push("::/0", &TargetContext::new()).unwrap();
         assert_eq!(everything.address_count(), u128::MAX);
+    }
+
+    /// A comma separates addresses on the left of the port separator and ports
+    /// on the right of it. Both readings are common in a hand-written target
+    /// list, and no rule applied to the whole token can reach both.
+    #[test]
+    fn a_comma_separates_addresses_before_the_ports_and_ports_after_them() {
+        let ctx = TargetContext::new();
+
+        let mut hosts = TargetMapBuilder::new(ports("80"));
+        hosts.push("10.0.0.1,10.0.0.2:443", &ctx).unwrap();
+        assert_eq!(hosts.address_count(), 2);
+        assert_eq!(hosts.build().units[0].ports(), &ports("443"));
+
+        let mut services = TargetMapBuilder::new(ports("80"));
+        services.push("10.0.0.1:80,443", &ctx).unwrap();
+        assert_eq!(services.address_count(), 1);
+        assert_eq!(services.build().units[0].ports(), &ports("80,443"));
+
+        let mut bare = TargetMapBuilder::new(ports("80"));
+        bare.push("10.0.0.1, 10.0.0.2 ,10.0.0.3", &ctx).unwrap();
+        assert_eq!(bare.address_count(), 3);
     }
 
     #[test]
