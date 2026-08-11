@@ -253,6 +253,7 @@
       "additionalProperties": false,
       "required": [
         "send_mode",
+        "tcp_technique",
         "retry",
         "max_probe_rate",
         "dns_enabled",
@@ -262,6 +263,10 @@
         "send_mode": {
           "description": "How raw probes were placed on the wire.",
           "enum": ["auto", "raw_socket", "ethernet"]
+        },
+        "tcp_technique": {
+          "description": "Which segment each TCP port probe carried, and so what its answers mean. A port reported `closed` by a `syn` scan refused a connection attempt; the same verdict from a `fin`, `null`, `xmas` or `maimon` scan is a reset drawn by a segment that was not one, and those techniques report every port closed against stacks that reset everything. An `ack` scan never reports a port open at all - it maps the filtering in front of the host.",
+          "enum": ["syn", "fin", "null", "xmas", "maimon", "ack"]
         },
         "retry": { "$ref": "#/$defs/retry" },
         "max_probe_rate": {

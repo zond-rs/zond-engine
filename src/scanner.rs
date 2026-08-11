@@ -239,7 +239,7 @@ pub async fn scan(
         (
             build_tcp_scanner(
                 ctx.clone(),
-                TcpScanTechnique::Syn,
+                cfg.tcp_technique,
                 target_count,
                 cfg.probe_tuning(),
             ),
@@ -271,7 +271,7 @@ pub async fn scan(
     if let Some(scanner) = udp_scanner {
         scanners.push(Box::new(scanner));
     }
-    let scanner = into_port_scanner(scanners, ctx.clone());
+    let scanner = into_port_scanner(scanners, ctx.clone(), cfg.tcp_technique);
 
     let handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
@@ -751,16 +751,26 @@ fn build_udp_scanner(
 /// place.
 ///
 /// The fallback is decided **per protocol**, not per scan. A host can fail to
-/// build one raw scanner and not the other - the SYN scanner needs a raw TCP
+/// build one raw scanner and not the other - the TCP scanner needs a raw TCP
 /// socket, the UDP scanner a raw UDP one, and a sandbox can permit one and
 /// refuse the other - and a protocol left without any scanner is not a degraded
 /// scan but a silent one: [`composite::CompositePortScanner`] has nowhere to
 /// route those targets, so they would simply never be probed and never be
 /// reported. Asking each scanner what it covers, rather than assuming a
 /// privileged scan covers everything, is what keeps that from happening.
+///
+/// **A connect fallback substitutes for a SYN scan and for nothing else.** It
+/// completes handshakes, so it answers roughly the question a SYN scan asks;
+/// it cannot send a FIN, a flagless segment or a bare ACK, and so it cannot
+/// answer what any of those were asked. Where the caller chose one of them and
+/// no raw scanner could be built, the TCP half of the scan is reported as a
+/// failure and left undone. That is worse for the caller and honest, where a
+/// silent substitution would hand back verdicts from a technique they did not
+/// choose - and no field in the report would say so.
 fn into_port_scanner(
     mut scanners: Vec<Box<dyn PortScanner>>,
     ctx: ScanContext,
+    tcp_technique: TcpScanTechnique,
 ) -> Box<dyn PortScanner> {
     let covered: Vec<Protocol> = scanners
         .iter()
@@ -768,10 +778,21 @@ fn into_port_scanner(
         .collect();
 
     if !covered.contains(&Protocol::Tcp) {
-        scanners.push(Box::new(connect::ConnectPortScanner::new(
-            ctx.clone(),
-            tuning::CONNECT_CONCURRENCY,
-        )));
+        if tcp_technique.finds_open_ports() {
+            scanners.push(Box::new(connect::ConnectPortScanner::new(
+                ctx.clone(),
+                tuning::CONNECT_CONCURRENCY,
+            )));
+        } else {
+            ctx.record_failure(
+                ScannerKind::TcpPort,
+                format!(
+                    "the {tcp_technique} technique needs raw sockets, which this process \
+                     does not have, and a connect scan answers a different question - so \
+                     no TCP port was probed",
+                ),
+            );
+        }
     }
 
     if !covered.contains(&Protocol::Udp) {
@@ -901,7 +922,7 @@ mod tests {
 
     fn covered(scanners: Vec<Box<dyn PortScanner>>) -> Vec<Protocol> {
         let (_session, ctx) = ScanSession::new();
-        into_port_scanner(scanners, ctx).supported_protocols()
+        into_port_scanner(scanners, ctx, TcpScanTechnique::Syn).supported_protocols()
     }
 
     /// With no privileged scanner at all, both connect fallbacks stand in.
@@ -924,6 +945,30 @@ mod tests {
             "TCP targets would be silently dropped"
         );
         assert!(protocols.contains(&Protocol::Udp));
+    }
+
+    /// A connect scan is a substitute for a SYN scan and for nothing else. Asked
+    /// for a technique it cannot express, an unprivileged scan has to leave the
+    /// TCP half undone and say so - a silent substitution would hand back
+    /// verdicts from a technique nobody chose.
+    #[test]
+    fn a_technique_the_fallback_cannot_express_is_reported_rather_than_substituted() {
+        let (_session, ctx) = ScanSession::new();
+        let scanner = into_port_scanner(Vec::new(), ctx.clone(), TcpScanTechnique::Fin);
+
+        assert!(
+            !scanner.supported_protocols().contains(&Protocol::Tcp),
+            "a connect scan cannot send a FIN and must not pretend to"
+        );
+
+        let failures = ctx.take_failures();
+        assert_eq!(failures.len(), 1, "the caller has to be told");
+        assert_eq!(failures[0].scanner(), ScannerKind::TcpPort);
+        assert!(
+            failures[0].reason().contains("fin"),
+            "the failure has to name the technique: {}",
+            failures[0].reason()
+        );
     }
 
     /// And the mirror case: raw TCP available, raw UDP not.
@@ -1027,6 +1072,7 @@ mod tests {
                 Box::new(StubScanner(vec![Protocol::Udp])),
             ],
             ctx,
+            TcpScanTechnique::Syn,
         );
         // Two scanners in, two scanners out: `supported_protocols` deduplicates,
         // so count the routes rather than the protocols.

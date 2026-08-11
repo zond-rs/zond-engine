@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::core::models::retry::RetryConfig;
+use crate::core::models::technique::TcpScanTechnique;
 
 /// How the privileged (raw) scanners put probe packets on the wire.
 ///
@@ -43,6 +44,10 @@ pub struct ProbeTuning {
     pub send_mode: SendMode,
     pub retry: RetryConfig,
     pub max_probe_rate: Option<u32>,
+    /// Which segment a TCP port probe carries. Read only by the raw TCP port
+    /// scanner: host discovery asks whether anything is there, which every one
+    /// of these techniques answers equally badly, so it stays on SYN.
+    pub tcp_technique: TcpScanTechnique,
 }
 
 /// Global configuration options for the scanner execution.
@@ -138,6 +143,18 @@ pub struct ZondConfig {
     /// for the time a large range takes to emit.
     pub max_probe_rate: Option<u32>,
 
+    /// Which segment a TCP port probe carries, and so what its answers mean.
+    ///
+    /// Defaults to [`TcpScanTechnique::Syn`], which is the only technique that
+    /// identifies an open port positively and the only one the unprivileged
+    /// connect fallback can approximate. The rest need raw sockets; asking for
+    /// one without them records a failure rather than quietly substituting a
+    /// connect scan, because the two answer different questions.
+    ///
+    /// Affects the port-scan phase only. [`discover`](crate::scanner::discover)
+    /// is unaffected.
+    pub tcp_technique: TcpScanTechnique,
+
     /// How hard the scan tries before accepting silence as an answer.
     ///
     /// Every probing path has its own schedule, tuned to what its protocol
@@ -154,6 +171,7 @@ impl ZondConfig {
             send_mode: self.send_mode,
             retry: self.retry,
             max_probe_rate: self.max_probe_rate,
+            tcp_technique: self.tcp_technique,
         }
     }
 }

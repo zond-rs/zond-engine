@@ -979,10 +979,17 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     } else {
         "dns disabled"
     };
+    // The technique leads, because it is what a reader needs before the port
+    // table underneath means anything: `closed` from a SYN scan and `closed`
+    // from a FIN scan are different findings.
     fact(
         out,
         "wire",
-        &format!("send {} · {rate} · {dns}", esc(settings.send_mode)),
+        &format!(
+            "{} · send {} · {rate} · {dns}",
+            esc(settings.tcp_technique),
+            esc(settings.send_mode)
+        ),
     )?;
 
     writeln!(out, "</dl>")?;

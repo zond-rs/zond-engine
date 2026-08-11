@@ -69,6 +69,7 @@ use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::retry::RetryConfig;
 use crate::core::models::target::TargetMap;
+use crate::core::models::technique::TcpScanTechnique;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::network::capture::CaptureCounts;
 
@@ -214,6 +215,12 @@ fn ip_set_ranges(ips: &IpSet) -> Vec<IpRange> {
 pub struct ScanSettings {
     /// How raw probes were placed on the wire.
     pub send_mode: SendMode,
+    /// Which segment each TCP port probe carried, and so what its answers mean.
+    ///
+    /// Two ports both reported `Closed` are different findings depending on
+    /// this: one refused a connection attempt, the other reset a segment that
+    /// was not one. A report without it cannot be read.
+    pub tcp_technique: TcpScanTechnique,
     /// The retransmission budget and patience in force.
     pub retry: RetryConfig,
     /// The probe-rate ceiling, or `None` if the scanner's own default applied.
@@ -228,6 +235,7 @@ impl From<&ZondConfig> for ScanSettings {
     fn from(cfg: &ZondConfig) -> Self {
         Self {
             send_mode: cfg.send_mode,
+            tcp_technique: cfg.tcp_technique,
             retry: cfg.retry,
             max_probe_rate: cfg.max_probe_rate,
             dns_enabled: !cfg.no_dns,

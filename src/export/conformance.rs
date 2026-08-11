@@ -22,6 +22,7 @@
 use boon::{Compiler, Schemas};
 use serde_json::Value;
 
+use crate::core::models::technique::TcpScanTechnique;
 use crate::export::schema::SCHEMA_VERSION;
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
 
@@ -118,6 +119,29 @@ fn the_schema_pins_the_version_the_code_emits() {
         schema["properties"]["schema_version"]["const"],
         Value::from(SCHEMA_VERSION)
     );
+}
+
+/// Every scan technique the engine can run is a value the published schema
+/// accepts.
+///
+/// The document tests below only ever exercise whichever technique the fixture
+/// happens to use, so a seventh technique could be added, exported, and pass
+/// every one of them while producing documents no consumer's validator accepts.
+/// This is the check that fails instead - and it fails at the point the variant
+/// is added, which is where the schema is easiest to update.
+#[test]
+fn every_technique_the_engine_runs_is_a_value_the_schema_accepts() {
+    let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
+    let accepted = schema["$defs"]["settings"]["properties"]["tcp_technique"]["enum"]
+        .as_array()
+        .expect("the schema names the techniques it accepts");
+
+    for technique in TcpScanTechnique::ALL {
+        assert!(
+            accepted.contains(&Value::from(technique.name())),
+            "the schema does not accept `{technique}`, which a scan can be asked for"
+        );
+    }
 }
 
 /// A fully populated report - every optional block present, a failed strategy,

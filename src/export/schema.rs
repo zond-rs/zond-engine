@@ -689,6 +689,14 @@ impl RangeDto {
 pub struct SettingsDto {
     /// How raw probes were placed on the wire.
     pub send_mode: &'static str,
+    /// Which segment each TCP port probe carried: `syn`, `fin`, `null`, `xmas`,
+    /// `maimon` or `ack`.
+    ///
+    /// Without it a port state cannot be read. `closed` from a SYN scan is a
+    /// refused connection attempt; `closed` from a FIN scan is a reset drawn by
+    /// a segment that was not one, and against a stack that resets everything it
+    /// may be nothing at all.
+    pub tcp_technique: &'static str,
     /// The retransmission budget and patience in force.
     pub retry: RetryDto,
     /// The probe-rate ceiling in probes per second, or `null` if the scanner's
@@ -707,6 +715,7 @@ impl SettingsDto {
     pub fn new(settings: &ScanSettings) -> Self {
         Self {
             send_mode: send_mode_name(settings.send_mode),
+            tcp_technique: settings.tcp_technique.name(),
             retry: RetryDto::new(&settings.retry),
             max_probe_rate: settings.max_probe_rate,
             dns_enabled: settings.dns_enabled,
