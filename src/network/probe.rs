@@ -48,8 +48,29 @@ use crate::network::transport::{self, TransportSenderHandle, TransportType};
 /// decides which captured frames are worth copying to userspace.
 #[derive(Debug, Clone, Copy)]
 pub enum ProbeKind {
-    /// TCP SYN probes and their SYN+ACK / RST replies, over IPv4 and IPv6.
+    /// TCP SYN probes and their SYN+ACK / RST replies, over IPv4 and IPv6,
+    /// where the sender picks a fresh source port per probe.
     TcpSyn,
+    /// TCP port probes and their replies, for a scan that sends every probe
+    /// from one source port.
+    TcpProbe {
+        /// The port every probe in the scan leaves from, and so the port its
+        /// replies come back to. One fixed port is what makes the TCP half of
+        /// this filter expressible for **both** address families: `dst port`
+        /// compiles over IPv6 where the flag test in [`ProbeKind::TcpSyn`]
+        /// cannot, so a scan using this kind sees only its own answers instead
+        /// of every IPv6 TCP segment on the host.
+        reply_port: u16,
+        /// Whether ICMP destination-unreachable messages are wanted as well.
+        ///
+        /// They are how a probe learns it was stopped in the path rather than
+        /// answered, but an ICMP error carries no ports of its own - the probe
+        /// it refers to is quoted in its payload - so admitting them means
+        /// admitting *all* ICMP on every captured interface and matching it in
+        /// userspace. Only a scan whose verdicts actually change on that
+        /// evidence should pay for it.
+        icmp_errors: bool,
+    },
     /// UDP service probes (DNS / mDNS) and their replies, over IPv4.
     UdpResolve,
     /// UDP port probes and their ICMP unreachable / direct UDP replies.
@@ -67,7 +88,7 @@ impl ProbeKind {
     /// The raw-socket transport type used for the send half.
     fn transport_type(self) -> TransportType {
         match self {
-            ProbeKind::TcpSyn => TransportType::TcpLayer4,
+            ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => TransportType::TcpLayer4,
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => TransportType::UdpLayer4,
         }
     }
@@ -82,7 +103,7 @@ impl ProbeKind {
     /// wrong protocol handler, so it is simply never answered.
     fn ip_protocol(self) -> IpNextHeaderProtocol {
         match self {
-            ProbeKind::TcpSyn => IpNextHeaderProtocols::Tcp,
+            ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => IpNextHeaderProtocols::Tcp,
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => IpNextHeaderProtocols::Udp,
         }
     }
@@ -114,6 +135,30 @@ impl ProbeKind {
             ProbeKind::TcpSyn => {
                 "(ip and tcp and (tcp[tcpflags] & (tcp-syn|tcp-rst)) != 0) or (ip6 and tcp)"
                     .to_string()
+            }
+            // Every reply to a probe of this kind is addressed back to the one
+            // port the scan sends from, so that is the whole narrowing - and it
+            // is a narrowing both families get, which the flag test above is
+            // not. What reaches userspace is this scan's own traffic rather
+            // than every segment that happens to carry a SYN or RST bit.
+            //
+            // The flags are checked in userspace instead. That is not a
+            // concession: a segment answering the right port still has to be
+            // one of the two answers a probe can draw, and has to carry back
+            // the value the probe went out with.
+            ProbeKind::TcpProbe {
+                reply_port,
+                icmp_errors,
+            } => {
+                let tcp = format!("tcp and dst port {reply_port}");
+                // An ICMP error names no ports of its own; the probe it refers
+                // to is quoted in its payload, so this half cannot be narrowed
+                // here and is matched in userspace.
+                if icmp_errors {
+                    format!("icmp or icmp6 or ({tcp})")
+                } else {
+                    tcp
+                }
             }
             // DNS (53) and mDNS (5353) responses, by source port.
             ProbeKind::UdpResolve => "udp and (src port 53 or src port 5353)".to_string(),
@@ -387,6 +432,14 @@ mod tests {
     fn every_probe_kind_carries_its_own_ip_protocol() {
         assert_eq!(ProbeKind::TcpSyn.ip_protocol(), IpNextHeaderProtocols::Tcp);
         assert_eq!(
+            ProbeKind::TcpProbe {
+                reply_port: 50_000,
+                icmp_errors: true,
+            }
+            .ip_protocol(),
+            IpNextHeaderProtocols::Tcp
+        );
+        assert_eq!(
             ProbeKind::UdpResolve.ip_protocol(),
             IpNextHeaderProtocols::Udp
         );
@@ -450,6 +503,10 @@ mod filter_conformance {
     const TCP_HDR_LEN: usize = 20;
     const ICMPV6_UNUSED_LEN: usize = 4;
 
+    /// The single port a [`ProbeKind::TcpProbe`] scan sends from, and so the
+    /// port its answers come back to.
+    const SCAN_PORT: u16 = 50_000;
+
     /// Whether `filter`, compiled for an Ethernet link, admits `frame`.
     ///
     /// A dead capture is a compiler with no interface behind it, so this needs
@@ -464,13 +521,19 @@ mod filter_conformance {
     }
 
     /// An Ethernet-framed TCP segment carrying `flags`, over whichever family
-    /// `src` and `dst` are.
+    /// `src` and `dst` are, addressed back to the port a scan sent from.
     fn tcp_frame(src: IpAddr, dst: IpAddr, flags: u8) -> Vec<u8> {
+        tcp_frame_to(src, dst, flags, SCAN_PORT)
+    }
+
+    /// [`tcp_frame`] addressed to an explicit port, for the filters that narrow
+    /// on one.
+    fn tcp_frame_to(src: IpAddr, dst: IpAddr, flags: u8, dst_port: u16) -> Vec<u8> {
         let mut segment = vec![0u8; TCP_HDR_LEN];
         {
             let mut tcp = MutableTcpPacket::new(&mut segment).expect("TCP header buffer");
             tcp.set_source(443);
-            tcp.set_destination(50_000);
+            tcp.set_destination(dst_port);
             tcp.set_data_offset((TCP_HDR_LEN / 4) as u8);
             tcp.set_flags(flags);
             tcp.set_window(1024);
@@ -601,6 +664,97 @@ mod filter_conformance {
             !admits_a_syn_ack,
             "libpcap now narrows TCP flags over IPv6; the split filter is no longer needed"
         );
+    }
+
+    // ─── TCP port probes ─────────────────────────────────────────────────────
+
+    fn tcp_probe_filter(icmp_errors: bool) -> String {
+        ProbeKind::TcpProbe {
+            reply_port: SCAN_PORT,
+            icmp_errors,
+        }
+        .filter()
+    }
+
+    /// Both answers a port probe can draw, over both families.
+    #[test]
+    fn the_tcp_probe_filter_admits_answers_addressed_to_the_scan() {
+        let filter = tcp_probe_filter(false);
+
+        for (src, dst) in [(SRC_V4, DST_V4), (SRC_V6, DST_V6)] {
+            assert!(
+                admits(&filter, &tcp_frame(src, dst, SYN | ACK)),
+                "a SYN+ACK is an open port and must reach the scanner"
+            );
+            assert!(
+                admits(&filter, &tcp_frame(src, dst, RST | ACK)),
+                "a RST is an answer and must reach the scanner"
+            );
+        }
+    }
+
+    /// What narrowing on the scan's own port buys over narrowing on flags, and
+    /// the reason a TCP port scan sends every probe from one port.
+    ///
+    /// A flag test cannot be compiled over IPv6 (see
+    /// [`libpcap_cannot_narrow_tcp_flags_over_ipv6`]), so
+    /// [`ProbeKind::TcpSyn`] admits every IPv6 TCP segment on every captured
+    /// interface and sorts them out in userspace. A destination port compiles
+    /// for both families, so this filter rejects the host's other conversations
+    /// in the kernel over IPv6 exactly as it does over IPv4.
+    #[test]
+    fn the_tcp_probe_filter_rejects_traffic_addressed_elsewhere_over_both_families() {
+        let filter = tcp_probe_filter(false);
+        let elsewhere = SCAN_PORT + 1;
+
+        for (src, dst) in [(SRC_V4, DST_V4), (SRC_V6, DST_V6)] {
+            assert!(
+                !admits(&filter, &tcp_frame_to(src, dst, RST | ACK, elsewhere)),
+                "a segment to a port this scan never sent from is somebody else's"
+            );
+        }
+    }
+
+    /// What this filter narrows on is the conversation, not the flags, so a
+    /// segment carrying neither of the two answers a probe can draw still
+    /// reaches userspace if it is addressed to the scan's port.
+    ///
+    /// Stated here rather than left to be discovered in a packet count. The
+    /// scan's port is drawn from the high ephemeral range precisely so nothing
+    /// else on the host is holding a conversation on it, and the scanner
+    /// re-checks the flags itself either way - so this costs a check per
+    /// segment, not a wrong verdict.
+    #[test]
+    fn the_tcp_probe_filter_narrows_on_the_conversation_rather_than_the_flags() {
+        let filter = tcp_probe_filter(false);
+
+        assert!(admits(&filter, &tcp_frame(SRC_V4, DST_V4, ACK)));
+        assert!(admits(&filter, &tcp_frame(SRC_V6, DST_V6, ACK)));
+    }
+
+    /// ICMP is admitted only when a technique's verdicts actually turn on it,
+    /// because an ICMP error names no ports and so cannot be narrowed at all:
+    /// asking for it means every ICMP packet on every captured interface is
+    /// copied to userspace.
+    #[test]
+    fn the_tcp_probe_filter_admits_icmp_errors_only_when_asked() {
+        let error = icmpv6_error_frame(SRC_V6, DST_V6);
+
+        assert!(!admits(&tcp_probe_filter(false), &error));
+        assert!(admits(&tcp_probe_filter(true), &error));
+    }
+
+    /// Asking for ICMP must not cost the answers the scan is actually waiting
+    /// for, nor widen what it accepts on the TCP half.
+    #[test]
+    fn asking_for_icmp_changes_nothing_about_the_tcp_half() {
+        let filter = tcp_probe_filter(true);
+
+        assert!(admits(&filter, &tcp_frame(SRC_V6, DST_V6, RST | ACK)));
+        assert!(!admits(
+            &filter,
+            &tcp_frame_to(SRC_V6, DST_V6, RST | ACK, SCAN_PORT + 1)
+        ));
     }
 
     // ─── UDP ─────────────────────────────────────────────────────────────────

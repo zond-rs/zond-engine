@@ -33,9 +33,9 @@
 //! occupy: one for SYN or FIN, none for a bare ACK-less segment with no flags
 //! at all.
 //!
-//! [`nonce_field`] is that rule, derived from the probe's flags rather than
-//! tabulated per technique, so a technique added later inherits it by
-//! construction.
+//! [`create_probe`] and [`echoed_nonce`] are the two halves of that rule, and
+//! both derive it from the probe's flags rather than from a table kept per
+//! technique, so a technique added later inherits it by construction.
 
 use std::net::IpAddr;
 

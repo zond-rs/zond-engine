@@ -27,7 +27,7 @@ const CHECKSUM_NONE_SUBSTITUTE: u16 = 0xFFFF;
 /// The addresses are parameters because a UDP checksum covers them: it is
 /// computed over a pseudo-header of source, destination, protocol, and length,
 /// not over the datagram alone. Passing them mirrors
-/// [`tcp::create_packet`](super::tcp::create_packet).
+/// [`tcp::create_probe`](super::tcp::create_probe).
 ///
 /// The checksum is optional on IPv4 but **mandatory on IPv6** - RFC 8200 §8.1
 /// requires a receiver to discard a zero-checksum UDP datagram - so a v6 probe

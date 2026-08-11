@@ -18,6 +18,21 @@
 //! nothing on its own, so it is answered with another probe: only when a port
 //! has spent its whole retry budget in silence is it reported filtered, which is
 //! the difference between observing a firewall and assuming one.
+//!
+//! ## Tying a reply to its probe
+//!
+//! Every probe in a scan leaves from one source port, chosen when the scanner is
+//! built, and that port is the scan's identity on the wire: the kernel's capture
+//! filter admits the segments addressed to it and drops the rest of the host's
+//! TCP traffic, over both address families ([`ProbeKind::TcpProbe`]). It is a
+//! boundary the scanner re-checks rather than relies on, since a transport can
+//! be built with no filter behind it at all.
+//!
+//! Which *attempt* a reply answers is a separate question, and the probe's nonce
+//! settles it: each attempt carries a fresh one, and a conformant stack echoes
+//! it back ([`tcp::echoed_nonce`]). That is what lets a reply arriving after a
+//! retry has already gone out still name the attempt it belongs to, and so yield
+//! a round trip that is real rather than one measured against the wrong packet.
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -35,21 +50,36 @@ use crate::core::models::target::Target;
 use crate::core::models::technique::TcpScanTechnique;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
-use crate::network::probe::{ProbeKind, ProbeTransport};
+use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
 use crate::protocols::tcp;
 use crate::scanner::{PortScanner, service};
+use crate::success;
 use crate::system::interface::SourceResolver;
 
-// Port scanning and routed discovery send the same kind of raw TCP SYN over the
-// same kind of network path, so they share one adaptive-deadline profile rather
-// than keeping two copies in step.
-use super::{DEADLINE_CONFIG, RETRY_POLICY, SynToken, send_syn};
+// Port scanning and routed discovery send the same kind of raw TCP probe over
+// the same kind of network path, so they share one adaptive-deadline profile
+// rather than keeping two copies in step.
+use super::{DEADLINE_CONFIG, RETRY_POLICY};
 
 /// The probe a reply refers to: the `(address, port)` it was sent to.
 type ProbeTarget = (IpAddr, u16);
 
+/// What identifies one attempt of a probe on the wire.
+///
+/// The nonce alone, because the source port no longer varies between attempts -
+/// it identifies the *scan*, and is checked once against every reply rather than
+/// per attempt. A fresh nonce per attempt is what makes a retried probe
+/// measurable at all: TCP itself has to discard round-trip samples from
+/// retransmissions because it cannot tell which transmission an
+/// acknowledgement answers, and a scanner that varies the value the reply echoes
+/// does not have that problem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TcpToken {
+    nonce: u32,
+}
+
 /// Outstanding probes and the schedule they are retried on.
-type Ledger = ProbeLedger<ProbeTarget, SynToken>;
+type Ledger = ProbeLedger<ProbeTarget, TcpToken>;
 
 /// The most probes left outstanding at once.
 ///
@@ -86,6 +116,11 @@ pub struct SynPortScanner {
     /// Scratch space for the probes coming due on one iteration, reused so a
     /// quiet tick allocates nothing.
     due: Vec<Due<ProbeTarget>>,
+    /// The source port every probe in this scan is sent from, and so the port
+    /// its replies come back to. It is the scan's identity on the wire: the
+    /// capture filter narrows to it, and a segment addressed anywhere else
+    /// answered somebody else. See the module documentation.
+    src_port: u16,
     /// Why the first probe that could not be sent failed, if any did, and how
     /// many followed it.
     ///
@@ -100,18 +135,31 @@ pub struct SynPortScanner {
 impl SynPortScanner {
     /// Builds a scanner that selects each probe's source via `resolver`, sized
     /// for a scan covering `target_count` `(address, port)` pairs.
+    ///
+    /// The scan's source port is drawn from the high ephemeral range, where it
+    /// is unlikely to collide with a listening service on this host, and the
+    /// transport's capture filter is built around it.
     pub fn new(
         resolver: SourceResolver,
         ctx: ScanContext,
         target_count: usize,
         tuning: ProbeTuning,
     ) -> anyhow::Result<Self> {
-        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, tuning.send_mode)?;
+        let src_port: u16 = rand::random_range(50_000..u16::MAX);
+        let transport = ProbeTransport::open_with(
+            ProbeKind::TcpProbe {
+                reply_port: src_port,
+                icmp_errors: TcpScanTechnique::Syn.reads_icmp_errors(),
+            },
+            tuning.send_mode,
+        )?;
+
         Ok(Self::build(
             resolver,
             ctx,
             transport,
             target_count,
+            src_port,
             RETRY_POLICY.configured(tuning.retry),
         ))
     }
@@ -123,6 +171,12 @@ impl SynPortScanner {
     /// the `test-support` feature) this is the seam that lets probe and reply
     /// correlation be driven against a simulated network rather than a real
     /// one, with no privileges and no interface.
+    ///
+    /// The source port is chosen here rather than passed in, unlike
+    /// [`UdpPortScanner::with_transport`](super::UdpPortScanner::with_transport):
+    /// a TCP reply is addressed back to whatever port the probe came from, so a
+    /// simulated network answers correctly without being told, where a
+    /// synthesized ICMP error has to be built around a port the test knows.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_transport(
         resolver: SourceResolver,
@@ -130,7 +184,14 @@ impl SynPortScanner {
         transport: ProbeTransport,
         target_count: usize,
     ) -> Self {
-        Self::build(resolver, ctx, transport, target_count, RETRY_POLICY)
+        Self::build(
+            resolver,
+            ctx,
+            transport,
+            target_count,
+            rand::random_range(50_000..u16::MAX),
+            RETRY_POLICY,
+        )
     }
 
     /// The common constructor, taking the retry schedule as an argument because
@@ -142,6 +203,7 @@ impl SynPortScanner {
         ctx: ScanContext,
         transport: ProbeTransport,
         target_count: usize,
+        src_port: u16,
         retry: RetryPolicy,
     ) -> Self {
         // The scan has to outlive its own retry schedule, or probes are written
@@ -155,6 +217,7 @@ impl SynPortScanner {
             deadline: AdaptiveDeadline::new(deadline_config, target_count),
             ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT)),
             due: Vec::new(),
+            src_port,
             send_failure: None,
             sends_failed: 0,
         }
@@ -172,7 +235,7 @@ impl SynPortScanner {
     /// Used for the first attempt and every retry alike. Nothing about the probe
     /// is kept between attempts and none of it needs to be: the packet is built
     /// afresh from the target, which is both cheaper than buffering it and
-    /// required, since every attempt must carry its own sequence number.
+    /// required, since every attempt must carry its own nonce.
     ///
     /// A probe that cannot be sent is simply not armed. The ledger has already
     /// charged the attempt by the time a retry reaches here, so an unroutable
@@ -184,8 +247,10 @@ impl SynPortScanner {
             return;
         };
 
-        match send_syn(
+        match send_tcp_probe(
             self.transport.tx.as_ref(),
+            TcpScanTechnique::Syn,
+            self.src_port,
             src_addr,
             ip,
             port,
@@ -203,6 +268,15 @@ impl SynPortScanner {
             return;
         };
 
+        // A segment addressed anywhere but this scan's own port answered
+        // somebody else's conversation. The capture filter already narrows to
+        // it, but that is a performance boundary rather than a guarantee - a
+        // transport can be built with no filter at all - and this is the only
+        // thing making the reply ours.
+        if tcp_packet.get_destination() != self.src_port {
+            return;
+        }
+
         let Some(reply) = tcp::classify_probe_response(&tcp_packet) else {
             return;
         };
@@ -210,14 +284,13 @@ impl SynPortScanner {
             return;
         };
 
-        // What the segment claims to be answering. The ledger checks it against
-        // every attempt still live for this port, so a reply to an earlier
-        // attempt that arrives after a retry has gone out is still recognized -
-        // and names which attempt it answered, so the round trip it yields is
-        // the real one.
-        let token = SynToken {
-            seq: tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp_packet),
-            src_port: tcp_packet.get_destination(),
+        // Which attempt the segment claims to be answering. The ledger checks it
+        // against every attempt still live for this port, so a reply to an
+        // earlier attempt that arrives after a retry has gone out is still
+        // recognized - and names which attempt it answered, so the round trip it
+        // yields is the real one.
+        let token = TcpToken {
+            nonce: tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp_packet),
         };
         let key = (ip, tcp_packet.get_source());
 
@@ -314,6 +387,66 @@ impl SynPortScanner {
                 );
             }
         });
+    }
+}
+
+/// Sends one probe of `technique` from `src_port` at `dst_addr:dst_port` and
+/// returns the token it went out carrying, so a later reply can be recognized as
+/// answering this attempt.
+///
+/// The nonce is drawn fresh here rather than by the caller, because it is the
+/// one thing that must never be repeated between attempts: two probes carrying
+/// the same nonce are indistinguishable in their replies, and a round trip
+/// measured against the wrong one is worse than no measurement.
+///
+/// `reason` receives the failure when there is one, so a scan whose probes never
+/// reached the wire can say why in its report rather than only in a log line. A
+/// probe that was never sent and a probe nobody answered are indistinguishable
+/// in a port count and could hardly be more different in what they mean.
+fn send_tcp_probe(
+    sender: &dyn ProbeSender,
+    technique: TcpScanTechnique,
+    src_port: u16,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
+    dst_port: u16,
+    reason: &mut Option<String>,
+) -> Option<TcpToken> {
+    let nonce: u32 = rand::random();
+
+    let packet = match tcp::create_probe(technique, &src_addr, &dst_addr, src_port, dst_port, nonce)
+    {
+        Ok(packet) => packet,
+        Err(e) => {
+            error!(
+                verbosity = 2,
+                "Failed to create {technique} probe for {dst_addr}:{dst_port}: {e}"
+            );
+            return None;
+        }
+    };
+
+    match sender.send(&packet, src_addr, dst_addr) {
+        Ok(()) => {
+            success!(
+                verbosity = 2,
+                "Sent {technique} probe to {dst_addr}:{dst_port}"
+            );
+            Some(TcpToken { nonce })
+        }
+        Err(e) => {
+            // `{e:#}` rather than `{e}`: the outer message says which probe
+            // failed, and the chained cause is the operating system's own
+            // explanation - "No route to host" and "Permission denied" call for
+            // completely different responses, and the bare wrapper distinguishes
+            // neither.
+            error!(
+                verbosity = 2,
+                "Failed to send {technique} probe to {dst_addr}:{dst_port}: {e:#}"
+            );
+            *reason = Some(format!("{e:#}"));
+            None
+        }
     }
 }
 
@@ -455,17 +588,29 @@ mod tests {
     }
 
     /// Builds a bare 20-byte TCP segment as a captured reply arrives, once the
-    /// link and IP headers are stripped: from `src_port` on the target, back to
-    /// the port the probe was sent from, acknowledging its sequence number.
-    fn tcp_segment(src_port: u16, token: SynToken, flags: u8) -> Vec<u8> {
+    /// link and IP headers are stripped: from `from_port` on the target, back to
+    /// `to_port` here, acknowledging the probe's nonce the way a stack answering
+    /// a SYN does.
+    fn segment_to(from_port: u16, to_port: u16, token: TcpToken, flags: u8) -> Vec<u8> {
         let mut buf = vec![0u8; 20];
         let mut tcp = MutableTcpPacket::new(&mut buf).unwrap();
-        tcp.set_source(src_port);
-        tcp.set_destination(token.src_port);
+        tcp.set_source(from_port);
+        tcp.set_destination(to_port);
         tcp.set_data_offset(5);
-        tcp.set_acknowledgement(token.seq.wrapping_add(1));
+        tcp.set_acknowledgement(token.nonce.wrapping_add(1));
         tcp.set_flags(flags);
         buf
+    }
+
+    /// [`segment_to`] addressed where a real answer would arrive: the one port
+    /// this scan sends from.
+    fn tcp_segment(
+        scanner: &SynPortScanner,
+        from_port: u16,
+        token: TcpToken,
+        flags: u8,
+    ) -> Vec<u8> {
+        segment_to(from_port, scanner.src_port, token, flags)
     }
 
     /// The probes a [`MockSender`] recorded, shared with the scanner under test.
@@ -490,7 +635,7 @@ mod tests {
     ///
     /// The token is read back off the recording sender rather than out of the
     /// scanner, so what a test answers is what actually reached the wire.
-    fn probe(scanner: &mut SynPortScanner, sent: &SentProbes, port: u16) -> SynToken {
+    fn probe(scanner: &mut SynPortScanner, sent: &SentProbes, port: u16) -> TcpToken {
         let before = sent.lock().unwrap().len();
         scanner.send_probe(Target {
             ip: TARGET,
@@ -501,9 +646,17 @@ mod tests {
         let sent = sent.lock().unwrap();
         let (segment, _, _) = sent.get(before).expect("probe reached the wire");
         let tcp = TcpPacket::new(segment).expect("probe is a TCP segment");
-        SynToken {
-            seq: tcp.get_sequence(),
-            src_port: tcp.get_source(),
+        TcpToken {
+            nonce: tcp.get_sequence(),
+        }
+    }
+
+    /// The token the most recent probe went out carrying.
+    fn last_probe(sent: &SentProbes) -> TcpToken {
+        let sent = sent.lock().unwrap();
+        let (segment, _, _) = sent.last().expect("a probe reached the wire");
+        TcpToken {
+            nonce: TcpPacket::new(segment).unwrap().get_sequence(),
         }
     }
 
@@ -519,7 +672,8 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         let token = probe(&mut scanner, &sent, 80);
 
-        scanner.handle_reply(TARGET, &tcp_segment(80, token, SYN | ACK), Instant::now());
+        let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
+        scanner.handle_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 80), Some(PortState::Open));
         assert!(!scanner.ledger.contains(&(TARGET, 80)));
@@ -530,45 +684,41 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         let token = probe(&mut scanner, &sent, 81);
 
-        scanner.handle_reply(TARGET, &tcp_segment(81, token, RST | ACK), Instant::now());
+        let reply = tcp_segment(&scanner, 81, token, RST | ACK);
+        scanner.handle_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 81), Some(PortState::Closed));
     }
 
     #[test]
-    fn reply_with_wrong_ack_is_ignored() {
+    fn reply_carrying_the_wrong_nonce_is_ignored() {
         let (mut scanner, session, sent) = scanner_with_mock();
         let token = probe(&mut scanner, &sent, 82);
 
-        // Acknowledgement doesn't correspond to our sequence number: a stray
-        // or spoofed segment, not a reply to our probe.
-        let stray = SynToken {
-            seq: token.seq.wrapping_add(999),
-            ..token
+        // Acknowledges a value this scan never sent: a stray or spoofed
+        // segment, not a reply to our probe.
+        let stray = TcpToken {
+            nonce: token.nonce.wrapping_add(999),
         };
-        scanner.handle_reply(TARGET, &tcp_segment(82, stray, SYN | ACK), Instant::now());
+        let reply = tcp_segment(&scanner, 82, stray, SYN | ACK);
+        scanner.handle_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 82), None);
         assert!(scanner.ledger.contains(&(TARGET, 82)));
     }
 
-    /// The source port is half of a probe's identity. A segment acknowledging
-    /// the right sequence number but addressed to a port this scan never sent
-    /// from did not answer this scan.
+    /// The scan's source port is where its answers arrive. A segment carrying
+    /// the right nonce but addressed to another port on this host belongs to
+    /// somebody else's conversation, and the capture that would normally have
+    /// dropped it does not exist on a synthetic transport.
     #[test]
-    fn reply_to_a_port_we_never_sent_from_is_ignored() {
+    fn reply_addressed_to_another_port_on_this_host_is_ignored() {
         let (mut scanner, session, sent) = scanner_with_mock();
         let token = probe(&mut scanner, &sent, 83);
 
-        let elsewhere = SynToken {
-            src_port: token.src_port.wrapping_add(1),
-            ..token
-        };
-        scanner.handle_reply(
-            TARGET,
-            &tcp_segment(83, elsewhere, SYN | ACK),
-            Instant::now(),
-        );
+        let elsewhere = scanner.src_port.wrapping_add(1);
+        let reply = segment_to(83, elsewhere, token, SYN | ACK);
+        scanner.handle_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 83), None);
         assert!(scanner.ledger.contains(&(TARGET, 83)));
@@ -580,7 +730,8 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
 
         // Same host, but a port we never probed.
-        scanner.handle_reply(TARGET, &tcp_segment(1234, token, SYN | ACK), Instant::now());
+        let reply = tcp_segment(&scanner, 1234, token, SYN | ACK);
+        scanner.handle_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 1234), None);
         assert!(scanner.ledger.contains(&(TARGET, 80)));
@@ -651,36 +802,58 @@ mod tests {
     fn an_answered_probe_is_never_retried() {
         let (mut scanner, _session, sent) = scanner_with_mock();
         let token = probe(&mut scanner, &sent, 80);
-        scanner.handle_reply(TARGET, &tcp_segment(80, token, SYN | ACK), Instant::now());
+        let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
+        scanner.handle_reply(TARGET, &reply, Instant::now());
 
         scanner.service_retries(Instant::now() + Duration::from_secs(10));
 
         assert_eq!(sent.lock().unwrap().len(), 1);
     }
 
-    /// Each attempt carries its own sequence number, so a reply to the first
-    /// arriving after the second has gone out is still a reply. Matching only
-    /// the newest attempt would discard it and report an open port filtered.
+    /// Each attempt carries its own nonce, so a reply to the first arriving
+    /// after the second has gone out is still a reply. Matching only the newest
+    /// attempt would discard it and report an open port filtered.
     #[test]
     fn a_reply_to_a_superseded_attempt_still_resolves_the_port() {
         let (mut scanner, session, sent) = scanner_with_mock();
         let first = probe(&mut scanner, &sent, 80);
 
         scanner.service_retries(Instant::now() + Duration::from_secs(1));
-        let second = {
-            let sent = sent.lock().unwrap();
-            let (segment, _, _) = sent.last().expect("retry sent");
-            let tcp = TcpPacket::new(segment).unwrap();
-            SynToken {
-                seq: tcp.get_sequence(),
-                src_port: tcp.get_source(),
-            }
-        };
-        assert_ne!(first.seq, second.seq, "each attempt needs its own identity");
+        let second = last_probe(&sent);
+        assert_ne!(
+            first.nonce, second.nonce,
+            "each attempt needs its own identity"
+        );
 
-        scanner.handle_reply(TARGET, &tcp_segment(80, first, SYN | ACK), Instant::now());
+        let reply = tcp_segment(&scanner, 80, first, SYN | ACK);
+        scanner.handle_reply(TARGET, &reply, Instant::now());
 
         assert_eq!(port_state(&session, 80), Some(PortState::Open));
+    }
+
+    /// The other half of that identity, and the one this scan does *not* vary:
+    /// every attempt leaves from the port the capture filter was built around,
+    /// so a retry's answer arrives where the scan is listening rather than
+    /// somewhere the kernel has already dropped.
+    #[test]
+    fn every_attempt_leaves_from_the_scans_own_port() {
+        let (mut scanner, _session, sent) = scanner_with_mock();
+        probe(&mut scanner, &sent, 80);
+        scanner.service_retries(Instant::now() + Duration::from_secs(1));
+
+        let ports: Vec<u16> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(segment, _, _)| TcpPacket::new(segment).unwrap().get_source())
+            .collect();
+
+        assert_eq!(ports.len(), 2, "the probe was not retried");
+        assert!(
+            ports.iter().all(|port| *port == scanner.src_port),
+            "probes left from {ports:?}, not from {}",
+            scanner.src_port
+        );
     }
 
     /// Two answers, one port: the second finds nothing outstanding and is
@@ -690,7 +863,7 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         let token = probe(&mut scanner, &sent, 80);
 
-        let reply = tcp_segment(80, token, SYN | ACK);
+        let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
         scanner.handle_reply(TARGET, &reply, Instant::now());
         scanner.handle_reply(TARGET, &reply, Instant::now());
 
