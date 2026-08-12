@@ -56,6 +56,15 @@ const DEFAULT_PORTS: &str = "22,80,443,445,3389";
 
 #[tokio::main]
 async fn main() {
+    // The engine emits its audit line per strategy at INFO. Without a subscriber
+    // installed it goes nowhere, and this instrument would be measuring a scan
+    // while discarding the one record of how that scan went.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .without_time()
+        .init();
+
     let mut args = std::env::args().skip(1);
     let target = args.next().unwrap_or_else(|| {
         eprintln!("usage: technique_sweep <target> [ports] [repeats]");
@@ -68,8 +77,26 @@ async fn main() {
         .unwrap_or(1)
         .max(1);
 
-    let addresses = to_set(&[target.as_str()], None).expect("target parses");
-    let port_set = PortSet::try_from(ports.as_str()).expect("ports parse");
+    // A hostname cannot be resolved here: `to_set` takes an optional resolver
+    // and this instrument supplies none, deliberately - a benchmark that
+    // silently scanned whatever DNS answered with would be measuring a moving
+    // target. Reported rather than panicked, because an unparseable argument is
+    // a typo and not a bug.
+    let addresses = match to_set(&[target.as_str()], None) {
+        Ok(addresses) => addresses,
+        Err(e) => {
+            eprintln!("target `{target}`: {e}");
+            eprintln!("give an address or a CIDR range; hostnames are not resolved here");
+            std::process::exit(2);
+        }
+    };
+    let port_set = match PortSet::try_from(ports.as_str()) {
+        Ok(ports) => ports,
+        Err(e) => {
+            eprintln!("ports `{ports}`: {e}");
+            std::process::exit(2);
+        }
+    };
     let numbers: Vec<u16> = port_set
         .iter()
         .filter(|(_, protocol)| *protocol == Protocol::Tcp)

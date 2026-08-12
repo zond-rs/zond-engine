@@ -32,8 +32,12 @@
 //! Run as root (raw socket + pcap both require it):
 //!
 //! ```text
-//! sudo -E cargo run --example verify_scan
+//! cargo bench --no-run --bench verify_scan
+//! sudo -E target/release/deps/verify_scan-<hash>
 //! ```
+//!
+//! Built as a bench rather than run through `cargo bench`, because cargo passes
+//! its own arguments to a `harness = false` target and this one reads argv.
 
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 
@@ -45,7 +49,16 @@ use zond_engine::scanner;
 
 #[tokio::main]
 async fn main() {
-    // `cargo run --example verify_scan -- ethernet` forces the Layer-2 send
+    // The engine emits its audit line per strategy at INFO. Without a subscriber
+    // installed it goes nowhere, and this instrument would be measuring a scan
+    // while discarding the one record of how that scan went.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .without_time()
+        .init();
+
+    // `verify_scan ethernet` forces the Layer-2 send
     // backend (host-stack bypass); otherwise the platform default is used.
     // Note: Ethernet mode can't reach loopback, so only the 1.1.1.1 check is
     // meaningful there.

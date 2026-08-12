@@ -1283,6 +1283,17 @@ impl LocalScanner {
         protocol: StatusProtocol,
         answered_attempt: Option<u8>,
     ) {
+        // Whether *this scanner* has seen this device before, which is not the
+        // same question as whether the store has a host at this address. In a
+        // port-scan phase local discovery runs as enrichment beside the port
+        // scanner, so the host usually exists already and `write_host` reports
+        // nothing new - crediting the audit on that would report a sweep that
+        // found nothing while its own log said a neighbour answered.
+        //
+        // Keyed on the MAC rather than the address because a device answering
+        // at three addresses is one device found once, which is the unit the
+        // roster and the audit both count in.
+        let first_sighting = !self.mac_to_ip.contains_key(&source_mac);
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
 
         // Host mutation only. `write_host` owns the guard, the drop-before-emit
@@ -1325,6 +1336,8 @@ impl LocalScanner {
 
         if is_new_host {
             self.deadline.mark_activity();
+        }
+        if first_sighting {
             self.audit.record_host_found(answered_attempt);
         }
         if rtt.is_none() {
