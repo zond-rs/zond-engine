@@ -76,10 +76,25 @@
 //!
 //! [`TargetMapBuilder`] groups by port specification rather than emitting a
 //! [`TargetSet`] per input token. A file of sixty-five thousand bare addresses
-//! becomes one unit whose [`IpSet`] merges them into as few ranges as they
-//! describe, instead of sixty-five thousand units of one address each. Ordering
-//! is first-seen and therefore deterministic: two runs over the same input
-//! produce the same scan.
+//! becomes one unit instead of sixty-five thousand units of one address each.
+//! Ordering is first-seen and therefore deterministic: two runs over the same
+//! input produce the same scan.
+//!
+//! **The saving is in the units, not in the ranges.** Merging a contiguous file
+//! down to a single range is the visible effect and it is not where the time
+//! goes: a file of deliberately non-adjacent addresses keeps all sixty-five
+//! thousand ranges and is exactly as much faster. What grouping avoids is the
+//! per-unit cost of walking a map - each [`TargetSet`] canonicalizes itself and
+//! allocates its own port vector when iterated, so sixty-five thousand units
+//! means sixty-five thousand of each.
+//!
+//! Measured on a 65 536-line file: building grouped costs about 1.4x what
+//! building ungrouped does, and walking the result costs about a twentieth,
+//! for roughly 1.6x end to end whether or not anything merged. The one shape
+//! that loses is a file naming a *distinct* port specification on every line -
+//! as many groups as lines, nothing shared, and the grouping machinery paid for
+//! nothing. See `examples/import_bench.rs`, which carries its predictions and
+//! the two of them the numbers contradicted.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -347,6 +362,12 @@ pub struct TargetMapBuilder {
     /// port specifications in a file is not bounded by anything: input nobody
     /// vouches for should not be able to make this quadratic.
     index: HashMap<PortSet, usize>,
+    /// Addresses accumulated so far, before overlapping expressions are merged.
+    ///
+    /// Kept as a running total rather than computed on demand, because it is
+    /// read once per expression and anything read that often has to be free.
+    /// See [`gross_address_count`](Self::gross_address_count).
+    gross_addresses: u128,
 }
 
 impl TargetMapBuilder {
@@ -357,6 +378,7 @@ impl TargetMapBuilder {
             default_ports,
             groups: Vec::new(),
             index: HashMap::new(),
+            gross_addresses: 0,
         }
     }
 
@@ -399,6 +421,11 @@ impl TargetMapBuilder {
         if resolved.is_empty() {
             return Err(TargetParseError::Empty);
         }
+
+        // Counted from this expression's own ranges, which are a handful at
+        // most, rather than from the accumulated set - see
+        // `gross_address_count` for what re-reading the whole set per line cost.
+        self.gross_addresses = self.gross_addresses.saturating_add(resolved.len_gross());
 
         let slot = match self.index.get(&ports) {
             Some(&slot) => slot,
@@ -473,19 +500,21 @@ impl TargetMapBuilder {
     /// How many addresses have accumulated, counted before overlapping
     /// expressions are merged.
     ///
-    /// The cheap counterpart to [`address_count`](Self::address_count): it reads
-    /// the ranges as they were inserted rather than merging them, so it costs
-    /// one pass over the ranges and needs no mutable access. A caller checking a
-    /// running budget wants this - re-merging every group on every expression
-    /// would make importing a file quadratic in its length, to refine a number
-    /// that is only ever compared against a ceiling.
+    /// The cheap counterpart to [`address_count`](Self::address_count), and
+    /// cheap is the entire point of it: a running total kept as expressions
+    /// arrive, returned in constant time.
+    ///
+    /// A caller checking a budget does so once per expression, so anything this
+    /// walks - the groups, or the ranges inside them - it walks once per line of
+    /// the file. Walking the accumulated ranges here made importing a 65 536
+    /// line list take 3.2 seconds against 6.9 milliseconds for the same file
+    /// through [`push`](Self::push) alone, and the cost grew with the square of
+    /// the line count. Measured; see `examples/import_bench.rs`.
     ///
     /// Never lower than the true count, so a budget checked against it refuses
     /// early rather than late.
     pub fn gross_address_count(&self) -> u128 {
-        self.groups.iter().fold(0u128, |total, (_, ips)| {
-            total.saturating_add(ips.len_gross())
-        })
+        self.gross_addresses
     }
 
     /// Whether anything scannable has accumulated.
@@ -785,6 +814,40 @@ mod tests {
         let map = builder.build();
         assert_eq!(map.units[0].ips().v6()[0].zone, Some(7));
         assert_eq!(map.units[0].ports(), &ports("22"));
+    }
+
+    /// The running total has to equal what walking the accumulated groups would
+    /// have said, or the budget it feeds is checking a number of its own
+    /// invention.
+    ///
+    /// Kept as a total because reading it costs nothing that way and it is read
+    /// once per line of a file; the equality below is what a future change that
+    /// adds ranges by some other route would break.
+    #[test]
+    fn the_running_address_total_matches_what_the_groups_hold() {
+        let ctx = TargetContext::new();
+        let mut builder = TargetMapBuilder::new(ports("80"));
+
+        for target in [
+            "10.0.0.0/24",
+            "10.0.0.5",
+            "192.168.1.1:22",
+            "2001:db8::/120",
+            "172.16.0.1,172.16.0.2,172.16.0.3",
+            "[fe80::1]:443",
+        ] {
+            builder.push(target, &ctx).expect("parses");
+        }
+
+        let walked = builder
+            .groups
+            .iter()
+            .fold(0u128, |total, (_, ips)| total + ips.len_gross());
+
+        assert_eq!(builder.gross_address_count(), walked);
+        // And it is an over-count of the merged figure, never an under-count,
+        // which is the direction a budget has to err in.
+        assert!(builder.gross_address_count() >= builder.address_count());
     }
 
     /// A CIDR block is an upper bound on scan size that its written form hides
