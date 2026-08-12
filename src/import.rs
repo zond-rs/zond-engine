@@ -92,7 +92,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 use crate::core::models::port::PortSet;
-use crate::core::models::target::TargetMap;
+use crate::core::models::target::{TargetMap, TargetSet};
 
 pub use list::ListImporter;
 
@@ -199,6 +199,34 @@ impl ImportLimits {
         Self::default()
     }
 
+    /// Sets the longest accepted line.
+    ///
+    /// A setter rather than a field to assign, because this type is
+    /// `non_exhaustive` - which keeps a future limit an additive change, and
+    /// means a crate outside this one cannot write `ImportLimits { .. }` with a
+    /// struct update. Adjusting one bound should not require constructing all
+    /// of them.
+    pub fn with_max_line_bytes(mut self, bytes: usize) -> Self {
+        self.max_line_bytes = bytes;
+        self
+    }
+
+    /// Sets the most target expressions one import may contain.
+    pub fn with_max_tokens(mut self, tokens: u64) -> Self {
+        self.max_tokens = tokens;
+        self
+    }
+
+    /// Sets the most addresses one import may name.
+    ///
+    /// The bound most worth adjusting: raise it for a deliberate IPv6 sweep,
+    /// lower it where even the whole of IPv4 is more than the caller means to
+    /// allow.
+    pub fn with_max_addresses(mut self, addresses: u128) -> Self {
+        self.max_addresses = addresses;
+        self
+    }
+
     /// Limits that refuse nothing, for input the caller has already vetted.
     ///
     /// `max_line_bytes` stays finite because it bounds a single allocation
@@ -242,6 +270,44 @@ pub struct Refusal {
     pub token: String,
     /// Why it was refused.
     pub reason: TargetParseError,
+}
+
+impl Imported {
+    /// Takes the addresses, discarding the ports.
+    ///
+    /// [`crate::scanner::scan`] takes the [`map`](Self::map) as it stands.
+    /// [`crate::scanner::discover`] takes an [`IpSet`](crate::core::models::ip::set::IpSet), because asking whether a
+    /// host is there at all has no use for ports - so this is the other half of
+    /// the same journey, and it lives here rather than in every front end
+    /// writing the same fold.
+    ///
+    /// Addresses from every unit are merged into one set and canonicalized, so
+    /// a file naming the same host under two port specifications sweeps it
+    /// once.
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    /// use zond_engine::core::models::port::PortSet;
+    /// use zond_engine::import::{ImportFormat, ImportOptions};
+    ///
+    /// let list = "192.168.0.1\n192.168.0.100\n192.168.0.20\n";
+    /// let options = ImportOptions::new(PortSet::try_from("80").unwrap());
+    ///
+    /// let targets = ImportFormat::List
+    ///     .read(&mut Cursor::new(list), &options)
+    ///     .unwrap()
+    ///     .into_ip_set();
+    ///
+    /// assert_eq!(targets.len(), 3);
+    /// // `zond_engine::scanner::discover(targets, &config)` takes it from here.
+    /// ```
+    pub fn into_ip_set(self) -> crate::core::models::ip::set::IpSet {
+        self.map
+            .units
+            .into_iter()
+            .map(TargetSet::into_ips)
+            .collect()
+    }
 }
 
 impl fmt::Display for Refusal {
@@ -367,7 +433,11 @@ pub enum ImportError {
     },
 
     /// A target expression was refused under [`OnRefusal::Abort`].
-    #[error("{origin}: '{token}': {source}")]
+    ///
+    /// The expression is not repeated in the message: every
+    /// [`TargetParseError`] that has one already names it, and three layers
+    /// each quoting the same token reads as a stutter rather than as detail.
+    #[error("{origin}: {source}")]
     Target {
         /// Where the expression was.
         origin: Origin,
@@ -911,6 +981,60 @@ mod tests {
 
         assert_eq!(imported.addresses, 256, "the same block, named twice");
         assert_eq!(imported.tokens, 2);
+    }
+
+    /// The plain case this module exists for, end to end: a file of addresses
+    /// somebody typed, in both directions the engine can be entered.
+    ///
+    /// `scan` takes the map as it stands and `discover` takes an `IpSet`, so a
+    /// list that only works for one of them only half works.
+    #[test]
+    fn a_hand_written_list_of_addresses_feeds_both_entry_points() {
+        let list = "\
+192.168.0.1
+192.168.0.100
+192.168.0.20
+192.168.0.53
+192.168.0.151
+";
+
+        let imported = read(list, &options("22,80")).expect("a list of addresses imports");
+
+        assert_eq!(imported.tokens, 5);
+        assert_eq!(imported.addresses, 5);
+        assert_eq!(imported.refusals.len(), 0);
+
+        // The port-scan entry point: one unit, both ports, ten probes.
+        assert_eq!(imported.map.units.len(), 1);
+        let mut map = imported.map.clone();
+        assert_eq!(map.gross_targets().unwrap(), 10);
+
+        // The discovery entry point: the same five addresses, no ports.
+        let targets = imported.into_ip_set();
+        assert_eq!(targets.len(), 5);
+        for address in ["192.168.0.1", "192.168.0.20", "192.168.0.151"] {
+            assert!(
+                targets.contains(&address.parse().unwrap()),
+                "{address} did not survive"
+            );
+        }
+    }
+
+    /// A host named under two different port specifications is two pieces of
+    /// work to scan and one host to sweep, so the discovery view has to merge
+    /// what the scan view keeps apart.
+    #[test]
+    fn converting_to_addresses_merges_what_the_units_kept_apart() {
+        let imported =
+            read("10.0.0.1:22\n10.0.0.1:443\n10.0.0.2:22\n", &options("80")).expect("imports");
+
+        assert_eq!(imported.map.units.len(), 2, "two port specifications");
+        assert_eq!(imported.addresses, 3, "counted once per unit");
+        assert_eq!(
+            imported.into_ip_set().len(),
+            2,
+            "but only two hosts to sweep"
+        );
     }
 
     /// The contract that makes sniffing usable on a pipe at all: it looks

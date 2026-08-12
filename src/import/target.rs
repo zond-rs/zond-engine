@@ -30,6 +30,7 @@
 //! | `fe80::1%en0` | `fe80::1%en0` | the caller's default |
 //! | `[fe80::1%en0]:22` | `fe80::1%en0` | `22` |
 //! | `scanme.example:22` | `scanme.example` | `22` |
+//! | `192.168.1.1:u:53` | `192.168.1.1` | `u:53` (UDP) |
 //!
 //! The address half is handed to [`crate::core::parse::ip`], which already
 //! understands literals, ranges, CIDR blocks, zones and keywords. This module
@@ -39,19 +40,31 @@
 //! ## Where the ports begin
 //!
 //! That decision is the entire difficulty, because `:` separates ports from
-//! addresses and also separates an IPv6 address from itself. Three rules settle
-//! it, and they are the rules every other tool in this space uses:
+//! addresses, separates an IPv6 address from itself, and - in this engine's own
+//! `u:53` spelling for a UDP port - appears inside a port specification too.
+//! Three rules settle it:
 //!
 //! 1. A token starting with `[` is an address up to the matching `]`,
 //!    optionally followed by `:` and a port specification.
-//! 2. A token with two or more colons and no brackets is an address, with no
-//!    ports. There is no other reading of `2001:db8::1`.
-//! 3. Otherwise the single colon separates address from ports.
+//! 2. **A dot before the first colon means the first colon separates.** No IPv6
+//!    address can have one: every dotted IPv6 form puts its dots in the last 32
+//!    bits, after at least one colon. So `192.168.1.1:u:53` and
+//!    `db.internal:u:53` are an address and its ports, however many colons
+//!    follow.
+//! 3. Otherwise, one colon separates and two or more are an IPv6 address.
+//!
+//! Rule 2 is what lets a UDP port be written without brackets. Without it,
+//! `192.168.1.1:u:53` has two colons and would be read as an address - and `u:`
+//! is this engine's own invention, so the collision is its own to resolve
+//! rather than the user's to work around.
 //!
 //! The consequence worth stating plainly: **`2001:db8::1:80` is an address, not
 //! port 80 on `2001:db8::1`.** It is a syntactically valid IPv6 address and
 //! nothing in the token says otherwise. Brackets exist for exactly this, and a
-//! caller that means the port writes `[2001:db8::1]:80`.
+//! caller that means the port writes `[2001:db8::1]:80`. A target with colons
+//! that is neither is refused with an error saying so, rather than being tried
+//! as a hostname - a hostname cannot contain a colon, so whatever its author
+//! meant, they did not mean a name.
 //!
 //! ## Hostnames
 //!
@@ -93,7 +106,7 @@
 //! for roughly 1.6x end to end whether or not anything merged. The one shape
 //! that loses is a file naming a *distinct* port specification on every line -
 //! as many groups as lines, nothing shared, and the grouping machinery paid for
-//! nothing. See `examples/import_bench.rs`, which carries its predictions and
+//! nothing. See `benches/import_bench.rs`, which carries its predictions and
 //! the two of them the numbers contradicted.
 
 use std::collections::HashMap;
@@ -221,6 +234,26 @@ pub enum TargetParseError {
     #[error("'{0}': this is a hostname, and no host lookup was supplied to resolve it")]
     NoHostLookup(String),
 
+    /// Digits and dots that are not an address.
+    ///
+    /// Reported instead of treating it as a hostname, because a top-level
+    /// domain cannot be entirely numeric: `192.168.0.300` is a typo, and
+    /// calling it an unresolvable name would send its author to look at their
+    /// DNS.
+    #[error("'{0}': not a valid address, and too numeric to be a hostname")]
+    MistypedAddress(String),
+
+    /// Something with colons in it that is neither an address nor bracketed.
+    ///
+    /// Reported instead of treating it as a hostname, because a hostname cannot
+    /// contain a colon: whatever the author meant, they did not mean a name.
+    /// Almost always an IPv6 target that needs brackets to carry its ports.
+    #[error(
+        "'{0}': not an address, and a hostname cannot contain ':'. \
+         An IPv6 target carrying ports must be bracketed, as in `[2001:db8::1]:443`"
+    )]
+    UnbracketedAddress(String),
+
     /// The lookup returned nothing for the name.
     #[error("'{0}': no address could be resolved for this name")]
     UnknownHost(String),
@@ -297,31 +330,44 @@ impl<'a> TargetExpr<'a> {
             };
         }
 
-        // Two or more colons can only be an IPv6 address. One colon is a
-        // separator, because no IPv6 address has exactly one.
-        match token.split(':').count() {
-            1 => Ok(Self {
-                address: token,
-                ports: None,
-            }),
-            2 => {
-                let (address, ports) = token.split_once(':').expect("two fields means a separator");
-                if address.is_empty() {
-                    return Err(TargetParseError::Empty);
-                }
-                if ports.is_empty() {
-                    return Err(TargetParseError::EmptyPorts(token.to_string()));
-                }
-                Ok(Self {
-                    address,
-                    ports: Some(ports),
-                })
+        let colons = token.matches(':').count();
+
+        // A dot before the first colon settles it: no IPv6 address can have
+        // one. Every dotted form IPv6 has - `::ffff:192.168.0.1` and its
+        // relatives - puts the dots in the last 32 bits, after at least one
+        // colon. So a dot first means IPv4, or a dotted hostname, and every
+        // colon after the first belongs to the ports.
+        //
+        // This is what lets a UDP port be written without brackets.
+        // `192.168.0.1:u:53` has two colons and is not an address; without this
+        // rule it would be read as one, and `u:` is this engine's own spelling
+        // so the collision is its own to resolve.
+        let dotted_first = match (token.find('.'), token.find(':')) {
+            (Some(dot), Some(colon)) => dot < colon,
+            _ => false,
+        };
+
+        if colons >= 1 && (dotted_first || colons == 1) {
+            let (address, ports) = token.split_once(':').expect("a colon was found");
+            if address.is_empty() {
+                return Err(TargetParseError::Empty);
             }
-            _ => Ok(Self {
-                address: token,
-                ports: None,
-            }),
+            if ports.is_empty() {
+                return Err(TargetParseError::EmptyPorts(token.to_string()));
+            }
+            return Ok(Self {
+                address,
+                ports: Some(ports),
+            });
         }
+
+        // No colon at all, or two or more with no dot in front of them: an
+        // address, whole, with no ports. There is no other reading of
+        // `2001:db8::1`.
+        Ok(Self {
+            address: token,
+            ports: None,
+        })
     }
 
     /// The addresses the expression names, splitting the address half on commas.
@@ -456,6 +502,21 @@ impl TargetMapBuilder {
         into: &mut IpSet,
         ctx: &TargetContext<'_>,
     ) -> Result<(), TargetParseError> {
+        // A name with a colon in it is not a name. Sending it to a host lookup
+        // would report "no such host" for something that was never a host, and
+        // the author almost certainly wrote an IPv6 target without brackets.
+        if name.contains(':') {
+            return Err(TargetParseError::UnbracketedAddress(name.to_string()));
+        }
+
+        // Neither is a name made only of digits and dots: a top-level domain
+        // cannot be entirely numeric, so `192.168.0.300` is a mistyped address
+        // rather than a host to look up. Reporting it as an unresolvable name
+        // would send its author to check their DNS over a typo.
+        if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            return Err(TargetParseError::MistypedAddress(name.to_string()));
+        }
+
         let lookup = ctx
             .hosts
             .ok_or_else(|| TargetParseError::NoHostLookup(name.to_string()))?;
@@ -509,7 +570,7 @@ impl TargetMapBuilder {
     /// the file. Walking the accumulated ranges here made importing a 65 536
     /// line list take 3.2 seconds against 6.9 milliseconds for the same file
     /// through [`push`](Self::push) alone, and the cost grew with the square of
-    /// the line count. Measured; see `examples/import_bench.rs`.
+    /// the line count. Measured; see `benches/import_bench.rs`.
     ///
     /// Never lower than the true count, so a budget checked against it refuses
     /// early rather than late.
@@ -633,6 +694,60 @@ mod tests {
             assert_eq!(expr.address, address);
             assert_eq!(expr.ports, port_spec);
         }
+    }
+
+    /// `u:` is this engine's own spelling for a UDP port, and it puts a second
+    /// colon in a token that already uses one as a separator. A rule that read
+    /// every multi-colon token as IPv6 would make a UDP port unwritable on an
+    /// IPv4 target without brackets - which is what a user types first, and what
+    /// a plain reading of the grammar promises them.
+    ///
+    /// A dot before the first colon settles it: no IPv6 address can have one,
+    /// because every dotted IPv6 form puts its dots in the last 32 bits, after
+    /// at least one colon.
+    #[test]
+    fn a_udp_port_needs_no_brackets_on_an_address_that_has_a_dot() {
+        let cases = [
+            ("192.168.0.1:u:53", "192.168.0.1", Some("u:53")),
+            ("192.168.0.1:u:53,u:161", "192.168.0.1", Some("u:53,u:161")),
+            ("10.0.0.0/24:80,u:53", "10.0.0.0/24", Some("80,u:53")),
+            ("db.internal:u:53", "db.internal", Some("u:53")),
+        ];
+
+        for (token, address, port_spec) in cases {
+            let expr = TargetExpr::parse(token).expect("parses");
+            assert_eq!(expr.address, address, "{token}");
+            assert_eq!(expr.ports, port_spec, "{token}");
+        }
+
+        // And the rule it must not break: an IPv6 address is still whole.
+        for token in ["2001:db8::1", "::ffff:192.168.0.1", "2001:db8::192.168.0.1"] {
+            let expr = TargetExpr::parse(token).expect("parses");
+            assert_eq!(expr.address, token, "{token} was split");
+            assert_eq!(expr.ports, None, "{token} acquired ports");
+        }
+    }
+
+    /// A hostname cannot contain a colon, so whatever the author of one meant,
+    /// they did not mean a name. Reporting it as an unresolvable host would send
+    /// them looking for a DNS problem they do not have.
+    #[test]
+    fn an_unbracketed_ipv6_target_with_ports_says_what_to_do_about_it() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+
+        // Two colons, no dot in front: read as an address, and it is not one.
+        let err = builder
+            .push("2001:db8::zz:443", &TargetContext::new())
+            .expect_err("not an address");
+
+        assert!(
+            matches!(err, TargetParseError::UnbracketedAddress(_)),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("[2001:db8::1]:443"),
+            "the error has to show the way out: {err}"
+        );
     }
 
     /// A malformed expression has to be refused rather than silently read as

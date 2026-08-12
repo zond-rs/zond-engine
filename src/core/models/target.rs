@@ -64,6 +64,16 @@ impl TargetSet {
         &self.ips
     }
 
+    /// Takes the IP set, discarding the ports.
+    ///
+    /// For a caller moving targets to a phase that has no use for ports -
+    /// [`discover`](crate::scanner::discover) asks whether a host is there at
+    /// all - where cloning the addresses to drop the ports beside them would be
+    /// the wrong shape for a set that may hold a /8.
+    pub fn into_ips(self) -> IpSet {
+        self.ips
+    }
+
     /// Returns a read-only reference to the underlying Port set.
     pub fn ports(&self) -> &PortSet {
         &self.ports

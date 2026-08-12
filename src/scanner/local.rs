@@ -108,7 +108,7 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 ///
 /// Sizing it needs solicitations sent **one per address**, since any other kind
 /// cannot say which attempt was answered. Measured that way on a wireless
-/// segment (`examples/ndp_pace.rs`), neighbours answer in single-digit
+/// segment (`benches/ndp_pace.rs`), neighbours answer in single-digit
 /// milliseconds when mains-powered and up to roughly 400 ms when asleep, so
 /// 800 ms covers the worst case with room to spare.
 ///
@@ -190,7 +190,7 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 /// bought at several times the scan duration — the send phase drags the
 /// adaptive deadline along behind it, so the cost compounds rather than adds.
 ///
-/// `examples/ndp_pace.rs` measures the trade if it is revisited. Two cautions
+/// `benches/ndp_pace.rs` measures the trade if it is revisited. Two cautions
 /// from the last attempt: the run-to-run variance on a segment of sleeping
 /// wireless devices is large enough to swamp small differences, so arms are
 /// only comparable within one block; and the number to judge it on is hosts
@@ -1299,7 +1299,7 @@ mod tests {
 
     /// The slowest answer to a *first* solicitation measured on a wireless
     /// segment, asking one address at a time so the attribution is certain
-    /// (`examples/ndp_pace.rs`). The schedule is sized from it, so it is stated
+    /// (`benches/ndp_pace.rs`). The schedule is sized from it, so it is stated
     /// once here rather than left implied by the constants.
     const SLOWEST_MEASURED_ANSWER: Duration = Duration::from_millis(408);
 
