@@ -290,24 +290,25 @@ impl SettingsDocument {
 /// for why that is the design rather than a convenience.
 ///
 /// Mirrors the fields of [`ZondConfig`] that are worth setting once and
-/// forgetting. Deliberately not all of them: `segment_sweep` is decided by the
-/// target expression the user typed and belongs to the front end that parsed it,
-/// so a file cannot turn a single-host scan into a segment sweep behind the
-/// user's back.
+/// forgetting. Deliberately not all of them, and deliberately nothing beyond
+/// them:
+///
+/// - **`segment_sweep` is missing** because it is decided by the target
+///   expression the user typed and belongs to the front end that parsed it. A
+///   file must not be able to turn a single-host scan into a segment sweep
+///   behind the user's back.
+/// - **Nothing about presentation is here at all** — no banner, no verbosity, no
+///   terminal handling. This document configures a scan. How a scan is displayed
+///   belongs to whatever program is displaying it, in a file of its own; see
+///   [`ZondConfig`] for where that line is drawn and why.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Suppresses the startup banner.
-    pub no_banner: Option<bool>,
     /// Forbids the scan from generating DNS traffic.
     pub no_dns: Option<bool>,
     /// Masks hostnames and hardware addresses in output.
     pub redact: Option<bool>,
-    /// Output density, 0 to 2.
-    pub quiet: Option<u8>,
-    /// Disables interactive keyboard listeners.
-    pub disable_input: Option<bool>,
     /// How raw probes are placed on the wire.
     #[serde(deserialize_with = "de_send_mode")]
     pub send_mode: Option<SendMode>,
@@ -353,11 +354,8 @@ impl Settings {
         }
 
         take!(
-            no_banner,
             no_dns,
             redact,
-            quiet,
-            disable_input,
             send_mode,
             max_probe_rate,
             tcp_technique,
@@ -388,20 +386,11 @@ impl Settings {
     /// a running scan; a caller builds its configuration, applies what it
     /// loaded, and starts.
     pub fn apply_to(&self, config: &mut ZondConfig) {
-        if let Some(value) = self.no_banner {
-            config.no_banner = value;
-        }
         if let Some(value) = self.no_dns {
             config.no_dns = value;
         }
         if let Some(value) = self.redact {
             config.redact = value;
-        }
-        if let Some(value) = self.quiet {
-            config.quiet = value;
-        }
-        if let Some(value) = self.disable_input {
-            config.disable_input = value;
         }
         if let Some(value) = self.send_mode {
             config.send_mode = value;
@@ -432,12 +421,9 @@ impl Settings {
 // ---------------------------------------------------------------------------
 
 /// Every key [`Settings`] understands, for suggesting a correction.
-const KNOWN_KEYS: [&str; 13] = [
-    "no_banner",
+const KNOWN_KEYS: [&str; 10] = [
     "no_dns",
     "redact",
-    "quiet",
-    "disable_input",
     "send_mode",
     "max_probe_rate",
     "tcp_technique",
@@ -770,7 +756,7 @@ mod tests {
         let system = document(
             r#"
             [defaults]
-            quiet = 2
+            redact = true
             no_dns = true
             max_probe_rate = 1000
             "#,
@@ -778,14 +764,18 @@ mod tests {
         let user = document(
             r#"
             [defaults]
-            quiet = 0
+            redact = false
             "#,
         );
 
         let mut settings = system.document.defaults.clone();
         settings.overlay(&user.document.defaults);
 
-        assert_eq!(settings.quiet, Some(0), "the user file spoke about this");
+        assert_eq!(
+            settings.redact,
+            Some(false),
+            "the user file spoke about this"
+        );
         assert_eq!(settings.no_dns, Some(true), "and said nothing about this");
         assert_eq!(settings.max_probe_rate, Some(1000));
     }
@@ -909,7 +899,7 @@ mod tests {
             r#"
             [defaults]
             no_dns = true
-            quiet = 2
+            redact = true
             tcp_technique = "xmas"
             effort = "thorough"
             max_attempts = 5
@@ -923,7 +913,7 @@ mod tests {
         loaded.document.defaults.apply_to(&mut config);
 
         assert!(config.no_dns);
-        assert_eq!(config.quiet, 2);
+        assert!(config.redact);
         assert_eq!(config.tcp_technique, TcpScanTechnique::Xmas);
         assert_eq!(config.retry.effort, ScanEffort::Thorough);
         assert_eq!(config.retry.max_attempts, Some(5));
@@ -945,7 +935,7 @@ mod tests {
 
         let untouched = ZondConfig::default();
         assert_eq!(config.no_dns, untouched.no_dns);
-        assert_eq!(config.quiet, untouched.quiet);
+        assert_eq!(config.redact, untouched.redact);
         assert_eq!(config.tcp_technique, untouched.tcp_technique);
         assert_eq!(config.max_probe_rate, untouched.max_probe_rate);
         assert_eq!(config.retry.effort, untouched.retry.effort);
@@ -971,7 +961,7 @@ mod tests {
 
         let mut config = ZondConfig::default();
         loaded.document.defaults.apply_to(&mut config);
-        assert_eq!(config.quiet, ZondConfig::default().quiet);
+        assert_eq!(config.redact, ZondConfig::default().redact);
         assert_eq!(config.tcp_technique, ZondConfig::default().tcp_technique);
     }
 
@@ -1036,7 +1026,7 @@ mod tests {
         assert!(path.exists());
 
         // Stand in for a user editing the file they were given.
-        std::fs::write(&path, "[defaults]\nquiet = 2\n").expect("writes");
+        std::fs::write(&path, "[defaults]\nredact = true\n").expect("writes");
 
         assert_eq!(
             provision(&path).expect("finds"),
@@ -1045,7 +1035,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(&path).expect("reads"),
-            "[defaults]\nquiet = 2\n",
+            "[defaults]\nredact = true\n",
             "provisioning overwrote a file somebody had edited"
         );
 
@@ -1072,7 +1062,7 @@ mod tests {
         settings.apply_to(&mut config);
 
         let untouched = ZondConfig::default();
-        assert_eq!(config.quiet, untouched.quiet);
+        assert_eq!(config.redact, untouched.redact);
         assert_eq!(config.tcp_technique, untouched.tcp_technique);
         assert_eq!(config.retry.effort, untouched.retry.effort);
         assert_eq!(config.max_probe_rate, untouched.max_probe_rate);

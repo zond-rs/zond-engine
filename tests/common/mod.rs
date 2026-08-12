@@ -53,13 +53,11 @@ use zond_engine::system::interface::SourceResolver;
 /// The loopback address every portable test targets.
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-/// A quiet, non-interactive config with DNS disabled, so a result reflects only
-/// what was actually observed on the wire — no reverse-lookup side effects.
+/// A config with DNS disabled, so a result reflects only what was actually
+/// observed on the wire — no reverse-lookup side effects.
 pub fn test_config() -> ZondConfig {
     ZondConfig {
-        no_banner: true,
         no_dns: true,
-        disable_input: true,
         ..Default::default()
     }
 }

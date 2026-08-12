@@ -256,9 +256,7 @@ async fn main() {
 
     let cfg = ZondConfig {
         segment_sweep,
-        no_banner: true,
         no_dns: true,
-        disable_input: true,
         max_probe_rate,
         retry: RetryConfig {
             effort,

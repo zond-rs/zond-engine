@@ -921,25 +921,22 @@ mod tests {
         assert_eq!(scope.protocols(), &[Protocol::Tcp, Protocol::Udp]);
     }
 
+    /// A phase's settings are what a reader needs to interpret its findings, so
+    /// a run that put something different on the wire has to record something
+    /// different.
+    ///
+    /// The other half of this — that a run differing only in how it was
+    /// *displayed* records the same settings — used to be asserted here against
+    /// `no_banner`, `quiet` and `disable_input`. Those fields no longer exist on
+    /// [`ZondConfig`]: presentation is the front end's, so there is nothing left
+    /// that could leak into a report and nothing left for a test to catch.
     #[test]
-    fn settings_ignore_presentation_config() {
+    fn settings_record_what_changed_the_scan() {
         let scanning = ZondConfig {
             no_dns: true,
             ..Default::default()
         };
-        let presentation = ZondConfig {
-            no_banner: true,
-            quiet: 2,
-            disable_input: true,
-            ..Default::default()
-        };
 
-        // Two runs that differ only in how the terminal looked must record the
-        // same settings; one that differs in what it put on the wire must not.
-        assert_eq!(
-            ScanSettings::from(&presentation),
-            ScanSettings::from(&ZondConfig::default())
-        );
         assert_ne!(
             ScanSettings::from(&scanning),
             ScanSettings::from(&ZondConfig::default())

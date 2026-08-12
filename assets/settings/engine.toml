@@ -3,6 +3,11 @@
 # Every key below is commented out, so this file as written changes nothing.
 # Uncomment what you want and it applies to every scan.
 #
+# Everything here changes what a scan puts on the wire. How a scan is *displayed*
+# — a banner, output density, whether keystrokes are listened for — is not the
+# engine's business and has no keys in this file. Whatever program you run keeps
+# its own settings in its own file.
+#
 # Layering, each overriding the one before:
 #
 #   built-in defaults  ->  /etc/zond/engine.toml  ->  this file  ->  a profile
@@ -93,19 +98,6 @@
 #
 # redact = false
 
-# Output density: 0 full, 1 reduced, 2 data only.
-#
-# quiet = 0
-
-# Suppress the startup banner.
-#
-# no_banner = false
-
-# Do not spawn threads listening for keyboard commands. For CI, daemons and
-# anywhere without a terminal.
-#
-# disable_input = false
-
 
 # ─── Profiles ─────────────────────────────────────────────────────────────────
 #
@@ -113,7 +105,7 @@
 # A profile speaks only about the keys it mentions; everything else comes from
 # the defaults above.
 #
-# Two worked examples. Uncomment, rename, or replace them entirely.
+# Three worked examples. Uncomment, rename, or replace them entirely.
 
 # [profiles.stealth]
 # tcp_technique = "fin"
@@ -125,3 +117,7 @@
 # effort = "single"
 # max_probe_rate = 50000
 # default_ports = "80, 443"
+
+# [profiles.ci]
+# effort = "fast"
+# no_dns = true

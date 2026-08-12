@@ -108,28 +108,32 @@ pub struct ProbeTuning {
     pub tcp_technique: TcpScanTechnique,
 }
 
-/// Global configuration options for the scanner execution.
+/// What a scan does, and what it is allowed to put on the wire.
 ///
-/// This struct controls the runtime behavior of the application, including
-/// UI verbosity, network protocol constraints, and privacy features.
-/// It is typically constructed via CLI arguments or a configuration file.
+/// **Every field here changes packets or timing.** Nothing about rendering — no
+/// banner, no verbosity, no terminal or keyboard handling — because none of that
+/// is the engine's business: it emits `tracing` events and installs no
+/// subscriber, so what a run looks like is decided entirely by whoever embeds
+/// the crate. A front end's own settings belong to the front end; the engine
+/// carries them nowhere and holds no opinion about them.
+///
+/// That boundary is worth keeping because this type is also the record of *how a
+/// scan was run*. [`ScanSettings`](crate::core::report::ScanSettings) is derived
+/// from it into every report, and a field that cannot change a finding has no
+/// business in the record of one.
 #[derive(Debug, Clone, Default)]
 pub struct ZondConfig {
-    /// Toggles the display of the startup ASCII banner.
+    /// Forbids the scan from generating any DNS traffic of its own: no A, AAAA
+    /// or PTR queries, and no name resolution to go with the addresses it finds.
     ///
-    /// If `true`, the application starts immediately with log output/spinners
-    /// without printing the stylized branding. Useful for clean logs or
-    /// frequent executions.
-    pub no_banner: bool,
-
-    /// Restricts the scanner from generating outbound DNS traffic.
+    /// Set when the traffic itself is the problem — a query to a resolver the
+    /// target operates announces the scan to whoever runs it, and on an
+    /// engagement that can be the whole of what goes wrong. The cost is hosts
+    /// reported by address alone.
     ///
-    /// # Behavior
-    /// * **True**: The scanner will strictly avoid sending DNS queries (A, AAAA, PTR).
-    /// * **False** (Default): The scanner may resolve hostnames to IPs or perform reverse lookups.
-    ///
-    /// **Note:** This does not prevent the underlying OS or network stack from
-    /// processing incoming DNS packets if they were initiated elsewhere.
+    /// It governs what this engine sends and nothing else. Traffic the host's
+    /// own stack generates for its own reasons is outside anything this crate
+    /// can promise.
     pub no_dns: bool,
 
     /// Whether discovery may probe the whole segment rather than only the
@@ -151,38 +155,21 @@ pub struct ZondConfig {
     /// target expression.
     pub segment_sweep: bool,
 
-    /// Enables privacy mode for sensitive data in the output.
+    /// Whether identifying detail should be masked wherever the scan's findings
+    /// leave the process: hostnames, hardware addresses, and the host part of an
+    /// IPv6 address.
     ///
-    /// When enabled, personally identifiable information (PII) or sensitive
-    /// network details are masked.
+    /// For a report going somewhere that needs to know a network's shape without
+    /// knowing which device is which — a client, an auditor, a screenshot in an
+    /// issue.
     ///
-    /// # Masked Fields
-    /// * IPv6 Suffixes (e.g Global Unicast)
-    /// * MAC Addresses
-    /// * Hostnames
-    ///
-    /// Use this when sharing screenshots or logs publicly.
+    /// The engine does not mask anything itself; a scan holds what it found. This
+    /// records the caller's intent, and it reaches the point of use through
+    /// [`ScanSettings`](crate::core::report::ScanSettings) and the export layer's
+    /// own [`Redaction`](crate::export::Redaction) policy. Masking on the way out
+    /// rather than on the way in is deliberate: the alternative is a report that
+    /// has quietly lost data nobody can recover.
     pub redact: bool,
-
-    /// How much of what the engine emits a consumer wants to render: `0` for
-    /// everything, rising to `2` for results only.
-    ///
-    /// The engine never reads this. It emits `tracing` events tagged with a
-    /// `verbosity` field and installs no subscriber, so what is shown is decided
-    /// entirely by whoever embeds the crate; this field only carries the choice
-    /// to whatever code makes it.
-    pub quiet: u8,
-
-    /// Disables interactive keyboard listeners.
-    ///
-    /// When `true`, the application will not spawn threads to listen for
-    /// runtime commands (like pausing, resuming, or status checks).
-    ///
-    /// # Use Cases
-    /// * Running in a CI/CD pipeline.
-    /// * Running as a background system service (daemon).
-    /// * Non-interactive testing environments.
-    pub disable_input: bool,
 
     /// How raw SYN probes are placed on the wire. Defaults to
     /// [`SendMode::Auto`], which is correct on every supported platform;
