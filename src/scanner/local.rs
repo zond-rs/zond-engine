@@ -47,7 +47,7 @@ use crate::core::session::ScanContext;
 use crate::network::channel::{self, EthernetHandle};
 use crate::network::mac::IntoCoreMac;
 use crate::protocols::{self as protocol, ethernet};
-use crate::scanner::NetworkExplorer;
+use crate::scanner::{NetworkExplorer, StrategyError};
 use crate::system::interface::NetworkInterfaceExtension;
 use crate::{error, info};
 
@@ -135,12 +135,18 @@ const NDP_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 )
 .without_cross_host_estimate();
 
-/// Errors specific to local-network scanning, covering interface setup problems
-/// and packets that fail the sanity checks a discovery reply is expected to pass.
+/// Why a captured frame is not a discovery finding.
+///
+/// Not a failure of the scanner: a promiscuous capture sees the whole segment's
+/// traffic, so most of what arrives is somebody else's and rejecting it is the
+/// normal case rather than an error. These are named rather than lumped into one
+/// `None` because which check rejected a frame is the first thing worth knowing
+/// when a host that should have been found was not.
+///
+/// Kept apart from [`StrategyError`], which is about a strategy that could not
+/// run at all.
 #[derive(Debug, thiserror::Error)]
-pub enum LocalScannerError {
-    #[error("interface has no mac address")]
-    NoMacAddress,
+pub(crate) enum FrameRejected {
     #[error("unmapped RTT source: {0}")]
     UnmappedRttSource(IpAddr),
     #[error("packet originated from this host")]
@@ -365,8 +371,11 @@ impl SourceIdentity {
     /// scanned and otherwise falls back to the interface's first non-loopback
     /// address. For IPv6, it uses the interface's link-local address when it has
     /// one, since that is what the ICMPv6 all-nodes probe is sent from.
-    fn resolve(intf: &NetworkInterface, ip_set: &IpSet) -> Result<Self, LocalScannerError> {
-        let mac = intf.mac.ok_or(LocalScannerError::NoMacAddress)?;
+    fn resolve(intf: &NetworkInterface, ip_set: &IpSet) -> Result<Self, StrategyError> {
+        let mac = intf.mac.ok_or_else(|| StrategyError::Interface {
+            interface: intf.name.clone(),
+            reason: "it has no MAC address, and every probe here is an Ethernet frame",
+        })?;
 
         let mut ipv4 = None;
         for net in intf.get_ipv4_nets() {
@@ -482,13 +491,14 @@ pub struct LocalScanner {
 
 #[async_trait]
 impl NetworkExplorer for LocalScanner {
-    async fn discover_hosts(mut self: Box<Self>) -> anyhow::Result<()> {
+    async fn discover_hosts(mut self: Box<Self>) -> Result<(), StrategyError> {
         let mut packet_iter = protocol::eth_packet_iter(
             &self.identity.mac,
             &self.identity.ipv4,
             &self.identity.link_local_ipv6,
             &self.ip_set,
-        )?;
+        )
+        .map_err(|e| StrategyError::Probe(format!("{e:#}")))?;
 
         // The first all-nodes echo is owed immediately, so it goes out at the
         // head of the sweep rather than behind every ARP request. It is the one
@@ -592,7 +602,7 @@ impl LocalScanner {
         dns_tx: Option<UnboundedSender<IpAddr>>,
         scope: Scope,
         retry: RetryConfig,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, StrategyError> {
         let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
         Self::build(
             intf,
@@ -622,7 +632,7 @@ impl LocalScanner {
         dns_tx: Option<UnboundedSender<IpAddr>>,
         scope: Scope,
         eth_handle: EthernetHandle,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, StrategyError> {
         Self::build(intf, ip_set, ctx, dns_tx, scope, eth_handle, RETRY_POLICY)
     }
 
@@ -638,7 +648,7 @@ impl LocalScanner {
         scope: Scope,
         eth_handle: EthernetHandle,
         retry: RetryPolicy,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, StrategyError> {
         let identity = SourceIdentity::resolve(&intf, &ip_set)?;
 
         let target_count = ip_set.len() as usize;
@@ -994,7 +1004,7 @@ impl LocalScanner {
 
         let source_mac = eth_frame.get_source();
         if source_mac == self.identity.mac {
-            return Err(LocalScannerError::SelfSourcedPacket.into());
+            return Err(FrameRejected::SelfSourcedPacket.into());
         }
 
         let source_addr: IpAddr = protocol::get_ip_addr_from_eth(&eth_frame)?;
@@ -1024,7 +1034,7 @@ impl LocalScanner {
             Scope::Sweep => subject.is_ipv4() && !self.ip_set.contains(&subject),
         };
         if out_of_range {
-            return Err(LocalScannerError::AddressOutOfRange(subject).into());
+            return Err(FrameRejected::AddressOutOfRange(subject).into());
         }
 
         if subject != source_addr {
@@ -1103,7 +1113,7 @@ impl LocalScanner {
                 sequence,
             } => {
                 if self.solicitation.sent_at.is_empty() {
-                    return Err(LocalScannerError::UnmappedRttSource(subject).into());
+                    return Err(FrameRejected::UnmappedRttSource(subject).into());
                 }
                 match self.solicitation.sent_at(identifier, sequence) {
                     Some(sent_at) => Some((

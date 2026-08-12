@@ -44,7 +44,7 @@ use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::audit::ProbeAudit;
-use super::{NetworkExplorer, payload};
+use super::{NetworkExplorer, StrategyError, payload};
 use crate::core::report::StopReason;
 use crate::core::session::ScannerKind;
 
@@ -364,7 +364,7 @@ pub struct RoutedScanner {
 
 #[async_trait]
 impl NetworkExplorer for RoutedScanner {
-    async fn discover_hosts(mut self: Box<Self>) -> anyhow::Result<()> {
+    async fn discover_hosts(mut self: Box<Self>) -> Result<(), StrategyError> {
         let mut send_tick = tokio::time::interval(self.send_tick);
         // Without this, a ticker that went unpolled while the loop was busy with
         // replies hands back every missed tick at once, and the pacing it exists
@@ -467,7 +467,7 @@ impl RoutedScanner {
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
         tuning: ProbeTuning,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, StrategyError> {
         let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, tuning.send_mode)?;
         Ok(Self::build(
             targets,

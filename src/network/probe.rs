@@ -31,9 +31,9 @@
 //! `Box<dyn ProbeSender>` and a capture-fed receive stream, and every scanner
 //! depends only on those two things.
 
+use std::fmt;
 use std::net::IpAddr;
 
-use anyhow::Context;
 use pnet::datalink;
 use pnet::packet::Packet;
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
@@ -174,6 +174,42 @@ impl ProbeKind {
     }
 }
 
+/// Why one probe could not be put on the wire.
+///
+/// Two variants, because two things are worth telling apart and nothing else is.
+/// [`Unsupported`](Self::Unsupported) is a fact about this transport that will
+/// be just as true for the next probe — retrying is pointless and a scan should
+/// give up on the path. [`Refused`](Self::Refused) came from outside and may not
+/// hold next time: a full send buffer clears, a route appears.
+///
+/// The refusal carries the operating system's own words rather than a
+/// classification of them. "No route to host" and "Permission denied" call for
+/// completely different responses from whoever is reading the report, and no
+/// enum this crate could write would keep pace with what a kernel actually says.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum SendError {
+    /// The host would not send the packet, in its own words.
+    #[error("{0}")]
+    Refused(String),
+
+    /// This transport cannot express the probe it was handed, and will not be
+    /// able to next time either.
+    #[error("this transport cannot send that probe: {0}")]
+    Unsupported(&'static str),
+}
+
+impl SendError {
+    /// Wraps a failure from a lower layer, keeping its whole cause chain.
+    ///
+    /// `{e:#}` rather than `{e}`: the outer message says which probe failed and
+    /// the chain is the operating system's own explanation, which is the half
+    /// that says what to do about it.
+    pub(crate) fn refused(error: impl fmt::Display) -> Self {
+        Self::Refused(format!("{error:#}"))
+    }
+}
+
 /// Sends an already-built Layer-4 `segment` to `dst`.
 ///
 /// `src` is the source address the segment's checksum was computed against;
@@ -181,7 +217,31 @@ impl ProbeKind {
 /// link-layer sender uses it to build the header itself. Implementations must
 /// be safe to share across threads.
 pub trait ProbeSender: Send + Sync {
-    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> anyhow::Result<()>;
+    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError>;
+}
+
+/// Why a probe transport could not be opened.
+///
+/// Named by the half that failed, because the two halves fail for different
+/// reasons and only one of them has an alternative. A scan that cannot capture
+/// has nowhere to hear an answer and is over; a scan that cannot open its send
+/// socket may still have a link-layer path, which is what [`SendMode`] selects.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum TransportError {
+    /// The receive half could not be started.
+    #[error("the reply capture could not be started: {0}")]
+    Capture(#[from] capture::CaptureError),
+
+    /// The raw send socket could not be opened. Needs root, and on Windows raw
+    /// TCP sends are blocked outright whatever the privileges.
+    #[error("the raw send socket could not be opened: {0}")]
+    RawSocket(String),
+
+    /// Layer-2 sending was asked for and this host has nothing to send from —
+    /// only tunnels or loopback. The raw-socket path is the one that works here.
+    #[error("no Ethernet-capable interface for Layer-2 send: {0}")]
+    NoEthernetInterface(String),
 }
 
 /// A borrowed Layer-4 segment presented as a `pnet` packet, so raw bytes can
@@ -207,16 +267,19 @@ pub struct RawIpSender {
 }
 
 impl RawIpSender {
-    fn open(kind: ProbeKind) -> anyhow::Result<Self> {
-        Ok(Self {
-            handle: transport::open_sender(kind.transport_type())?,
-        })
+    fn open(kind: ProbeKind) -> Result<Self, TransportError> {
+        transport::open_sender(kind.transport_type())
+            .map(|handle| Self { handle })
+            .map_err(|e| TransportError::RawSocket(format!("{e:#}")))
     }
 }
 
 impl ProbeSender for RawIpSender {
-    fn send(&self, segment: &[u8], _src: IpAddr, dst: IpAddr) -> anyhow::Result<()> {
-        self.handle.send_to(RawSegment(segment), dst).map(|_| ())
+    fn send(&self, segment: &[u8], _src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
+        self.handle
+            .send_to(RawSegment(segment), dst)
+            .map(|_| ())
+            .map_err(SendError::refused)
     }
 }
 
@@ -227,8 +290,8 @@ impl ProbeSender for RawIpSender {
 struct NoopSender;
 
 impl ProbeSender for NoopSender {
-    fn send(&self, _segment: &[u8], _src: IpAddr, _dst: IpAddr) -> anyhow::Result<()> {
-        anyhow::bail!("this transport is receive-only and cannot send")
+    fn send(&self, _segment: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
+        Err(SendError::Unsupported("it is receive-only"))
     }
 }
 
@@ -261,7 +324,7 @@ impl ProbeTransport {
     }
     /// Opens a transport for `kind` with the platform-default send backend
     /// ([`SendMode::Auto`]).
-    pub fn open(kind: ProbeKind) -> anyhow::Result<Self> {
+    pub fn open(kind: ProbeKind) -> Result<Self, TransportError> {
         Self::open_with(kind, SendMode::Auto)
     }
 
@@ -272,7 +335,7 @@ impl ProbeTransport {
     /// is caught whichever interface the kernel routed the probe out of - the
     /// egress path can differ per destination, especially with a VPN in play,
     /// so binding to a single guessed interface would silently miss replies.
-    pub fn open_with(kind: ProbeKind, mode: SendMode) -> anyhow::Result<Self> {
+    pub fn open_with(kind: ProbeKind, mode: SendMode) -> Result<Self, TransportError> {
         match mode {
             SendMode::Ethernet => Self::open_ethernet(kind),
             SendMode::RawSocket => Self::open_on(kind, &capturable_interfaces()),
@@ -293,7 +356,7 @@ impl ProbeTransport {
     }
 
     /// [`open`](Self::open) against an explicit interface-name list.
-    pub fn open_on(kind: ProbeKind, interfaces: &[String]) -> anyhow::Result<Self> {
+    pub fn open_on(kind: ProbeKind, interfaces: &[String]) -> Result<Self, TransportError> {
         let (rx, capture) = capture::start(interfaces, &kind.filter())?;
         let tx: Box<dyn ProbeSender> = Box::new(RawIpSender::open(kind)?);
         Ok(Self { tx, rx, capture })
@@ -306,9 +369,12 @@ impl ProbeTransport {
     /// bypassing the host stack. Fails if the host has no Ethernet-capable
     /// interface - only a tunnel or loopback - in which case the raw-IP
     /// transport from [`open`](Self::open) is the correct choice.
-    pub fn open_ethernet(kind: ProbeKind) -> anyhow::Result<Self> {
-        let sender = EthernetSender::from_system(kind.ip_protocol())
-            .context("no Ethernet-capable interface for Layer-2 send")?;
+    pub fn open_ethernet(kind: ProbeKind) -> Result<Self, TransportError> {
+        let sender = EthernetSender::from_system(kind.ip_protocol()).ok_or_else(|| {
+            TransportError::NoEthernetInterface(
+                "the host has only tunnel or loopback interfaces".to_string(),
+            )
+        })?;
         let (rx, capture) = capture::start(&capturable_interfaces(), &kind.filter())?;
         Ok(Self {
             tx: Box::new(sender),
@@ -324,7 +390,7 @@ impl ProbeTransport {
     /// emits raw packets - so no raw send socket is opened. That drops an
     /// unnecessary privilege requirement and failure mode (a host that blocks
     /// raw sockets can still resolve hostnames).
-    pub fn open_receiver(kind: ProbeKind) -> anyhow::Result<Self> {
+    pub fn open_receiver(kind: ProbeKind) -> Result<Self, TransportError> {
         let (rx, capture) = capture::start(&capturable_interfaces(), &kind.filter())?;
         Ok(Self {
             tx: Box::new(NoopSender),
@@ -378,7 +444,7 @@ pub struct MockSender {
 
 #[cfg(test)]
 impl ProbeSender for MockSender {
-    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> anyhow::Result<()> {
+    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
         self.sent.lock().unwrap().push((segment.to_vec(), src, dst));
         Ok(())
     }

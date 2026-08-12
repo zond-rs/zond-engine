@@ -60,7 +60,7 @@ use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
 use crate::network::capture::CapturedSegment;
 use crate::network::probe::{ProbeKind, ProbeTransport};
-use crate::scanner::PortScanner;
+use crate::scanner::{PortScanner, StrategyError};
 use crate::system::interface::SourceResolver;
 
 use super::icmp_error::{self, Unreachable};
@@ -197,7 +197,7 @@ impl UdpPortScanner {
         ctx: ScanContext,
         target_count: usize,
         tuning: ProbeTuning,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, StrategyError> {
         let src_port: u16 = rand::random_range(50_000..u16::MAX);
         let transport = ProbeTransport::open_with(
             ProbeKind::UdpProbe {
@@ -590,7 +590,7 @@ impl PortScanner for UdpPortScanner {
     /// earlier ones are answered or expire, so the send rate settles at the
     /// rate the network is actually resolving them instead of at the rate the
     /// dispatcher can produce them.
-    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         let mut sending_finished = false;
 
         loop {

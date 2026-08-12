@@ -7,7 +7,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // use crate::adapters::outbound::terminal::print;
-use anyhow::{self, Context};
 use pnet::datalink;
 use pnet::datalink::{Channel, Config, DataLinkReceiver, DataLinkSender, NetworkInterface};
 use std::thread;
@@ -49,7 +48,35 @@ impl EthernetHandle {
     }
 }
 
-pub fn start_capture(intf: &NetworkInterface) -> anyhow::Result<EthernetHandle> {
+/// Why a link-layer channel could not be opened.
+///
+/// Both variants name the interface, because a scan opens one channel per
+/// segment it means to sweep and "opening a channel failed" is not actionable
+/// without knowing which.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum ChannelError {
+    /// The operating system refused the channel. Usually missing privileges:
+    /// sending and receiving raw frames needs root everywhere this engine runs.
+    #[error("opening a link-layer channel on {interface} failed: {source}")]
+    Open {
+        /// The interface that refused.
+        interface: String,
+        /// What the operating system said.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The interface opened but is not Ethernet, so the frames this scanner
+    /// builds mean nothing on it.
+    #[error("{interface} is not an Ethernet interface")]
+    NotEthernet {
+        /// The interface in question.
+        interface: String,
+    },
+}
+
+pub fn start_capture(intf: &NetworkInterface) -> Result<EthernetHandle, ChannelError> {
     let cfg = Config {
         read_timeout: Some(Duration::from_millis(READ_TIMEOUT_MS)),
         ..Default::default()
@@ -60,20 +87,28 @@ pub fn start_capture(intf: &NetworkInterface) -> anyhow::Result<EthernetHandle> 
     Ok(EthernetHandle { tx, rx: queue_rx })
 }
 
+/// The two halves of an open link-layer channel: somewhere to put frames, and
+/// the frames arriving.
+pub type EthernetChannel = (Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>);
+
 pub fn open_eth_channel<F>(
     intf: &NetworkInterface,
     channel_opener: F,
     cfg: Config,
-) -> anyhow::Result<(Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>)>
+) -> Result<EthernetChannel, ChannelError>
 where
     F: FnOnce(&NetworkInterface, Config) -> std::io::Result<datalink::Channel>,
 {
-    let ch: Channel =
-        channel_opener(intf, cfg).with_context(|| format!("opening on {}", intf.name))?;
+    let ch: Channel = channel_opener(intf, cfg).map_err(|source| ChannelError::Open {
+        interface: intf.name.clone(),
+        source,
+    })?;
 
     match ch {
         Channel::Ethernet(tx, rx) => Ok((tx, rx)),
-        _ => anyhow::bail!("non-ethernet channel for {}", intf.name),
+        _ => Err(ChannelError::NotEthernet {
+            interface: intf.name.clone(),
+        }),
     }
 }
 

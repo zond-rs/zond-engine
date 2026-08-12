@@ -102,6 +102,64 @@ pub enum ScanError {
     TaskFailed,
 }
 
+/// Why one scanning strategy could not start, or could not finish.
+///
+/// **This is not how a scan fails.** A scan runs several strategies and carries
+/// on with whatever survives, so one of these is recorded in the report's
+/// [`failures`](ScanReport::failures) and announced on the event stream rather
+/// than returned from [`discover`] or [`scan`]. It reaches a caller directly
+/// only when they build a strategy themselves, which is what the `test-support`
+/// feature is for.
+///
+/// The variants are the layers a strategy is assembled from, because that is
+/// what determines whether anything can be done about it. A [`Transport`] or
+/// [`Channel`] failure is almost always missing privileges and the same
+/// unprivileged fallback answers all of them; an [`Interface`] failure is about
+/// one interface and the scan of every other one is unaffected.
+///
+/// [`Transport`]: StrategyError::Transport
+/// [`Channel`]: StrategyError::Channel
+/// [`Interface`]: StrategyError::Interface
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum StrategyError {
+    /// The raw probe transport could not be opened.
+    #[error(transparent)]
+    Transport(#[from] crate::network::probe::TransportError),
+
+    /// The link-layer channel a local sweep needs could not be opened.
+    #[error(transparent)]
+    Channel(#[from] crate::network::channel::ChannelError),
+
+    /// The interface this strategy was given cannot be probed from.
+    #[error("{interface} cannot be probed from: {reason}")]
+    Interface {
+        /// The interface in question.
+        interface: String,
+        /// What is missing.
+        reason: &'static str,
+    },
+
+    /// The strategy's probes could not be built. A bug or an impossible target
+    /// rather than an environment problem, since a probe is built from values
+    /// this engine chose.
+    #[error("the probes for this strategy could not be built: {0}")]
+    Probe(String),
+
+    /// A strategy panicked.
+    ///
+    /// Always a bug in the engine, never a fact about the network, and reported
+    /// rather than swallowed: the task it killed would otherwise take the
+    /// evidence with it, and the scan would look merely empty.
+    #[error("the {scanner:?} scanner panicked: {detail}")]
+    Panicked {
+        /// Which strategy went down.
+        scanner: ScannerKind,
+        /// What the runtime said about it.
+        detail: String,
+    },
+}
+
 /// A handle to a running scan.
 ///
 /// Discovered hosts arrive live through the paired [`ScanSession`]. Await this
@@ -301,7 +359,7 @@ pub async fn scan(
 /// rather than pretend, through `&mut self`, that it might run again.
 #[async_trait]
 pub trait NetworkExplorer {
-    async fn discover_hosts(self: Box<Self>) -> anyhow::Result<()>;
+    async fn discover_hosts(self: Box<Self>) -> Result<(), StrategyError>;
 }
 
 /// A scanning strategy that classifies the ports of a known set of targets.
@@ -334,7 +392,7 @@ pub trait PortScanner: Send {
     /// in the shared store. Returns `Ok` when the run completes, including an
     /// early stop through the abort signal, and `Err` only when the strategy
     /// itself fails.
-    async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> anyhow::Result<()>;
+    async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> Result<(), StrategyError>;
 
     /// Second-pass service identification, run once after a successful
     /// [`scan`](PortScanner::scan) that was not aborted.
@@ -396,7 +454,7 @@ impl ScanCapabilities {
 /// runs it alongside the port scan. Keeping it in one place lets both surface
 /// identical host detail without duplicating the orchestration.
 struct Enrichment {
-    scanners: Vec<(ScannerKind, JoinHandle<anyhow::Result<()>>)>,
+    scanners: Vec<(ScannerKind, JoinHandle<Result<(), StrategyError>>)>,
     resolver: Option<JoinHandle<Option<HostnameResolver>>>,
 }
 
@@ -464,7 +522,7 @@ async fn spawn_explorers(
     dns_tx: Option<UnboundedSender<IpAddr>>,
     tuning: ProbeTuning,
     scope: Scope,
-) -> Vec<(ScannerKind, JoinHandle<anyhow::Result<()>>)> {
+) -> Vec<(ScannerKind, JoinHandle<Result<(), StrategyError>>)> {
     let mut explorers: Vec<(ScannerKind, Box<dyn NetworkExplorer + Send>)> = Vec::new();
     let interface::RoutedTargets {
         local,
@@ -916,7 +974,7 @@ mod tests {
             self.0.clone()
         }
 
-        async fn scan(&mut self, _targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+        async fn scan(&mut self, _targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
             Ok(())
         }
     }

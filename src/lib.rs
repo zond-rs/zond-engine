@@ -124,7 +124,7 @@ pub use crate::core::models::target::{Target, TargetMap, TargetSet};
 pub use crate::core::models::technique::TcpScanTechnique;
 pub use crate::core::report::{ScanReport, ScanSummary};
 pub use crate::core::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
-pub use crate::scanner::{ScanError, ScanTask, discover, scan};
+pub use crate::scanner::{ScanError, ScanTask, StrategyError, discover, scan};
 
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
 // from anywhere in the crate. They are deliberately not part of the public API;

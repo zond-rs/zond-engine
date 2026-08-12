@@ -45,7 +45,7 @@ use pnet::util::MacAddr;
 use crate::network::channel::open_eth_channel;
 use crate::network::frame;
 use crate::network::neighbor::{LinkRoute, NeighborResolver};
-use crate::network::probe::ProbeSender;
+use crate::network::probe::{ProbeSender, SendError};
 use crate::protocols::arp;
 
 /// How long to wait for an ARP reply before giving up on an on-link target.
@@ -178,26 +178,39 @@ impl EthernetSender {
 }
 
 impl ProbeSender for EthernetSender {
-    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> anyhow::Result<()> {
-        let route = self
-            .resolver
-            .lock()
-            .unwrap()
-            .resolve(dst)
-            .with_context(|| format!("no Ethernet route to {dst}"))?;
+    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
+        // Every step here can fail for a reason outside this process - no route,
+        // a neighbour that never answered our ARP, an interface that went down
+        // mid-scan - so they are all refusals carrying the cause, not claims
+        // that the transport is incapable.
+        (|| -> anyhow::Result<()> {
+            let route = self
+                .resolver
+                .lock()
+                .unwrap()
+                .resolve(dst)
+                .with_context(|| format!("no Ethernet route to {dst}"))?;
 
-        let dst_mac = self.next_hop_mac(&route)?;
-        let frame =
-            frame::build_ethernet_frame(route.src_mac, dst_mac, src, dst, self.protocol, segment)?;
+            let dst_mac = self.next_hop_mac(&route)?;
+            let frame = frame::build_ethernet_frame(
+                route.src_mac,
+                dst_mac,
+                src,
+                dst,
+                self.protocol,
+                segment,
+            )?;
 
-        let mut channels = self.channels.lock().unwrap();
-        let channel = self.channel_for(&mut channels, &route.interface)?;
-        channel
-            .tx
-            .send_to(&frame, None)
-            .context("no frame send result")?
-            .context("sending frame")?;
-        Ok(())
+            let mut channels = self.channels.lock().unwrap();
+            let channel = self.channel_for(&mut channels, &route.interface)?;
+            channel
+                .tx
+                .send_to(&frame, None)
+                .context("no frame send result")?
+                .context("sending frame")?;
+            Ok(())
+        })()
+        .map_err(SendError::refused)
     }
 }
 

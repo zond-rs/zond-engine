@@ -46,7 +46,6 @@
 
 #![allow(dead_code)]
 
-use anyhow::Context;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -63,7 +62,7 @@ use pnet::packet::udp::UdpPacket;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use zond_engine::network::capture::CapturedSegment;
-use zond_engine::network::probe::{ProbeSender, ProbeTransport};
+use zond_engine::network::probe::{ProbeSender, ProbeTransport, SendError};
 use zond_engine::protocols::{ip, udp};
 
 /// TCP header length used for synthesized replies: the 20-byte minimum, with
@@ -497,12 +496,12 @@ impl ProbeSender for FakeLink {
     /// point is that the scanner cannot tell the difference between a probe
     /// that was lost and one that was ignored, and reporting an error here
     /// would hand it exactly the signal a real network withholds.
-    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> anyhow::Result<()> {
+    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
         let Some(probe) = self.parse(segment) else {
-            anyhow::bail!(
+            return Err(SendError::Refused(format!(
                 "fake net received a segment it could not parse as {:?}",
                 self.layer4
-            );
+            )));
         };
 
         let policy = self
@@ -946,8 +945,11 @@ pub fn unsendable_transport(reason: &'static str) -> ProbeTransport {
     struct Refuses(&'static str, UnboundedSender<CapturedSegment>);
 
     impl ProbeSender for Refuses {
-        fn send(&self, _segment: &[u8], _src: IpAddr, dst: IpAddr) -> anyhow::Result<()> {
-            Err(anyhow::anyhow!("{}", self.0)).context(format!("failed to send to {dst}"))
+        fn send(&self, _segment: &[u8], _src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
+            Err(SendError::Refused(format!(
+                "failed to send to {dst}: {}",
+                self.0
+            )))
         }
     }
 

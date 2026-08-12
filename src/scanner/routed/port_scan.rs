@@ -63,7 +63,7 @@ use crate::error;
 use crate::network::capture::CapturedSegment;
 use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
 use crate::protocols::tcp;
-use crate::scanner::{PortScanner, service};
+use crate::scanner::{PortScanner, StrategyError, service};
 use crate::success;
 use crate::system::interface::SourceResolver;
 
@@ -162,7 +162,7 @@ impl TcpPortScanner {
         technique: TcpScanTechnique,
         target_count: usize,
         tuning: ProbeTuning,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, StrategyError> {
         let src_port: u16 = rand::random_range(50_000..u16::MAX);
         let transport = ProbeTransport::open_with(
             ProbeKind::TcpProbe {
@@ -656,7 +656,7 @@ impl PortScanner for TcpPortScanner {
     /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes
     /// are outstanding, and retries are serviced before new targets are taken,
     /// since a retry is an obligation the scan already owns.
-    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         let mut sending_finished = false;
 
         loop {

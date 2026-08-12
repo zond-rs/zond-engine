@@ -23,7 +23,7 @@
 
 use super::dispatcher::Dispatcher;
 use super::pool::ProbePool;
-use super::{NetworkExplorer, PortScanner, payload, tuning};
+use super::{NetworkExplorer, PortScanner, StrategyError, payload, tuning};
 use crate::core::models::host::{Host, HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol};
@@ -62,7 +62,7 @@ impl ConnectScanner {
 
 #[async_trait]
 impl NetworkExplorer for ConnectScanner {
-    async fn discover_hosts(self: Box<Self>) -> anyhow::Result<()> {
+    async fn discover_hosts(self: Box<Self>) -> Result<(), StrategyError> {
         // A discovery run is single-shot, so it consumes the scanner: `ips` and
         // `ctx` move straight into `discover`, no `mem::take` placeholder needed.
         discover(self.ips, self.ctx).await
@@ -125,7 +125,7 @@ impl PortScanner for ConnectPortScanner {
         vec![Protocol::Tcp]
     }
 
-    async fn scan(&mut self, rx: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+    async fn scan(&mut self, rx: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         scan(rx, self.concurrency, self.ctx.clone()).await
     }
 }
@@ -152,7 +152,7 @@ impl PortScanner for ConnectUdpPortScanner {
         vec![Protocol::Udp]
     }
 
-    async fn scan(&mut self, mut rx: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+    async fn scan(&mut self, mut rx: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         let mut pool = ProbePool::new(self.concurrency, |probed| absorb_probe(&self.ctx, probed));
 
         while let Some(target) = rx.recv().await {
@@ -178,7 +178,7 @@ pub async fn scan(
     mut rx: mpsc::Receiver<Target>,
     concurrency_limit: usize,
     ctx: ScanContext,
-) -> anyhow::Result<()> {
+) -> Result<(), StrategyError> {
     let mut pool = ProbePool::new(concurrency_limit, |probed| absorb_probe(&ctx, probed));
 
     while let Some(target) = rx.recv().await {
@@ -407,16 +407,13 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
 /// instead of hammering one subnet at a time, and each probe waits out the
 /// [`CONNECT_PROBE_TIMEOUT`](tuning::CONNECT_PROBE_TIMEOUT) so that hosts on slow
 /// or distant links still register.
-pub async fn discover(ips: IpSet, ctx: ScanContext) -> anyhow::Result<()> {
+pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError> {
     let mut target_map = TargetMap::new();
-    let port_set = PortSet::try_from(
-        DISCOVERY_PORTS
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-            .as_str(),
-    )?;
+    // Built from the numbers rather than by formatting them into a string and
+    // parsing it back. The round trip was a fallible call on a constant this
+    // module owns, which meant a `?` on an error that could not happen and a
+    // signature that had to admit it.
+    let port_set = PortSet::from_iter(DISCOVERY_PORTS.iter().map(|&port| (port, Protocol::Tcp)));
     target_map.add_unit(TargetSet::new(ips, port_set));
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);

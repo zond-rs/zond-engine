@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use crate::core::models::port::Protocol;
 use crate::core::models::target::Target;
 use crate::core::session::{ScanContext, ScannerKind};
-use crate::scanner::PortScanner;
+use crate::scanner::{PortScanner, StrategyError};
 use crate::warn;
 
 /// A port scanner that multiplexes targets by protocol.
@@ -60,7 +60,7 @@ impl PortScanner for CompositePortScanner {
         protocols
     }
 
-    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         struct Route {
             supported_protocols: Vec<Protocol>,
             tx: mpsc::Sender<Target>,
@@ -128,7 +128,7 @@ impl PortScanner for CompositePortScanner {
         // service-detection pass would skip strategies that ran perfectly well,
         // and their tasks would be left running against a store the scan has
         // already moved on from.
-        let mut failure: Option<anyhow::Error> = None;
+        let mut failure: Option<StrategyError> = None;
 
         for (kind, handle) in handles {
             match handle.await {
@@ -142,8 +142,10 @@ impl PortScanner for CompositePortScanner {
                 // ever means the scanner panicked - a bug, and one that would
                 // otherwise vanish along with the scanner it took down.
                 Err(e) => {
-                    failure
-                        .get_or_insert_with(|| anyhow::anyhow!("{kind:?} scanner panicked: {e}"));
+                    failure.get_or_insert_with(|| StrategyError::Panicked {
+                        scanner: kind,
+                        detail: e.to_string(),
+                    });
                 }
             }
         }
@@ -223,9 +225,9 @@ mod tests {
             self.supported.clone()
         }
 
-        async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {
+        async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
             match self.behaviour {
-                Behaviour::Fail(reason) => return Err(anyhow::anyhow!(reason)),
+                Behaviour::Fail(reason) => return Err(StrategyError::Probe(reason.into())),
                 Behaviour::Panic => panic!("scanner bug"),
                 Behaviour::Collect => {}
             }
@@ -247,7 +249,10 @@ mod tests {
 
     /// Feeds `targets` through a composite over `scanners` and returns what the
     /// run reported.
-    async fn run(scanners: Vec<Box<dyn PortScanner>>, targets: Vec<Target>) -> anyhow::Result<()> {
+    async fn run(
+        scanners: Vec<Box<dyn PortScanner>>,
+        targets: Vec<Target>,
+    ) -> Result<(), StrategyError> {
         let mut composite = CompositePortScanner::new(scanners);
         let (tx, rx) = mpsc::channel(16);
         for t in targets {

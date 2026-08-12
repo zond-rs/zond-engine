@@ -223,7 +223,33 @@ impl CaptureGuard {
 ///
 /// Fails only if *no* interface could be captured, since a transport with no
 /// receive path is useless.
-pub fn start(interfaces: &[String], filter: &str) -> anyhow::Result<(CaptureStream, CaptureGuard)> {
+/// Why a capture could not be started.
+///
+/// One variant, because there is one way this fails. An interface that cannot be
+/// captured is skipped and logged rather than failing the scan — a host has
+/// several, most of them irrelevant to any given probe, and refusing to scan
+/// because a virtual bridge declined would be wrong. Only *every* interface
+/// failing leaves the scan with nowhere to hear an answer, and that is this.
+///
+/// `#[non_exhaustive]` because the capture layer is where new platform-specific
+/// failures show up first.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum CaptureError {
+    /// No interface could be captured, so no reply could ever be heard. Almost
+    /// always missing privileges: opening a capture needs root on every platform
+    /// this engine supports.
+    #[error(
+        "no interface could be captured for replies, so no answer could be heard \
+         (opening a capture needs root)"
+    )]
+    NoInterface,
+}
+
+pub fn start(
+    interfaces: &[String],
+    filter: &str,
+) -> Result<(CaptureStream, CaptureGuard), CaptureError> {
     let (tx, rx) = mpsc::unbounded_channel();
     let stop = Arc::new(AtomicBool::new(false));
     let mut handles = Vec::new();
@@ -253,7 +279,7 @@ pub fn start(interfaces: &[String], filter: &str) -> anyhow::Result<(CaptureStre
     }
 
     if handles.is_empty() {
-        anyhow::bail!("no interface could be captured for replies");
+        return Err(CaptureError::NoInterface);
     }
 
     Ok((

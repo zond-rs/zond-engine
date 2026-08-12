@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 
 use zond_engine::core::models::host::Host;
 use zond_engine::network::capture::CapturedSegment;
-use zond_engine::network::probe::{ProbeSender, ProbeTransport};
+use zond_engine::network::probe::{ProbeSender, ProbeTransport, SendError};
 use zond_engine::scanner::resolver::HostnameResolver;
 
 const ROUTER: &str = "192.168.0.1";
@@ -203,7 +203,7 @@ fn ip(address: &str) -> IpAddr {
 struct SilentSender;
 
 impl ProbeSender for SilentSender {
-    fn send(&self, _segment: &[u8], _src: IpAddr, _dst: IpAddr) -> anyhow::Result<()> {
+    fn send(&self, _segment: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
         panic!("the hostname resolver must not emit raw probes");
     }
 }
