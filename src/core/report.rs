@@ -64,11 +64,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::core::config::{SendMode, ZondConfig};
 use crate::core::models::host::{Host, HostStatus};
-use crate::core::models::ip::range::IpRange;
+use crate::core::models::ip::range::{IpRange, Ipv4Range, Ipv6Range};
+use crate::core::models::ip::scoped::Zone;
 use crate::core::models::ip::set::IpSet;
-use crate::core::models::port::{PortState, Protocol};
+use crate::core::models::port::{PortSet, PortState, Protocol};
 use crate::core::models::retry::RetryConfig;
-use crate::core::models::target::TargetMap;
+use crate::core::models::target::{TargetMap, TargetSet};
 use crate::core::models::technique::TcpScanTechnique;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::network::capture::CaptureCounts;
@@ -378,7 +379,8 @@ impl ProbeStats {
         self.scanner
     }
 
-    /// How many targets this scanner owned.
+    /// How many targets this scanner owned: addresses for a discovery sweep,
+    /// `(address, port)` probes for a port scan.
     pub fn targets(&self) -> u128 {
         self.targets
     }
@@ -422,7 +424,18 @@ impl ProbeStats {
         self.replies_without_rtt
     }
 
-    /// Targets credited as alive for the first time.
+    /// Targets a reply resolved, counted once each.
+    ///
+    /// The unit is whatever the scanner's targets are, which is also the unit of
+    /// [`targets`](Self::targets), so the two read together as answered against
+    /// asked: a host for a discovery sweep, an `(address, port)` probe for a port
+    /// scan. Named for the first of those because discovery was the first
+    /// strategy to carry an audit.
+    ///
+    /// This is the number a run is judged on. Read against `targets` it is
+    /// coverage; read against [`stop_reason`](Self::stop_reason) and
+    /// [`last_reply`](Self::last_reply) it says whether the run was still finding
+    /// things when it ended.
     pub fn hosts_found(&self) -> u64 {
         self.hosts_found
     }
@@ -824,6 +837,84 @@ impl ScanReport {
         summary
     }
 
+    /// The hosts this report found alive, as targets for a port scan.
+    ///
+    /// The join between the engine's two phases, which is the whole economy of
+    /// having two: sweep a range cheaply, then spend the expensive phase only on
+    /// what answered. Without this a caller has to walk the hosts, filter them,
+    /// and assemble four types by hand to say something the report already
+    /// knows.
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use zond_engine::{PortSet, ZondConfig, discover, scan};
+    /// use zond_engine::core::parse::ip::to_set;
+    ///
+    /// let cfg = ZondConfig::default();
+    /// let (_, sweep) = discover(to_set(&["192.168.1.0/24"], None)?, &cfg).await?;
+    /// let mut report = sweep.join().await?;
+    ///
+    /// let targets = report.alive_targets(PortSet::try_from("22,80,443")?);
+    /// let (_, ports) = scan(targets, &cfg).await?;
+    /// report.merge(ports.join().await?);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// **Only hosts that answered.** [`Host::is_alive`] is the filter, so a host
+    /// recorded as [`Down`](HostStatus::Down) — a router said it was
+    /// unreachable — or [`Unknown`](HostStatus::Unknown) is left out. Probing an
+    /// address nothing answered for costs a full port scan's worth of silence to
+    /// learn what the sweep already established.
+    ///
+    /// **One address per host, the one it is reported under.** A dual-stack host
+    /// is one machine and is scanned once, at the address
+    /// [`Host::primary_ip`] picked; scanning both would report it twice, keyed
+    /// separately, which is the outcome that ranking exists to prevent. A caller
+    /// who does want every address can build the set from [`Host::ips`] instead.
+    ///
+    /// A link-local address carries the interface it was found on, because it is
+    /// meaningless without one — `fe80::1` names a different machine on every
+    /// segment, and the sweep that found it is the only thing that knows which.
+    pub fn alive_targets(&self, ports: PortSet) -> TargetMap {
+        let mut ips = IpSet::new();
+
+        for host in self.hosts.values().filter(|host| host.is_alive()) {
+            match host.primary_ip() {
+                IpAddr::V4(v4) => {
+                    if let Ok(range) = Ipv4Range::new(v4, v4) {
+                        ips.push_v4_range(range);
+                    }
+                }
+                IpAddr::V6(v6) => {
+                    // The zone is kept for exactly the addresses that cannot be
+                    // reached without one, and dropped for the rest for the
+                    // reason `ScopedIp` drops it: the same global address
+                    // through two interfaces is one address, not two.
+                    let zone = v6
+                        .is_unicast_link_local()
+                        .then(|| host.zone().map(Zone::index))
+                        .flatten();
+                    if let Ok(range) = Ipv6Range::scoped(v6, v6, zone) {
+                        ips.push_v6_range(range);
+                    }
+                }
+            }
+        }
+
+        ips.canonicalize();
+
+        let mut targets = TargetMap::new();
+        // An empty unit is not the same as no unit: a `TargetMap` holding a set
+        // with no addresses would have a port dimension and nothing to apply it
+        // to, and `scan` would report a phase that covered nothing rather than
+        // one there was nothing to do.
+        if !ips.is_empty() {
+            targets.add_unit(TargetSet::new(ips, ports));
+        }
+        targets
+    }
+
     /// Folds a later phase of the same job into this report.
     ///
     /// Hosts present in both are combined with [`Host::merge`], so a host
@@ -970,6 +1061,77 @@ mod tests {
         assert_eq!(summary.ports_open, 2);
         assert_eq!(summary.ports_by_state[&PortState::Filtered], 1);
         assert_eq!(summary.services_identified, 1);
+    }
+
+    /// The whole economy of running discovery first: a host that never answered
+    /// costs a full port scan's worth of silence to learn what the sweep already
+    /// established.
+    #[test]
+    fn only_hosts_that_answered_become_port_scan_targets() {
+        let mut up = Host::new(ip(1));
+        up.set_status(HostStatus::Up);
+        let mut filtered = Host::new(ip(2));
+        filtered.set_status(HostStatus::Filtered);
+        let mut down = Host::new(ip(3));
+        down.set_status(HostStatus::Down);
+        let unknown = Host::new(ip(4));
+
+        let report = ScanReport::new(phase(ScanKind::Discovery), [up, filtered, down, unknown]);
+
+        let mut targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
+
+        // Up and Filtered are both alive - something is there, whether or not it
+        // is answering for itself. Down and Unknown are not.
+        assert_eq!(targets.gross_ips().expect("countable"), 2);
+        assert_eq!(targets.gross_targets().expect("countable"), 2);
+    }
+
+    /// A dual-stack host is one machine. Scanning it at every address it holds
+    /// would report it once per address, keyed separately - which is exactly
+    /// what `consider_primary_ip`'s ranking exists to prevent.
+    #[test]
+    fn a_dual_stack_host_is_scanned_once() {
+        let mut dual = Host::new(ip(1));
+        dual.set_status(HostStatus::Up);
+        dual.add_ip(IpAddr::from_str("2001:db8::1").unwrap());
+
+        let report = ScanReport::new(phase(ScanKind::Discovery), [dual]);
+        let mut targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
+
+        assert_eq!(targets.gross_ips().expect("countable"), 1);
+    }
+
+    /// `fe80::1` names a different machine on every segment, and a socket cannot
+    /// be opened to one without the interface's scope id. The sweep that found
+    /// it is the only thing that knows which, so the target has to carry it or
+    /// the port scan cannot reach the host discovery just found.
+    #[test]
+    fn a_link_local_target_keeps_the_interface_it_was_found_on() {
+        let lla: IpAddr = "fe80::10".parse().unwrap();
+        let mut host = Host::new(lla);
+        host.set_status(HostStatus::Up);
+        host.set_zone(Zone::new(7, "en0"));
+
+        let report = ScanReport::new(phase(ScanKind::Discovery), [host]);
+        let targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
+
+        let zones: Vec<Option<u32>> = targets
+            .units
+            .iter()
+            .flat_map(|unit| unit.ips().v6().iter().map(|range| range.zone))
+            .collect();
+        assert_eq!(zones, vec![Some(7)]);
+    }
+
+    /// A sweep that found nothing yields no work, not an empty unit carrying a
+    /// port dimension with nothing to apply it to.
+    #[test]
+    fn a_sweep_that_found_nothing_yields_no_targets() {
+        let report = ScanReport::new(phase(ScanKind::Discovery), [Host::new(ip(1))]);
+        let targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
+
+        assert!(targets.is_empty());
+        assert!(targets.units.is_empty());
     }
 
     #[test]

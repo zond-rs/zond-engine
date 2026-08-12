@@ -129,6 +129,7 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
         ScannerKind::SynPort => "syn_port",
         ScannerKind::TcpPort => "tcp_port",
         ScannerKind::Connect => "connect",
+        ScannerKind::ConnectUdp => "connect_udp",
         ScannerKind::UdpPort => "udp_port",
         ScannerKind::Composite => "composite",
     }

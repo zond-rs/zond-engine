@@ -43,8 +43,19 @@ pub enum ScannerKind {
     ///
     /// [`SynPort`]: ScannerKind::SynPort
     TcpPort,
-    /// Unprivileged TCP connect fallback.
+    /// Unprivileged TCP connect fallback, for both host discovery and port
+    /// scanning.
     Connect,
+    /// Unprivileged UDP fallback.
+    ///
+    /// Named apart from [`Connect`] because a report has to be able to say which
+    /// half of an unprivileged scan failed. The two send different datagrams,
+    /// read different answers, and fail for different reasons — a host that
+    /// refuses one may be perfectly happy with the other, and one name for both
+    /// makes that indistinguishable.
+    ///
+    /// [`Connect`]: ScannerKind::Connect
+    ConnectUdp,
     /// Privileged raw UDP port scanning.
     UdpPort,
     /// Composite scanner that delegates to protocol-specific scanners.

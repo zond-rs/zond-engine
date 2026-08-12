@@ -258,12 +258,18 @@ fn send_syn(
 /// scan's identity on the wire: the capture filter narrows direct replies down
 /// to it, and the datagram quoted inside an ICMP error is checked against it.
 /// Randomizing per probe would leave no filter expressible but "all UDP".
+///
+/// `reason` receives the failure when there is one, exactly as it does for
+/// [`send_syn`]. A UDP scan whose probes never left reports every port
+/// open-filtered - the same answer a firewall produces - and only this says
+/// otherwise.
 fn send_udp(
     sender: &dyn ProbeSender,
     src_port: u16,
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
+    reason: &mut Option<String>,
 ) -> Option<()> {
     // What makes an open port answer at all: UDP has no handshake, so the
     // application itself has to recognize the request. See [`payload`].
@@ -288,10 +294,15 @@ fn send_udp(
             Some(())
         }
         Err(e) => {
+            // `{e:#}` rather than `{e}`, for the reason `send_syn` gives: the
+            // chained cause is the operating system's own explanation, and
+            // "No route to host" and "Permission denied" call for completely
+            // different responses.
             error!(
                 verbosity = 2,
-                "Failed to send UDP probe to {dst_addr}:{dst_port}: {e}"
+                "Failed to send UDP probe to {dst_addr}:{dst_port}: {e:#}"
             );
+            *reason = Some(format!("{e:#}"));
             None
         }
     }

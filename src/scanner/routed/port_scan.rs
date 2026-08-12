@@ -58,6 +58,7 @@ use crate::core::models::port::{PortState, Protocol};
 use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy};
 use crate::core::models::target::Target;
 use crate::core::models::technique::TcpScanTechnique;
+use crate::core::report::StopReason;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
 use crate::network::capture::CapturedSegment;
@@ -70,6 +71,7 @@ use crate::system::interface::SourceResolver;
 // Port scanning and routed discovery send the same kind of raw TCP probe over
 // the same kind of network path, so they share one adaptive-deadline profile
 // rather than keeping two copies in step.
+use super::super::audit::ProbeAudit;
 use super::icmp_error::{self, Unreachable};
 use super::{DEADLINE_CONFIG, RETRY_POLICY};
 
@@ -146,7 +148,10 @@ pub struct TcpPortScanner {
     /// about the difference. `Filtered` is a claim about the network; a probe
     /// that was never sent is a claim about this host.
     send_failure: Option<String>,
-    sends_failed: u64,
+    /// Per-run counters, so a scan that classified fewer ports than it asked
+    /// about can be attributed to loss, to its own deadline, or to correlation
+    /// rather than guessed at. Reported once when the loop exits.
+    audit: ProbeAudit,
 }
 
 impl TcpPortScanner {
@@ -243,7 +248,7 @@ impl TcpPortScanner {
             due: Vec::new(),
             src_port,
             send_failure: None,
-            sends_failed: 0,
+            audit: ProbeAudit::new(),
         }
     }
 
@@ -271,7 +276,7 @@ impl TcpPortScanner {
             return;
         };
 
-        match send_tcp_probe(
+        let token = send_tcp_probe(
             self.transport.tx.as_ref(),
             self.technique,
             self.src_port,
@@ -279,9 +284,11 @@ impl TcpPortScanner {
             ip,
             port,
             &mut self.send_failure,
-        ) {
-            Some(token) => self.ledger.arm(ip, (ip, port), token, now),
-            None => self.sends_failed += 1,
+        );
+        self.audit.record_send(token.is_some());
+
+        if let Some(token) = token {
+            self.ledger.arm(ip, (ip, port), token, now);
         }
     }
 
@@ -301,6 +308,7 @@ impl TcpPortScanner {
     /// one, classifies it and records the port's state.
     fn handle_tcp_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
         let Some(tcp_packet) = TcpPacket::new(bytes) else {
+            self.audit.record_off_target();
             return;
         };
 
@@ -310,10 +318,12 @@ impl TcpPortScanner {
         // transport can be built with no filter at all - and this is the only
         // thing making the reply ours.
         if tcp_packet.get_destination() != self.src_port {
+            self.audit.record_off_target();
             return;
         }
 
         let Some(reply) = tcp::classify_probe_response(&tcp_packet) else {
+            self.audit.record_off_target();
             return;
         };
         // A segment this technique's probe could not have provoked - a SYN+ACK
@@ -396,6 +406,10 @@ impl TcpPortScanner {
         now: Instant,
     ) {
         let Some(resolution) = self.ledger.resolve(&key, token, now) else {
+            // A reply matching no live attempt: a stray or spoofed segment, a
+            // duplicate of one already acted on, or an answer to a probe already
+            // written off. It proves something is there and yields no sample.
+            self.audit.record_reply_without_rtt();
             return;
         };
 
@@ -403,6 +417,7 @@ impl TcpPortScanner {
         if let Some(rtt) = resolution.rtt {
             self.deadline.record_rtt(rtt);
         }
+        self.audit.record_host_found(resolution.answered_attempt);
 
         self.record_port(key.0, key.1, state, sender);
     }
@@ -658,25 +673,33 @@ impl PortScanner for TcpPortScanner {
     /// since a retry is an obligation the scan already owns.
     async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         let mut sending_finished = false;
+        let mut probes = 0u128;
 
-        loop {
+        // The loop yields why it stopped, so the audit cannot report a reason
+        // the code never actually took.
+        let reason = loop {
             // Read once per iteration and reused throughout it: a scan at rate
             // takes this path constantly, and the arithmetic below only needs
             // the instants to agree with each other.
             let now = Instant::now();
             self.service_retries(now);
 
-            if self.ctx.handle.should_stop() || self.deadline.hard_deadline_passed() {
-                break;
+            if self.ctx.handle.should_stop() {
+                break StopReason::Aborted;
             }
+            if self.deadline.hard_deadline_passed() {
+                break StopReason::DeadlineExpired;
+            }
+            // Every probe asked as many times as its budget allows. Waiting
+            // longer could not change what this found.
             if sending_finished && self.ledger.is_empty() {
-                break;
+                break StopReason::AttemptsSpent;
             }
             // Silence is only evidence once nothing is outstanding. With probes
             // still waiting on their timers, quiet is exactly what the retry
             // schedule expects and is no reason to conclude anything.
             if self.ledger.is_empty() && self.deadline.has_expired() {
-                break;
+                break StopReason::DeadlineExpired;
             }
 
             // Both are read off `self` before the `select!`, which borrows the
@@ -687,15 +710,21 @@ impl PortScanner for TcpPortScanner {
             tokio::select! {
                 target = targets.recv(), if admitting => {
                     match target {
-                        Some(target) => self.send_probe(target),
+                        Some(target) => {
+                            probes += 1;
+                            self.send_probe(target);
+                        }
                         None => sending_finished = true,
                     }
                 }
 
                 res = self.transport.rx.recv() => {
                     match res {
-                        Some(reply) => self.handle_reply(&reply, Instant::now()),
-                        None => break,
+                        Some(reply) => {
+                            self.audit.record_segment();
+                            self.handle_reply(&reply, Instant::now());
+                        }
+                        None => break StopReason::StreamClosed,
                     }
                 }
 
@@ -703,24 +732,32 @@ impl PortScanner for TcpPortScanner {
                 // even though nothing is arriving to wake the loop otherwise.
                 _ = tokio::time::sleep(tick) => {}
             }
-        }
+        };
 
         self.resolve_remaining_as_silent();
 
         // Reported once with the first cause, for the reason in
         // `RoutedScanner`: a port scan that could not send is not a port scan
         // that found everything closed, and only this channel says so.
-        if self.sends_failed > 0 {
+        if self.audit.sends_failed > 0 {
             self.ctx.record_failure(
                 self.kind(),
                 format!(
                     "{} probes could not be sent, so their ports are reported \
                      unanswered without having been asked: {}",
-                    self.sends_failed,
+                    self.audit.sends_failed,
                     self.send_failure.as_deref().unwrap_or("cause unrecorded"),
                 ),
             );
         }
+
+        // Read before the transport is dropped, since the counters live with the
+        // capture threads it keeps alive.
+        let capture = self.transport.capture_counts();
+        let kind = self.kind();
+        self.audit.report("tcp-port", probes, reason, capture);
+        self.ctx
+            .record_probe_stats(self.audit.stats(kind, probes, reason, capture));
         Ok(())
     }
 

@@ -55,7 +55,7 @@ pub async fn detect(ctx: &ScanContext) {
         return;
     }
 
-    let mut pool = ProbePool::new(CONNECT_CONCURRENCY, |fingerprinted| {
+    let mut pool = ProbePool::new(CONNECT_CONCURRENCY, |fingerprinted, _audit| {
         if let Some((ip, port)) = fingerprinted {
             write_back(ctx, ip, port);
         }

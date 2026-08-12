@@ -838,6 +838,7 @@
         "syn_port",
         "tcp_port",
         "connect",
+        "connect_udp",
         "udp_port",
         "composite"
       ]

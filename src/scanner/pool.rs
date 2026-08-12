@@ -25,6 +25,7 @@
 use tokio::task::JoinSet;
 
 use crate::error;
+use crate::scanner::audit::ProbeAudit;
 
 /// A bounded pool of in-flight probe tasks.
 ///
@@ -35,16 +36,24 @@ use crate::error;
 /// output is passed to the `fold` closure the pool was built with. A task that
 /// panicked is dropped, which matches a scan's best-effort contract: one lost
 /// probe must not sink the whole sweep.
-pub(in crate::scanner) struct ProbePool<R, F: FnMut(R)> {
+///
+/// The pool also owns the run's [`ProbeAudit`], and hands it to `fold` alongside
+/// each result. It has to be here rather than beside the pool at the call site:
+/// `fold` runs inside the pool and the caller's own loop runs outside it, so two
+/// separate borrows of one audit would not compile, and the alternative is
+/// interior mutability in three call sites to work around a structure that could
+/// simply hold it. A caller that has no use for it ignores the argument.
+pub(in crate::scanner) struct ProbePool<R, F: FnMut(R, &mut ProbeAudit)> {
     set: JoinSet<R>,
     limit: usize,
     fold: F,
+    audit: ProbeAudit,
 }
 
 impl<R, F> ProbePool<R, F>
 where
     R: Send + 'static,
-    F: FnMut(R),
+    F: FnMut(R, &mut ProbeAudit),
 {
     /// Builds an empty pool that keeps at most `limit` probes in flight and
     /// applies `fold` to each finished probe's output.
@@ -53,7 +62,19 @@ where
             set: JoinSet::new(),
             limit,
             fold,
+            audit: ProbeAudit::new(),
         }
+    }
+
+    /// The counters for this run, for a caller that records something the fold
+    /// cannot see - a probe admitted, say, which happens in the source loop.
+    pub(in crate::scanner) fn audit(&mut self) -> &mut ProbeAudit {
+        &mut self.audit
+    }
+
+    /// Takes the counters once the run is over.
+    pub(in crate::scanner) fn into_audit(self) -> ProbeAudit {
+        self.audit
     }
 
     /// Spawns `task`, first reaping finished probes until the pool has room, so
@@ -86,7 +107,7 @@ where
     /// defective probe cannot sink the whole scan while still not vanishing unseen.
     async fn reap(&mut self) {
         match self.set.join_next().await {
-            Some(Ok(output)) => (self.fold)(output),
+            Some(Ok(output)) => (self.fold)(output, &mut self.audit),
             Some(Err(e)) => error!("probe task panicked: {e}"),
             None => {}
         }

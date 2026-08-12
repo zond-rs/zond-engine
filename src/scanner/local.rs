@@ -43,10 +43,12 @@ use crate::core::models::ip::scoped::Zone;
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::retry::{Due, ProbeLedger, RetryConfig, RetryPolicy};
 use crate::core::models::timer::ScanBudget;
-use crate::core::session::ScanContext;
+use crate::core::report::StopReason;
+use crate::core::session::{ScanContext, ScannerKind};
 use crate::network::channel::{self, EthernetHandle};
 use crate::network::mac::IntoCoreMac;
 use crate::protocols::{self as protocol, ethernet};
+use crate::scanner::audit::ProbeAudit;
 use crate::scanner::{NetworkExplorer, StrategyError};
 use crate::system::interface::NetworkInterfaceExtension;
 use crate::{error, info};
@@ -479,6 +481,15 @@ pub struct LocalScanner {
     /// yields a round trip or it does not, and the host is reported either way.
     confirming: VecDeque<IpAddr>,
     confirmed_at: HashMap<IpAddr, Instant>,
+    /// Per-run counters, so a sweep that finds fewer hosts than the segment
+    /// holds can be attributed to loss, to its own deadline, or to correlation
+    /// rather than guessed at. Reported once when the loop exits.
+    ///
+    /// `capture` is always `None` here: this scanner reads frames off an
+    /// [`EthernetHandle`], which is a plain reader thread with no kernel buffer
+    /// to interrogate, so what the kernel dropped is not knowable from inside
+    /// this scanner rather than being zero.
+    audit: ProbeAudit,
     /// When each IPv6 address was *first* asked about.
     ///
     /// Diagnostic only, and kept because the number it yields is the one thing
@@ -516,21 +527,26 @@ impl NetworkExplorer for LocalScanner {
         // ticker exists to impose evaporates exactly when the queue is longest.
         send_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        loop {
+        // The loop yields why it stopped, so the audit cannot report a reason
+        // the code never actually took.
+        let reason = loop {
             let now = Instant::now();
             self.service_retries(now);
 
-            if self.ctx.handle.should_stop() || self.deadline.hard_deadline_passed() {
-                break;
+            if self.ctx.handle.should_stop() {
+                break StopReason::Aborted;
+            }
+            if self.deadline.hard_deadline_passed() {
+                break StopReason::DeadlineExpired;
             }
             if sending_finished && self.all_targets_responded() {
-                break;
+                break StopReason::AllResponded;
             }
             // Silence is only evidence once nothing is outstanding: with probes
             // still waiting on their timers, quiet is what the retry schedule
             // expects rather than a sign the segment has gone quiet.
             if sending_finished && self.idle(now) && self.deadline.has_expired() {
-                break;
+                break StopReason::DeadlineExpired;
             }
 
             // Anything left to put on the wire, whether a first attempt or a
@@ -544,8 +560,11 @@ impl NetworkExplorer for LocalScanner {
             tokio::select! {
                 pkt = self.eth_handle.rx.recv() => {
                     match pkt {
-                        Some(bytes) => _ = self.process_eth_packet(&bytes, Instant::now()),
-                        None => break,
+                        Some(bytes) => {
+                            self.audit.record_segment();
+                            _ = self.process_eth_packet(&bytes, Instant::now());
+                        }
+                        None => break StopReason::StreamClosed,
                     }
                 }
 
@@ -575,7 +594,7 @@ impl NetworkExplorer for LocalScanner {
 
                 _ = tokio::time::sleep(idle_delay), if !sending => {}
             }
-        }
+        };
 
         // What the confirmations bought, which is only visible from here. An
         // entry still in the map is a solicitation that went out and was never
@@ -590,6 +609,27 @@ impl NetworkExplorer for LocalScanner {
             );
         }
 
+        // A sweep whose frames never left is not a sweep that found nothing, and
+        // the difference is invisible in every number a caller reads. Reported
+        // once with a count rather than once per probe, as the routed paths do.
+        if self.audit.sends_failed > 0 {
+            self.ctx.record_failure(
+                ScannerKind::Local,
+                format!(
+                    "{} of {} probes could not be built for {}, so those addresses \
+                     are reported absent without having been asked",
+                    self.audit.sends_failed, self.audit.sends_attempted, self.identity.zone,
+                ),
+            );
+        }
+
+        // No capture counts: frames arrive over an `EthernetHandle`, which is a
+        // reader thread rather than a kernel capture, so what the kernel dropped
+        // is unknowable here rather than zero.
+        let targets = self.ip_set.len();
+        self.audit.report("local-discovery", targets, reason, None);
+        self.ctx
+            .record_probe_stats(self.audit.stats(ScannerKind::Local, targets, reason, None));
         Ok(())
     }
 }
@@ -689,6 +729,7 @@ impl LocalScanner {
             confirming: VecDeque::new(),
             confirmed_at: HashMap::new(),
             first_asked_at: HashMap::new(),
+            audit: ProbeAudit::new(),
         })
     }
 
@@ -752,6 +793,7 @@ impl LocalScanner {
         match protocol::ndp::create_neighbor_solicitation(&self.identity.mac, &source_v6, target_v6)
         {
             Ok(packet) => {
+                self.audit.record_send(true);
                 self.eth_handle.tx.send_to(&packet, None);
                 self.confirmed_at.insert(target, now);
                 info!(
@@ -759,10 +801,13 @@ impl LocalScanner {
                     "Asked {target} directly, having only overheard it"
                 );
             }
-            Err(e) => error!(
-                verbosity = 1,
-                "Failed to build a confirming solicitation for {target}: {e}"
-            ),
+            Err(e) => {
+                self.audit.record_send(false);
+                error!(
+                    verbosity = 1,
+                    "Failed to build a confirming solicitation for {target}: {e}"
+                );
+            }
         }
     }
 
@@ -783,10 +828,12 @@ impl LocalScanner {
             self.solicitation.next_sequence(),
         ) {
             Ok(packet) => {
+                self.audit.record_send(true);
                 self.eth_handle.tx.send_to(&packet, None);
                 self.solicitation.record_sent(now);
             }
             Err(e) => {
+                self.audit.record_send(false);
                 error!(
                     verbosity = 1,
                     "Failed to rebuild all-nodes solicitation: {e}"
@@ -832,6 +879,7 @@ impl LocalScanner {
 
         match packet {
             Ok(packet) => {
+                self.audit.record_send(true);
                 self.eth_handle.tx.send_to(&packet, None);
                 if target.is_ipv6() {
                     self.first_asked_at.entry(target).or_insert(now);
@@ -843,7 +891,10 @@ impl LocalScanner {
             // Not armed, so the ledger's charge for this attempt stands and the
             // address runs out of attempts on schedule rather than waiting
             // outstanding forever.
-            Err(e) => error!(verbosity = 1, "Failed to rebuild probe for {target}: {e}"),
+            Err(e) => {
+                self.audit.record_send(false);
+                error!(verbosity = 1, "Failed to rebuild probe for {target}: {e}");
+            }
         }
     }
 
@@ -1004,6 +1055,7 @@ impl LocalScanner {
 
         let source_mac = eth_frame.get_source();
         if source_mac == self.identity.mac {
+            self.audit.record_off_target();
             return Err(FrameRejected::SelfSourcedPacket.into());
         }
 
@@ -1014,6 +1066,9 @@ impl LocalScanner {
         }
 
         let Some((matched, protocol)) = self.interpret_response(&eth_frame) else {
+            // Common in promiscuous mode: traffic between other hosts, or
+            // forwarded through a router. Not this scan's, and not a fault.
+            self.audit.record_off_target();
             return Ok(());
         };
 
@@ -1034,6 +1089,7 @@ impl LocalScanner {
             Scope::Sweep => subject.is_ipv4() && !self.ip_set.contains(&subject),
         };
         if out_of_range {
+            self.audit.record_off_target();
             return Err(FrameRejected::AddressOutOfRange(subject).into());
         }
 
@@ -1043,6 +1099,12 @@ impl LocalScanner {
                 "{subject} answered from {source_addr}, which is another of its addresses"
             );
         }
+
+        // Which send the reply answered, where the wire can say. Set inside the
+        // one arm that can know it rather than threaded through the match: the
+        // all-nodes echo is timed against a request it names, but that request
+        // was put to the whole segment and answers no address's own probe.
+        let mut answered_attempt = None;
 
         let rtt = match matched {
             // `interpret_response` returns `None` rather than this, so the arm
@@ -1061,6 +1123,7 @@ impl LocalScanner {
             // it answers.
             ProtocolMatch::Solicited(_) => match self.resolve_probe(&subject, now) {
                 Some(resolution) => {
+                    answered_attempt = resolution.answered_attempt;
                     if resolution.rtt.is_none() {
                         info!(
                             verbosity = 2,
@@ -1134,7 +1197,7 @@ impl LocalScanner {
         if self.ip_set.contains(&subject) {
             self.responded.insert(subject);
         }
-        self.record_response(source_mac, subject, rtt, protocol.clone());
+        self.record_response(source_mac, subject, rtt, protocol.clone(), answered_attempt);
 
         // The address the reply came *from* belongs to the same host and is just
         // as real, so it is recorded too - but only after the subject, which is
@@ -1142,7 +1205,7 @@ impl LocalScanner {
         // about is how a phone solicited at one address came back reported under
         // another.
         if subject != source_addr {
-            self.record_response(source_mac, source_addr, None, protocol);
+            self.record_response(source_mac, source_addr, None, protocol, None);
         }
 
         Ok(())
@@ -1218,6 +1281,7 @@ impl LocalScanner {
         source_addr: IpAddr,
         rtt: Option<(Duration, RttSource)>,
         protocol: StatusProtocol,
+        answered_attempt: Option<u8>,
     ) {
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
 
@@ -1261,6 +1325,13 @@ impl LocalScanner {
 
         if is_new_host {
             self.deadline.mark_activity();
+            self.audit.record_host_found(answered_attempt);
+        }
+        if rtt.is_none() {
+            // Alive, and no round trip to show for it: a reply to a probe this
+            // scan no longer had outstanding, or one Karn's rule refuses to
+            // time. Both are worth counting separately from the finding itself.
+            self.audit.record_reply_without_rtt();
         }
 
         if let Some((rtt, source)) = rtt {

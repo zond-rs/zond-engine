@@ -71,8 +71,9 @@ pub(crate) struct ProbeAudit {
     /// retransmissions land here, and so does a correlation bug.
     pub(crate) replies_without_rtt: u64,
 
-    /// Targets credited as alive for the first time. This is the number the run
-    /// is judged on.
+    /// Targets a reply resolved, counted once each — a host for a discovery
+    /// sweep, an `(address, port)` probe for a port scan. The number the run is
+    /// judged on, and the numerator to the `targets` this run was given.
     pub(crate) hosts_found: u64,
 
     /// Found hosts by the attempt whose reply revealed them, `[0]` being the
@@ -137,9 +138,13 @@ impl ProbeAudit {
         self.replies_without_rtt += 1;
     }
 
-    /// Records a target credited as alive for the first time, timestamped
-    /// against the start of the run and attributed to the attempt that revealed
-    /// it where the reply named one.
+    /// Records a target resolved by a reply, timestamped against the start of
+    /// the run and attributed to the attempt that answered it where the reply
+    /// named one.
+    ///
+    /// Called once per target, on the reply that first resolved it. A duplicate
+    /// or a late arrival for the same target is
+    /// [`record_reply_without_rtt`](Self::record_reply_without_rtt), not this.
     pub(crate) fn record_host_found(&mut self, answered_attempt: Option<u8>) {
         self.hosts_found += 1;
 

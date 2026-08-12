@@ -21,6 +21,7 @@
 //! [`ProbePool`](super::pool::ProbePool) to avoid exhausting OS sockets, and both
 //! record findings through the shared [`ScanContext`] like every other strategy.
 
+use super::audit::ProbeAudit;
 use super::dispatcher::Dispatcher;
 use super::pool::ProbePool;
 use super::{NetworkExplorer, PortScanner, StrategyError, payload, tuning};
@@ -28,6 +29,7 @@ use crate::core::models::host::{Host, HostStatus, StatusProtocol, StatusReason};
 use crate::core::models::ip::set::IpSet;
 use crate::core::models::port::{Port, PortSet, PortState, Protocol};
 use crate::core::models::target::{Target, TargetMap, TargetSet};
+use crate::core::report::StopReason;
 use crate::core::session::{ScanContext, ScannerKind};
 use crate::error;
 use async_trait::async_trait;
@@ -145,7 +147,7 @@ impl ConnectUdpPortScanner {
 #[async_trait]
 impl PortScanner for ConnectUdpPortScanner {
     fn kind(&self) -> ScannerKind {
-        ScannerKind::Connect // or add a new one if preferred, but Connect covers unprivileged
+        ScannerKind::ConnectUdp
     }
 
     fn supported_protocols(&self) -> Vec<Protocol> {
@@ -153,16 +155,25 @@ impl PortScanner for ConnectUdpPortScanner {
     }
 
     async fn scan(&mut self, mut rx: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
-        let mut pool = ProbePool::new(self.concurrency, |probed| absorb_probe(&self.ctx, probed));
+        let ctx = self.ctx.clone();
+        let mut pool = ProbePool::new(self.concurrency, |probed, audit: &mut ProbeAudit| {
+            absorb_probe(&ctx, probed, audit)
+        });
 
+        let mut probes = 0u128;
+        let mut reason = StopReason::AttemptsSpent;
         while let Some(target) = rx.recv().await {
             if self.ctx.handle.should_stop() {
+                reason = StopReason::Aborted;
                 break;
             }
+            probes += 1;
+            pool.audit().record_send(true);
             pool.admit(udp_port_prober(target)).await;
         }
 
         pool.drain().await;
+        finish(&self.ctx, pool.into_audit(), self.kind(), probes, reason);
         Ok(())
     }
 }
@@ -179,17 +190,32 @@ pub async fn scan(
     concurrency_limit: usize,
     ctx: ScanContext,
 ) -> Result<(), StrategyError> {
-    let mut pool = ProbePool::new(concurrency_limit, |probed| absorb_probe(&ctx, probed));
+    let folder = ctx.clone();
+    let mut pool = ProbePool::new(concurrency_limit, |probed, audit: &mut ProbeAudit| {
+        absorb_probe(&folder, probed, audit)
+    });
 
+    let mut probes = 0u128;
+    let mut reason = StopReason::AttemptsSpent;
     while let Some(target) = rx.recv().await {
         if ctx.handle.should_stop() {
+            reason = StopReason::Aborted;
             break;
         }
+        probes += 1;
+        pool.audit().record_send(true);
         pool.admit(port_prober(target)).await;
     }
 
     // Every target dispatched; wait out the probes still in flight.
     pool.drain().await;
+    finish(
+        &ctx,
+        pool.into_audit(),
+        ScannerKind::Connect,
+        probes,
+        reason,
+    );
     Ok(())
 }
 
@@ -200,10 +226,17 @@ pub async fn scan(
 /// the case worth noticing: this strategy declines to file closed ports, but the
 /// RST behind the refusal still proves the host is there, and that evidence
 /// would otherwise be dropped along with the port verdict.
-fn absorb_probe(ctx: &ScanContext, probed: ProbedPort) {
+fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
     let Some(probed) = probed else {
         return;
     };
+    if probed.answered {
+        // A connect probe carries no attempt token: the retransmission that may
+        // have produced this answer was the host stack's, on its own schedule
+        // (see `tuning::CONNECT_PROBE_TIMEOUT`), so which attempt was answered is
+        // not knowable from here.
+        audit.record_host_found(None);
+    }
     if probed.port.is_none() && !probed.answered {
         return;
     }
@@ -419,20 +452,34 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError>
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
     let mut rx = dispatcher.run_shuffled(&ctx.handle);
     let found_hosts = Arc::new(DashSet::new());
-    let mut pool = ProbePool::new(tuning::DISCOVERY_CONCURRENCY, |probed| {
-        absorb_host(&ctx, probed)
-    });
+    let folder = ctx.clone();
+    let mut pool = ProbePool::new(
+        tuning::DISCOVERY_CONCURRENCY,
+        |probed, audit: &mut ProbeAudit| absorb_host(&folder, probed, audit),
+    );
 
+    let mut probes = 0u128;
+    let mut reason = StopReason::AttemptsSpent;
     while let Some(target) = rx.recv().await {
         if ctx.handle.should_stop() {
+            reason = StopReason::Aborted;
             break;
         }
+        probes += 1;
+        pool.audit().record_send(true);
         let found = Arc::clone(&found_hosts);
         pool.admit(prober(target, found)).await;
     }
 
     // Every target dispatched; wait out the probes still in flight.
     pool.drain().await;
+    finish(
+        &ctx,
+        pool.into_audit(),
+        ScannerKind::Connect,
+        probes,
+        reason,
+    );
     Ok(())
 }
 
@@ -445,11 +492,35 @@ type ProbedHost = Option<Host>;
 /// entry starts from [`Host::new`] and absorbs the probe's findings (RTT, any
 /// extra IPs), so the recorded result is the same whether or not the host was
 /// seen before.
-fn absorb_host(ctx: &ScanContext, probed: ProbedHost) {
+fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
     if let Some(host) = probed {
         let ip = host.primary_ip();
+        // See `absorb_probe`: this path has no attempt to attribute the answer
+        // to, so every host it finds is counted as unattributed.
+        audit.record_host_found(None);
         ctx.update_host(ip, |existing| existing.merge(host));
     }
+}
+
+/// Files what one connect run observed about itself.
+///
+/// Shared by all three, because they differ only in what they probe for. There
+/// is no capture to report: a connect probe is a socket, so what the kernel
+/// discarded is not knowable here rather than being zero, and `None` says so.
+///
+/// The counters this path can honestly fill are the ones about *the run* -
+/// how many probes it started, how many answered, when, and why it stopped.
+/// `segments_seen` and `answered_on` stay empty because a connect probe sees no
+/// segments and names no attempt; see [`absorb_probe`].
+fn finish(
+    ctx: &ScanContext,
+    audit: ProbeAudit,
+    scanner: ScannerKind,
+    probes: u128,
+    reason: StopReason,
+) {
+    audit.report("connect", probes, reason, None);
+    ctx.record_probe_stats(audit.stats(scanner, probes, reason, None));
 }
 
 /// Probes a single [`Target`] for host presence over a TCP connect.
