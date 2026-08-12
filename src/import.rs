@@ -81,6 +81,9 @@ pub mod csv;
 #[cfg(feature = "import-json")]
 pub mod json;
 
+#[cfg(feature = "import-nmap")]
+pub mod nmap;
+
 #[cfg(feature = "import-settings")]
 pub mod settings;
 
@@ -98,6 +101,9 @@ pub use csv::{CsvColumn, CsvImporter};
 
 #[cfg(feature = "import-json")]
 pub use json::{JsonImporter, JsonLinesImporter};
+
+#[cfg(feature = "import-nmap")]
+pub use nmap::NmapXmlImporter;
 
 #[cfg(feature = "import-settings")]
 pub use settings::{Settings, SettingsDocument, SettingsError, SettingsWarning};
@@ -534,6 +540,11 @@ pub enum ImportFormat {
     /// A report this engine wrote, one record per line.
     #[cfg(feature = "import-json")]
     JsonLines,
+
+    /// Nmap's XML: a previous scan by nmap, or by this engine writing nmap's
+    /// format.
+    #[cfg(feature = "import-nmap")]
+    NmapXml,
 }
 
 impl ImportFormat {
@@ -557,6 +568,8 @@ impl ImportFormat {
             // the exporter accepts in the other direction.
             #[cfg(feature = "import-json")]
             "jsonl" | "ndjson" => Some(ImportFormat::JsonLines),
+            #[cfg(feature = "import-nmap")]
+            "xml" => Some(ImportFormat::NmapXml),
             _ => None,
         }
     }
@@ -616,6 +629,11 @@ impl ImportFormat {
             }
         }
 
+        #[cfg(feature = "import-nmap")]
+        if prefix.first() == Some(&b'<') {
+            return Ok(ImportFormat::NmapXml);
+        }
+
         #[cfg(feature = "import-json")]
         if prefix.first() == Some(&b'{') {
             // Both JSON formats open with a brace, and the record-per-line one
@@ -672,6 +690,8 @@ impl ImportFormat {
             ImportFormat::Json => "json",
             #[cfg(feature = "import-json")]
             ImportFormat::JsonLines => "jsonl",
+            #[cfg(feature = "import-nmap")]
+            ImportFormat::NmapXml => "xml",
         }
     }
 
@@ -688,6 +708,8 @@ impl ImportFormat {
             ImportFormat::Json,
             #[cfg(feature = "import-json")]
             ImportFormat::JsonLines,
+            #[cfg(feature = "import-nmap")]
+            ImportFormat::NmapXml,
         ]
     }
 
@@ -701,6 +723,8 @@ impl ImportFormat {
             ImportFormat::Json => Box::new(JsonImporter::new(options.limits)),
             #[cfg(feature = "import-json")]
             ImportFormat::JsonLines => Box::new(JsonLinesImporter::new(options.limits)),
+            #[cfg(feature = "import-nmap")]
+            ImportFormat::NmapXml => Box::new(NmapXmlImporter::new(options.limits)),
         }
     }
 
@@ -731,6 +755,8 @@ impl fmt::Display for ImportFormat {
             ImportFormat::Json => "json",
             #[cfg(feature = "import-json")]
             ImportFormat::JsonLines => "jsonl",
+            #[cfg(feature = "import-nmap")]
+            ImportFormat::NmapXml => "nmap-xml",
         })
     }
 }

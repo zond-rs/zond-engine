@@ -67,9 +67,16 @@ import-json = ["dep:serde_json"]
 # — see `import::settings` for why that boundary is drawn where it is.
 import-settings = []
 
+# Reading nmap's XML back in as targets: the file people already have in an
+# engagement repository, hosts with the ports found on each. Adds no dependency —
+# a hand-rolled subset parser, which is defensible only because it refuses far
+# more than it accepts; see `import::nmap`. Turns `export-nmap` on so the two
+# can be tested against each other.
+import-nmap = ["export-nmap"]
+
 # Every format this crate can read. The list format is unconditional and is not
 # named here: it needs nothing, and everybody needs it.
-import-all = ["import-csv", "import-json", "import-settings"]
+import-all = ["import-csv", "import-json", "import-nmap", "import-settings"]
 
 # Exposes `ProbeTransport::from_parts`, which builds a transport over a caller-
 # supplied sender and reply stream instead of a socket and a capture. That is
