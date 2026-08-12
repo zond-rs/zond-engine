@@ -182,6 +182,67 @@ pub enum ScanEffort {
     Thorough,
 }
 
+impl ScanEffort {
+    /// Every level, ordered from least effort to most.
+    pub const ALL: [ScanEffort; 4] = [
+        ScanEffort::Single,
+        ScanEffort::Fast,
+        ScanEffort::Balanced,
+        ScanEffort::Thorough,
+    ];
+
+    /// The name this level is written under, wherever it arrives as text.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ScanEffort::Single => "single",
+            ScanEffort::Fast => "fast",
+            ScanEffort::Balanced => "balanced",
+            ScanEffort::Thorough => "thorough",
+        }
+    }
+}
+
+impl std::fmt::Display for ScanEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The error [`ScanEffort::from_str`] returns, carrying the names that would
+/// have worked so a front end can print it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown scan effort '{input}', expected one of: single, fast, balanced, thorough")]
+pub struct UnknownScanEffort {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl std::str::FromStr for ScanEffort {
+    type Err = UnknownScanEffort;
+
+    /// Parses an effort name, ignoring case and surrounding whitespace, so a
+    /// choice arriving as text - from an argument, a form field, a settings
+    /// file - needs no mapping table of its own.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::core::models::retry::ScanEffort;
+    ///
+    /// assert_eq!("Thorough".parse(), Ok(ScanEffort::Thorough));
+    /// assert!("maximum".parse::<ScanEffort>().is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|effort| effort.name() == name)
+            .ok_or_else(|| UnknownScanEffort {
+                input: s.to_string(),
+            })
+    }
+}
+
 /// User control over retransmission, applied on top of each scanner's own
 /// profile.
 ///

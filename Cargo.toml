@@ -61,9 +61,15 @@ import-csv = ["export-csv"]
 # reads are written by hand and deliberately narrower — see `import::json`.
 import-json = ["dep:serde_json"]
 
+# Defaults and named profiles, read from a TOML document. Adds no dependency:
+# `toml` is already unconditional. This is the one feature in the crate whose
+# functions can write to a filesystem, and only the one path a caller hands them
+# — see `import::settings` for why that boundary is drawn where it is.
+import-settings = []
+
 # Every format this crate can read. The list format is unconditional and is not
 # named here: it needs nothing, and everybody needs it.
-import-all = ["import-csv", "import-json"]
+import-all = ["import-csv", "import-json", "import-settings"]
 
 # Exposes `ProbeTransport::from_parts`, which builds a transport over a caller-
 # supplied sender and reply stream instead of a socket and a capture. That is

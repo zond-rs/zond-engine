@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::fmt;
+use std::str::FromStr;
+
 use crate::core::models::retry::RetryConfig;
 use crate::core::models::technique::TcpScanTechnique;
 
@@ -29,6 +32,61 @@ pub enum SendMode {
     /// still traverses). Requires an Ethernet-capable interface and can't
     /// reach loopback or tunnel-only destinations.
     Ethernet,
+}
+
+impl SendMode {
+    /// Every mode, in the order a front end should offer them.
+    pub const ALL: [SendMode; 3] = [SendMode::Auto, SendMode::RawSocket, SendMode::Ethernet];
+
+    /// The name this mode is written under, wherever it arrives as text.
+    pub const fn name(self) -> &'static str {
+        match self {
+            SendMode::Auto => "auto",
+            SendMode::RawSocket => "raw_socket",
+            SendMode::Ethernet => "ethernet",
+        }
+    }
+}
+
+impl fmt::Display for SendMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The error [`SendMode::from_str`] returns, carrying the names that would have
+/// worked so a front end can print it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown send mode '{input}', expected one of: auto, raw_socket, ethernet")]
+pub struct UnknownSendMode {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl FromStr for SendMode {
+    type Err = UnknownSendMode;
+
+    /// Parses a mode name, ignoring case and surrounding whitespace, so a choice
+    /// arriving as text - from an argument, a form field, a settings file -
+    /// needs no mapping table of its own.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::core::config::SendMode;
+    ///
+    /// assert_eq!("Ethernet".parse(), Ok(SendMode::Ethernet));
+    /// assert!("layer2".parse::<SendMode>().is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == name)
+            .ok_or_else(|| UnknownSendMode {
+                input: s.to_string(),
+            })
+    }
 }
 
 /// The knobs a probing strategy is built from, carried together so adding one

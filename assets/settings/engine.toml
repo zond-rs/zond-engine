@@ -1,0 +1,127 @@
+# zond engine settings
+#
+# Every key below is commented out, so this file as written changes nothing.
+# Uncomment what you want and it applies to every scan.
+#
+# Layering, each overriding the one before:
+#
+#   built-in defaults  ->  /etc/zond/engine.toml  ->  this file  ->  a profile
+#
+# A layer speaks only about the keys it mentions. Saying nothing is not the same
+# as setting a default, which is what makes it possible to override a
+# system-wide value back to what it was.
+
+
+# ─── Defaults ─────────────────────────────────────────────────────────────────
+#
+# Applied to every scan.
+
+[defaults]
+
+# How hard a scan tries before it accepts silence as an answer. Every probing
+# path has its own schedule tuned to what its protocol requires; this scales
+# those rather than replacing them.
+#
+#   single    one probe per target, no repeats. For address-space-scale sweeps.
+#   fast      fewer attempts, less patience. For a network known to be healthy.
+#   balanced  the default.
+#   thorough  more attempts, more patience, no shortcuts on silent hosts.
+#
+# effort = "balanced"
+
+# Replaces the attempt budget outright, whatever `effort` implies. 1 disables
+# retransmission entirely.
+#
+# max_attempts = 3
+
+# Multiplies how long the scan is willing to wait. Does not touch the shortest
+# timeout a protocol allows: that floor is not a preference, it is what the
+# protocol costs.
+#
+# timeout_scale = 1.0
+
+# Whether a host that has answered nothing at all may have its remaining probe
+# budget cut. Turning this off spends the full budget on every port of every
+# silent address, which is thorough and expensive.
+#
+# dampen_silent_hosts = true
+
+# The fastest routed discovery may put probes on the wire, in probes per second.
+#
+# This is a coverage control before it is a politeness one. A probe's chance of
+# being answered falls as the rate rises: on a policed path a burst loses most
+# of its first attempt. Lowering the rate buys coverage on the first attempt;
+# raising it trades coverage for the time a large range takes to emit.
+#
+# max_probe_rate = 20000
+
+# Which segment a TCP port probe carries, and so what its answers mean.
+#
+#   syn     the only technique that identifies an open port positively.
+#   fin     |
+#   null    |  answered negatively, by the RST only a closed port must send.
+#   xmas    |  a filter that blocks connections often passes these.
+#   maimon  |
+#   ack     tells filtered from unfiltered, never says which is open.
+#
+# Only `syn` works without raw sockets. Against a stack that answers every flag
+# probe with a RST — Windows, many Cisco devices — fin, null, xmas and maimon
+# report every port closed, which is not merely useless but confidently wrong.
+#
+# tcp_technique = "syn"
+
+# How raw probes are placed on the wire.
+#
+#   auto        a raw Layer-4 socket on Unix, Layer-2 frames on Windows.
+#   raw_socket  force the socket, whatever the platform.
+#   ethernet    force self-built frames, bypassing the host IP stack and the
+#               local firewall with it. Cannot reach loopback or tunnels.
+#
+# send_mode = "auto"
+
+# The ports a scan covers when the caller names none. Same grammar as the
+# command line: `u:` prefixes a UDP port, `-` makes a range.
+#
+# default_ports = "22, 80, 443, 445, 3389"
+
+# Forbid the scan from generating any DNS traffic — no A, AAAA or PTR queries.
+#
+# no_dns = false
+
+# Mask hostnames and hardware addresses in exported output. For a report going
+# to somebody who does not need to know which device is which.
+#
+# redact = false
+
+# Output density: 0 full, 1 reduced, 2 data only.
+#
+# quiet = 0
+
+# Suppress the startup banner.
+#
+# no_banner = false
+
+# Do not spawn threads listening for keyboard commands. For CI, daemons and
+# anywhere without a terminal.
+#
+# disable_input = false
+
+
+# ─── Profiles ─────────────────────────────────────────────────────────────────
+#
+# Named sets of overrides, layered on top of [defaults] when one is selected.
+# A profile speaks only about the keys it mentions; everything else comes from
+# the defaults above.
+#
+# Two worked examples. Uncomment, rename, or replace them entirely.
+
+# [profiles.stealth]
+# tcp_technique = "fin"
+# max_probe_rate = 200
+# effort = "thorough"
+# no_dns = true
+
+# [profiles.sweep]
+# effort = "single"
+# max_probe_rate = 50000
+# default_ports = "80, 443"

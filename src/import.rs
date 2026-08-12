@@ -81,6 +81,9 @@ pub mod csv;
 #[cfg(feature = "import-json")]
 pub mod json;
 
+#[cfg(feature = "import-settings")]
+pub mod settings;
+
 use std::fmt;
 use std::io::BufRead;
 use std::path::Path;
@@ -95,6 +98,9 @@ pub use csv::{CsvColumn, CsvImporter};
 
 #[cfg(feature = "import-json")]
 pub use json::{JsonImporter, JsonLinesImporter};
+
+#[cfg(feature = "import-settings")]
+pub use settings::{Settings, SettingsDocument, SettingsError, SettingsWarning};
 
 pub use target::{
     HostLookup, TargetContext, TargetExpr, TargetMapBuilder, TargetParseError, to_target_map,
