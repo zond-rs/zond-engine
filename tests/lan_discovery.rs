@@ -69,7 +69,7 @@ async fn an_answering_host_is_discovered_with_its_mac() {
     let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A));
     let session = sweep(&lan, &[v4(10)], Scope::Targeted).await;
 
-    let host = session.store.get(&v4(10)).expect("host discovered");
+    let host = session.hosts().get(&v4(10)).expect("host discovered");
     assert_eq!(
         host.mac().map(|m| m.to_string()),
         Some(PEER_A.to_string()),
@@ -91,7 +91,7 @@ async fn an_answering_host_records_what_proved_it_alive() {
     let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A));
     let session = sweep(&lan, &[v4(10)], Scope::Targeted).await;
 
-    let host = session.store.get(&v4(10)).expect("host discovered");
+    let host = session.hosts().get(&v4(10)).expect("host discovered");
     assert_eq!(host.status(), HostStatus::Up);
     assert!(host.is_alive());
     assert_eq!(status_protocols(&session, v4(10)), vec!["Arp".to_string()]);
@@ -122,7 +122,7 @@ async fn an_ipv6_neighbour_is_alive_by_the_probe_that_found_it() {
     let targets: Vec<IpAddr> = (10..=20).map(v4).collect();
     let session = sweep(&lan, &targets, Scope::Sweep).await;
 
-    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    let host = session.hosts().get(&peer_v6).expect("neighbour discovered");
     assert_eq!(host.status(), HostStatus::Up);
     assert_eq!(
         status_protocols(&session, peer_v6),
@@ -152,7 +152,7 @@ async fn an_ipv6_neighbour_carries_the_interface_it_was_found_on() {
     let targets: Vec<IpAddr> = (10..=20).map(v4).collect();
     let session = sweep(&lan, &targets, Scope::Sweep).await;
 
-    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    let host = session.hosts().get(&peer_v6).expect("neighbour discovered");
     let zone = host
         .zone()
         .expect("a link-local neighbour needs its interface");
@@ -197,7 +197,7 @@ async fn a_targeted_ipv6_run_probes_its_target() {
     let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
 
     assert!(
-        session.store.contains_key(&peer_v6),
+        session.hosts().contains(&peer_v6),
         "a targeted IPv6 run must probe the address it was given"
     );
     assert_eq!(
@@ -206,7 +206,7 @@ async fn a_targeted_ipv6_run_probes_its_target() {
         "an advertisement is evidence of neighbour discovery, and now there is some"
     );
     assert!(
-        !session.store.contains_key(&bystander),
+        !session.hosts().contains(&bystander),
         "asking about one address must not wake the rest of the segment"
     );
     assert!(
@@ -232,7 +232,7 @@ async fn a_lost_solicitation_is_retried_and_the_neighbour_is_still_found() {
     let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
 
     assert!(
-        session.store.contains_key(&peer_v6),
+        session.hosts().contains(&peer_v6),
         "a neighbour that answered the second solicitation is still a live host"
     );
     let solicits = lan
@@ -273,7 +273,7 @@ async fn a_neighbour_answering_from_another_address_is_still_measured() {
     let session = sweep(&lan, &[IpAddr::V6(solicited)], Scope::Targeted).await;
 
     let host = session
-        .store
+        .hosts()
         .get(&IpAddr::V6(solicited))
         .expect("the host must be keyed by the address that was asked about");
     assert!(
@@ -316,7 +316,7 @@ async fn an_overheard_neighbour_is_asked_directly_and_then_measured() {
     let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
 
     let host = session
-        .store
+        .hosts()
         .get(&peer_v6)
         .expect("an overheard advertisement is still a discovered host");
     assert!(
@@ -364,7 +364,7 @@ async fn a_slow_confirmation_is_still_measured() {
 
     let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
 
-    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    let host = session.hosts().get(&peer_v6).expect("neighbour discovered");
     assert!(
         host.min_rtt().is_some(),
         "a reply slower than the retry schedule is still the answer to the one \
@@ -402,7 +402,7 @@ async fn a_sweep_waits_for_the_confirmation_it_sent() {
 
     assert!(
         session
-            .store
+            .hosts()
             .get(&peer_v6)
             .is_some_and(|host| host.min_rtt().is_some()),
         "the answer arrived within the window a neighbour is allowed to take"
@@ -432,7 +432,7 @@ async fn a_solicited_neighbour_answering_slowly_is_still_timed() {
 
     let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
 
-    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    let host = session.hosts().get(&peer_v6).expect("neighbour discovered");
     assert!(
         host.min_rtt().is_some(),
         "the slowest answer ever measured on a real segment is 408ms, so a \
@@ -456,9 +456,9 @@ async fn an_empty_address_produces_no_host() {
     let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A));
     let session = sweep(&lan, &[v4(10), v4(11)], Scope::Targeted).await;
 
-    assert!(session.store.contains_key(&v4(10)));
+    assert!(session.hosts().contains(&v4(10)));
     assert!(
-        !session.store.contains_key(&v4(11)),
+        !session.hosts().contains(&v4(11)),
         "silence is not evidence of a host"
     );
 }
@@ -470,7 +470,7 @@ async fn a_slow_arp_reply_still_discovers_the_host() {
     let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A).delay(Duration::from_millis(50)));
     let session = sweep(&lan, &[v4(10)], Scope::Targeted).await;
 
-    assert!(session.store.contains_key(&v4(10)));
+    assert!(session.hosts().contains(&v4(10)));
 }
 
 /// One machine holding two addresses is one host, not two.
@@ -487,7 +487,7 @@ async fn one_machine_answering_at_two_addresses_is_recorded_once() {
     let session = sweep(&lan, &[v4(10), v4(11)], Scope::Targeted).await;
 
     assert_eq!(
-        session.store.len(),
+        session.hosts().len(),
         1,
         "two addresses behind one MAC are one machine"
     );
@@ -502,7 +502,7 @@ async fn two_machines_are_recorded_separately() {
         .host(v4(11), LanHost::at(PEER_B));
     let session = sweep(&lan, &[v4(10), v4(11)], Scope::Targeted).await;
 
-    assert_eq!(session.store.len(), 2);
+    assert_eq!(session.hosts().len(), 2);
 }
 
 /// Discovery of a named address does not report the neighbours it never asked
@@ -523,9 +523,9 @@ async fn discovery_of_one_address_does_not_report_the_whole_segment() {
 
     let session = sweep(&lan, &[peer_v6], Scope::Targeted).await;
 
-    assert!(session.store.contains_key(&peer_v6));
+    assert!(session.hosts().contains(&peer_v6));
     assert_eq!(
-        session.store.len(),
+        session.hosts().len(),
         1,
         "only the address that was asked about belongs in the report"
     );
@@ -571,7 +571,7 @@ async fn a_sweep_discovers_ipv6_neighbours_through_the_solicitation() {
         "a sweep should solicit the segment"
     );
     assert!(
-        session.store.contains_key(&peer_v6),
+        session.hosts().contains(&peer_v6),
         "an IPv6 neighbour answering the solicitation is a discovered host"
     );
 }
@@ -601,7 +601,7 @@ async fn a_neighbour_answering_only_the_all_nodes_echo_is_timed() {
     let targets: Vec<IpAddr> = (10..=20).map(v4).collect();
     let session = sweep(&lan, &targets, Scope::Sweep).await;
 
-    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    let host = session.hosts().get(&peer_v6).expect("neighbour discovered");
     assert_eq!(
         status_protocols(&session, peer_v6),
         vec!["IcmpEcho".to_string()],
@@ -638,7 +638,7 @@ async fn a_directed_probe_outranks_the_segment_wide_one_for_latency() {
     targets.push(peer_v6);
     let session = sweep(&lan, &targets, Scope::Sweep).await;
 
-    let host = session.store.get(&peer_v6).expect("neighbour discovered");
+    let host = session.hosts().get(&peer_v6).expect("neighbour discovered");
     let samples = host.telemetry().history();
 
     // Asserted against the samples themselves rather than a wall-clock bound.
@@ -709,7 +709,7 @@ async fn an_address_only_mdns_knows_about_is_asked_about() {
         "an announced address nothing has answered for is a lead worth one probe"
     );
     let host = session
-        .store
+        .hosts()
         .get(&IpAddr::V6(announced))
         .expect("it answered the solicitation, so it is a host");
     assert!(
@@ -735,7 +735,7 @@ async fn announcing_over_mdns_does_not_make_the_announcer_a_host() {
     let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
 
     assert!(
-        session.store.is_empty(),
+        session.hosts().is_empty(),
         "nothing answered a probe, so nothing is a discovered host"
     );
 }
@@ -773,7 +773,7 @@ async fn a_sweep_with_no_targets_still_finds_the_segment() {
         "a sweep with nothing to address still owes the segment an echo"
     );
     assert!(
-        session.store.contains_key(&peer_v6),
+        session.hosts().contains(&peer_v6),
         "the neighbour answered it, so it is a discovered host"
     );
 }
@@ -811,7 +811,7 @@ async fn a_small_sweep_does_not_drop_ipv6_neighbours() {
     let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
 
     assert!(
-        session.store.contains_key(&peer_v6),
+        session.hosts().contains(&peer_v6),
         "the neighbour answered before the sweep ended and must not be lost"
     );
 }

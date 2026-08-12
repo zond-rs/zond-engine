@@ -34,7 +34,7 @@ async fn abort_stops_a_scan_promptly() {
 
     // Let it get going, then pull the abort signal.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    session.handle.abort();
+    session.handle().abort();
 
     let stopped = tokio::time::timeout(Duration::from_secs(5), task.join()).await;
     assert!(
@@ -83,5 +83,5 @@ async fn empty_port_scan_completes_cleanly() {
         &test_config(),
     )
     .await;
-    assert!(outcome.store.is_empty());
+    assert!(outcome.hosts().is_empty());
 }

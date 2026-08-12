@@ -30,12 +30,45 @@ this crate no dependency.
 
 ## Getting Started
 
-To use the `zond-engine` in your own Rust project, add it as a dependency in your `Cargo.toml`:
+Add it as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
 zond-engine = "0.10.0"
 ```
+
+A scan runs in two phases. `discover` establishes which hosts exist; `scan`
+classifies the ports of hosts already known. They are separate calls because
+they cost very different amounts — sweeping a `/24` is a few hundred packets,
+port-scanning all of it is a few hundred thousand — so run the cheap one first
+and spend the expensive one only on what answered.
+
+Each returns a pair: a `ScanSession` you can watch while the scan runs, and a
+task that resolves to the `ScanReport` describing it afterwards.
+
+```rust
+use zond_engine::{ScanEvent, ZondConfig, discover};
+use zond_engine::core::parse::ip::to_set;
+
+let targets = to_set(&["192.168.1.0/24"], None)?;
+let (mut session, task) = discover(targets, &ZondConfig::default()).await?;
+
+// Hosts arrive as they are found, rather than all at the end.
+while let Some(event) = session.events().recv().await {
+    if let ScanEvent::HostUpdated(ip) = event
+        && let Some(host) = session.hosts().get(&ip)
+    {
+        println!("{host}");
+    }
+}
+
+let report = task.join().await?;
+println!("{} hosts up", report.summary().hosts_alive);
+```
+
+Both phases work without root — they fall back to ordinary TCP connect
+attempts — and the report records which it was, so a result can be read for what
+it is worth.
 
 ## Modules
 

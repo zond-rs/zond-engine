@@ -108,7 +108,7 @@ async fn main() {
                 println!("  !! {failure}");
             }
 
-            let host: Option<IpAddr> = session.store.iter().next().map(|entry| *entry.key());
+            let host: Option<IpAddr> = session.hosts().snapshot().first().map(|h| h.primary_ip());
             let states: Vec<&str> = numbers
                 .iter()
                 .map(
@@ -120,7 +120,12 @@ async fn main() {
                 .collect();
 
             let status = host
-                .and_then(|ip| session.store.get(&ip).map(|h| format!("{:?}", h.status())))
+                .and_then(|ip| {
+                    session
+                        .hosts()
+                        .get(&ip)
+                        .map(|h| format!("{:?}", h.status()))
+                })
                 .unwrap_or_else(|| "no host".to_string());
 
             print!("{:<8}", technique.name());
@@ -147,7 +152,7 @@ fn state_of(
     port: u16,
 ) -> Option<PortState> {
     session
-        .store
+        .hosts()
         .get(&ip)
         .and_then(|host| host.ports().find(|p| p.number() == port).map(|p| p.state()))
 }

@@ -62,9 +62,9 @@ async fn a_sweep_whose_probes_never_left_reports_why() {
 
     // Read from the live event stream, which is the channel a consumer watching
     // a scan in progress actually has.
-    let mut events = session.events;
+    let (_hosts, mut events, _handle) = session.into_parts();
     let mut reasons = Vec::new();
-    while let Ok(event) = events.try_recv() {
+    while let Some(event) = events.try_recv() {
         if let ScanEvent::ScannerFailed { reason, .. } = event {
             reasons.push(reason);
         }
@@ -131,10 +131,10 @@ async fn the_report_snapshots_every_host_the_store_holds() {
     )
     .await;
 
-    assert_eq!(outcome.report.host_count(), outcome.store.len());
+    assert_eq!(outcome.report.host_count(), outcome.hosts().len());
 
     let summary = outcome.report.summary();
-    assert_eq!(summary.hosts_total, outcome.store.len());
+    assert_eq!(summary.hosts_total, outcome.hosts().len());
     assert_eq!(
         summary.ports_open, 1,
         "the listener's port should be counted open"
@@ -219,7 +219,7 @@ async fn an_aborted_scan_still_reports() {
         .expect("discover starts");
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    session.handle.abort();
+    session.handle().abort();
 
     let report = tokio::time::timeout(Duration::from_secs(5), task.join())
         .await

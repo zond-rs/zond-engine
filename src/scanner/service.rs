@@ -162,11 +162,11 @@ mod tests {
         let ip = addr.ip();
         let mut host = Host::new(ip);
         host.add_port(Port::new(addr.port(), Protocol::Tcp, PortState::Open));
-        session.store.insert(ip, host);
+        session.hosts().insert(ip, host);
 
         detect(&ctx).await;
 
-        let host = session.store.get(&ip).unwrap();
+        let host = session.hosts().get(&ip).unwrap();
         let port = host
             .ports()
             .find(|p| p.number() == addr.port())
@@ -185,11 +185,11 @@ mod tests {
         let mut host = Host::new(ip);
         // A closed port must not be probed.
         host.add_port(Port::new(9, Protocol::Tcp, PortState::Closed));
-        session.store.insert(ip, host);
+        session.hosts().insert(ip, host);
 
         detect(&ctx).await; // must return promptly without connecting anywhere
 
-        let host = session.store.get(&ip).unwrap();
+        let host = session.hosts().get(&ip).unwrap();
         let port = host.ports().find(|p| p.number() == 9).unwrap();
         // Untouched: no service was attached by the phase.
         assert!(port.service().is_none());

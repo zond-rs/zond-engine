@@ -746,12 +746,12 @@ mod tests {
     }
 
     fn host_status(session: &ScanSession, ip: IpAddr) -> Option<HostStatus> {
-        session.store.get(&ip).map(|host| host.status())
+        session.hosts().get(&ip).map(|host| host.status())
     }
 
     fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortState> {
         session
-            .store
+            .hosts()
             .get(&ip)
             .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
     }
@@ -1049,7 +1049,7 @@ mod tests {
         assert_eq!(host_status(&session, TARGET), Some(HostStatus::Unknown));
         assert!(
             session
-                .store
+                .hosts()
                 .get(&TARGET)
                 .expect("the port verdict created the host")
                 .reasons()

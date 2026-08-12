@@ -161,7 +161,7 @@ async fn a_slow_reply_is_still_matched_to_its_probe() {
 async fn a_duplicated_reply_records_the_port_once() {
     let (session, _net) = syn_scan(&[(80, Policy::open().duplicated())]).await;
 
-    let host = session.store.get(&TARGET).expect("host recorded");
+    let host = session.hosts().get(&TARGET).expect("host recorded");
     assert_eq!(
         host.ports().filter(|p| p.number() == 80).count(),
         1,
@@ -219,7 +219,7 @@ async fn established_traffic_does_not_discover_a_host() {
         .expect("sweep runs to completion");
 
     assert!(
-        !session.store.contains_key(&TARGET_V6),
+        !session.hosts().contains(&TARGET_V6),
         "an ACK from an established connection is not evidence of discovery"
     );
 }
@@ -620,7 +620,7 @@ async fn icmpv6_errors_are_classified_by_their_own_code_numbers() {
 async fn a_duplicated_udp_reply_records_the_port_once() {
     let (session, _net) = udp_scan(TARGET, &[(53, Policy::open().duplicated())]).await;
 
-    let host = session.store.get(&TARGET).expect("host recorded");
+    let host = session.hosts().get(&TARGET).expect("host recorded");
     assert_eq!(host.ports().filter(|p| p.number() == 53).count(), 1);
 }
 

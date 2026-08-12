@@ -55,8 +55,14 @@ pub enum ScannerKind {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ScanEvent {
-    /// Indicates that new data is available for a host.
-    /// The consumer should read from `ScanSession::store` to get the latest state.
+    /// Something was learned about the host at this address.
+    ///
+    /// The event carries only the address, deliberately: a scan can emit
+    /// thousands of these, and copying a whole [`Host`] into each one would cost
+    /// more than the notification is worth. Read the current state back from
+    /// [`ScanSession::hosts`], which is a single lookup and always up to date —
+    /// where a host copied into an event is stale the moment the next probe
+    /// answers.
     HostUpdated(IpAddr),
 
     /// A scanning strategy failed to start or terminated abnormally. The scan
@@ -70,17 +76,166 @@ pub enum ScanEvent {
     },
 }
 
-/// A handle to an active network scan.
+/// What a scan has found so far, readable while it is still running.
+///
+/// A cheap, cloneable view of one shared store. Cloning it does not copy the
+/// hosts; every clone reads the same live data, so a consumer can hand one to a
+/// rendering task and keep another for itself.
+///
+/// **Reads return owned snapshots.** [`get`](Self::get) clones the host rather
+/// than lending a reference into the map, because the alternative is a guard
+/// held across whatever the caller does next — and a scanner writing to the same
+/// key meanwhile is not a hypothetical, it is the normal case. A caller cannot
+/// hold this wrong.
+///
+/// The concrete map behind it is deliberately not visible. It is an
+/// implementation choice, and exposing it would make the version of a
+/// third-party concurrency crate part of this crate's semver.
+#[derive(Debug, Clone, Default)]
+pub struct HostStore {
+    inner: Arc<DashMap<IpAddr, Host>>,
+}
+
+impl HostStore {
+    fn new(inner: Arc<DashMap<IpAddr, Host>>) -> Self {
+        Self { inner }
+    }
+
+    /// The host recorded at `ip`, as it stands right now.
+    ///
+    /// Keyed by the address a scanner wrote it under, which for a host found at
+    /// several addresses is whichever one it was first credited to. To look a
+    /// host up by any of its addresses, search
+    /// [`snapshot`](Self::snapshot) on [`Host::ips`].
+    pub fn get(&self, ip: &IpAddr) -> Option<Host> {
+        self.inner.get(ip).map(|entry| entry.value().clone())
+    }
+
+    /// Whether anything has been recorded at `ip`.
+    ///
+    /// Cheaper than [`get`](Self::get) when the host itself is not wanted, since
+    /// nothing is cloned.
+    pub fn contains(&self, ip: &IpAddr) -> bool {
+        self.inner.contains_key(ip)
+    }
+
+    /// How many hosts have been recorded.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Whether nothing has been recorded yet.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Every host recorded so far, ordered by the address each is keyed under.
+    ///
+    /// A point-in-time copy: the scan carries on writing, and this does not
+    /// change afterwards. Ordered rather than in map order so two reads of the
+    /// same data can be compared, for the reason
+    /// [`ScanReport`](crate::core::report::ScanReport) orders its hosts.
+    pub fn snapshot(&self) -> Vec<Host> {
+        let mut hosts: Vec<Host> = self
+            .inner
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        hosts.sort_by_key(Host::primary_ip);
+        hosts
+    }
+
+    /// Puts a host in the store directly, replacing anything at that address.
+    ///
+    /// Test-only, and deliberately not how a scan records a finding — that is
+    /// [`ScanContext::write_host`], which upserts, merges and announces the
+    /// change. This exists for the tests that need a store already holding a
+    /// particular host, standing in for the scanner that would have written it.
+    #[cfg(test)]
+    pub(crate) fn insert(&self, ip: IpAddr, host: Host) {
+        self.inner.insert(ip, host);
+    }
+}
+
+/// The live event stream of a scan.
+///
+/// Each event says that something changed; the detail is read back from the
+/// [`HostStore`]. See [`ScanEvent`].
+#[derive(Debug)]
+pub struct ScanEvents {
+    rx: mpsc::UnboundedReceiver<ScanEvent>,
+}
+
+impl ScanEvents {
+    /// Waits for the next event. `None` once the scan has ended and every event
+    /// it emitted has been taken, which is the definitive end of the stream.
+    pub async fn recv(&mut self) -> Option<ScanEvent> {
+        self.rx.recv().await
+    }
+
+    /// The next event if one is already queued, without waiting.
+    ///
+    /// `None` covers both "nothing queued right now" and "the scan is over", so
+    /// it drains a finished scan but cannot detect the end of a running one. Use
+    /// [`recv`](Self::recv) for that.
+    pub fn try_recv(&mut self) -> Option<ScanEvent> {
+        self.rx.try_recv().ok()
+    }
+}
+
+/// A handle to an active network scan: what it has found, what it is doing, and
+/// the means to stop it.
+///
+/// Returned by [`discover`](crate::scanner::discover) and
+/// [`scan`](crate::scanner::scan) alongside the
+/// [`ScanTask`](crate::scanner::ScanTask) that resolves to the final report.
+/// This is the live half of that pair — it describes the present moment and
+/// keeps no history; the report is what answers a question asked afterwards.
+///
+/// ```no_run
+/// # async fn example(mut session: zond_engine::ScanSession) {
+/// use zond_engine::ScanEvent;
+///
+/// while let Some(event) = session.events().recv().await {
+///     if let ScanEvent::HostUpdated(ip) = event
+///         && let Some(host) = session.hosts().get(&ip)
+///     {
+///         println!("{host}");
+///     }
+/// }
+/// # }
+/// ```
 pub struct ScanSession {
-    /// Thread-safe, lock-free store of all hosts discovered so far.
-    pub store: Arc<DashMap<IpAddr, Host>>,
+    store: HostStore,
+    events: ScanEvents,
+    handle: ScanHandle,
+}
 
-    /// Receiver for lightweight update events.
-    /// UI/Web interfaces can loop over this to react to changes in real-time.
-    pub events: mpsc::UnboundedReceiver<ScanEvent>,
+impl ScanSession {
+    /// What the scan has found so far.
+    pub fn hosts(&self) -> &HostStore {
+        &self.store
+    }
 
-    /// Handle to control the active scan (e.g., to abort it).
-    pub handle: ScanHandle,
+    /// The live event stream.
+    pub fn events(&mut self) -> &mut ScanEvents {
+        &mut self.events
+    }
+
+    /// The control handle, which is how a scan is stopped early.
+    pub fn handle(&self) -> &ScanHandle {
+        &self.handle
+    }
+
+    /// Takes the session apart, for a caller that wants to watch the events from
+    /// one task and read the hosts from another.
+    ///
+    /// [`HostStore`] and [`ScanHandle`] are both cloneable and shareable, so
+    /// this is only needed to move the event stream — which is not, there being
+    /// exactly one of it.
+    pub fn into_parts(self) -> (HostStore, ScanEvents, ScanHandle) {
+        (self.store, self.events, self.handle)
+    }
 }
 
 /// Where an instrumented scanner leaves its counters for the final
@@ -154,11 +309,17 @@ impl FailureLog {
 ///
 /// Bundling these avoids passing (and cloning) the same arguments individually
 /// at every scanner construction site.
+/// Every field is `pub(crate)`. A scanner is built with one of these and writes
+/// findings through [`write_host`](Self::write_host), which is where the
+/// lock-then-announce ordering lives; handing a consumer the raw map and the raw
+/// event sender would hand them that ordering to get wrong, and would pin the
+/// concurrency crate behind the map into this crate's semver. What a consumer
+/// reads is [`ScanSession`].
 #[derive(Clone)]
 pub struct ScanContext {
-    pub handle: ScanHandle,
-    pub store: Arc<DashMap<IpAddr, Host>>,
-    pub events_tx: mpsc::UnboundedSender<ScanEvent>,
+    pub(crate) handle: ScanHandle,
+    pub(crate) store: Arc<DashMap<IpAddr, Host>>,
+    pub(crate) events_tx: mpsc::UnboundedSender<ScanEvent>,
     pub(crate) failures: Arc<FailureLog>,
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
 }
@@ -261,14 +422,21 @@ impl ScanContext {
 }
 
 impl ScanSession {
+    /// Opens a session and the context the strategies behind it write into.
+    ///
+    /// The engine's own entry points call this; a consumer normally receives the
+    /// session already built, from [`discover`](crate::scanner::discover) or
+    /// [`scan`](crate::scanner::scan). It is public because driving a single
+    /// scanner directly — which is what the `test-support` feature is for —
+    /// means supplying it a context.
     pub fn new() -> (Self, ScanContext) {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::new();
         let (events_tx, rx) = mpsc::unbounded_channel();
 
         let session = Self {
-            store: store.clone(),
-            events: rx,
+            store: HostStore::new(store.clone()),
+            events: ScanEvents { rx },
             handle: handle.clone(),
         };
 
@@ -318,8 +486,8 @@ mod tests {
 
         ctx.record_failure(ScannerKind::Local, "eth0: no address".into());
 
-        match session.events.try_recv() {
-            Ok(ScanEvent::ScannerFailed { scanner, reason }) => {
+        match session.events().try_recv() {
+            Some(ScanEvent::ScannerFailed { scanner, reason }) => {
                 assert_eq!(scanner, ScannerKind::Local);
                 assert_eq!(reason, "eth0: no address");
             }

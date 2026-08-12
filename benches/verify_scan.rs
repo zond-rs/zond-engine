@@ -147,7 +147,7 @@ async fn main() {
 
     let state_of = |ip: IpAddr, port: u16| -> Option<PortState> {
         session
-            .store
+            .hosts()
             .get(&ip)
             .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
     };

@@ -8,8 +8,12 @@
 
 pub mod config;
 pub mod handle;
-pub mod logging;
 pub mod models;
+// Nothing here is public: it is the five macros the engine emits its own
+// diagnostics through, and a library that exported those would shadow
+// `tracing`'s and `log`'s macros of the same names in any consumer that
+// glob-imported it. See the module for the rest of the argument.
+pub(crate) mod logging;
 pub mod parse;
 pub mod redact;
 pub mod report;

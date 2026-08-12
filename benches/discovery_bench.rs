@@ -311,7 +311,7 @@ async fn main() {
         }
 
         let mut found: BTreeSet<Device> = BTreeSet::new();
-        for host in session.store.iter() {
+        for host in session.hosts().snapshot() {
             let device = identity(&host);
             let record = devices.entry(device.clone()).or_default();
             // Counted once per run however many store entries a device has: two

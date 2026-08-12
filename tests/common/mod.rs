@@ -33,9 +33,7 @@ pub mod fake_lan;
 pub mod fake_net;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::Arc;
 
-use dashmap::DashMap;
 use pnet::datalink::{MacAddr, NetworkInterface};
 use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use tokio::io::AsyncWriteExt;
@@ -48,7 +46,7 @@ use zond_engine::core::models::ip::set::IpSet;
 use zond_engine::core::models::port::{PortSet, PortState, Protocol};
 use zond_engine::core::models::target::{Target, TargetMap, TargetSet};
 use zond_engine::core::report::ScanReport;
-use zond_engine::core::session::{ScanEvent, ScanSession};
+use zond_engine::core::session::{HostStore, ScanEvent, ScanSession};
 use zond_engine::scanner::{self, PortScanner, ScanTask};
 use zond_engine::system::interface::SourceResolver;
 
@@ -175,15 +173,21 @@ pub fn ip_set(ip: IpAddr) -> IpSet {
 /// The outcome of driving a scan to completion: the final host store, every
 /// event emitted along the way, and the report the engine produced.
 pub struct Outcome {
-    pub store: Arc<DashMap<IpAddr, Host>>,
+    pub store: HostStore,
     pub events: Vec<ScanEvent>,
     pub report: ScanReport,
 }
 
 impl Outcome {
+    /// Everything the scan recorded, under the same name the live
+    /// [`ScanSession`] gives it.
+    pub fn hosts(&self) -> &HostStore {
+        &self.store
+    }
+
     /// The recorded host at `ip`, if the scan found one.
     pub fn host(&self, ip: IpAddr) -> Option<Host> {
-        self.store.get(&ip).map(|h| h.clone())
+        self.store.get(&ip)
     }
 
     /// The state recorded for `ip:port`, if any port entry exists.
@@ -221,9 +225,9 @@ pub async fn run_discover(targets: IpSet, cfg: &ZondConfig) -> Outcome {
 async fn drive(mut session: ScanSession, task: ScanTask) -> Outcome {
     let report = task.join().await.expect("scan task runs to completion");
 
-    let store = session.store.clone();
+    let store = session.hosts().clone();
     let mut events = Vec::new();
-    while let Ok(event) = session.events.try_recv() {
+    while let Some(event) = session.events().try_recv() {
         events.push(event);
     }
 
@@ -327,7 +331,7 @@ pub fn udp(ip: IpAddr, port: u16) -> Target {
 /// drives a single scanner rather than the whole `scan` pipeline.
 pub fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortState> {
     session
-        .store
+        .hosts()
         .get(&ip)
         .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
 }
@@ -337,13 +341,13 @@ pub fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortSt
 /// [`HostStatus::Unknown`] was probed and stayed silent, which is a different
 /// outcome from never having been probed.
 pub fn host_status(session: &ScanSession, ip: IpAddr) -> Option<HostStatus> {
-    session.store.get(&ip).map(|host| host.status())
+    session.hosts().get(&ip).map(|host| host.status())
 }
 
 /// Every protocol name recorded as evidence for `ip`'s status, sorted so a test
 /// can assert on them without depending on set iteration order.
 pub fn status_protocols(session: &ScanSession, ip: IpAddr) -> Vec<String> {
-    let Some(host) = session.store.get(&ip) else {
+    let Some(host) = session.hosts().get(&ip) else {
         return Vec::new();
     };
     let mut names: Vec<String> = host

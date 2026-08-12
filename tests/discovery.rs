@@ -44,7 +44,7 @@ async fn loopback_is_discovered_alive_with_rtt() {
 async fn empty_target_set_finds_nothing() {
     let outcome = run_discover(IpSet::new(), &test_config()).await;
     assert!(
-        outcome.store.is_empty(),
+        outcome.hosts().is_empty(),
         "discovering an empty set must yield no hosts"
     );
 }
