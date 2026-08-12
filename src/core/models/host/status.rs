@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// Variants are ordered by **semantic severity** and **reachability certainty**:
 /// `Unknown < Down < Filtered < Up`.
 ///
-/// This ordering is critical for the [`Host::merge`](crate::core::models::Host::merge) logic:
+/// This ordering is critical for the [`Host::merge`](crate::core::models::host::Host::merge) logic:
 /// if one scan identifies a host as `Down` but a concurrent high-fidelity scan
 /// identifies it as `Up`, the `Up` status will prevail.
 ///

@@ -653,7 +653,7 @@ impl PortScanner for TcpPortScanner {
     /// outstanding when the loop ends takes the verdict this technique reads
     /// silence as.
     ///
-    /// New targets are admitted only while fewer than [`MAX_IN_FLIGHT`] probes
+    /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes
     /// are outstanding, and retries are serviced before new targets are taken,
     /// since a retry is an obligation the scan already owns.
     async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> anyhow::Result<()> {

@@ -111,7 +111,7 @@ impl HostnameResolver {
     /// Builds a resolver that reads IPs to resolve from `dns_rx`.
     ///
     /// It works out which resolvers can answer for the hosts being scanned
-    /// ([`dns_server_candidates`]), binds a query socket for each address family
+    /// (`dns_server_candidates`), binds a query socket for each address family
     /// they span, and opens the raw receiver used to sniff DNS and mDNS traffic.
     pub fn new(dns_rx: UnboundedReceiver<IpAddr>) -> anyhow::Result<Self> {
         let dns_servers = dns_server_candidates();
@@ -157,7 +157,7 @@ impl HostnameResolver {
     ///
     /// On each turn it does one of three things: send PTR queries for a newly
     /// arrived IP, read a reply to a query it sent, or absorb a DNS or mDNS packet
-    /// sniffed off the wire. Once `dns_rx` closes, it waits [`REPLY_GRACE`] for any
+    /// sniffed off the wire. Once `dns_rx` closes, it waits `REPLY_GRACE` for any
     /// PTR queries still in flight before returning itself, so the caller can hand
     /// the collected names to [`resolve_hosts`](Self::resolve_hosts).
     pub async fn run(mut self) -> Self {

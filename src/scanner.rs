@@ -27,7 +27,7 @@
 //! each port from a single raw SYN probe rather than completing a full
 //! handshake. Targets that cannot be mapped to a usable interface, along with
 //! every target when running unprivileged, fall back to plain TCP connect
-//! attempts through the [`connect`] module.
+//! attempts through the `connect` module.
 //!
 //! Every strategy implements [`NetworkExplorer`], which lets [`discover`] spawn
 //! several unrelated scanners (the per-interface local ones, the routed one,
@@ -221,7 +221,7 @@ pub async fn discover(
 /// [`routed::TcpPortScanner`] classifies it from a single reply rather than a
 /// completed handshake. Without root, or when the host has no address to probe
 /// from, probes fall back to a plain TCP connect attempt per target through the
-/// [`connect`] module.
+/// `connect` module.
 pub async fn scan(
     mut target_map: TargetMap,
     cfg: &ZondConfig,
@@ -293,7 +293,7 @@ pub async fn scan(
 /// `discover_hosts` reports only whether the attempt itself succeeded. This
 /// keeps very different strategies (raw ARP/ICMP, raw TCP SYN, plain TCP
 /// connect) interchangeable to the caller: build one, run it, move on.
-/// [`spawn_explorers`] depends on that uniformity to drive several unrelated
+/// `spawn_explorers` depends on that uniformity to drive several unrelated
 /// scanner types through a single loop.
 ///
 /// Running the scanner consumes it (`self: Box<Self>`). A discovery sweep
@@ -309,22 +309,23 @@ pub trait NetworkExplorer {
 /// This is the port-scan counterpart to [`NetworkExplorer`]. Where that trait
 /// lets [`discover`] drive several host-discovery strategies through one loop,
 /// this lets [`scan`] drive whichever port-scan strategy privilege selected,
-/// either the raw [`routed::TcpPortScanner`] or the unprivileged [`connect`]
+/// either the raw [`routed::TcpPortScanner`] or the unprivileged `connect`
 /// fallback, through a single path. Implementations consume the shuffled
 /// [`Target`] stream that a [`dispatcher::Dispatcher`] produces and write their
 /// findings into the shared [`ScanContext`] they were built with;
 /// [`PortScanner::scan`] reports only whether the run completed.
-/// [`run_port_scan`] relies on that to treat both strategies identically.
+/// `run_port_scan` relies on that to treat both strategies identically.
 #[async_trait]
 pub trait PortScanner: Send {
-    /// Identifies the strategy, used to tag a [`ScanEvent::ScannerFailed`] when
+    /// Identifies the strategy, used to tag a
+    /// [`ScanEvent::ScannerFailed`](crate::core::session::ScanEvent::ScannerFailed) when
     /// a run fails.
     fn kind(&self) -> ScannerKind;
 
     /// Returns the set of transport protocols this scanner is capable of probing.
     ///
-    /// [`into_port_scanner`] reads this to decide which protocols still need an
-    /// unprivileged fallback, and [`composite::CompositePortScanner`] reads it
+    /// `into_port_scanner` reads this to decide which protocols still need an
+    /// unprivileged fallback, and `composite::CompositePortScanner` reads it
     /// to route each target, so a scanner that under-reports its coverage is
     /// simply never given that work.
     fn supported_protocols(&self) -> Vec<Protocol>;
@@ -577,30 +578,6 @@ async fn spawn_explorers(
         .collect()
 }
 
-/// Adds the addresses in this host's IPv6 neighbour table to the targets of
-/// whichever interface each belongs to.
-///
-/// This is the only source the engine has for an IPv6 address nobody named. A
-/// neighbor solicitation is the mandatory probe, and it can only be aimed at an
-/// address someone already holds; the all-nodes echo produces addresses but is
-/// optional to answer and draws only link-local ones, since it goes out from a
-/// link-local source. The operating system's own table has been accumulating
-/// both for as long as the machine has been running, at no cost in packets — on
-/// the segment this was written against it holds fifteen global and unique-local
-/// addresses the engine could not otherwise learn at all.
-///
-/// Three exclusions, each for its own reason:
-///
-/// - **Other interfaces' entries.** A neighbour on `en1` is not reachable
-///   through `en0`, and the entry says which it belongs to.
-/// - **This host's own addresses.** The table lists them too, and a scan that
-///   reported the machine running it as a discovered neighbour would be wrong in
-///   a way nobody would think to check.
-/// - **Loopback and the unspecified address**, which name nothing on a segment.
-///
-/// Nothing seeded here is treated as a discovered host. Every entry is an
-/// address that answered *once*, from a table that goes stale, so each becomes a
-/// probe like any other and earns its place in the report by answering now.
 /// Makes sure the link a sweep is about is among the links to be scanned, even
 /// when no address mapped to it.
 ///
@@ -633,6 +610,30 @@ fn include_swept_link(
     local.insert(link.interface, IpSet::new());
 }
 
+/// Adds the addresses in this host's IPv6 neighbour table to the targets of
+/// whichever interface each belongs to.
+///
+/// This is the only source the engine has for an IPv6 address nobody named. A
+/// neighbor solicitation is the mandatory probe, and it can only be aimed at an
+/// address someone already holds; the all-nodes echo produces addresses but is
+/// optional to answer and draws only link-local ones, since it goes out from a
+/// link-local source. The operating system's own table has been accumulating
+/// both for as long as the machine has been running, at no cost in packets — on
+/// the segment this was written against it holds fifteen global and unique-local
+/// addresses the engine could not otherwise learn at all.
+///
+/// Three exclusions, each for its own reason:
+///
+/// - **Other interfaces' entries.** A neighbour on `en1` is not reachable
+///   through `en0`, and the entry says which it belongs to.
+/// - **This host's own addresses.** The table lists them too, and a scan that
+///   reported the machine running it as a discovered neighbour would be wrong in
+///   a way nobody would think to check.
+/// - **Loopback and the unspecified address**, which name nothing on a segment.
+///
+/// Nothing seeded here is treated as a discovered host. Every entry is an
+/// address that answered *once*, from a table that goes stale, so each becomes a
+/// probe like any other and earns its place in the report by answering now.
 fn seed_from_neighbor_table(
     local: &mut std::collections::HashMap<pnet::datalink::NetworkInterface, IpSet>,
 ) {

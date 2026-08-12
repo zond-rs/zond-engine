@@ -9,11 +9,14 @@
 pub mod core;
 pub mod export;
 pub mod fingerprinting;
+pub mod host_sys;
 pub mod import;
-pub mod info;
 pub mod network;
 pub mod protocols;
 pub mod scanner;
 pub mod system;
 
-pub mod host_sys;
+// The engine's own diagnostic macros, reachable as `crate::info!` and friends
+// from anywhere in the crate. They are deliberately not part of the public API;
+// see `core::logging` for what exporting them would cost a consumer.
+pub(crate) use crate::core::logging::{error, info, success, warn};

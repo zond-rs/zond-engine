@@ -83,7 +83,7 @@ pub struct Host {
     /// Identified operating system metadata.
     os: Option<Box<OsFingerprint>>,
 
-    /// physical hardware (MAC) and vendor information.
+    /// Physical hardware (MAC) and vendor information.
     hardware: Option<HardwareInfo>,
 
     /// The interface this host was observed through, when one is known.

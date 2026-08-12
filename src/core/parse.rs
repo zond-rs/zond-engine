@@ -13,7 +13,7 @@
 //! into a clean, high-level API.
 //!
 //! Currently supported:
-//! * **IP Resolution**: Translating strings and keywords into [`IpSet`] models.
+//! * **IP Resolution**: Translating strings and keywords into [`IpSet`](crate::core::models::ip::set::IpSet) models.
 
 pub mod ip;
 

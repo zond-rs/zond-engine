@@ -208,7 +208,7 @@ impl std::fmt::Display for ScanEffort {
     }
 }
 
-/// The error [`ScanEffort::from_str`] returns, carrying the names that would
+/// The error parsing a [`ScanEffort`] returns, carrying the names that would
 /// have worked so a front end can print it verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown scan effort '{input}', expected one of: single, fast, balanced, thorough")]

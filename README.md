@@ -9,10 +9,24 @@
 
 ## Features
 
-* **Network Discovery:** Fast, asynchronous host scanning using raw sockets or TCP connect fallbacks.
-* **Protocol Fingerprinting:** Identify services, databases, and network devices using an embedded signature database.
-* **System Profiling:** Gather detailed local network interface and system information.
-* **Pluggable Architecture:** Easy to extend with custom packet parsers or discovery modules.
+* **Host discovery:** ARP and ICMPv6 on the local segment, raw TCP SYN for anything
+  through a gateway, and an unprivileged TCP connect fallback when the process is
+  not root. Hosts arrive live on an event stream as they are found.
+* **Port scanning:** six TCP techniques (see below) and raw UDP, with
+  retransmission, an adaptive deadline, and a verdict per port that says what the
+  evidence actually supports.
+* **Service fingerprinting:** identify the service, product and version behind an
+  open port using an embedded signature database.
+* **Reports in and out:** export a finished scan as JSON, JSONL, CSV, a
+  self-contained HTML page, or nmap-compatible XML; read targets back from a list,
+  CSV, this engine's own JSON, or an nmap XML file somebody else produced.
+  Each format sits behind a cargo feature.
+
+There is no dynamic plugin system, deliberately — loading code into a process
+holding raw-socket privileges is a liability, and it buys nothing a trait does
+not. `Exporter` and the import traits are public, so a consumer who wants their
+own format writes it in their own crate, type-checked at compile time and costing
+this crate no dependency.
 
 ## Getting Started
 
@@ -25,13 +39,17 @@ zond-engine = "0.10.0"
 
 ## Modules
 
-This crate contains the following core modules:
-
-* `core`: Shared data structures, constants, and utilities.
-* `protocols`: Network protocol parsers and packet crafting (TCP, UDP, ICMP, DNS, MDNS, etc.).
-* `plugins`: Extendable modules for specific application-layer interactions or advanced enumeration.
-* `system`: OS-level utilities (interfaces, firewall status, local processes) for Linux and macOS.
-* `scanner`: The main asynchronous scanner, host resolution, and core orchestration logic.
+* `core`: the domain model (hosts, ports, IP sets, targets), scan configuration,
+  the live session and the finished report.
+* `scanner`: the two entry points — `discover` for which hosts are alive, `scan`
+  for which of their ports are open — and the strategies behind them.
+* `fingerprinting`: service identification over an open port.
+* `export` / `import`: reports out, targets and settings in.
+* `protocols`: protocol parsers and packet crafting (TCP, UDP, ICMP, ARP, NDP,
+  DNS, mDNS).
+* `network`: raw send and capture transports, beneath the protocol layer.
+* `system`: interfaces, routing and privilege checks.
+* `host_sys`: local sockets and firewall status for the host itself.
 
 ## TCP scan techniques
 

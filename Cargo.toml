@@ -2,9 +2,17 @@
 name = "zond-engine"
 version = "0.10.0"
 edition = "2024"
+# The floor the README advertises. Declared here as well so `cargo add` refuses
+# an older toolchain, rather than letting it fail later in a wall of edition-2024
+# syntax errors from inside a dependency nobody was looking at.
+rust-version = "1.93"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/zond-rs/zond-engine"
+documentation = "https://docs.rs/zond-engine"
+readme = "README.md"
 description = "A lightweight, fast, and highly concurrent networking backend for packet crafting, protocol fingerprinting, and host discovery."
+keywords = ["network", "scanner", "portscan", "discovery", "security"]
+categories = ["network-programming", "asynchronous"]
 
 [features]
 default = ["export-json"]
@@ -105,7 +113,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", optional = true }
 bincode = "1.3.3"
 dns-parser = "0.8"
-toml = "1.1.3+spec-1.1.0"
+toml = "1.1.3"
 regex = "1.13.1"
 regex-syntax = "0.8"
 fancy-regex = "0.19.0"

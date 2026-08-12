@@ -14,4 +14,3 @@ pub mod mac;
 pub mod neighbor;
 pub mod probe;
 pub mod transport;
-pub mod utils;

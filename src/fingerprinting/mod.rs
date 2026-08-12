@@ -30,7 +30,7 @@
 //!
 //! ## Concurrency contract
 //!
-//! Every analyzer runs in two phases and [`analyze`] enforces the split: the
+//! Every analyzer runs in two phases and `analyze` enforces the split: the
 //! transport's first-contact I/O and each analyzer's own `collect` probes run on
 //! the async reactor; all `analyze` (CPU) work is handed to the blocking pool.
 //! Nothing in this module compiles a regex on a reactor thread — see
@@ -113,7 +113,7 @@ pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
 ///
 /// Network I/O — the banner grab and any active probes — runs here on the async
 /// reactor with bounded reads and per-stage timeouts. The CPU-bound signature
-/// matching is handed to [`analyze`], which runs on the blocking pool so a large
+/// matching is handed to `analyze`, which runs on the blocking pool so a large
 /// match set can never stall the scheduler.
 ///
 /// If nothing identifies, a trimmed printable banner is attached as a

@@ -6,48 +6,66 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! This module is currently a wrapper for the 'tracing' crate.
-//! The goal is to provide an abstraction so that other modules
-//! do not depend on tracing directrly, making it easy to swap
-//! our way of logging more easily in the future if needed.
+//! # Internal diagnostics
+//!
+//! How the engine's own code emits diagnostic events. Every macro here is
+//! `pub(crate)`, and that is the whole of its API design.
+//!
+//! **A library must not export these.** Exported from the crate root they would
+//! be `zond_engine::info!` and `zond_engine::error!` — five of the most generic
+//! identifiers in Rust, shadowing `tracing`'s and `log`'s macros of the same
+//! names in any consumer that glob-imports this crate, and pinned by semver
+//! forever. Worse, a macro expanding to `tracing::info!` resolves that path in
+//! the *caller's* namespace: a consumer who does not happen to depend on
+//! `tracing` themselves gets a compile error out of a macro they were invited to
+//! use. Neither problem is reachable from inside this repository, which is why
+//! the expansions here are absolute (`::tracing::`) and the macros are not
+//! exported.
+//!
+//! What a consumer sees instead is the events. The engine emits `tracing` and
+//! installs no subscriber, so whoever embeds it decides whether anything is
+//! rendered and how.
+//!
+//! Two fields carry the conventions a front end reads. `status` names what kind
+//! of thing an event is, which is what a terminal colours on and a structured
+//! consumer filters on. `verbosity` is set by the caller on anything below a
+//! headline — a default run shows none of it.
 
-#[macro_export]
 macro_rules! info {
     (incoming, $($arg:tt)+) => {
-        tracing::info!(status = "incoming", $($arg)+)
+        ::tracing::info!(status = "incoming", $($arg)+)
     };
     (outgoing, $($arg:tt)+) => {
-        tracing::info!(status = "outgoing", $($arg)+)
+        ::tracing::info!(status = "outgoing", $($arg)+)
     };
     ($($arg:tt)+) => {
-        tracing::info!(status = "info", $($arg)+)
+        ::tracing::info!(status = "info", $($arg)+)
     };
 }
 
-#[macro_export]
 macro_rules! success {
     ($($arg:tt)+) => {
-        tracing::info!(status = "success", $($arg)+)
+        ::tracing::info!(status = "success", $($arg)+)
     };
 }
 
-#[macro_export]
-macro_rules! debug {
-    ($($arg:tt)+) => {
-        tracing::debug!(status = "debug", $($arg)+)
-    };
-}
-
-#[macro_export]
 macro_rules! error {
     ($($arg:tt)+) => {
-        tracing::error!(status = "error", $($arg)+)
+        ::tracing::error!(status = "error", $($arg)+)
     };
 }
 
-#[macro_export]
-macro_rules! warn {
+// Defined under a name nothing else claims, then re-exported as `warn` below.
+// `warn` is a built-in attribute, so re-exporting a macro of that name by its
+// own name is ambiguous and will not compile; renaming on the way out resolves
+// an unambiguous path and still binds the name every call site writes.
+macro_rules! warn_macro {
     ($($arg:tt)+) => {
-        tracing::warn!(status = "warn", $($arg)+)
+        ::tracing::warn!(status = "warn", $($arg)+)
     };
 }
+
+pub(crate) use error;
+pub(crate) use info;
+pub(crate) use success;
+pub(crate) use warn_macro as warn;

@@ -356,7 +356,7 @@ impl UdpPortScanner {
     /// of one already resolved, an answer to a probe already written off, or a
     /// packet that reached us despite not answering anything this scan sent.
     ///
-    /// The round trip is whatever the ledger is willing to youch for. A probe
+    /// The round trip is whatever the ledger is willing to vouch for. A probe
     /// that was sent once is unambiguous; one that was retried is not, since
     /// the two datagrams are identical on the wire, and no sample is taken.
     fn resolve_probe(
@@ -585,7 +585,7 @@ impl PortScanner for UdpPortScanner {
     /// scan's deadline expires. Anything still outstanding when the loop ends is
     /// reported as OpenFiltered.
     ///
-    /// New targets are admitted only while fewer than [`MAX_IN_FLIGHT`] probes
+    /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes
     /// are outstanding. That ceiling is what paces the scan: probes leave as
     /// earlier ones are answered or expire, so the send rate settles at the
     /// rate the network is actually resolving them instead of at the rate the

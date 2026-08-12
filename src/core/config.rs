@@ -164,14 +164,13 @@ pub struct ZondConfig {
     /// Use this when sharing screenshots or logs publicly.
     pub redact: bool,
 
-    /// Controls the visual density and formatting of the terminal output.
+    /// How much of what the engine emits a consumer wants to render: `0` for
+    /// everything, rising to `2` for results only.
     ///
-    /// This value is typically mapped from the `-q` or `--quiet` CLI flags.
-    ///
-    /// # Levels
-    /// * **0** (Default): Full UI, including colors, spinners, and detailed tables.
-    /// * **1**: Reduced styling. Minimal colors, simplified tables.
-    /// * **2**: Raw mode. Output is strictly data (e.g., plain IP lists), suitable for piping into other tools.
+    /// The engine never reads this. It emits `tracing` events tagged with a
+    /// `verbosity` field and installs no subscriber, so what is shown is decided
+    /// entirely by whoever embeds the crate; this field only carries the choice
+    /// to whatever code makes it.
     pub quiet: u8,
 
     /// Disables interactive keyboard listeners.
@@ -218,7 +217,8 @@ pub struct ZondConfig {
     /// Every probing path has its own schedule, tuned to what its protocol
     /// requires; this scales those rather than replacing them, so raising or
     /// lowering the effort cannot hand a scanner a schedule its protocol cannot
-    /// satisfy. Defaults to [`ScanEffort::Balanced`].
+    /// satisfy. Defaults to
+    /// [`ScanEffort::Balanced`](crate::core::models::retry::ScanEffort::Balanced).
     pub retry: RetryConfig,
 }
 

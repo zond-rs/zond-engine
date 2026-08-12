@@ -10,13 +10,13 @@
 //!
 //! Discovers hosts on the same physical network segment by sending ARP requests
 //! (IPv4) and ICMPv6 all-nodes solicitations (IPv6), then listening for replies.
-//! Recognizing those replies is left to the [`discovery`] module, so adding a
+//! Recognizing those replies is left to the `discovery` module, so adding a
 //! new discovery mechanism does not mean touching the receive loop.
 //!
 //! The two probes are repeated on different terms, because they ask different
 //! questions. An ARP request is put to one address, answered once, and retired
 //! by that answer, so it is retransmitted through the shared
-//! [`ProbeLedger`](crate::core::models::retry::ProbeLedger) like every other
+//! [`ProbeLedger`] like every other
 //! probe in the engine. The solicitation is put to the whole segment and
 //! answered by whoever is listening, so it is simply repeated a few times and
 //! given a window to be answered in.

@@ -8,7 +8,7 @@
 
 //! # Layer-2 (Ethernet) Send Backend
 //!
-//! A [`ProbeSender`](crate::network::probe::ProbeSender) that builds and
+//! A [`ProbeSender`] that builds and
 //! emits complete Ethernet frames itself, rather than handing a segment to a
 //! raw socket and letting the kernel route it.
 //!

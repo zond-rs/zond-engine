@@ -178,7 +178,7 @@ pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<
 ///
 /// On-link destinations are answered from the in-memory [`OnLinkTable`];
 /// everything else falls back to [`probe_route_source`], and then to
-/// [`plausible_source`] when the kernel declines.
+/// `plausible_source` when the kernel declines.
 pub struct SourceResolver {
     onlink: OnLinkTable,
     sockets: ProbeSockets,
@@ -216,7 +216,7 @@ impl SourceResolver {
     /// if no address on this host could plausibly reach it.
     ///
     /// Three answers in order of authority: this host's own segments, then the
-    /// kernel's routing table, then [`plausible_source`] for the case where the
+    /// kernel's routing table, then `plausible_source` for the case where the
     /// kernel refuses but the host visibly holds an address of the right scope.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
         if let Some(cached) = self.cache.get(&target) {

@@ -254,7 +254,6 @@ async fn port_prober(target: Target) -> ProbedPort {
             })
         }
         Ok(Err(e)) => {
-            use std::io::ErrorKind;
             match e.kind() {
                 // A refusal is a definite "closed"; no port is recorded, but the
                 // RST the kernel translated into it proves the host is up.
@@ -486,7 +485,6 @@ async fn prober(target: Target, found_set: Arc<DashSet<IpAddr>>) -> ProbedHost {
         // Only these TCP errors imply the host answered at the IP/TCP layer. Any
         // other error (no route, permission denied, timeout) says nothing.
         Ok(Err(e)) => {
-            use std::io::ErrorKind;
             matches!(
                 e.kind(),
                 ErrorKind::ConnectionRefused

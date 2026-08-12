@@ -107,7 +107,7 @@ pub trait Analyzer: Send + Sync {
 /// lazily; most responses match on their port and never trigger it.
 ///
 /// Within a tier the analyzer picks the **most specific** match, not the first
-/// one to fire (see [`best_match`]): a generic `HTTP/1.1` signature no longer
+/// one to fire (see `best_match`): a generic `HTTP/1.1` signature no longer
 /// shadows the `Server: nginx/1.25.3` signature that names a product and
 /// version.
 pub struct BannerRegexAnalyzer;

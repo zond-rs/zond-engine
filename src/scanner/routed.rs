@@ -11,7 +11,7 @@
 //! Finds hosts reached through a gateway rather than ones sitting on the local
 //! segment. It sends a single raw TCP SYN packet to each target and listens for
 //! any reply. A full three-way handshake is never completed, so this works
-//! whether or not the target port is open. [`port_scan`] builds on the same
+//! whether or not the target port is open. `port_scan` builds on the same
 //! raw-socket machinery to answer a different question: not whether a host is
 //! alive, but which of its ports are open.
 //!

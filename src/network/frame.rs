@@ -162,7 +162,7 @@ pub struct IpSegment<'a> {
 ///
 /// Returns `None` for a truncated packet, an implausible header length, an
 /// unrecognized IP version, or an IPv6 chain that names no Layer-4 segment at
-/// all (see [`walk_ipv6_headers`]).
+/// all (see `walk_ipv6_headers`).
 pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
     match ip_bytes.first()? >> 4 {
         4 => {

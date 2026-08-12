@@ -10,7 +10,7 @@
 //!
 //! Builds the segment a port probe puts on the wire and reads the segment that
 //! comes back. What either one *means* is
-//! [`TcpScanTechnique`](crate::core::models::technique::TcpScanTechnique)'s
+//! [`TcpScanTechnique`]'s
 //! business; this module knows only what a TCP header is.
 //!
 //! ## The nonce, and why it moves between fields
