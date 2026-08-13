@@ -11,16 +11,27 @@
 //! This module provides the [`IpSet`] model, a high-performance container for managing
 //! large collections of unique IP addresses.
 //!
-//! ## Performance Characteristics
+//! ## Merging is lazy, and that is a build-time concern
 //!
-//! `IpSet` uses a **lazy normalization** strategy. Insertions are $O(1)$ amortized,
-//! as they simply push to an internal buffer. The set is sorted and merged ($O(N \log N)$)
-//! only when a query method is called or when [`IpSet::canonicalize`] is invoked explicitly.
+//! Insertion is $O(1)$: it pushes to a buffer. Sorting and merging is
+//! $O(N \log N)$ and happens once, at [`IpSet::canonicalize`]. That split exists
+//! because a target file can name tens of thousands of ranges, and merging after
+//! each one would make loading it quadratic.
 //!
-//! For maximum performance in multithreaded scanning:
-//! 1. Build the set using `insert`, `extend`, or `FromIterator`.
-//! 2. Call [`IpSet::canonicalize`] once.
-//! 3. Use thread-safe query methods like [`IpSet::contains_canonical`].
+//! **The cost of that is a set that can answer wrongly while it is half built,
+//! and it is not a cost callers are asked to carry.** A set becomes canonical at
+//! the boundary where it stops being built and starts being read:
+//! [`TargetSet::new`](crate::core::models::target::TargetSet::new) merges what it
+//! is given and never mutates it again, so everything downstream of a
+//! `TargetSet` reads merged ranges by construction.
+//!
+//! [`contains`](IpSet::contains) and [`len`](IpSet::len) are correct whatever
+//! state the set is in — they take a fast path when it is clean and a slower one
+//! when it is not. There used to be a second, public, faster pair beside them
+//! guarded only by `debug_assert!`; choosing between them was the caller's
+//! problem, choosing wrong was silent in release, and a wrong answer about
+//! whether an address is in scope decides whether a reply is credited or thrown
+//! away. They are now the private fast paths of the two above.
 
 use super::range::{IpError, IpRange, Ipv4Range, Ipv6Range};
 use std::{
@@ -245,12 +256,20 @@ impl IpSet {
 
     // ─── Query API (Read-Only / Sync) ────────────────────────────────────────
 
-    /// A high-performance, thread-safe version of `contains`.
+    /// The fast path [`contains`](Self::contains) takes on a merged set.
+    ///
+    /// Private, and deliberately so. It was public alongside `contains`, which
+    /// made choosing between them the caller's problem and made choosing wrong
+    /// silent: the `debug_assert!` below is the only thing separating a binary
+    /// search over merged ranges from a binary search over ranges that are not
+    /// sorted, and a release build has no `debug_assert!`. A wrong answer about
+    /// whether an address is in scope decides whether a reply is credited or
+    /// discarded.
     ///
     /// # Panics
     ///
     /// Panics in debug mode if the set has pending unmerged ranges.
-    pub fn contains_canonical(&self, ip: &IpAddr) -> bool {
+    fn contains_canonical(&self, ip: &IpAddr) -> bool {
         debug_assert!(
             !self.v4_dirty && !self.v6_dirty,
             "IpSet must be canonicalized before calling contains_canonical"
@@ -291,12 +310,13 @@ impl IpSet {
         }
     }
 
-    /// A thread-safe version of `len`.
+    /// The fast path [`len`](Self::len) takes on a merged set. Private for the
+    /// reason [`contains_canonical`](Self::contains_canonical) is.
     ///
     /// # Panics
     ///
     /// Panics in debug mode if the set has pending unmerged ranges.
-    pub fn len_canonical(&self) -> u128 {
+    fn len_canonical(&self) -> u128 {
         debug_assert!(
             !self.v4_dirty && !self.v6_dirty,
             "IpSet must be canonicalized before calling len_canonical"
@@ -309,10 +329,9 @@ impl IpSet {
     /// Counted per family rather than as one total because a caller that emits
     /// a different probe per family needs to know the ratio between them - a
     /// sweep interleaving ARP with neighbor solicitation has to space each
-    /// against the other's volume. Overlapping ranges are counted twice, as
-    /// they are in [`len_canonical`](Self::len_canonical) before merging: these
-    /// steer pacing, and a pacing decision does not warrant canonicalizing a
-    /// clone of the set.
+    /// against the other's volume. Overlapping ranges are counted twice, which
+    /// merging is what would fix: these steer pacing, and a pacing decision does
+    /// not warrant canonicalizing a clone of the set to make them exact.
     ///
     /// Saturates rather than wrapping, for the reason
     /// [`Ipv6Range::len`](crate::core::models::ip::range::Ipv6Range::len) gives:

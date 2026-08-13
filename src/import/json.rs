@@ -723,7 +723,7 @@ mod tests {
             .export(&report, &mut document)
             .expect("the fixture exports");
 
-        let mut imported = ImportFormat::Json
+        let imported = ImportFormat::Json
             .read(&mut Cursor::new(document), &options())
             .expect("its own document reads back");
 

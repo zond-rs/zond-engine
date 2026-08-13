@@ -20,9 +20,6 @@ use thiserror::Error;
 /// Errors that can occur during target composition and calculation.
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum TargetError {
-    #[error("Target collection is in a dirty state; call `canonicalize()` before concurrent reads")]
-    UncanonicalizedState,
-
     #[error("Target calculation resulted in an integer overflow")]
     CapacityOverflow,
 }
@@ -37,26 +34,34 @@ pub struct Target {
 
 /// A blueprint pairing a set of IP addresses with a set of ports.
 ///
-/// `TargetSet` supports lazy evaluation of the underlying sets. Volume queries
-/// and iteration will safely trigger normalization of the IPs and ports.
+/// **The addresses are canonical for this type's whole life.** [`IpSet`] merges
+/// lazily, so a half-built one can hold overlapping ranges and answer questions
+/// about them wrongly; that is a real hazard, and it has already cost this
+/// project one benchmark that reported 65 536 ranges for a file holding one.
+///
+/// The hazard is removed rather than documented: [`new`](Self::new)
+/// canonicalizes, and `ips` is private with no way to mutate it afterwards, so
+/// there is no moment at which a `TargetSet` holds an unmerged set. Everything
+/// that reads one therefore takes `&self` — a count is not a mutation, and a
+/// signature that said otherwise was the invariant leaking into every caller.
 #[derive(Debug, Clone, Default)]
 pub struct TargetSet {
-    /// Internal IP set. Kept private to protect lazy-evaluation invariants.
+    /// Internal IP set, canonical by construction.
     ips: IpSet,
     /// Internal Port set. Kept private to protect lazy-evaluation invariants.
     ports: PortSet,
-    /// Tracks whether the underlying sets are currently normalized for safe reads.
-    is_canonicalized: bool,
 }
 
 impl TargetSet {
-    /// Creates a new scan blueprint. Defaults to an uncanonicalized state.
-    pub fn new(ips: IpSet, ports: PortSet) -> Self {
-        Self {
-            ips,
-            ports,
-            is_canonicalized: false,
-        }
+    /// Creates a scan blueprint over `ips` and `ports`.
+    ///
+    /// Merges `ips` here, once, which is what lets every read below be `&self`.
+    /// The work is the same either way — a set has to be merged before it can be
+    /// counted or iterated — and doing it at one known point rather than at
+    /// whichever read happened first is the whole of the difference.
+    pub fn new(mut ips: IpSet, ports: PortSet) -> Self {
+        ips.canonicalize();
+        Self { ips, ports }
     }
 
     /// Returns a read-only reference to the underlying IP set.
@@ -80,8 +85,7 @@ impl TargetSet {
     }
 
     /// Returns the number of unique IP addresses in this set.
-    /// Performs lazy normalization.
-    pub fn ip_count(&mut self) -> u128 {
+    pub fn ip_count(&self) -> u128 {
         self.ips.len()
     }
 
@@ -90,20 +94,10 @@ impl TargetSet {
         self.ports.len()
     }
 
-    /// Prepares the internal IP and Port sets for high-performance read-only access.
-    pub fn canonicalize(&mut self) {
-        if !self.is_canonicalized {
-            self.ips.canonicalize();
-            self.is_canonicalized = true;
-        }
-    }
-
-    /// Returns the total number of targets. Performs lazy normalization if needed.
+    /// Returns the total number of targets.
     ///
     /// Returns a `TargetError::CapacityOverflow` if the calculation exceeds `u128::MAX`.
-    pub fn total_targets(&mut self) -> Result<u128, TargetError> {
-        self.canonicalize();
-
+    pub fn total_targets(&self) -> Result<u128, TargetError> {
         let port_len = self.ports.len() as u128;
         self.ips
             .len()
@@ -115,9 +109,7 @@ impl TargetSet {
     ///
     /// This uses `Arc` internally to prevent O(N) memory allocations when iterating
     /// over massive subnets (e.g., /8 or IPv6 ranges).
-    pub fn iter(&mut self) -> impl Iterator<Item = Target> + Send + '_ {
-        self.canonicalize();
-
+    pub fn iter(&self) -> impl Iterator<Item = Target> + Send + '_ {
         let ports_arc: Arc<[(u16, Protocol)]> = self.ports.to_vec().into();
 
         self.ips.iter().flat_map(move |ip| {
@@ -128,22 +120,6 @@ impl TargetSet {
                 protocol: local_ports[i].1,
             })
         })
-    }
-
-    /// Thread-safe version of `total_targets`.
-    ///
-    /// This method is strictly read-only. It returns `TargetError::UncanonicalizedState`
-    /// if the sets have not been normalized prior to concurrent access.
-    pub fn total_targets_canonical(&self) -> Result<u128, TargetError> {
-        if !self.is_canonicalized {
-            return Err(TargetError::UncanonicalizedState);
-        }
-
-        let port_len = self.ports.len() as u128;
-        self.ips
-            .len_canonical()
-            .checked_mul(port_len)
-            .ok_or(TargetError::CapacityOverflow)
     }
 
     /// Returns true if either the IP set or the Port set is completely empty.
@@ -169,18 +145,14 @@ impl TargetMap {
         self.units.push(unit);
     }
 
-    /// Triggers normalization for all units.
-    pub fn canonicalize(&mut self) {
-        for unit in &mut self.units {
-            unit.canonicalize();
-        }
-    }
-
     /// Returns the gross total of target connections across all units.
-    /// Performs lazy normalization.
-    pub fn gross_targets(&mut self) -> Result<u128, TargetError> {
+    ///
+    /// Gross rather than net: two units naming the same address each count it,
+    /// because a unit is a set of addresses *paired with a set of ports* and two
+    /// units are two different questions about that address.
+    pub fn gross_targets(&self) -> Result<u128, TargetError> {
         let mut total: u128 = 0;
-        for unit in &mut self.units {
+        for unit in &self.units {
             let unit_total = unit.total_targets()?;
             total = total
                 .checked_add(unit_total)
@@ -190,10 +162,9 @@ impl TargetMap {
     }
 
     /// Returns the gross number of IP addresses across all units.
-    /// Performs lazy normalization.
-    pub fn gross_ips(&mut self) -> Result<u128, TargetError> {
+    pub fn gross_ips(&self) -> Result<u128, TargetError> {
         let mut total: u128 = 0;
-        for unit in &mut self.units {
+        for unit in &self.units {
             total = total
                 .checked_add(unit.ip_count())
                 .ok_or(TargetError::CapacityOverflow)?;
@@ -207,8 +178,8 @@ impl TargetMap {
     }
 
     /// Creates a flattened iterator over every target in every unit.
-    pub fn iter(&mut self) -> impl Iterator<Item = Target> + Send + '_ {
-        self.units.iter_mut().flat_map(|unit| unit.iter())
+    pub fn iter(&self) -> impl Iterator<Item = Target> + Send + '_ {
+        self.units.iter().flat_map(|unit| unit.iter())
     }
 }
 
@@ -235,26 +206,30 @@ mod tests {
     }
 
     #[test]
-    fn target_set_lazy_math() {
-        let mut ts = TargetSet::new(mock_ip_set("192.168.1.0/24"), mock_port_set("80, 443"));
+    fn target_set_math() {
+        let ts = TargetSet::new(mock_ip_set("192.168.1.0/24"), mock_port_set("80, 443"));
         assert_eq!(ts.total_targets().unwrap(), 256 * 2);
     }
 
+    /// The property that replaced an invariant callers had to maintain: a set is
+    /// merged the moment it is a `TargetSet`, so nothing downstream can read one
+    /// that is not.
+    ///
+    /// This is what the two tests here used to be about. They asserted that a
+    /// read before `canonicalize()` returned `TargetError::UncanonicalizedState`,
+    /// and that it succeeded afterwards — a state that no longer exists to test.
+    /// Overlapping ranges counted twice is the failure that made it matter, so
+    /// that is what this asserts instead.
     #[test]
-    fn thread_safe_reads_require_canonicalization() {
-        let ts = TargetSet::new(mock_ip_set("192.168.1.0/24"), mock_port_set("80"));
+    fn a_target_set_merges_its_addresses_on_construction() {
+        let mut overlapping = mock_ip_set("192.168.1.0/24");
+        overlapping.insert_range("192.168.1.128/25".parse().expect("valid range"));
 
-        // Reading without canonicalizing should return an explicit error
-        let err = ts.total_targets_canonical().unwrap_err();
-        assert_eq!(err, TargetError::UncanonicalizedState);
-    }
+        let ts = TargetSet::new(overlapping, mock_port_set("80"));
 
-    #[test]
-    fn thread_safe_reads_succeed_when_prepared() {
-        let mut ts = TargetSet::new(mock_ip_set("192.168.1.0/24"), mock_port_set("80"));
-        ts.canonicalize();
-
-        assert_eq!(ts.total_targets_canonical().unwrap(), 256);
+        // 256, not the 384 the two arguments add up to.
+        assert_eq!(ts.ip_count(), 256);
+        assert_eq!(ts.total_targets().unwrap(), 256);
     }
 
     #[test]

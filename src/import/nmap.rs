@@ -1108,7 +1108,7 @@ mod tests {
             .export(&report, &mut document)
             .expect("the fixture exports");
 
-        let mut imported = ImportFormat::NmapXml
+        let imported = ImportFormat::NmapXml
             .read(&mut Cursor::new(document), &options())
             .expect("this engine reads back what it wrote");
 

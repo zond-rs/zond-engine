@@ -553,7 +553,7 @@ impl TargetMapBuilder {
             .iter_mut()
             .map(|(_, ips)| {
                 ips.canonicalize();
-                ips.len_canonical()
+                ips.len()
             })
             .fold(0u128, |total, count| total.saturating_add(count))
     }
@@ -797,7 +797,7 @@ mod tests {
         assert_eq!(builder.group_count(), 1, "one port specification, one unit");
         assert_eq!(builder.address_count(), 256);
 
-        let mut map = builder.build();
+        let map = builder.build();
         assert_eq!(map.units.len(), 1);
         // 256 contiguous addresses on one port: the IpSet merged them into a
         // single range on the way in.

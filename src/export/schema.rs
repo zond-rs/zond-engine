@@ -1531,7 +1531,7 @@ mod tests {
             PortSet::from_iter([(80, Protocol::Tcp), (53, Protocol::Udp)]),
         ));
 
-        let scope = ScopeDto::new(&TargetScope::from_target_map(&mut targets));
+        let scope = ScopeDto::new(&TargetScope::from_target_map(&targets));
 
         assert_eq!(scope.addresses, "4");
         assert_eq!(scope.probes.as_deref(), Some("8"));

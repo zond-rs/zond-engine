@@ -281,7 +281,7 @@ pub async fn discover(
 /// from, probes fall back to a plain TCP connect attempt per target through the
 /// `connect` module.
 pub async fn scan(
-    mut target_map: TargetMap,
+    target_map: TargetMap,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::new();
@@ -289,8 +289,10 @@ pub async fn scan(
     let ips = target_ips(&target_map);
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
 
-    // Recorded before `target_map` moves into the dispatcher.
-    let scope = TargetScope::from_target_map(&mut target_map);
+    // Recorded before `target_map` moves into the dispatcher. Reading it costs
+    // only a shared borrow: a `TargetMap` is canonical from the moment its units
+    // are built, so counting one is not a mutation.
+    let scope = TargetScope::from_target_map(&target_map);
     let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, cfg);
 
     let (tcp_scanner, udp_scanner) = if caps.privileged {

@@ -141,9 +141,7 @@ impl TargetScope {
     /// is actually billed in. It is `None` when the target map is large enough
     /// to overflow that count, which is a failure to measure and is reported as
     /// one rather than as a plausible-looking number.
-    pub fn from_target_map(targets: &mut TargetMap) -> Self {
-        targets.canonicalize();
-
+    pub fn from_target_map(targets: &TargetMap) -> Self {
         let mut ranges = Vec::new();
         let mut protocols = Vec::new();
         for unit in &targets.units {
@@ -1005,7 +1003,7 @@ mod tests {
         let mut targets = TargetMap::new();
         targets.add_unit(TargetSet::new(ip_set("10.0.0.1-10.0.0.4"), ports));
 
-        let scope = TargetScope::from_target_map(&mut targets);
+        let scope = TargetScope::from_target_map(&targets);
 
         assert_eq!(scope.addresses(), 4);
         assert_eq!(scope.probes(), Some(12));
@@ -1078,7 +1076,7 @@ mod tests {
 
         let report = ScanReport::new(phase(ScanKind::Discovery), [up, filtered, down, unknown]);
 
-        let mut targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
+        let targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
 
         // Up and Filtered are both alive - something is there, whether or not it
         // is answering for itself. Down and Unknown are not.
@@ -1096,7 +1094,7 @@ mod tests {
         dual.add_ip(IpAddr::from_str("2001:db8::1").unwrap());
 
         let report = ScanReport::new(phase(ScanKind::Discovery), [dual]);
-        let mut targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
+        let targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
 
         assert_eq!(targets.gross_ips().expect("countable"), 1);
     }

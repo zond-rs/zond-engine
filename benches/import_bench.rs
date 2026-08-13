@@ -234,7 +234,7 @@ fn shapes() {
         });
 
         let grouped_walk = median(|| {
-            let mut map = build_grouped(&shape.text, &ports);
+            let map = build_grouped(&shape.text, &ports);
             let start = Instant::now();
             let count = map.iter().count();
             let elapsed = start.elapsed();
@@ -242,7 +242,7 @@ fn shapes() {
             elapsed
         });
         let naive_walk = median(|| {
-            let mut map = build_ungrouped(&shape.text, &ports);
+            let map = build_ungrouped(&shape.text, &ports);
             let start = Instant::now();
             let count = map.iter().count();
             let elapsed = start.elapsed();
@@ -250,14 +250,14 @@ fn shapes() {
             elapsed
         });
 
-        let mut map = build_grouped(&shape.text, &ports);
+        let map = build_grouped(&shape.text, &ports);
         let units = map.units.len();
-        // Canonicalized first, because ranges are merged lazily and counting
-        // them before that reports how many were *inserted*, not how many the
-        // set holds. Reading it too early made a contiguous file and a
-        // deliberately unmergeable one report identical figures, which is the
-        // instrument agreeing with itself rather than measuring anything.
-        map.canonicalize();
+        // No canonicalize call, and none possible: a `TargetSet` merges its
+        // addresses when it is built, so there is no longer a moment at which
+        // this could count ranges *inserted* rather than ranges held. That was
+        // a real reading once — a contiguous file and a deliberately unmergeable
+        // one reported identical figures, the instrument agreeing with itself
+        // rather than measuring anything.
         let ranges: usize = map
             .units
             .iter()

@@ -1006,7 +1006,7 @@ mod tests {
 
         // The port-scan entry point: one unit, both ports, ten probes.
         assert_eq!(imported.map.units.len(), 1);
-        let mut map = imported.map.clone();
+        let map = imported.map.clone();
         assert_eq!(map.gross_targets().unwrap(), 10);
 
         // The discovery entry point: the same five addresses, no ports.
