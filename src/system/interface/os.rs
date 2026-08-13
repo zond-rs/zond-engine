@@ -38,6 +38,26 @@ pub mod linux_impl {
     }
 }
 
+/// Classifying a macOS link as physical or wireless, which decides which
+/// interface a `lan` sweep runs on.
+///
+/// **This is the one place the engine shells out**, and it is worth stating why
+/// rather than leaving it to be discovered. macOS exposes the wired/wireless
+/// distinction through `SystemConfiguration` and through the `IFM_IEEE80211`
+/// media type an `ioctl` can read; both are platform FFI, and neither has been
+/// written. `networksetup` ships with every macOS install and answers the same
+/// question in two lines.
+///
+/// What that costs, stated plainly: the engine spawns a process, and resolves it
+/// through `PATH`. It is bounded — macOS only, run once behind a `OnceLock`,
+/// never given any input derived from a scan target or a captured packet — but a
+/// library running inside somebody else's privileged process should be judged on
+/// this, not excused for it. Replacing it with `SystemConfiguration` is the right
+/// end state and is recorded in `docs/bugs.md`.
+///
+/// If the command is unavailable both sets come back empty, `is_physical` answers
+/// `false` for everything, and a `lan` sweep finds no interface to run on rather
+/// than picking a wrong one.
 #[cfg(target_os = "macos")]
 pub mod macos_impl {
     use super::*;

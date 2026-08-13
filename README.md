@@ -81,8 +81,8 @@ it is worth.
 * `protocols`: protocol parsers and packet crafting (TCP, UDP, ICMP, ARP, NDP,
   DNS, mDNS).
 * `network`: raw send and capture transports, beneath the protocol layer.
-* `system`: interfaces, routing and privilege checks.
-* `host_sys`: local sockets and firewall status for the host itself.
+* `system`: interfaces, routing and privilege checks — the only place the engine
+  asks the host about itself.
 
 ## TCP scan techniques
 

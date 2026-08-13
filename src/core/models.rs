@@ -10,7 +10,6 @@ pub mod deadline;
 pub mod fingerprint;
 pub mod host;
 pub mod ip;
-pub mod localhost;
 pub mod mac;
 pub mod port;
 pub mod retry;

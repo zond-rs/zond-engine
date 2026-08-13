@@ -7,14 +7,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! # Host System
 //!
-//! This module brokers the host-facing capabilities a scan depends on.
-//! [`interface`] resolves, validates, and routes the network hardware attached to
-//! the host, classifying local connections (wired vs wireless), fetching network
-//! IPv4 assignments, and routing an arbitrary set of targets securely out of the
-//! host boundaries. [`privilege`] reports whether the process may open raw
+//! Everything the engine asks the machine it is running on, and nothing else.
+//!
+//! [`interface`] resolves, validates and routes the network hardware attached to
+//! the host: which links are physical, which are wireless, what addresses they
+//! carry, and which source address reaches a given target. [`neighbors`] reads
+//! the host's own IPv6 neighbour table, which is the only source of an IPv6
+//! address nobody named. [`privilege`] reports whether the process may open raw
 //! sockets.
 //!
-//! Exposes a clean facade for all host system logic to consumers.
+//! **This is the only module that asks the host about itself, and it asks only
+//! what a scan needs to send a packet.** It deliberately does not profile the
+//! machine — what it is listening on, what firewall it runs — because none of
+//! that changes what goes on the wire, and a library that gathers it is
+//! collecting data on its embedder's host for nobody's benefit.
 
 pub mod interface;
 pub mod neighbors;

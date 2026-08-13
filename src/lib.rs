@@ -91,8 +91,7 @@
 //!   reasonable thing to want on its own; nothing in the two phases above
 //!   requires touching them.
 //! - [`system`] — interfaces, routing, and whether the process may open raw
-//!   sockets.
-//! - [`host_sys`] — what the local machine itself is listening on.
+//!   sockets. The one place the engine asks the host about itself.
 //!
 //! # Platforms
 //!
@@ -101,7 +100,6 @@
 pub mod core;
 pub mod export;
 pub mod fingerprinting;
-pub mod host_sys;
 pub mod import;
 pub mod network;
 pub mod protocols;
