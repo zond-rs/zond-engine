@@ -61,8 +61,9 @@ use crate::model::target::Target;
 use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
 use crate::scanner::report::StopReason;
+use crate::scanner::service;
 use crate::scanner::session::{ScanContext, ScannerKind};
-use crate::scanner::{PortScanner, StrategyError, service};
+use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::success;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
@@ -71,9 +72,9 @@ use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};
 // Port scanning and routed discovery send the same kind of raw TCP probe over
 // the same kind of network path, so they share one adaptive-deadline profile
 // rather than keeping two copies in step.
-use super::super::audit::ProbeAudit;
 use super::icmp_error::{self, Unreachable};
 use super::{DEADLINE_CONFIG, RETRY_POLICY};
+use crate::scanner::audit::ProbeAudit;
 
 /// The probe a reply refers to: the `(address, port)` it was sent to.
 type ProbeTarget = (IpAddr, u16);
@@ -201,7 +202,6 @@ impl TcpPortScanner {
     /// a TCP reply is addressed back to whatever port the probe came from, so a
     /// simulated network answers correctly without being told, where a
     /// synthesized ICMP error has to be built around a port the test knows.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,

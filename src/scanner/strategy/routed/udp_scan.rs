@@ -59,14 +59,14 @@ use crate::model::target::Target;
 use crate::model::timer::ScanBudget;
 use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
-use crate::scanner::{PortScanner, StrategyError};
+use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{ProbeKind, ProbeTransport};
 
-use super::super::audit::ProbeAudit;
 use super::icmp_error::{self, Unreachable};
 use super::send_udp;
+use crate::scanner::audit::ProbeAudit;
 
 /// The probe a reply refers to: the `(address, port)` it was sent to.
 type ProbeTarget = (IpAddr, u16);
@@ -238,7 +238,6 @@ impl UdpPortScanner {
     /// transport (`ProbeTransport::from_parts`, behind the `test-support`
     /// feature) this is the seam that lets classification be driven against a
     /// simulated network rather than a real one.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -738,7 +737,7 @@ mod tests {
     use pnet::packet::icmp::{IcmpCode, IcmpTypes};
     use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
 
-    use super::super::icmp_error::{
+    use crate::scanner::strategy::routed::icmp_error::{
         ICMPV6_ADMIN_PROHIBITED, ICMPV6_INGRESS_EGRESS_POLICY, ICMPV6_NO_ROUTE,
         ICMPV6_PORT_UNREACHABLE, ICMPV6_REJECT_ROUTE, ICMPV6_UNUSED_LEN,
     };

@@ -30,9 +30,9 @@ use common::*;
 use zond_engine::model::host::HostStatus;
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
-use zond_engine::scanner::NetworkExplorer;
-use zond_engine::scanner::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
 use zond_engine::scanner::session::ScanSession;
+use zond_engine::scanner::strategy::HostScanner;
+use zond_engine::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
 use zond_engine::system::interface::RoutedTarget;
 
 /// The fixed source port the simulated UDP scans probe from.
@@ -204,7 +204,7 @@ async fn established_traffic_does_not_discover_a_host() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET_V6, 443, Policy::established());
     let (session, ctx) = ScanSession::new();
 
-    let scanner = RoutedScanner::with_transport(
+    let mut scanner = RoutedScanner::with_transport(
         vec![RoutedTarget {
             target: TARGET_V6,
             source: SCANNER_V6.into(),
@@ -213,7 +213,7 @@ async fn established_traffic_does_not_discover_a_host() {
         None,
         net.transport(),
     );
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");

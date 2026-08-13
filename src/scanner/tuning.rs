@@ -10,9 +10,9 @@
 //!
 //! The timeouts and concurrency ceilings the unprivileged (TCP connect) scan
 //! paths run against, gathered in one place. These used to be declared per module:
-//! a `1000ms` connect budget spelled once in [`connect`](super::connect) and again
-//! in [`service`](super::service), and a fan-out of `50` living as both a
-//! [`scan`](super::scan) constant and a `service` constant. Tuning one copy then
+//! a `1000ms` connect budget spelled once in [`connect`](crate::scanner::strategy::connect) and again
+//! in [`service`](crate::scanner::service), and a fan-out of `50` living as both a
+//! [`scan`](crate::scanner::scan) constant and a `service` constant. Tuning one copy then
 //! quietly left the other behind. Defining them here once keeps the knobs
 //! consistent and easy to find.
 //!
@@ -45,7 +45,7 @@ use std::time::Duration;
 /// on the unprivileged path, which is the right way round - the raw scanners
 /// retransmit for themselves and size their own patience from measured round
 /// trips.
-pub(in crate::scanner) const CONNECT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+pub const CONNECT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// The initial retransmission timeout a host TCP stack uses for a SYN
 /// (RFC 6298 §2.1), which [`CONNECT_PROBE_TIMEOUT`] has to outlive.
@@ -55,12 +55,12 @@ const HOST_SYN_RETRANSMIT: Duration = Duration::from_secs(1);
 /// How many TCP connects the port-scan and service-detection fan-outs keep in
 /// flight at once. Bounded so a wide scan stays fast without exhausting OS
 /// sockets.
-pub(in crate::scanner) const CONNECT_CONCURRENCY: usize = 50;
+pub const CONNECT_CONCURRENCY: usize = 50;
 
 /// How many connect probes the unprivileged discovery sweep keeps in flight.
 /// Far higher than [`CONNECT_CONCURRENCY`] because each probe is a bare liveness
 /// check against a handful of ports, not a full fingerprint conversation.
-pub(in crate::scanner) const DISCOVERY_CONCURRENCY: usize = 2048;
+pub const DISCOVERY_CONCURRENCY: usize = 2048;
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║

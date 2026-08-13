@@ -18,20 +18,21 @@
 //! an accept or even a refusal, as proof the host is alive. [`scan`] takes known
 //! targets and classifies each port from a full connect handshake. Both consume a
 //! randomized [`Dispatcher`] stream and cap their in-flight connections with a
-//! [`ProbePool`](super::pool::ProbePool) to avoid exhausting OS sockets, and both
+//! [`ProbePool`] to avoid exhausting OS sockets, and both
 //! record findings through the shared [`ScanContext`] like every other strategy.
 
-use super::audit::ProbeAudit;
-use super::dispatcher::Dispatcher;
-use super::pool::ProbePool;
-use super::{NetworkExplorer, PortScanner, StrategyError, payload, tuning};
 use crate::error;
 use crate::model::host::{Host, HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::port::{Port, PortSet, PortState, Protocol};
 use crate::model::target::{Target, TargetMap, TargetSet};
+use crate::scanner::audit::ProbeAudit;
+use crate::scanner::dispatcher::Dispatcher;
+use crate::scanner::pool::ProbePool;
 use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
+use crate::scanner::{payload, tuning};
 use async_trait::async_trait;
 use dashmap::DashSet;
 use std::io::ErrorKind;
@@ -45,7 +46,7 @@ use tokio::time::timeout;
 /// Most common ports across Linux, Windows, and Networking gear.
 const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 
-/// Adapts the unprivileged [`discover`] strategy to [`NetworkExplorer`], so it can
+/// Adapts the unprivileged [`discover`] strategy to [`HostScanner`], so it can
 /// be spawned alongside [`LocalScanner`](super::local::LocalScanner) and
 /// [`RoutedScanner`](super::routed::RoutedScanner) from a single explorer list.
 pub struct ConnectScanner {
@@ -63,11 +64,16 @@ impl ConnectScanner {
 }
 
 #[async_trait]
-impl NetworkExplorer for ConnectScanner {
-    async fn discover_hosts(self: Box<Self>) -> Result<(), StrategyError> {
-        // A discovery run is single-shot, so it consumes the scanner: `ips` and
-        // `ctx` move straight into `discover`, no `mem::take` placeholder needed.
-        discover(self.ips, self.ctx).await
+impl HostScanner for ConnectScanner {
+    fn kind(&self) -> ScannerKind {
+        ScannerKind::Connect
+    }
+
+    async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
+        // The targets are taken rather than cloned. A sweep asks each address
+        // once, so a second call has nothing left to probe and correctly does
+        // nothing, where a clone would silently re-probe the whole set.
+        discover(std::mem::take(&mut self.ips), self.ctx.clone()).await
     }
 }
 
@@ -99,7 +105,7 @@ type ProbedPort = Option<Probed>;
 ///
 /// It carries no [`detect_services`](PortScanner::detect_services) override,
 /// because the connect engine fingerprints each port inline over the live stream
-/// it already holds (see [`port_prober`]), so a second identification pass would
+/// it already holds (see this module's port prober), so a second identification pass would
 /// be wasted work. This is the reason service detection lives on the trait rather
 /// than in the caller: the fact that connect needs no second pass is expressed
 /// here by its absence, instead of as a branch at the call site.
@@ -438,7 +444,7 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
 /// skipped, so a host is recorded once rather than once per open port. Targets
 /// are drawn from a shuffling [`Dispatcher`] to spread load across the network
 /// instead of hammering one subnet at a time, and each probe waits out the
-/// [`CONNECT_PROBE_TIMEOUT`](tuning::CONNECT_PROBE_TIMEOUT) so that hosts on slow
+/// [`CONNECT_PROBE_TIMEOUT`](crate::scanner::tuning::CONNECT_PROBE_TIMEOUT) so that hosts on slow
 /// or distant links still register.
 pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError> {
     let mut target_map = TargetMap::new();

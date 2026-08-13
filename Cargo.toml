@@ -99,11 +99,16 @@ import-nmap = []
 # named here: it needs nothing, and everybody needs it.
 import-all = ["import-csv", "import-json", "import-nmap", "import-settings"]
 
-# Exposes `ProbeTransport::from_parts`, which builds a transport over a caller-
-# supplied sender and reply stream instead of a socket and a capture. That is
-# what lets an integration test outside this crate drive a scanner against a
-# synthetic network. It adds no dependencies and changes no behaviour, but it is
-# not part of the supported API: enable it for tests only, never for a release.
+# Exposes `ProbeTransport::from_parts` and `EthernetHandle::from_parts`, which
+# build a transport over a caller-supplied sender and reply stream instead of a
+# socket and a capture. That is what lets a test outside this crate drive a real
+# scanner against a synthetic network: no sockets, no privileges, no interfaces.
+#
+# This gates the *fake* transports and nothing else. Building a strategy by hand
+# against a real transport needs no feature at all — see the `scanner::strategy`
+# module, whose types and `with_transport` constructors are ordinary public API.
+# It adds no dependencies and changes no behaviour, but a synthetic transport has
+# no use in a shipped binary: enable it for tests only, never for a release.
 test-support = []
 
 [dependencies]

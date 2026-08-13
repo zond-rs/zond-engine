@@ -43,10 +43,11 @@ use async_trait::async_trait;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::audit::ProbeAudit;
-use super::{NetworkExplorer, StrategyError, payload};
+use crate::scanner::audit::ProbeAudit;
+use crate::scanner::payload;
 use crate::scanner::report::StopReason;
 use crate::scanner::session::ScannerKind;
+use crate::scanner::strategy::{HostScanner, StrategyError};
 
 pub use port_scan::TcpPortScanner;
 pub use udp_scan::UdpPortScanner;
@@ -374,8 +375,12 @@ pub struct RoutedScanner {
 }
 
 #[async_trait]
-impl NetworkExplorer for RoutedScanner {
-    async fn discover_hosts(mut self: Box<Self>) -> Result<(), StrategyError> {
+impl HostScanner for RoutedScanner {
+    fn kind(&self) -> ScannerKind {
+        ScannerKind::Routed
+    }
+
+    async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
         let mut send_tick = tokio::time::interval(self.send_tick);
         // Without this, a ticker that went unpolled while the loop was busy with
         // replies hands back every missed tick at once, and the pacing it exists
@@ -493,11 +498,16 @@ impl RoutedScanner {
     /// Builds a sweep around an already-opened transport, so the caller decides
     /// how probes reach the wire and where replies come from.
     ///
+    /// This is the constructor for a caller orchestrating their own scan.
+    /// [`new`](Self::new) opens a transport with the settings this engine would
+    /// choose; this one takes whatever the caller opened, which is what makes it
+    /// possible to scan through a transport built with a particular send mode or
+    /// bound to particular interfaces.
+    ///
     /// Paired with a synthetic transport (`ProbeTransport::from_parts`, behind
-    /// the `test-support` feature) this is the seam that lets liveness
+    /// the `test-support` feature) it is also the seam that lets liveness
     /// detection and RTT correlation be driven against a simulated network
     /// rather than a real one.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_transport(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,

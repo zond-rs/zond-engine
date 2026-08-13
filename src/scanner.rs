@@ -17,51 +17,105 @@
 //! a cheap discovery sweep first and spend the expensive port-scanning work
 //! only on hosts that are known to exist.
 //!
-//! Both phases adapt to whether the process holds root privileges. When it
-//! does, [`discover`] groups targets by network interface and scans each one
-//! with a raw-socket strategy suited to it: [`LocalScanner`] (in the [`local`]
-//! module) handles hosts on the same physical segment over ARP and ICMP, while
-//! [`RoutedScanner`] (in [`routed`]) handles anything reached through a gateway
-//! over TCP SYN. [`scan`] follows the same pattern for ports, where a
-//! privileged caller gets [`routed::TcpPortScanner`]. That scanner classifies
-//! each port from a single raw SYN probe rather than completing a full
-//! handshake. Targets that cannot be mapped to a usable interface, along with
-//! every target when running unprivileged, fall back to plain TCP connect
-//! attempts through the `connect` module.
+//! # Three altitudes, and how to choose
 //!
-//! Every strategy implements [`NetworkExplorer`], which lets [`discover`] spawn
-//! several unrelated scanners (the per-interface local ones, the routed one,
-//! and the fallback) and drive them all through one loop. Discovered hosts land
-//! in a shared, thread-safe store as they are found, and each update fires a
-//! lightweight event so a caller can watch a scan in progress instead of
-//! waiting for it to finish. When DNS resolution is enabled, hostnames for
-//! discovered hosts are looked up in the background through the [`resolver`]
-//! module without blocking discovery.
+//! This module is usable at three levels of detail. They are the same code —
+//! the top one is written in terms of the one below it — so moving down costs
+//! only the decisions you take over, and nothing has to be reimplemented.
+//!
+//! **Call [`discover`] or [`scan`].** Targets and a [`ZondConfig`] in, a live
+//! [`ScanSession`] and a [`ScanReport`] out. Privilege, interfaces, fallbacks,
+//! retries and hostname resolution are all decided for you. This is the right
+//! altitude for a CLI, a service, or anything wrapping the engine, and it is
+//! where most callers should stay.
+//!
+//! **Build a [`plan`], edit it, run it.** A [`DiscoveryPlan`](plan::DiscoveryPlan)
+//! is the set of strategies a scan intends to run, worked out from the targets
+//! and this host's own configuration, with nothing opened and nothing sent.
+//! Print it instead of running it and you have a dry run. Drop the steps for
+//! three of your five links and run the rest. Its
+//! [refusals](plan::Refusal) say what a scan will not cover before it starts.
+//!
+//! **Build one strategy and drive it yourself.** Everything in [`strategy`] is
+//! ordinary public API: open a [`ScanSession`], construct a
+//! [`LocalScanner`](strategy::local::LocalScanner) aimed at one segment or a
+//! [`TcpPortScanner`](strategy::routed::TcpPortScanner) over a transport you
+//! opened, run it, and read the store. Nothing here needs a cargo feature —
+//! this is a supported way to use the engine, not a test hatch.
+//!
+//! ```no_run
+//! use zond_engine::config::ZondConfig;
+//! use zond_engine::model::parse::ip::to_set;
+//! use zond_engine::scanner::plan::DiscoveryPlan;
+//! use zond_engine::scanner::session::ScanSession;
+//! use zond_engine::scanner::strategy::local::Scope;
+//!
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let cfg = ZondConfig::default();
+//! let plan = DiscoveryPlan::build(to_set(&["192.168.1.0/24"], None)?, Scope::Sweep);
+//!
+//! // What the sweep would do, before it does any of it.
+//! for step in plan.steps() {
+//!     println!("{:?}: {} address(es)", step.kind(), step.target_count());
+//! }
+//! for refusal in plan.refusals() {
+//!     println!("not covered: {}", refusal.reason);
+//! }
+//!
+//! // And when you want to run it, a context is what a strategy is built with.
+//! let (_session, ctx) = ScanSession::new();
+//! for step in plan.into_steps() {
+//!     let mut scanner = step.into_scanner(ctx.clone(), None, cfg.probe_tuning())?;
+//!     // scanner.discover_hosts().await?;
+//!     let _ = &mut scanner;
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # How a scan is assembled
+//!
+//! Both phases adapt to whether the process holds root privileges. When it
+//! does, [`discover`] groups targets by the interface that reaches them and
+//! scans each with a strategy suited to it:
+//! [`LocalScanner`](strategy::local::LocalScanner) (ARP and ICMPv6) for hosts on
+//! the same physical segment, [`RoutedScanner`](strategy::routed::RoutedScanner)
+//! (TCP SYN) for anything reached through a gateway. [`scan`] follows the same
+//! pattern for ports, where a privileged caller gets
+//! [`TcpPortScanner`](strategy::routed::TcpPortScanner), which classifies each
+//! port from a single raw exchange rather than a completed handshake. Targets
+//! that map to no usable interface, along with every target when unprivileged,
+//! fall back to plain TCP connect attempts.
+//!
+//! Every one of those implements [`HostScanner`] or
+//! [`PortScanner`], which is what lets several unrelated
+//! strategies be driven through one loop. Discovered hosts land in a shared,
+//! thread-safe store as they are found, and each update fires an event, so a
+//! caller can watch a scan in progress instead of waiting for it to finish.
+//! When DNS resolution is enabled, hostnames are looked up in the background
+//! through the [`resolver`] module without blocking discovery.
 
 use std::net::IpAddr;
 use std::pin::Pin;
 
-use async_trait::async_trait;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::config::{ProbeTuning, ZondConfig};
-use crate::model::ip::range::{IpRange, Ipv6Range};
-use crate::model::technique::TcpScanTechnique;
+use crate::model::ip::range::IpRange;
 use crate::model::{
     ip::set::IpSet,
     port::Protocol,
     target::{Target, TargetMap},
+    technique::TcpScanTechnique,
 };
 use crate::scanner::report::{PhaseRecorder, ScanKind, ScanReport, TargetScope};
 use crate::scanner::resolver::HostnameResolver;
 use crate::scanner::session::{ScanContext, ScanSession, ScannerKind};
-use crate::system::interface;
-use crate::system::neighbors;
 use crate::system::privilege::is_elevated;
 use crate::{error, info, success, warn};
-use local::{LocalScanner, Scope};
-use routed::RoutedScanner;
+use strategy::local::Scope;
+use strategy::{HostScanner, PortScanner, StrategyError};
 
 // What running a scan produces, as opposed to how it is run. A caller holds a
 // `ScanSession` while the scan is in flight, a `ScanHandle` to stop it, and a
@@ -72,35 +126,25 @@ pub mod handle;
 pub mod report;
 pub mod session;
 
-mod audit;
-mod composite;
-mod connect;
+// The strategies themselves, and the two traits that make them
+// interchangeable. Public unconditionally: a caller who wants to aim one
+// scanner at one segment, rather than ask this module to plan a whole scan, is
+// doing something this engine supports rather than something it tolerates.
+pub mod plan;
+pub mod strategy;
+
+// What a strategy needs and what reads its output. `dispatcher` turns a target
+// map into the stream a `PortScanner` consumes, `audit` is what a raw strategy
+// records about its own run, `resolver` is the hostname tail, and `pool`,
+// `payload` and `tuning` are shared probe machinery.
+pub mod audit;
 pub mod dispatcher;
-mod payload;
-mod pool;
-mod service;
-
-#[cfg(not(feature = "test-support"))]
-mod local;
-#[cfg(feature = "test-support")]
-pub mod local;
-
-// The raw scanners and the hostname resolver stay implementation details of
-// [`scan`] and [`discover`] by default; under `test-support` they are reachable
-// directly, which is what lets an out-of-crate test build one over a synthetic
-// transport. Splitting each declaration is the only way to vary an item's
-// visibility by feature, and it keeps the default public API exactly what it
-// was.
-#[cfg(not(feature = "test-support"))]
-mod resolver;
-#[cfg(feature = "test-support")]
+pub mod pool;
 pub mod resolver;
+pub mod service;
 
-#[cfg(not(feature = "test-support"))]
-mod routed;
-#[cfg(feature = "test-support")]
-pub mod routed;
-mod tuning;
+pub mod payload;
+pub mod tuning;
 
 /// An error returned when a scan fails to run to completion.
 #[non_exhaustive]
@@ -109,64 +153,6 @@ pub enum ScanError {
     /// The scan task panicked or was aborted before it finished.
     #[error("scan task terminated abnormally")]
     TaskFailed,
-}
-
-/// Why one scanning strategy could not start, or could not finish.
-///
-/// **This is not how a scan fails.** A scan runs several strategies and carries
-/// on with whatever survives, so one of these is recorded in the report's
-/// [`failures`](ScanReport::failures) and announced on the event stream rather
-/// than returned from [`discover`] or [`scan`]. It reaches a caller directly
-/// only when they build a strategy themselves, which is what the `test-support`
-/// feature is for.
-///
-/// The variants are the layers a strategy is assembled from, because that is
-/// what determines whether anything can be done about it. A [`Transport`] or
-/// [`Channel`] failure is almost always missing privileges and the same
-/// unprivileged fallback answers all of them; an [`Interface`] failure is about
-/// one interface and the scan of every other one is unaffected.
-///
-/// [`Transport`]: StrategyError::Transport
-/// [`Channel`]: StrategyError::Channel
-/// [`Interface`]: StrategyError::Interface
-#[non_exhaustive]
-#[derive(Debug, thiserror::Error)]
-pub enum StrategyError {
-    /// The raw probe transport could not be opened.
-    #[error(transparent)]
-    Transport(#[from] crate::transport::probe::TransportError),
-
-    /// The link-layer channel a local sweep needs could not be opened.
-    #[error(transparent)]
-    Channel(#[from] crate::transport::channel::ChannelError),
-
-    /// The interface this strategy was given cannot be probed from.
-    #[error("{interface} cannot be probed from: {reason}")]
-    Interface {
-        /// The interface in question.
-        interface: String,
-        /// What is missing.
-        reason: &'static str,
-    },
-
-    /// The strategy's probes could not be built. A bug or an impossible target
-    /// rather than an environment problem, since a probe is built from values
-    /// this engine chose.
-    #[error("the probes for this strategy could not be built: {0}")]
-    Probe(String),
-
-    /// A strategy panicked.
-    ///
-    /// Always a bug in the engine, never a fact about the network, and reported
-    /// rather than swallowed: the task it killed would otherwise take the
-    /// evidence with it, and the scan would look merely empty.
-    #[error("the {scanner:?} scanner panicked: {detail}")]
-    Panicked {
-        /// Which strategy went down.
-        scanner: ScannerKind,
-        /// What the runtime said about it.
-        detail: String,
-    },
 }
 
 /// A handle to a running scan.
@@ -213,8 +199,9 @@ impl IntoFuture for ScanTask {
 /// This is the first phase of a scan: it establishes presence, not open ports.
 /// With root privileges, targets are grouped by the network interface that
 /// would reach them and scanned with a raw-socket strategy suited to each:
-/// [`LocalScanner`] (ARP and ICMP) for hosts on the same physical segment, and
-/// [`RoutedScanner`] (TCP SYN) for anything reached through a gateway. Targets
+/// [`LocalScanner`](strategy::local::LocalScanner) (ARP and ICMP) for hosts on the
+/// same physical segment, and [`RoutedScanner`](strategy::routed::RoutedScanner)
+/// (TCP SYN) for anything reached through a gateway. Targets
 /// that cannot be mapped to an interface, a loopback address for instance,
 /// along with every target when running without root, fall back to plain TCP
 /// connect attempts against a handful of common ports.
@@ -248,7 +235,7 @@ pub async fn discover(
     // return is needed because `targets` moves into one path or the other.
     if !caps.privileged {
         let handle = tokio::spawn(async move {
-            if let Err(e) = connect::discover(targets, ctx.clone()).await {
+            if let Err(e) = strategy::connect::discover(targets, ctx.clone()).await {
                 ctx.record_failure(ScannerKind::Connect, e.to_string());
             }
             finish_enrichment(None, caps, &ctx).await;
@@ -265,7 +252,8 @@ pub async fn discover(
     } else {
         Scope::Targeted
     };
-    let enrichment = Enrichment::spawn(targets, &ctx, caps, cfg.probe_tuning(), scope).await;
+    let plan = plan::DiscoveryPlan::build(targets, scope);
+    let enrichment = Enrichment::spawn(plan, &ctx, caps, cfg.probe_tuning()).await;
 
     let handle = tokio::spawn(async move {
         finish_enrichment(Some(enrichment), caps, &ctx).await;
@@ -285,7 +273,7 @@ pub async fn discover(
 ///
 /// With root privileges, every probe is a raw TCP SYN sent from the source
 /// address the host would route each target through, and
-/// [`routed::TcpPortScanner`] classifies it from a single reply rather than a
+/// [`strategy::routed::TcpPortScanner`] classifies it from a single reply rather than a
 /// completed handshake. Without root, or when the host has no address to probe
 /// from, probes fall back to a plain TCP connect attempt per target through the
 /// `connect` module.
@@ -304,43 +292,30 @@ pub async fn scan(
     let scope = TargetScope::from_target_map(&target_map);
     let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, cfg);
 
-    let (tcp_scanner, udp_scanner) = if caps.privileged {
-        (
-            build_tcp_scanner(
-                ctx.clone(),
-                cfg.tcp_technique,
-                target_count,
-                cfg.probe_tuning(),
-            ),
-            build_udp_scanner(ctx.clone(), target_count, cfg.probe_tuning()),
-        )
-    } else {
-        (None, None)
-    };
+    let built = build_port_scanner(
+        plan::PortScanPlan::build(cfg, caps.privileged),
+        &ctx,
+        target_count,
+        cfg.probe_tuning(),
+    );
 
     // A privileged scan enriches hosts the same way `discover` does: ARP and
     // ICMPv6 for MAC and RTT, TCP SYN for RTT, passive DNS and mDNS for
     // hostnames and extra IPs. It runs alongside the port scan and writes into
     // the same store, so a scanned host carries the same detail a discovered one
     // does. The unprivileged fallback cannot ARP, so it settles for active
-    // reverse DNS. Keying on `syn_scanner` rather than `caps.privileged` means a
-    // privileged host that could not build a SYN scanner still takes the fallback.
-    let enrichment = if tcp_scanner.is_some() || udp_scanner.is_some() {
-        Some(Enrichment::spawn(ips, &ctx, caps, cfg.probe_tuning(), Scope::Targeted).await)
+    // reverse DNS.
+    //
+    // Keyed on what actually opened rather than on privilege: a privileged host
+    // whose raw socket was refused has no raw enrichment to offer either, and
+    // takes the unprivileged tail exactly as an unprivileged host does.
+    let enrichment = if built.opened_raw() {
+        let plan = plan::DiscoveryPlan::build(ips, Scope::Targeted);
+        Some(Enrichment::spawn(plan, &ctx, caps, cfg.probe_tuning()).await)
     } else {
         None
     };
-
-    // Both branches of the privilege fork now sit behind one interface. Pick the
-    // strategy here and drive it uniformly below.
-    let mut scanners: Vec<Box<dyn PortScanner>> = Vec::new();
-    if let Some(scanner) = tcp_scanner {
-        scanners.push(Box::new(scanner));
-    }
-    if let Some(scanner) = udp_scanner {
-        scanners.push(Box::new(scanner));
-    }
-    let scanner = into_port_scanner(scanners, ctx.clone(), cfg.tcp_technique);
+    let scanner = built.scanner;
 
     let handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
@@ -352,73 +327,6 @@ pub async fn scan(
     });
 
     Ok((session, ScanTask::new(handle)))
-}
-
-/// A scanning strategy that finds which hosts, among the targets it owns, are
-/// reachable.
-///
-/// Implementations do not return their findings. They write discovered hosts
-/// directly into the shared [`ScanContext`] they were built with, and
-/// `discover_hosts` reports only whether the attempt itself succeeded. This
-/// keeps very different strategies (raw ARP/ICMP, raw TCP SYN, plain TCP
-/// connect) interchangeable to the caller: build one, run it, move on.
-/// `spawn_explorers` depends on that uniformity to drive several unrelated
-/// scanner types through a single loop.
-///
-/// Running the scanner consumes it (`self: Box<Self>`). A discovery sweep
-/// happens exactly once, so an implementation can move out of its own state
-/// rather than pretend, through `&mut self`, that it might run again.
-#[async_trait]
-pub trait NetworkExplorer {
-    async fn discover_hosts(self: Box<Self>) -> Result<(), StrategyError>;
-}
-
-/// A scanning strategy that classifies the ports of a known set of targets.
-///
-/// This is the port-scan counterpart to [`NetworkExplorer`]. Where that trait
-/// lets [`discover`] drive several host-discovery strategies through one loop,
-/// this lets [`scan`] drive whichever port-scan strategy privilege selected,
-/// either the raw [`routed::TcpPortScanner`] or the unprivileged `connect`
-/// fallback, through a single path. Implementations consume the shuffled
-/// [`Target`] stream that a [`dispatcher::Dispatcher`] produces and write their
-/// findings into the shared [`ScanContext`] they were built with;
-/// [`PortScanner::scan`] reports only whether the run completed.
-/// `run_port_scan` relies on that to treat both strategies identically.
-#[async_trait]
-pub trait PortScanner: Send {
-    /// Identifies the strategy, used to tag a
-    /// [`ScanEvent::ScannerFailed`](crate::scanner::session::ScanEvent::ScannerFailed) when
-    /// a run fails.
-    fn kind(&self) -> ScannerKind;
-
-    /// Returns the set of transport protocols this scanner is capable of probing.
-    ///
-    /// `into_port_scanner` reads this to decide which protocols still need an
-    /// unprivileged fallback, and `composite::CompositePortScanner` reads it
-    /// to route each target, so a scanner that under-reports its coverage is
-    /// simply never given that work.
-    fn supported_protocols(&self) -> Vec<Protocol>;
-
-    /// Probes every target arriving on `targets` and records each port's state
-    /// in the shared store. Returns `Ok` when the run completes, including an
-    /// early stop through the abort signal, and `Err` only when the strategy
-    /// itself fails.
-    async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> Result<(), StrategyError>;
-
-    /// Second-pass service identification, run once after a successful
-    /// [`scan`](PortScanner::scan) that was not aborted.
-    ///
-    /// The SYN strategy classifies port state from a single raw exchange and
-    /// never holds a connection to fingerprint through, so it opens one here for
-    /// each open port. The connect strategy fingerprints inline while it still
-    /// holds the live stream, so its implementation is the default no-op.
-    /// Putting this on the trait keeps the "does this strategy need a second
-    /// pass?" decision in the type rather than in a branch at the call site.
-    ///
-    /// Takes `&mut self` to match [`scan`](PortScanner::scan): the receiver
-    /// never crosses an await point as a shared reference, so the strategy types
-    /// need to be [`Send`] but not [`Sync`].
-    async fn detect_services(&mut self, _ctx: &ScanContext) {}
 }
 
 /// The environment-derived facts that steer how a scan runs.
@@ -473,11 +381,10 @@ impl Enrichment {
     /// Spawns every enrichment strategy for `targets`. They begin running
     /// immediately and concurrently. Call [`Enrichment::finish`] to await them.
     async fn spawn(
-        targets: IpSet,
+        plan: plan::DiscoveryPlan,
         ctx: &ScanContext,
         caps: ScanCapabilities,
         tuning: ProbeTuning,
-        scope: Scope,
     ) -> Self {
         let (dns_tx, resolver) = if caps.dns {
             let (tx, rx) = mpsc::unbounded_channel();
@@ -487,7 +394,7 @@ impl Enrichment {
             (None, None)
         };
 
-        let scanners = spawn_explorers(targets, ctx, dns_tx, tuning, scope).await;
+        let scanners = spawn_explorers(plan, ctx, dns_tx, tuning).await;
         Self { scanners, resolver }
     }
 
@@ -510,135 +417,48 @@ impl Enrichment {
     }
 }
 
-/// Builds a scanning strategy for each way a target can be reached and runs them
-/// all concurrently.
+/// Turns a [`DiscoveryPlan`] into running tasks.
 ///
-/// [`interface::map_ips_to_interfaces`] sorts the targets into three groups.
-/// Those on-link to an interface's segment become a per-interface
-/// [`LocalScanner`]. Those reached through a gateway, each already paired with
-/// the source address to probe it from, are covered by a single
-/// [`RoutedScanner`]. Those with no resolvable route go to a
-/// [`connect::ConnectScanner`]. When a particular scanner cannot be constructed,
-/// a capture socket that could not be opened for instance, that scanner is
-/// skipped and logged while the rest of the scan proceeds.
+/// Every refusal the plan carries is recorded before anything is spawned, so the
+/// distinction between "nothing is there" and "nobody looked" survives into the
+/// report. Then each step is asked for its strategy: a step that cannot open
+/// what it needs is recorded and skipped, and the rest of the scan proceeds
+/// rather than being abandoned over one bad interface.
 ///
-/// Every constructed scanner is spawned as its own task, tagged with its
-/// [`ScannerKind`], and returned, so the caller can wait on all of them and
-/// react to failures individually rather than letting one bad scanner abort the
-/// whole scan. A scanner that fails to start is reported through
-/// [`ScanEvent::ScannerFailed`] and skipped.
+/// Each surviving strategy gets its own task, tagged with its own
+/// [`ScannerKind`], so the caller can wait on all of them and react to failures
+/// individually.
 async fn spawn_explorers(
-    targets: IpSet,
+    plan: plan::DiscoveryPlan,
     ctx: &ScanContext,
     dns_tx: Option<UnboundedSender<IpAddr>>,
     tuning: ProbeTuning,
-    scope: Scope,
 ) -> Vec<(ScannerKind, JoinHandle<Result<(), StrategyError>>)> {
-    let mut explorers: Vec<(ScannerKind, Box<dyn NetworkExplorer + Send>)> = Vec::new();
-    let interface::RoutedTargets {
-        local,
-        routed,
-        unmapped,
-        ambiguous,
-        unenumerable,
-    } = interface::map_ips_to_interfaces(targets);
-
-    // A link-local target naming no interface. Reported rather than guessed at:
-    // every interface has an `fe80::/64`, so probing the first one that matches
-    // would scan an arbitrary segment and report the address absent when it is
-    // present on another.
-    for range in &ambiguous {
-        ctx.record_failure(
-            ScannerKind::Local,
-            format!(
-                "{} is link-local, so it names a different machine on every \
-                 segment. Say which: {}%<interface>.",
-                range.start_addr, range.start_addr
-            ),
-        );
+    for refusal in plan.refusals() {
+        ctx.record_failure(refusal.scanner, refusal.reason.clone());
     }
 
-    // Ranges no strategy can take. Reported before anything is spawned, and
-    // reported as a failure rather than logged, because the distinction a caller
-    // has to be able to draw is between "nothing is there" and "nobody looked" -
-    // and only one of those is visible in a host count. A routed IPv6 prefix
-    // cannot be walked (see `MAX_ENUMERABLE_ADDRESSES`), and until discovery
-    // gains a strategy that searches a scope instead of a list, saying so is the
-    // whole of what the engine can honestly do with one.
-    for range in &unenumerable {
-        ctx.record_failure(
-            ScannerKind::Routed,
-            format!(
-                "{}-{} is {} addresses: too large to probe one at a time, and \
-                 routed IPv6 has no other strategy yet. Give specific addresses \
-                 or a smaller prefix.",
-                range.start_addr,
-                range.end_addr,
-                range.len()
-            ),
-        );
-    }
-
-    // A sweep may probe addresses nobody named, so it may also take leads from
-    // the host itself. A targeted run may not.
-    let mut local = local;
-    if matches!(scope, Scope::Sweep) {
-        include_swept_link(&mut local);
-        seed_from_neighbor_table(&mut local);
-    }
-
-    // Local scanner (ARP/ICMP) for hosts on the same physical segment.
-    for (intf, local_ips) in local {
-        // A sweep's link earns a scanner whether or not any address mapped to
-        // it, because its most important probe is not addressed to anyone: the
-        // all-nodes echo is one packet the whole segment may answer. A targeted
-        // run has nothing to send without targets.
-        if local_ips.is_empty() && matches!(scope, Scope::Targeted) {
-            continue;
-        }
-        info!(verbosity = 1, "Spawning local scanner for {}", intf.name);
-        match LocalScanner::new(
-            intf.clone(),
-            local_ips,
-            ctx.clone(),
-            dns_tx.clone(),
-            scope,
-            tuning.retry,
-        ) {
-            Ok(scanner) => explorers.push((ScannerKind::Local, Box::new(scanner))),
-            Err(e) => ctx.record_failure(ScannerKind::Local, format!("{}: {e}", intf.name)),
-        }
-    }
-
-    // Routed scanner (TCP SYN) for targets reached through a gateway.
-    if !routed.is_empty() {
+    let mut explorers: Vec<Box<dyn HostScanner>> = Vec::new();
+    for step in plan.into_steps() {
+        let kind = step.kind();
         info!(
             verbosity = 1,
-            "Spawning routed scanner for {} target(s)",
-            routed.len()
+            "Spawning {:?} scanner for {} target(s)",
+            kind,
+            step.target_count()
         );
-        match RoutedScanner::new(routed, ctx.clone(), dns_tx.clone(), tuning) {
-            Ok(scanner) => explorers.push((ScannerKind::Routed, Box::new(scanner))),
-            Err(e) => ctx.record_failure(ScannerKind::Routed, e.to_string()),
+        match step.into_scanner(ctx.clone(), dns_tx.clone(), tuning) {
+            Ok(scanner) => explorers.push(scanner),
+            Err(e) => ctx.record_failure(kind, e.to_string()),
         }
-    }
-
-    // Fallback scanner (unprivileged TCP handshake) for unmapped IPs, such as
-    // localhost or targets the OS could not resolve a route or interface for.
-    if !unmapped.is_empty() {
-        warn!(
-            verbosity = 1,
-            "Spawning fallback scanner for unmapped targets"
-        );
-        explorers.push((
-            ScannerKind::Connect,
-            Box::new(connect::ConnectScanner::new(unmapped, ctx.clone())),
-        ));
     }
 
     explorers
         .into_iter()
-        .map(|(kind, explorer)| {
+        .map(|mut explorer| {
+            // Read before the strategy moves into its task: once it is running,
+            // the only thing left to attribute a failure to is the handle.
+            let kind = explorer.kind();
             (
                 kind,
                 tokio::spawn(async move { explorer.discover_hosts().await }),
@@ -647,209 +467,81 @@ async fn spawn_explorers(
         .collect()
 }
 
-/// Makes sure the link a sweep is about is among the links to be scanned, even
-/// when no address mapped to it.
+/// Turns a [`PortScanPlan`](plan::PortScanPlan) into the single strategy
+/// [`run_port_scan`] drives.
 ///
-/// Mapping targets to interfaces can only ever produce interfaces some target
-/// named, and the whole point of a sweep is the probe that names nobody. A link
-/// addressed only in IPv6 resolves to no target list at all — a `/64` cannot be
-/// enumerated and there is no IPv4 range to walk — so it mapped to nothing, no
-/// scanner was built for it, and the all-nodes echo that would have found its
-/// entire segment was never sent. The scan reported an empty network and looked
-/// like it had worked.
-///
-/// Matching by name rather than by value: `map_ips_to_interfaces` and this both
-/// read the platform's interface list, but a `NetworkInterface` compares on
-/// every field, and being wrong here means scanning one link twice.
-fn include_swept_link(
-    local: &mut std::collections::HashMap<pnet::datalink::NetworkInterface, IpSet>,
-) {
-    let Ok(Some(link)) = interface::get_lan_link() else {
-        return;
-    };
-
-    if local.keys().any(|intf| intf.name == link.interface.name) {
-        return;
+/// Every refusal is recorded first, for the same reason discovery records its
+/// own: a protocol nobody probed has to be distinguishable from a protocol with
+/// nothing open. A step that cannot open its socket is recorded and dropped, and
+/// whatever built is wrapped in a
+/// [`CompositePortScanner`](strategy::composite::CompositePortScanner), which
+/// routes each target to a strategy that covers its protocol. One scanner comes
+/// back either way, so the fork stays confined here.
+fn build_port_scanner(
+    plan: plan::PortScanPlan,
+    ctx: &ScanContext,
+    target_count: usize,
+    tuning: ProbeTuning,
+) -> BuiltPortScan {
+    for refusal in plan.refusals() {
+        ctx.record_failure(refusal.scanner, refusal.reason.clone());
     }
 
-    info!(
-        verbosity = 1,
-        "Sweeping {} for IPv6 neighbours; it has no IPv4 range to walk", link.interface.name
-    );
-    local.insert(link.interface, IpSet::new());
-}
-
-/// Adds the addresses in this host's IPv6 neighbour table to the targets of
-/// whichever interface each belongs to.
-///
-/// This is the only source the engine has for an IPv6 address nobody named. A
-/// neighbor solicitation is the mandatory probe, and it can only be aimed at an
-/// address someone already holds; the all-nodes echo produces addresses but is
-/// optional to answer and draws only link-local ones, since it goes out from a
-/// link-local source. The operating system's own table has been accumulating
-/// both for as long as the machine has been running, at no cost in packets — on
-/// the segment this was written against it holds fifteen global and unique-local
-/// addresses the engine could not otherwise learn at all.
-///
-/// Three exclusions, each for its own reason:
-///
-/// - **Other interfaces' entries.** A neighbour on `en1` is not reachable
-///   through `en0`, and the entry says which it belongs to.
-/// - **This host's own addresses.** The table lists them too, and a scan that
-///   reported the machine running it as a discovered neighbour would be wrong in
-///   a way nobody would think to check.
-/// - **Loopback and the unspecified address**, which name nothing on a segment.
-///
-/// Nothing seeded here is treated as a discovered host. Every entry is an
-/// address that answered *once*, from a table that goes stale, so each becomes a
-/// probe like any other and earns its place in the report by answering now.
-fn seed_from_neighbor_table(
-    local: &mut std::collections::HashMap<pnet::datalink::NetworkInterface, IpSet>,
-) {
-    let table = neighbors::ipv6_neighbors();
-    if !table.is_empty() {
-        seed_from_neighbor_table_with(local, &table);
-    }
-}
-
-/// [`seed_from_neighbor_table`] against an explicit table, so the exclusions can
-/// be tested without a host that happens to have the right neighbours.
-fn seed_from_neighbor_table_with(
-    local: &mut std::collections::HashMap<pnet::datalink::NetworkInterface, IpSet>,
-    table: &[neighbors::Neighbor],
-) {
-    for (intf, targets) in local.iter_mut() {
-        let mut seeded = 0usize;
-        for addr in candidates_for(intf, table) {
-            let IpAddr::V6(addr) = addr else { continue };
-            // The zone matters for exactly the addresses that cannot be probed
-            // without one, and is dropped for the rest for the reason
-            // `ScopedIp` drops it: the same global address through two
-            // interfaces is one address, not two.
-            let zone = addr.is_unicast_link_local().then_some(intf.index);
-            if let Ok(range) = Ipv6Range::scoped(addr, addr, zone) {
-                targets.insert_range(IpRange::V6(range));
-                seeded += 1;
+    let technique = plan.technique();
+    let mut scanners: Vec<Box<dyn PortScanner>> = Vec::new();
+    let mut opened = Vec::new();
+    for step in plan.into_steps() {
+        match step.into_scanner(ctx.clone(), target_count, tuning) {
+            Ok(scanner) => {
+                opened.push(step.kind());
+                scanners.push(scanner);
             }
+            Err(e) => ctx.record_failure(step.kind(), e.to_string()),
         }
+    }
 
-        if seeded > 0 {
-            targets.canonicalize();
-            info!(
-                verbosity = 1,
-                "Took {seeded} IPv6 address(es) from the neighbour table as candidates on {}",
-                intf.name
-            );
-        }
+    BuiltPortScan {
+        scanner: Box::new(strategy::composite::CompositePortScanner::new(
+            ensure_coverage(scanners, ctx, technique),
+        )),
+        opened,
     }
 }
 
-/// The neighbour-table addresses worth probing on `intf`, in table order.
-fn candidates_for(
-    intf: &pnet::datalink::NetworkInterface,
-    table: &[neighbors::Neighbor],
-) -> Vec<IpAddr> {
-    let own: std::collections::HashSet<IpAddr> = intf.ips.iter().map(|net| net.ip()).collect();
-
-    table
-        .iter()
-        .filter(|entry| entry.interface_index == intf.index)
-        .filter(|entry| !own.contains(&entry.ip))
-        .filter(|entry| match entry.ip {
-            IpAddr::V6(addr) => !addr.is_loopback() && !addr.is_unspecified(),
-            IpAddr::V4(_) => false,
-        })
-        .map(|entry| entry.ip)
-        .collect()
-}
-
-/// Tries to build a privileged raw-socket TCP port scanner for `technique`,
-/// resolving each probe's source address per target across the host's
-/// interfaces and routing table.
+/// Backs the plan's intent with what actually opened: any protocol left without
+/// a strategy gets the unprivileged one, or is refused.
 ///
-/// Called only once privilege is confirmed (see [`ScanCapabilities`]). Returns
-/// `None`, meaning [`scan`] should fall back to TCP connect probes, when the
-/// host has no address to probe from or when the scanner fails to initialize,
-/// for instance because raw sockets could not be opened. Each case is logged
-/// here rather than treated as a hard failure, since the unprivileged path is
-/// always a working substitute.
-fn build_tcp_scanner(
-    ctx: ScanContext,
-    technique: TcpScanTechnique,
-    target_count: usize,
-    tuning: ProbeTuning,
-) -> Option<routed::TcpPortScanner> {
-    let resolver = interface::SourceResolver::from_system();
-    if !resolver.has_sources() {
-        warn!("No usable network interface found; using TCP connect fallback");
-        return None;
-    }
-
-    match routed::TcpPortScanner::new(resolver, ctx, technique, target_count, tuning) {
-        Ok(scanner) => Some(scanner),
-        Err(e) => {
-            error!("Failed to initialize {technique} port scanner: {e}");
-            None
-        }
-    }
-}
-
-/// Tries to build a privileged raw-socket UDP port scanner.
-fn build_udp_scanner(
-    ctx: ScanContext,
-    target_count: usize,
-    tuning: ProbeTuning,
-) -> Option<routed::UdpPortScanner> {
-    let resolver = interface::SourceResolver::from_system();
-    if !resolver.has_sources() {
-        return None; // Fallback will be used
-    }
-
-    match routed::UdpPortScanner::new(resolver, ctx, target_count, tuning) {
-        Ok(scanner) => Some(scanner),
-        Err(e) => {
-            error!("Failed to initialize UDP port scanner: {e}");
-            None
-        }
-    }
-}
-
-/// Assembles the port-scanning strategy behind the [`PortScanner`] interface:
-/// whichever privileged scanners were built, backed by an unprivileged connect
-/// fallback for every protocol none of them covers. All of them are driven
-/// identically by [`run_port_scan`], so the choice stays confined to this one
-/// place.
-///
-/// The fallback is decided **per protocol**, not per scan. A host can fail to
-/// build one raw scanner and not the other - the TCP scanner needs a raw TCP
-/// socket, the UDP scanner a raw UDP one, and a sandbox can permit one and
-/// refuse the other - and a protocol left without any scanner is not a degraded
-/// scan but a silent one: [`composite::CompositePortScanner`] has nowhere to
-/// route those targets, so they would simply never be probed and never be
-/// reported. Asking each scanner what it covers, rather than assuming a
-/// privileged scan covers everything, is what keeps that from happening.
+/// **The plan cannot do this on its own, and that is the point of separating
+/// them.** A plan says a raw TCP scanner and a raw UDP scanner should run. Only
+/// the attempt discovers that this host permitted one raw socket and not the
+/// other — a sandbox can do exactly that — and a protocol left with no strategy
+/// at all is not a degraded scan but a silent one:
+/// [`CompositePortScanner`](strategy::composite::CompositePortScanner) has
+/// nowhere to route those targets, so they are never probed and never reported.
+/// Asking what actually built, rather than assuming a privileged scan covers
+/// everything, is what keeps that from happening.
 ///
 /// **A connect fallback substitutes for a SYN scan and for nothing else.** It
-/// completes handshakes, so it answers roughly the question a SYN scan asks;
-/// it cannot send a FIN, a flagless segment or a bare ACK, and so it cannot
-/// answer what any of those were asked. Where the caller chose one of them and
-/// no raw scanner could be built, the TCP half of the scan is reported as a
-/// failure and left undone. That is worse for the caller and honest, where a
-/// silent substitution would hand back verdicts from a technique they did not
-/// choose - and no field in the report would say so.
-fn into_port_scanner(
+/// completes handshakes, so it answers roughly the question a SYN scan asks; it
+/// cannot send a FIN, a flagless segment or a bare ACK, and so cannot answer
+/// what any of those were asked. Where the caller chose one of those and no raw
+/// scanner opened, the TCP half is reported as a failure and left undone. That
+/// is worse for the caller and honest, where a silent substitution would hand
+/// back verdicts from a technique they did not choose - and no field in the
+/// report would say so.
+fn ensure_coverage(
     mut scanners: Vec<Box<dyn PortScanner>>,
-    ctx: ScanContext,
-    tcp_technique: TcpScanTechnique,
-) -> Box<dyn PortScanner> {
+    ctx: &ScanContext,
+    technique: TcpScanTechnique,
+) -> Vec<Box<dyn PortScanner>> {
     let covered: Vec<Protocol> = scanners
         .iter()
         .flat_map(|scanner| scanner.supported_protocols())
         .collect();
 
     if !covered.contains(&Protocol::Tcp) {
-        if tcp_technique.finds_open_ports() {
-            scanners.push(Box::new(connect::ConnectPortScanner::new(
+        if technique.finds_open_ports() {
+            scanners.push(Box::new(strategy::connect::ConnectPortScanner::new(
                 ctx.clone(),
                 tuning::CONNECT_CONCURRENCY,
             )));
@@ -857,7 +549,7 @@ fn into_port_scanner(
             ctx.record_failure(
                 ScannerKind::TcpPort,
                 format!(
-                    "the {tcp_technique} technique needs raw sockets, which this process \
+                    "the {technique} technique needs raw sockets, which this process \
                      does not have, and a connect scan answers a different question - so \
                      no TCP port was probed",
                 ),
@@ -866,13 +558,33 @@ fn into_port_scanner(
     }
 
     if !covered.contains(&Protocol::Udp) {
-        scanners.push(Box::new(connect::ConnectUdpPortScanner::new(
-            ctx,
+        scanners.push(Box::new(strategy::connect::ConnectUdpPortScanner::new(
+            ctx.clone(),
             tuning::CONNECT_CONCURRENCY,
         )));
     }
 
-    Box::new(composite::CompositePortScanner::new(scanners))
+    scanners
+}
+
+/// A port-scan strategy, and which of the planned steps actually opened.
+///
+/// The second half is not decoration. Host enrichment is worth running only
+/// alongside a raw scan — it is the raw paths that yield a MAC and an RTT — and
+/// whether a raw scan is happening is answerable only after the sockets were
+/// asked for, not from the privilege the process holds.
+struct BuiltPortScan {
+    scanner: Box<dyn PortScanner>,
+    opened: Vec<ScannerKind>,
+}
+
+impl BuiltPortScan {
+    /// Whether any raw-socket strategy is among what opened.
+    fn opened_raw(&self) -> bool {
+        self.opened
+            .iter()
+            .any(|kind| matches!(kind, ScannerKind::SynPort | ScannerKind::UdpPort))
+    }
 }
 
 /// Drives one port-scan strategy to completion. It streams targets through the
@@ -992,7 +704,10 @@ mod tests {
 
     fn covered(scanners: Vec<Box<dyn PortScanner>>) -> Vec<Protocol> {
         let (_session, ctx) = ScanSession::new();
-        into_port_scanner(scanners, ctx, TcpScanTechnique::Syn).supported_protocols()
+        ensure_coverage(scanners, &ctx, TcpScanTechnique::Syn)
+            .iter()
+            .flat_map(|scanner| scanner.supported_protocols())
+            .collect()
     }
 
     /// With no privileged scanner at all, both connect fallbacks stand in.
@@ -1024,10 +739,14 @@ mod tests {
     #[test]
     fn a_technique_the_fallback_cannot_express_is_reported_rather_than_substituted() {
         let (_session, ctx) = ScanSession::new();
-        let scanner = into_port_scanner(Vec::new(), ctx.clone(), TcpScanTechnique::Fin);
+        let scanners = ensure_coverage(Vec::new(), &ctx, TcpScanTechnique::Fin);
+        let protocols: Vec<Protocol> = scanners
+            .iter()
+            .flat_map(|scanner| scanner.supported_protocols())
+            .collect();
 
         assert!(
-            !scanner.supported_protocols().contains(&Protocol::Tcp),
+            !protocols.contains(&Protocol::Tcp),
             "a connect scan cannot send a FIN and must not pretend to"
         );
 
@@ -1052,100 +771,20 @@ mod tests {
         );
     }
 
-    fn v6(addr: &str) -> IpAddr {
-        addr.parse().unwrap()
-    }
-
-    fn interface_with(
-        index: u32,
-        name: &str,
-        own: Vec<IpAddr>,
-    ) -> pnet::datalink::NetworkInterface {
-        use pnet::ipnetwork::{IpNetwork, Ipv6Network};
-        pnet::datalink::NetworkInterface {
-            name: name.to_string(),
-            description: String::new(),
-            index,
-            mac: None,
-            ips: own
-                .into_iter()
-                .map(|ip| match ip {
-                    IpAddr::V6(v6) => IpNetwork::V6(Ipv6Network::new(v6, 64).unwrap()),
-                    IpAddr::V4(_) => unreachable!("test uses v6 only"),
-                })
-                .collect(),
-            flags: 0,
-        }
-    }
-
-    fn entry(ip: &str, index: u32) -> neighbors::Neighbor {
-        neighbors::Neighbor {
-            ip: v6(ip),
-            mac: None,
-            interface_index: index,
-        }
-    }
-
-    /// The three entries that must never become targets, each wrong in its own
-    /// way: another interface's neighbour is not reachable through this one,
-    /// this host would be reported as a discovered neighbour of itself, and
-    /// loopback names nothing on a segment.
-    #[test]
-    fn seeding_skips_other_interfaces_our_own_addresses_and_loopback() {
-        let own = v6("2001:db8::50");
-        let intf = interface_with(7, "en0", vec![own]);
-        let table = vec![
-            entry("2001:db8::aa", 7),
-            entry("fe80::bb", 7),
-            entry("2001:db8::cc", 9),
-            entry("2001:db8::50", 7),
-            entry("::1", 7),
-        ];
-
-        let seeded = candidates_for(&intf, &table);
-
-        assert_eq!(seeded, vec![v6("2001:db8::aa"), v6("fe80::bb")]);
-    }
-
-    /// A link-local candidate carries the interface it came from, because it
-    /// cannot be probed without one. A global address does not, for the reason
-    /// `ScopedIp` drops it: the same address through two interfaces is one
-    /// address.
-    #[test]
-    fn a_seeded_link_local_keeps_its_interface_and_a_global_does_not() {
-        let intf = interface_with(7, "en0", Vec::new());
-        let table = vec![entry("fe80::bb", 7), entry("2001:db8::aa", 7)];
-        let mut local = std::collections::HashMap::from([(intf, IpSet::new())]);
-
-        seed_from_neighbor_table_with(&mut local, &table);
-
-        let targets = local.into_values().next().unwrap();
-        let zones: Vec<Option<u32>> = targets.v6().iter().map(|range| range.zone).collect();
-        assert!(
-            zones.contains(&Some(7)),
-            "the link-local needs its interface"
-        );
-        assert!(
-            zones.contains(&None),
-            "the global address needs no interface"
-        );
-    }
-
     /// When the privileged scanners already cover everything, no fallback is
     /// added - a connect scanner beside them would re-probe the same ports.
     #[test]
     fn fully_covered_protocols_gain_no_fallback() {
         let (_session, ctx) = ScanSession::new();
-        let scanner = into_port_scanner(
+        let scanners = ensure_coverage(
             vec![
                 Box::new(StubScanner(vec![Protocol::Tcp])),
                 Box::new(StubScanner(vec![Protocol::Udp])),
             ],
-            ctx,
+            &ctx,
             TcpScanTechnique::Syn,
         );
-        // Two scanners in, two scanners out: `supported_protocols` deduplicates,
-        // so count the routes rather than the protocols.
-        assert_eq!(scanner.supported_protocols().len(), 2);
+        // Two scanners in, two scanners out: nothing was added beside them.
+        assert_eq!(scanners.len(), 2);
     }
 }

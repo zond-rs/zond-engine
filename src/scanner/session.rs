@@ -271,7 +271,6 @@ impl ProbeStatsLog {
         std::mem::take(&mut *entries)
     }
 
-    #[cfg(feature = "test-support")]
     fn snapshot(&self) -> Vec<ProbeStats> {
         self.entries
             .lock()
@@ -376,7 +375,12 @@ impl ScanContext {
     /// consumer - in that order, so the durable copy exists before the
     /// notification that might be dropped. A scan continues with whatever
     /// strategies remain, so this narrows a result rather than ending it.
-    pub(crate) fn record_failure(&self, scanner: ScannerKind, reason: String) {
+    ///
+    /// Public because a caller running strategies themselves has to be able to
+    /// file what went wrong the same way the engine's own orchestration does; a
+    /// custom strategy that could not would produce a report claiming a clean
+    /// run over a scan that lost half its work.
+    pub fn record_failure(&self, scanner: ScannerKind, reason: String) {
         error!("Scanner {scanner:?} failed: {reason}");
         self.failures
             .push(ScannerFailure::new(scanner, reason.clone()));
@@ -391,7 +395,12 @@ impl ScanContext {
     /// is not announced on the event stream: it describes the run rather than
     /// changing what the scan found, and a live consumer has nothing to do with
     /// it mid-scan.
-    pub(crate) fn record_probe_stats(&self, stats: ProbeStats) {
+    ///
+    /// Public for the same reason [`record_failure`](Self::record_failure) is: a
+    /// strategy somebody else wrote should be able to account for its own run,
+    /// and a report is worth less when only the built-in strategies appear in
+    /// its audit.
+    pub fn record_probe_stats(&self, stats: ProbeStats) {
         self.probe_stats.push(stats);
     }
 
@@ -402,11 +411,12 @@ impl ScanContext {
 
     /// The probe counters filed so far, left in place.
     ///
-    /// Not part of the supported API. A test that drives one scanner directly
-    /// over a synthetic transport never reaches the phase that would drain
-    /// these into a report, and this is how it reads what the scanner filed.
-    /// Enable `test-support` for tests only, never for a release.
-    #[cfg(feature = "test-support")]
+    /// The reading counterpart of [`record_probe_stats`](Self::record_probe_stats),
+    /// for a caller driving strategies themselves: they never reach the phase
+    /// that drains these into a [`ScanReport`](crate::scanner::report::ScanReport),
+    /// so this is how they read what a strategy filed. Non-destructive on
+    /// purpose — draining is the report's privilege, and a caller who could do
+    /// it would leave the report describing a scan that recorded nothing.
     pub fn probe_stats_snapshot(&self) -> Vec<ProbeStats> {
         self.probe_stats.snapshot()
     }
@@ -435,11 +445,12 @@ impl ScanContext {
 impl ScanSession {
     /// Opens a session and the context the strategies behind it write into.
     ///
-    /// The engine's own entry points call this; a consumer normally receives the
-    /// session already built, from [`discover`](crate::scanner::discover) or
-    /// [`scan`](crate::scanner::scan). It is public because driving a single
-    /// scanner directly — which is what the `test-support` feature is for —
-    /// means supplying it a context.
+    /// A caller wrapping the engine normally receives the session already
+    /// built, from [`discover`](crate::scanner::discover) or
+    /// [`scan`](crate::scanner::scan), and never calls this. A caller
+    /// orchestrating their own scan calls it first: every strategy in
+    /// [`strategy`](crate::scanner::strategy) is constructed with a
+    /// [`ScanContext`], and this is where one comes from.
     pub fn new() -> (Self, ScanContext) {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::new();

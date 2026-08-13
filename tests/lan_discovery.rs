@@ -29,9 +29,9 @@ use pnet::datalink::MacAddr;
 use zond_engine::model::host::HostStatus;
 use zond_engine::model::host::telemetry::RttSource;
 use zond_engine::model::ip::set::IpSet;
-use zond_engine::scanner::NetworkExplorer;
-use zond_engine::scanner::local::{LocalScanner, Scope};
 use zond_engine::scanner::session::ScanSession;
+use zond_engine::scanner::strategy::HostScanner;
+use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
 
 const PEER_A: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 const PEER_B: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);
@@ -50,11 +50,11 @@ async fn sweep(lan: &FakeLan, targets: &[IpAddr], scope: Scope) -> ScanSession {
     ips.canonicalize();
 
     let (session, ctx) = ScanSession::new();
-    let scanner =
+    let mut scanner =
         LocalScanner::with_handle(scanner_interface(), ips, ctx, None, scope, lan.handle())
             .expect("scanner builds over the simulated segment");
 
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");

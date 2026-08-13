@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use crate::model::port::Protocol;
 use crate::model::target::Target;
 use crate::scanner::session::{ScanContext, ScannerKind};
-use crate::scanner::{PortScanner, StrategyError};
+use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::warn;
 
 /// A port scanner that multiplexes targets by protocol.

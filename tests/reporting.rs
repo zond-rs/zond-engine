@@ -23,10 +23,10 @@ use common::*;
 use zond_engine::model::host::HostStatus;
 use zond_engine::model::port::{PortState, Protocol};
 use zond_engine::scanner;
-use zond_engine::scanner::NetworkExplorer;
 use zond_engine::scanner::report::{ENGINE_VERSION, ScanKind};
-use zond_engine::scanner::routed::RoutedScanner;
 use zond_engine::scanner::session::{ScanEvent, ScanSession};
+use zond_engine::scanner::strategy::HostScanner;
+use zond_engine::scanner::strategy::routed::RoutedScanner;
 use zond_engine::system::interface::RoutedTarget;
 
 /// A sweep whose probes never reached the wire has to say so, and say why.
@@ -45,7 +45,7 @@ use zond_engine::system::interface::RoutedTarget;
 #[tokio::test]
 async fn a_sweep_whose_probes_never_left_reports_why() {
     let (session, ctx) = ScanSession::new();
-    let scanner = RoutedScanner::with_transport(
+    let mut scanner = RoutedScanner::with_transport(
         vec![RoutedTarget {
             target: TARGET_V6,
             source: SCANNER_V6.into(),
@@ -55,7 +55,7 @@ async fn a_sweep_whose_probes_never_left_reports_why() {
         unsendable_transport("No route to host (os error 65)"),
     );
 
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("a sweep that cannot send still completes");

@@ -47,7 +47,8 @@ use zond_engine::model::port::{PortSet, PortState, Protocol};
 use zond_engine::model::target::{Target, TargetMap, TargetSet};
 use zond_engine::scanner::report::ScanReport;
 use zond_engine::scanner::session::{HostStore, ScanEvent, ScanSession};
-use zond_engine::scanner::{self, PortScanner, ScanTask};
+use zond_engine::scanner::strategy::PortScanner;
+use zond_engine::scanner::{self, ScanTask};
 use zond_engine::system::interface::SourceResolver;
 
 /// The loopback address every portable test targets.

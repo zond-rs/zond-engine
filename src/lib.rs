@@ -64,6 +64,31 @@
 //! # }
 //! ```
 //!
+//! # Wrapping the engine, or being the orchestrator
+//!
+//! The example above is the whole API for a front end that wants results:
+//! targets in, hosts and a report out, with privilege, interfaces, fallbacks and
+//! retries all decided for it. Most callers want exactly that and should not
+//! have to learn anything below it.
+//!
+//! Some callers want to be the one deciding. For them the same machinery is
+//! available a layer at a time, and none of it is behind a cargo feature:
+//!
+//! - **The vocabulary alone.** [`model`] parses targets, holds hosts and ports,
+//!   and does arithmetic on address sets, without scanning anything. A caller
+//!   with their own probing code can use it as a domain model and stop there.
+//! - **The plan.** [`scanner::plan`] works out which strategies would run
+//!   against a set of targets on this host, opening nothing. Inspect it, drop
+//!   steps, reorder them, or print it as a dry run.
+//! - **One strategy at a time.** [`scanner::strategy`] holds every scanner the
+//!   engine uses behind two small traits, each constructible directly and each
+//!   able to run over a transport the caller opened. Aim one at one segment and
+//!   read the results out of a [`ScanSession`] you made yourself.
+//!
+//! The `test-support` feature is *not* the way in to any of this. It gates the
+//! synthetic transports the crate's own tests use to fake a network, and nothing
+//! else.
+//!
 //! # Reports out, targets in
 //!
 //! [`export`] writes a finished report as JSON, JSONL, CSV, a self-contained
@@ -99,13 +124,14 @@
 //! - [`system`] — interfaces, routing, and whether the process may open raw
 //!   sockets. The one place the engine asks the host about itself.
 //! - [`fingerprinting`] — identifying the service behind an open port.
-//! - [`scanner`] — the two entry points and the strategies behind them, together
-//!   with what running one produces: the live
+//! - [`scanner`] — the two entry points, the [`plan`](scanner::plan) behind
+//!   them, and the [`strategy`](scanner::strategy) implementations behind that,
+//!   together with what running one produces: the live
 //!   [`session`](scanner::session), the [`handle`](scanner::handle) that stops
 //!   it, and the [`report`](scanner::report) it leaves behind. Those are the
 //!   scanner's output rather than a foundation under it, and they live with it
 //!   for that reason.
-//! - [`format`] — what a reader and a writer of the same document have to agree
+//! - [`format`](mod@crate::format) — what a reader and a writer of the same document have to agree
 //!   on, and nothing else. It sits below both so that reading a format never
 //!   requires compiling the code that writes it.
 //! - [`export`], [`import`] — the file formats themselves, which sit above the
@@ -148,7 +174,8 @@ pub use crate::model::technique::TcpScanTechnique;
 pub use crate::scanner::handle::ScanHandle;
 pub use crate::scanner::report::{ScanReport, ScanSummary};
 pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
-pub use crate::scanner::{ScanError, ScanTask, StrategyError, discover, scan};
+pub use crate::scanner::strategy::StrategyError;
+pub use crate::scanner::{ScanError, ScanTask, discover, scan};
 
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
 // from anywhere in the crate. They are deliberately not part of the public API;

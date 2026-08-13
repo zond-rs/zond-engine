@@ -47,7 +47,7 @@ use crate::protocols::{self as protocol, ethernet};
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
-use crate::scanner::{NetworkExplorer, StrategyError};
+use crate::scanner::strategy::{HostScanner, StrategyError};
 use crate::system::interface::NetworkInterfaceExtension;
 use crate::transport::channel::{self, EthernetHandle};
 use crate::transport::mac::IntoCoreMac;
@@ -501,8 +501,12 @@ pub struct LocalScanner {
 }
 
 #[async_trait]
-impl NetworkExplorer for LocalScanner {
-    async fn discover_hosts(mut self: Box<Self>) -> Result<(), StrategyError> {
+impl HostScanner for LocalScanner {
+    fn kind(&self) -> ScannerKind {
+        ScannerKind::Local
+    }
+
+    async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
         let mut packet_iter = protocol::eth_packet_iter(
             &self.identity.mac,
             &self.identity.ipv4,
@@ -660,11 +664,14 @@ impl LocalScanner {
     ///
     /// The addressing identity is still resolved from `intf`, since a probe has
     /// to be sent from some MAC and address, but nothing here touches the
-    /// interface itself. Paired with a synthetic channel
+    /// interface itself.
+    ///
+    /// This is the constructor for a caller orchestrating their own scan, who
+    /// has opened a channel on the interface they mean rather than letting
+    /// [`new`](Self::new) choose. Paired with a synthetic channel
     /// (`EthernetHandle::from_parts`, behind the `test-support` feature) and a
-    /// hand-built [`NetworkInterface`], this is the seam that lets ARP and NDP
-    /// discovery be driven against a simulated segment with no privileges.
-    #[cfg(any(test, feature = "test-support"))]
+    /// hand-built [`NetworkInterface`], it is also the seam that lets ARP and
+    /// NDP discovery be driven against a simulated segment with no privileges.
     pub fn with_handle(
         intf: NetworkInterface,
         ip_set: IpSet,

@@ -45,7 +45,7 @@ use crate::scanner::session::ScannerKind;
 ///
 /// Owned by the scanner and mutated from its own loop, so the fields are plain
 /// integers rather than atomics.
-pub(crate) struct ProbeAudit {
+pub struct ProbeAudit {
     started: Instant,
 
     /// Probes the scanner tried to put on the wire.

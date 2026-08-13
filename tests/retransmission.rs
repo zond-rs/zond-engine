@@ -59,10 +59,10 @@ use pnet::datalink::MacAddr;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
-use zond_engine::scanner::NetworkExplorer;
-use zond_engine::scanner::local::{LocalScanner, Scope};
-use zond_engine::scanner::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
 use zond_engine::scanner::session::{ScanSession, ScannerKind};
+use zond_engine::scanner::strategy::HostScanner;
+use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
+use zond_engine::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
 use zond_engine::system::interface::RoutedTarget;
 
 /// How many times a probe should be sent before the engine concludes the target
@@ -263,7 +263,7 @@ async fn a_lost_discovery_syn_is_retried_and_the_host_is_still_found() {
 
     let (session, ctx) = ScanSession::new();
     let audit_ctx = ctx.clone();
-    let scanner = RoutedScanner::with_transport(
+    let mut scanner = RoutedScanner::with_transport(
         vec![RoutedTarget {
             target: TARGET,
             source: SCANNER_V4.into(),
@@ -272,7 +272,7 @@ async fn a_lost_discovery_syn_is_retried_and_the_host_is_still_found() {
         None,
         net.transport(),
     );
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");
@@ -320,7 +320,7 @@ async fn a_silent_address_is_probed_a_bounded_number_of_times() {
     let net = FakeNet::new(Layer4::Tcp);
 
     let (session, ctx) = ScanSession::new();
-    let scanner = RoutedScanner::with_transport(
+    let mut scanner = RoutedScanner::with_transport(
         vec![RoutedTarget {
             target: TARGET,
             source: SCANNER_V4.into(),
@@ -329,7 +329,7 @@ async fn a_silent_address_is_probed_a_bounded_number_of_times() {
         None,
         net.transport(),
     );
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");
@@ -349,7 +349,7 @@ async fn a_discovered_host_is_not_probed_again() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 443, Policy::open());
 
     let (session, ctx) = ScanSession::new();
-    let scanner = RoutedScanner::with_transport(
+    let mut scanner = RoutedScanner::with_transport(
         vec![RoutedTarget {
             target: TARGET,
             source: SCANNER_V4.into(),
@@ -358,7 +358,7 @@ async fn a_discovered_host_is_not_probed_again() {
         None,
         net.transport(),
     );
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");
@@ -390,8 +390,8 @@ async fn a_paced_sweep_probes_every_target_without_bursting_them() {
         .collect();
 
     let (_session, ctx) = ScanSession::new();
-    let scanner = RoutedScanner::with_transport(targets.clone(), ctx, None, net.transport());
-    Box::new(scanner)
+    let mut scanner = RoutedScanner::with_transport(targets.clone(), ctx, None, net.transport());
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");
@@ -495,7 +495,7 @@ async fn a_lost_arp_request_is_retried_and_the_host_is_still_discovered() {
     ips.canonicalize();
 
     let (session, ctx) = ScanSession::new();
-    let scanner = LocalScanner::with_handle(
+    let mut scanner = LocalScanner::with_handle(
         scanner_interface(),
         ips,
         ctx,
@@ -504,7 +504,7 @@ async fn a_lost_arp_request_is_retried_and_the_host_is_still_discovered() {
         lan.handle(),
     )
     .expect("scanner builds over the simulated segment");
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");
@@ -535,7 +535,7 @@ async fn an_empty_address_is_probed_a_bounded_number_of_times() {
     ips.canonicalize();
 
     let (_session, ctx) = ScanSession::new();
-    let scanner = LocalScanner::with_handle(
+    let mut scanner = LocalScanner::with_handle(
         scanner_interface(),
         ips,
         ctx,
@@ -544,7 +544,7 @@ async fn an_empty_address_is_probed_a_bounded_number_of_times() {
         lan.handle(),
     )
     .expect("scanner builds over the simulated segment");
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");
@@ -576,7 +576,7 @@ async fn the_all_nodes_solicitation_is_repeated_and_spaced() {
     ips.canonicalize();
 
     let (_session, ctx) = ScanSession::new();
-    let scanner = LocalScanner::with_handle(
+    let mut scanner = LocalScanner::with_handle(
         scanner_interface(),
         ips,
         ctx,
@@ -585,7 +585,7 @@ async fn the_all_nodes_solicitation_is_repeated_and_spaced() {
         lan.handle(),
     )
     .expect("scanner builds over the simulated segment");
-    Box::new(scanner)
+    scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");

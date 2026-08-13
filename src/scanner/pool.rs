@@ -43,7 +43,7 @@ use crate::scanner::audit::ProbeAudit;
 /// separate borrows of one audit would not compile, and the alternative is
 /// interior mutability in three call sites to work around a structure that could
 /// simply hold it. A caller that has no use for it ignores the argument.
-pub(in crate::scanner) struct ProbePool<R, F: FnMut(R, &mut ProbeAudit)> {
+pub struct ProbePool<R, F: FnMut(R, &mut ProbeAudit)> {
     set: JoinSet<R>,
     limit: usize,
     fold: F,
@@ -57,7 +57,7 @@ where
 {
     /// Builds an empty pool that keeps at most `limit` probes in flight and
     /// applies `fold` to each finished probe's output.
-    pub(in crate::scanner) fn new(limit: usize, fold: F) -> Self {
+    pub fn new(limit: usize, fold: F) -> Self {
         Self {
             set: JoinSet::new(),
             limit,
@@ -68,21 +68,18 @@ where
 
     /// The counters for this run, for a caller that records something the fold
     /// cannot see - a probe admitted, say, which happens in the source loop.
-    pub(in crate::scanner) fn audit(&mut self) -> &mut ProbeAudit {
+    pub fn audit(&mut self) -> &mut ProbeAudit {
         &mut self.audit
     }
 
     /// Takes the counters once the run is over.
-    pub(in crate::scanner) fn into_audit(self) -> ProbeAudit {
+    pub fn into_audit(self) -> ProbeAudit {
         self.audit
     }
 
     /// Spawns `task`, first reaping finished probes until the pool has room, so
     /// the concurrency cap always holds. Awaits only when the pool is full.
-    pub(in crate::scanner) async fn admit(
-        &mut self,
-        task: impl Future<Output = R> + Send + 'static,
-    ) {
+    pub async fn admit(&mut self, task: impl Future<Output = R> + Send + 'static) {
         while self.set.len() >= self.limit {
             self.reap().await;
         }
@@ -91,7 +88,7 @@ where
 
     /// Awaits every probe still in flight, folding each result. Call once the
     /// source is exhausted so no finished work is dropped.
-    pub(in crate::scanner) async fn drain(&mut self) {
+    pub async fn drain(&mut self) {
         while !self.set.is_empty() {
             self.reap().await;
         }
