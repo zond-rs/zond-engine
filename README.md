@@ -1,6 +1,6 @@
 # Zond Engine
 
-![Build Status](https://github.com/zond-rs/zond-engine/actions/workflows/build.yml/badge.svg)
+![Test Status](https://github.com/zond-rs/zond-engine/actions/workflows/test.yml/badge.svg)
 ![Lint Status](https://github.com/zond-rs/zond-engine/actions/workflows/lint.yml/badge.svg)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 ![Rust Version](https://img.shields.io/badge/rustc-1.93+-blue.svg)

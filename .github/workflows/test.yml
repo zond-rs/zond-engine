@@ -1,0 +1,131 @@
+# The test suite, on the platforms this crate claims to support.
+#
+# There is deliberately no build-and-release job here. This repository is a
+# library: `cargo build --release` produces an `.rlib` nobody downloads, and the
+# zip, tarball and `.deb` this workflow used to publish were for a `zond` binary
+# that no target in this repository builds. They belong to the CLI, which is a
+# separate repository with its own release.
+#
+# A library's release is `cargo publish`, and that is deliberately not automated
+# here — pushing a version to crates.io is irreversible, and it should be a
+# person's decision rather than a side effect of tagging. What this workflow does
+# instead is check, on every change, that the crate *could* be published: see the
+# packaging job.
+#
+# Windows is not in the matrix. The crate says it is unsupported and it is; a
+# runner for it would be permanently red and would teach everyone to ignore a
+# failing job, which is worse than not having one.
+name: Test
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "benches/**"
+      - "assets/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/test.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "benches/**"
+      - "assets/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/test.yml"
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libpcap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # `--all-features` rather than a bare `cargo test`: the export and import
+      # formats are each behind a feature, and a suite that only ever runs the
+      # default set leaves most of them compiled but never executed.
+      - name: Run tests
+        run: cargo test --all-features
+
+      # Tier 2 marks work the engine does not do yet with `#[ignore]`. Those are
+      # claims, not switched-off tests: each one runs, fails for the reason it
+      # states, and removing the attribute is the definition of done. This step
+      # confirms they still fail for that reason, and does not gate the build.
+      - name: Check the ignored tests still fail as claimed
+        continue-on-error: true
+        run: cargo test --all-features -- --ignored
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Pinned to the exact version `Cargo.toml` declares. Without this the
+      # `rust-version` field is an assertion nobody checks, and the README badge
+      # advertising it is a promise to strangers made on no evidence.
+      - name: Install the declared minimum toolchain
+        uses: dtolnay/rust-toolchain@1.93.0
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # Build rather than test: the question is whether a consumer on this
+      # toolchain can compile the crate and everything it exposes. The dev
+      # dependencies are the test suite's problem, not theirs.
+      - name: Build on the declared minimum
+        run: cargo build --all-features
+
+  package:
+    name: Publishable
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # Builds the crate from the packaged files rather than from the working
+      # tree, which is the only thing that catches a file the package needs and
+      # does not carry. `build.rs` compiles the fingerprint signatures out of
+      # `assets/`, so an `exclude` that swept those up would produce a crate that
+      # fails to build for every consumer and for nobody here.
+      #
+      # It does not publish. It answers "could this be published", which is a
+      # question worth having answered before the day somebody wants to.
+      - name: Verify the crate packages and builds from the package
+        run: cargo package --all-features
