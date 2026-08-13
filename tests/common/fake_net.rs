@@ -16,7 +16,7 @@
 //! network that misbehaves on demand.
 //!
 //! [`FakeNet`] is that network. It plugs into
-//! [`ProbeTransport::from_parts`](zond_engine::network::probe::ProbeTransport::from_parts):
+//! [`ProbeTransport::from_parts`](zond_engine::transport::probe::ProbeTransport::from_parts):
 //! it receives the Layer-4 segments a scanner emits, decides per target how
 //! (and whether) to answer, and pushes synthesized replies back onto the
 //! scanner's receive stream exactly as a capture would. No sockets, no
@@ -61,9 +61,9 @@ use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
 use pnet::packet::udp::UdpPacket;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-use zond_engine::network::capture::CapturedSegment;
-use zond_engine::network::probe::{ProbeSender, ProbeTransport, SendError};
 use zond_engine::protocols::{ip, udp};
+use zond_engine::transport::capture::CapturedSegment;
+use zond_engine::transport::probe::{ProbeSender, ProbeTransport, SendError};
 
 /// TCP header length used for synthesized replies: the 20-byte minimum, with
 /// no options. Real stacks usually attach options to a SYN+ACK, but nothing in
@@ -94,7 +94,7 @@ const HOP_LIMIT: u8 = 64;
 /// A bare Layer-4 segment does not say what it is, and TCP and UDP headers are
 /// not distinguishable by inspection, so this has to be declared up front -
 /// exactly as the real transport declares a
-/// [`ProbeKind`](zond_engine::network::probe::ProbeKind) when it compiles its
+/// [`ProbeKind`](zond_engine::transport::probe::ProbeKind) when it compiles its
 /// capture filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer4 {

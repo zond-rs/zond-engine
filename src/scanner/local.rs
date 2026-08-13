@@ -36,21 +36,21 @@ use pnet::packet::ethernet::EthernetPacket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
-use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::core::models::host::telemetry::RttSource;
-use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
-use crate::core::models::ip::scoped::Zone;
-use crate::core::models::ip::set::IpSet;
-use crate::core::models::retry::{Due, ProbeLedger, RetryConfig, RetryPolicy};
-use crate::core::models::timer::ScanBudget;
-use crate::core::report::StopReason;
-use crate::core::session::{ScanContext, ScannerKind};
-use crate::network::channel::{self, EthernetHandle};
-use crate::network::mac::IntoCoreMac;
+use crate::model::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::model::host::telemetry::RttSource;
+use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+use crate::model::ip::scoped::Zone;
+use crate::model::ip::set::IpSet;
+use crate::model::retry::{Due, ProbeLedger, RetryConfig, RetryPolicy};
+use crate::model::timer::ScanBudget;
 use crate::protocols::{self as protocol, ethernet};
 use crate::scanner::audit::ProbeAudit;
+use crate::scanner::report::StopReason;
+use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::{NetworkExplorer, StrategyError};
 use crate::system::interface::NetworkInterfaceExtension;
+use crate::transport::channel::{self, EthernetHandle};
+use crate::transport::mac::IntoCoreMac;
 use crate::{error, info};
 
 use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6EchoProtocol, NdpProtocol, ProtocolMatch};
@@ -361,7 +361,7 @@ struct SourceIdentity {
     /// link-local address it records is valid on this interface and no other.
     /// Recording that alongside the host is what makes those addresses usable
     /// by the phases that come after discovery; see
-    /// [`ScopedIp`](crate::core::models::ip::scoped::ScopedIp).
+    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp).
     zone: Zone,
 }
 
@@ -988,7 +988,7 @@ impl LocalScanner {
         &mut self,
         address: &IpAddr,
         now: Instant,
-    ) -> Option<crate::core::models::retry::Resolution> {
+    ) -> Option<crate::model::retry::Resolution> {
         if address.is_ipv6() {
             self.ndp_ledger.resolve(address, None, now)
         } else {

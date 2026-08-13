@@ -25,7 +25,7 @@
 
 use std::sync::OnceLock;
 
-use crate::core::models::fingerprint::{MAX_COMPILED_REGEX_BYTES, MatchRule};
+use crate::model::fingerprint::{MAX_COMPILED_REGEX_BYTES, MatchRule};
 use crate::warn;
 
 use super::model::{Confidence, Evidence, SourceId};

@@ -61,7 +61,7 @@ pub struct Neighbor {
     ///
     /// Required rather than incidental for IPv6: a link-local address from this
     /// table is meaningless without it, exactly as it is everywhere else in the
-    /// engine. See [`ScopedIp`](crate::core::models::ip::scoped::ScopedIp).
+    /// engine. See [`ScopedIp`](crate::model::ip::scoped::ScopedIp).
     pub interface_index: u32,
 }
 

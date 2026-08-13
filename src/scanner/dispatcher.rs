@@ -15,8 +15,8 @@
 //! in time, which avoids hammering one subnet in a tight burst, and the memory cost
 //! stays bounded regardless of how large the target range is.
 
-use crate::core::handle::ScanHandle;
-use crate::core::models::target::{Target, TargetMap};
+use crate::model::target::{Target, TargetMap};
+use crate::scanner::handle::ScanHandle;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 
@@ -98,9 +98,9 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::ip::set::IpSet;
-    use crate::core::models::port::PortSet;
-    use crate::core::models::target::TargetSet;
+    use crate::model::ip::set::IpSet;
+    use crate::model::port::PortSet;
+    use crate::model::target::TargetSet;
     use std::net::IpAddr;
 
     #[tokio::test]

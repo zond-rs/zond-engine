@@ -27,11 +27,11 @@ use std::io::Write;
 use boon::{Compiler, Schemas};
 use common::*;
 use serde_json::Value;
-use zond_engine::core::report::ScanReport;
 use zond_engine::export::{
     CsvExporter, ExportFormat, ExportOptions, Exporter, HtmlExporter, JsonExporter,
     JsonLinesExporter, Redaction,
 };
+use zond_engine::scanner::report::ScanReport;
 
 /// The schemas shipped in `assets/`, which are what a consumer validates
 /// against.
@@ -108,7 +108,7 @@ async fn a_real_port_scan_exports_a_document_the_schema_accepts() {
 /// follow.
 #[tokio::test]
 async fn a_real_discovery_sweep_exports_a_document_the_schema_accepts() {
-    let mut targets = zond_engine::core::models::ip::set::IpSet::new();
+    let mut targets = zond_engine::model::ip::set::IpSet::new();
     targets.insert_range("127.0.0.0/29".parse().expect("a valid range"));
 
     let outcome = run_discover(targets, &test_config()).await;

@@ -23,10 +23,10 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
-use zond_engine::core::models::host::Host;
-use zond_engine::network::capture::CapturedSegment;
-use zond_engine::network::probe::{ProbeSender, ProbeTransport, SendError};
+use zond_engine::model::host::Host;
 use zond_engine::scanner::resolver::HostnameResolver;
+use zond_engine::transport::capture::CapturedSegment;
+use zond_engine::transport::probe::{ProbeSender, ProbeTransport, SendError};
 
 const ROUTER: &str = "192.168.0.1";
 const PRINTER: &str = "192.168.0.30";

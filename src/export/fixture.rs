@@ -21,21 +21,21 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
-use crate::core::config::ZondConfig;
-use crate::core::models::host::{
+use crate::config::ZondConfig;
+use crate::model::capture::CaptureCounts;
+use crate::model::host::{
     Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
 };
-use crate::core::models::ip::set::IpSet;
-use crate::core::models::mac::MacAddr;
-use crate::core::models::port::{
+use crate::model::ip::set::IpSet;
+use crate::model::mac::MacAddr;
+use crate::model::port::{
     CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, ScriptOutput, Security,
     Service,
 };
-use crate::core::report::{
+use crate::scanner::report::{
     BUCKET_BOUNDS_MS, PhaseRecorder, ProbeStats, ScanKind, ScanReport, StopReason, TargetScope,
 };
-use crate::core::session::{ScanSession, ScannerKind};
-use crate::network::capture::CaptureCounts;
+use crate::scanner::session::{ScanSession, ScannerKind};
 
 /// An address on the fixture's network.
 fn ip(last: u8) -> IpAddr {

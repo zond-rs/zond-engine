@@ -13,7 +13,7 @@
 //! not send segments and read replies, it builds whole Ethernet frames, puts
 //! them on an interface, and identifies a neighbour by the source MAC of what
 //! comes back. That is why it holds an
-//! [`EthernetHandle`](zond_engine::network::channel::EthernetHandle) rather than
+//! [`EthernetHandle`](zond_engine::transport::channel::EthernetHandle) rather than
 //! a probe transport, and why it needs a simulator of its own: a capture-fed
 //! transport has already discarded the MAC address by the time a scanner sees
 //! the bytes.
@@ -46,8 +46,8 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::udp::{MutableUdpPacket, ipv6_checksum as udp_ipv6_checksum};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-use zond_engine::network::channel::EthernetHandle;
 use zond_engine::protocols::{ethernet, ip};
+use zond_engine::transport::channel::EthernetHandle;
 
 use super::fake_net::{Loss, SplitMix64};
 

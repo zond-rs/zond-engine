@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::core::models::ip::set::IpSet;
+use crate::model::ip::set::IpSet;
 use crate::system::interface::source::viable_interfaces;
 use pnet::datalink::NetworkInterface;
 

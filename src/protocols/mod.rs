@@ -17,8 +17,8 @@ pub mod tcp;
 pub mod udp;
 pub mod utils;
 
-use crate::core::models::ip::range::{Ipv4Range, Ipv6Range};
-use crate::core::models::ip::set::IpSet;
+use crate::model::ip::range::{Ipv4Range, Ipv6Range};
+use crate::model::ip::set::IpSet;
 use pnet::datalink::MacAddr;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

@@ -95,12 +95,12 @@
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 
-use zond_engine::core::models::ip::set::IpSet;
-use zond_engine::core::models::port::PortSet;
-use zond_engine::core::models::target::{TargetMap, TargetSet};
-use zond_engine::core::parse::ip::insert_expression;
-use zond_engine::import::target::TargetExpr;
 use zond_engine::import::{ImportFormat, ImportLimits, ImportOptions};
+use zond_engine::model::ip::set::IpSet;
+use zond_engine::model::parse::ip::insert_expression;
+use zond_engine::model::parse::target::TargetExpr;
+use zond_engine::model::port::PortSet;
+use zond_engine::model::target::{TargetMap, TargetSet};
 
 /// How many times each arm runs. The median is reported, so a scheduling hiccup
 /// in one run cannot become the finding.
@@ -309,8 +309,8 @@ fn import(text: &str, ports: &PortSet) -> TargetMap {
 /// from the cost of the budget check that wraps it - which is the whole of
 /// prediction 5.
 fn build_grouped(text: &str, ports: &PortSet) -> TargetMap {
-    let context = zond_engine::import::TargetContext::new();
-    let mut builder = zond_engine::import::TargetMapBuilder::new(ports.clone());
+    let context = zond_engine::model::parse::target::TargetContext::new();
+    let mut builder = zond_engine::model::parse::target::TargetMapBuilder::new(ports.clone());
     for token in text.split_whitespace() {
         builder
             .push(token, &context)

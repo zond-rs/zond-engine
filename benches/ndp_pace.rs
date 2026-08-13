@@ -74,10 +74,10 @@ use pnet::datalink::{MacAddr, NetworkInterface};
 use pnet::packet::Packet;
 use pnet::packet::arp::{ArpOperations, ArpPacket};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use zond_engine::network::channel;
 use zond_engine::protocols::{arp, ndp};
 use zond_engine::system::interface::{NetworkInterfaceExtension, get_prioritized_interfaces};
 use zond_engine::system::neighbors;
+use zond_engine::transport::channel;
 
 /// How long to listen after the last solicitation goes out.
 ///

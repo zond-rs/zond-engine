@@ -16,15 +16,15 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use zond_engine::core::session::ScanEvent;
 use zond_engine::scanner;
+use zond_engine::scanner::session::ScanEvent;
 
 /// Aborting via the session handle brings a running scan to a prompt, clean stop
 /// well inside a generous deadline — the loops honour `should_stop` rather than
 /// only checking between targets.
 #[tokio::test]
 async fn abort_stops_a_scan_promptly() {
-    let mut targets = zond_engine::core::models::ip::set::IpSet::new();
+    let mut targets = zond_engine::model::ip::set::IpSet::new();
     // A large loopback range: enough work that an abort is observable.
     targets.insert_range("127.0.0.0/22".parse().unwrap());
 
@@ -78,10 +78,6 @@ async fn scan_emits_host_updated_events() {
 /// Ok even with no work to do.
 #[tokio::test]
 async fn empty_port_scan_completes_cleanly() {
-    let outcome = run_scan(
-        zond_engine::core::models::target::TargetMap::new(),
-        &test_config(),
-    )
-    .await;
+    let outcome = run_scan(zond_engine::model::target::TargetMap::new(), &test_config()).await;
     assert!(outcome.hosts().is_empty());
 }

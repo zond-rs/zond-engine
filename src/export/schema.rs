@@ -57,7 +57,7 @@
 //! scan, so exporting a /16 costs a host's worth of memory rather than a
 //! network's.
 //!
-//! [`Host`]: crate::core::models::host::Host
+//! [`Host`]: crate::model::host::Host
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -67,42 +67,32 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 use serde::ser::{SerializeSeq, Serializer};
 
-use crate::core::config::SendMode;
-use crate::core::models::host::{
+use crate::config::SendMode;
+use crate::export::ExportOptions;
+use crate::export::time::rfc3339;
+use crate::model::capture::CaptureCounts;
+use crate::model::host::{
     HardwareInfo, Host, HostStatus, HostTelemetry, NetworkRole, OsFingerprint, StatusProtocol,
     StatusReason,
 };
-use crate::core::models::ip::range::IpRange;
-use crate::core::models::port::{
+use crate::model::ip::range::IpRange;
+use crate::model::port::{
     CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, ScriptOutput, Security,
     Service,
 };
-use crate::core::models::retry::{RetryConfig, ScanEffort};
-use crate::core::report::{
+use crate::model::retry::{RetryConfig, ScanEffort};
+use crate::scanner::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, ScanKind, ScanPhase, ScanReport, ScanSettings,
     ScanSummary, ScannerFailure, StopReason, TargetScope,
 };
-use crate::core::session::ScannerKind;
-use crate::export::ExportOptions;
-use crate::export::time::rfc3339;
-use crate::network::capture::CaptureCounts;
+use crate::scanner::session::ScannerKind;
 
-/// The version of the exported document's structure.
-///
-/// Bumped only when a consumer written against the previous version would
-/// misread the new one: a field removed, renamed, retyped, or given a different
-/// meaning. Adding a field, a new enum string, or a new optional block does not
-/// bump it, because a consumer that ignores what it does not recognise is
-/// unaffected - and one that does not ignore it was going to break on the next
-/// scanner either way.
-///
-/// The engine's own version travels alongside it in `engine.version`, so a
-/// report can be attributed to a build without the schema having to move every
-/// time the engine does.
-pub const SCHEMA_VERSION: u32 = 1;
-
-/// The name reported in the document's `engine.name` field.
-pub const ENGINE_NAME: &str = "zond-engine";
+// The two values a reader of this document has to agree with are defined in
+// [`crate::format`] rather than here, because a reader that had to reach into
+// the writer for them would be depending on being able to write a format it only
+// ever reads. Re-exported so this module still reads as the whole description of
+// the document.
+pub use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
 
 // ---------------------------------------------------------------------------
 // Enum names
@@ -267,7 +257,7 @@ fn micros_opt(duration: Option<Duration>) -> Option<u64> {
 /// [module documentation](self) for the conventions the output obeys.
 ///
 /// ```no_run
-/// use zond_engine::core::report::ScanReport;
+/// use zond_engine::scanner::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, schema::ReportDto};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {
@@ -1437,9 +1427,9 @@ impl Serialize for ScriptValueDto<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::ip::set::IpSet;
-    use crate::core::models::port::PortSet;
-    use crate::core::models::target::{TargetMap, TargetSet};
+    use crate::model::ip::set::IpSet;
+    use crate::model::port::PortSet;
+    use crate::model::target::{TargetMap, TargetSet};
 
     /// Every enumerated value the document can carry has to be spelled the same
     /// way twice - once here, once in the schema file. Pinning the strings is

@@ -57,44 +57,15 @@
 
 use std::io::Write;
 
-use crate::core::models::host::Host;
-use crate::core::models::port::Port;
-use crate::core::report::ScanReport;
 use crate::export::schema::{
     host_status_name, network_role_name, port_state_name, protocol_name, scan_response_name,
 };
 use crate::export::time::rfc3339;
 use crate::export::{ExportError, ExportOptions, Exporter};
-
-/// The column names, in order. Host columns first, then the port columns that
-/// are empty on a host with no ports.
-pub const COLUMNS: [&str; 25] = [
-    "ip",
-    "hostname",
-    "status",
-    "alive",
-    "ips",
-    "mac",
-    "mac_vendor",
-    "os",
-    "os_accuracy",
-    "roles",
-    "rtt_median_us",
-    "ttl",
-    "first_seen",
-    "last_seen",
-    "port",
-    "protocol",
-    "state",
-    "service",
-    "service_product",
-    "service_version",
-    "service_confidence",
-    "discovery_reason",
-    "tls_version",
-    "cert_common_name",
-    "cert_not_after",
-];
+use crate::format::csv::{COLUMNS, PORT_COLUMNS};
+use crate::model::host::Host;
+use crate::model::port::Port;
+use crate::scanner::report::ScanReport;
 
 /// Characters that make a spreadsheet read a cell as a formula.
 const FORMULA_LEADERS: [char; 5] = ['=', '+', '-', '@', '\t'];
@@ -106,7 +77,7 @@ const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use zond_engine::core::report::ScanReport;
+/// use zond_engine::scanner::report::ScanReport;
 /// use zond_engine::export::{CsvExporter, ExportOptions, Exporter};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {
@@ -183,9 +154,6 @@ impl Exporter for CsvExporter {
         Ok(())
     }
 }
-
-/// How many of [`COLUMNS`] describe the port rather than the host.
-const PORT_COLUMNS: usize = 11;
 
 /// The host half of a row, rendered once and reused for each of its ports.
 ///
@@ -450,7 +418,7 @@ mod tests {
 
     /// Exports one report, so a test comparing two exports compares the same
     /// scan rather than two fixtures built a few microseconds apart.
-    fn bytes(exporter: &CsvExporter, report: &crate::core::report::ScanReport) -> Vec<u8> {
+    fn bytes(exporter: &CsvExporter, report: &crate::scanner::report::ScanReport) -> Vec<u8> {
         let mut bytes = Vec::new();
         exporter
             .export(report, &mut bytes)

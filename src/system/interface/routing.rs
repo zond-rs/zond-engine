@@ -6,9 +6,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::core::models::ip::range::IpRange::{V4, V6};
-use crate::core::models::ip::range::Ipv6Range;
-use crate::core::models::ip::set::IpSet;
+use crate::model::ip::range::IpRange::{V4, V6};
+use crate::model::ip::range::Ipv6Range;
+use crate::model::ip::set::IpSet;
 use crate::system::interface::source::{
     ProbeSockets, plausible_source, probe_route_source, viable_interfaces,
 };
@@ -251,7 +251,7 @@ fn find_local_index(interfaces: &[NetworkInterface], target: IpAddr) -> Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::ip::range::{IpRange, Ipv4Range, Ipv6Range};
+    use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
     use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
     use std::net::{Ipv4Addr, Ipv6Addr};
 

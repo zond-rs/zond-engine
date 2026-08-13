@@ -42,7 +42,7 @@
 //!
 //! ```no_run
 //! use zond_engine::{ScanEvent, ZondConfig, discover};
-//! use zond_engine::core::parse::ip::to_set;
+//! use zond_engine::model::parse::ip::to_set;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let targets = to_set(&["192.168.1.0/24"], None)?;
@@ -81,30 +81,56 @@
 //! The names most consumers need are re-exported here at the root. The modules
 //! below are the whole of it:
 //!
-//! - [`scanner`] — the two entry points and the strategies behind them.
-//! - [`core`] — the domain model ([`Host`], [`Port`], [`IpSet`], [`TargetMap`]),
-//!   the configuration, the live session and the finished report.
-//! - [`fingerprinting`] — identifying the service behind an open port.
-//! - [`export`], [`import`] — the file formats.
-//! - [`protocols`], [`network`] — packet building and parsing, and the raw send
-//!   and capture transports beneath them. Public because crafting a packet is a
+//! The list is an order, not a set: each module depends only on the ones above
+//! it, and that is a property the crate is arranged to keep rather than an
+//! observation about how it happens to look today.
+//!
+//! - [`model`] — the vocabulary every other module names: [`Host`], [`Port`],
+//!   [`IpSet`], [`TargetMap`], and the grammars that construct them from what a
+//!   person wrote. It depends on nothing else here.
+//! - [`config`] — what a caller asks for before a scan starts.
+//! - [`protocols`] — building and parsing packets, as bytes and nothing else.
+//! - [`transport`] — the sockets and captures that carry those bytes. Kept apart
+//!   from [`protocols`] because one half needs a NIC and root and the other half
+//!   needs neither, and a packet that cannot be built without a socket open is a
+//!   packet nobody can test. Both are public because crafting a probe is a
 //!   reasonable thing to want on its own; nothing in the two phases above
 //!   requires touching them.
 //! - [`system`] — interfaces, routing, and whether the process may open raw
 //!   sockets. The one place the engine asks the host about itself.
+//! - [`fingerprinting`] — identifying the service behind an open port.
+//! - [`scanner`] — the two entry points and the strategies behind them, together
+//!   with what running one produces: the live
+//!   [`session`](scanner::session), the [`handle`](scanner::handle) that stops
+//!   it, and the [`report`](scanner::report) it leaves behind. Those are the
+//!   scanner's output rather than a foundation under it, and they live with it
+//!   for that reason.
+//! - [`format`] — what a reader and a writer of the same document have to agree
+//!   on, and nothing else. It sits below both so that reading a format never
+//!   requires compiling the code that writes it.
+//! - [`export`], [`import`] — the file formats themselves, which sit above the
+//!   report because they describe it and it does not know they exist.
 //!
 //! # Platforms
 //!
 //! Linux and macOS. Windows is not currently supported.
 
-pub mod core;
+pub mod config;
 pub mod export;
 pub mod fingerprinting;
+pub mod format;
 pub mod import;
-pub mod network;
+pub mod model;
 pub mod protocols;
 pub mod scanner;
 pub mod system;
+pub mod transport;
+
+// Nothing here is public: it is the five macros the engine emits its own
+// diagnostics through, and a library that exported those would shadow
+// `tracing`'s and `log`'s macros of the same names in any consumer that
+// glob-imported it. See the module for the rest of the argument.
+pub(crate) mod logging;
 
 // The names a consumer reaches for, at the root rather than four modules deep.
 //
@@ -112,19 +138,19 @@ pub mod system;
 // well, so this is a convenience and never the only way to name a type; what it
 // costs is that each name is a commitment, which is why the crate's whole
 // vocabulary is not re-exported wholesale.
-pub use crate::core::config::{SendMode, ZondConfig};
-pub use crate::core::handle::ScanHandle;
-pub use crate::core::models::host::{Host, HostStatus};
-pub use crate::core::models::ip::set::IpSet;
-pub use crate::core::models::port::{Port, PortSet, PortState, Protocol, Service};
-pub use crate::core::models::retry::{RetryConfig, ScanEffort};
-pub use crate::core::models::target::{Target, TargetMap, TargetSet};
-pub use crate::core::models::technique::TcpScanTechnique;
-pub use crate::core::report::{ScanReport, ScanSummary};
-pub use crate::core::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
+pub use crate::config::{SendMode, ZondConfig};
+pub use crate::model::host::{Host, HostStatus};
+pub use crate::model::ip::set::IpSet;
+pub use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
+pub use crate::model::retry::{RetryConfig, ScanEffort};
+pub use crate::model::target::{Target, TargetMap, TargetSet};
+pub use crate::model::technique::TcpScanTechnique;
+pub use crate::scanner::handle::ScanHandle;
+pub use crate::scanner::report::{ScanReport, ScanSummary};
+pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
 pub use crate::scanner::{ScanError, ScanTask, StrategyError, discover, scan};
 
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
 // from anywhere in the crate. They are deliberately not part of the public API;
-// see `core::logging` for what exporting them would cost a consumer.
-pub(crate) use crate::core::logging::{error, info, success, warn};
+// see `logging` for what exporting them would cost a consumer.
+pub(crate) use crate::logging::{error, info, success, warn};

@@ -11,9 +11,10 @@
 //! A table with a column of addresses in it. Two quite different files arrive
 //! this way and both are worth reading:
 //!
-//! - **A report this engine wrote.** [`crate::export::csv`] emits one row per
-//!   host and port, so reading it back is how a caller rescans exactly what a
-//!   previous scan found, on exactly the ports it found open.
+//! - **A report this engine wrote.** The exporter emits one row per host and
+//!   port under the header in [`crate::format::csv`], so reading it back is how
+//!   a caller rescans exactly what a previous scan found, on exactly the ports
+//!   it found open.
 //! - **A spreadsheet somebody else wrote.** An asset inventory, a scope
 //!   document from a client, an export from a CMDB. One column is addresses and
 //!   the rest is theirs.
@@ -39,7 +40,7 @@
 //!
 //! ## Reading it back the way it was written
 //!
-//! The reverse of [`crate::export::csv`], detail for detail: RFC 4180 quoting
+//! The reverse of the CSV exporter, detail for detail: RFC 4180 quoting
 //! with doubled quotes inside quoted fields, both line endings, a byte-order
 //! mark skipped if Excel left one, and the apostrophe that the exporter puts in
 //! front of a field beginning with a formula character taken back off again.
@@ -561,8 +562,8 @@ fn begin_field(fields: &mut Vec<Vec<u8>>, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::port::PortSet;
     use crate::import::{ImportFormat, ImportOptions, Imported, TargetCollector};
+    use crate::model::port::PortSet;
     use std::io::Cursor;
 
     fn options() -> ImportOptions<'static> {

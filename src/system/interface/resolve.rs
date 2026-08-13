@@ -9,10 +9,9 @@
 use crate::{info, warn};
 use std::{net::Ipv4Addr, sync::atomic::Ordering};
 
-use crate::core::models::ip::range::IpRange;
-use crate::core::{
-    models::ip::{
-        range::{IpError, Ipv4Range},
+use crate::model::{
+    ip::{
+        range::{IpError, IpRange, Ipv4Range},
         set::IpSet,
     },
     parse::{IS_LAN_SCAN, IpParseError, ip::Keyword},
@@ -22,7 +21,7 @@ use crate::system::interface;
 /// Looks up an interface by name and returns its scope id, for the
 /// `%interface` suffix on a link-local target.
 ///
-/// The engine's answer to [`ZoneResolverFn`](crate::core::parse::ip::ZoneResolverFn):
+/// The engine's answer to [`ZoneResolverFn`](crate::model::parse::ip::ZoneResolverFn):
 /// the parser knows the syntax and this knows the host.
 pub fn resolve_zone(name: &str) -> Option<u32> {
     pnet::datalink::interfaces()

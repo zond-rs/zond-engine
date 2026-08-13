@@ -54,7 +54,7 @@
 //! Four calls, in this order, none of them implicit:
 //!
 //! ```no_run
-//! use zond_engine::core::config::ZondConfig;
+//! use zond_engine::config::ZondConfig;
 //! use zond_engine::import::settings;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -135,10 +135,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::core::config::{SendMode, ZondConfig};
-use crate::core::models::port::PortSet;
-use crate::core::models::retry::ScanEffort;
-use crate::core::models::technique::TcpScanTechnique;
+use crate::config::{SendMode, ZondConfig};
+use crate::model::port::PortSet;
+use crate::model::retry::ScanEffort;
+use crate::model::technique::TcpScanTechnique;
 
 /// The name a settings document is expected to have on disk.
 pub const FILE_NAME: &str = "engine.toml";

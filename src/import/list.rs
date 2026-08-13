@@ -25,7 +25,7 @@
 //! Newlines and runs of whitespace. **Not commas** - a comma belongs to the
 //! expression it is inside, where it separates ports in `10.0.0.1:80,443` and
 //! addresses in `10.0.0.1,10.0.0.2`, and only
-//! [`TargetExpr`](crate::import::TargetExpr) knows which half it landed in.
+//! [`TargetExpr`](crate::model::parse::target::TargetExpr) knows which half it landed in.
 //! Splitting on commas out here would take the first of those apart into a host
 //! and a stray `443`.
 //!
@@ -192,8 +192,8 @@ pub(crate) fn read_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::port::PortSet;
     use crate::import::{ImportFormat, ImportOptions, Imported};
+    use crate::model::port::PortSet;
     use std::io::Cursor;
 
     fn read(input: &str) -> Imported {

@@ -17,7 +17,7 @@
 mod common;
 
 use common::*;
-use zond_engine::core::models::ip::set::IpSet;
+use zond_engine::model::ip::set::IpSet;
 
 /// Loopback is discovered as alive, with at least one RTT sample recorded.
 #[tokio::test]

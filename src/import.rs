@@ -34,7 +34,7 @@
 //!
 //! ```
 //! use std::io::Cursor;
-//! use zond_engine::core::models::port::PortSet;
+//! use zond_engine::model::port::PortSet;
 //! use zond_engine::import::{ImportFormat, ImportOptions};
 //!
 //! let file = "# staging\n192.168.1.1\n10.0.0.0/30:8080\n";
@@ -73,7 +73,6 @@
 //! the entire vocabulary.
 
 pub mod list;
-pub mod target;
 
 #[cfg(feature = "import-csv")]
 pub mod csv;
@@ -91,8 +90,9 @@ use std::fmt;
 use std::io::BufRead;
 use std::path::Path;
 
-use crate::core::models::port::PortSet;
-use crate::core::models::target::{TargetMap, TargetSet};
+use crate::model::parse::target::{TargetContext, TargetMapBuilder, TargetParseError};
+use crate::model::port::PortSet;
+use crate::model::target::{TargetMap, TargetSet};
 
 pub use list::ListImporter;
 
@@ -107,10 +107,6 @@ pub use nmap::NmapXmlImporter;
 
 #[cfg(feature = "import-settings")]
 pub use settings::{Settings, SettingsDocument, SettingsError, SettingsWarning};
-
-pub use target::{
-    HostLookup, TargetContext, TargetExpr, TargetMapBuilder, TargetParseError, to_target_map,
-};
 
 /// Where in the input a token came from.
 ///
@@ -276,7 +272,7 @@ impl Imported {
     /// Takes the addresses, discarding the ports.
     ///
     /// [`crate::scanner::scan`] takes the [`map`](Self::map) as it stands.
-    /// [`crate::scanner::discover`] takes an [`IpSet`](crate::core::models::ip::set::IpSet), because asking whether a
+    /// [`crate::scanner::discover`] takes an [`IpSet`](crate::model::ip::set::IpSet), because asking whether a
     /// host is there at all has no use for ports - so this is the other half of
     /// the same journey, and it lives here rather than in every front end
     /// writing the same fold.
@@ -287,7 +283,7 @@ impl Imported {
     ///
     /// ```
     /// use std::io::Cursor;
-    /// use zond_engine::core::models::port::PortSet;
+    /// use zond_engine::model::port::PortSet;
     /// use zond_engine::import::{ImportFormat, ImportOptions};
     ///
     /// let list = "192.168.0.1\n192.168.0.100\n192.168.0.20\n";
@@ -301,7 +297,7 @@ impl Imported {
     /// assert_eq!(targets.len(), 3);
     /// // `zond_engine::scanner::discover(targets, &config)` takes it from here.
     /// ```
-    pub fn into_ip_set(self) -> crate::core::models::ip::set::IpSet {
+    pub fn into_ip_set(self) -> crate::model::ip::set::IpSet {
         self.map
             .units
             .into_iter()
@@ -692,7 +688,7 @@ impl ImportFormat {
             // Recognising this crate's own header is not a heuristic about what
             // CSV looks like - it is recognising output this crate wrote. No
             // other table is claimed.
-            let header = crate::export::csv::COLUMNS.join(",");
+            let header = crate::format::csv::COLUMNS.join(",");
             let overlap = prefix.len().min(header.len());
             if overlap >= 16 && prefix[..overlap] == header.as_bytes()[..overlap] {
                 return Ok(ImportFormat::Csv);

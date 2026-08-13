@@ -35,7 +35,7 @@ pub enum ViabilityError {
 /// The selection picks a *link*, and until this existed it returned an
 /// `Ipv4Network` — so everything the link knew about itself was thrown away at
 /// the moment it was chosen. The interface identity is what
-/// [`Zone`](crate::core::models::ip::scoped::Zone) needs to make a link-local
+/// [`Zone`](crate::model::ip::scoped::Zone) needs to make a link-local
 /// address usable, and the IPv6 prefixes are what say which addresses are on
 /// this segment at all.
 ///

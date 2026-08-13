@@ -14,7 +14,7 @@
 //! Both raw port scanners depend on this, and both would otherwise carry their
 //! own copy of two code tables that number the same meanings differently.
 //! What they must *not* share is the conclusion, which is why this module stops
-//! at [`Unreachable`] and leaves [`PortState`](crate::core::models::port::PortState)
+//! at [`Unreachable`] and leaves [`PortState`](crate::model::port::PortState)
 //! to the caller: a port unreachable answering a UDP probe is the port's own
 //! stack reporting no listener, and the identical message answering a TCP probe
 //! cannot be - no TCP stack emits one - so it is a middlebox speaking for an
@@ -39,8 +39,8 @@ use pnet::packet::icmp::{IcmpCode, IcmpTypes};
 use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
 
-use crate::network::capture::CapturedSegment;
-use crate::network::frame::{self, IpSegment};
+use crate::transport::capture::CapturedSegment;
+use crate::transport::frame::{self, IpSegment};
 
 // The ICMPv6 Destination Unreachable codes worth acting on (RFC 4443 §3.1).
 // Spelled out because `pnet` models ICMPv6 codes as a bare newtype, with no

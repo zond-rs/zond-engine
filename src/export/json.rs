@@ -18,9 +18,9 @@
 
 use std::io::Write;
 
-use crate::core::report::ScanReport;
 use crate::export::schema::ReportDto;
 use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::scanner::report::ScanReport;
 
 /// The format name carried in a [`ExportError::Render`].
 const FORMAT: &str = "json";
@@ -29,7 +29,7 @@ const FORMAT: &str = "json";
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use zond_engine::core::report::ScanReport;
+/// use zond_engine::scanner::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, Exporter, JsonExporter, Redaction};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(document["engine"]["name"], "zond-engine");
         assert_eq!(
             document["engine"]["version"],
-            crate::core::report::ENGINE_VERSION
+            crate::scanner::report::ENGINE_VERSION
         );
         assert!(
             document["generated_at"]

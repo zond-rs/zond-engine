@@ -85,11 +85,11 @@ use std::fmt::{self, Write as _};
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::core::models::host::{Host, HostStatus};
-use crate::core::models::port::{Port, PortState, Protocol};
-use crate::core::report::ScanReport;
 use crate::export::schema::ENGINE_NAME;
 use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::model::host::{Host, HostStatus};
+use crate::model::port::{Port, PortState, Protocol};
+use crate::scanner::report::ScanReport;
 
 /// The format's name in errors.
 const FORMAT: &str = "nmap XML";
@@ -104,7 +104,7 @@ const XML_OUTPUT_VERSION: &str = "1.05";
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use zond_engine::core::report::ScanReport;
+/// use zond_engine::scanner::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, Exporter, NmapXmlExporter};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {

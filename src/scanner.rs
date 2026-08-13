@@ -45,23 +45,32 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::core::config::{ProbeTuning, ZondConfig};
-use crate::core::models::ip::range::{IpRange, Ipv6Range};
-use crate::core::models::technique::TcpScanTechnique;
-use crate::core::models::{
+use crate::config::{ProbeTuning, ZondConfig};
+use crate::model::ip::range::{IpRange, Ipv6Range};
+use crate::model::technique::TcpScanTechnique;
+use crate::model::{
     ip::set::IpSet,
     port::Protocol,
     target::{Target, TargetMap},
 };
-use crate::core::report::{PhaseRecorder, ScanKind, ScanReport, TargetScope};
-use crate::core::session::{ScanContext, ScanSession, ScannerKind};
+use crate::scanner::report::{PhaseRecorder, ScanKind, ScanReport, TargetScope};
 use crate::scanner::resolver::HostnameResolver;
+use crate::scanner::session::{ScanContext, ScanSession, ScannerKind};
 use crate::system::interface;
 use crate::system::neighbors;
 use crate::system::privilege::is_elevated;
 use crate::{error, info, success, warn};
 use local::{LocalScanner, Scope};
 use routed::RoutedScanner;
+
+// What running a scan produces, as opposed to how it is run. A caller holds a
+// `ScanSession` while the scan is in flight, a `ScanHandle` to stop it, and a
+// `ScanReport` once it is over; all three describe this module's work and
+// nothing below it needs them, which is why they sit here rather than in the
+// vocabulary the whole crate shares.
+pub mod handle;
+pub mod report;
+pub mod session;
 
 mod audit;
 mod composite;
@@ -125,11 +134,11 @@ pub enum ScanError {
 pub enum StrategyError {
     /// The raw probe transport could not be opened.
     #[error(transparent)]
-    Transport(#[from] crate::network::probe::TransportError),
+    Transport(#[from] crate::transport::probe::TransportError),
 
     /// The link-layer channel a local sweep needs could not be opened.
     #[error(transparent)]
-    Channel(#[from] crate::network::channel::ChannelError),
+    Channel(#[from] crate::transport::channel::ChannelError),
 
     /// The interface this strategy was given cannot be probed from.
     #[error("{interface} cannot be probed from: {reason}")]
@@ -165,7 +174,7 @@ pub enum StrategyError {
 /// Discovered hosts arrive live through the paired [`ScanSession`]. Await this
 /// handle, or call [`ScanTask::join`], to wait for the whole scan to finish and
 /// receive the [`ScanReport`] describing it. To stop a scan early, call
-/// [`ScanHandle::abort`](crate::core::handle::ScanHandle::abort) on the
+/// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) on the
 /// session's handle; the report still arrives, describing however far the scan
 /// got.
 pub struct ScanTask {
@@ -211,7 +220,7 @@ impl IntoFuture for ScanTask {
 /// connect attempts against a handful of common ports.
 ///
 /// Hosts are written into the returned [`ScanSession`]'s store as they are
-/// found, and each write fires a [`crate::core::session::ScanEvent`] so a
+/// found, and each write fires a [`crate::scanner::session::ScanEvent`] so a
 /// caller can watch a scan in progress rather than seeing only the final
 /// result. Unless `cfg.no_dns` is set, discovered hosts are also resolved to
 /// hostnames in the background, through passive DNS and mDNS sniffing when
@@ -220,7 +229,7 @@ impl IntoFuture for ScanTask {
 /// The returned [`ScanTask`] resolves once every scanning strategy, and the
 /// resolver if one was started, has finished, and yields the [`ScanReport`] for
 /// the sweep. To stop a scan early, call
-/// [`crate::core::handle::ScanHandle::abort`] on the session's handle. Both
+/// [`crate::scanner::handle::ScanHandle::abort`] on the session's handle. Both
 /// phases check for that signal regularly rather than only between targets.
 pub async fn discover(
     mut targets: IpSet,
@@ -378,7 +387,7 @@ pub trait NetworkExplorer {
 #[async_trait]
 pub trait PortScanner: Send {
     /// Identifies the strategy, used to tag a
-    /// [`ScanEvent::ScannerFailed`](crate::core::session::ScanEvent::ScannerFailed) when
+    /// [`ScanEvent::ScannerFailed`](crate::scanner::session::ScanEvent::ScannerFailed) when
     /// a run fails.
     fn kind(&self) -> ScannerKind;
 

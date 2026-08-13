@@ -68,7 +68,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::core::models::port::{Port, PortState, Protocol, Service};
+use crate::model::port::{Port, PortState, Protocol, Service};
 
 /// How long to wait for a service to speak first (banner grab).
 const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);

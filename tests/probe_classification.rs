@@ -27,12 +27,12 @@ use std::time::Duration;
 
 use common::fake_net::{FakeNet, Layer4, Policy, Stack, Unreachable};
 use common::*;
-use zond_engine::core::models::host::HostStatus;
-use zond_engine::core::models::port::PortState;
-use zond_engine::core::models::technique::TcpScanTechnique;
-use zond_engine::core::session::ScanSession;
+use zond_engine::model::host::HostStatus;
+use zond_engine::model::port::PortState;
+use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner::NetworkExplorer;
 use zond_engine::scanner::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
+use zond_engine::scanner::session::ScanSession;
 use zond_engine::system::interface::RoutedTarget;
 
 /// The fixed source port the simulated UDP scans probe from.

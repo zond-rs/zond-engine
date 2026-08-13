@@ -49,9 +49,9 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use crate::core::report::ScanReport;
 use crate::export::schema::{HostDto, ReportHeaderDto};
 use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::scanner::report::ScanReport;
 
 /// The format name carried in an [`ExportError::Render`].
 const FORMAT: &str = "jsonl";
@@ -66,7 +66,7 @@ pub const HOST_RECORD: &str = "host";
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use zond_engine::core::report::ScanReport;
+/// use zond_engine::scanner::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, Exporter, JsonLinesExporter};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {

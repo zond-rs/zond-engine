@@ -42,7 +42,7 @@ use std::net::IpAddr;
 use anyhow::Context;
 use pnet::packet::tcp::{MutableTcpPacket, TcpOption, TcpPacket};
 
-use crate::core::models::technique::{TcpReply, TcpScanTechnique};
+use crate::model::technique::{TcpReply, TcpScanTechnique};
 
 /// TCP header flag bits, in the order they sit in the header.
 pub mod flags {

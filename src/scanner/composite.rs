@@ -24,9 +24,9 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::core::models::port::Protocol;
-use crate::core::models::target::Target;
-use crate::core::session::{ScanContext, ScannerKind};
+use crate::model::port::Protocol;
+use crate::model::target::Target;
+use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::{PortScanner, StrategyError};
 use crate::warn;
 

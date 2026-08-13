@@ -10,15 +10,15 @@
 //!
 //! Scan, export, and feed the report in again: the same hosts, on the ports
 //! they were found on. It is the shortest path to "check whether anything
-//! changed", and it is why [`crate::export::json`] and
-//! [`crate::export::jsonl`] both have a reader here.
+//! changed", and it is why both the document format and the record-per-line
+//! one have a reader here.
 //!
 //! ## The input schema is a narrower contract than the output one
 //!
 //! The export DTOs are not reused, and cannot be. They are borrowing,
 //! write-only types - `&'static str` for every enum name, `&'a str` for every
-//! borrowed field - and [`ReportDto`](crate::export::schema::ReportDto) is not
-//! a data structure at all but a streaming adapter holding `&ScanReport`. There
+//! borrowed field - and the export side's `ReportDto` is not a data structure
+//! at all but a streaming adapter holding `&ScanReport`. There
 //! is nothing there for `serde` to deserialize *into*, and giving them owned
 //! fields would cost the export path an allocation per enum name per port to
 //! serve a reader that wants four fields.
@@ -68,7 +68,7 @@ use std::net::Ipv6Addr;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
-use crate::export::schema::{ENGINE_NAME, SCHEMA_VERSION};
+use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
 use crate::import::{ImportError, ImportLimits, Importer, Origin, TargetSink};
 
 /// The format's name in errors.
@@ -493,8 +493,8 @@ impl Importer for JsonLinesImporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::port::PortSet;
     use crate::import::{ImportFormat, ImportOptions, Imported};
+    use crate::model::port::PortSet;
     use std::io::Cursor;
 
     /// The port every test's default port set holds, named so the round-trip
@@ -562,7 +562,8 @@ mod tests {
         fn zones(name: &str) -> Option<u32> {
             (name == "en0").then_some(7)
         }
-        let options = options().with_context(crate::import::TargetContext::new().with_zones(zones));
+        let options = options()
+            .with_context(crate::model::parse::target::TargetContext::new().with_zones(zones));
 
         let file = document(
             r#"{"primary_ip":"fe80::aa","ips":["fe80::aa","10.0.0.1"],"zone":"en0",

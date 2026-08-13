@@ -40,13 +40,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-use zond_engine::core::config::ZondConfig;
-use zond_engine::core::models::host::{Host, HostStatus};
-use zond_engine::core::models::ip::set::IpSet;
-use zond_engine::core::models::port::{PortSet, PortState, Protocol};
-use zond_engine::core::models::target::{Target, TargetMap, TargetSet};
-use zond_engine::core::report::ScanReport;
-use zond_engine::core::session::{HostStore, ScanEvent, ScanSession};
+use zond_engine::config::ZondConfig;
+use zond_engine::model::host::{Host, HostStatus};
+use zond_engine::model::ip::set::IpSet;
+use zond_engine::model::port::{PortSet, PortState, Protocol};
+use zond_engine::model::target::{Target, TargetMap, TargetSet};
+use zond_engine::scanner::report::ScanReport;
+use zond_engine::scanner::session::{HostStore, ScanEvent, ScanSession};
 use zond_engine::scanner::{self, PortScanner, ScanTask};
 use zond_engine::system::interface::SourceResolver;
 

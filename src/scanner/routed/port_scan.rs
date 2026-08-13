@@ -51,22 +51,22 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
-use crate::core::config::ProbeTuning;
-use crate::core::models::deadline::AdaptiveDeadline;
-use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
-use crate::core::models::port::{PortState, Protocol};
-use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy};
-use crate::core::models::target::Target;
-use crate::core::models::technique::TcpScanTechnique;
-use crate::core::report::StopReason;
-use crate::core::session::{ScanContext, ScannerKind};
+use crate::config::ProbeTuning;
 use crate::error;
-use crate::network::capture::CapturedSegment;
-use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
+use crate::model::deadline::AdaptiveDeadline;
+use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+use crate::model::port::{PortState, Protocol};
+use crate::model::retry::{Due, ProbeLedger, RetryPolicy};
+use crate::model::target::Target;
+use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
+use crate::scanner::report::StopReason;
+use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::{PortScanner, StrategyError, service};
 use crate::success;
 use crate::system::interface::SourceResolver;
+use crate::transport::capture::CapturedSegment;
+use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};
 
 // Port scanning and routed discovery send the same kind of raw TCP probe over
 // the same kind of network path, so they share one adaptive-deadline profile
@@ -795,9 +795,9 @@ mod tests {
     use pnet::packet::icmp::{IcmpCode, IcmpTypes};
     use pnet::packet::tcp::MutableTcpPacket;
 
-    use crate::core::session::ScanSession;
-    use crate::network::probe::{MockSender, ProbeTransport};
     use crate::protocols::ip;
+    use crate::scanner::session::ScanSession;
+    use crate::transport::probe::{MockSender, ProbeTransport};
 
     const SYN: u8 = 1 << 1;
     const RST: u8 = 1 << 2;
@@ -870,7 +870,7 @@ mod tests {
     }
 
     /// The probes a [`MockSender`] recorded, shared with the scanner under test.
-    type SentProbes = std::sync::Arc<std::sync::Mutex<Vec<crate::network::probe::SentProbe>>>;
+    type SentProbes = std::sync::Arc<std::sync::Mutex<Vec<crate::transport::probe::SentProbe>>>;
 
     /// A SYN scanner wired to a recording [`MockSender`] and an idle capture
     /// stream, plus the session store to assert against and the probe log to

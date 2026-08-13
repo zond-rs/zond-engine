@@ -1,0 +1,704 @@
+// Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors
+//
+// This file is part of Zond Engine, licensed under the GNU Affero General
+// Public License, version 3 or later. See the LICENSE file for details, or
+// <https://www.gnu.org/licenses/agpl-3.0.html>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! # Host Model
+//!
+//! This module defines the [`Host`] entity, which represents a single network
+//! equipment or device.
+//!
+//! The `Host` model is architected as an **aggregate of findings**. It is
+//! specifically designed to be enriched over multiple asynchronous scanning
+//! stages, leveraging high-performance merging logic to collate reachability,
+//! hardware, OS, and service discovery data into a single forensic record.
+
+use crate::model::ip::scoped::{ScopedIp, Zone};
+use crate::model::port::Port;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    net::IpAddr,
+    time::SystemTime,
+};
+
+pub mod hardware;
+pub mod os;
+pub mod status;
+pub mod telemetry;
+
+pub use hardware::HardwareInfo;
+pub use os::OsFingerprint;
+pub use status::{HostStatus, StatusProtocol, StatusReason};
+pub use telemetry::HostTelemetry;
+
+/// The absolute maximum number of open ports to record per host.
+///
+/// This serves as a security boundary against network "tarpits" (devices that
+/// report every possible port as open), which could otherwise trigger an
+/// Out-Of-Memory (OOM) crash in the scanner.
+pub const MAX_PORTS_PER_HOST: usize = 1000;
+
+/// Specialized network roles identified during host discovery.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+pub enum NetworkRole {
+    /// Identifies the default gateway for a local subnet.
+    Gateway,
+    /// Identifies a host providing DHCP services.
+    DHCP,
+    /// Identifies a host providing DNS services.
+    DNS,
+    /// Identifies a host that has triggered defensive limits (e.g., reporting
+    /// an impossible number of open ports).
+    Tarpit,
+}
+
+/// A comprehensive identity and state record for a network-reachable host.
+///
+/// A `Host` is the primary unit of work for the Zond scanner. It holds
+/// multi-homed IP data, forensic hardware IDs, and a history of network
+/// performance metrics.
+///
+/// Large metadata blocks (like [`OsFingerprint`]) are stored in Boxes to
+/// minimize the overall stack size of the `Host` struct.
+#[derive(Debug, Clone)]
+pub struct Host {
+    /// The primary IP address used to target or identify this host.
+    primary_ip: IpAddr,
+
+    /// All known IP addresses for this host (multi-homed support).
+    ips: BTreeSet<IpAddr>,
+
+    /// The resolved hostname (FQDN or local network name).
+    hostname: Option<String>,
+
+    /// The current reachability status.
+    status: HostStatus,
+
+    /// Aggregated evidence explaining the current reachability status.
+    reasons: HashSet<StatusReason>,
+
+    /// Identified operating system metadata.
+    os: Option<Box<OsFingerprint>>,
+
+    /// Physical hardware (MAC) and vendor information.
+    hardware: Option<HardwareInfo>,
+
+    /// The interface this host was observed through, when one is known.
+    ///
+    /// Recorded by the strategies that work at the link layer, which are the
+    /// only ones that can know it: a routed probe crosses whatever path the
+    /// kernel chose and says nothing about which interface it left by.
+    ///
+    /// It is not decoration. An IPv6 link-local address is meaningless without
+    /// it — `fe80::1` names a different machine on every segment, and a socket
+    /// cannot be opened to one without the interface's scope id — so this is
+    /// what makes the addresses local discovery finds usable by everything that
+    /// runs after it. See [`ScopedIp`].
+    zone: Option<Zone>,
+
+    /// Network performance and path telemetry.
+    telemetry: HostTelemetry,
+
+    /// Inferred roles based on network location or discovered services.
+    network_roles: HashSet<NetworkRole>,
+
+    /// Extensible map for scan script results (e.g., Nmap NSE output).
+    scripts: Option<HashMap<String, String>>,
+
+    /// The timestamp of the first discovery event for this host.
+    first_seen: SystemTime,
+
+    /// The timestamp of the most recent discovery or update event.
+    last_seen: SystemTime,
+
+    /// Internal map for sorted port discovery. Limited by [`MAX_PORTS_PER_HOST`].
+    ports: BTreeMap<u16, Port>,
+}
+
+/// How well an address identifies the host holding it: lower leads.
+///
+/// The ordering behind [`Host::consider_primary_ip`], kept beside it as a free
+/// function so the comparison is one expression rather than a branch that grows
+/// a case each time a family is added.
+fn identity_rank(ip: &IpAddr) -> u8 {
+    match ip {
+        IpAddr::V4(_) => 0,
+        IpAddr::V6(v6) if v6.is_unicast_link_local() => 2,
+        IpAddr::V6(_) => 1,
+    }
+}
+
+impl Host {
+    /// Creates a new `Host` centered around a primary IP address.
+    ///
+    /// The initial status is always [`HostStatus::Unknown`].
+    pub fn new(primary_ip: IpAddr) -> Self {
+        let mut ips = BTreeSet::new();
+        ips.insert(primary_ip);
+        let now = SystemTime::now();
+
+        Self {
+            primary_ip,
+            ips,
+            hostname: None,
+            status: HostStatus::Unknown,
+            reasons: HashSet::new(),
+            os: None,
+            hardware: None,
+            zone: None,
+            telemetry: HostTelemetry::default(),
+            network_roles: HashSet::new(),
+            scripts: None,
+            first_seen: now,
+            last_seen: now,
+            ports: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the primary IP address for this host.
+    pub fn primary_ip(&self) -> IpAddr {
+        self.primary_ip
+    }
+
+    /// Returns all known IP addresses for this host.
+    pub fn ips(&self) -> &BTreeSet<IpAddr> {
+        &self.ips
+    }
+
+    /// Returns the resolved hostname, if any.
+    pub fn hostname(&self) -> Option<&str> {
+        self.hostname.as_deref()
+    }
+
+    /// Returns the current reachability status.
+    pub fn status(&self) -> HostStatus {
+        self.status
+    }
+
+    /// Returns all aggregated evidence for the current status.
+    pub fn reasons(&self) -> &HashSet<StatusReason> {
+        &self.reasons
+    }
+
+    /// Returns the identified operating system, if any.
+    pub fn os(&self) -> Option<&OsFingerprint> {
+        self.os.as_deref()
+    }
+
+    /// Returns physical hardware information, if any.
+    pub fn hardware(&self) -> Option<&HardwareInfo> {
+        self.hardware.as_ref()
+    }
+
+    /// Returns the interface this host was observed through, if known.
+    pub fn zone(&self) -> Option<&Zone> {
+        self.zone.as_ref()
+    }
+
+    /// Records the interface this host was observed through.
+    ///
+    /// Only the first is kept. A host reachable through two interfaces is a real
+    /// situation, and picking the earlier sighting is arbitrary but stable —
+    /// where overwriting would make the address a scan reports depend on which
+    /// strategy happened to finish last.
+    pub fn set_zone(&mut self, zone: Zone) {
+        self.zone.get_or_insert(zone);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// This host's primary address, carrying the interface it is valid on.
+    ///
+    /// The address to hand anything that intends to *reach* the host, rather
+    /// than merely name it: [`ScopedIp::to_socket_addr`] refuses rather than
+    /// building a socket address that cannot be connected to.
+    pub fn scoped_ip(&self) -> ScopedIp {
+        match &self.zone {
+            Some(zone) => ScopedIp::scoped(self.primary_ip, zone.clone()),
+            None => ScopedIp::unscoped(self.primary_ip),
+        }
+    }
+
+    /// Returns network performance and path telemetry.
+    pub fn telemetry(&self) -> &HostTelemetry {
+        &self.telemetry
+    }
+
+    /// Returns inferred roles based on network location or discovered services.
+    pub fn network_roles(&self) -> &HashSet<NetworkRole> {
+        &self.network_roles
+    }
+
+    /// Returns the map of scan script results.
+    pub fn scripts(&self) -> Option<&HashMap<String, String>> {
+        self.scripts.as_ref()
+    }
+
+    /// Returns the timestamp of the first discovery event.
+    pub fn first_seen(&self) -> SystemTime {
+        self.first_seen
+    }
+
+    /// Returns the timestamp of the most recent discovery or update event.
+    pub fn last_seen(&self) -> SystemTime {
+        self.last_seen
+    }
+
+    /// Updates the primary IP, ensures it exists in the `ips` set,
+    /// and bumps the `last_seen` timestamp.
+    pub fn set_primary_ip(&mut self, ip: IpAddr) {
+        self.primary_ip = ip;
+        self.ips.insert(ip);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Offers `candidate` as the address this host is reported under, taking it
+    /// only if it identifies the host better than the current one.
+    ///
+    /// Returns whether the primary address changed.
+    ///
+    /// **The rule, in one place.** A dual-stack host answers at several
+    /// addresses and something has to choose which one names it. Left to
+    /// whichever probe replied first, the same machine is reported under its
+    /// IPv4 address on one run and its link-local on the next. For an inventory
+    /// that is worse than an ugly address: it is one device appearing as two.
+    ///
+    /// So addresses are ranked, and the ranking only ever moves upward:
+    ///
+    /// 1. **IPv4**, because it is what a person recognises and types.
+    /// 2. **Globally scoped IPv6** — global unicast or unique-local — which
+    ///    names the host from anywhere and needs nothing else to be usable.
+    /// 3. **Link-local IPv6**, which names a different machine on every segment
+    ///    and is meaningless without the zone that
+    ///    [`scoped_ip`](Self::scoped_ip) supplies.
+    ///
+    /// Ties keep the incumbent, so a host with two global addresses does not
+    /// flip between them as replies arrive. Nothing is discarded either way:
+    /// every address stays in [`ips`](Self::ips), and this decides only which
+    /// one leads.
+    pub fn consider_primary_ip(&mut self, candidate: IpAddr) -> bool {
+        self.add_ip(candidate);
+
+        if identity_rank(&candidate) >= identity_rank(&self.primary_ip) {
+            return false;
+        }
+
+        self.primary_ip = candidate;
+        self.last_seen = SystemTime::now();
+        true
+    }
+
+    /// Adds a new IP address to the host's record and bumps `last_seen`.
+    /// Returns `true` if the IP was newly added.
+    pub fn add_ip(&mut self, ip: IpAddr) -> bool {
+        let is_new = self.ips.insert(ip);
+        self.last_seen = SystemTime::now();
+        is_new
+    }
+
+    /// Adds multiple IP addresses to the host's record and bumps `last_seen`.
+    pub fn extend_ips(&mut self, ips: impl IntoIterator<Item = IpAddr>) {
+        self.ips.extend(ips);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Sets the host's hostname and bumps `last_seen`.
+    pub fn set_hostname(&mut self, hostname: Option<String>) {
+        self.hostname = hostname;
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Updates the reachability status and bumps `last_seen`.
+    pub fn set_status(&mut self, status: HostStatus) {
+        self.status = status;
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Adds a status reason and bumps `last_seen`.
+    pub fn add_reason(&mut self, reason: StatusReason) {
+        self.reasons.insert(reason);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Records one piece of liveness evidence: the status it establishes, and
+    /// the reason it establishes it.
+    ///
+    /// This is how scanners report what they saw, and it is deliberately the
+    /// only such entry point. The status is **promoted, never lowered**, on the
+    /// semantic ordering of [`HostStatus`] — the same rule
+    /// [`Host::merge`](Host::merge) applies between two records of one host, for
+    /// the same reason: a scan learns about a host from several probes arriving
+    /// in an order nobody controls, and an ICMP unreachable from a router that
+    /// happens to land after an ARP reply must not overwrite proof the host
+    /// answered for itself.
+    ///
+    /// The reason is kept whether or not the status moved. A host that is
+    /// already `Up` still gains the audit trail of everything else that saw it,
+    /// which is the whole purpose of [`StatusReason`].
+    ///
+    /// Callers must only pass evidence backed by a received packet. Silence is
+    /// not evidence and has no status to record; see [`HostStatus::Unknown`].
+    pub fn record_evidence(&mut self, status: HostStatus, reason: StatusReason) {
+        if status > self.status {
+            self.status = status;
+        }
+        self.reasons.insert(reason);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Sets the OS fingerprint and bumps `last_seen`.
+    pub fn set_os(&mut self, os: OsFingerprint) {
+        self.os = Some(Box::new(os));
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Sets the hardware info and bumps `last_seen`.
+    pub fn set_hardware(&mut self, hardware: HardwareInfo) {
+        self.hardware = Some(hardware);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Builder method to set the hardware MAC and return Self.
+    pub fn with_mac(mut self, mac: crate::model::mac::MacAddr) -> Self {
+        self.set_mac(mac);
+        self
+    }
+
+    /// Sets the hardware MAC on an existing host. Unlike [`Host::with_mac`],
+    /// this works by reference, so a host created by one scanner (e.g. the
+    /// port scanner, which has no MAC) can be enriched with a MAC learned by
+    /// another (the ARP-based local scanner) regardless of which ran first.
+    pub fn set_mac(&mut self, mac: crate::model::mac::MacAddr) {
+        self.set_hardware(HardwareInfo::new(mac));
+    }
+
+    /// Adds a single RTT measurement and bumps `last_seen`.
+    pub fn add_rtt(&mut self, rtt: std::time::Duration) {
+        self.telemetry.add_rtt(rtt);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Adds a round trip measured against a probe the whole segment was asked,
+    /// which this host will report only if it produced no better sample.
+    ///
+    /// See [`RttSource`](crate::model::host::telemetry::RttSource) for
+    /// why the two are kept apart.
+    pub fn add_segment_wide_rtt(&mut self, rtt: std::time::Duration) {
+        self.telemetry.add_segment_wide_rtt(rtt);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Builder method to add a single RTT measurement and return Self.
+    pub fn with_rtt(mut self, rtt: std::time::Duration) -> Self {
+        self.add_rtt(rtt);
+        self
+    }
+
+    /// Adds multiple RTT measurements and bumps `last_seen`.
+    pub fn set_rtts(&mut self, rtts: impl IntoIterator<Item = std::time::Duration>) {
+        for rtt in rtts {
+            self.telemetry.add_rtt(rtt);
+        }
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Adds a network role and bumps `last_seen`.
+    pub fn add_network_role(&mut self, role: NetworkRole) {
+        self.network_roles.insert(role);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Adds or updates a script result and bumps `last_seen`.
+    pub fn add_script_result(&mut self, key: String, value: String) {
+        self.scripts
+            .get_or_insert_with(HashMap::new)
+            .insert(key, value);
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Returns the minimum recorded RTT.
+    pub fn min_rtt(&self) -> Option<std::time::Duration> {
+        self.telemetry.min_rtt()
+    }
+
+    /// Returns the maximum recorded RTT.
+    pub fn max_rtt(&self) -> Option<std::time::Duration> {
+        self.telemetry.max_rtt()
+    }
+
+    /// Returns the average recorded RTT.
+    pub fn average_rtt(&self) -> Option<std::time::Duration> {
+        self.telemetry.average_rtt()
+    }
+
+    /// Returns the median recorded RTT, a summary of typical latency that is
+    /// robust against outliers. See [`HostTelemetry::median_rtt`].
+    pub fn median_rtt(&self) -> Option<std::time::Duration> {
+        self.telemetry.median_rtt()
+    }
+
+    /// Returns the most recent MAC address, if hardware info is available.
+    pub fn mac(&self) -> Option<crate::model::mac::MacAddr> {
+        self.hardware.as_ref().and_then(|h| h.most_recent_mac())
+    }
+
+    /// Returns the hardware vendor, if hardware info is available.
+    pub fn vendor(&self) -> Option<&str> {
+        self.hardware
+            .as_ref()
+            .and_then(|h| h.vendor.as_ref())
+            .map(|v| &**v)
+    }
+
+    /// Returns `true` if this host is confirmed to be on the network
+    /// (either fully responding or filtered).
+    pub fn is_alive(&self) -> bool {
+        self.status.is_alive()
+    }
+
+    /// Returns an iterator over all discovered ports in sorted order.
+    pub fn ports(&self) -> impl Iterator<Item = &Port> {
+        self.ports.values()
+    }
+
+    /// Returns the total number of recorded ports for this host.
+    pub fn port_count(&self) -> usize {
+        self.ports.len()
+    }
+
+    /// Ingests a new port finding.
+    ///
+    /// If the port is already known, it is merged with the existing record.
+    /// If the total port count exceeds [`MAX_PORTS_PER_HOST`], the port is ignored
+    /// and the host is assigned the [`NetworkRole::Tarpit`] role.
+    pub fn add_port(&mut self, new_port: Port) {
+        if self.ports.len() >= MAX_PORTS_PER_HOST && !self.ports.contains_key(&new_port.number()) {
+            self.network_roles.insert(NetworkRole::Tarpit);
+            return;
+        }
+
+        self.ports
+            .entry(new_port.number())
+            .and_modify(|p| p.merge(new_port.clone()))
+            .or_insert(new_port);
+
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Merges architectural findings from another `Host` record.
+    ///
+    /// This is the core aggregation method of the library, used to combine
+    /// results from multiple asynchronous scan stages into a single truth.
+    ///
+    /// - Status is promoted based on semantic ordering.
+    /// - Telemetry and OS data are merged using their respective logic.
+    /// - Port caps are enforced during aggregation.
+    pub fn merge(&mut self, other: Host) {
+        self.ips.extend(other.ips);
+        if self.hostname.is_none() {
+            self.hostname = other.hostname;
+        }
+
+        if other.status > self.status {
+            self.status = other.status;
+        }
+        self.reasons.extend(other.reasons);
+
+        if let Some(other_os) = other.os {
+            if let Some(ref mut self_os) = self.os {
+                self_os.merge(*other_os);
+            } else {
+                self.os = Some(other_os);
+            }
+        }
+
+        if let Some(other_hw) = other.hardware {
+            if let Some(ref mut self_hw) = self.hardware {
+                self_hw.merge(other_hw);
+            } else {
+                self.hardware = Some(other_hw);
+            }
+        }
+
+        if let Some(other_zone) = other.zone {
+            self.zone.get_or_insert(other_zone);
+        }
+
+        self.telemetry.merge(other.telemetry);
+        self.network_roles.extend(other.network_roles);
+
+        if let Some(other_scripts) = other.scripts {
+            let self_scripts = self.scripts.get_or_insert_with(HashMap::new);
+            self_scripts.extend(other_scripts);
+        }
+
+        for (_, port) in other.ports {
+            self.add_port(port);
+        }
+
+        if other.first_seen < self.first_seen {
+            self.first_seen = other.first_seen;
+        }
+        if other.last_seen > self.last_seen {
+            self.last_seen = other.last_seen;
+        }
+    }
+}
+
+impl std::fmt::Display for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.primary_ip, self.status)?;
+        if let Some(ref os) = self.os {
+            write!(f, " - {}", os)?;
+        }
+        if self.network_roles.contains(&NetworkRole::Tarpit) {
+            write!(f, " [TARPIT]")?;
+        } else {
+            write!(f, " [{}]", self.telemetry)?;
+        }
+        Ok(())
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::port::{Port, PortState, Protocol};
+    use std::net::Ipv4Addr;
+
+    static IP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 100));
+
+    #[test]
+    fn host_primary_ip_invariant() {
+        let mut host = Host::new(IP_ADDR);
+        let fresh_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
+        host.set_primary_ip(fresh_ip);
+
+        assert_eq!(host.primary_ip(), fresh_ip);
+        assert!(host.ips().contains(&fresh_ip));
+    }
+
+    #[test]
+    fn tarpit_boundary_test() {
+        let mut host = Host::new(IP_ADDR);
+        for i in 0..MAX_PORTS_PER_HOST {
+            host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Open));
+        }
+        assert!(!host.network_roles.contains(&NetworkRole::Tarpit));
+
+        host.add_port(Port::new(9999, Protocol::Tcp, PortState::Open));
+        assert!(host.network_roles.contains(&NetworkRole::Tarpit));
+        assert_eq!(host.port_count(), MAX_PORTS_PER_HOST);
+    }
+
+    #[test]
+    fn host_merge_promotes_status() {
+        let mut h1 = Host::new(IP_ADDR);
+        h1.set_status(HostStatus::Down);
+
+        let mut h2 = Host::new(IP_ADDR);
+        h2.set_status(HostStatus::Filtered);
+
+        h1.merge(h2);
+        assert_eq!(h1.status(), HostStatus::Filtered);
+    }
+
+    #[test]
+    fn merge_tarpit_collision_test() {
+        let mut h1 = Host::new(IP_ADDR);
+        for i in 0..600 {
+            h1.add_port(Port::new(i, Protocol::Tcp, PortState::Open));
+        }
+
+        let mut h2 = Host::new(IP_ADDR);
+        // Ports 500-1100. 100 overlap (0-indexed 500-599), 500 new ones.
+        // Total should hit cap at 1000.
+        for i in 500..1100 {
+            h2.add_port(Port::new(i, Protocol::Tcp, PortState::Open));
+        }
+
+        h1.merge(h2);
+        assert_eq!(h1.port_count(), MAX_PORTS_PER_HOST);
+        assert!(h1.network_roles.contains(&NetworkRole::Tarpit));
+    }
+
+    /// The address a dual-stack host is reported under must not depend on which
+    /// probe happened to answer first, or one machine is reported as two across
+    /// consecutive runs of the same scan.
+    #[test]
+    fn the_address_a_host_leads_with_does_not_depend_on_reply_order() {
+        let v4: IpAddr = "192.0.2.10".parse().unwrap();
+        let gua: IpAddr = "2001:db8::10".parse().unwrap();
+        let lla: IpAddr = "fe80::10".parse().unwrap();
+
+        // Every order the three replies could arrive in.
+        for order in [
+            [v4, gua, lla],
+            [v4, lla, gua],
+            [gua, v4, lla],
+            [gua, lla, v4],
+            [lla, v4, gua],
+            [lla, gua, v4],
+        ] {
+            let mut host = Host::new(order[0]);
+            for ip in order {
+                host.consider_primary_ip(ip);
+            }
+
+            assert_eq!(
+                host.primary_ip(),
+                v4,
+                "arrival order {order:?} must not change which address leads"
+            );
+            assert_eq!(host.ips().len(), 3, "and none of them is discarded");
+        }
+    }
+
+    /// Without IPv4, a globally scoped address leads over a link-local one: it
+    /// names the host from anywhere, where `fe80::…` names a different machine
+    /// on every segment.
+    #[test]
+    fn a_global_address_leads_over_a_link_local_one() {
+        let gua: IpAddr = "2001:db8::10".parse().unwrap();
+        let lla: IpAddr = "fe80::10".parse().unwrap();
+
+        let mut from_lla = Host::new(lla);
+        from_lla.consider_primary_ip(gua);
+        assert_eq!(from_lla.primary_ip(), gua);
+
+        let mut from_gua = Host::new(gua);
+        from_gua.consider_primary_ip(lla);
+        assert_eq!(
+            from_gua.primary_ip(),
+            gua,
+            "and the ranking never moves back down"
+        );
+    }
+
+    /// A tie keeps the incumbent, so a host with several equally good addresses
+    /// does not flip between them as replies arrive.
+    #[test]
+    fn an_equally_good_address_does_not_displace_the_current_one() {
+        let first: IpAddr = "2001:db8::1".parse().unwrap();
+        let second: IpAddr = "2001:db8::2".parse().unwrap();
+
+        let mut host = Host::new(first);
+        assert!(!host.consider_primary_ip(second));
+        assert_eq!(host.primary_ip(), first);
+        assert!(
+            host.ips().contains(&second),
+            "it is still an address it has"
+        );
+    }
+}

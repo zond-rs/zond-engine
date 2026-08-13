@@ -18,7 +18,7 @@
 mod common;
 
 use common::*;
-use zond_engine::core::models::port::PortState;
+use zond_engine::model::port::PortState;
 
 /// A live listener's port is reported Open.
 #[tokio::test]

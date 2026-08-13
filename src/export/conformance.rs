@@ -22,9 +22,9 @@
 use boon::{Compiler, Schemas};
 use serde_json::Value;
 
-use crate::core::models::technique::TcpScanTechnique;
 use crate::export::schema::SCHEMA_VERSION;
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
+use crate::model::technique::TcpScanTechnique;
 
 /// The published schemas, compiled into the test binary so a test cannot pass
 /// against a file that was not shipped.

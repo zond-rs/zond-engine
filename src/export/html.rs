@@ -78,15 +78,15 @@ use std::fmt::{self, Write as _};
 use std::io::Write;
 use std::time::SystemTime;
 
-use crate::core::models::host::{Host, HostStatus};
-use crate::core::models::port::{Port, PortState, ScriptOutput};
-use crate::core::report::ScanReport;
 use crate::export::schema::{
     ENGINE_NAME, HostDto, PhaseDto, PortDto, ProbeStatsDto, SCHEMA_VERSION, SummaryDto,
     host_status_name, port_state_name, scan_kind_name, total_elapsed_us,
 };
 use crate::export::time::rfc3339;
 use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::model::host::{Host, HostStatus};
+use crate::model::port::{Port, PortState, ScriptOutput};
+use crate::scanner::report::ScanReport;
 
 /// The stylesheet inlined into every report.
 ///
@@ -155,7 +155,7 @@ fn port_tone(state: PortState) -> &'static str {
 /// ```no_run
 /// use std::fs::File;
 /// use std::io::BufWriter;
-/// use zond_engine::core::report::ScanReport;
+/// use zond_engine::scanner::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, Exporter, HtmlExporter};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {

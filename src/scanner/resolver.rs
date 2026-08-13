@@ -44,8 +44,9 @@ use crate::protocols::{
     mdns::{self, MdnsHost},
 };
 use crate::{
-    core::models::{host::Host, ip},
-    error, info, warn,
+    error, info,
+    model::{host::Host, ip},
+    warn,
 };
 use anyhow::Context;
 use dashmap::DashMap;
@@ -54,7 +55,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::network::probe::{ProbeKind, ProbeTransport};
+use crate::transport::probe::{ProbeKind, ProbeTransport};
 
 const DNS_PORT: u16 = 53;
 use crate::protocols::mdns::PORT as MDNS_PORT;

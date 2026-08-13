@@ -8,7 +8,7 @@
 
 //! Scan report tests: what the engine records about a run it just completed.
 //!
-//! The unit tests in `core::report` cover the aggregate's own arithmetic against
+//! The unit tests in `scanner::report` cover the aggregate's own arithmetic against
 //! hand-built hosts. These drive the real public entry points instead, so they
 //! catch the failure the unit tests cannot see: a report that is correct in
 //! isolation but wired to the wrong scan, taken at the wrong moment, or filled
@@ -20,13 +20,13 @@ use std::time::Duration;
 
 use common::fake_net::unsendable_transport;
 use common::*;
-use zond_engine::core::models::host::HostStatus;
-use zond_engine::core::models::port::{PortState, Protocol};
-use zond_engine::core::report::{ENGINE_VERSION, ScanKind};
-use zond_engine::core::session::{ScanEvent, ScanSession};
+use zond_engine::model::host::HostStatus;
+use zond_engine::model::port::{PortState, Protocol};
 use zond_engine::scanner;
 use zond_engine::scanner::NetworkExplorer;
+use zond_engine::scanner::report::{ENGINE_VERSION, ScanKind};
 use zond_engine::scanner::routed::RoutedScanner;
+use zond_engine::scanner::session::{ScanEvent, ScanSession};
 use zond_engine::system::interface::RoutedTarget;
 
 /// A sweep whose probes never reached the wire has to say so, and say why.
@@ -86,7 +86,7 @@ async fn a_sweep_whose_probes_never_left_reports_why() {
 /// discovery kind, and the address scope the caller asked for.
 #[tokio::test]
 async fn a_discovery_report_records_its_own_scope() {
-    let mut targets = zond_engine::core::models::ip::set::IpSet::new();
+    let mut targets = zond_engine::model::ip::set::IpSet::new();
     targets.insert_range("127.0.0.0/29".parse().unwrap());
 
     let outcome = run_discover(targets, &test_config()).await;
@@ -211,7 +211,7 @@ async fn a_report_distinguishes_a_clean_run() {
 /// it found, not whether the run can be accounted for afterwards.
 #[tokio::test]
 async fn an_aborted_scan_still_reports() {
-    let mut targets = zond_engine::core::models::ip::set::IpSet::new();
+    let mut targets = zond_engine::model::ip::set::IpSet::new();
     targets.insert_range("127.0.0.0/22".parse().unwrap());
 
     let (session, task) = scanner::discover(targets, &test_config())

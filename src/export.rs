@@ -41,7 +41,7 @@
 //!
 //! ```
 //! use std::io::{self, Write};
-//! use zond_engine::core::report::ScanReport;
+//! use zond_engine::scanner::report::ScanReport;
 //! use zond_engine::export::{ExportError, Exporter};
 //!
 //! /// Writes one line per host: the address and how many ports it had.
@@ -73,6 +73,7 @@
 //! behind a cargo feature so a consumer who wants none of them pays for none of
 //! them. `export-json` is on by default.
 
+pub mod redact;
 pub mod schema;
 pub mod time;
 
@@ -102,9 +103,8 @@ use std::fmt;
 use std::io::Write;
 use std::path::Path;
 
-use crate::core::models::mac::MacAddr;
-use crate::core::redact;
-use crate::core::report::ScanReport;
+use crate::model::mac::MacAddr;
+use crate::scanner::report::ScanReport;
 
 #[cfg(feature = "export-json")]
 pub use json::JsonExporter;

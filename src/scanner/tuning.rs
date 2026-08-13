@@ -18,7 +18,7 @@
 //!
 //! Only the connect-based paths are covered. The raw-socket scanners size
 //! themselves adaptively from observed round-trip times (see
-//! [`AdaptiveDeadline`](crate::core::models::deadline::AdaptiveDeadline)) rather
+//! [`AdaptiveDeadline`](crate::model::deadline::AdaptiveDeadline)) rather
 //! than from fixed constants, so they have no knobs to gather here.
 
 use std::time::Duration;

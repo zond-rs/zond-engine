@@ -10,8 +10,8 @@
 //!
 //! The file somebody already has. `-oX` is what gets saved into an engagement
 //! repository, so reading it is how a previous scan - nmap's or this engine's,
-//! since [`crate::export::nmap`] writes the same format - becomes the target
-//! list for the next one, hosts and per-host ports together.
+//! since this engine's nmap exporter writes the same format - becomes the
+//! target list for the next one, hosts and per-host ports together.
 //!
 //! ## The refusals are the security control
 //!
@@ -72,7 +72,7 @@
 //! skipped too, because every nmap host record carries an address and resolving
 //! a name again would be work with a worse answer.
 //!
-//! Ports are not filtered by state, for the same reason [`super::json`] does not
+//! Ports are not filtered by state, for the same reason the JSON reader does not
 //! filter: the file is the caller's own selection, and "rescan what nmap found"
 //! should not quietly mean "rescan some of it".
 
@@ -805,8 +805,8 @@ fn is_name_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::port::PortSet;
     use crate::import::{ImportFormat, ImportOptions, Imported};
+    use crate::model::port::PortSet;
     use std::io::Cursor;
 
     /// The preamble every real nmap file opens with, and which the refusal rule

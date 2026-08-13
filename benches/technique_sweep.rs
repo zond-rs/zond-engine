@@ -42,12 +42,12 @@
 use std::net::IpAddr;
 use std::time::Instant;
 
-use zond_engine::core::config::ZondConfig;
-use zond_engine::core::models::port::{PortSet, PortState, Protocol};
-use zond_engine::core::models::target::{TargetMap, TargetSet};
-use zond_engine::core::models::technique::TcpScanTechnique;
-use zond_engine::core::parse::ip::to_set;
+use zond_engine::config::ZondConfig;
 use zond_engine::export::schema::port_state_name;
+use zond_engine::model::parse::ip::to_set;
+use zond_engine::model::port::{PortSet, PortState, Protocol};
+use zond_engine::model::target::{TargetMap, TargetSet};
+use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner;
 
 /// The ports of the reference host, chosen to cover one of each state a SYN
@@ -174,7 +174,7 @@ fn print_header(ports: &[u16]) {
 }
 
 fn state_of(
-    session: &zond_engine::core::session::ScanSession,
+    session: &zond_engine::scanner::session::ScanSession,
     ip: IpAddr,
     port: u16,
 ) -> Option<PortState> {

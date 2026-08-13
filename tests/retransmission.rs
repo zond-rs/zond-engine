@@ -41,7 +41,7 @@
 //! Every probing path needs this and every one of them already kept the state it
 //! requires, which argued for one shared retry policy beside `AdaptiveDeadline`
 //! rather than several implementations drifting apart. It landed that way, in
-//! `core::models::retry`. These tests assert on observable behaviour and assume
+//! `model::retry`. These tests assert on observable behaviour and assume
 //! none of it, so they stay honest regardless of how it is built.
 //!
 //! The one number they do assume is the attempt count, kept in [`ATTEMPTS`]
@@ -56,13 +56,13 @@ use common::fake_lan::{FakeLan, LanHost, LanProbe};
 use common::fake_net::{FakeNet, Layer4, Policy};
 use common::*;
 use pnet::datalink::MacAddr;
-use zond_engine::core::models::ip::set::IpSet;
-use zond_engine::core::models::port::PortState;
-use zond_engine::core::models::technique::TcpScanTechnique;
-use zond_engine::core::session::{ScanSession, ScannerKind};
+use zond_engine::model::ip::set::IpSet;
+use zond_engine::model::port::PortState;
+use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner::NetworkExplorer;
 use zond_engine::scanner::local::{LocalScanner, Scope};
 use zond_engine::scanner::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
+use zond_engine::scanner::session::{ScanSession, ScannerKind};
 use zond_engine::system::interface::RoutedTarget;
 
 /// How many times a probe should be sent before the engine concludes the target

@@ -21,7 +21,7 @@
 //!
 //! So a payload-free UDP scan can only ever observe the ICMP half - closed
 //! ports - while every genuinely open port falls to the deadline and reports
-//! [`OpenFiltered`](crate::core::models::port::PortState::OpenFiltered). That
+//! [`OpenFiltered`](crate::model::port::PortState::OpenFiltered). That
 //! is a correct verdict for what was asked, and a nearly useless one. Sending
 //! something a service will recognize is what turns "no evidence" into
 //! evidence.

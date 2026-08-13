@@ -49,20 +49,20 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::udp::UdpPacket;
 use tokio::sync::mpsc;
 
-use crate::core::config::ProbeTuning;
-use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
-use crate::core::models::port::{PortState, Protocol};
-use crate::core::models::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
-use crate::core::models::target::Target;
-use crate::core::models::timer::ScanBudget;
-use crate::core::report::StopReason;
-use crate::core::session::{ScanContext, ScannerKind};
+use crate::config::ProbeTuning;
 use crate::error;
-use crate::network::capture::CapturedSegment;
-use crate::network::probe::{ProbeKind, ProbeTransport};
+use crate::model::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+use crate::model::port::{PortState, Protocol};
+use crate::model::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
+use crate::model::target::Target;
+use crate::model::timer::ScanBudget;
+use crate::scanner::report::StopReason;
+use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::{PortScanner, StrategyError};
 use crate::system::interface::SourceResolver;
+use crate::transport::capture::CapturedSegment;
+use crate::transport::probe::{ProbeKind, ProbeTransport};
 
 use super::super::audit::ProbeAudit;
 use super::icmp_error::{self, Unreachable};
@@ -743,9 +743,9 @@ mod tests {
         ICMPV6_PORT_UNREACHABLE, ICMPV6_REJECT_ROUTE, ICMPV6_UNUSED_LEN,
     };
 
-    use crate::core::session::ScanSession;
-    use crate::network::probe::{MockSender, ProbeTransport};
     use crate::protocols::{ip, udp};
+    use crate::scanner::session::ScanSession;
+    use crate::transport::probe::{MockSender, ProbeTransport};
 
     const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
     const TARGET_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 200));
@@ -789,7 +789,7 @@ mod tests {
     }
 
     /// The probes a [`MockSender`] recorded, shared with the scanner under test.
-    type SentProbes = std::sync::Arc<std::sync::Mutex<Vec<crate::network::probe::SentProbe>>>;
+    type SentProbes = std::sync::Arc<std::sync::Mutex<Vec<crate::transport::probe::SentProbe>>>;
 
     fn scanner_with_mock() -> (UdpPortScanner, ScanSession) {
         let (session, ctx) = ScanSession::new();
@@ -1306,7 +1306,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs libpcap capture access (root or access_bpf)"]
     async fn real_kernel_icmp_error_identifies_the_probe_that_caused_it() {
-        use crate::network::capture;
+        use crate::transport::capture;
         use std::time::Duration;
 
         let loopback = pnet::datalink::interfaces()
@@ -1363,7 +1363,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs libpcap capture access (root or access_bpf)"]
     async fn real_udp_reply_reaches_the_scan_through_the_capture_filter() {
-        use crate::network::capture;
+        use crate::transport::capture;
         use std::time::Duration;
 
         let loopback = pnet::datalink::interfaces()

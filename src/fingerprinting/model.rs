@@ -20,7 +20,7 @@
 //! These types are deliberately independent of *how* evidence is produced, so
 //! adding a new kind of detector never changes them.
 
-use crate::core::models::port::Service;
+use crate::model::port::Service;
 
 /// How much trust to place in a single piece of [`Evidence`].
 ///

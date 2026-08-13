@@ -78,7 +78,7 @@ async fn unknown_banner_still_yields_an_open_port() {
         .expect("port present");
     assert_eq!(
         state,
-        zond_engine::core::models::port::PortState::Open,
+        zond_engine::model::port::PortState::Open,
         "a reachable listener must read Open regardless of banner recognisability"
     );
 }

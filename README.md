@@ -48,7 +48,7 @@ task that resolves to the `ScanReport` describing it afterwards.
 
 ```rust
 use zond_engine::{ScanEvent, ZondConfig, discover};
-use zond_engine::core::parse::ip::to_set;
+use zond_engine::model::parse::ip::to_set;
 
 let targets = to_set(&["192.168.1.0/24"], None)?;
 let (mut session, task) = discover(targets, &ZondConfig::default()).await?;

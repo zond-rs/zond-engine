@@ -32,13 +32,13 @@ use std::net::IpAddr;
 
 use tokio::net::TcpStream;
 
-use crate::core::models::ip::scoped::ScopedIp;
+use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
 use tokio::time::timeout;
 
-use crate::core::models::port::{Port, PortState, Protocol};
-use crate::core::session::ScanContext;
+use crate::model::port::{Port, PortState, Protocol};
 use crate::scanner::pool::ProbePool;
+use crate::scanner::session::ScanContext;
 use crate::scanner::tuning::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 
 /// Fingerprints every open TCP port currently in the store, upgrading each
@@ -77,7 +77,7 @@ pub async fn detect(ctx: &ScanContext) {
 /// The address is taken from the host rather than from the store key, because
 /// the key is only the address and a link-local one cannot be connected to
 /// without the interface it was seen on. The host carries that; see
-/// [`Host::scoped_ip`](crate::core::models::host::Host::scoped_ip).
+/// [`Host::scoped_ip`](crate::model::host::Host::scoped_ip).
 fn open_tcp_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16)> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
@@ -139,8 +139,8 @@ fn write_back(ctx: &ScanContext, ip: IpAddr, port: Port) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::host::Host;
-    use crate::core::session::ScanSession;
+    use crate::model::host::Host;
+    use crate::scanner::session::ScanSession;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 

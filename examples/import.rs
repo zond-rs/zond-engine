@@ -41,8 +41,8 @@
 
 use std::io::Cursor;
 
-use zond_engine::core::models::port::PortSet;
 use zond_engine::import::{ImportFormat, ImportLimits, ImportOptions, OnRefusal};
+use zond_engine::model::port::PortSet;
 
 fn main() {
     heading("1. A list of addresses");
@@ -388,7 +388,7 @@ fn reading_an_nmap_file() {
 /// change because of a file in somebody's home directory.
 #[cfg(feature = "import-settings")]
 fn settings_and_profiles() {
-    use zond_engine::core::config::ZondConfig;
+    use zond_engine::config::ZondConfig;
     use zond_engine::import::settings;
 
     let document = r#"

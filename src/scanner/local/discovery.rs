@@ -19,7 +19,7 @@ use std::net::IpAddr;
 
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 
-use crate::core::models::host::StatusProtocol;
+use crate::model::host::StatusProtocol;
 use crate::protocols::{ip, ndp};
 
 /// What a [`DiscoveryProtocol`] found when asked to interpret one received frame.

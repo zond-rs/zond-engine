@@ -68,9 +68,10 @@ export-all = ["export-json", "export-jsonl", "export-csv", "export-html", "expor
 # Reading targets out of a table: a report this engine wrote, or a spreadsheet
 # somebody else did. Adds no dependency — the reader is the mirror of the writer
 # behind `export-csv`, and a CSV crate would cost more than the two hundred
-# lines it saves. It turns `export-csv` on because sniffing a table recognises
-# this crate's own header, which means knowing what that header is.
-import-csv = ["export-csv"]
+# lines it saves. Sniffing a table means recognising this crate's own header, and
+# the header itself lives in `format::csv`, which either direction compiles in on
+# its own; reading a format does not require being able to write it.
+import-csv = []
 
 # Reading a report this engine wrote back in as targets, as a JSON document or
 # one record per line. Shares `serde_json` with the export side, so it costs
@@ -89,9 +90,10 @@ import-settings = []
 # Reading nmap's XML back in as targets: the file people already have in an
 # engagement repository, hosts with the ports found on each. Adds no dependency —
 # a hand-rolled subset parser, which is defensible only because it refuses far
-# more than it accepts; see `import::nmap`. Turns `export-nmap` on so the two
-# can be tested against each other.
-import-nmap = ["export-nmap"]
+# more than it accepts; see `import::nmap`. The round-trip tests need the writer
+# too, but they ask for it themselves with a `cfg` rather than making every
+# consumer of the reader compile it.
+import-nmap = []
 
 # Every format this crate can read. The list format is unconditional and is not
 # named here: it needs nothing, and everybody needs it.

@@ -27,17 +27,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::core::config::ProbeTuning;
-use crate::core::models::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::core::models::host::{HostStatus, StatusProtocol, StatusReason};
-use crate::core::models::ip::set::IpSet;
-use crate::core::models::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
-use crate::core::models::technique::TcpScanTechnique;
-use crate::core::models::timer::ScanBudget;
-use crate::core::session::ScanContext;
-use crate::network::probe::{ProbeKind, ProbeSender, ProbeTransport};
+use crate::config::ProbeTuning;
+use crate::model::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+use crate::model::ip::set::IpSet;
+use crate::model::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
+use crate::model::technique::TcpScanTechnique;
+use crate::model::timer::ScanBudget;
 use crate::protocols as protocol;
+use crate::scanner::session::ScanContext;
 use crate::system::interface::RoutedTarget;
+use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};
 use crate::{error, success};
 use async_trait::async_trait;
 use pnet::packet::tcp::TcpPacket;
@@ -45,8 +45,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::audit::ProbeAudit;
 use super::{NetworkExplorer, StrategyError, payload};
-use crate::core::report::StopReason;
-use crate::core::session::ScannerKind;
+use crate::scanner::report::StopReason;
+use crate::scanner::session::ScannerKind;
 
 pub use port_scan::TcpPortScanner;
 pub use udp_scan::UdpPortScanner;

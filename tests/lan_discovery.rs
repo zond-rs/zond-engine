@@ -26,12 +26,12 @@ use std::time::Duration;
 use common::fake_lan::{FakeLan, LanHost, LanProbe};
 use common::*;
 use pnet::datalink::MacAddr;
-use zond_engine::core::models::host::HostStatus;
-use zond_engine::core::models::host::telemetry::RttSource;
-use zond_engine::core::models::ip::set::IpSet;
-use zond_engine::core::session::ScanSession;
+use zond_engine::model::host::HostStatus;
+use zond_engine::model::host::telemetry::RttSource;
+use zond_engine::model::ip::set::IpSet;
 use zond_engine::scanner::NetworkExplorer;
 use zond_engine::scanner::local::{LocalScanner, Scope};
+use zond_engine::scanner::session::ScanSession;
 
 const PEER_A: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 const PEER_B: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);

@@ -41,10 +41,10 @@
 
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 
-use zond_engine::core::config::{SendMode, ZondConfig};
-use zond_engine::core::models::ip::set::IpSet;
-use zond_engine::core::models::port::{PortSet, PortState};
-use zond_engine::core::models::target::{TargetMap, TargetSet};
+use zond_engine::config::{SendMode, ZondConfig};
+use zond_engine::model::ip::set::IpSet;
+use zond_engine::model::port::{PortSet, PortState};
+use zond_engine::model::target::{TargetMap, TargetSet};
 use zond_engine::scanner;
 
 #[tokio::main]
