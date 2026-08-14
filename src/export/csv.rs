@@ -613,4 +613,40 @@ mod tests {
 
         assert!(matches!(error, ExportError::Io(_)), "got {error:?}");
     }
+
+    /// A field a spreadsheet would execute is neutralized before it gets there.
+    ///
+    /// **The control this pins had no test at all.** A cell beginning `=`, `+`,
+    /// `-`, `@` or a tab is a formula to Excel, LibreOffice and Sheets alike, and
+    /// a scanned host chooses its own banner — so `=HYPERLINK(...)` in a service
+    /// version is a scan report that exfiltrates on open. The guard quotes the
+    /// field and prefixes an apostrophe, which the spreadsheet strips on display
+    /// and never evaluates.
+    ///
+    /// Asserted over the whole document rather than one call, so a column added
+    /// later without going through the writer fails this too.
+    #[test]
+    fn no_field_of_a_hostile_report_can_be_read_as_a_formula() {
+        let mut out = Vec::new();
+        CsvExporter::new(ExportOptions::new())
+            .export(&fixture::hostile(), &mut out)
+            .expect("the table renders");
+        let table = String::from_utf8(out).expect("utf-8");
+
+        assert!(
+            table.contains("\"'="),
+            "the payload should be present and guarded - otherwise this proves \
+             nothing about a table that simply dropped it"
+        );
+
+        for (row, line) in table.lines().enumerate() {
+            for (column, field) in line.split(',').enumerate() {
+                assert!(
+                    !field.starts_with(FORMULA_LEADERS),
+                    "row {row} column {column} opens with a formula leader and \
+                     will be evaluated when the file is opened: {field}"
+                );
+            }
+        }
+    }
 }

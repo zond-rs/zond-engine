@@ -736,4 +736,38 @@ mod tests {
         assert_eq!(nmap_confidence(0), 1, "nmap's scale starts at 1");
         assert_eq!(nmap_confidence(255), 10, "and stops at 10");
     }
+
+    /// Every attacker-controlled string reaches the document escaped.
+    ///
+    /// The companion to the per-character test above, and the one that matters
+    /// for a format somebody else parses: an unescaped `<` from a scanned host's
+    /// banner does not merely look wrong, it ends the element it is inside and
+    /// hands the rest of the report to whoever wrote the banner. A consumer
+    /// ingesting this XML into DefectDojo or Metasploit parses whatever results.
+    ///
+    /// It covers fields nobody has added yet, which the per-character test
+    /// cannot: any new string written without the escaper fails this the moment
+    /// the fixture carries it.
+    #[test]
+    fn no_field_of_a_hostile_report_reaches_the_document_unescaped() {
+        let mut out = Vec::new();
+        NmapXmlExporter::new(ExportOptions::new())
+            .export(&fixture::hostile(), &mut out)
+            .expect("the document renders");
+        let document = String::from_utf8(out).expect("utf-8");
+
+        assert!(
+            document.contains("&lt;script&gt;"),
+            "the payload should be present, escaped - otherwise this proves \
+             nothing about a document that simply dropped it"
+        );
+        assert!(
+            !document.contains("<script>"),
+            "a scanned host's banner opened an element in the report"
+        );
+        assert!(
+            !document.contains(fixture::HOSTILE),
+            "the payload survived intact somewhere in the document"
+        );
+    }
 }

@@ -192,3 +192,104 @@ pub(crate) fn report() -> ScanReport {
 
     recorder.finish(&ctx)
 }
+
+// ---------------------------------------------------------------------------
+// The hostile report
+// ---------------------------------------------------------------------------
+
+/// The string every attacker-controlled field of [`hostile`] is set to.
+///
+/// A scanned host chooses its own banner, its own certificate subject and its
+/// own script output, and all three end up in a document somebody opens. This
+/// carries one payload per format the engine writes: markup and quotes for HTML
+/// and XML, a leading `=` for a spreadsheet, and a right-to-left override, which
+/// reverses the text after it so one address can be made to read as another.
+///
+/// Deliberately one string rather than one per field. A test asserting that this
+/// never survives intact does not have to know which field it came from, which
+/// is what lets it cover fields nobody has written yet.
+pub(crate) const HOSTILE: &str = "=<script>alert(\"x\")</script>&'\u{202e}";
+
+/// A host on the hostile fixture's network.
+fn hostile_host() -> Host {
+    let mut host = Host::new(ip(3));
+    host.set_hostname(Some(HOSTILE.to_string()));
+    host.set_status(HostStatus::Up);
+    host.add_reason(StatusReason::new(StatusProtocol::Arp, HOSTILE));
+    host.set_mac(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x01));
+    host.add_script_result(HOSTILE.to_string(), HOSTILE.to_string());
+
+    let mut os = OsFingerprint::new(HOSTILE, 90);
+    os.family = Some(HOSTILE.into());
+    os.generation = Some(HOSTILE.into());
+    os.add_cpe(HOSTILE);
+    host.set_os(os);
+    host.add_rtt(Duration::from_micros(1_000));
+
+    host.add_port(hostile_port());
+    host
+}
+
+/// A port whose every describable string is hostile.
+fn hostile_port() -> Port {
+    let service = Service::new(HOSTILE, 100)
+        .with_product(HOSTILE)
+        .with_vendor(HOSTILE)
+        .with_version(HOSTILE)
+        .add_cpe(HOSTILE);
+
+    let certificate = CertificateInfo::new(
+        HOSTILE,
+        vec![HOSTILE.to_string()],
+        HOSTILE,
+        std::time::UNIX_EPOCH + Duration::from_secs(1_767_225_600),
+        std::time::UNIX_EPOCH + Duration::from_secs(1_798_761_600),
+        HOSTILE,
+        256,
+        HOSTILE,
+    );
+
+    let security = Security::new()
+        .with_tls_version(HOSTILE)
+        .with_cipher_suite(HOSTILE)
+        .add_alpn(HOSTILE)
+        .with_certificate(certificate);
+
+    let mut nested = std::collections::HashMap::new();
+    nested.insert(
+        HOSTILE.to_string(),
+        ScriptOutput::String(HOSTILE.to_string()),
+    );
+
+    Port::new(8443, Protocol::Tcp, PortState::Open)
+        .with_service(service)
+        .with_security(security)
+        .with_discovery(Discovery::new(ScanResponse::TcpSynAck).with_source_ip(ip(50)))
+        .add_script(HOSTILE, ScriptOutput::String(HOSTILE.to_string()))
+        .add_script(HOSTILE, ScriptOutput::Map(nested))
+}
+
+/// A report whose every attacker-controlled string is [`HOSTILE`].
+///
+/// The same shape as [`report`], so a writer that handles one handles the other.
+/// What it is for is the question the per-field tests cannot answer: not "does
+/// the escaper work" but "does every field go through it".
+pub(crate) fn hostile() -> ScanReport {
+    let (_session, ctx) = ScanSession::new();
+
+    let mut targets = IpSet::new();
+    targets.insert_range("192.168.0.0/24".parse().expect("a valid range"));
+
+    let recorder = PhaseRecorder::start(
+        ScanKind::Discovery,
+        true,
+        TargetScope::from_ip_set(&mut targets),
+        &ZondConfig::default(),
+    );
+
+    ctx.record_failure(ScannerKind::Local, HOSTILE.to_string());
+    ctx.record_probe_stats(probe_stats());
+    ctx.store.insert(ip(3), hostile_host());
+
+    recorder.finish(&ctx)
+}

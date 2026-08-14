@@ -1651,4 +1651,47 @@ mod tests {
 
         assert!(matches!(error, ExportError::Io(_)), "got {error:?}");
     }
+
+    /// Every attacker-controlled string in a report reaches the page escaped —
+    /// not just the hostname somebody thought to write a test for.
+    ///
+    /// **This is the test that covers a field nobody has added yet.** The two
+    /// above check that `esc` escapes; neither would notice a new `PortDto` field
+    /// written straight into the markup, because neither renders a page. This
+    /// one puts one payload in every string the schema carries, renders the whole
+    /// document, and asserts the payload never survives intact anywhere in it.
+    ///
+    /// What it cannot catch is a field the fixture does not set. Adding a string
+    /// to the schema means adding it to
+    /// [`fixture::hostile`](crate::export::fixture::hostile) as well, and that is
+    /// the whole maintenance burden of this test.
+    #[test]
+    fn no_field_of_a_hostile_report_reaches_the_page_unescaped() {
+        let mut bytes = Vec::new();
+        HtmlExporter::new(ExportOptions::new())
+            .export(&fixture::hostile(), &mut bytes)
+            .expect("the page renders");
+        let page = String::from_utf8(bytes).expect("utf-8");
+
+        assert!(
+            page.contains("&lt;script&gt;"),
+            "the payload should be present, escaped - otherwise this test proves \
+             nothing about a document that simply dropped it"
+        );
+        assert!(
+            !page.contains("<script>"),
+            "a scanned host's own banner opened a script tag in the report"
+        );
+        assert!(
+            !page.contains(fixture::HOSTILE),
+            "the payload survived intact somewhere on the page"
+        );
+        // The bidi override reorders everything after it and is invisible while
+        // doing so, which is the whole reason it is neutralized rather than
+        // merely escaped.
+        assert!(
+            !page.contains('\u{202e}'),
+            "a right-to-left override reached the page and will reorder it"
+        );
+    }
 }
