@@ -25,6 +25,7 @@
 //! frames directly, bypassing the operating system's own IP stack.
 
 mod discovery;
+mod ipv6;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -54,6 +55,7 @@ use crate::transport::mac::IntoCoreMac;
 use crate::{error, info};
 
 use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6EchoProtocol, NdpProtocol, ProtocolMatch};
+use ipv6::Ipv6Discovery;
 
 /// Outstanding ARP requests and the schedule they are retried on.
 ///
@@ -91,51 +93,6 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     0.2,
     None,
 );
-
-/// How a neighbor solicitation is retransmitted, which is nothing like how an
-/// ARP request is.
-///
-/// The constraint that shapes this is Karn's rule. Two solicitations for one
-/// address are identical on the wire and an advertisement carries no identifier,
-/// so a reply answering the second cannot be told from one answering the first.
-/// **A round trip is only measurable if the first attempt is the one answered**,
-/// which makes the first timeout the load-bearing number: it has to outlast the
-/// replies rather than merely be generous. The second attempt exists for a lost
-/// probe and knowingly gives up the measurement to recover the host.
-///
-/// A separate ledger from ARP's, because the schedule is driven by a round-trip
-/// estimate the ledger keeps: mixing ARP's single-digit milliseconds with an
-/// IPv6 neighbour's hundreds pulls the estimate to whichever protocol answered
-/// more often and mis-times the other.
-///
-/// Sizing it needs solicitations sent **one per address**, since any other kind
-/// cannot say which attempt was answered. Measured that way on a wireless
-/// segment (`benches/ndp_pace.rs`), neighbours answer in single-digit
-/// milliseconds when mains-powered and up to roughly 400 ms when asleep, so
-/// 800 ms covers the worst case with room to spare.
-///
-/// [`without_cross_host_estimate`](RetryPolicy::without_cross_host_estimate) is
-/// what makes those numbers mean anything. Without it, one fast neighbour seeds
-/// the scan-wide estimate, an unmeasured neighbour's first timeout is pulled
-/// down to [`min_rto`](RetryPolicy::min_rto), and the floor silently becomes the
-/// real schedule. A per-host estimate cannot fill the gap either: an address is
-/// asked once per sweep, so its own estimate exists only after the probe it
-/// would have timed has already resolved.
-///
-/// **Slack here is charged to every scan**, not just to a retransmit:
-/// [`DEADLINE_CONFIG`] is widened to outlive the longest probe, so a first
-/// timeout set too generously holds every sweep open whether or not any IPv6
-/// neighbour is slow.
-const NDP_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
-    2,
-    Duration::from_millis(800),
-    Duration::from_millis(400),
-    Duration::from_secs(3),
-    1.5,
-    0.2,
-    None,
-)
-.without_cross_host_estimate();
 
 /// Why a captured frame is not a discovery finding.
 ///
@@ -204,137 +161,6 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 /// only comparable within one block; and the number to judge it on is hosts
 /// found and hosts timed *per second of scan*, not first-attempt rate.
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
-
-/// How many times the all-nodes solicitation is sent.
-///
-/// It is one packet standing in for the entire IPv6 half of a sweep: every
-/// neighbour that has no address in the scanned IPv4 range is found through this
-/// and nothing else. Sending it once made IPv6 discovery the only part of the
-/// engine with no retransmission at all, and it showed - the IPv4 hosts of a
-/// segment came back identically on every run while the IPv6-only ones came and
-/// went.
-const SOLICITATION_ATTEMPTS: u8 = 3;
-
-/// How long to leave between solicitations.
-const SOLICITATION_INTERVAL: Duration = Duration::from_millis(600);
-
-/// How long after the final solicitation the sweep keeps listening.
-///
-/// Longer than a segment's round trip, because a neighbour answers a multicast
-/// probe on a schedule of its own: implementations spread their replies to keep
-/// the whole segment from answering at once, and a device asleep on wifi answers
-/// when it next wakes. Observed on a live segment, replies land between roughly
-/// 0.9 and 1.9 seconds after the request, varying by a second between runs for
-/// the same host.
-///
-/// That figure was taken while the sweep was still broadcasting at full rate,
-/// so part of it is congestion rather than the neighbour. It stands until the
-/// echo's own timing says otherwise, which is now recorded rather than
-/// guessed at, since a reply names the request it answers. Erring long costs
-/// the tail of a sweep; erring short discards a host that did answer.
-const SOLICITATION_WINDOW: Duration = Duration::from_millis(1_500);
-
-/// The all-nodes solicitation's schedule: which requests have gone out and
-/// when, when the next is owed, and how long the last one is still worth
-/// waiting on.
-///
-/// Kept separately from the [`Ledger`] rather than as an entry in it, because it
-/// is a different kind of thing. Every other probe is a question put to one
-/// address, answered once, and retired by that answer. This is a question put to
-/// the whole segment: no single reply resolves it, no reply means the next one
-/// is not coming, and there is nothing to give up on.
-///
-/// It is nonetheless *timed*, which the per-address solicitation is not. An echo
-/// reply carries back the identifier and sequence number of the request it
-/// answers, so a neighbour's reply names which of these probes it belongs to
-/// however many have gone out. That is why every attempt's send time is kept
-/// rather than only the most recent: on a segment where one device answers in
-/// six milliseconds and another wakes two requests later, measuring against the
-/// wrong request reports the neighbour's sleep schedule as latency.
-#[derive(Debug)]
-struct Solicitation {
-    /// Identifies this scan's echo requests, so somebody else's ping is not
-    /// mistaken for an answer to ours. One value for the whole run: the
-    /// sequence number is what separates the attempts.
-    identifier: u16,
-    /// When each request left, indexed by the sequence number it carried.
-    sent_at: Vec<Instant>,
-    next_due: Option<Instant>,
-    last_sent_at: Option<Instant>,
-}
-
-impl Default for Solicitation {
-    fn default() -> Self {
-        Self {
-            identifier: rand::random(),
-            sent_at: Vec::with_capacity(SOLICITATION_ATTEMPTS as usize),
-            next_due: None,
-            last_sent_at: None,
-        }
-    }
-}
-
-impl Solicitation {
-    /// The sequence number the next request should carry.
-    fn next_sequence(&self) -> u16 {
-        self.sent_at.len() as u16
-    }
-
-    /// When the request carrying `identifier` and `sequence` left, or `None` if
-    /// this scan never sent it.
-    ///
-    /// A foreign identifier belongs to somebody else's ping, and a sequence
-    /// beyond what has been sent is not ours either. Both come back unmeasured
-    /// rather than rejected: the frame still arrived carrying a neighbour's own
-    /// MAC, which proves the neighbour is there whatever provoked it.
-    fn sent_at(&self, identifier: u16, sequence: u16) -> Option<Instant> {
-        if identifier != self.identifier {
-            return None;
-        }
-        self.sent_at.get(sequence as usize).copied()
-    }
-
-    /// Makes the first request due now.
-    ///
-    /// Kept apart from construction so a run that must not sweep the segment -
-    /// or has no link-local address to ask from - simply never arms this and
-    /// never owes a probe, rather than carrying a schedule that has to be
-    /// checked against the scope everywhere it is read.
-    fn arm(&mut self, now: Instant) {
-        self.next_due = Some(now);
-    }
-
-    /// Records one going out and schedules the next, if any are still owed.
-    fn record_sent(&mut self, now: Instant) {
-        self.sent_at.push(now);
-        self.last_sent_at = Some(now);
-        self.next_due = (self.sent_at.len() < SOLICITATION_ATTEMPTS as usize)
-            .then(|| now + SOLICITATION_INTERVAL);
-    }
-
-    /// Whether another one is owed now.
-    fn is_due(&self, now: Instant) -> bool {
-        self.next_due.is_some_and(|due| due <= now)
-    }
-
-    /// Whether a reply could still legitimately arrive: another solicitation is
-    /// owed, or the last one is still inside its response window.
-    fn window_open(&self, now: Instant) -> bool {
-        if self.next_due.is_some() {
-            return true;
-        }
-        self.last_sent_at
-            .is_some_and(|sent_at| now < sent_at + SOLICITATION_WINDOW)
-    }
-
-    /// When this next needs the loop's attention.
-    fn next_wakeup(&self) -> Option<Instant> {
-        self.next_due.or_else(|| {
-            self.last_sent_at
-                .map(|sent_at| sent_at + SOLICITATION_WINDOW)
-        })
-    }
-}
 
 /// How much of the segment a [`LocalScanner`] run touches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -428,14 +254,6 @@ pub struct LocalScanner {
     /// Outstanding ARP requests, and when each is next due to be repeated or
     /// given up on.
     ledger: Ledger,
-    /// Outstanding neighbor solicitations, on their own schedule.
-    ///
-    /// A separate ledger rather than a separate policy inside one, because the
-    /// retry timing is driven by a round-trip estimate the ledger keeps: mixing
-    /// ARP's single-digit milliseconds with NDP's hundreds would pull the shared
-    /// estimate to whichever protocol answered more often and mis-time the
-    /// other. Keeping them apart is what lets each be paced by its own evidence.
-    ndp_ledger: Ledger,
     /// Scratch space for the probes coming due on one iteration, reused so a
     /// quiet tick allocates nothing.
     due: Vec<Due<IpAddr>>,
@@ -444,9 +262,6 @@ pub struct LocalScanner {
     /// attempt does, which is what keeps a burst of expiring probes from
     /// becoming a burst on the wire.
     retries: VecDeque<IpAddr>,
-    /// The all-nodes solicitation's own schedule, which every IPv6-only
-    /// neighbour on the segment is found through.
-    solicitation: Solicitation,
     /// Where to forward newly discovered addresses for hostname
     /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
@@ -458,29 +273,6 @@ pub struct LocalScanner {
     /// Target addresses that have answered, so a targeted run can stop the
     /// moment every one of them has, rather than waiting out the deadline.
     responded: HashSet<IpAddr>,
-    /// Every IPv6 address this sweep has put a solicitation on the wire for.
-    ///
-    /// Bounds the confirmation in [`confirm`](Self::confirm): a neighbour may
-    /// advertise an address many times over a scan, and without this each
-    /// advertisement would earn it another probe.
-    solicited: HashSet<IpAddr>,
-    /// Overheard addresses waiting to be asked about, and when each was asked.
-    ///
-    /// Deliberately outside the [`Ledger`], which exists to decide when to give
-    /// up on an address nobody has answered for. A confirmation asks a different
-    /// question: the host is already known to be there, so the only thing at
-    /// stake is the measurement, and a retry destroys exactly that. Two
-    /// solicitations for one address are identical on the wire, so an
-    /// advertisement answering either cannot say which - Karn's rule - and the
-    /// round trip is discarded. Measured on a live segment, that is what happened
-    /// to every neighbour on wifi: the retry timer, sized from ARP replies
-    /// arriving in single-digit milliseconds, fired long before a sleeping device
-    /// got round to answering.
-    ///
-    /// So a confirmation is sent exactly once and simply waited on. It either
-    /// yields a round trip or it does not, and the host is reported either way.
-    confirming: VecDeque<IpAddr>,
-    confirmed_at: HashMap<IpAddr, Instant>,
     /// Per-run counters, so a sweep that finds fewer hosts than the segment
     /// holds can be attributed to loss, to its own deadline, or to correlation
     /// rather than guessed at. Reported once when the loop exits.
@@ -490,14 +282,15 @@ pub struct LocalScanner {
     /// to interrogate, so what the kernel dropped is not knowable from inside
     /// this scanner rather than being zero.
     audit: ProbeAudit,
-    /// When each IPv6 address was *first* asked about.
+    /// What this sweep has asked the IPv6 half of the segment, and what it is
+    /// still waiting to hear back.
     ///
-    /// Diagnostic only, and kept because the number it yields is the one thing
-    /// that cannot be reasoned out from the outside: how long a neighbour
-    /// actually takes to answer. Everything about pacing solicitation depends on
-    /// it, and three rounds of inference from host counts got it wrong before a
-    /// packet capture settled it.
-    first_asked_at: HashMap<IpAddr, Instant>,
+    /// A `/64` cannot be walked the way an IPv4 range can, so nothing about the
+    /// ARP half carries over: the probes are different, the retry schedule is
+    /// different, and an advertisement cannot say which attempt it answers. That
+    /// mechanism keeps its own state rather than sharing this struct's, and the
+    /// reasoning behind its timing lives with it.
+    ipv6: Ipv6Discovery,
 }
 
 #[async_trait]
@@ -521,7 +314,7 @@ impl HostScanner for LocalScanner {
         // have guessed, and the sooner it is asked the more of its response
         // window falls inside the scan.
         if matches!(self.scope, Scope::Sweep) && self.identity.link_local_ipv6.is_some() {
-            self.solicitation.arm(Instant::now());
+            self.ipv6.arm_solicitation(Instant::now());
         }
 
         let mut sending_finished = false;
@@ -557,8 +350,8 @@ impl HostScanner for LocalScanner {
             // repeat, goes through the same paced ticker.
             let sending = !sending_finished
                 || !self.retries.is_empty()
-                || !self.confirming.is_empty()
-                || self.solicitation.is_due(now);
+                || self.ipv6.confirmations_pending()
+                || self.ipv6.solicitation().is_due(now);
             let idle_delay = self.tick_delay(now);
 
             tokio::select! {
@@ -579,9 +372,9 @@ impl HostScanner for LocalScanner {
                     let now = Instant::now();
                     if let Some(target) = self.retries.pop_front() {
                         self.send_probe(target, now);
-                    } else if let Some(target) = self.confirming.pop_front() {
+                    } else if let Some(target) = self.ipv6.next_confirmation() {
                         self.send_confirmation(target, now);
-                    } else if self.solicitation.is_due(now) {
+                    } else if self.ipv6.solicitation().is_due(now) {
                         self.send_solicitation(now);
                     } else if !sending_finished {
                         match packet_iter.next() {
@@ -605,11 +398,11 @@ impl HostScanner for LocalScanner {
         // answered, and the difference between "none were sent" and "none came
         // back" is the difference between a bug here and a segment full of
         // devices that decline to answer a direct question.
-        if !self.confirmed_at.is_empty() {
+        if self.ipv6.unanswered_confirmations() > 0 {
             info!(
                 verbosity = 2,
                 "{} of the addresses asked about directly never answered",
-                self.confirmed_at.len()
+                self.ipv6.unanswered_confirmations()
             );
         }
 
@@ -704,11 +497,11 @@ impl LocalScanner {
         // The longer of the two schedules, because the sweep has to outlive
         // whichever probe it commits to last. Sized from ARP alone, it ends
         // while solicitations are still legitimately outstanding - which is the
-        // shape of the bug `NDP_RETRY_POLICY` exists to fix, arriving one layer
+        // shape of the bug `ipv6::NDP_RETRY_POLICY` exists to fix, arriving one layer
         // up.
         let probe_lifetime = retry
             .worst_case_probe_lifetime()
-            .max(NDP_RETRY_POLICY.worst_case_probe_lifetime());
+            .max(ipv6::NDP_RETRY_POLICY.worst_case_probe_lifetime());
         let deadline_config = DEADLINE_CONFIG.allowing_for(probe_lifetime);
         let deadline = AdaptiveDeadline::new(deadline_config, target_count);
 
@@ -724,18 +517,15 @@ impl LocalScanner {
                 Box::new(Icmpv6EchoProtocol),
             ],
             ledger: Ledger::new(retry, target_count),
-            ndp_ledger: Ledger::new(NDP_RETRY_POLICY, target_count),
+
             due: Vec::new(),
             retries: VecDeque::new(),
-            solicitation: Solicitation::default(),
+
             dns_tx,
             mac_to_ip: HashMap::new(),
             scope,
             responded: HashSet::new(),
-            solicited: HashSet::new(),
-            confirming: VecDeque::new(),
-            confirmed_at: HashMap::new(),
-            first_asked_at: HashMap::new(),
+            ipv6: Ipv6Discovery::new(target_count),
             audit: ProbeAudit::new(),
         })
     }
@@ -748,9 +538,7 @@ impl LocalScanner {
     /// because it has to remember the token each one carried.
     fn record_probe(&mut self, ip: IpAddr, now: Instant) {
         if ip.is_ipv6() {
-            self.solicited.insert(ip);
-            self.first_asked_at.entry(ip).or_insert(now);
-            self.ndp_ledger.arm(ip, ip, (), now);
+            self.ipv6.record_asked(ip, now);
         } else {
             self.ledger.arm(ip, ip, (), now);
         }
@@ -780,14 +568,13 @@ impl LocalScanner {
         if !address.is_ipv6()
             || !matches!(self.scope, Scope::Sweep)
             || self.identity.link_local_ipv6.is_none()
-            || !self.solicited.insert(address)
         {
             return;
         }
 
-        // Through the queue rather than sent here, so a confirmation leaves on
-        // the same paced ticker every other probe does.
-        self.confirming.push_back(address);
+        // Queued rather than sent here, so a confirmation leaves on the same
+        // paced ticker every other probe does.
+        self.ipv6.note_overheard(address);
     }
 
     /// Sends the one solicitation an overheard address gets, and notes when.
@@ -802,7 +589,7 @@ impl LocalScanner {
             Ok(packet) => {
                 self.audit.record_send(true);
                 self.eth_handle.tx.send_to(&packet, None);
-                self.confirmed_at.insert(target, now);
+                self.ipv6.record_confirmation_sent(target, now);
                 info!(
                     verbosity = 2,
                     "Asked {target} directly, having only overheard it"
@@ -831,13 +618,13 @@ impl LocalScanner {
         match protocol::icmp::create_all_nodes_echo_request_v6(
             &self.identity.mac,
             &link_local,
-            self.solicitation.identifier,
-            self.solicitation.next_sequence(),
+            self.ipv6.solicitation().identifier,
+            self.ipv6.solicitation().next_sequence(),
         ) {
             Ok(packet) => {
                 self.audit.record_send(true);
                 self.eth_handle.tx.send_to(&packet, None);
-                self.solicitation.record_sent(now);
+                self.ipv6.record_solicitation_sent(now);
             }
             Err(e) => {
                 self.audit.record_send(false);
@@ -847,7 +634,7 @@ impl LocalScanner {
                 );
                 // Recorded anyway, so a solicitation that cannot be built stops
                 // being owed instead of holding the sweep open forever.
-                self.solicitation.record_sent(now);
+                self.ipv6.record_solicitation_sent(now);
             }
         }
     }
@@ -889,8 +676,7 @@ impl LocalScanner {
                 self.audit.record_send(true);
                 self.eth_handle.tx.send_to(&packet, None);
                 if target.is_ipv6() {
-                    self.first_asked_at.entry(target).or_insert(now);
-                    self.ndp_ledger.arm(target, target, (), now);
+                    self.ipv6.record_asked(target, now);
                 } else {
                     self.ledger.arm(target, target, (), now);
                 }
@@ -944,7 +730,7 @@ impl LocalScanner {
 
         for host in hosts {
             for ip in host.ips {
-                if ip.is_ipv6() && !self.solicited.contains(&ip) {
+                if ip.is_ipv6() && !self.ipv6.is_solicited(&ip) {
                     info!(
                         verbosity = 2,
                         "mDNS named {ip} as {}, which nothing has answered for", host.hostname
@@ -963,31 +749,19 @@ impl LocalScanner {
     /// that never answered is one this sweep does not report, and the ledger
     /// emptying is part of what tells the loop it is finished.
     fn service_retries(&mut self, now: Instant) {
-        for ledger in [&mut self.ledger, &mut self.ndp_ledger] {
-            ledger.drain_due(now, &mut self.due);
-            for event in self.due.drain(..) {
-                if let Due::Retry { key, .. } = event {
-                    self.retries.push_back(key);
-                }
+        // Taken so each ledger can borrow `self` mutably in turn; the buffer
+        // itself is reused, so this costs no allocation.
+        let mut due = std::mem::take(&mut self.due);
+
+        self.ledger.drain_due(now, &mut due);
+        self.ipv6.drain_due(now, &mut due);
+        for event in due.drain(..) {
+            if let Due::Retry { key, .. } = event {
+                self.retries.push_back(key);
             }
         }
-    }
 
-    /// How long ago `address` was first asked about, rendered for a log line, or
-    /// nothing if it was never asked.
-    ///
-    /// The measurement that decides how solicitation should be paced. A reply
-    /// arriving inside the first attempt's timeout is one the schedule could have
-    /// timed; one arriving after it is a neighbour genuinely slower than the
-    /// policy expects, and the two call for different changes.
-    fn since_first_asked(&self, address: &IpAddr, now: Instant) -> String {
-        match self.first_asked_at.get(address) {
-            Some(asked) => format!(
-                " ({}ms after it was first asked)",
-                now.saturating_duration_since(*asked).as_millis()
-            ),
-            None => String::new(),
-        }
+        self.due = due;
     }
 
     /// Retires the probe for `address` from whichever ledger owns its family.
@@ -997,7 +771,7 @@ impl LocalScanner {
         now: Instant,
     ) -> Option<crate::model::retry::Resolution> {
         if address.is_ipv6() {
-            self.ndp_ledger.resolve(address, None, now)
+            self.ipv6.resolve(address, now)
         } else {
             self.ledger.resolve(address, None, now)
         }
@@ -1005,29 +779,7 @@ impl LocalScanner {
 
     /// Whether the sweep has nothing left to send and nothing left to wait for.
     fn idle(&self, now: Instant) -> bool {
-        self.retries.is_empty()
-            && self.confirming.is_empty()
-            && self.ledger.is_empty()
-            && self.ndp_ledger.is_empty()
-            && !self.solicitation.window_open(now)
-            && !self.confirmation_window_open(now)
-    }
-
-    /// Whether an answer to a confirmation could still legitimately arrive.
-    ///
-    /// A confirmation is deliberately outside the [`Ledger`], which is what
-    /// keeps the loop alive for every other outstanding probe - so without this
-    /// the sweep sends a solicitation and then stops listening for its reply,
-    /// which is a strange thing to spend a packet on.
-    ///
-    /// The window is the one the all-nodes echo already uses, for the same
-    /// reason and on the same evidence: a neighbour answers when it next wakes,
-    /// and on this segment that was measured at up to one and a half seconds.
-    /// A direct question does not make a sleeping device answer any sooner.
-    fn confirmation_window_open(&self, now: Instant) -> bool {
-        self.confirmed_at
-            .values()
-            .any(|sent_at| now < *sent_at + SOLICITATION_WINDOW)
+        self.retries.is_empty() && self.ledger.is_empty() && self.ipv6.is_idle(now)
     }
 
     /// How long the loop may sleep once it has stopped sending: until the
@@ -1036,19 +788,9 @@ impl LocalScanner {
     /// comes first.
     fn tick_delay(&self, now: Instant) -> Duration {
         let mut delay = self.deadline.time_until_next_tick();
-        let confirmation_wakeup = self
-            .confirmed_at
-            .values()
-            .map(|sent_at| *sent_at + SOLICITATION_WINDOW)
-            .min();
-        for wakeup in [
-            self.ledger.next_due(),
-            self.ndp_ledger.next_due(),
-            self.solicitation.next_wakeup(),
-            confirmation_wakeup,
-        ]
-        .into_iter()
-        .flatten()
+        for wakeup in [self.ledger.next_due(), self.ipv6.next_wakeup()]
+            .into_iter()
+            .flatten()
         {
             delay = delay.min(wakeup.saturating_duration_since(now));
         }
@@ -1136,7 +878,7 @@ impl LocalScanner {
                             verbosity = 2,
                             "{subject} answered over {protocol:?} after {} attempts, so it is not timed{}",
                             resolution.attempts,
-                            self.since_first_asked(&subject, now)
+                            self.ipv6.since_first_asked(&subject, now)
                         );
                     }
                     resolution.rtt.map(|rtt| (rtt, RttSource::Direct))
@@ -1145,15 +887,13 @@ impl LocalScanner {
                 // an overheard address gets - unambiguous, because there is only
                 // ever one - or it is a neighbour talking to somebody else,
                 // which is worth asking about directly.
-                None => match self.confirmed_at.remove(&subject) {
-                    Some(sent_at) => {
-                        Some((now.saturating_duration_since(sent_at), RttSource::Direct))
-                    }
+                None => match self.ipv6.take_confirmation_rtt(&subject, now) {
+                    Some(rtt) => Some((rtt, RttSource::Direct)),
                     None => {
                         info!(
                             verbosity = 2,
                             "{subject} answered over {protocol:?} with no probe of ours outstanding{}",
-                            self.since_first_asked(&subject, now)
+                            self.ipv6.since_first_asked(&subject, now)
                         );
                         self.confirm(subject);
                         None
@@ -1182,10 +922,10 @@ impl LocalScanner {
                 identifier,
                 sequence,
             } => {
-                if self.solicitation.sent_at.is_empty() {
+                if self.ipv6.solicitation().nothing_sent() {
                     return Err(FrameRejected::UnmappedRttSource(subject).into());
                 }
-                match self.solicitation.sent_at(identifier, sequence) {
+                match self.ipv6.solicitation().sent_at(identifier, sequence) {
                     Some(sent_at) => Some((
                         now.saturating_duration_since(sent_at),
                         RttSource::SegmentWide,
@@ -1381,98 +1121,6 @@ impl LocalScanner {
             && let Some(tx) = &self.dns_tx
         {
             let _ = tx.send(source_addr);
-        }
-    }
-}
-
-// ╔════════════════════════════════════════════╗
-// ║ ████████╗███████╗███████╗████████╗███████╗ ║
-// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
-// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
-// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
-// ║    ██║   ███████╗███████║   ██║   ███████║ ║
-// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
-// ╚════════════════════════════════════════════╝
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The slowest answer to a *first* solicitation measured on a wireless
-    /// segment, asking one address at a time so the attribution is certain
-    /// (`benches/ndp_pace.rs`). The schedule is sized from it, so it is stated
-    /// once here rather than left implied by the constants.
-    const SLOWEST_MEASURED_ANSWER: Duration = Duration::from_millis(408);
-
-    /// The solicitation schedule has to outlast the replies without the sweep
-    /// paying for the slack, and both halves of that are easy to lose.
-    ///
-    /// Too short and a first attempt is retransmitted before the neighbour
-    /// could have answered, which does not merely waste a packet: two
-    /// solicitations are identical on the wire, so the round trip is discarded
-    /// rather than delayed. Too long and every sweep pays for it, because
-    /// [`DEADLINE_CONFIG`] is widened to outlive the longest probe whether or
-    /// not any IPv6 neighbour turns out to be slow.
-    #[test]
-    fn the_solicitation_schedule_outlasts_the_replies_without_the_sweep_paying_for_it() {
-        assert!(
-            NDP_RETRY_POLICY.initial_rto > SLOWEST_MEASURED_ANSWER,
-            "a first attempt must outlast the slowest answer measured, or the \
-             retry lands first and Karn's rule discards the sample"
-        );
-        assert!(
-            NDP_RETRY_POLICY.min_rto >= SLOWEST_MEASURED_ANSWER / 2,
-            "the floor is the schedule for every neighbour with no measurement \
-             of its own, so it cannot sit far below where the answers are"
-        );
-        assert!(
-            NDP_RETRY_POLICY.worst_case_probe_lifetime() < Duration::from_secs(3),
-            "the sweep's deadline is sized from this, so slack here is charged \
-             to every scan whether or not any IPv6 neighbour is slow"
-        );
-    }
-
-    /// A neighbour with no measurement of its own must be timed by the policy,
-    /// never by what some other neighbour on the segment answered in.
-    ///
-    /// The two populations on one wireless link differ by orders of magnitude —
-    /// a mains-powered device against a sleeping one — so a scan-wide estimate
-    /// describes neither, and inheriting the fast one silently replaces the
-    /// declared schedule with the floor.
-    #[test]
-    fn a_neighbours_schedule_is_not_inherited_from_a_faster_one() {
-        let router: IpAddr = "fe80::1".parse().unwrap();
-        let sleeper: IpAddr = "fe80::2".parse().unwrap();
-
-        // The largest wait the floor could ever produce. Anything at or below
-        // it means the scan's own fast answer was applied to a neighbour that
-        // has told it nothing, which is the whole defect.
-        let floor = NDP_RETRY_POLICY
-            .min_rto
-            .mul_f64(1.0 + NDP_RETRY_POLICY.jitter);
-
-        // Across seeds, because the schedule is jittered and one draw is not
-        // evidence about the rule.
-        for seed in [1, 0x5EED, 0xC0FFEE, u64::MAX] {
-            let mut ledger: Ledger = ProbeLedger::seeded(NDP_RETRY_POLICY, 4, seed);
-            let start = Instant::now();
-
-            ledger.arm(router, router, (), start);
-            ledger.resolve(&router, None, start + Duration::from_millis(5));
-
-            ledger.arm(sleeper, sleeper, (), start);
-            let due = ledger.next_due().expect("the sleeper has a timer");
-
-            assert!(
-                due.saturating_duration_since(start) > floor,
-                "a router answering in 5 ms must not schedule the retry for a \
-                 neighbour that has not answered at all (seed {seed})"
-            );
-            assert!(
-                due.saturating_duration_since(start) > SLOWEST_MEASURED_ANSWER,
-                "and the wait must still outlast the slowest answer measured \
-                 (seed {seed})"
-            );
         }
     }
 }
