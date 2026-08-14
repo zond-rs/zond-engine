@@ -51,12 +51,12 @@ use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
 use crate::error;
-use crate::model::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
-use crate::model::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
 use crate::model::target::Target;
-use crate::model::timer::ScanBudget;
+use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::scanner::pacing::retry::{Due, ProbeLedger, RetryPolicy, SilentHostPolicy};
+use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{PortScanner, StrategyError};

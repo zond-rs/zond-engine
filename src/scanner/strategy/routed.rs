@@ -29,13 +29,13 @@ use std::{
 };
 
 use crate::config::ProbeTuning;
-use crate::model::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
-use crate::model::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
 use crate::model::technique::TcpScanTechnique;
-use crate::model::timer::ScanBudget;
 use crate::protocols as protocol;
+use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
+use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::session::ScanContext;
 use crate::system::interface::RoutedTarget;
 use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};

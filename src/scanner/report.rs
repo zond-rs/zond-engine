@@ -21,7 +21,7 @@
 //!
 //! That distinction matters because a bare list of hosts is not a result anyone
 //! can act on. "Nine hosts on a /24" means one thing after a
-//! [`Thorough`](crate::model::retry::ScanEffort::Thorough) privileged
+//! [`Thorough`](crate::config::ScanEffort::Thorough) privileged
 //! sweep and quite another after an unprivileged connect fallback that lost its
 //! routed scanner to a permissions error. The hosts are identical in both; only
 //! the report separates them.
@@ -62,6 +62,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::config::RetryConfig;
 use crate::config::{SendMode, ZondConfig};
 use crate::model::capture::CaptureCounts;
 use crate::model::host::{Host, HostStatus};
@@ -69,7 +70,6 @@ use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::model::port::{PortSet, PortState, Protocol};
-use crate::model::retry::RetryConfig;
 use crate::model::target::{TargetMap, TargetSet};
 use crate::model::technique::TcpScanTechnique;
 use crate::scanner::session::{ScanContext, ScannerKind};
@@ -264,7 +264,7 @@ pub const BUCKET_BOUNDS_MS: [u64; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1_000];
 /// rest are lumped together.
 ///
 /// Sized past the largest budget any path runs (five, under
-/// [`ScanEffort::Thorough`](crate::model::retry::ScanEffort)), so the
+/// [`ScanEffort::Thorough`](crate::config::ScanEffort)), so the
 /// distribution is reported in full for every configuration that ships and a
 /// hand-raised budget still has somewhere to land.
 pub const ATTEMPTS_COUNTED: usize = 6;

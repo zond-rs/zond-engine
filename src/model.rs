@@ -10,17 +10,35 @@
 //!
 //! What a scan talks about: a [`Host`](host::Host), a [`Port`](port::Port), the
 //! addresses to visit ([`IpSet`](ip::set::IpSet), [`TargetMap`](target::TargetMap)),
-//! and the measurements a probe produces on the way ([`RttWindow`](rtt_window::RttWindow),
-//! [`CaptureCounts`](capture::CaptureCounts)).
+//! and what a probe observed on the way
+//! ([`CaptureCounts`](capture::CaptureCounts)).
 //!
 //! **This module depends on nothing else in the crate, and that is a property to
 //! keep rather than an accident of how it grew.** Every other module names these
 //! types — the scanners fill them in, the report records them, the exporters
 //! write them out, the parsers construct them — so anything this layer reached
 //! back up to would be pulled into the foundation with it, and the layering
-//! below it would stop meaning anything. A type belongs here when more than one
-//! module has to agree on it; a type that only one module uses belongs in that
-//! module.
+//! below it would stop meaning anything.
+//!
+//! ## What belongs here
+//!
+//! **A type belongs here when more than one module has to agree on it; a type
+//! that only one module uses belongs in that module.** That rule is easy to
+//! state and easy to drift from, because a leaf everything can reach is a
+//! convenient place to put anything. It has drifted once already: the retry
+//! ledger, the adaptive deadline, the scan timer and the round-trip window all
+//! lived here, and every one of them was named by exactly one module. They are
+//! [`scanner::pacing`](crate::scanner::pacing) now — a `ProbeLedger` is not
+//! something a scan *talks about*, it is how a scan is *run*.
+//!
+//! The knobs that survived that move are the test for the rule. [`ScanEffort`]
+//! and [`RetryConfig`] are set by a caller, scaled by the scanner and recorded
+//! in the report, so three modules must agree on them — and they are in
+//! [`crate::config`] rather than here, because what a caller *asks for* is its
+//! own vocabulary and is answered before a scan starts.
+//!
+//! [`ScanEffort`]: crate::config::ScanEffort
+//! [`RetryConfig`]: crate::config::RetryConfig
 //!
 //! For the same reason nothing here is serializable. The wire format is a
 //! separate contract, written out by hand in
@@ -34,15 +52,10 @@
 //! constructing a target does not drag the host's interface table into the leaf.
 
 pub mod capture;
-pub mod deadline;
-pub mod fingerprint;
 pub mod host;
 pub mod ip;
 pub mod mac;
 pub mod parse;
 pub mod port;
-pub mod retry;
-pub mod rtt_window;
 pub mod target;
 pub mod technique;
-pub mod timer;

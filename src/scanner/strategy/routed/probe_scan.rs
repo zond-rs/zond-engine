@@ -42,10 +42,10 @@
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use crate::model::deadline::AdaptiveDeadline;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
-use crate::model::retry::{Due, ProbeLedger};
 use crate::scanner::audit::ProbeAudit;
+use crate::scanner::pacing::deadline::AdaptiveDeadline;
+use crate::scanner::pacing::retry::{Due, ProbeLedger};
 use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::system::interface::SourceResolver;

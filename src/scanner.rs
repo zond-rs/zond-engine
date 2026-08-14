@@ -130,6 +130,7 @@ pub mod session;
 // interchangeable. Public unconditionally: a caller who wants to aim one
 // scanner at one segment, rather than ask this module to plan a whole scan, is
 // doing something this engine supports rather than something it tolerates.
+pub mod pacing;
 pub mod plan;
 pub mod strategy;
 

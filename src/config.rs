@@ -9,7 +9,6 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::model::retry::RetryConfig;
 use crate::model::technique::TcpScanTechnique;
 
 /// How the privileged (raw) scanners put probe packets on the wire.
@@ -86,6 +85,130 @@ impl FromStr for SendMode {
             .ok_or_else(|| UnknownSendMode {
                 input: s.to_string(),
             })
+    }
+}
+
+/// How much effort a scan spends before accepting silence as an answer.
+///
+/// Every probing path has its own tuned
+/// [`RetryPolicy`](crate::scanner::pacing::retry::RetryPolicy), set against what its
+/// protocol actually requires - a SYN is answered as fast as the path allows, an
+/// ICMP error only as fast as the host is permitted to send one. This scales
+/// that starting point rather than replacing it, so choosing "fast" does not
+/// quietly hand the UDP scanner a schedule its protocol cannot satisfy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScanEffort {
+    /// One probe per target and no repeats.
+    ///
+    /// A first-class choice rather than a disabled feature: it is what an
+    /// address-space-scale sweep wants, where per-probe state cannot be afforded
+    /// and coverage is bought with a second pass instead.
+    Single,
+    /// Fewer attempts and less patience. For a network already known to be
+    /// healthy, where a missed host is cheaper than the time spent confirming
+    /// one is absent.
+    Fast,
+    #[default]
+    Balanced,
+    /// More attempts, more patience, and no shortcuts on hosts that stay
+    /// silent. For a lossy path, or a result someone is going to act on.
+    Thorough,
+}
+
+impl ScanEffort {
+    /// Every level, ordered from least effort to most.
+    pub const ALL: [ScanEffort; 4] = [
+        ScanEffort::Single,
+        ScanEffort::Fast,
+        ScanEffort::Balanced,
+        ScanEffort::Thorough,
+    ];
+
+    /// The name this level is written under, wherever it arrives as text.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ScanEffort::Single => "single",
+            ScanEffort::Fast => "fast",
+            ScanEffort::Balanced => "balanced",
+            ScanEffort::Thorough => "thorough",
+        }
+    }
+}
+
+impl std::fmt::Display for ScanEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The error parsing a [`ScanEffort`] returns, carrying the names that would
+/// have worked so a front end can print it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown scan effort '{input}', expected one of: single, fast, balanced, thorough")]
+pub struct UnknownScanEffort {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl std::str::FromStr for ScanEffort {
+    type Err = UnknownScanEffort;
+
+    /// Parses an effort name, ignoring case and surrounding whitespace, so a
+    /// choice arriving as text - from an argument, a form field, a settings
+    /// file - needs no mapping table of its own.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::config::ScanEffort;
+    ///
+    /// assert_eq!("Thorough".parse(), Ok(ScanEffort::Thorough));
+    /// assert!("maximum".parse::<ScanEffort>().is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|effort| effort.name() == name)
+            .ok_or_else(|| UnknownScanEffort {
+                input: s.to_string(),
+            })
+    }
+}
+
+/// User control over retransmission, applied on top of each scanner's own
+/// profile.
+///
+/// Comparable so a report can state whether two runs were asked for the same
+/// effort. Not [`Eq`]: `timeout_scale` is a float, and a scale nobody can write
+/// down exactly is not a scale two runs should be claimed to share.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RetryConfig {
+    pub effort: ScanEffort,
+    /// Replaces the attempt budget outright, whatever `effort` implies. One
+    /// disables retransmission.
+    pub max_attempts: Option<u8>,
+    /// Multiplies how long the scan is willing to wait.
+    ///
+    /// Deliberately does not touch the shortest timeout a policy allows. That
+    /// floor is not a preference to be traded away, it is what the protocol
+    /// costs: retrying a UDP probe sooner than the target is permitted to answer
+    /// is not a faster scan, it is a wasted packet.
+    pub timeout_scale: Option<f64>,
+    /// Whether a host that answers nothing at all may have its budget cut.
+    /// Turning this off spends the full budget on every port of every silent
+    /// address, which is thorough and expensive.
+    pub dampen_silent_hosts: bool,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            effort: ScanEffort::default(),
+            max_attempts: None,
+            timeout_scale: None,
+            dampen_silent_hosts: true,
+        }
     }
 }
 
@@ -205,7 +328,7 @@ pub struct ZondConfig {
     /// requires; this scales those rather than replacing them, so raising or
     /// lowering the effort cannot hand a scanner a schedule its protocol cannot
     /// satisfy. Defaults to
-    /// [`ScanEffort::Balanced`](crate::model::retry::ScanEffort::Balanced).
+    /// [`ScanEffort::Balanced`].
     pub retry: RetryConfig,
 }
 

@@ -37,15 +37,16 @@ use pnet::packet::ethernet::EthernetPacket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
-use crate::model::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::config::RetryConfig;
 use crate::model::host::telemetry::RttSource;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
-use crate::model::retry::{Due, ProbeLedger, RetryConfig, RetryPolicy};
-use crate::model::timer::ScanBudget;
 use crate::protocols::{self as protocol, ethernet};
 use crate::scanner::audit::ProbeAudit;
+use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::scanner::pacing::retry::{Due, ProbeLedger, RetryPolicy};
+use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{HostScanner, StrategyError};
@@ -769,7 +770,7 @@ impl LocalScanner {
         &mut self,
         address: &IpAddr,
         now: Instant,
-    ) -> Option<crate::model::retry::Resolution> {
+    ) -> Option<crate::scanner::pacing::retry::Resolution> {
         if address.is_ipv6() {
             self.ipv6.resolve(address, now)
         } else {

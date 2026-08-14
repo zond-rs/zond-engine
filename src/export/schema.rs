@@ -68,6 +68,7 @@ use serde::Serialize;
 use serde::ser::{SerializeSeq, Serializer};
 
 use crate::config::SendMode;
+use crate::config::{RetryConfig, ScanEffort};
 use crate::export::ExportOptions;
 use crate::export::time::rfc3339;
 use crate::model::capture::CaptureCounts;
@@ -80,7 +81,6 @@ use crate::model::port::{
     CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, ScriptOutput, Security,
     Service,
 };
-use crate::model::retry::{RetryConfig, ScanEffort};
 use crate::scanner::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, ScanKind, ScanPhase, ScanReport, ScanSettings,
     ScanSummary, ScannerFailure, StopReason, TargetScope,

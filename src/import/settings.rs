@@ -135,9 +135,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::config::ScanEffort;
 use crate::config::{SendMode, ZondConfig};
 use crate::model::port::PortSet;
-use crate::model::retry::ScanEffort;
 use crate::model::technique::TcpScanTechnique;
 
 /// The name a settings document is expected to have on disk.

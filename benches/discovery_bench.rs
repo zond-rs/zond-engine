@@ -92,11 +92,11 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use zond_engine::config::ZondConfig;
+use zond_engine::config::{RetryConfig, ScanEffort};
 use zond_engine::export::schema::status_protocol_name;
 use zond_engine::model::host::Host;
 use zond_engine::model::parse::IS_LAN_SCAN;
 use zond_engine::model::parse::ip::to_set_with as to_ipset_with;
-use zond_engine::model::retry::{RetryConfig, ScanEffort};
 use zond_engine::scanner;
 use zond_engine::system::interface;
 

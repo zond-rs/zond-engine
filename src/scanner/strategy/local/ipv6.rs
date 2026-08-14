@@ -52,7 +52,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use crate::model::retry::{Due, ProbeLedger, Resolution, RetryPolicy};
+use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy};
 
 /// Outstanding per-address solicitations and the schedule they are retried on.
 ///
@@ -470,7 +470,7 @@ impl Ipv6Discovery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::retry::ProbeLedger;
+    use crate::scanner::pacing::retry::ProbeLedger;
 
     /// The slowest answer to a *first* solicitation measured on a wireless
     /// segment, asking one address at a time so the attribution is certain

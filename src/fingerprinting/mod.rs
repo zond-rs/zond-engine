@@ -47,6 +47,7 @@ mod matcher;
 mod pattern;
 mod prefilter;
 mod response;
+mod signature;
 mod ssh;
 mod tls;
 mod tls_cert;
@@ -59,6 +60,14 @@ pub use db::SignatureDb;
 pub use http::HttpHeadersAnalyzer;
 pub use model::{Confidence, Evidence, ServiceVerdict, SourceId, Tunnel};
 pub use response::{Collected, ResponseSet, TlsInfo};
+// The schema an `assets/fingerprinting` signature file is written against.
+// `build.rs` compiles the shipped signatures out of it and validates them; these
+// are exported so a consumer authoring signatures of their own is held to the
+// same bounds rather than discovering them when a pattern is silently dropped.
+pub use signature::{
+    MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, MatchRule, Probe, ServiceDefinition,
+    ServiceSignature,
+};
 pub use ssh::SshAnalyzer;
 pub use tls_cert::TlsCertAnalyzer;
 

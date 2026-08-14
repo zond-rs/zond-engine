@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 /// that the caller supplies on each check. That tolerance is intentionally
 /// not fixed at construction time: a caller can widen or narrow it as it
 /// learns more about current network conditions (for example, from an
-/// [`crate::model::rtt_window::RttWindow`]).
+/// [`crate::scanner::pacing::rtt_window::RttWindow`]).
 #[derive(Debug, Clone, Copy)]
 pub struct ScanTimer {
     // Configuration

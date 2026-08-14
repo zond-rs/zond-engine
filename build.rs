@@ -19,7 +19,7 @@
 //! build warnings.
 //!
 //! The authoring schema is not redefined here: it is `include!`d from the
-//! canonical definitions in `src/model/fingerprint.rs`, so the build-time
+//! canonical definitions in `src/fingerprinting/signature.rs`, so the build-time
 //! and runtime views can never drift apart.
 
 use std::env;
@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 /// The authoring schema, shared verbatim with the runtime. Kept in an inner
 /// module so its items don't leak into the build script's namespace.
 mod schema {
-    include!("src/model/fingerprint.rs");
+    include!("src/fingerprinting/signature.rs");
 }
 
 /// The pattern-compilation logic, shared verbatim with the runtime so the build
@@ -46,7 +46,7 @@ use schema::{MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, ServiceDefinition, u
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/fingerprinting");
-    println!("cargo:rerun-if-changed=src/model/fingerprint.rs");
+    println!("cargo:rerun-if-changed=src/fingerprinting/signature.rs");
 
     let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest_path = Path::new(&out_dir).join("fingerprints.bin");

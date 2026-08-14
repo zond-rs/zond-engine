@@ -41,7 +41,7 @@
 //! Every probing path needs this and every one of them already kept the state it
 //! requires, which argued for one shared retry policy beside `AdaptiveDeadline`
 //! rather than several implementations drifting apart. It landed that way, in
-//! `model::retry`. These tests assert on observable behaviour and assume
+//! `scanner::pacing::retry`. These tests assert on observable behaviour and assume
 //! none of it, so they stay honest regardless of how it is built.
 //!
 //! The one number they do assume is the attempt count, kept in [`ATTEMPTS`]

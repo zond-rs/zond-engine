@@ -38,7 +38,7 @@ use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 
-use crate::model::fingerprint::{ServiceDefinition, unescape};
+use crate::fingerprinting::signature::{ServiceDefinition, unescape};
 
 use super::matcher::Signature;
 use super::prefilter::LiteralPrefilter;
@@ -245,7 +245,7 @@ impl SignatureDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::fingerprint::{MatchRule, Probe, ServiceSignature};
+    use crate::fingerprinting::signature::{MatchRule, Probe, ServiceSignature};
 
     fn def(name: &str, ports: Vec<u16>, patterns: &[&str]) -> ServiceDefinition {
         ServiceDefinition {

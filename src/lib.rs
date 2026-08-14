@@ -113,7 +113,10 @@
 //! - [`model`] — the vocabulary every other module names: [`Host`], [`Port`],
 //!   [`IpSet`], [`TargetMap`], and the grammars that construct them from what a
 //!   person wrote. It depends on nothing else here.
-//! - [`config`] — what a caller asks for before a scan starts.
+//! - [`config`] — what a caller asks for before a scan starts, including the
+//!   effort a scan is worth spending. Separate from [`model`] because a request
+//!   is not a finding, and separate from [`scanner`] because a report has to
+//!   record what was asked for whether or not a scan ever ran.
 //! - [`protocols`] — building and parsing packets, as bytes and nothing else.
 //! - [`transport`] — the sockets and captures that carry those bytes. Kept apart
 //!   from [`protocols`] because one half needs a NIC and root and the other half
@@ -164,11 +167,10 @@ pub(crate) mod logging;
 // well, so this is a convenience and never the only way to name a type; what it
 // costs is that each name is a commitment, which is why the crate's whole
 // vocabulary is not re-exported wholesale.
-pub use crate::config::{SendMode, ZondConfig};
+pub use crate::config::{RetryConfig, ScanEffort, SendMode, ZondConfig};
 pub use crate::model::host::{Host, HostStatus};
 pub use crate::model::ip::set::IpSet;
 pub use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
-pub use crate::model::retry::{RetryConfig, ScanEffort};
 pub use crate::model::target::{Target, TargetMap, TargetSet};
 pub use crate::model::technique::TcpScanTechnique;
 pub use crate::scanner::handle::ScanHandle;
