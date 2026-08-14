@@ -25,7 +25,7 @@ pub use windows_impl::{is_physical, is_wireless};
 
 /// Determines if the interface corresponds to a physical adapter (not virtual).
 #[cfg(target_os = "linux")]
-pub mod linux_impl {
+mod linux_impl {
     use super::*;
     use std::path::Path;
 
@@ -59,7 +59,7 @@ pub mod linux_impl {
 /// `false` for everything, and a `lan` sweep finds no interface to run on rather
 /// than picking a wrong one.
 #[cfg(target_os = "macos")]
-pub mod macos_impl {
+mod macos_impl {
     use super::*;
     use std::collections::HashSet;
     use std::process::Command;
@@ -127,7 +127,7 @@ pub mod macos_impl {
 }
 
 #[cfg(target_os = "windows")]
-pub mod windows_impl {
+mod windows_impl {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashSet;

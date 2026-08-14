@@ -176,9 +176,12 @@ pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<
 /// same host recurs across every port it probes: the first probe to a host
 /// does the work, and every later port reuses the cached result.
 ///
-/// On-link destinations are answered from the in-memory [`OnLinkTable`];
-/// everything else falls back to [`probe_route_source`], and then to
-/// `plausible_source` when the kernel declines.
+/// Three sources, in descending order of confidence. On-link destinations are
+/// answered from an in-memory table of each interface's own subnets. Everything
+/// else is put to the kernel, by connecting a UDP socket to the target and
+/// reading back the address it chose — which asks the routing table without
+/// sending a packet. When the kernel declines, the last resort is any address
+/// on an interface that could plausibly carry the traffic.
 pub struct SourceResolver {
     onlink: OnLinkTable,
     sockets: ProbeSockets,

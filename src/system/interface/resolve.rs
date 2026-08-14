@@ -30,7 +30,7 @@ pub fn resolve_zone(name: &str) -> Option<u32> {
         .map(|iface| iface.index)
 }
 
-pub fn resolve(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
+pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
     match keyword {
         Keyword::Lan => resolve_lan(ip_set),
         Keyword::Vpn => Err(IpParseError::LanError(

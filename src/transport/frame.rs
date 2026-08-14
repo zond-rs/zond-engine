@@ -50,7 +50,7 @@ use pnet::util::MacAddr;
 
 use crate::protocols::ethernet;
 use crate::protocols::ip;
-use crate::protocols::utils::{ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN};
+use crate::protocols::sizes::{ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN};
 
 /// The subset of `pcap` data-link types this crate knows how to strip down to
 /// an IP packet. Anything else is [`LinkType::Unsupported`] and the caller

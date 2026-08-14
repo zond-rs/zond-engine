@@ -13,9 +13,9 @@ pub mod icmp;
 pub mod ip;
 pub mod mdns;
 pub mod ndp;
+pub mod sizes;
 pub mod tcp;
 pub mod udp;
-pub mod utils;
 
 use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::set::IpSet;

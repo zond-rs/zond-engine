@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::protocols::ethernet;
-use crate::protocols::utils::{ARP_LEN, MIN_ETH_FRAME_NO_FCS};
+use crate::protocols::sizes::{ARP_LEN, MIN_ETH_FRAME_NO_FCS};
 use anyhow::Context;
 use pnet::datalink::MacAddr;
 use pnet::packet::Packet;

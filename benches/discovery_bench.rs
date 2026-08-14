@@ -238,8 +238,8 @@ async fn main() {
     // error rather than a silently different target set.
     let ips = to_ipset_with(
         &[targets.as_str()],
-        Some(interface::resolve::resolve),
-        Some(interface::resolve::resolve_zone),
+        Some(interface::resolve_keyword),
+        Some(interface::resolve_zone),
     )
     .unwrap_or_else(|e| fail(&format!("target expression `{targets}`: {e}")));
     let total = ips.len();

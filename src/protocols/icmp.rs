@@ -8,7 +8,7 @@
 
 use crate::protocols::ethernet;
 use crate::protocols::ip;
-use crate::protocols::utils::{ETH_HDR_LEN, ICMP_V6_ECHO_REQ_LEN, IP_V6_HDR_LEN};
+use crate::protocols::sizes::{ETH_HDR_LEN, ICMP_V6_ECHO_REQ_LEN, IP_V6_HDR_LEN};
 use anyhow::Context;
 use pnet::datalink::MacAddr;
 use pnet::packet::Packet;

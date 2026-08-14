@@ -8,7 +8,7 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::protocols::utils::{IP_V4_HDR_LEN, IP_V6_HDR_LEN, UDP_HDR_LEN};
+use crate::protocols::sizes::{IP_V4_HDR_LEN, IP_V6_HDR_LEN, UDP_HDR_LEN};
 use anyhow::Context;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};

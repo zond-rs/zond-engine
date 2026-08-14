@@ -13,16 +13,24 @@
 //! and routing an arbitrary set of network targets securely out of the host boundaries.
 //!
 //! Exposes a clean facade for all interface management logic to consumers.
-pub mod ext;
-pub mod lan;
-pub mod os;
-pub mod resolve;
-pub mod routing;
-pub mod source;
-pub mod utils;
+//!
+//! **The facade is the whole of it.** Every name below is re-exported here and
+//! the modules holding them are private, so each has exactly one public path.
+//! Naming both would commit the crate to two spellings of every item and to the
+//! file layout underneath, and the layout is where this module still moves: how
+//! a source address is chosen is an implementation detail that has changed twice
+//! and will again, while `SourceResolver` is the answer either way.
+mod ext;
+mod lan;
+mod os;
+mod resolve;
+mod routing;
+mod source;
+mod utils;
 
 pub use ext::NetworkInterfaceExtension;
 pub use lan::{LanLink, ViabilityError, get_lan_link, get_lan_network};
+pub use resolve::{resolve_keyword, resolve_zone};
 pub use routing::{RoutedTarget, RoutedTargets, map_ips_to_interfaces};
 pub use source::SourceResolver;
 pub use utils::{get_prioritized_interfaces, is_layer_2_capable, is_on_link};

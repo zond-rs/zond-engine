@@ -50,7 +50,7 @@ use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, checksum};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use std::net::Ipv6Addr;
 
-use crate::protocols::utils::{ETH_HDR_LEN, IP_V6_HDR_LEN};
+use crate::protocols::sizes::{ETH_HDR_LEN, IP_V6_HDR_LEN};
 use crate::protocols::{ethernet, ip};
 
 /// A neighbor solicitation carrying one source link-layer address option: the
