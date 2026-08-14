@@ -62,6 +62,7 @@ use crate::model::ip::range::{IpRange, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::model::port::Protocol;
 use crate::model::technique::TcpScanTechnique;
+use crate::scanner::pacing::limits;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::connect::{
     ConnectPortScanner, ConnectScanner, ConnectUdpPortScanner,
@@ -69,7 +70,6 @@ use crate::scanner::strategy::connect::{
 use crate::scanner::strategy::local::{LocalScanner, Scope};
 use crate::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
-use crate::scanner::tuning;
 use crate::system::interface::{self, RoutedTarget};
 use crate::system::neighbors;
 use crate::{info, warn};
@@ -367,11 +367,11 @@ impl PortScanStep {
             )?)),
             Self::ConnectTcp => Ok(Box::new(ConnectPortScanner::new(
                 ctx,
-                tuning::CONNECT_CONCURRENCY,
+                limits::CONNECT_CONCURRENCY,
             ))),
             Self::ConnectUdp => Ok(Box::new(ConnectUdpPortScanner::new(
                 ctx,
-                tuning::CONNECT_CONCURRENCY,
+                limits::CONNECT_CONCURRENCY,
             ))),
         }
     }

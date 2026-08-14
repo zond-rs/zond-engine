@@ -28,11 +28,12 @@ use crate::model::port::{Port, PortSet, PortState, Protocol};
 use crate::model::target::{Target, TargetMap, TargetSet};
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::dispatcher::Dispatcher;
+use crate::scanner::pacing::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
+use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
-use crate::scanner::{payload, tuning};
 use async_trait::async_trait;
 use dashmap::DashSet;
 use std::io::ErrorKind;
@@ -239,7 +240,7 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
     if probed.answered {
         // A connect probe carries no attempt token: the retransmission that may
         // have produced this answer was the host stack's, on its own schedule
-        // (see `tuning::CONNECT_PROBE_TIMEOUT`), so which attempt was answered is
+        // (see `CONNECT_PROBE_TIMEOUT`), so which attempt was answered is
         // not knowable from here.
         audit.record_host_found(None);
     }
@@ -276,12 +277,7 @@ async fn port_prober(target: Target) -> ProbedPort {
 
     let socket_addr = SocketAddr::new(target.ip, target.port);
 
-    match timeout(
-        tuning::CONNECT_PROBE_TIMEOUT,
-        TcpStream::connect(socket_addr),
-    )
-    .await
-    {
+    match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
         Ok(Ok(stream)) => {
             let port =
                 crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Open);
@@ -415,7 +411,7 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
     }
 
     let mut buf = [0u8; 1024];
-    match timeout(tuning::CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
+    match timeout(CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
         // Something answered, so something is listening.
         Ok(Ok(_)) => record(PortState::Open, true),
         // An ICMP Port Unreachable, surfaced against the connected peer.
@@ -444,7 +440,7 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
 /// skipped, so a host is recorded once rather than once per open port. Targets
 /// are drawn from a shuffling [`Dispatcher`] to spread load across the network
 /// instead of hammering one subnet at a time, and each probe waits out the
-/// [`CONNECT_PROBE_TIMEOUT`](crate::scanner::tuning::CONNECT_PROBE_TIMEOUT) so that hosts on slow
+/// [`CONNECT_PROBE_TIMEOUT`] so that hosts on slow
 /// or distant links still register.
 pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError> {
     let mut target_map = TargetMap::new();
@@ -459,10 +455,9 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError>
     let mut rx = dispatcher.run_shuffled(&ctx.handle);
     let found_hosts = Arc::new(DashSet::new());
     let folder = ctx.clone();
-    let mut pool = ProbePool::new(
-        tuning::DISCOVERY_CONCURRENCY,
-        |probed, audit: &mut ProbeAudit| absorb_host(&folder, probed, audit),
-    );
+    let mut pool = ProbePool::new(DISCOVERY_CONCURRENCY, |probed, audit: &mut ProbeAudit| {
+        absorb_host(&folder, probed, audit)
+    });
 
     let mut probes = 0u128;
     let mut reason = StopReason::AttemptsSpent;
@@ -548,12 +543,7 @@ async fn prober(target: Target, found_set: Arc<DashSet<IpAddr>>) -> ProbedHost {
     let socket_addr: SocketAddr = SocketAddr::new(target.ip, target.port);
 
     let start: Instant = Instant::now();
-    let alive = match timeout(
-        tuning::CONNECT_PROBE_TIMEOUT,
-        TcpStream::connect(socket_addr),
-    )
-    .await
-    {
+    let alive = match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
         // A completed handshake means the host is alive.
         Ok(Ok(_)) => true,
         // Only these TCP errors imply the host answered at the IP/TCP layer. Any

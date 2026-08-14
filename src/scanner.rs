@@ -136,8 +136,8 @@ pub mod strategy;
 
 // What a strategy needs and what reads its output. `dispatcher` turns a target
 // map into the stream a `PortScanner` consumes, `audit` is what a raw strategy
-// records about its own run, `resolver` is the hostname tail, and `pool`,
-// `payload` and `tuning` are shared probe machinery.
+// records about its own run, `resolver` is the hostname tail, and `pool` and
+// `payload` are shared probe machinery.
 pub mod audit;
 pub mod dispatcher;
 pub mod pool;
@@ -145,7 +145,6 @@ pub mod resolver;
 pub mod service;
 
 pub mod payload;
-pub mod tuning;
 
 /// An error returned when a scan fails to run to completion.
 #[non_exhaustive]
@@ -544,7 +543,7 @@ fn ensure_coverage(
         if technique.finds_open_ports() {
             scanners.push(Box::new(strategy::connect::ConnectPortScanner::new(
                 ctx.clone(),
-                tuning::CONNECT_CONCURRENCY,
+                pacing::limits::CONNECT_CONCURRENCY,
             )));
         } else {
             ctx.record_failure(
@@ -561,7 +560,7 @@ fn ensure_coverage(
     if !covered.contains(&Protocol::Udp) {
         scanners.push(Box::new(strategy::connect::ConnectUdpPortScanner::new(
             ctx.clone(),
-            tuning::CONNECT_CONCURRENCY,
+            pacing::limits::CONNECT_CONCURRENCY,
         )));
     }
 

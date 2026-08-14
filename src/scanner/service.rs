@@ -37,9 +37,9 @@ use crate::warn;
 use tokio::time::timeout;
 
 use crate::model::port::{Port, PortState, Protocol};
+use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::ScanContext;
-use crate::scanner::tuning::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 
 /// Fingerprints every open TCP port currently in the store, upgrading each
 /// port's service in place.

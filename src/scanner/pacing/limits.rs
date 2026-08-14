@@ -6,20 +6,23 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Scan tuning
+//! # What the unprivileged paths cannot measure for themselves
 //!
-//! The timeouts and concurrency ceilings the unprivileged (TCP connect) scan
-//! paths run against, gathered in one place. These used to be declared per module:
-//! a `1000ms` connect budget spelled once in [`connect`](crate::scanner::strategy::connect) and again
-//! in [`service`](crate::scanner::service), and a fan-out of `50` living as both a
-//! [`scan`](crate::scanner::scan) constant and a `service` constant. Tuning one copy then
-//! quietly left the other behind. Defining them here once keeps the knobs
-//! consistent and easy to find.
+//! The timeouts and concurrency ceilings the TCP-connect scan paths run
+//! against, in one place because more than one path uses each of them: the
+//! connect port scanner, the connect discovery sweep and the service-detection
+//! pass all open the same kind of connection for the same purpose. A budget
+//! spelled separately in each is a budget that gets tuned in one and left behind
+//! in the others, and the failure is silent — the paths simply stop agreeing
+//! about how patient a scan is.
 //!
-//! Only the connect-based paths are covered. The raw-socket scanners size
-//! themselves adaptively from observed round-trip times (see
-//! [`AdaptiveDeadline`](crate::scanner::pacing::deadline::AdaptiveDeadline)) rather
-//! than from fixed constants, so they have no knobs to gather here.
+//! **Only the connect paths need constants at all.** A raw scanner measures the
+//! round trips it is getting and sizes its own patience from them (see
+//! [`AdaptiveDeadline`](super::deadline::AdaptiveDeadline)). A connect probe
+//! cannot: it sends one SYN, the kernel owns the retransmission, and the scanner
+//! never sees a round trip it could learn from. So its numbers come from what
+//! the protocol guarantees rather than from what the network is doing, and each
+//! one below says which guarantee.
 
 use std::time::Duration;
 
