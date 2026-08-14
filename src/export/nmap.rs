@@ -396,7 +396,6 @@ fn transport(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Tcp => "tcp",
         Protocol::Udp => "udp",
-        Protocol::Sctp => "sctp",
     }
 }
 

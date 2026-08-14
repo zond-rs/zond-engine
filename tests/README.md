@@ -75,16 +75,24 @@ not a test that is switched off. It runs, it fails for the reason it says, and
 removing the attribute is the definition of done.
 
 `retransmission.rs` was written this way against a feature the engine did not
-have, and every test in it now runs. What remains under the convention is one
-known bug: `lan_discovery.rs` carries an ignored test reproducing a sweep that
-drops queued IPv6 replies.
+have, and every test in it now runs. **Nothing in `tests/` is currently ignored**,
+so the convention has no live claim under it right now.
 
-This file is also the one place in Tier 2 that takes seconds rather than
-milliseconds, because a bounded retry schedule is exactly what it is asserting
-on: a probe that is meant to go unanswered has to actually wait out every
-attempt before the verdict it produces means anything.
+The four `#[ignore]`d tests in the crate are a different thing entirely — they
+are gated on an environment rather than on a missing feature, and each says so in
+its attribute: two UDP scan tests need libpcap capture access, one nmap importer
+test needs a real document named by `ZOND_NMAP_XML`, and one nmap exporter test
+prints a document for external validation instead of asserting. They are not
+claims about unfinished work and removing the attribute is not the definition of
+done for any of them.
 
-An ignored test is a claim, so check it still fails for the reason it says:
+`retransmission.rs` is also the one place in Tier 2 that takes seconds rather
+than milliseconds, because a bounded retry schedule is exactly what it is
+asserting on: a probe that is meant to go unanswered has to actually wait out
+every attempt before the verdict it produces means anything.
+
+An ignored test that *is* a claim should still fail for the reason it says, so
+when one exists, check it:
 
 ```sh
 cargo test -- --ignored

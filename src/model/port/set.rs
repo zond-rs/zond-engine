@@ -298,12 +298,15 @@ impl FromIterator<(u16, Protocol)> for PortSet {
     fn from_iter<T: IntoIterator<Item = (u16, Protocol)>>(iter: T) -> Self {
         let mut tcp = Vec::new();
         let mut udp = Vec::new();
-        let mut sctp = Vec::new();
         for (port, proto) in iter {
+            // Every arm pushes into a field this struct stores. That is the
+            // whole guarantee: a protocol added to `Protocol` stops this
+            // compiling until somebody decides where its ports go, where a
+            // catch-all - or a local vector nobody returns - would drop them
+            // silently and produce a `PortSet` quietly missing what it was given.
             match proto {
                 Protocol::Tcp => tcp.push(port..=port),
                 Protocol::Udp => udp.push(port..=port),
-                Protocol::Sctp => sctp.push(port..=port),
             }
         }
         Self::merge_ranges(&mut tcp);

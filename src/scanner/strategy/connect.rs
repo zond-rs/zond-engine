@@ -86,9 +86,13 @@ impl HostScanner for ConnectScanner {
 struct Probed {
     /// The address probed.
     ip: IpAddr,
-    /// The port verdict, where there is one worth recording. A refusal proves
-    /// the port is closed but is deliberately not filed, which is why this is
-    /// separate from [`Probed::answered`].
+    /// The port verdict, where the probe produced one.
+    ///
+    /// Separate from [`Probed::answered`] because the two say different things:
+    /// a timeout yields a `Filtered` port and proves nothing about the host,
+    /// while a refusal yields a `Closed` port *and* proves the host is up. Only
+    /// a target that was never probed - UDP through a TCP prober - carries
+    /// `None`.
     port: Option<Port>,
     /// Whether the host answered. The kernel hands back a completed handshake or
     /// a `ConnectionRefused` only when a segment came back from the target, so
@@ -190,8 +194,9 @@ impl PortScanner for ConnectUdpPortScanner {
 /// This is the primary scanning strategy for callers without root privileges. It
 /// consumes a randomized stream of [`Target`]s from a [`Dispatcher`], holding the
 /// number of in-flight connections at or below `concurrency_limit` to avoid
-/// exhausting OS sockets, and records every non-closed port it finds into the
-/// shared [`ScanContext`] store.
+/// exhausting OS sockets, and records every port it probed into the shared
+/// [`ScanContext`] store - open, closed and filtered alike, so the list does not
+/// depend on whether the caller had root.
 pub async fn scan(
     mut rx: mpsc::Receiver<Target>,
     concurrency_limit: usize,
@@ -290,11 +295,26 @@ async fn port_prober(target: Target) -> ProbedPort {
         }
         Ok(Err(e)) => {
             match e.kind() {
-                // A refusal is a definite "closed"; no port is recorded, but the
-                // RST the kernel translated into it proves the host is up.
+                // A refusal is the clearest verdict this scanner ever gets, and
+                // it is filed as one. The RST the kernel translated into it
+                // proves two things at once: the port has nothing listening, and
+                // something is there to say so.
+                //
+                // Recorded rather than dropped because a port list that changes
+                // with the caller's privilege level is not a smaller answer, it
+                // is a different one. The raw path files `Closed` here, so
+                // omitting it left an unprivileged report with no `Closed` entry
+                // in its `ports_by_state` however many refusals it collected -
+                // a summary that was structurally wrong rather than merely
+                // incomplete, and exactly the kind of difference somebody
+                // diffing two scans would read as a change in the network.
                 ErrorKind::ConnectionRefused => Some(Probed {
                     ip: target.ip,
-                    port: None,
+                    port: Some(crate::fingerprinting::baseline_port(
+                        target.port,
+                        Protocol::Tcp,
+                        PortState::Closed,
+                    )),
                     answered: true,
                 }),
                 // Anything else failed without the target having answered - a

@@ -28,11 +28,19 @@ pub use set::{PortSet, PortSetParseError};
 ///
 /// Ordered so that a set of protocols has one canonical rendering, which is what
 /// keeps two scans of the same targets producing byte-identical reports.
+///
+/// **A variant exists here only once a scanner speaks it.** SCTP was listed
+/// before anything could probe it, and the cost was not the unused name: every
+/// `match` over this enum had to invent an answer for a case that never
+/// occurred, and [`PortSet`] invented the wrong one — it collected SCTP ports
+/// into a vector it never stored, so they vanished with no error. A protocol
+/// that cannot be probed is better absent than present and mishandled, and
+/// adding one back is a deliberate act that the compiler will walk through every
+/// site that has to decide something about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
     Tcp,
     Udp,
-    Sctp,
 }
 
 /// The reachability state of a specific port.

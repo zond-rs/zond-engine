@@ -349,11 +349,7 @@ mod tests {
 
         run(
             vec![Box::new(tcp_scanner)],
-            vec![
-                target(Protocol::Tcp, 80),
-                target(Protocol::Udp, 53),
-                target(Protocol::Sctp, 9),
-            ],
+            vec![target(Protocol::Tcp, 80), target(Protocol::Udp, 53)],
         )
         .await
         .expect("unroutable targets are not a failure");
