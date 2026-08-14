@@ -65,6 +65,7 @@ use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{ProbeKind, ProbeTransport};
 
 use super::icmp_error::{self, Unreachable};
+use super::probe_scan::RawProbeScan;
 use super::send_udp;
 use crate::scanner::audit::ProbeAudit;
 
@@ -163,39 +164,12 @@ const MAX_IN_FLIGHT: usize = 512;
 
 /// Probes specific `(address, port)` pairs with raw UDP packets.
 pub struct UdpPortScanner {
-    /// Resolves the source address to send each target's probe from, consulting
-    /// on-link subnets and the kernel routing table.
-    resolver: SourceResolver,
-    /// Shared state (host store, event channel, abort signal) for the scan
-    /// this prober is part of.
-    ctx: ScanContext,
-    /// Transport used to send raw UDP probes and receive replies (or ICMP errors).
-    transport: ProbeTransport,
-    /// Governs how long this scan keeps running, adapting to observed
-    /// round-trip times.
-    deadline: AdaptiveDeadline,
-    /// Probes sent but not yet resolved into a classification, and when each is
-    /// next due to be resent or written off.
-    ledger: Ledger,
-    /// Scratch space for the probes coming due on one iteration, reused so a
-    /// quiet tick allocates nothing.
-    due: Vec<Due<ProbeTarget>>,
-    /// The source port every probe in this scan is sent from. It is the scan's
-    /// identity on the wire: the capture filter narrows direct replies to it,
-    /// and an ICMP error's quoted datagram is only believed when it names this
-    /// port as its source. See the module documentation.
-    src_port: u16,
-    /// Why the first probe that could not be sent failed, if any did.
-    ///
-    /// Without this a scan whose probes never reached the wire reports every
-    /// port `OpenFiltered` - the same answer a firewall produces - and says
-    /// nothing about the difference. `OpenFiltered` is a claim about the
-    /// network; a probe that was never sent is a claim about this host.
-    send_failure: Option<String>,
-    /// Per-run counters, so a scan that resolved fewer probes than it sent can
-    /// be attributed to loss, to its own deadline, or to correlation rather than
-    /// guessed at. Reported once when the loop exits.
-    audit: ProbeAudit,
+    /// Everything a raw port scan carries and does regardless of protocol: the
+    /// transport, the ledger, the deadline, the pacing and the stop conditions.
+    /// What stays in this file is what a *UDP* probe is and what its answers
+    /// prove - which for UDP is mostly what an ICMP error proves, since an open
+    /// port is under no obligation to say anything at all.
+    core: RawProbeScan<()>,
 }
 
 impl UdpPortScanner {
@@ -271,15 +245,18 @@ impl UdpPortScanner {
         let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
 
         Self {
-            resolver,
-            ctx,
-            transport,
-            deadline: AdaptiveDeadline::new(deadline_config, target_count),
-            ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT)),
-            due: Vec::new(),
-            src_port,
-            send_failure: None,
-            audit: ProbeAudit::new(),
+            core: RawProbeScan {
+                resolver,
+                ctx,
+                transport,
+                deadline: AdaptiveDeadline::new(deadline_config, target_count),
+                ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT)),
+                due: Vec::new(),
+                src_port,
+                send_failure: None,
+                audit: ProbeAudit::new(),
+                max_in_flight: MAX_IN_FLIGHT,
+            },
         }
     }
 
@@ -297,7 +274,7 @@ impl UdpPortScanner {
     /// open port answer at all, and the source port is the scan's identity on
     /// the wire, so neither may vary between attempts.
     fn probe(&mut self, ip: IpAddr, port: u16, now: Instant) {
-        let Some(src_addr) = self.resolver.resolve(ip) else {
+        let Some(src_addr) = self.core.resolver.resolve(ip) else {
             error!(
                 verbosity = 2,
                 "No route to {ip}; skipping UDP probe to {ip}:{port}"
@@ -306,17 +283,17 @@ impl UdpPortScanner {
         };
 
         let sent = send_udp(
-            self.transport.tx.as_ref(),
-            self.src_port,
+            self.core.transport.tx.as_ref(),
+            self.core.src_port,
             src_addr,
             ip,
             port,
-            &mut self.send_failure,
+            &mut self.core.send_failure,
         );
-        self.audit.record_send(sent.is_some());
+        self.core.audit.record_send(sent.is_some());
 
         if sent.is_some() {
-            self.ledger.arm(ip, (ip, port), (), now);
+            self.core.ledger.arm(ip, (ip, port), (), now);
         }
     }
 
@@ -324,10 +301,10 @@ impl UdpPortScanner {
     /// resolves that probe.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
         let classified = match reply.protocol {
-            IpNextHeaderProtocols::Udp => answering_probe(&reply.bytes, self.src_port)
+            IpNextHeaderProtocols::Udp => answering_probe(&reply.bytes, self.core.src_port)
                 .map(|port| ((reply.source, port), Verdict::Port(PortState::Open))),
             _ => icmp_error::parse(reply).and_then(|error| {
-                let target = quoted_probe(&error, self.src_port)?;
+                let target = quoted_probe(&error, self.core.src_port)?;
                 Some((target, verdict_of(error.reason)))
             }),
         };
@@ -342,29 +319,9 @@ impl UdpPortScanner {
             // that the address could not be reached at all, so it carries no
             // verdict on the port it happened to quote, and the probe should
             // retire on its own schedule like any other unanswered one.
-            Some((target, Verdict::Host)) => self.record_host_down(target.0, reply.source),
+            Some((target, Verdict::Host)) => self.core.record_host_down(target.0, reply.source),
             None => {}
         }
-    }
-
-    /// Records that a router could not reach this address.
-    ///
-    /// The engine's only producer of [`HostStatus::Down`], and the reason the
-    /// UDP scanner is the only path that can report it: it is the only one whose
-    /// capture filter admits ICMP at all.
-    ///
-    /// The evidence is second-hand by definition - the host cannot report its
-    /// own unreachability - so the reason names the router that sent it. Being
-    /// the lowest non-`Unknown` status, it never overwrites evidence that the
-    /// host answered for itself, whichever order the two arrive in.
-    fn record_host_down(&mut self, ip: IpAddr, sender: IpAddr) {
-        self.ctx.update_host(ip, |host| {
-            host.record_evidence(
-                HostStatus::Down,
-                StatusReason::new(StatusProtocol::IcmpUnreachable, "destination unreachable")
-                    .from_source(sender),
-            );
-        });
     }
 
     /// Retires one outstanding probe with the state its reply established,
@@ -384,19 +341,21 @@ impl UdpPortScanner {
         sender: IpAddr,
         now: Instant,
     ) {
-        let Some(resolution) = self.ledger.resolve(&target, None, now) else {
+        let Some(resolution) = self.core.ledger.resolve(&target, None, now) else {
             // A duplicate of one already resolved, an answer to a probe already
             // written off, or a packet that reached us despite answering nothing
             // this scan sent.
-            self.audit.record_reply_without_rtt();
+            self.core.audit.record_reply_without_rtt();
             return;
         };
 
-        self.deadline.mark_activity();
+        self.core.deadline.mark_activity();
         if let Some(rtt) = resolution.rtt {
-            self.deadline.record_rtt(rtt);
+            self.core.deadline.record_rtt(rtt);
         }
-        self.audit.record_host_found(resolution.answered_attempt);
+        self.core
+            .audit
+            .record_host_found(resolution.answered_attempt);
         self.record_port(target.0, target.1, state, Some(sender));
     }
 
@@ -412,11 +371,11 @@ impl UdpPortScanner {
     /// Running out of attempts is not activity - nothing answered - so the
     /// adaptive deadline is deliberately left untouched here.
     fn service_retries(&mut self, now: Instant) {
-        self.ledger.drain_due(now, &mut self.due);
+        self.core.ledger.drain_due(now, &mut self.core.due);
 
         // Taken so the sends below can borrow `self` mutably; the buffer itself
         // is reused, so this costs no allocation.
-        let due = std::mem::take(&mut self.due);
+        let due = std::mem::take(&mut self.core.due);
         for event in &due {
             match *event {
                 Due::Retry {
@@ -427,8 +386,8 @@ impl UdpPortScanner {
                 }
             }
         }
-        self.due = due;
-        self.due.clear();
+        self.core.due = due;
+        self.core.due.clear();
     }
 
     /// Marks every probe still outstanding once the scan winds down as
@@ -439,24 +398,9 @@ impl UdpPortScanner {
     /// [`service_retries`](Self::service_retries) retires most probes long
     /// before this runs; what reaches here are the ones still mid-schedule when
     /// the scan's own deadline ran out.
-    fn resolve_remaining_as_filtered(&mut self) {
-        for (ip, port) in self.ledger.drain_unresolved() {
+    fn resolve_remaining(&mut self) {
+        for (ip, port) in self.core.ledger.drain_unresolved() {
             self.record_port(ip, port, PortState::OpenFiltered, None);
-        }
-    }
-
-    /// How long the loop may sleep before it must look at its own state again.
-    ///
-    /// The adaptive deadline decides this while nothing is outstanding. With
-    /// probes in flight the wait is additionally capped at the moment the next
-    /// one falls due, so a retry goes out on time - which matters most in the
-    /// case where *nothing* is arriving, since then no reply will wake the loop
-    /// either.
-    fn tick_delay(&self, now: Instant) -> Duration {
-        let until_deadline_tick = self.deadline.time_until_next_tick();
-        match self.ledger.next_due() {
-            Some(due) => until_deadline_tick.min(due.saturating_duration_since(now)),
-            None => until_deadline_tick,
         }
     }
 
@@ -516,7 +460,7 @@ impl UdpPortScanner {
             _ => None,
         };
 
-        self.ctx.update_host(ip, |host| {
+        self.core.ctx.update_host(ip, |host| {
             host.add_port(port);
             if let Some((status, reason)) = evidence {
                 host.record_evidence(status, reason);
@@ -625,29 +569,14 @@ impl PortScanner for UdpPortScanner {
             let now = Instant::now();
             self.service_retries(now);
 
-            if self.ctx.handle.should_stop() {
-                break StopReason::Aborted;
-            }
-            if self.deadline.hard_deadline_passed() {
-                break StopReason::DeadlineExpired;
-            }
-            // Every probe asked as many times as its budget allows. Against a
-            // rate-limited host that is the ordinary way a UDP scan finishes.
-            if sending_finished && self.ledger.is_empty() {
-                break StopReason::AttemptsSpent;
-            }
-            // Silence is only evidence once nothing is outstanding. With probes
-            // still waiting on their timers, quiet is exactly what the retry
-            // schedule expects - and against a host rate-limiting its ICMP
-            // errors, it is what the protocol expects too.
-            if self.ledger.is_empty() && self.deadline.has_expired() {
-                break StopReason::DeadlineExpired;
+            if let Some(reason) = self.core.stop_reason(sending_finished) {
+                break reason;
             }
 
             // Both are read off `self` before the `select!`, which borrows the
             // receive half mutably for the duration of the statement.
-            let admitting = !sending_finished && self.ledger.len() < MAX_IN_FLIGHT;
-            let tick = self.tick_delay(now);
+            let admitting = self.core.admitting(sending_finished);
+            let tick = self.core.tick_delay(now);
 
             tokio::select! {
                 target = targets.recv(), if admitting => {
@@ -660,10 +589,10 @@ impl PortScanner for UdpPortScanner {
                     }
                 }
 
-                res = self.transport.rx.recv() => {
+                res = self.core.transport.rx.recv() => {
                     match res {
                         Some(reply) => {
-                            self.audit.record_segment();
+                            self.core.audit.record_segment();
                             self.handle_reply(&reply, Instant::now());
                         }
                         None => break StopReason::StreamClosed,
@@ -676,33 +605,11 @@ impl PortScanner for UdpPortScanner {
             }
         };
 
-        self.resolve_remaining_as_filtered();
+        self.resolve_remaining();
 
-        // A UDP scan that could not send is not a UDP scan that found everything
-        // open-filtered, and the two are identical in every number a caller
-        // reads. Reported once with the first cause, as the SYN paths do.
-        if self.audit.sends_failed > 0 {
-            self.ctx.record_failure(
-                ScannerKind::UdpPort,
-                format!(
-                    "{} probes could not be sent, so their ports are reported \
-                     open-filtered without having been asked: {}",
-                    self.audit.sends_failed,
-                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
-                ),
-            );
-        }
-
-        // Read before the transport is dropped, since the counters live with the
-        // capture threads it keeps alive.
-        let capture = self.transport.capture_counts();
-        self.audit.report("udp-port", probes, reason, capture);
-        self.ctx.record_probe_stats(self.audit.stats(
-            ScannerKind::UdpPort,
-            probes,
-            reason,
-            capture,
-        ));
+        let kind = self.kind();
+        self.core
+            .finish(kind, "udp-port", "open-filtered", probes, reason);
         Ok(())
     }
 
@@ -903,7 +810,7 @@ mod tests {
         scanner.handle_reply(&udp_reply(53, SCAN_SRC_PORT), Instant::now());
 
         assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Open));
-        assert!(scanner.ledger.is_empty());
+        assert!(scanner.core.ledger.is_empty());
     }
 
     /// A datagram from a pending port that is *not* addressed to this scan's
@@ -919,7 +826,7 @@ mod tests {
         );
 
         assert_eq!(port_state(&session, TARGET, 53), None);
-        assert_eq!(scanner.ledger.len(), 1);
+        assert_eq!(scanner.core.ledger.len(), 1);
     }
 
     #[test]
@@ -939,7 +846,7 @@ mod tests {
         );
 
         assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Closed));
-        assert!(scanner.ledger.is_empty());
+        assert!(scanner.core.ledger.is_empty());
     }
 
     /// The regression guard for the classification bug this scanner shipped
@@ -967,7 +874,7 @@ mod tests {
         assert_eq!(port_state(&session, TARGET, 161), Some(PortState::Closed));
         assert_eq!(port_state(&session, TARGET, 53), None);
         assert_eq!(port_state(&session, TARGET, 123), None);
-        assert_eq!(scanner.ledger.len(), 2);
+        assert_eq!(scanner.core.ledger.len(), 2);
     }
 
     /// An error relayed by a router carries the router's address, but quotes a
@@ -1020,7 +927,7 @@ mod tests {
             "the port has no verdict yet and the probe must be left to retire on its own"
         );
         assert_eq!(
-            scanner.ledger.len(),
+            scanner.core.ledger.len(),
             1,
             "an unreachable address says nothing about the probe's fate"
         );
@@ -1140,7 +1047,7 @@ mod tests {
         );
 
         assert_eq!(port_state(&session, TARGET, 53), None);
-        assert_eq!(scanner.ledger.len(), 1);
+        assert_eq!(scanner.core.ledger.len(), 1);
     }
 
     /// Only code 3 says a port answered. The codes that describe a blocked
@@ -1188,7 +1095,7 @@ mod tests {
             );
 
             assert_eq!(port_state(&session, TARGET, 53), None, "code {code:?}");
-            assert_eq!(scanner.ledger.len(), 1, "code {code:?}");
+            assert_eq!(scanner.core.ledger.len(), 1, "code {code:?}");
         }
     }
 
@@ -1251,7 +1158,7 @@ mod tests {
         );
 
         assert_eq!(port_state(&session, TARGET_V6, 53), Some(PortState::Closed));
-        assert!(scanner.ledger.is_empty());
+        assert!(scanner.core.ledger.is_empty());
     }
 
     /// ICMPv6 code 0 is "no route to destination" - a statement about the path.
@@ -1266,7 +1173,7 @@ mod tests {
         );
 
         assert_eq!(port_state(&session, TARGET_V6, 53), None);
-        assert_eq!(scanner.ledger.len(), 1);
+        assert_eq!(scanner.core.ledger.len(), 1);
     }
 
     /// A truncated or malformed reply must be dropped, never panic: every byte
@@ -1288,7 +1195,7 @@ mod tests {
         }
 
         assert_eq!(port_state(&session, TARGET, 53), None);
-        assert_eq!(scanner.ledger.len(), 1);
+        assert_eq!(scanner.core.ledger.len(), 1);
     }
 
     /// Checks the quoted-datagram parse against an ICMP error this machine's
@@ -1445,7 +1352,7 @@ mod tests {
             port_state(&session, TARGET, 53),
             Some(PortState::OpenFiltered)
         );
-        assert!(scanner.ledger.is_empty());
+        assert!(scanner.core.ledger.is_empty());
     }
 
     /// Running out of attempts is not activity: nothing answered, so the
@@ -1457,13 +1364,13 @@ mod tests {
 
         // A deadline whose silence clock has been reset reports a full tick;
         // capture the value before and after to see whether it moved.
-        let before = scanner.deadline.time_until_next_tick();
+        let before = scanner.core.deadline.time_until_next_tick();
         let mut now = Instant::now();
         for _ in 0..RETRY_POLICY.max_attempts + 1 {
             now += RETRY_POLICY.worst_case_probe_lifetime();
             scanner.service_retries(now);
         }
-        let after = scanner.deadline.time_until_next_tick();
+        let after = scanner.core.deadline.time_until_next_tick();
 
         assert!(
             after <= before,
@@ -1478,11 +1385,11 @@ mod tests {
     fn pending_probes_shorten_the_sleep() {
         let (mut scanner, _session) = scanner_with_mock();
         let now = Instant::now();
-        assert!(scanner.ledger.is_empty());
-        let idle = scanner.tick_delay(now);
+        assert!(scanner.core.ledger.is_empty());
+        let idle = scanner.core.tick_delay(now);
 
         probe(&mut scanner, TARGET, 53);
-        let busy = scanner.tick_delay(now);
+        let busy = scanner.core.tick_delay(now);
 
         assert!(busy < idle, "sleep not shortened while probes are out");
         assert!(
@@ -1515,13 +1422,13 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 161);
 
-        scanner.resolve_remaining_as_filtered();
+        scanner.resolve_remaining();
 
         assert_eq!(
             port_state(&session, TARGET, 161),
             Some(PortState::OpenFiltered)
         );
-        assert!(scanner.ledger.is_empty());
+        assert!(scanner.core.ledger.is_empty());
     }
 
     #[test]
@@ -1532,7 +1439,7 @@ mod tests {
             port: 80,
             protocol: Protocol::Tcp,
         });
-        assert!(scanner.ledger.is_empty());
+        assert!(scanner.core.ledger.is_empty());
     }
 
     /// Every probe in a scan must leave from the one port the capture filter
