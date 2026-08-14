@@ -418,7 +418,7 @@ async fn a_sweep_waits_for_the_confirmation_it_sent() {
 /// even if it did.
 ///
 /// **The delay is 400 ms because that is roughly the slowest a real neighbour
-/// answers**, measured one address at a time with `examples/ndp_pace.rs`, and
+/// answers**, measured one address at a time with `benches/ndp_pace.rs`, and
 /// what `NDP_RETRY_POLICY`'s first timeout is sized against. Keep it clear of
 /// that timeout's jitter: a fixture set close to the schedule makes this test
 /// fail intermittently while saying nothing about the behaviour.

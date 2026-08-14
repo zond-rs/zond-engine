@@ -32,10 +32,14 @@
 //! attempts are answered:
 //!
 //! ```text
-//! sudo -E cargo run --release --example ndp_pace -- 1
-//! sudo -E cargo run --release --example ndp_pace -- 20
-//! sudo -E cargo run --release --example ndp_pace -- 100
-//! ```
+//! cargo bench --no-run --bench ndp_pace
+//! sudo -E target/release/deps/ndp_pace-<hash> 1
+//! sudo -E target/release/deps/ndp_pace-<hash> 20
+//! sudo -E target/release/deps/ndp_pace-<hash> 100
+//! ```//!
+//! Built with `--no-run` and invoked directly, for the reason `verify_scan`
+//! gives: cargo passes its own arguments through to a `harness = false` target,
+//! and this one reads argv.
 //!
 //! If the answered count climbs with the interval, the scanner's burst is the
 //! cause and solicitation needs its own pacing. If it does not, the burst is
@@ -49,7 +53,7 @@
 //! than only as a count.
 //!
 //! ```text
-//! sudo -E cargo run --release --example ndp_pace -- [interval_ms] [flags]
+//! sudo -E target/release/deps/ndp_pace-<hash> [interval_ms] [flags]
 //!
 //!   --window MS      how long to keep listening after the last solicitation
 //!                    (default 4000)

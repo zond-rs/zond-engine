@@ -50,10 +50,14 @@
 //! Raw sockets and `libpcap` both need root:
 //!
 //! ```text
-//! sudo -E cargo run --release --example discovery_bench -- <targets> [runs] [effort] [flags]
-//! sudo -E cargo run --release --example discovery_bench -- 1.1.1.0/24 5
-//! sudo -E cargo run --release --example discovery_bench -- 1.1.1.0/22 5 thorough
-//! ```
+//! cargo bench --no-run --bench discovery_bench
+//! sudo -E target/release/deps/discovery_bench-<hash> <targets> [runs] [effort] [flags]
+//! sudo -E target/release/deps/discovery_bench-<hash> 1.1.1.0/24 5
+//! sudo -E target/release/deps/discovery_bench-<hash> 1.1.1.0/22 5 thorough
+//! ```//!
+//! Built with `--no-run` and invoked directly, for the reason `verify_scan`
+//! gives: cargo passes its own arguments through to a `harness = false` target,
+//! and this one reads argv.
 //!
 //! `--rate N` caps how fast routed discovery emits probes, in probes per
 //! second. It is the one knob that changes what the network sees rather than

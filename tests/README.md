@@ -150,12 +150,21 @@ discovery on the local segment, does not use `ProbeTransport` at all. It holds a
 
 ### The `test-support` feature
 
-`ProbeTransport::from_parts` and the `scanner::routed` module are only public
-when the `test-support` feature is on. The tests get it through a dev dependency
-on the crate itself, declared in `Cargo.toml`, which Cargo unifies with the
-library target. Nothing is compiled twice, and the feature stays off for
-everyone downstream. It is not part of the supported API and should never be
-enabled in a release.
+`test-support` gates the **fake** transports and nothing else:
+`ProbeTransport::from_parts` and `EthernetHandle::from_parts`, which build a
+transport over a caller-supplied sender and reply stream instead of a socket and
+a capture. That is what lets a test outside this crate drive a real scanner
+against a synthetic network.
+
+The scanners themselves need no feature. `scanner::strategy` and every
+`with_transport` constructor in it are ordinary public API, because building a
+strategy by hand against a real transport is a supported way to use the engine
+rather than a test hatch — see the three altitudes in the `scanner` module docs.
+
+The tests get the feature through a dev dependency on the crate itself, declared
+in `Cargo.toml`, which Cargo unifies with the library target. Nothing is
+compiled twice, and the feature stays off for every downstream consumer. A
+synthetic transport has no use in a shipped binary, so enable it for tests only.
 
 ## Tier 3: privileged Linux tests
 

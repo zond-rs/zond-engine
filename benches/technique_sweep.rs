@@ -32,8 +32,12 @@
 //! about the others' traffic.
 //!
 //! ```text
-//! sudo -E cargo run --example technique_sweep -- 192.168.0.1 22,80,443 3
-//! ```
+//! cargo bench --no-run --bench technique_sweep
+//! sudo -E target/release/deps/technique_sweep-<hash> 192.168.0.1 22,80,443 3
+//! ```//!
+//! Built with `--no-run` and invoked directly, for the reason `verify_scan`
+//! gives: cargo passes its own arguments through to a `harness = false` target,
+//! and this one reads argv.
 //!
 //! The third argument is how many times to repeat the whole sweep. Every run is
 //! printed rather than averaged: a technique that answers differently between

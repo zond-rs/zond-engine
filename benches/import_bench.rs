@@ -18,8 +18,11 @@
 //! is never reported on its own.
 //!
 //! ```text
-//! cargo run --release --example import_bench
+//! cargo bench --bench import_bench
 //! ```
+//!
+//! No arguments and no privileges, so unlike the other instruments here this one
+//! runs through `cargo bench` directly.
 //!
 //! ## Predictions, written before the first run
 //!
