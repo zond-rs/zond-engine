@@ -6,10 +6,17 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Network Telemetry
+//! # How far away a host is
 //!
-//! This module provides the [`HostTelemetry`] model for tracking network
-//! performance metrics and path discovery data over time.
+//! [`HostTelemetry`] holds a sliding window of round-trip measurements and the
+//! summaries a report draws from them: the fastest, the typical, and how much
+//! they vary.
+//!
+//! The whole design turns on one distinction. Not every reply is equally good
+//! evidence of a path, and the two kinds must not be pooled — see [`RttSource`]
+//! for what separates them and [`HostTelemetry`] for how the ranking is
+//! applied. Averaging them together is how a router answering in 7 ms came to
+//! be reported at 37.
 
 use std::{
     collections::VecDeque,
@@ -47,16 +54,26 @@ pub enum RttSource {
 /// kind of question produced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RttSample {
+    /// When the reply arrived, on the monotonic clock.
+    ///
+    /// [`Instant`] rather than the wall clock because this exists to order
+    /// samples against each other — [`HostTelemetry::merge`] sorts by it and
+    /// [`jitter`](HostTelemetry::jitter) differences consecutive pairs — and a
+    /// clock adjustment mid-scan must not reorder a history.
     pub at: Instant,
+    /// The elapsed time between sending the probe and reading the reply.
     pub rtt: Duration,
+    /// Whether that elapsed time is a round trip or an upper bound on one. See
+    /// [`RttSource`].
     pub source: RttSource,
 }
 
-/// Performance and discovery metrics for a specific network host.
+/// A host's recent round trips, and the summaries drawn from them.
 ///
-/// `HostTelemetry` maintains a sliding window of Round-Trip Time (RTT)
-/// measurements and performs statistical analysis (Averaging and Jitter)
-/// used for network health assessment.
+/// A sliding window rather than every sample ever taken: a monitor watching one
+/// segment for days would otherwise grow without bound, and what a report says
+/// about latency should describe the host now rather than an average over an
+/// afternoon.
 ///
 /// Every statistic is computed over the host's [`RttSource::Direct`] samples
 /// when it has any, and falls back to the segment-wide ones only when it has
@@ -349,11 +366,18 @@ impl Default for HostTelemetry {
 mod tests {
     use super::*;
 
+    /// Every statistic is `Option`, and an empty window is the case that makes
+    /// that necessary: there is no average of nothing, and returning zero would
+    /// read as an instantaneous host.
     #[test]
-    fn telemetry_math_safety() {
-        let t = HostTelemetry::new(10);
-        assert_eq!(t.average_rtt(), None);
-        assert_eq!(t.jitter(), None);
+    fn a_window_with_no_samples_reports_no_statistics() {
+        let empty = HostTelemetry::new(10);
+
+        assert_eq!(empty.average_rtt(), None);
+        assert_eq!(empty.median_rtt(), None);
+        assert_eq!(empty.jitter(), None);
+        assert_eq!(empty.min_rtt(), None);
+        assert_eq!(empty.max_rtt(), None);
     }
 
     /// A directed probe's answer describes the path; a segment-wide probe's
@@ -456,16 +480,21 @@ mod tests {
         assert_eq!(t.max_rtt(), Some(Duration::from_millis(200)));
     }
 
+    /// The mean over direct samples, which is what a report prints beside a
+    /// host.
     #[test]
-    fn telemetry_averaging_logic() {
+    fn the_average_is_the_mean_of_the_direct_samples() {
         let mut t = HostTelemetry::new(5);
         t.add_rtt(Duration::from_millis(10));
         t.add_rtt(Duration::from_millis(20));
         assert_eq!(t.average_rtt(), Some(Duration::from_millis(15)));
     }
 
+    /// Jitter is the mean absolute difference between *consecutive* samples,
+    /// not the spread of the window — it measures instability over time, which
+    /// is why the history has to stay in time order.
     #[test]
-    fn jitter_calculation_consistency() {
+    fn jitter_averages_the_gaps_between_consecutive_samples() {
         let mut t = HostTelemetry::new(5);
         t.add_rtt(Duration::from_millis(100)); // prev
         t.add_rtt(Duration::from_millis(110)); // diff 10
@@ -477,14 +506,10 @@ mod tests {
         );
     }
 
+    /// Sorted internally, so the order samples arrived in does not change the
+    /// answer.
     #[test]
-    fn median_is_none_when_empty() {
-        let t = HostTelemetry::new(5);
-        assert_eq!(t.median_rtt(), None);
-    }
-
-    #[test]
-    fn median_odd_count_is_the_middle_sample() {
+    fn the_median_of_an_odd_window_is_its_middle_sample() {
         let mut t = HostTelemetry::new(5);
         // Inserted out of order to confirm the median sorts internally.
         t.add_rtt(Duration::from_millis(30));
@@ -493,8 +518,10 @@ mod tests {
         assert_eq!(t.median_rtt(), Some(Duration::from_millis(20)));
     }
 
+    /// With no single middle sample, the two central ones are averaged — and
+    /// the subtraction is written to avoid overflowing on their sum.
     #[test]
-    fn median_even_count_averages_the_two_central_samples() {
+    fn the_median_of_an_even_window_averages_the_two_central_samples() {
         let mut t = HostTelemetry::new(5);
         t.add_rtt(Duration::from_millis(10));
         t.add_rtt(Duration::from_millis(20));
@@ -504,8 +531,10 @@ mod tests {
         assert_eq!(t.median_rtt(), Some(Duration::from_millis(25)));
     }
 
+    /// The reason a report leads with the median rather than the mean: one
+    /// retransmit or scheduling hiccup should not redescribe a host's latency.
     #[test]
-    fn median_resists_a_single_outlier() {
+    fn the_median_barely_moves_for_a_single_outlier() {
         let mut t = HostTelemetry::new(5);
         t.add_rtt(Duration::from_millis(10));
         t.add_rtt(Duration::from_millis(11));
@@ -516,16 +545,21 @@ mod tests {
         assert_eq!(t.median_rtt(), Some(Duration::from_millis(12)));
     }
 
+    /// Two records of one host disagreeing about how much history to keep are
+    /// two callers' requests, and honouring the smaller would discard samples
+    /// the other asked for.
     #[test]
-    fn merge_capacity_upgrade() {
+    fn a_merge_widens_the_window_to_the_larger_of_the_two() {
         let mut t1 = HostTelemetry::new(3);
         let t2 = HostTelemetry::new(10);
         t1.merge(t2);
         assert_eq!(t1.max_samples(), 10);
     }
 
+    /// A window of zero holds nothing, and a merge of two of them must not be
+    /// the way a sample gets in.
     #[test]
-    fn merge_zero_capacity_safety() {
+    fn a_window_of_zero_stays_empty_across_a_merge() {
         let mut t1 = HostTelemetry::new(0);
         let t2 = HostTelemetry::new(0);
         t1.merge(t2);

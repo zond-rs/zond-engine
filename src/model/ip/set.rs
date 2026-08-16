@@ -32,6 +32,7 @@
 
 use super::range::{IpError, IpRange, Ipv4Range, Ipv6Range};
 use std::{
+    borrow::Cow,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     str::FromStr,
 };
@@ -52,7 +53,10 @@ pub enum IpSetError {
 /// A collection of unique IP addresses stored as sorted, non-overlapping ranges.
 ///
 /// Handles automatic merging of overlapping and adjacent ranges lazily.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Equality is over the addresses held, not over how the set was built: see the
+/// hand-written [`PartialEq`].
+#[derive(Debug, Clone, Default, Eq)]
 pub struct IpSet {
     v4: Vec<Ipv4Range>,
     v6: Vec<Ipv6Range>,
@@ -149,15 +153,18 @@ impl IpSet {
     /// means one thing at one end and something else at the other. So adjacency
     /// alone is not enough to combine two ranges; they have to agree on scope.
     ///
-    /// The sort is keyed on the address first and the zone only as a tie-break,
-    /// because [`contains_canonical`](Self::contains_canonical) binary-searches
-    /// this vector by address and would be wrong under any other ordering. The
-    /// cost is that two same-zone ranges with a differently-zoned one between
-    /// them are left unmerged. That produces a slightly longer vector covering
-    /// exactly the same addresses, which is much better than a membership test
-    /// that silently misses.
+    /// **The sort is keyed on the zone first.** That leaves the vector as one
+    /// run per interface, each sorted by address and disjoint within itself,
+    /// which is what [`v6_runs`](Self::v6_runs) hands the binary search. Sorted
+    /// by address first the runs interleave, and two ranges that overlap
+    /// numerically while disagreeing on zone both survive the merge — a vector
+    /// a binary search steps straight past.
+    ///
+    /// Grouping also merges strictly more than address-first ordering did: two
+    /// ranges sharing a zone are now always adjacent, where before a
+    /// differently-zoned range between them left both in place.
     fn merge_v6(&mut self) {
-        self.v6.sort_by_key(|r| (r.start_addr(), r.zone()));
+        self.v6.sort_by_key(|r| (r.zone(), r.start_addr()));
         let mut merged: Vec<Ipv6Range> = Vec::with_capacity(self.v6.len());
         let mut current = self.v6[0];
 
@@ -174,6 +181,25 @@ impl IpSet {
         }
         merged.push(current);
         self.v6 = merged;
+    }
+
+    /// The merged IPv6 ranges, one slice per interface.
+    ///
+    /// Each slice is sorted by address and holds no two ranges that overlap,
+    /// which is the precondition [`holds`] needs and which the vector as a
+    /// whole does not meet. There is one slice per distinct zone, so this
+    /// yields once for the sets that name no interface at all and otherwise as
+    /// many times as the host has interfaces in the set.
+    fn v6_runs(&self) -> impl Iterator<Item = &[Ipv6Range]> {
+        let mut rest = self.v6.as_slice();
+
+        std::iter::from_fn(move || {
+            let zone = rest.first()?.zone();
+            // Sorted by zone first, so this run is a prefix of what is left.
+            let (run, tail) = rest.split_at(rest.partition_point(|r| r.zone() == zone));
+            rest = tail;
+            Some(run)
+        })
     }
 
     // ─── Query API (Lazy) ────────────────────────────────────────────────────
@@ -195,22 +221,8 @@ impl IpSet {
             return self.contains_canonical(ip);
         }
         match ip {
-            IpAddr::V4(v4) => {
-                let target = u32::from(*v4);
-                self.v4.iter().any(|range| {
-                    let start = u32::from(range.start_addr());
-                    let end = u32::from(range.end_addr());
-                    target >= start && target <= end
-                })
-            }
-            IpAddr::V6(v6) => {
-                let target = u128::from(*v6);
-                self.v6.iter().any(|range| {
-                    let start = u128::from(range.start_addr());
-                    let end = u128::from(range.end_addr());
-                    target >= start && target <= end
-                })
-            }
+            IpAddr::V4(v4) => self.v4.iter().any(|range| range.contains(v4)),
+            IpAddr::V6(v6) => self.v6.iter().any(|range| range.contains(v6)),
         }
     }
 
@@ -262,8 +274,8 @@ impl IpSet {
             temp.canonicalize();
             temp.into_iter()
         } else {
-            let v4_iter = self.v4.iter().flat_map(|range| range.to_iter());
-            let v6_iter = self.v6.iter().flat_map(|range| range.to_iter());
+            let v4_iter = self.v4.iter().flat_map(|range| range.iter());
+            let v6_iter = self.v6.iter().flat_map(|range| range.iter());
             Box::new(v4_iter.chain(v6_iter))
         }
     }
@@ -287,37 +299,22 @@ impl IpSet {
             "IpSet must be canonicalized before calling contains_canonical"
         );
         match ip {
-            IpAddr::V4(v4) => {
-                let target = u32::from(*v4);
-                self.v4
-                    .binary_search_by(|range| {
-                        let start = u32::from(range.start_addr());
-                        let end = u32::from(range.end_addr());
-                        if target < start {
-                            std::cmp::Ordering::Greater
-                        } else if target > end {
-                            std::cmp::Ordering::Less
-                        } else {
-                            std::cmp::Ordering::Equal
-                        }
-                    })
-                    .is_ok()
-            }
+            IpAddr::V4(v4) => holds(&self.v4, u128::from(u32::from(*v4)), |range| {
+                (
+                    u128::from(u32::from(range.start_addr())),
+                    u128::from(u32::from(range.end_addr())),
+                )
+            }),
             IpAddr::V6(v6) => {
                 let target = u128::from(*v6);
-                self.v6
-                    .binary_search_by(|range| {
-                        let start = u128::from(range.start_addr());
-                        let end = u128::from(range.end_addr());
-                        if target < start {
-                            std::cmp::Ordering::Greater
-                        } else if target > end {
-                            std::cmp::Ordering::Less
-                        } else {
-                            std::cmp::Ordering::Equal
-                        }
+                self.v6_runs().any(|run| {
+                    holds(run, target, |range| {
+                        (
+                            u128::from(range.start_addr()),
+                            u128::from(range.end_addr()),
+                        )
                     })
-                    .is_ok()
+                })
             }
         }
     }
@@ -371,6 +368,61 @@ impl IpSet {
     pub fn v6(&self) -> &[Ipv6Range] {
         &self.v6
     }
+}
+
+impl PartialEq for IpSet {
+    /// Whether the two sets hold the same addresses.
+    ///
+    /// Written by hand rather than derived because the derive compared the
+    /// range vectors as written and the dirty flags beside them, so one address
+    /// inserted twice and the same address inserted once were different sets.
+    /// What a caller means by `==` here is the addresses.
+    ///
+    /// Merged ranges are the only comparable form, so a set that is not in one
+    /// is merged on a clone — the same trade [`len`](Self::len) makes, and for
+    /// the same reason: comparing is a read, and a read does not mutate its
+    /// operand. Two sets that have both been canonicalized, which is every set
+    /// that reached a `TargetSet`, compare without allocating.
+    fn eq(&self, other: &Self) -> bool {
+        fn merged(set: &IpSet) -> Cow<'_, IpSet> {
+            if set.v4_dirty || set.v6_dirty {
+                let mut owned = set.clone();
+                owned.canonicalize();
+                Cow::Owned(owned)
+            } else {
+                Cow::Borrowed(set)
+            }
+        }
+
+        let (this, that) = (merged(self), merged(other));
+        this.v4 == that.v4 && this.v6 == that.v6
+    }
+}
+
+/// Whether any range in `ranges` holds `target`, by binary search.
+///
+/// `bounds` reads a range's inclusive ends, widened to `u128` so that one
+/// search serves both families.
+///
+/// **`ranges` must be sorted by start address and free of overlap.** Against
+/// overlapping ranges the search can land on one that ends before the target,
+/// conclude the target lies further right, and never look at the range on its
+/// left that holds it. Each family reaches that precondition its own way: the
+/// IPv4 vector is disjoint once merged, and the IPv6 vector only within a
+/// single zone's run — see [`IpSet::v6_runs`].
+fn holds<R>(ranges: &[R], target: u128, bounds: impl Fn(&R) -> (u128, u128)) -> bool {
+    ranges
+        .binary_search_by(|range| {
+            let (start, end) = bounds(range);
+            if target < start {
+                std::cmp::Ordering::Greater
+            } else if target > end {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -506,8 +558,11 @@ impl FromStr for IpSet {
 mod tests {
     use super::*;
 
+    /// The lazy state, seen from outside: two adjacent addresses stay two
+    /// ranges until canonicalized, then become one, and the count is right
+    /// either way.
     #[test]
-    fn lazy_merging_v4() {
+    fn adjacent_addresses_merge_when_the_set_is_canonicalized() {
         let mut set = IpSet::new();
         set.insert(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)));
         set.insert(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 2)));
@@ -523,8 +578,12 @@ mod tests {
         assert_eq!(set.v4.len(), 1);
     }
 
+    /// Every arrangement two ranges can be in — overlapping at the start, at
+    /// the end, disjoint, and one subsuming the rest — collapsing to the single
+    /// range that covers them. Counted once each, which is what makes `len` a
+    /// number a budget can be checked against.
     #[test]
-    fn set_battle_test_overlaps() {
+    fn every_kind_of_overlap_collapses_to_one_range() {
         let mut set = IpSet::new();
         // Insert: [10-20]
         set.insert_range("10.0.0.10-10.0.0.20".parse().unwrap());
@@ -542,8 +601,11 @@ mod tests {
         assert_eq!(set.v4().len(), 1);
     }
 
+    /// Adjacency is tested with a saturating add, so two addresses at the very
+    /// top of the IPv6 space still merge rather than overflowing into a
+    /// comparison that fails.
     #[test]
-    fn set_ipv6_adjacency_boundary() {
+    fn the_top_of_the_ipv6_space_merges_without_overflowing() {
         let mut set = IpSet::new();
         // ::f...f (max)
         let max_v6 = Ipv6Addr::from(u128::MAX);
@@ -557,8 +619,11 @@ mod tests {
         assert_eq!(set.v6().len(), 1);
     }
 
+    /// Iterating is a read: it yields every address once and leaves the set in
+    /// the state it found it, so a caller can iterate a set it is still
+    /// building.
     #[test]
-    fn iteration_is_lazy_safe() {
+    fn iterating_yields_each_address_without_mutating_the_set() {
         let mut set = IpSet::new();
         set.insert(IpAddr::V4(Ipv4Addr::from(1)));
         set.insert(IpAddr::V4(Ipv4Addr::from(2)));
@@ -569,8 +634,10 @@ mod tests {
         assert!(!set.v4_dirty);
     }
 
+    /// Canonicalizing an empty set is a no-op rather than an error, so a caller
+    /// that built nothing does not have to check before reading.
     #[test]
-    fn empty_set_canonical_is_fine() {
+    fn an_empty_set_canonicalizes_and_counts_as_zero() {
         let mut set = IpSet::new();
         set.canonicalize();
         assert_eq!(set.len_canonical(), 0);
@@ -596,15 +663,20 @@ mod tests {
         assert!(!untouched.v4_dirty && !untouched.v6_dirty);
     }
 
+    /// One string naming both families, with a duplicate across two spellings
+    /// that has to be counted once.
     #[test]
-    fn from_str_mixed_advanced() {
+    fn a_written_set_may_mix_both_families_and_still_counts_distinctly() {
         let set = IpSet::from_str("1.1.1.1/32, 1.1.1.1, ::1-::1, 10.0.0.1-10.0.0.2").unwrap();
         // 1.1.1.1 (v4) + ::1 (v6) + 10.0.0.1, 10.0.0.2 (v4)
         assert_eq!(set.len(), 4);
     }
 
+    /// Insertion appends and defers the merge, so a hundred addresses are a
+    /// hundred ranges until `canonicalize` runs. That is the whole point of the
+    /// split — merging on each insertion makes loading a target file quadratic.
     #[test]
-    fn bulk_extend_efficiency() {
+    fn insertion_defers_the_merge_until_it_is_asked_for() {
         let mut set = IpSet::new();
         let ips = (0..100).map(|i| IpAddr::V4(Ipv4Addr::from(i)));
         set.extend(ips);
@@ -684,12 +756,57 @@ mod tests {
 
         assert_eq!(joined.v6().len(), 1);
 
-        // Membership still answers across the split. This is what keeps the
-        // sort keyed on the address with the zone only breaking ties: any
-        // other ordering leaves `contains_canonical` binary-searching a vector
-        // it cannot navigate.
+        // Membership still answers across the split.
         assert!(split.contains(&IpAddr::V6(five)));
         assert!(split.contains(&IpAddr::V6(six)));
+    }
+
+    /// Equality is about the addresses a set holds, not about whether it has
+    /// been merged yet. Derived, it compared the dirty flags and the range
+    /// vectors as written, so the same one address inserted two ways compared
+    /// unequal — and `assert_eq!` on two sets was answering a question about
+    /// bookkeeping.
+    #[test]
+    fn two_sets_holding_the_same_addresses_are_equal_however_they_were_built() {
+        let canonical = IpSet::try_from("10.0.0.1-10.0.0.2, ::1").expect("parses");
+
+        let mut piecemeal = IpSet::new();
+        piecemeal.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        piecemeal.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+        piecemeal.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+
+        assert_eq!(canonical, piecemeal, "same addresses, different order");
+        assert_ne!(canonical, IpSet::try_from("10.0.0.1, ::1").expect("parses"));
+    }
+
+    /// Refusing to merge across zones leaves ranges that *overlap* as well as
+    /// ranges that abut, and a binary search cannot navigate an overlapping
+    /// vector: it lands on a range that ends before the target, concludes the
+    /// target lies further right, and never examines the range on its left
+    /// that holds it.
+    ///
+    /// Two interfaces each carrying a slice of `fe80::/64` is the ordinary
+    /// shape of a dual-homed segment, and a missed membership test there
+    /// discards a reply from a host that did answer.
+    #[test]
+    fn membership_answers_when_ranges_on_different_interfaces_overlap() {
+        let one: Ipv6Addr = "fe80::1".parse().unwrap();
+        let two: Ipv6Addr = "fe80::2".parse().unwrap();
+        let three: Ipv6Addr = "fe80::3".parse().unwrap();
+        let ten: Ipv6Addr = "fe80::a".parse().unwrap();
+
+        let mut set = IpSet::new();
+        set.push_v6_range(Ipv6Range::scoped(one, ten, Some(4)).unwrap());
+        set.push_v6_range(Ipv6Range::scoped(two, three, Some(9)).unwrap());
+        set.canonicalize();
+
+        for address in [one, two, three, ten] {
+            assert!(
+                set.contains(&IpAddr::V6(address)),
+                "{address} is covered by the range on interface 4"
+            );
+        }
+        assert!(!set.contains(&IpAddr::V6("fe80::b".parse().unwrap())));
     }
 }
 
@@ -706,7 +823,55 @@ mod property_tests {
         any::<u128>().prop_map(Ipv6Addr::from)
     }
 
+    /// Zoned ranges drawn from one narrow band of `fe80::/64`, so that
+    /// generated ranges overlap each other often rather than by luck. Four
+    /// zones, which is the shape of a multi-homed host.
+    fn any_zoned_v6_range() -> impl Strategy<Value = Ipv6Range> {
+        (0..64u128, 0..64u128, prop::option::of(0..4u32)).prop_map(|(a, b, zone)| {
+            let base = u128::from(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0));
+            let (low, high) = if a <= b { (a, b) } else { (b, a) };
+            Ipv6Range::scoped(
+                Ipv6Addr::from(base + low),
+                Ipv6Addr::from(base + high),
+                zone,
+            )
+            .expect("low <= high")
+        })
+    }
+
     proptest::proptest! {
+        /// Membership has to agree with a linear scan of the same ranges.
+        ///
+        /// The fast path is a binary search, which is only valid over ranges
+        /// that do not overlap. Zones are what put overlapping ranges in one
+        /// vector — `merge_v6` refuses to combine ranges from two interfaces —
+        /// so this is where a search that steps past the range holding the
+        /// target shows up. An example of that is pinned in
+        /// `membership_answers_when_ranges_on_different_interfaces_overlap`;
+        /// this covers the arrangements nobody thought to write down.
+        #[test]
+        fn zoned_membership_agrees_with_a_linear_scan(
+            ranges in prop::collection::vec(any_zoned_v6_range(), 1..12),
+            offsets in prop::collection::vec(0..80u128, 1..20),
+        ) {
+            let mut set = IpSet::new();
+            for range in &ranges {
+                set.push_v6_range(*range);
+            }
+            set.canonicalize();
+
+            let base = u128::from(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0));
+            for offset in offsets {
+                let probe = Ipv6Addr::from(base + offset);
+                let expected = ranges.iter().any(|range| range.contains(&probe));
+                prop_assert_eq!(
+                    set.contains(&IpAddr::V6(probe)),
+                    expected,
+                    "{} in {:?}", probe, ranges
+                );
+            }
+        }
+
         #[test]
         fn v4_membership_invariant(ips in proptest::collection::vec(any_ipv4(), 1..50)) {
             let mut set = IpSet::new();

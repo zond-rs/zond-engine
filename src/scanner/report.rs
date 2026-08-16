@@ -849,7 +849,7 @@ impl ScanReport {
     /// use zond_engine::model::parse::ip::to_set;
     ///
     /// let cfg = ZondConfig::default();
-    /// let (_, sweep) = discover(to_set(&["192.168.1.0/24"], None)?, &cfg).await?;
+    /// let (_, sweep) = discover(to_set(&["192.168.1.0/24"], None, None)?, &cfg).await?;
     /// let mut report = sweep.join().await?;
     ///
     /// let targets = report.alive_targets(PortSet::try_from("22,80,443")?);
@@ -891,7 +891,7 @@ impl ScanReport {
                     // through two interfaces is one address, not two.
                     let zone = v6
                         .is_unicast_link_local()
-                        .then(|| host.zone().map(Zone::index))
+                        .then(|| host.zone().and_then(Zone::index))
                         .flatten();
                     if let Ok(range) = Ipv6Range::scoped(v6, v6, zone) {
                         ips.push_v6_range(range);

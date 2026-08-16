@@ -29,8 +29,11 @@
 //!
 //! No single probe fills a `Port` in. Techniques run in sequence, a connect
 //! fallback may repeat what a raw scan already asked, and service detection
-//! arrives afterwards. Every one of these types therefore carries a `merge`, and
-//! the rules they merge by are the substance of this module.
+//! arrives afterwards. [`Port::merge`] folds one probe's account into another,
+//! and the rules it merges by are the substance of this module. [`Service`] and
+//! [`Security`] carry their own, since each knows what makes one of its findings
+//! better than another; a [`Discovery`] is taken or discarded whole, because it
+//! is the account of a single packet and half of one explains nothing.
 //!
 //! They agree on one thing: a tie keeps what is already recorded. Two probes
 //! that learned the same amount are equally good sources, and preferring the
@@ -88,22 +91,31 @@ pub enum Protocol {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortState {
-    /// State is ambiguous; port is either closed or filtered (e.g., IP ID idle scan).
+    /// Closed or filtered, and the probe cannot say which. What an idle scan
+    /// concludes when the target's IP ID did not advance.
     ClosedFiltered,
 
-    /// Packets are being dropped silently by a firewall. We received no response.
+    /// Something dropped the probe. The lowest state a scan will record from
+    /// silence alone, and only for the techniques every live stack would have
+    /// answered — see
+    /// [`silence_means`](crate::model::technique::TcpScanTechnique::silence_means).
     Filtered,
 
-    /// Target is accessible, but we cannot determine if it is open or closed (e.g., TCP ACK scan).
+    /// The probe reached the host's stack and nothing dropped it on the way,
+    /// but whether anything is listening was not asked. What an ACK scan
+    /// establishes.
     Unfiltered,
 
-    /// Actively rejecting connections (e.g., TCP RST received).
+    /// Nothing is listening. A RST answering a SYN says so outright.
     Closed,
 
-    /// State is ambiguous; port might be open, or packets might be silently dropped (e.g., UDP scan).
+    /// Open, or silently dropped. The honest verdict for a probe whose positive
+    /// result *is* silence: a bare FIN that an open port is required to ignore,
+    /// or a UDP payload no service recognised.
     OpenFiltered,
 
-    /// Actively accepting connections (e.g., TCP SYN/ACK received).
+    /// Something is listening and accepted the connection attempt. Only a SYN
+    /// draws the SYN+ACK that establishes this.
     Open,
 }
 
@@ -120,21 +132,21 @@ pub struct Port {
     /// The transport protocol this endpoint is reached over.
     protocol: Protocol,
 
-    /// The discovered state of the port.
+    /// What a probe established about it.
     state: PortState,
 
-    /// Rich service identity (e.g., "OpenSSH 8.9", CPE strings).
+    /// What is listening, and how sure the identification is.
     service: Option<Service>,
 
-    /// Security/Encryption details (TLS certificate, negotiated ciphers).
+    /// What a TLS handshake negotiated, for an endpoint that completed one.
     security: Option<Security>,
 
-    /// Low-level discovery telemetry (TTL, reason for state, RTT).
+    /// The packet that settled [`state`](Self::state), and what it carried.
     discovery: Option<Discovery>,
 }
 
 impl Port {
-    /// Creates a new, basic Port instance.
+    /// A port in `state`, with nothing yet established about what is behind it.
     pub fn new(number: u16, protocol: Protocol, state: PortState) -> Self {
         Self {
             number,
@@ -146,17 +158,17 @@ impl Port {
         }
     }
 
-    /// Returns the port number.
+    /// The 16-bit port number.
     pub fn number(&self) -> u16 {
         self.number
     }
 
-    /// Returns the transport protocol.
+    /// The transport this endpoint is reached over.
     pub fn protocol(&self) -> Protocol {
         self.protocol
     }
 
-    /// Returns the current discovery state.
+    /// What a probe established about this port.
     pub fn state(&self) -> PortState {
         self.state
     }
@@ -170,7 +182,7 @@ impl Port {
         self.state = std::cmp::max(self.state, state);
     }
 
-    /// Returns the service identification, if any.
+    /// What is listening, if anything identified it.
     pub fn service(&self) -> Option<&Service> {
         self.service.as_ref()
     }
@@ -185,49 +197,66 @@ impl Port {
         self.service.as_ref().map(|s| s.name())
     }
 
-    /// Sets or updates the service identification.
+    /// Records a service identification, replacing any already held.
+    ///
+    /// A caller refining an identification rather than replacing it should
+    /// merge into [`service`](Self::service) instead; see [`Service::merge`].
     pub fn set_service(&mut self, service: Service) {
         self.service = Some(service);
     }
 
-    /// Returns the security/encryption telemetry, if any.
+    /// What a TLS handshake negotiated here, if one completed.
     pub fn security(&self) -> Option<&Security> {
         self.security.as_ref()
     }
 
-    /// Sets or updates the security telemetry.
+    /// Records what a handshake negotiated, replacing anything already held.
     pub fn set_security(&mut self, security: Security) {
         self.security = Some(security);
     }
 
-    /// Returns the low-level discovery telemetry, if any.
+    /// The account of the packet that settled this port's state, if there is
+    /// one. An unprivileged connect attempt produces none.
     pub fn discovery(&self) -> Option<&Discovery> {
         self.discovery.as_ref()
     }
 
-    /// Builder method to attach service information.
+    /// Builder form of [`set_service`](Self::set_service).
     pub fn with_service(mut self, service: Service) -> Self {
         self.service = Some(service);
         self
     }
 
-    /// Builder method to attach security metadata.
+    /// Builder form of [`set_security`](Self::set_security).
     pub fn with_security(mut self, security: Security) -> Self {
         self.security = Some(security);
         self
     }
 
-    /// Builder method to attach low-level discovery telemetry.
+    /// Attaches the account of the packet that settled this port's state.
     pub fn with_discovery(mut self, discovery: Discovery) -> Self {
         self.discovery = Some(discovery);
         self
     }
 
-    /// Merges architectural findings from another Port record into this one.
+    /// Folds another probe's account of this same endpoint into this one.
     ///
-    /// Prioritizes the most definitive port state. Merges nested `Service`,
-    /// `Security`, and `Discovery` metadata progressively.
+    /// The state is promoted to whichever is more definitive; `Service` and
+    /// `Security` merge by their own rules; the telemetry follows the state.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `other` describes a different endpoint. A number
+    /// names one endpoint per transport, so merging TCP/53 into UDP/53 produces
+    /// a record of neither. [`Host`](crate::model::host::Host) keys on both and
+    /// cannot reach this; a caller merging by hand can.
     pub fn merge(&mut self, other: Port) {
+        debug_assert_eq!(
+            (self.number, self.protocol),
+            (other.number, other.protocol),
+            "merging two different endpoints into one record"
+        );
+
         // The state this port held before the merge. Step 4 has to judge the
         // incoming telemetry against what it actually had to beat, and step 1
         // has already overwritten `self.state` by the time it runs.
@@ -289,8 +318,11 @@ impl Port {
 mod tests {
     use super::*;
 
+    /// A second probe that learned more replaces the verdict; one that learned
+    /// less does not. The ordering on [`PortState`] is what decides, so these
+    /// pin the three promotions a scan actually performs.
     #[test]
-    fn port_state_ordering_upgrades_correctly() {
+    fn a_probe_that_learned_more_raises_the_verdict() {
         // Filtered -> Open
         let mut p1 = Port::new(80, Protocol::Tcp, PortState::Filtered);
         p1.merge(Port::new(80, Protocol::Tcp, PortState::Open));
@@ -344,8 +376,11 @@ mod tests {
         );
     }
 
+    /// The telemetry explains the verdict, so when the verdict is replaced the
+    /// account of it has to be replaced too — the RTT and TTL of a `NoResponse`
+    /// say nothing about a port something has since answered on.
     #[test]
-    fn discovery_telemetry_upgrades_on_better_state() {
+    fn telemetry_follows_the_verdict_it_explains() {
         let disc_filtered = Discovery::new(ScanResponse::NoResponse);
         let mut p_filtered =
             Port::new(22, Protocol::Tcp, PortState::Filtered).with_discovery(disc_filtered.clone());

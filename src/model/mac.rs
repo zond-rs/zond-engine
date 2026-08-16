@@ -6,11 +6,18 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! This module provides a native **Medium Access Control (MAC)** address type
-//! to eliminate dependency on external network parsing libraries within the core.
+//! # Hardware addresses
 //!
-//! It also includes **Organizationally Unique Identifier (OUI)** database
-//! initialization and handling for vendor identification.
+//! [`MacAddr`] is the 48-bit address a device answers under on its segment, and
+//! [`vendor`] is who made the hardware, looked up from the address's
+//! Organizationally Unique Identifier.
+//!
+//! The type is this crate's own rather than a packet library's, so that the
+//! vocabulary a report is written in does not change when the layer that reads
+//! frames does. A MAC crosses the whole engine — an ARP reply produces one, a
+//! host record keeps every one it has seen, and a report prints them — and
+//! borrowing the type from whichever crate happens to parse Ethernet today
+//! would put that crate in every one of those signatures.
 
 use mac_oui::Oui;
 use std::fmt;
@@ -127,41 +134,66 @@ impl fmt::Display for MacAddr {
     }
 }
 
-static OUI_DB: OnceLock<Oui> = OnceLock::new();
+static OUI_DB: OnceLock<Option<Oui>> = OnceLock::new();
 
-/// Retrieves or initializes the **Organizationally unique identifier** database.
+/// The OUI database, loaded once, or `None` if it could not be loaded at all.
 ///
-/// Used for linking a vendor to a MAC address (LAN)
-fn get_oui_db() -> &'static Oui {
-    OUI_DB.get_or_init(|| Oui::default().expect("failed to load OUI database"))
+/// A failure is recorded rather than retried or raised. The database is
+/// compiled in, so a load that fails once fails every time, and there is
+/// nothing a caller could do about it in any case. A scan that cannot name a
+/// manufacturer has still found every address it found — that is not worth
+/// taking down a process that embeds this crate.
+fn oui_db() -> Option<&'static Oui> {
+    OUI_DB.get_or_init(|| Oui::default().ok()).as_ref()
 }
 
-/// Identify the vendor of a MAC address.
+/// The manufacturer `mac`'s OUI is allocated to, if the database recognises it.
+///
+/// `None` for a [locally administered](MacAddr::is_locally_administered)
+/// address, which is allocated to nobody, and for an address whose OUI is not
+/// in the database.
 pub fn vendor(mac: &MacAddr) -> Option<String> {
-    let db = get_oui_db();
-    let mac_str = mac.to_string();
-    match db.lookup_by_mac(&mac_str) {
-        Ok(Some(entry)) => Some(entry.company_name.clone()),
-        _ => None,
-    }
+    let entry = oui_db()?.lookup_by_mac(&mac.to_string()).ok()??;
+    Some(entry.company_name.clone())
 }
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Lowercase hex, colon-separated, and the same from both formatters.
+    ///
+    /// Pinned because two things read it rather than a person only: [`vendor`]
+    /// queries the OUI database with this exact string, and a report prints it
+    /// for a reader who will paste it into their own tooling. `Debug` matches
+    /// `Display` so that an address logged inside a larger structure is the
+    /// same address the report shows.
     #[test]
-    fn test_mac_display_and_debug() {
+    fn an_address_renders_as_lowercase_colon_separated_hex() {
         let mac = MacAddr::new(0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E);
         assert_eq!(mac.to_string(), "00:1a:2b:3c:4d:5e");
-        assert_eq!(format!("{:?}", mac), "00:1a:2b:3c:4d:5e");
+        assert_eq!(format!("{mac:?}"), "00:1a:2b:3c:4d:5e");
     }
 
+    /// The conversions to and from raw octets are the boundary with the code
+    /// that reads frames, which has bytes and no opinion about them. Losing the
+    /// order here would misattribute every address a capture produced.
     #[test]
-    fn test_mac_from_array() {
-        let arr = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
-        let mac = MacAddr::from(arr);
-        assert_eq!(mac.octets(), arr);
+    fn octets_survive_the_conversions_frame_parsing_uses() {
+        let octets = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        let mac = MacAddr::from(octets);
+
+        assert_eq!(mac.octets(), octets);
+        assert_eq!(<[u8; 6]>::from(mac), octets);
     }
 
     /// The form `Display` writes has to be the form `FromStr` reads, or an
@@ -181,6 +213,9 @@ mod tests {
         assert_eq!("00:1a:2b:3c:4d:5e".parse(), Ok(mac));
     }
 
+    /// Each of these is a plausible thing to type or to read out of a file, and
+    /// each has to be refused rather than half-parsed: an address that silently
+    /// loses an octet identifies the wrong device.
     #[test]
     fn malformed_addresses_are_refused() {
         for input in [

@@ -1103,7 +1103,7 @@ impl LocalScanner {
             // created it first, so enrichment order doesn't decide whether a MAC
             // is recorded. Repeating one already on record refreshes its
             // last-seen time, which is what `HardwareInfo` keeps them for.
-            host.set_mac(source_mac.into_core());
+            host.record_mac(source_mac.into_core());
             host.set_zone(self.identity.zone.clone());
 
             // The protocol name is the whole of the evidence here - a reply came

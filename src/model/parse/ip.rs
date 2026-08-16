@@ -127,10 +127,6 @@ pub enum IpParseError {
     #[error("Could not resolve LAN interface: {0}")]
     LanError(String),
 
-    /// Wrapper for underlying network library or calculation failures.
-    #[error("Network error: {0}")]
-    NetworkError(String),
-
     /// The provided input resulted in zero valid IP addresses.
     #[error("Target input resulted in an empty set")]
     EmptySet,
@@ -151,14 +147,19 @@ pub enum IpParseError {
 /// table and this module deliberately knows nothing about the machine it runs
 /// on. Writes into the set it is given rather than returning one, so a keyword
 /// mixed with literal targets accumulates alongside them.
-pub type ResolverFn = fn(Keyword, &mut IpSet) -> Result<(), IpParseError>;
+///
+/// A borrowed `dyn Fn` rather than a bare `fn` pointer, so that a resolver may
+/// close over what it needs — an interface table read once and reused, say —
+/// which a function pointer cannot. It stays `Copy`, so
+/// [`TargetContext`](super::target::TargetContext) does too.
+pub type ResolverFn<'a> = &'a dyn Fn(Keyword, &mut IpSet) -> Result<(), IpParseError>;
 
 /// Looks up an interface by name and returns its scope id.
 ///
 /// Injected for the same reason [`ResolverFn`] is: resolving a name means
 /// reading the host's interface list, and this module deliberately knows nothing
 /// about the host it runs on. `None` for a name no interface answers to.
-pub type ZoneResolverFn = fn(&str) -> Option<u32>;
+pub type ZoneResolverFn<'a> = &'a dyn Fn(&str) -> Option<u32>;
 
 /// Resolves a list of address expressions into one [`IpSet`].
 ///
@@ -172,34 +173,24 @@ pub type ZoneResolverFn = fn(&str) -> Option<u32>;
 /// nothing was named, since an empty target set is a caller mistake rather than
 /// a scan of nothing.
 ///
+/// A caller that supplies no `zones` cannot express a link-local target at all,
+/// and gets [`IpParseError::UnknownInterface`] rather than a set that silently
+/// means a different segment.
+///
 /// # Examples
 ///
 /// ```
 /// use zond_engine::model::parse::ip::to_set;
 ///
-/// let set = to_set(&["192.168.1.0/24", "10.0.0.1", "10.0.0.5-10"], None).unwrap();
+/// let set = to_set(&["192.168.1.0/24", "10.0.0.1", "10.0.0.5-10"], None, None).unwrap();
 ///
 /// // 256 from the block, one literal, six from the range.
 /// assert_eq!(set.len(), 263);
 /// ```
-pub fn to_set<S>(ips: &[S], resolver: Option<ResolverFn>) -> Result<IpSet, IpParseError>
-where
-    S: AsRef<str>,
-{
-    to_set_with(ips, resolver, None)
-}
-
-/// [`to_set`], additionally able to resolve the `%interface` suffix on a
-/// link-local address.
-///
-/// Separate rather than an extra argument to [`to_set`] so existing callers keep
-/// compiling. A caller that does not supply `zones` cannot express a link-local
-/// target at all, and gets an error saying so rather than a target set that
-/// silently means a different segment.
-pub fn to_set_with<S>(
+pub fn to_set<S>(
     ips: &[S],
-    resolver: Option<ResolverFn>,
-    zones: Option<ZoneResolverFn>,
+    resolver: Option<ResolverFn<'_>>,
+    zones: Option<ZoneResolverFn<'_>>,
 ) -> Result<IpSet, IpParseError>
 where
     S: AsRef<str>,
@@ -227,7 +218,7 @@ where
 /// Identifies the format of a single address expression and inserts it into an
 /// existing set.
 ///
-/// This is the grammar itself, without the list handling [`to_set_with`] wraps
+/// This is the grammar itself, without the list handling [`to_set`] wraps
 /// around it. A caller that has already tokenized its input, such as an
 /// importer reading a file of targets, wants exactly this: one expression,
 /// inserted into a set it is accumulating.
@@ -243,8 +234,8 @@ where
 pub fn insert_expression(
     s: &str,
     set: &mut IpSet,
-    resolver: Option<ResolverFn>,
-    zones: Option<ZoneResolverFn>,
+    resolver: Option<ResolverFn<'_>>,
+    zones: Option<ZoneResolverFn<'_>>,
 ) -> Result<(), IpParseError> {
     // The interface suffix is stripped first and applied to whatever the rest
     // parses to, so `fe80::1%en0` and `fe80::1-fe80::5%en0` are both expressible
@@ -294,7 +285,7 @@ fn parse_scoped(
     address: &str,
     zone: &str,
     set: &mut IpSet,
-    zones: Option<ZoneResolverFn>,
+    zones: Option<ZoneResolverFn<'_>>,
 ) -> Result<(), IpParseError> {
     if zone.is_empty() {
         return Err(IpParseError::Malformed(original.to_string()));
@@ -315,7 +306,7 @@ fn parse_scoped(
 
     let scoped =
         crate::model::ip::range::Ipv6Range::scoped(v6.start_addr(), v6.end_addr(), Some(index))
-            .map_err(map_range_error)?;
+            .map_err(|e| map_range_error(original, e))?;
     set.insert_range(IpRange::V6(scoped));
     Ok(())
 }
@@ -332,7 +323,7 @@ fn parse_range(s: &str) -> Result<IpRange, IpParseError> {
         IpError::InvalidFormat(_) | IpError::AddrParse(_) | IpError::PrefixParse(_) => {
             IpParseError::Malformed(s.into())
         }
-        other => map_range_error(other),
+        other => map_range_error(s, other),
     })
 }
 
@@ -350,15 +341,20 @@ fn parse_cidr(s: &str) -> Result<IpRange, IpParseError> {
         .parse::<u8>()
         .map_err(|_| IpParseError::Malformed(s.into()))?;
 
-    crate::model::ip::range::cidr_range(ip, prefix).map_err(map_range_error)
+    crate::model::ip::range::cidr_range(ip, prefix).map_err(|e| map_range_error(s, e))
 }
 
-fn map_range_error(e: IpError) -> IpParseError {
+/// Restates a range error in this module's vocabulary, against the expression
+/// the caller wrote.
+///
+/// `original` is threaded through because the remaining variants describe a
+/// token this module no longer holds — a bare "invalid IP range" leaves whoever
+/// is reading the error with nothing to search their input for.
+fn map_range_error(original: &str, e: IpError) -> IpParseError {
     match e {
         IpError::InvalidRange(s, e) => IpParseError::InvalidRange(s, e),
         IpError::InvalidPrefix(p) => IpParseError::InvalidPrefix(p),
-        IpError::NetworkError(msg) => IpParseError::NetworkError(msg),
-        _ => IpParseError::Malformed("Invalid IP range".into()),
+        _ => IpParseError::Malformed(original.to_string()),
     }
 }
 
@@ -392,7 +388,7 @@ mod tests {
             "2001:db8::1-2001:db8::5",
             "8.8.8.8",
         ] {
-            let direct = to_set(&[expression], None)
+            let direct = to_set(&[expression], None, None)
                 .unwrap_or_else(|e| panic!("to_set rejected `{expression}`: {e}"));
             let via_set = IpSet::from_str(expression)
                 .unwrap_or_else(|e| panic!("IpSet::from_str rejected `{expression}`: {e}"));
@@ -405,40 +401,50 @@ mod tests {
         }
     }
 
+    /// The simplest expression there is, and the one every other form reduces
+    /// to.
     #[test]
-    fn to_set_basic_single() {
+    fn a_single_literal_address_becomes_a_set_of_one() {
         let input = vec!["192.168.1.1"];
-        let set = to_set(&input, None).expect("Should parse single IP");
+        let set = to_set(&input, None, None).expect("Should parse single IP");
         assert_eq!(set.len(), 1);
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
     }
 
+    /// One argument may itself be a list, so a command line and a whole target
+    /// file reach the same code.
     #[test]
-    fn to_set_comma_separated() {
+    fn one_argument_may_name_several_addresses() {
         let input = vec!["10.0.0.1, 10.0.0.2, 10.0.0.5"];
-        let set = to_set(&input, None).expect("Should parse comma list");
+        let set = to_set(&input, None, None).expect("Should parse comma list");
         assert_eq!(set.len(), 3);
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
     }
 
+    /// A block is expanded to what it covers, not to what was written — the
+    /// difference a budget check depends on.
     #[test]
-    fn parse_cidr_blocks() {
+    fn a_cidr_block_covers_every_address_in_it() {
         let input = vec!["172.16.0.0/24"];
-        let set = to_set(&input, None).expect("Should parse CIDR");
+        let set = to_set(&input, None, None).expect("Should parse CIDR");
         assert_eq!(set.len(), 256);
     }
 
+    /// The shorthand crosses an octet boundary, which is where writing it out
+    /// by hand goes wrong: `.250-2.10` is seventeen addresses, not eight.
     #[test]
-    fn parse_short_range_suffix() {
+    fn a_shortened_range_end_continues_the_starts_octets() {
         let input = vec!["192.168.1.250-2.10"];
-        let set = to_set(&input, None).unwrap();
+        let set = to_set(&input, None, None).unwrap();
         assert_eq!(set.len(), 17);
     }
 
+    /// A prefix too long for its family is refused rather than clamped, since
+    /// a clamped `/33` silently scans the whole `/32` it was not asked about.
     #[test]
-    fn error_invalid_cidr() {
+    fn a_prefix_longer_than_its_family_allows_is_refused() {
         let input = vec!["192.168.1.1/33"];
-        let result = to_set(&input, None);
+        let result = to_set(&input, None, None);
         assert_eq!(result.unwrap_err(), IpParseError::InvalidPrefix(33));
     }
 
@@ -448,18 +454,20 @@ mod tests {
     /// long.
     #[test]
     fn a_prefix_error_names_the_bound_for_both_families() {
-        let v6 = to_set(&["2001:db8::/129"], None).unwrap_err();
+        let v6 = to_set(&["2001:db8::/129"], None, None).unwrap_err();
         assert_eq!(v6, IpParseError::InvalidPrefix(129));
         assert!(v6.to_string().contains("0-128"), "{v6}");
 
-        let v4 = to_set(&["192.168.1.1/33"], None).unwrap_err();
+        let v4 = to_set(&["192.168.1.1/33"], None, None).unwrap_err();
         assert!(v4.to_string().contains("0-32"), "{v4}");
     }
 
+    /// A backwards range is a typo, and reporting it is what stops it being
+    /// read as an empty set that scans nothing.
     #[test]
-    fn error_invalid_range_order() {
+    fn a_range_written_backwards_is_refused() {
         let input = vec!["10.0.0.10-1"];
-        let result = to_set(&input, None);
+        let result = to_set(&input, None, None);
         assert!(matches!(result, Err(IpParseError::InvalidRange(_, _))));
     }
 
@@ -473,7 +481,7 @@ mod tests {
             (name == "en0").then_some(7)
         }
 
-        let set = to_set_with(&["fe80::aa%en0"], None, Some(zones)).expect("parses");
+        let set = to_set(&["fe80::aa%en0"], None, Some(&zones)).expect("parses");
 
         assert_eq!(set.v6().len(), 1);
         assert_eq!(set.v6()[0].zone(), Some(7));
@@ -484,7 +492,7 @@ mod tests {
     /// unanswerable question it is, for the classifier to report.
     #[test]
     fn a_link_local_target_without_an_interface_is_ambiguous() {
-        let set = to_set(&["fe80::aa"], None).expect("parses");
+        let set = to_set(&["fe80::aa"], None, None).expect("parses");
 
         assert!(set.v6()[0].is_ambiguous());
     }
@@ -498,12 +506,12 @@ mod tests {
         }
 
         assert!(matches!(
-            to_set_with(&["fe80::aa%wlan9"], None, Some(zones)),
+            to_set(&["fe80::aa%wlan9"], None, Some(&zones)),
             Err(IpParseError::UnknownInterface(_))
         ));
         assert!(
             matches!(
-                to_set(&["fe80::aa%en0"], None),
+                to_set(&["fe80::aa%en0"], None, None),
                 Err(IpParseError::UnknownInterface(_))
             ),
             "a caller with no lookup cannot express a scoped target and must be told"
@@ -518,19 +526,22 @@ mod tests {
         }
 
         assert!(matches!(
-            to_set_with(&["2001:db8::1%en0"], None, Some(zones)),
+            to_set(&["2001:db8::1%en0"], None, Some(&zones)),
             Err(IpParseError::ZoneOnUnscopedTarget(_))
         ));
         assert!(matches!(
-            to_set_with(&["192.168.1.1%en0"], None, Some(zones)),
+            to_set(&["192.168.1.1%en0"], None, Some(&zones)),
             Err(IpParseError::ZoneOnUnscopedTarget(_))
         ));
     }
 
+    /// Nothing to scan is a caller mistake rather than a scan of nothing: a
+    /// silent empty set looks exactly like a completed scan that found no
+    /// hosts.
     #[test]
-    fn empty_input_error() {
+    fn input_naming_no_addresses_is_an_error() {
         let input: Vec<&str> = vec!["", " "];
-        let result = to_set(&input, None);
+        let result = to_set(&input, None, None);
         assert_eq!(result.unwrap_err(), IpParseError::EmptySet);
     }
 }

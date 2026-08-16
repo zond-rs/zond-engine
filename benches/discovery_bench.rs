@@ -112,7 +112,7 @@ use zond_engine::config::ZondConfig;
 use zond_engine::config::{RetryConfig, ScanEffort};
 use zond_engine::export::schema::status_protocol_name;
 use zond_engine::model::host::Host;
-use zond_engine::model::parse::ip::to_set_with as to_ipset_with;
+use zond_engine::model::parse::ip::to_set as to_ipset;
 use zond_engine::model::parse::ip::{Keyword, names_keyword};
 use zond_engine::scanner;
 use zond_engine::scanner::report::{BUCKET_BOUNDS_MS, ProbeStats};
@@ -254,10 +254,10 @@ async fn main() {
     // resolving a keyword means reading the host's interfaces and the parser is
     // deliberately free of that dependency - so a caller that omits it gets an
     // error rather than a silently different target set.
-    let ips = to_ipset_with(
+    let ips = to_ipset(
         &[targets.as_str()],
-        Some(interface::resolve_keyword),
-        Some(interface::resolve_zone),
+        Some(&interface::resolve_keyword),
+        Some(&interface::resolve_zone),
     )
     .unwrap_or_else(|e| fail(&format!("target expression `{targets}`: {e}")));
     let total = ips.len();

@@ -30,7 +30,7 @@
 pub mod ip;
 pub mod target;
 
-pub use ip::{IpParseError, names_keyword, to_set as to_ipset};
+pub use ip::{IpParseError, names_keyword, to_set};
 
 use crate::model::port::PortSet;
 use crate::model::target::TargetMap;
@@ -51,7 +51,7 @@ use crate::model::target::TargetMap;
 pub fn to_target_map(
     targets: &[String],
     global_ports: PortSet,
-    resolver: Option<ip::ResolverFn>,
+    resolver: Option<ip::ResolverFn<'_>>,
 ) -> Result<TargetMap, target::TargetParseError> {
     let mut ctx = target::TargetContext::new();
     ctx.keywords = resolver;

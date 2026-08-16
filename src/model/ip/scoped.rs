@@ -37,27 +37,50 @@ use std::sync::Arc;
 /// what a report has to print for its reader to act on. Deriving either from the
 /// other costs a lookup at exactly the moments this is used in bulk.
 ///
-/// Identity is the index alone. Two `Zone`s naming the same interface are the
-/// same zone whatever string was recorded alongside, and an interface's index is
-/// unique on a host for as long as the interface exists, which is longer than
-/// any one scan.
+/// **A zone written down is not yet a zone found.** Parsing `%en0` yields a
+/// name and nothing else; only a lookup against the running host turns it into
+/// an index. [`unresolved`](Self::unresolved) is that first state, and
+/// [`index`](Self::index) is `None` for as long as it lasts.
+///
+/// Identity follows from which state it is in. A resolved zone is its index
+/// alone: two of them naming the same interface are the same zone whatever
+/// string was recorded alongside, since an interface's index is unique on a host
+/// for longer than any one scan. An unresolved zone has only the name it was
+/// written under, so that is its identity — and a resolved zone is never equal
+/// to an unresolved one, because nothing here can know whether they name the
+/// same interface.
 #[derive(Debug, Clone)]
 pub struct Zone {
-    index: u32,
+    index: Option<u32>,
     name: Arc<str>,
 }
 
 impl Zone {
-    /// Names the interface with index `index`.
+    /// Names the interface with index `index`, as a lookup against the host
+    /// reported it.
     pub fn new(index: u32, name: impl Into<Arc<str>>) -> Self {
         Self {
-            index,
+            index: Some(index),
             name: name.into(),
         }
     }
 
-    /// The interface index, as a `SocketAddrV6` scope id.
-    pub fn index(&self) -> u32 {
+    /// Names an interface that nothing has looked up yet.
+    ///
+    /// What parsing `%en0` out of a target expression produces. An address
+    /// scoped to one of these is [`unusable`](ScopedIp::is_unusable) until
+    /// something that knows the host's interfaces replaces it: naming an
+    /// interface is not the same as having found it, and a socket needs the
+    /// index.
+    pub fn unresolved(name: impl Into<Arc<str>>) -> Self {
+        Self {
+            index: None,
+            name: name.into(),
+        }
+    }
+
+    /// The interface index, as a `SocketAddrV6` scope id, once one is known.
+    pub fn index(&self) -> Option<u32> {
         self.index
     }
 
@@ -65,11 +88,20 @@ impl Zone {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// What identity compares. An index when there is one, and the name it was
+    /// written under when there is not; the two states never match each other.
+    fn identity(&self) -> (Option<u32>, Option<&str>) {
+        match self.index {
+            Some(index) => (Some(index), None),
+            None => (None, Some(&*self.name)),
+        }
+    }
 }
 
 impl PartialEq for Zone {
     fn eq(&self, other: &Self) -> bool {
-        self.index == other.index
+        self.identity() == other.identity()
     }
 }
 
@@ -77,7 +109,7 @@ impl Eq for Zone {}
 
 impl std::hash::Hash for Zone {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.index.hash(state);
+        self.identity().hash(state);
     }
 }
 
@@ -89,7 +121,7 @@ impl PartialOrd for Zone {
 
 impl Ord for Zone {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.index.cmp(&other.index)
+        self.identity().cmp(&other.identity())
     }
 }
 
@@ -149,13 +181,18 @@ impl ScopedIp {
         self.zone.as_ref()
     }
 
-    /// Whether this address is one that needs a zone and does not have one.
+    /// Whether this address is one that needs a zone and has no *resolved* one.
     ///
     /// Such an address cannot be connected to, and the honest thing to do with
     /// it is say so rather than attempt a connection that fails with an error
     /// about the network.
+    ///
+    /// A zone that names an interface nothing has looked up counts as missing.
+    /// The kernel takes a scope id and there is none, so `fe80::1%en0` straight
+    /// out of a target file is exactly as unreachable as bare `fe80::1` until
+    /// something resolves the name.
     pub fn is_unusable(&self) -> bool {
-        Self::needs_zone(&self.addr) && self.zone.is_none()
+        Self::needs_zone(&self.addr) && self.zone.as_ref().and_then(Zone::index).is_none()
     }
 
     /// This address as somewhere a socket can be opened to.
@@ -166,11 +203,14 @@ impl ScopedIp {
     /// connection attempt that fails for a reason having nothing to do with the
     /// target.
     pub fn to_socket_addr(&self, port: u16) -> Option<SocketAddr> {
-        match (self.addr, &self.zone) {
-            (IpAddr::V6(v6), Some(zone)) if Self::needs_zone(&self.addr) => {
-                Some(SocketAddr::V6(SocketAddrV6::new(v6, port, 0, zone.index())))
+        if self.is_unusable() {
+            return None;
+        }
+
+        match (self.addr, self.zone.as_ref().and_then(Zone::index)) {
+            (IpAddr::V6(v6), Some(scope_id)) => {
+                Some(SocketAddr::V6(SocketAddrV6::new(v6, port, 0, scope_id)))
             }
-            _ if self.is_unusable() => None,
             (addr, _) => Some(SocketAddr::new(addr, port)),
         }
     }
@@ -214,10 +254,10 @@ impl FromStr for ScopedIp {
     /// Reads `fe80::1%en0`, or any plain address.
     ///
     /// The interface index is not resolved here: this parses text, and looking
-    /// up a name requires the host's interface list. A zone parsed this way
-    /// carries index zero until something that knows the interfaces replaces it,
-    /// which is the same state the operating system reports for an unresolvable
-    /// name.
+    /// up a name requires the host's interface list. The zone comes back
+    /// [`unresolved`](Zone::unresolved), which is to say it carries the name and
+    /// no scope id, and the address is [`unusable`](Self::is_unusable) until
+    /// something that knows the interfaces supplies one.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let Some((addr, zone)) = s.split_once('%') else {
             return s
@@ -239,7 +279,7 @@ impl FromStr for ScopedIp {
 
         Ok(Self {
             addr,
-            zone: Some(Zone::new(0, zone)),
+            zone: Some(Zone::unresolved(zone)),
         })
     }
 }
@@ -321,6 +361,25 @@ mod tests {
     fn a_zone_is_its_index_not_its_name() {
         assert_eq!(Zone::new(4, "en0"), Zone::new(4, "utun4"));
         assert_ne!(Zone::new(4, "en0"), Zone::new(5, "en0"));
+    }
+
+    /// Until something resolves it, a parsed zone has no index — and identity
+    /// by index alone made every one of them the same zone. Two link-local
+    /// targets written against two interfaces would then be one address, which
+    /// is precisely the collapse this type exists to prevent, reached from the
+    /// other direction.
+    #[test]
+    fn an_unresolved_zone_is_identified_by_the_name_it_was_written_under() {
+        let en0: ScopedIp = "fe80::1%en0".parse().expect("parses");
+        let en1: ScopedIp = "fe80::1%en1".parse().expect("parses");
+
+        assert_ne!(en0, en1, "two interfaces, two addresses");
+        assert_eq!(en0, "fe80::1%en0".parse().expect("parses"));
+
+        // And an unresolved zone cannot open a socket: naming an interface is
+        // not the same as having found it.
+        assert!(en0.is_unusable());
+        assert_eq!(en0.to_socket_addr(22), None);
     }
 
     /// The point of the whole exercise: a link-local destination is reachable

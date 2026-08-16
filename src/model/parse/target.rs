@@ -135,9 +135,9 @@ pub type HostLookup<'a> = &'a dyn Fn(&str) -> Option<Vec<IpAddr>>;
 #[derive(Default, Clone, Copy)]
 pub struct TargetContext<'a> {
     /// Expands keywords such as `lan` into the addresses they stand for.
-    pub keywords: Option<ResolverFn>,
+    pub keywords: Option<ResolverFn<'a>>,
     /// Resolves the `%interface` suffix on a link-local address to a scope id.
-    pub zones: Option<ZoneResolverFn>,
+    pub zones: Option<ZoneResolverFn<'a>>,
     /// Resolves a hostname to addresses.
     pub hosts: Option<HostLookup<'a>>,
 }
@@ -150,13 +150,13 @@ impl<'a> TargetContext<'a> {
     }
 
     /// Sets the keyword resolver.
-    pub fn with_keywords(mut self, keywords: ResolverFn) -> Self {
+    pub fn with_keywords(mut self, keywords: ResolverFn<'a>) -> Self {
         self.keywords = Some(keywords);
         self
     }
 
     /// Sets the interface-zone resolver.
-    pub fn with_zones(mut self, zones: ZoneResolverFn) -> Self {
+    pub fn with_zones(mut self, zones: ZoneResolverFn<'a>) -> Self {
         self.zones = Some(zones);
         self
     }
@@ -916,7 +916,7 @@ mod tests {
         fn zones(name: &str) -> Option<u32> {
             (name == "en0").then_some(7)
         }
-        let ctx = TargetContext::new().with_zones(zones);
+        let ctx = TargetContext::new().with_zones(&zones);
 
         let mut builder = TargetMapBuilder::new(ports("80"));
         builder.push("[fe80::aa%en0]:22", &ctx).unwrap();
@@ -924,6 +924,29 @@ mod tests {
         let map = builder.build();
         assert_eq!(map.units[0].ips().v6()[0].zone(), Some(7));
         assert_eq!(map.units[0].ports(), &ports("22"));
+    }
+
+    /// A resolver is whatever the caller has, not whatever fits in a function
+    /// pointer. The host's interface table is read once and closed over here,
+    /// which is the shape a caller resolving thousands of targets needs and
+    /// which `fn(&str) -> Option<u32>` cannot express — under that signature
+    /// this does not compile, and the lookup has to become a global.
+    #[test]
+    fn a_resolver_may_close_over_what_it_needs_to_answer() {
+        let interfaces = [("en0".to_string(), 7u32), ("utun3".to_string(), 12)];
+        let zones = |name: &str| {
+            interfaces
+                .iter()
+                .find(|(known, _)| known == name)
+                .map(|(_, index)| *index)
+        };
+        let ctx = TargetContext::new().with_zones(&zones);
+
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        builder.push("[fe80::aa%utun3]:22", &ctx).expect("parses");
+
+        let map = builder.build();
+        assert_eq!(map.units[0].ips().v6()[0].zone(), Some(12));
     }
 
     /// The running total has to equal what walking the accumulated groups would

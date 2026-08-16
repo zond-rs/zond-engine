@@ -57,35 +57,43 @@ pub enum ScanResponse {
     Custom(String),
 }
 
-/// Telemetry and rationale for a port's discovered state.
+/// The evidence behind a port's state: which packet decided it, when, how long
+/// it took, and where it came from.
 ///
-/// This struct separates absolute timeline data (`timestamp`) from
-/// relative performance data (`rtt`), ensuring safe operation even
-/// if the host's wall-clock time is adjusted during a scan.
+/// The two times answer different questions and neither substitutes for the
+/// other. `timestamp` places the finding on a timeline a person reads, so it is
+/// wall-clock. `rtt` is measured elapsed time, and stays correct across a clock
+/// adjustment mid-scan because it was never derived from the clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {
-    /// The specific packet response that determined the state.
+    /// The packet that settled the state.
     reason: ScanResponse,
 
-    /// The absolute time at which the port state was first confirmed.
-    /// Useful for logging and database records.
+    /// When the state was settled, for a reader placing it against everything
+    /// else that happened.
     timestamp: SystemTime,
 
-    /// The round-trip time (RTT) for the discovery probe.
-    /// Crucial for timing adjustments in subsequent scan phases.
+    /// How long the reply took. Absent for a probe nothing answered, and for a
+    /// connect attempt that measured no round trip of its own.
     rtt: Option<Duration>,
 
-    /// The Time-to-Live (TTL) value from the response packet.
-    /// Useful for network distance estimation and OS fingerprinting.
+    /// The TTL the reply carried, which bounds how many hops away its sender
+    /// is. A value inconsistent with the target's distance is how a forged or
+    /// middlebox-generated reply is caught.
     ttl: Option<u8>,
 
-    /// The IP address of the interface where this discovery was made.
-    /// Essential for multi-homed hosts where port states vary by interface.
+    /// Who sent the reply, when that is worth recording separately — a `Closed`
+    /// sourced from an address that is not the target's says something about
+    /// the path rather than about the port.
     source_ip: Option<IpAddr>,
 }
 
 impl Discovery {
-    /// Creates a new discovery record with the current wall-clock timestamp.
+    /// Records that `reason` settled a port's state, as of now.
+    ///
+    /// Everything else is optional and attached by the builder methods below,
+    /// because an unprivileged connect attempt knows only that it succeeded or
+    /// failed: there is no header to read a TTL from and no interface to name.
     ///
     /// # Examples
     ///
@@ -105,44 +113,44 @@ impl Discovery {
         }
     }
 
-    /// Returns the specific network response indicator.
+    /// The packet that settled the state.
     pub fn reason(&self) -> &ScanResponse {
         &self.reason
     }
 
-    /// Returns the absolute time of discovery.
+    /// When the state was settled.
     pub fn timestamp(&self) -> SystemTime {
         self.timestamp
     }
 
-    /// Returns the round-trip time (RTT) of the probe, if available.
+    /// How long the reply took, if a round trip was measured.
     pub fn rtt(&self) -> Option<Duration> {
         self.rtt
     }
 
-    /// Returns the packet TTL (Time-to-Live), if available.
+    /// The TTL the reply carried, if it was read from a header.
     pub fn ttl(&self) -> Option<u8> {
         self.ttl
     }
 
-    /// Returns the source IP address that responded to the probe.
+    /// Who sent the reply, if that was recorded.
     pub fn source_ip(&self) -> Option<IpAddr> {
         self.source_ip
     }
 
-    /// Builder method to attach Round-Trip Time (RTT) telemetry.
+    /// Attaches the measured round trip.
     pub fn with_rtt(mut self, rtt: Duration) -> Self {
         self.rtt = Some(rtt);
         self
     }
 
-    /// Builder method to attach packet TTL telemetry.
+    /// Attaches the TTL read from the reply's header.
     pub fn with_ttl(mut self, ttl: u8) -> Self {
         self.ttl = Some(ttl);
         self
     }
 
-    /// Builder method to attach the source IP of the responding interface.
+    /// Attaches the address the reply came from.
     pub fn with_source_ip(mut self, ip: IpAddr) -> Self {
         self.source_ip = Some(ip);
         self
@@ -163,8 +171,10 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// Everything but the reason is optional and arrives separately, so the
+    /// builders have to compose without any of them displacing another.
     #[test]
-    fn discovery_builder_pattern() {
+    fn the_optional_evidence_composes_without_displacing_the_reason() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let rtt = Duration::from_millis(45);
 

@@ -45,7 +45,7 @@
 //! use zond_engine::model::parse::ip::to_set;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let targets = to_set(&["192.168.1.0/24"], None)?;
+//! let targets = to_set(&["192.168.1.0/24"], None, None)?;
 //! let (mut session, task) = discover(targets, &ZondConfig::default()).await?;
 //!
 //! // Hosts arrive as they are found.

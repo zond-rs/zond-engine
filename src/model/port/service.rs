@@ -117,7 +117,7 @@ impl Service {
     }
 
     /// The CPE identifiers recorded for this service, in sorted order.
-    pub fn cpe(&self) -> &BTreeSet<Arc<str>> {
+    pub fn cpes(&self) -> &BTreeSet<Arc<str>> {
         &self.cpe
     }
 
@@ -231,84 +231,77 @@ impl Service {
 mod tests {
     use super::*;
 
+    /// Every field an analyzer can fill, filled through the builders that
+    /// compose into one expression.
     #[test]
-    fn service_builder_pattern() {
-        let srv = Service::new("http", 85)
-            .with_product("nginx")
-            .with_version("1.21.0")
-            .with_cpe("cpe:/a:igor_sysoev:nginx:1.21.0");
-
-        assert_eq!(srv.name(), "http");
-        assert_eq!(srv.confidence(), 85);
-        assert_eq!(srv.product(), Some("nginx"));
-        assert_eq!(srv.version(), Some("1.21.0"));
-        assert_eq!(srv.cpe().len(), 1);
-    }
-
-    #[test]
-    fn service_carries_vendor_and_extrainfo() {
-        let srv = Service::new("http", 90)
+    fn a_service_carries_everything_an_analyzer_can_establish() {
+        let service = Service::new("http", 85)
             .with_product("Apache")
             .with_vendor("Apache Software Foundation")
-            .with_extrainfo("PHP/8.2.1");
+            .with_version("2.4.57")
+            .with_extrainfo("PHP/8.2.1")
+            .with_cpe("cpe:/a:apache:http_server:2.4.57");
 
-        assert_eq!(srv.vendor(), Some("Apache Software Foundation"));
-        assert_eq!(srv.extrainfo(), Some("PHP/8.2.1"));
+        assert_eq!(service.name(), "http");
+        assert_eq!(service.confidence(), 85);
+        assert_eq!(service.product(), Some("Apache"));
+        assert_eq!(service.vendor(), Some("Apache Software Foundation"));
+        assert_eq!(service.version(), Some("2.4.57"));
+        assert_eq!(service.extrainfo(), Some("PHP/8.2.1"));
+        assert_eq!(service.cpes().len(), 1);
     }
 
+    /// Confidence is what ranks two identifications, so a value above 100 would
+    /// outrank a completed handshake and could never be displaced. A caller
+    /// computing a score must not be able to produce one.
     #[test]
-    fn service_merge_higher_confidence_overwrites_vendor() {
-        let mut srv1 = Service::new("http", 50).with_vendor("Unknown");
-        let srv2 = Service::new("http", 100).with_vendor("NGINX");
-        srv1.merge(srv2);
-        assert_eq!(srv1.vendor(), Some("NGINX"));
+    fn a_confidence_above_100_is_clamped_rather_than_kept() {
+        assert_eq!(Service::new("ssh", 101).confidence(), 100);
     }
 
+    /// The surer identification names the service; the other still fills what
+    /// it left blank. Both directions matter — a handshake that identified
+    /// `http` precisely should not lose the version a banner read, and a banner
+    /// guess should not rename what a handshake established.
     #[test]
-    fn service_confidence_is_clamped_to_100() {
-        let srv = Service::new("ssh", 101);
-        assert_eq!(srv.confidence(), 100);
+    fn the_surer_identification_names_the_service_and_the_other_fills_its_gaps() {
+        let mut guess = Service::new("http", 50).with_product("nginx");
+        guess.merge(
+            Service::new("http", 100)
+                .with_product("Apache")
+                .with_version("2.4"),
+        );
+        assert_eq!(guess.product(), Some("Apache"), "the surer product wins");
+        assert_eq!(guess.confidence(), 100);
+        assert_eq!(guess.version(), Some("2.4"));
+
+        let mut established = Service::new("http", 85).with_product("nginx");
+        established.merge(Service::new("unknown", 10).with_version("2.0"));
+        assert_eq!(established.name(), "http", "a guess does not rename it");
+        assert_eq!(established.product(), Some("nginx"));
+        assert_eq!(established.confidence(), 85);
+        assert_eq!(
+            established.version(),
+            Some("2.0"),
+            "but a gap is worth filling from any source"
+        );
     }
 
+    /// A CPE claims that an identifier applies, not that this is the service,
+    /// so it is kept whatever the confidences were — the same rule
+    /// [`OsFingerprint::merge`](crate::model::host::OsFingerprint::merge)
+    /// follows. Repeats collapse, since two analyzers commonly extract the
+    /// same one.
     #[test]
-    fn service_merge_lower_confidence_does_not_overwrite_identity() {
-        let mut srv1 = Service::new("http", 85).with_product("nginx");
-        let srv2 = Service::new("unknown", 10).with_version("2.0");
+    fn cpes_are_unioned_across_a_merge_whatever_the_confidence() {
+        let mut ssh = Service::new("ssh", 100).with_cpe("cpe:/a:openbsd:openssh");
+        ssh.merge(
+            Service::new("ssh", 10)
+                .with_cpe("cpe:/o:linux:linux_kernel")
+                .with_cpe("cpe:/a:openbsd:openssh"),
+        );
 
-        srv1.merge(srv2);
-
-        // Name and product shouldn't change, but version should be adopted from lower confidence
-        // if not already present.
-        assert_eq!(srv1.name(), "http");
-        assert_eq!(srv1.confidence(), 85);
-        assert_eq!(srv1.product(), Some("nginx"));
-        assert_eq!(srv1.version(), Some("2.0"));
-    }
-
-    #[test]
-    fn service_merge_higher_confidence_overwrites_identity() {
-        let mut srv1 = Service::new("http", 50).with_product("nginx");
-        let srv2 = Service::new("http", 100)
-            .with_product("Apache")
-            .with_version("2.4");
-
-        srv1.merge(srv2);
-
-        // The higher confidence payload completely overwrites the identity
-        assert_eq!(srv1.name(), "http");
-        assert_eq!(srv1.confidence(), 100);
-        assert_eq!(srv1.product(), Some("Apache"));
-        assert_eq!(srv1.version(), Some("2.4"));
-    }
-
-    #[test]
-    fn service_merge_deduplicates_cpes() {
-        let mut srv1 = Service::new("ssh", 100).with_cpe("cpe:/a:openbsd:openssh");
-        let srv2 = Service::new("ssh", 100).with_cpe("cpe:/o:linux:linux_kernel");
-
-        srv1.merge(srv2);
-
-        assert_eq!(srv1.cpe().len(), 2);
+        assert_eq!(ssh.cpes().len(), 2, "one new, one already held");
     }
 
     /// A service's identifiers come from a banner, which the target writes.
@@ -320,7 +313,7 @@ mod tests {
         for i in 0..(MAX_CPES_PER_SERVICE * 2) {
             service.add_cpe(format!("cpe:/a:vendor:product:{i}"));
         }
-        assert_eq!(service.cpe().len(), MAX_CPES_PER_SERVICE);
+        assert_eq!(service.cpes().len(), MAX_CPES_PER_SERVICE);
 
         // And a merge cannot smuggle past what `add_cpe` refuses.
         let mut other = Service::new("http", 50);
@@ -328,6 +321,6 @@ mod tests {
             other.add_cpe(format!("cpe:/a:other:product:{i}"));
         }
         service.merge(other);
-        assert_eq!(service.cpe().len(), MAX_CPES_PER_SERVICE);
+        assert_eq!(service.cpes().len(), MAX_CPES_PER_SERVICE);
     }
 }

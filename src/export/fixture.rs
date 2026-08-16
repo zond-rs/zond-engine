@@ -48,7 +48,7 @@ fn router() -> Host {
     host.set_hostname(Some("router.local".to_string()));
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
-    host.set_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
+    host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
 
     let mut os = OsFingerprint::new("Linux", 95)
         .with_family("Unix-like")
@@ -206,7 +206,7 @@ fn hostile_host() -> Host {
     host.set_hostname(Some(HOSTILE.to_string()));
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, HOSTILE));
-    host.set_mac(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x01));
+    host.record_mac(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x01));
     // The one role anything assigns, carried here so the corpus still exercises
     // a non-empty `roles` array through every exporter.
     host.add_network_role(NetworkRole::Tarpit);

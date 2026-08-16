@@ -58,3 +58,47 @@ pub fn is_global_unicast(ipv6_addr: &Ipv6Addr) -> bool {
     let first_byte = ipv6_addr.octets()[0];
     (0x20..=0x3F).contains(&first_byte)
 }
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The boundaries of `2000::/3`, and the special-purpose prefixes inside it
+    /// that this deliberately does not exclude. Both halves matter: an address
+    /// wrongly called local costs a host its usable address, and one wrongly
+    /// called global is reported at an address nobody can reach.
+    #[test]
+    fn the_range_iana_allocates_global_unicast_from_is_what_is_tested() {
+        for global in [
+            "2000::",             // the first address of the range
+            "3fff:ffff::ffff",    // and the last
+            "2001:db8::1",        // documentation, unusual but globally scoped
+            "2001::1",            // Teredo, which does turn up on consumer segments
+            "2002::1",            // 6to4
+        ] {
+            let addr: Ipv6Addr = global.parse().expect("a valid address");
+            assert!(is_global_unicast(&addr), "{global}");
+        }
+
+        for local in [
+            "1fff:ffff::",  // just below the range
+            "4000::",       // just above it
+            "fe80::1",      // link-local: a different machine on every segment
+            "fd00::1",      // unique-local
+            "::1",          // loopback
+            "ff02::1",      // multicast
+        ] {
+            let addr: Ipv6Addr = local.parse().expect("a valid address");
+            assert!(!is_global_unicast(&addr), "{local}");
+        }
+    }
+}

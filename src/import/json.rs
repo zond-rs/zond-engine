@@ -563,7 +563,7 @@ mod tests {
             (name == "en0").then_some(7)
         }
         let options = options()
-            .with_context(crate::model::parse::target::TargetContext::new().with_zones(zones));
+            .with_context(crate::model::parse::target::TargetContext::new().with_zones(&zones));
 
         let file = document(
             r#"{"primary_ip":"fe80::aa","ips":["fe80::aa","10.0.0.1"],"zone":"en0",

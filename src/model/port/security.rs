@@ -137,13 +137,21 @@ impl Security {
         }
     }
 
-    /// Returns `true` if the certificate is actively valid at the current system time.
-    /// Returns `false` if the certificate is expired, not yet valid, or missing.
+    /// Whether the certificate is valid *now*, by this machine's clock.
+    ///
+    /// For a caller acting on a live scan. Anything reading a scan back
+    /// afterwards wants [`is_cert_valid_at`](Self::is_cert_valid_at) with the
+    /// time the scan ran, or the same report answers differently every time it
+    /// is opened.
     pub fn is_cert_valid(&self) -> bool {
         self.is_cert_valid_at(SystemTime::now())
     }
 
-    /// Returns `true` if the certificate is valid at a specific target time.
+    /// Whether the certificate is valid at `target_time`.
+    ///
+    /// `false` for a certificate that is expired, not yet valid, or absent —
+    /// the three are different, and a caller that needs to tell them apart
+    /// reads [`certificate`](Self::certificate) directly.
     pub fn is_cert_valid_at(&self, target_time: SystemTime) -> bool {
         self.certificate
             .as_ref()
@@ -178,14 +186,24 @@ impl Security {
     /// assert!(!security.is_cert_expiring(Duration::from_secs(86_400 * 5)));
     /// ```
     pub fn is_cert_expiring(&self, threshold: Duration) -> bool {
-        let now = SystemTime::now();
+        self.is_cert_expiring_at(threshold, SystemTime::now())
+    }
+
+    /// Whether the certificate is valid at `at` and expires within `threshold`
+    /// of it.
+    ///
+    /// The counterpart of [`is_cert_valid_at`](Self::is_cert_valid_at), and the
+    /// one to use on a stored scan. "Expires within thirty days" is a question
+    /// about a moment, and the moment a report is *read* is not the moment it
+    /// was taken: asked with the current time, a scan from last quarter reports
+    /// a renewal queue that was never true of the network it describes.
+    pub fn is_cert_expiring_at(&self, threshold: Duration, at: SystemTime) -> bool {
         self.certificate.as_ref().is_some_and(|c| {
-            // Must be currently valid...
-            if now < c.validity_start() || now > c.validity_end() {
+            // An already-expired certificate is not expiring; see above.
+            if at < c.validity_start() || at > c.validity_end() {
                 return false;
             }
-            // ...but expiring before the threshold
-            c.validity_end() < now + threshold
+            c.validity_end() < at + threshold
         })
     }
 }
@@ -348,8 +366,10 @@ mod tests {
             .with_public_key("RSA", 2048)
     }
 
+    /// ALPN is a list where the rest are single values, and it deduplicates on
+    /// the way in — a server offering the same protocol twice is one protocol.
     #[test]
-    fn security_builder_pattern() {
+    fn a_record_carries_what_the_handshake_agreed() {
         let sec = Security::new()
             .with_tls_version("TLSv1.3")
             .with_cipher_suite("TLS_AES_256_GCM_SHA384")
@@ -361,8 +381,11 @@ mod tests {
         assert_eq!(sec.alpn().len(), 2);
     }
 
+    /// Two probes of one endpoint may each have completed a different part of
+    /// the handshake. A merge fills what is missing and keeps what is held,
+    /// which is the rule every merge in this module follows.
     #[test]
-    fn security_merge_logic() {
+    fn a_merge_fills_the_gaps_without_displacing_what_is_recorded() {
         let mut s1 = Security::new()
             .with_tls_version("TLSv1.2")
             .with_alpn("http/1.1");
@@ -380,8 +403,41 @@ mod tests {
         assert!(s1.alpn().iter().any(|p| &**p == "h2"));
     }
 
+    /// Both questions have to be answerable against the time the scan ran, or a
+    /// stored report answers differently every time it is opened. Expiry is the
+    /// one that was missing: only the wall-clock form existed, so a report from
+    /// last quarter described a renewal queue that was never true of the
+    /// network it recorded.
     #[test]
-    fn certificate_validity_lifecycle() {
+    fn validity_and_expiry_are_both_answerable_at_a_caller_chosen_time() {
+        let day = Duration::from_secs(86_400);
+        let scanned_at = SystemTime::UNIX_EPOCH + day * 365;
+
+        let security = Security::new().with_certificate(CertificateInfo::new(
+            "test.local",
+            "Local CA",
+            scanned_at - day * 30,
+            scanned_at + day * 10,
+            "deadbeef",
+        ));
+
+        assert!(security.is_cert_valid_at(scanned_at));
+        assert!(security.is_cert_expiring_at(day * 30, scanned_at), "ten days left");
+        assert!(!security.is_cert_expiring_at(day * 5, scanned_at));
+
+        // Read a year later, the same record says the certificate had already
+        // expired — and an expired certificate is not an expiring one.
+        let read_at = scanned_at + day * 365;
+        assert!(!security.is_cert_valid_at(read_at));
+        assert!(!security.is_cert_expiring_at(day * 30, read_at));
+    }
+
+    /// The three states a certificate can be in against the current clock, and
+    /// the distinction that matters most: an already-expired certificate is not
+    /// an expiring one. Folding the two together buries an outage in a renewal
+    /// queue.
+    #[test]
+    fn an_expired_certificate_is_not_reported_as_one_about_to_expire() {
         // Valid from 10 days ago until 10 days from now
         let valid_cert = mock_cert(-864000, 864000);
         let sec_valid = Security::new().with_certificate(valid_cert);

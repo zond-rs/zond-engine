@@ -32,31 +32,40 @@ use std::{
 };
 use thiserror::Error;
 
-/// Errors associated with IP address range operations.
+/// Why a range could not be built or read.
+///
+/// The distinction [`parse::ip`](crate::model::parse::ip) depends on runs
+/// through these: [`InvalidFormat`](Self::InvalidFormat),
+/// [`AddrParse`](Self::AddrParse) and [`PrefixParse`](Self::PrefixParse) mean
+/// "this is not a range", which is also what a hostname looks like from here,
+/// while the other two mean "this is a range, and it is wrong".
 #[non_exhaustive]
 #[derive(Debug, Error, PartialEq)]
 pub enum IpError {
-    /// Occurs when the start address is numerically greater than the end address.
+    /// The start address is above the end. Both are named, since which of the
+    /// two was mistyped is the reader's to work out.
     #[error("Invalid range: start address {0} is greater than end address {1}")]
     InvalidRange(IpAddr, IpAddr),
 
-    /// Occurs when a CIDR prefix is outside the valid range (0-32 for v4, 0-128 for v6).
+    /// A CIDR prefix longer than its family allows.
+    ///
+    /// The bound is not in the message because this type does not carry the
+    /// family it was written against;
+    /// [`IpParseError::InvalidPrefix`](crate::model::parse::ip::IpParseError::InvalidPrefix)
+    /// is the one a user reads, and it names both.
     #[error("Invalid CIDR prefix: {0}")]
     InvalidPrefix(u8),
 
-    /// Occurs when a network calculation error arises from the underlying network library.
-    #[error("Network error: {0}")]
-    NetworkError(String),
-
-    /// Occurs when an IP address string cannot be parsed.
+    /// Not an address at all, on either side of a separator.
     #[error("Failed to parse IP address: {0}")]
     AddrParse(#[from] std::net::AddrParseError),
 
-    /// Occurs when the provided string format for an IP range is recognized as invalid.
+    /// Recognisably a range — it has a separator — but not one this grammar
+    /// accepts.
     #[error("Invalid IP range format: {0}")]
     InvalidFormat(String),
 
-    /// Occurs when parsing an integer value for a prefix length fails.
+    /// The text after `/` was not a number.
     #[error("Invalid prefix number format: {0}")]
     PrefixParse(#[from] std::num::ParseIntError),
 }
@@ -102,7 +111,7 @@ impl Ipv4Range {
     ///
     /// Iterating over large ranges (e.g., /8) is fast, but collecting the results
     /// into a `Vec` will consume significant memory.
-    pub fn to_iter(&self) -> impl Iterator<Item = IpAddr> {
+    pub fn iter(&self) -> impl Iterator<Item = IpAddr> {
         let start: u32 = self.start_addr.into();
         let end: u32 = self.end_addr.into();
         (start..=end).map(|ip| IpAddr::V4(Ipv4Addr::from(ip)))
@@ -145,10 +154,7 @@ impl Ipv4Range {
 
     /// Checks if the given [`Ipv4Addr`] falls within this range (inclusive).
     pub fn contains(&self, ip: &Ipv4Addr) -> bool {
-        let start: u32 = self.start_addr.into();
-        let end: u32 = self.end_addr.into();
-        let ip_u32: u32 = (*ip).into();
-        ip_u32 >= start && ip_u32 <= end
+        (u32::from(self.start_addr)..=u32::from(self.end_addr)).contains(&u32::from(*ip))
     }
 
     /// How many addresses the range covers, never fewer than one.
@@ -278,18 +284,19 @@ impl Ipv6Range {
     /// IPv6 ranges can be astronomically large. Iterating over a typical CIDR (like a /64)
     /// will take millions of years. This method is provided for small, manually
     /// defined ranges.
-    pub fn to_iter(&self) -> impl Iterator<Item = IpAddr> {
+    pub fn iter(&self) -> impl Iterator<Item = IpAddr> {
         let start: u128 = self.start_addr.into();
         let end: u128 = self.end_addr.into();
         (start..=end).map(|ip| IpAddr::V6(Ipv6Addr::from(ip)))
     }
 
     /// Checks if the given [`Ipv6Addr`] falls within this range (inclusive).
+    ///
+    /// Blind to the zone, like [`IpSet::contains`](super::set::IpSet::contains)
+    /// above it: a received packet carries a bare address with no interface
+    /// attached to compare against.
     pub fn contains(&self, ip: &Ipv6Addr) -> bool {
-        let start: u128 = self.start_addr.into();
-        let end: u128 = self.end_addr.into();
-        let ip_u128: u128 = (*ip).into();
-        ip_u128 >= start && ip_u128 <= end
+        (u128::from(self.start_addr)..=u128::from(self.end_addr)).contains(&u128::from(*ip))
     }
 
     /// How many addresses the range covers, never fewer than one. See
@@ -314,10 +321,10 @@ impl Ipv6Range {
 // Unified IpRange API
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// A unified representation of either an IPv4 or IPv6 range.
+/// Either family's range, for a caller that does not care which it was handed.
 ///
-/// This enum acts as the primary entry point for parsing ranges from user input
-/// via [`FromStr`] or for library consumers who want protocol-agnostic logic.
+/// What [`FromStr`] produces, since the text decides the family and the caller
+/// writing it usually has no reason to branch on the answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IpRange {
     /// An IPv4 address range.
@@ -408,10 +415,9 @@ impl FromStr for IpRange {
         }
 
         // Handle single IP
-        let ip = s.parse::<IpAddr>()?;
-        match ip {
-            IpAddr::V4(v4) => Ok(IpRange::V4(Ipv4Range::new(v4, v4).unwrap())),
-            IpAddr::V6(v6) => Ok(IpRange::V6(Ipv6Range::new(v6, v6).unwrap())),
+        match s.parse::<IpAddr>()? {
+            IpAddr::V4(v4) => Ok(IpRange::V4(Ipv4Range::single(v4))),
+            IpAddr::V6(v6) => Ok(IpRange::V6(Ipv6Range::single(v6))),
         }
     }
 }
@@ -514,103 +520,102 @@ pub fn cidr_range(ip: IpAddr, prefix: u8) -> Result<IpRange, IpError> {
 mod tests {
     use super::*;
 
-    // --- IPv4 Specific Tests ---
-
+    /// Both bounds are inclusive, so the edges are the cases worth writing
+    /// down: the property tests below establish that a range holds its own
+    /// endpoints, and these establish that it holds nothing beyond them. An
+    /// off-by-one here scans an address nobody asked about, or misses one they
+    /// did.
     #[test]
-    fn new_valid_v4() {
-        let start = Ipv4Addr::new(192, 168, 1, 1);
-        let end = Ipv4Addr::new(192, 168, 1, 10);
-        let range = Ipv4Range::new(start, end).unwrap();
-        assert_eq!(range.start_addr, start);
-        assert_eq!(range.end_addr, end);
-    }
-
-    #[test]
-    fn len_calculations_v4() {
-        let cases = vec![
-            (Ipv4Addr::new(10, 0, 0, 0), Ipv4Addr::new(10, 0, 0, 0), 1),
-            (
-                Ipv4Addr::new(10, 0, 0, 0),
-                Ipv4Addr::new(10, 0, 0, 255),
-                256,
-            ),
-            (Ipv4Addr::new(0, 0, 0, 0), Ipv4Addr::new(0, 0, 0, 10), 11),
-        ];
-
-        for (start, end, expected_len) in cases {
-            let range = Ipv4Range::new(start, end).unwrap();
-            assert_eq!(range.len(), expected_len);
-        }
-    }
-
-    #[test]
-    fn contains_logic_v4() {
-        let range =
+    fn a_range_holds_both_its_bounds_and_nothing_outside_them() {
+        let v4 =
             Ipv4Range::new(Ipv4Addr::new(172, 16, 0, 10), Ipv4Addr::new(172, 16, 0, 20)).unwrap();
-        assert!(range.contains(&Ipv4Addr::new(172, 16, 0, 10)));
-        assert!(range.contains(&Ipv4Addr::new(172, 16, 0, 15)));
-        assert!(range.contains(&Ipv4Addr::new(172, 16, 0, 20)));
-        assert!(!range.contains(&Ipv4Addr::new(172, 16, 0, 9)));
-        assert!(!range.contains(&Ipv4Addr::new(172, 16, 0, 21)));
+        assert!(v4.contains(&Ipv4Addr::new(172, 16, 0, 10)));
+        assert!(v4.contains(&Ipv4Addr::new(172, 16, 0, 20)));
+        assert!(!v4.contains(&Ipv4Addr::new(172, 16, 0, 9)));
+        assert!(!v4.contains(&Ipv4Addr::new(172, 16, 0, 21)));
+
+        let v6 = Ipv6Range::new(Ipv6Addr::from(100), Ipv6Addr::from(200)).unwrap();
+        assert_eq!(v6.len(), 101, "inclusive at both ends");
+        assert!(v6.contains(&Ipv6Addr::from(100)));
+        assert!(v6.contains(&Ipv6Addr::from(200)));
+        assert!(!v6.contains(&Ipv6Addr::from(201)));
     }
 
+    /// The ends of each address space, where the arithmetic that counts a range
+    /// is one step from overflowing.
+    ///
+    /// `::/0` is the case the type cannot represent exactly: 2^128 addresses is
+    /// one more than a `u128` holds, so the count saturates. That undercount of
+    /// one is deliberate — the alternative is a wrapping subtraction reporting
+    /// the whole of IPv6 as *nothing*, and a budget check reading zero would
+    /// wave through precisely the target it exists to stop.
     #[test]
-    fn iteration_values_v4() {
-        let range = Ipv4Range::new(Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(1, 1, 1, 3)).unwrap();
-        let ips: Vec<IpAddr> = range.to_iter().collect();
+    fn the_extremes_of_each_address_space_saturate_rather_than_wrap() {
+        let top_of_v4 = Ipv4Range::new(
+            Ipv4Addr::new(255, 255, 255, 254),
+            Ipv4Addr::new(255, 255, 255, 255),
+        )
+        .unwrap();
+        assert_eq!(top_of_v4.len(), 2);
+
+        let sixty_four = cidr_range(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 64).unwrap();
+        assert_eq!(sixty_four.len(), 1u128 << 64);
+
+        let everything = cidr_range(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0).unwrap();
+        assert_eq!(everything.len(), u128::MAX, "saturated, never zero");
+    }
+
+    /// Ascending, with no address skipped or repeated. The order is what a scan
+    /// walks, so two runs over one target list probe in the same sequence — and
+    /// the values, not merely the count, are what the property tests below do
+    /// not pin.
+    #[test]
+    fn iteration_yields_every_address_in_ascending_order() {
+        let v4 = Ipv4Range::new(Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(1, 1, 1, 3)).unwrap();
         assert_eq!(
-            ips,
-            vec![
+            v4.iter().collect::<Vec<_>>(),
+            [
                 IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
                 IpAddr::V4(Ipv4Addr::new(1, 1, 1, 2)),
                 IpAddr::V4(Ipv4Addr::new(1, 1, 1, 3)),
             ]
         );
+
+        let v6 = Ipv6Range::new(Ipv6Addr::from(1), Ipv6Addr::from(3)).unwrap();
+        assert_eq!(
+            v6.iter().collect::<Vec<_>>(),
+            [
+                IpAddr::V6(Ipv6Addr::from(1)),
+                IpAddr::V6(Ipv6Addr::from(2)),
+                IpAddr::V6(Ipv6Addr::from(3)),
+            ]
+        );
     }
 
+    /// Every form the grammar accepts, and what each covers.
+    ///
+    /// This is the whole of what a written range can mean, and everything in
+    /// the crate that reads one ends here — so a spelling that stops working
+    /// stops working for target files, imported reports and command lines at
+    /// once.
     #[test]
-    fn max_u32_range_boundaries() {
-        let start = Ipv4Addr::new(255, 255, 255, 254);
-        let end = Ipv4Addr::new(255, 255, 255, 255);
-        let range = Ipv4Range::new(start, end).unwrap();
-        assert_eq!(range.len(), 2);
-    }
+    fn every_written_form_names_the_range_it_says_it_does() {
+        for (written, first, last) in [
+            ("8.8.8.8", "8.8.8.8", "8.8.8.8"),
+            ("10.0.0.0/24", "10.0.0.0", "10.0.0.255"),
+            ("192.168.1.5/24", "192.168.1.0", "192.168.1.255"),
+            ("1.1.1.1-1.1.1.5", "1.1.1.1", "1.1.1.5"),
+            ("10.0.0.1-50", "10.0.0.1", "10.0.0.50"),
+            ("192.168.1.1-2.254", "192.168.1.1", "192.168.2.254"),
+            ("::1", "::1", "::1"),
+            ("::1/120", "::", "::ff"),
+            ("2001:db8::1-2001:db8::5", "2001:db8::1", "2001:db8::5"),
+        ] {
+            let range: IpRange = written.parse().unwrap_or_else(|e| panic!("{written}: {e}"));
 
-    // --- IPv6 Specific Tests ---
-
-    #[test]
-    fn ipv6_range_basics() {
-        let start = Ipv6Addr::from(100);
-        let end = Ipv6Addr::from(200);
-        let range = Ipv6Range::new(start, end).unwrap();
-        assert_eq!(range.len(), 101);
-        assert!(range.contains(&Ipv6Addr::from(150)));
-        assert!(!range.contains(&Ipv6Addr::from(201)));
-    }
-
-    #[test]
-    fn ipv6_large_len() {
-        let range = cidr_range(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 64).unwrap();
-        assert_eq!(range.len(), 1u128 << 64);
-    }
-
-    #[test]
-    fn iteration_ipv6_small() {
-        let range = Ipv6Range::new(Ipv6Addr::from(1), Ipv6Addr::from(3)).unwrap();
-        let ips: Vec<_> = range.to_iter().collect();
-        assert_eq!(ips.len(), 3);
-        assert_eq!(ips[0], IpAddr::V6(Ipv6Addr::from(1)));
-    }
-
-    // --- Parsing & Global Tests ---
-
-    #[test]
-    fn from_str_comprehensive() {
-        assert_eq!("10.0.0.0/24".parse::<IpRange>().unwrap().len(), 256);
-        assert_eq!("192.168.1.0/24".parse::<IpRange>().unwrap().len(), 256);
-        assert_eq!("::1/120".parse::<IpRange>().unwrap().len(), 256);
-        assert_eq!("1.1.1.1-1.1.1.5".parse::<IpRange>().unwrap().len(), 5);
-        assert_eq!("8.8.8.8".parse::<IpRange>().unwrap().len(), 1);
+            assert_eq!(range.start_addr().to_string(), first, "{written} starts");
+            assert_eq!(range.end_addr().to_string(), last, "{written} ends");
+        }
     }
 
     /// `new` is the only way to build a range, so the ordering it checks is a
@@ -628,9 +633,14 @@ mod tests {
             Err(IpError::InvalidRange(_, _))
         ));
 
+        assert!(matches!(
+            Ipv6Range::new(Ipv6Addr::from(2), Ipv6Addr::from(1)),
+            Err(IpError::InvalidRange(_, _))
+        ));
+
         let range = Ipv4Range::new(low, high).expect("in order");
         assert_eq!(range.len(), 5);
-        assert_eq!(range.to_iter().count() as u64, range.len());
+        assert_eq!(range.iter().count() as u64, range.len());
     }
 
     /// The one mutation a range allows. It only ever grows the end, which is
@@ -647,20 +657,13 @@ mod tests {
         range.extend_end_to(Ipv4Addr::new(10, 0, 0, 2));
         assert_eq!(range.end_addr(), Ipv4Addr::new(10, 0, 0, 9));
         assert!(range.end_addr() >= range.start_addr());
-        assert_eq!(range.to_iter().count() as u64, range.len());
+        assert_eq!(range.iter().count() as u64, range.len());
     }
 
+    /// These messages are printed at whoever mistyped a target, so they have to
+    /// name the value that was wrong rather than only the rule it broke.
     #[test]
-    fn invalid_range_order() {
-        let v4_err = Ipv4Range::new(Ipv4Addr::new(1, 1, 1, 2), Ipv4Addr::new(1, 1, 1, 1));
-        assert!(matches!(v4_err, Err(IpError::InvalidRange(_, _))));
-
-        let v6_err = Ipv6Range::new(Ipv6Addr::from(2), Ipv6Addr::from(1));
-        assert!(matches!(v6_err, Err(IpError::InvalidRange(_, _))));
-    }
-
-    #[test]
-    fn error_formatting() {
+    fn an_error_names_the_input_that_produced_it() {
         let prefix_err = IpError::InvalidPrefix(40);
         assert_eq!(format!("{prefix_err}"), "Invalid CIDR prefix: 40");
 
@@ -724,12 +727,12 @@ mod property_tests {
 
         #[test]
         fn ipv4_iterator_consistency(range in any_ipv4_range()) {
-            prop_assert_eq!(range.to_iter().count() as u64, range.len());
+            prop_assert_eq!(range.iter().count() as u64, range.len());
         }
 
         #[test]
         fn ipv6_iterator_consistency(range in any_ipv6_range()) {
-            prop_assert_eq!(range.to_iter().count() as u128, range.len());
+            prop_assert_eq!(range.iter().count() as u128, range.len());
         }
 
         #[test]

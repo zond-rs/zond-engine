@@ -6,11 +6,22 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Network Target Composition
+//! # What a scan was asked to cover
 //!
-//! This module defines the atomic units of a scan. It bridges the gap between
-//! high-level network definitions ([`IpSet`], [`PortSet`]) and the low-level
-//! packets sent by the scanner engine.
+//! A [`Target`] is one address, one port, one protocol: the smallest thing a
+//! scan can ask about, and what a probe is built from. The two types above it
+//! exist so that nothing has to hold the whole list.
+//!
+//! [`TargetSet`] pairs an [`IpSet`] with a [`PortSet`] and yields their cross
+//! product lazily. A `/8` on a thousand ports is sixteen billion targets, which
+//! is a few words to describe and more than any machine can hold; the set
+//! describes it and the iterator produces them one at a time.
+//!
+//! [`TargetMap`] is several of those, because one scan can ask different
+//! questions of different hosts — `10.0.0.1:22` and `10.0.0.0/24:80` are one
+//! job with two shapes. Each unit is a set of addresses *paired with a set of
+//! ports*, which is why the counts here are gross rather than net: two units
+//! naming one address are two different questions about it, and both get asked.
 
 use crate::model::ip::set::IpSet;
 use crate::model::port::{PortSet, Protocol};
@@ -143,6 +154,12 @@ impl TargetSet {
 /// A collection of multiple [`TargetSet`] units.
 #[derive(Debug, Clone, Default)]
 pub struct TargetMap {
+    /// The units, in the order they were added.
+    ///
+    /// Public because there is no invariant over the vector for an accessor to
+    /// protect: a [`TargetSet`] is canonical and immutable from the moment it
+    /// is built, this type caches nothing derived from them, and a scanner
+    /// splitting work across units needs to iterate and partition them freely.
     pub units: Vec<TargetSet>,
 }
 
@@ -208,18 +225,19 @@ impl TargetMap {
 mod tests {
     use super::*;
 
-    // Mock definitions for tests
-    fn mock_ip_set(input: &str) -> IpSet {
-        input.parse().expect("Valid IP input")
+    fn ips(written: &str) -> IpSet {
+        written.parse().expect("a valid address specification")
     }
 
-    fn mock_port_set(input: &str) -> PortSet {
-        input.parse().expect("Valid Port input")
+    fn ports(written: &str) -> PortSet {
+        written.parse().expect("a valid port specification")
     }
 
+    /// The cross product's size, which is what a caller checks a scan budget
+    /// against before anything is sent.
     #[test]
-    fn target_set_math() {
-        let ts = TargetSet::new(mock_ip_set("192.168.1.0/24"), mock_port_set("80, 443"));
+    fn a_sets_target_count_is_its_addresses_times_its_ports() {
+        let ts = TargetSet::new(ips("192.168.1.0/24"), ports("80, 443"));
         assert_eq!(ts.total_targets().unwrap(), 256 * 2);
     }
 
@@ -228,10 +246,10 @@ mod tests {
     /// the failure that makes this matter, so that is what it checks.
     #[test]
     fn a_target_set_merges_its_addresses_on_construction() {
-        let mut overlapping = mock_ip_set("192.168.1.0/24");
+        let mut overlapping = ips("192.168.1.0/24");
         overlapping.insert_range("192.168.1.128/25".parse().expect("valid range"));
 
-        let ts = TargetSet::new(overlapping, mock_port_set("80"));
+        let ts = TargetSet::new(overlapping, ports("80"));
 
         // 256, not the 384 the two arguments add up to.
         assert_eq!(ts.ip_count(), 256);
@@ -243,7 +261,7 @@ mod tests {
     /// produce the same total. This pins the triples.
     #[test]
     fn a_set_yields_every_address_paired_with_every_port() {
-        let ts = TargetSet::new(mock_ip_set("10.0.0.1-10.0.0.2"), mock_port_set("80, u:53"));
+        let ts = TargetSet::new(ips("10.0.0.1-10.0.0.2"), ports("80, u:53"));
 
         let mut targets: Vec<(String, u16, Protocol)> = ts
             .iter()
@@ -267,10 +285,10 @@ mod tests {
     #[test]
     fn a_map_iterates_its_units_in_the_order_they_were_added() {
         let mut map = TargetMap::new();
-        map.add_unit(TargetSet::new(mock_ip_set("10.0.0.1"), mock_port_set("80")));
+        map.add_unit(TargetSet::new(ips("10.0.0.1"), ports("80")));
         map.add_unit(TargetSet::new(
-            mock_ip_set("10.0.0.2"),
-            mock_port_set("u:53"),
+            ips("10.0.0.2"),
+            ports("u:53"),
         ));
 
         let targets: Vec<(String, u16, Protocol)> = map
@@ -293,22 +311,24 @@ mod tests {
     /// as a small number is the one answer a budget check must never be given.
     #[test]
     fn a_target_count_too_large_to_represent_is_refused_rather_than_wrapped() {
-        let two_ports = TargetSet::new(mock_ip_set("::/0"), mock_port_set("80, 443"));
+        let two_ports = TargetSet::new(ips("::/0"), ports("80, 443"));
         assert_eq!(
             two_ports.total_targets(),
             Err(TargetError::CapacityOverflow)
         );
 
-        let one_port = TargetSet::new(mock_ip_set("::/0"), mock_port_set("80"));
+        let one_port = TargetSet::new(ips("::/0"), ports("80"));
         assert_eq!(one_port.total_targets().unwrap(), u128::MAX);
     }
 
+    /// A map's total is the sum of its units', so a caller can budget the whole
+    /// job from one number rather than walking the units itself.
     #[test]
-    fn target_map_aggregation() {
+    fn a_maps_total_is_the_sum_of_its_units() {
         let mut map = TargetMap::new();
         map.add_unit(TargetSet::new(
-            mock_ip_set("10.0.0.1-10.0.0.5"),
-            mock_port_set("80,443"),
+            ips("10.0.0.1-10.0.0.5"),
+            ports("80,443"),
         ));
         assert_eq!(map.gross_targets().unwrap(), 10);
     }

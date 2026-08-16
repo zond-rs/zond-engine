@@ -52,7 +52,7 @@
 //!
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let cfg = ZondConfig::default();
-//! let plan = DiscoveryPlan::build(to_set(&["192.168.1.0/24"], None)?, Scope::Sweep);
+//! let plan = DiscoveryPlan::build(to_set(&["192.168.1.0/24"], None, None)?, Scope::Sweep);
 //!
 //! // What the sweep would do, before it does any of it.
 //! for step in plan.steps() {

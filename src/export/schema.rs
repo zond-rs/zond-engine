@@ -1232,7 +1232,7 @@ impl<'a> ServiceDto<'a> {
             vendor: service.vendor(),
             version: service.version(),
             extrainfo: service.extrainfo(),
-            cpe: service.cpe().iter().map(AsRef::as_ref).collect(),
+            cpe: service.cpes().iter().map(AsRef::as_ref).collect(),
         }
     }
 }

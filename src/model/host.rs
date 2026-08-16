@@ -18,8 +18,10 @@
 //! rule: later is not better. Status is promoted and never lowered, by
 //! [`Host::record_evidence`]. The address a host is reported under is ranked
 //! rather than overwritten, by [`Host::consider_primary_ip`]. A MAC is added to
-//! those already seen rather than replacing them, by [`Host::set_mac`]. Where
+//! those already seen rather than replacing them, by [`Host::record_mac`]. Where
 //! two findings are equally good, the one already recorded wins.
+//!
+//! [`Host::set_hostname`] is the one exception, and says why.
 //!
 //! Without that rule a report would depend on which probe happened to finish
 //! last, and the same scan of the same network would produce a different
@@ -29,7 +31,7 @@
 
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
-use crate::model::port::Port;
+use crate::model::port::{Port, Protocol};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     net::IpAddr,
@@ -141,8 +143,19 @@ pub struct Host {
     /// The timestamp of the most recent discovery or update event.
     last_seen: SystemTime,
 
-    /// Internal map for sorted port discovery. Limited by [`MAX_PORTS_PER_HOST`].
-    ports: BTreeMap<u16, Port>,
+    /// The ports found on this host, in a stable order, bounded by
+    /// [`MAX_PORTS_PER_HOST`].
+    ///
+    /// Keyed on the number *and* the protocol, because a number names one
+    /// endpoint per transport and a scan can be asked about both — `PortSet`
+    /// spells the UDP half `u:53`, and the raw TCP and UDP scanners report into
+    /// this map independently. Keyed on the number alone, whichever arrived
+    /// second would be merged into the first and reported under its protocol.
+    ///
+    /// Ordered by number first, so a report lists a host's ports the way a
+    /// reader expects to read them, with the two transports of one number
+    /// adjacent.
+    ports: BTreeMap<(u16, Protocol), Port>,
 }
 
 /// How well an address identifies the host holding it: lower leads.
@@ -150,12 +163,28 @@ pub struct Host {
 /// The ordering behind [`Host::consider_primary_ip`], kept beside it as a free
 /// function so the comparison is one expression rather than a branch that grows
 /// a case each time a family is added.
+///
+/// Rank 1 is what the documentation there calls globally scoped: an address that
+/// names the host from off its segment. That is
+/// [`is_global_unicast`](crate::model::ip::is_global_unicast) and unique-local,
+/// tested for rather than inferred from "not link-local" — the latter also
+/// admits loopback, multicast and the unspecified address, none of which name
+/// this host to anyone.
 fn identity_rank(ip: &IpAddr) -> u8 {
     match ip {
         IpAddr::V4(_) => 0,
-        IpAddr::V6(v6) if v6.is_unicast_link_local() => 2,
-        IpAddr::V6(_) => 1,
+        IpAddr::V6(v6) if crate::model::ip::is_global_unicast(v6) || is_unique_local(v6) => 1,
+        IpAddr::V6(_) => 2,
     }
+}
+
+/// Whether `addr` is in `fc00::/7`, the range reserved for addresses that are
+/// unique across an organization but not routed onto the internet.
+///
+/// Globally scoped for this purpose: it names one host wherever the
+/// organization's routing reaches, which is what the ranking is asking.
+fn is_unique_local(addr: &std::net::Ipv6Addr) -> bool {
+    addr.octets()[0] & 0xfe == 0xfc
 }
 
 impl Host {
@@ -318,7 +347,14 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
-    /// Sets the host's hostname and bumps `last_seen`.
+    /// Records the name this host resolved to, replacing any already recorded.
+    ///
+    /// The one field that *is* overwritten, and the exception is deliberate:
+    /// unlike a status or an address, a hostname has no ordering that says
+    /// which of two answers knows more, and a caller passing `None` is clearing
+    /// a name rather than declining to set one. [`merge`](Self::merge) keeps the
+    /// incumbent instead, because there neither record is the later word — they
+    /// are two accounts of the same host.
     pub fn set_hostname(&mut self, hostname: Option<String>) {
         self.hostname = hostname;
         self.last_seen = SystemTime::now();
@@ -381,7 +417,7 @@ impl Host {
     /// Replaces this host's hardware record wholesale.
     ///
     /// For a caller holding a complete [`HardwareInfo`], such as one read back
-    /// from a report. A single sighting goes through [`set_mac`](Self::set_mac),
+    /// from a report. A single sighting goes through [`record_mac`](Self::record_mac),
     /// which adds to the record instead of discarding what is already in it.
     pub fn set_hardware(&mut self, hardware: HardwareInfo) {
         self.hardware = Some(hardware);
@@ -390,7 +426,7 @@ impl Host {
 
     /// Builder method to record a MAC sighting and return Self.
     pub fn with_mac(mut self, mac: MacAddr) -> Self {
-        self.set_mac(mac);
+        self.record_mac(mac);
         self
     }
 
@@ -415,7 +451,7 @@ impl Host {
     ///
     /// [`most_recent_mac`]: HardwareInfo::most_recent_mac
     /// [`prune_stale_macs`]: HardwareInfo::prune_stale_macs
-    pub fn set_mac(&mut self, mac: MacAddr) {
+    pub fn record_mac(&mut self, mac: MacAddr) {
         match &mut self.hardware {
             Some(hardware) => hardware.add_mac(mac),
             None => self.hardware = Some(HardwareInfo::new(mac)),
@@ -513,13 +549,15 @@ impl Host {
     /// [`MAX_PORTS_PER_HOST`] and has been marked [`NetworkRole::Tarpit`]; the
     /// caller is told rather than left to assume the port list is complete.
     pub fn add_port(&mut self, new_port: Port) -> bool {
-        if self.ports.len() >= MAX_PORTS_PER_HOST && !self.ports.contains_key(&new_port.number()) {
+        let key = (new_port.number(), new_port.protocol());
+
+        if self.ports.len() >= MAX_PORTS_PER_HOST && !self.ports.contains_key(&key) {
             self.network_roles.insert(NetworkRole::Tarpit);
             return false;
         }
 
         self.ports
-            .entry(new_port.number())
+            .entry(key)
             .and_modify(|p| p.merge(new_port.clone()))
             .or_insert(new_port);
 
@@ -541,6 +579,18 @@ impl Host {
     /// unconditionally would reintroduce between phases the same
     /// machine-reported-as-two that the ranking prevents within one.
     pub fn merge(&mut self, other: Host) {
+        // Taken before anything else, and restored at the end.
+        //
+        // Every mutator below stamps `last_seen` with the current time, because
+        // each of them is normally a scanner reporting something it just saw.
+        // A merge is not a sighting: it folds two records that were each
+        // observed earlier. Left alone, the stamps would overwrite both
+        // records' observation times with the moment they happened to be folded
+        // together, and `last_seen` would answer "when was this record last
+        // touched" to a reader who asked when the host was last heard from.
+        let first_seen = self.first_seen.min(other.first_seen);
+        let last_seen = self.last_seen.max(other.last_seen);
+
         let other_primary = other.primary_ip;
 
         self.ips.extend(other.ips);
@@ -582,12 +632,8 @@ impl Host {
             self.add_port(port);
         }
 
-        if other.first_seen < self.first_seen {
-            self.first_seen = other.first_seen;
-        }
-        if other.last_seen > self.last_seen {
-            self.last_seen = other.last_seen;
-        }
+        self.first_seen = first_seen;
+        self.last_seen = last_seen;
     }
 }
 
@@ -640,6 +686,36 @@ mod tests {
         assert_eq!(climbing.status(), HostStatus::Up);
     }
 
+    /// A port number names two endpoints, and a scan can be asked about both:
+    /// `PortSet` spells the UDP half `u:53`, and the raw TCP and UDP scanners
+    /// each report their findings here. Keyed on the number alone, the second
+    /// arrival is merged into the first — so one result is lost and the
+    /// survivor is reported under the other's protocol, with a state maximised
+    /// across two unrelated questions.
+    #[test]
+    fn a_port_number_holds_one_endpoint_per_protocol() {
+        let mut host = Host::new(IP_ADDR);
+        host.add_port(Port::new(53, Protocol::Tcp, PortState::Closed));
+        host.add_port(Port::new(53, Protocol::Udp, PortState::Open));
+
+        let ports: Vec<_> = host.ports().collect();
+        assert_eq!(ports.len(), 2, "TCP/53 and UDP/53 are two endpoints");
+        assert_eq!(
+            (ports[0].protocol(), ports[0].state()),
+            (Protocol::Tcp, PortState::Closed)
+        );
+        assert_eq!(
+            (ports[1].protocol(), ports[1].state()),
+            (Protocol::Udp, PortState::Open),
+            "neither finding was folded into the other"
+        );
+
+        // And a repeat of one of them still merges with its own protocol.
+        host.add_port(Port::new(53, Protocol::Tcp, PortState::Open));
+        assert_eq!(host.port_count(), 2);
+        assert_eq!(host.ports().next().expect("tcp/53").state(), PortState::Open);
+    }
+
     /// A dropped port is a truncated list, and the caller is the only one that
     /// can decide what to do about it.
     #[test]
@@ -653,8 +729,11 @@ mod tests {
         assert!(host.network_roles().contains(&NetworkRole::Tarpit));
     }
 
+    /// The cap is exact: the host takes ports up to it and is marked only once
+    /// one is actually refused. Marking a host at the boundary would label a
+    /// complete port list as truncated.
     #[test]
-    fn tarpit_boundary_test() {
+    fn the_tarpit_marking_appears_only_once_a_port_is_refused() {
         let mut host = Host::new(IP_ADDR);
         for i in 0..MAX_PORTS_PER_HOST {
             host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Open));
@@ -666,8 +745,37 @@ mod tests {
         assert_eq!(host.port_count(), MAX_PORTS_PER_HOST);
     }
 
+    /// `last_seen` answers when the host was last heard from, so a merge — which
+    /// hears from nothing — must not move it. Every mutator a merge runs stamps
+    /// the current time, so without care both records' observation times are
+    /// replaced by the moment they were folded together.
+    ///
+    /// Stamped by hand rather than by construction order: `SystemTime` is only
+    /// as fine-grained as the platform makes it, and on Windows two
+    /// constructions can land on the same tick.
     #[test]
-    fn host_merge_promotes_status() {
+    fn merging_two_records_keeps_the_span_they_were_observed_over() {
+        let epoch = SystemTime::UNIX_EPOCH;
+        let at = |secs| epoch + std::time::Duration::from_secs(secs);
+
+        let mut early = Host::new(IP_ADDR);
+        early.first_seen = at(10);
+        early.last_seen = at(20);
+
+        let mut late = Host::new(IP_ADDR);
+        late.first_seen = at(30);
+        late.last_seen = at(40);
+
+        early.merge(late);
+
+        assert_eq!(early.first_seen(), at(10), "the earlier sighting");
+        assert_eq!(early.last_seen(), at(40), "and the later one");
+    }
+
+    /// Merge promotes on the same ordering the setters use, so folding one
+    /// phase into another gives what a single phase would.
+    #[test]
+    fn merging_promotes_the_status_without_lowering_it() {
         let mut h1 = Host::new(IP_ADDR);
         h1.set_status(HostStatus::Down);
 
@@ -717,8 +825,8 @@ mod tests {
         let second = MacAddr::new(0x02, 0, 0, 0, 0, 2);
 
         let mut host = Host::new(IP_ADDR);
-        host.set_mac(first);
-        host.set_mac(second);
+        host.record_mac(first);
+        host.record_mac(second);
 
         let hardware = host.hardware().expect("a sighting was recorded");
         assert_eq!(hardware.macs().len(), 2);
@@ -779,6 +887,32 @@ mod tests {
                 "arrival order {order:?} must not change which address leads"
             );
             assert_eq!(host.ips().len(), 3, "and none of them is discarded");
+        }
+    }
+
+    /// The ranking's middle tier is "names the host from off its segment", and
+    /// only addresses that do belong in it. Written as "not link-local" it also
+    /// admitted loopback, multicast and the unspecified address — none of which
+    /// name this host to anybody, and each of which would have displaced a
+    /// genuine link-local address that at least names it to its own segment.
+    #[test]
+    fn only_a_globally_scoped_address_outranks_a_link_local_one() {
+        let lla: IpAddr = "fe80::10".parse().unwrap();
+
+        for scoped in ["2001:db8::10", "fd00::10"] {
+            let mut host = Host::new(lla);
+            host.consider_primary_ip(scoped.parse().unwrap());
+            assert_eq!(host.primary_ip().to_string(), scoped, "{scoped} names the host");
+        }
+
+        for useless in ["::1", "::", "ff02::1"] {
+            let mut host = Host::new(lla);
+            host.consider_primary_ip(useless.parse().unwrap());
+            assert_eq!(
+                host.primary_ip(),
+                lla,
+                "{useless} does not identify the host to anyone"
+            );
         }
     }
 

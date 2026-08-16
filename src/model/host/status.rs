@@ -6,14 +6,19 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Host Reachability Status
+//! # Whether a host is there, and what says so
 //!
-//! This module defines the [`HostStatus`] model and supporting structures
-//! for recording how and why a host is considered reachable.
+//! [`HostStatus`] is the verdict and [`StatusReason`] is the evidence behind
+//! it: which protocol produced it, which address sent it, and what it said.
 //!
-//! The cornerstone of this module is the semantic ordering of status variants,
-//! allowing disparate scan results to be merged deterministically by prioritizing
-//! the most definitive evidence of a host's state.
+//! Probes answer in an order nobody controls, so the verdict has to be
+//! independent of arrival order. That is what the ordering on `HostStatus` is
+//! for — a scan promotes along it and never lowers — and the type's own
+//! documentation has the rule that makes the ordering defensible.
+//!
+//! A host keeps every reason it collected, not just the one that settled the
+//! verdict. Reachability is a claim someone will want to check, and "up" with
+//! nothing behind it cannot be checked.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -203,42 +208,77 @@ impl std::fmt::Display for HostStatus {
 mod tests {
     use super::*;
 
+    /// The derived ordering is load-bearing: `Host::record_evidence` promotes
+    /// along it, so the variants' declaration order *is* the merge rule. Adding
+    /// a variant in the wrong place would silently let weaker evidence overrule
+    /// stronger, and nothing else would say so.
     #[test]
-    fn status_ordering_contract() {
-        // This test ensures that the derived Ord implementation matches the semantic severity.
+    fn the_variant_order_ranks_evidence_from_weakest_to_strongest() {
         assert!(HostStatus::Unknown < HostStatus::Down);
         assert!(HostStatus::Down < HostStatus::Filtered);
         assert!(HostStatus::Filtered < HostStatus::Up);
     }
 
+    /// "Alive" means something is there, which a perimeter enforcing policy
+    /// around an address proves as surely as the host answering. It is what
+    /// decides whether a host is carried into a port scan, so a `Filtered` host
+    /// wrongly excluded is a host never scanned.
     #[test]
-    fn status_alive_semantics() {
-        assert!(!HostStatus::Unknown.is_alive());
-        assert!(!HostStatus::Down.is_alive());
-        assert!(HostStatus::Filtered.is_alive());
+    fn a_filtered_host_counts_as_alive_and_an_unanswered_one_does_not() {
         assert!(HostStatus::Up.is_alive());
+        assert!(HostStatus::Filtered.is_alive());
+        assert!(!HostStatus::Down.is_alive());
+        assert!(!HostStatus::Unknown.is_alive());
     }
 
+    /// Every variant renders, and renders distinctly. `Display` reaches a
+    /// report's reader directly, and two states sharing a rendering would be
+    /// indistinguishable in the output whatever the model held.
     #[test]
-    fn status_display_consistency() {
-        assert_eq!(HostStatus::Unknown.to_string(), "Unknown");
-        assert_eq!(HostStatus::Up.to_string(), "Up");
+    fn every_status_renders_under_its_own_name() {
+        let rendered: Vec<String> = [
+            HostStatus::Unknown,
+            HostStatus::Down,
+            HostStatus::Filtered,
+            HostStatus::Up,
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+
+        assert_eq!(rendered, ["Unknown", "Down", "Filtered", "Up"]);
     }
 
+    /// A reason carries the protocol that produced it and, when the evidence
+    /// came from somewhere other than the host itself, the address that sent
+    /// it. The attribution is the point: a port unreachable from a middlebox
+    /// proves something quite different from the same message sourced by the
+    /// target.
     #[test]
-    fn status_reason_ergonomics() {
-        let reason = StatusReason::new(
+    fn a_reason_records_its_protocol_and_who_it_came_from() {
+        let unattributed = StatusReason::new(
             StatusProtocol::Custom(Arc::from("dns-probe")),
             "Resolved A record successfully",
         );
 
         assert_eq!(
-            reason.protocol,
+            unattributed.protocol,
             StatusProtocol::Custom(Arc::from("dns-probe"))
         );
         assert_eq!(
-            reason.details.as_deref(),
+            unattributed.details.as_deref(),
             Some("Resolved A record successfully")
         );
+        assert_eq!(
+            unattributed.source, None,
+            "unqualified means the host answered for itself"
+        );
+
+        let router: IpAddr = "192.0.2.1".parse().expect("a valid address");
+        let attributed =
+            StatusReason::basic(StatusProtocol::IcmpUnreachable).from_source(router);
+
+        assert_eq!(attributed.source, Some(router));
+        assert_eq!(attributed.details, None);
     }
 }

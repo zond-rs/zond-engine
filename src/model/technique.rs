@@ -265,11 +265,25 @@ impl fmt::Display for TcpScanTechnique {
 
 /// The error [`TcpScanTechnique::from_str`] returns, carrying the list of names
 /// that would have worked so a front end can print it verbatim.
+///
+/// The list is built from [`TcpScanTechnique::ALL`] rather than written out, so
+/// a technique added there appears in the error that exists to enumerate them.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unknown TCP scan technique '{input}', expected one of: syn, fin, null, xmas, maimon, ack")]
+#[error("unknown TCP scan technique '{input}', expected one of: {}", Self::expected())]
 pub struct UnknownTechnique {
     /// What the caller wrote.
     pub input: String,
+}
+
+impl UnknownTechnique {
+    /// The accepted names, comma-separated, in the order they are documented.
+    fn expected() -> String {
+        TcpScanTechnique::ALL
+            .iter()
+            .map(|technique| technique.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 impl FromStr for TcpScanTechnique {
@@ -326,12 +340,16 @@ mod tests {
     }
 
     /// The error names the alternatives, since it is printed straight at a user
-    /// who has just mistyped a flag.
+    /// who has just mistyped a flag — and it names *every* one, because it is
+    /// built from `ALL` rather than from a list that has to be remembered.
     #[test]
     fn an_unknown_name_is_rejected_with_the_ones_that_would_work() {
-        let error = "stealth".parse::<TcpScanTechnique>().unwrap_err();
-        assert!(error.to_string().contains("stealth"));
-        assert!(error.to_string().contains("xmas"));
+        let error = "stealth".parse::<TcpScanTechnique>().unwrap_err().to_string();
+
+        assert!(error.contains("stealth"));
+        for technique in TcpScanTechnique::ALL {
+            assert!(error.contains(technique.name()), "{technique} is missing: {error}");
+        }
     }
 
     /// The near-miss the whole table exists to prevent: a RST is a closed port

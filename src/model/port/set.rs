@@ -30,8 +30,9 @@ use crate::model::port::Protocol;
 use std::{num::ParseIntError, ops::RangeInclusive, str::FromStr};
 use thiserror::Error;
 
-/// Common defaults for rapid discovery scans.
-pub const DEFAULT_PORTSET_PORTS: &str = "22, 80, 443, 445, 3389";
+/// The ports [`PortSet::common_discovery`] names: a handful that answer often
+/// enough to be worth asking every host about.
+pub const COMMON_DISCOVERY_PORTS: &str = "22, 80, 443, 445, 3389";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Error Types
@@ -92,6 +93,16 @@ impl PortSet {
             tcp: Vec::new(),
             udp: Vec::new(),
         }
+    }
+
+    /// The ports worth asking every host about when the caller named none:
+    /// [`COMMON_DISCOVERY_PORTS`].
+    ///
+    /// A deliberate choice rather than a neutral value, which is why it is not
+    /// [`Default`]. A caller that scans this set is scanning what this crate
+    /// picked, and should have said so.
+    pub fn common_discovery() -> Self {
+        Self::try_from(COMMON_DISCOVERY_PORTS).expect("the discovery ports are a valid spec")
     }
 
     /// Returns the total number of unique port/protocol combinations.
@@ -207,9 +218,15 @@ impl PortSet {
 // ══════════════════════════════════════════════════════════════════════════════
 
 impl Default for PortSet {
-    /// Returns a default [`PortSet`] containing common discovery services.
+    /// The empty set, which is what every other `Default` in this crate means
+    /// and what a struct deriving `Default` around one has to get.
+    ///
+    /// The opinionated set is [`common_discovery`](Self::common_discovery). It
+    /// was `Default` once, which meant that
+    /// [`TargetSet`](crate::model::target::TargetSet) and anything else
+    /// deriving `Default` acquired a scan specification nobody wrote.
     fn default() -> Self {
-        Self::try_from(DEFAULT_PORTSET_PORTS).expect("Static discovery ports must be valid.")
+        Self::new()
     }
 }
 
@@ -344,8 +361,10 @@ impl FromIterator<(u16, Protocol)> for PortSet {
 mod tests {
     use super::*;
 
+    /// The forms a person actually writes, mixed in one specification the way
+    /// they arrive on a command line.
     #[test]
-    fn set_try_from_str_parses_correctly() {
+    fn a_specification_may_mix_ports_ranges_and_protocols() {
         let port_set_single = PortSet::try_from("21");
         let port_set_multiple = PortSet::try_from("21, 22 80, 800-1000, u:53 8080");
 
@@ -365,8 +384,10 @@ mod tests {
         assert!(port_set_multiple.has_tcp(8080));
     }
 
+    /// `u:` is this crate's own spelling for the UDP half, and it has to apply
+    /// to a range as well as to a single port.
     #[test]
-    fn set_try_from_str_parses_udp_variants() {
+    fn the_udp_prefix_applies_to_single_ports_and_to_ranges() {
         let port_set_udp = PortSet::try_from("u:22 u:53-100, u:1024");
 
         assert!(port_set_udp.is_ok());
@@ -380,8 +401,11 @@ mod tests {
         assert!(port_set_udp.has_udp(1024));
     }
 
+    /// Whitespace names no ports, which is a valid thing to say — a caller
+    /// supplying an empty default is not making a mistake, and the empty set is
+    /// what `Default` means.
     #[test]
-    fn set_empty_input() {
+    fn a_specification_naming_nothing_is_an_empty_set_not_an_error() {
         let empty = PortSet::try_from("   ");
         assert!(empty.is_ok());
         let set = empty.unwrap();
@@ -389,23 +413,31 @@ mod tests {
         assert!(set.udp.is_empty());
     }
 
+    /// The ends of the 16-bit space, where the range arithmetic is one step
+    /// from overflowing.
     #[test]
-    fn set_boundaries() {
+    fn the_ends_of_the_port_space_parse_and_are_held() {
         let limits = PortSet::try_from("0, 65535, u:0-65535").unwrap();
         assert!(limits.has_tcp(0));
         assert!(limits.has_tcp(65535));
         assert!(limits.has_udp(32768));
     }
 
+    /// Target lists are hand-written and pasted together, so stray and repeated
+    /// separators are ordinary rather than exceptional. Refusing them would
+    /// reject a file over punctuation.
     #[test]
-    fn set_messy_delimiters() {
+    fn stray_separators_are_tolerated_rather_than_refused() {
         let messy = PortSet::try_from(", 80, , 443 ,").unwrap();
         assert!(messy.has_tcp(80));
         assert!(messy.has_tcp(443));
     }
 
+    /// Each mistake is reported as the kind of mistake it is, because the
+    /// error is printed at whoever typed it. A port too large for 16 bits must
+    /// not silently wrap to a port they did not ask for.
     #[test]
-    fn set_try_from_str_throws_errors() {
+    fn each_malformed_specification_is_refused_with_its_own_reason() {
         let port_set_invalid_port = PortSet::try_from("80 70000 22");
         let port_set_invalid_range = PortSet::try_from("21 8000-80");
         let port_set_malformed_spec = PortSet::try_from("22 60-70-80 8080");
@@ -435,8 +467,10 @@ mod tests {
         ));
     }
 
+    /// The owned-string conversion has to agree with the borrowed one, since
+    /// callers reach this type from both an argument and a parsed config.
     #[test]
-    fn set_try_from_string_parses_correctly() {
+    fn an_owned_string_parses_the_same_as_a_borrowed_one() {
         let port_set = PortSet::try_from(String::from("21 80-100 u:5353"));
 
         assert!(port_set.is_ok());
@@ -450,22 +484,33 @@ mod tests {
         assert!(port_set.has_udp(5353));
     }
 
-    /// `Default` parses a string constant and unwraps the result, so a typo in
-    /// [`DEFAULT_PORTSET_PORTS`] is a panic rather than a compile error.
-    /// Nothing else in the crate calls it, which means without this the panic
-    /// would surface at a consumer's first use.
+    /// Two claims, and the second is why the first is written here.
+    ///
+    /// `common_discovery` parses a string constant and unwraps it, so a typo in
+    /// [`COMMON_DISCOVERY_PORTS`] is a panic rather than a compile error, and
+    /// without a test the panic surfaces at a consumer's first call.
+    ///
+    /// And `Default` is empty. It named those same five ports once, which meant
+    /// every struct deriving `Default` around a `PortSet` — `TargetSet` among
+    /// them — silently carried a scan specification nobody wrote.
     #[test]
-    fn the_default_port_set_parses_and_holds_the_ports_it_names() {
-        let set = PortSet::default();
-
+    fn the_discovery_set_parses_and_default_stays_empty() {
+        let set = PortSet::common_discovery();
         for port in [22, 80, 443, 445, 3389] {
-            assert!(set.has_tcp(port), "{port} is named in the default set");
+            assert!(set.has_tcp(port), "{port} is named in the discovery set");
         }
         assert_eq!(set.len(), 5, "and nothing else is");
+
+        assert!(PortSet::default().is_empty());
+        assert_eq!(PortSet::default(), PortSet::new());
     }
 
+    /// Canonical from construction: overlapping, adjacent and subsumed ranges
+    /// all collapse. That is what makes membership a binary search and what
+    /// makes `Hash` agree with `Eq`, so two spellings of one set group together
+    /// in `TargetMapBuilder`.
     #[test]
-    fn set_overlap_and_adjacency_merging() {
+    fn overlapping_and_adjacent_ranges_collapse_on_construction() {
         // Overlap: 1-10 and 5-15 should be 1-15
         let set = PortSet::try_from("1-10, 5-15").unwrap();
         assert_eq!(set.len(), 15);

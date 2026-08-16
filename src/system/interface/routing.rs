@@ -126,7 +126,7 @@ pub(crate) fn map_ips_to_interfaces_with(
         let end = IpAddr::V4(range.end_addr());
         match owning_interface(&interfaces, start, end) {
             Some(idx) => local.entry(idx).or_default().insert_range(V4(*range)),
-            None => singles_to_route.extend(range.to_iter()),
+            None => singles_to_route.extend(range.iter()),
         }
     }
     for range in ip_set.v6() {
@@ -158,7 +158,7 @@ pub(crate) fn map_ips_to_interfaces_with(
             // turn. The check comes before `to_iter` because the expansion is
             // what does the damage, not the probing.
             None if !is_enumerable(range) => unenumerable.push(*range),
-            None => singles_to_route.extend(range.to_iter()),
+            None => singles_to_route.extend(range.iter()),
         }
     }
 

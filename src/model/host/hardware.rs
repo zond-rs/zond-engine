@@ -152,30 +152,47 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// A sighting resolves a vendor through the OUI database and records the
+    /// address that produced it.
+    ///
+    /// That *some* vendor resolves is the whole assertion. Naming the company
+    /// would pin a third-party database's spelling of it and break on a data
+    /// update this crate is not party to — see
+    /// [`mac::vendor`](crate::model::mac::vendor), whose own test says the
+    /// same.
     #[test]
-    fn hardware_vendor_assignment() {
+    fn a_sighting_records_the_address_and_resolves_its_vendor() {
         let mac = MacAddr::new(0x00, 0x0C, 0x29, 0xAB, 0xCD, 0xEF);
         let hw = HardwareInfo::new(mac);
 
-        assert_eq!(hw.vendor(), Some("VMware, Inc"));
+        assert!(hw.vendor().is_some(), "a registered OUI");
         assert!(hw.macs().contains_key(&mac));
     }
 
+    /// "Which address is it using now" is answered from the timestamps, not
+    /// from the map's own order — that is keyed on the address so a report
+    /// renders reproducibly. Reading the newest any other way would report the
+    /// numerically largest MAC as the current one.
+    ///
+    /// Timestamps are set by hand because the point is which is newer, and two
+    /// insertions are not reliably far enough apart to say.
     #[test]
-    fn test_most_recent_mac_selection() {
-        let mac_old = MacAddr::new(1, 1, 1, 1, 1, 1);
-        let mac_new = MacAddr::new(2, 2, 2, 2, 2, 2);
+    fn the_most_recent_sighting_is_the_newest_one_not_the_last_inserted() {
+        let newest = MacAddr::new(0x02, 0, 0, 0, 0, 0x01);
+        let older = MacAddr::new(0x02, 0xff, 0, 0, 0, 0xff);
 
-        let mut hw = HardwareInfo::new(mac_old);
+        let mut hw = HardwareInfo::new(older);
         hw.macs
-            .insert(mac_new, SystemTime::now() + Duration::from_secs(60));
+            .insert(newest, SystemTime::now() + Duration::from_secs(60));
 
-        assert_eq!(hw.most_recent_mac(), Some(mac_new));
+        assert_eq!(hw.most_recent_mac(), Some(newest));
     }
 
+    /// [`HardwareInfo::prune_stale_macs`] can empty the map, so the accessor
+    /// that names the current address has to survive that rather than assume a
+    /// record always holds one.
     #[test]
-    fn most_recent_mac_on_empty() {
-        // Construct an empty one manually via the pub(crate) field
+    fn a_record_with_no_addresses_left_names_none() {
         let hw = HardwareInfo {
             macs: BTreeMap::new(),
             vendor: None,
@@ -183,19 +200,22 @@ mod tests {
         assert_eq!(hw.most_recent_mac(), None);
     }
 
+    /// The record grows by one address every time a device randomizes its MAC,
+    /// with no natural end on a segment full of phones. The cutoff is the
+    /// caller's, because discarding an address discards the evidence the host
+    /// ever used it.
     #[test]
-    fn prune_stale_macs_logic() {
-        let mac_keep = MacAddr::new(1, 1, 1, 1, 1, 1);
-        let mac_drop = MacAddr::new(2, 2, 2, 2, 2, 2);
+    fn pruning_forgets_the_addresses_not_seen_since_the_cutoff() {
+        let recent = MacAddr::new(1, 1, 1, 1, 1, 1);
+        let stale = MacAddr::new(2, 2, 2, 2, 2, 2);
 
-        let mut hw = HardwareInfo::new(mac_keep);
+        let mut hw = HardwareInfo::new(recent);
         hw.macs
-            .insert(mac_drop, SystemTime::now() - Duration::from_secs(3600));
+            .insert(stale, SystemTime::now() - Duration::from_secs(3600));
 
-        let cutoff = SystemTime::now() - Duration::from_secs(1800);
-        hw.prune_stale_macs(cutoff);
+        hw.prune_stale_macs(SystemTime::now() - Duration::from_secs(1800));
 
         assert_eq!(hw.macs().len(), 1);
-        assert!(hw.macs().contains_key(&mac_keep));
+        assert!(hw.macs().contains_key(&recent));
     }
 }

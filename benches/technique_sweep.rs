@@ -86,7 +86,7 @@ async fn main() {
     // silently scanned whatever DNS answered with would be measuring a moving
     // target. Reported rather than panicked, because an unparseable argument is
     // a typo and not a bug.
-    let addresses = match to_set(&[target.as_str()], None) {
+    let addresses = match to_set(&[target.as_str()], None, None) {
         Ok(addresses) => addresses,
         Err(e) => {
             eprintln!("target `{target}`: {e}");
