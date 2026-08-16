@@ -36,10 +36,10 @@ pub enum TargetError {
 pub struct Target {
     /// The address to probe.
     ///
-    /// Bare, with no zone. A target set is produced by a scan that already
-    /// knows which interface it is bound to — see
+    /// Bare, with no zone, because a target set is produced by a scan that
+    /// already knows which interface it is bound to. See
     /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for where the interface
-    /// is carried when it matters.
+    /// is carried when it does matter.
     pub ip: IpAddr,
     /// The port to probe.
     pub port: u16,
@@ -47,18 +47,12 @@ pub struct Target {
     pub protocol: Protocol,
 }
 
-/// A blueprint pairing a set of IP addresses with a set of ports.
+/// A set of addresses paired with the ports to try on each of them.
 ///
-/// **The addresses are canonical for this type's whole life.** [`IpSet`] merges
-/// lazily, so a half-built one can hold overlapping ranges and answer questions
-/// about them wrongly; that is a real hazard, and it has already cost this
-/// project one benchmark that reported 65 536 ranges for a file holding one.
-///
-/// The hazard is removed rather than documented: [`new`](Self::new)
-/// canonicalizes, and `ips` is private with no way to mutate it afterwards, so
-/// there is no moment at which a `TargetSet` holds an unmerged set. Everything
-/// that reads one therefore takes `&self` — a count is not a mutation, and a
-/// signature that said otherwise was the invariant leaking into every caller.
+/// The addresses are merged for this type's whole life. [`new`](Self::new)
+/// canonicalizes them and there is no way to mutate them afterwards, so a
+/// `TargetSet` never holds overlapping ranges and never miscounts them. Every
+/// method that reads one takes `&self`, since counting is not a mutation.
 #[derive(Debug, Clone, Default)]
 pub struct TargetSet {
     /// Internal IP set, canonical by construction.
@@ -70,10 +64,10 @@ pub struct TargetSet {
 impl TargetSet {
     /// Creates a scan blueprint over `ips` and `ports`.
     ///
-    /// Merges `ips` here, once, which is what lets every read below be `&self`.
-    /// The work is the same either way — a set has to be merged before it can be
-    /// counted or iterated — and doing it at one known point rather than at
-    /// whichever read happened first is the whole of the difference.
+    /// Merges `ips` once, here, which is what lets every read below take
+    /// `&self`. The work is the same either way, since a set has to be merged
+    /// before it can be counted or iterated. Doing it at one known point rather
+    /// than at whichever read happens first is the whole of the difference.
     pub fn new(mut ips: IpSet, ports: PortSet) -> Self {
         ips.canonicalize();
         Self { ips, ports }
@@ -86,10 +80,10 @@ impl TargetSet {
 
     /// Takes the IP set, discarding the ports.
     ///
-    /// For a caller moving targets to a phase that has no use for ports -
-    /// [`discover`](crate::scanner::discover) asks whether a host is there at
-    /// all - where cloning the addresses to drop the ports beside them would be
-    /// the wrong shape for a set that may hold a /8.
+    /// For moving targets to a phase that has no use for ports, such as
+    /// [`discover`](crate::scanner::discover), which only asks whether a host is
+    /// there at all. Cloning the addresses in order to drop the ports beside
+    /// them would be the wrong shape for a set that may hold a `/8`.
     pub fn into_ips(self) -> IpSet {
         self.ips
     }
@@ -122,11 +116,11 @@ impl TargetSet {
 
     /// Every address paired with every port, lazily.
     ///
-    /// Nothing is normalized here and nothing needs to be: the addresses were
-    /// merged when the set was constructed. Nothing is materialized either — a
-    /// `/8` on a thousand ports is 16 billion targets, so they are produced one
-    /// at a time and the port list is shared behind an `Arc` rather than cloned
-    /// per address.
+    /// The addresses were merged when the set was constructed, so there is
+    /// nothing to normalize. Nothing is materialized either. A `/8` on a
+    /// thousand ports is 16 billion targets, so they are produced one at a time
+    /// and the port list is shared behind an `Arc` rather than cloned for every
+    /// address.
     pub fn iter(&self) -> impl Iterator<Item = Target> + Send + '_ {
         let ports_arc: Arc<[(u16, Protocol)]> = self.ports.to_vec().into();
 
@@ -229,15 +223,9 @@ mod tests {
         assert_eq!(ts.total_targets().unwrap(), 256 * 2);
     }
 
-    /// The property that replaced an invariant callers had to maintain: a set is
-    /// merged the moment it is a `TargetSet`, so nothing downstream can read one
-    /// that is not.
-    ///
-    /// This is what the two tests here used to be about. They asserted that a
-    /// read before `canonicalize()` returned `TargetError::UncanonicalizedState`,
-    /// and that it succeeded afterwards — a state that no longer exists to test.
-    /// Overlapping ranges counted twice is the failure that made it matter, so
-    /// that is what this asserts instead.
+    /// A set is merged the moment it becomes a `TargetSet`, so nothing
+    /// downstream can read one that is not. Overlapping ranges counted twice is
+    /// the failure that makes this matter, so that is what it checks.
     #[test]
     fn a_target_set_merges_its_addresses_on_construction() {
         let mut overlapping = mock_ip_set("192.168.1.0/24");
@@ -275,7 +263,7 @@ mod tests {
     }
 
     /// A map's iterator is a flattening of its units, in the order they were
-    /// added — which is what makes two runs over one input scan in one order.
+    /// added, which is what makes two runs over one input scan in one order.
     #[test]
     fn a_map_iterates_its_units_in_the_order_they_were_added() {
         let mut map = TargetMap::new();
@@ -301,9 +289,8 @@ mod tests {
 
     /// `::/0` is 2^128 addresses, which [`IpSet::len`] already saturates to
     /// `u128::MAX`. One port still fits; two do not, and the multiplication has
-    /// to refuse rather than wrap — a scan of the entire address space
-    /// reported as a small number is the one answer a budget check must never
-    /// be given.
+    /// to refuse rather than wrap. A scan of the entire address space reported
+    /// as a small number is the one answer a budget check must never be given.
     #[test]
     fn a_target_count_too_large_to_represent_is_refused_rather_than_wrapped() {
         let two_ports = TargetSet::new(mock_ip_set("::/0"), mock_port_set("80, 443"));

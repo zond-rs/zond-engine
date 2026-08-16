@@ -10,9 +10,9 @@
 //!
 //! A range is two addresses and everything between them, inclusive at both
 //! ends. It is how this engine holds a `/24` or a `/8` without holding the
-//! addresses themselves — the unit [`IpSet`](super::set::IpSet) is built out
-//! of, and the reason a target set naming sixteen million addresses costs two
-//! words.
+//! addresses themselves. It is the unit [`IpSet`](super::set::IpSet) is built
+//! out of, and the reason a target set naming sixteen million addresses costs
+//! two words.
 //!
 //! [`Ipv4Range`] and [`Ipv6Range`] are separate rather than one type over
 //! `IpAddr` because the arithmetic differs in kind: a v4 range is 8 bytes and

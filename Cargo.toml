@@ -139,6 +139,12 @@ aho-corasick = "1.1"
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 x509-parser = "0.18.1"
+# SHA-256 for certificate fingerprints, and nothing else. Declared rather than
+# vendored because `rustls` already pins its `ring` crypto provider, so this
+# names a crate the build compiles either way: it costs no extra compilation and
+# no new supply chain, where hand-rolling the digest would put a cryptographic
+# primitive in this repository for one call site.
+ring = "0.17"
 
 [dev-dependencies]
 # A JSON Schema validator, used only to hold the exported document to

@@ -9,9 +9,9 @@
 //! # Written down, and read back
 //!
 //! The grammars that turn what a person typed into the values in
-//! [`crate::model`]. [`ip`] handles the address half — literals, ranges, CIDR
-//! blocks, zones and keywords — and [`target`] handles an address with a port
-//! specification after it.
+//! [`crate::model`]. [`ip`] handles the address half, covering literals,
+//! ranges, CIDR blocks, zones and keywords. [`target`] handles an address with
+//! a port specification after it.
 //!
 //! **These grammars live beside the model rather than beside the file formats
 //! because every way of naming a target ends here.** A command-line argument, a
@@ -21,8 +21,8 @@
 //! only where the tokens come from, and none of them can drift into accepting a
 //! slightly different dialect.
 //!
-//! Resolution that needs to ask the machine anything — what `lan` means, which
-//! interface a `%zone` names — arrives as a caller-supplied callback
+//! Resolution that needs to ask the machine anything, such as what `lan` means
+//! or which interface a `%zone` names, arrives as a caller-supplied callback
 //! ([`ip::ResolverFn`], [`ip::ZoneResolverFn`]). That is what keeps this a leaf:
 //! the engine passes [`crate::system::interface`]'s answers in, rather than this
 //! module reaching out for them.

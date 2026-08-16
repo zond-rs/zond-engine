@@ -51,6 +51,7 @@ mod signature;
 mod ssh;
 mod tls;
 mod tls_cert;
+mod tls_summary;
 
 #[cfg(test)]
 mod corpus;
@@ -134,6 +135,15 @@ pub async fn fingerprint_tcp(stream: TcpStream, mut port: Port) -> Port {
     let (responses, tunnel) = gather(stream, port.number()).await;
     if responses.is_empty() {
         return port;
+    }
+
+    // Recorded before the response set is handed off, and independently of what
+    // the analyzers conclude. A handshake is a fact about the port; whether any
+    // analyzer manages to name the service behind it is a separate question, and
+    // a port whose service stays unidentified still has a certificate worth
+    // reporting.
+    if let Some(tls) = responses.tls.as_ref() {
+        port.set_security(tls_summary::security(tls));
     }
 
     // Analysis runs off the reactor. Keep a last-resort banner label before the

@@ -38,9 +38,9 @@
 //! is **refused**, never silently dropped: a scan that covers less than its
 //! input said it covers is a wrong answer that looks like a right one.
 //!
-//! Hostnames are not resolved here at all — that is
-//! [`super::target::TargetMapBuilder`]'s, because whether a name may be looked
-//! up is a policy question and this grammar has no business deciding it. An
+//! Hostnames are not resolved here at all. That belongs to
+//! [`super::target::TargetMapBuilder`], because whether a name may be looked up
+//! is a policy question and this grammar has no business deciding it. An
 //! expression that is not any of the forms above comes back as
 //! [`IpParseError::Malformed`], which is the signal a caller uses to try a name.
 
@@ -57,20 +57,13 @@ pub static IS_LAN_SCAN: AtomicBool = AtomicBool::new(false);
 /// A name standing for a set of addresses only the running host can supply.
 ///
 /// Written in place of an address, and expanded by the caller's
-/// [`ResolverFn`] — this module knows the words and nothing about what they
+/// [`ResolverFn`]. This module knows the words and nothing about what they
 /// resolve to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     /// The local segment: the network on the interface carrying this host's
-    /// default route. The only keyword the grammar recognises.
+    /// default route.
     Lan,
-    /// The network on the far side of an active VPN tunnel.
-    ///
-    /// **Named but not implemented.** No resolver expands it and
-    /// [`insert_expression`] does not match it, so `vpn` written as a target is
-    /// not read as a keyword at all — it falls through to the hostname path and
-    /// is reported as a name that does not resolve.
-    Vpn,
 }
 
 impl Keyword {
@@ -78,7 +71,6 @@ impl Keyword {
     pub fn as_str(&self) -> &'static str {
         match self {
             Keyword::Lan => "lan",
-            Keyword::Vpn => "vpn",
         }
     }
 }
@@ -125,31 +117,12 @@ pub enum IpParseError {
     UnknownInterface(String),
 }
 
-/// Resolves a collection of input strings into a consolidated [`IpSet`].
+/// Expands a [`Keyword`] into the addresses it stands for.
 ///
-/// Handles whitespace trimming, comma-separated lists, and individual item parsing.
-///
-/// # Arguments
-///
-/// * `ips` - A slice of string-like objects representing scan targets.
-///
-/// # Errors
-///
-/// Returns an [`IpParseError`] if any component fails to parse or if the final set
-/// is empty.
-///
-/// # Examples
-///
-/// ```
-/// use zond_engine::model::parse::ip::{to_set, Keyword};
-/// use zond_engine::model::ip::set::IpSet;
-///
-/// let ips = vec!["192.168.1.0/24", "10.0.0.1", "10.0.0.5-10"];
-/// let set = to_set(&ips, None).unwrap();
-///
-/// // /24 (256) + single (1) + range 5-10 (6) = 263
-/// assert_eq!(set.len(), 263);
-/// ```
+/// Supplied by the caller, because answering means reading the host's interface
+/// table and this module deliberately knows nothing about the machine it runs
+/// on. Writes into the set it is given rather than returning one, so a keyword
+/// mixed with literal targets accumulates alongside them.
 pub type ResolverFn = fn(Keyword, &mut IpSet) -> Result<(), IpParseError>;
 
 /// Looks up an interface by name and returns its scope id.
@@ -159,6 +132,28 @@ pub type ResolverFn = fn(Keyword, &mut IpSet) -> Result<(), IpParseError>;
 /// about the host it runs on. `None` for a name no interface answers to.
 pub type ZoneResolverFn = fn(&str) -> Option<u32>;
 
+/// Resolves a list of address expressions into one [`IpSet`].
+///
+/// Each element may itself be a comma-separated list, so a single argument and
+/// a whole file of targets go through the same call. Surrounding whitespace is
+/// trimmed and empty elements are skipped.
+///
+/// # Errors
+///
+/// The first expression that does not parse, or [`IpParseError::EmptySet`] if
+/// nothing was named, since an empty target set is a caller mistake rather than
+/// a scan of nothing.
+///
+/// # Examples
+///
+/// ```
+/// use zond_engine::model::parse::ip::to_set;
+///
+/// let set = to_set(&["192.168.1.0/24", "10.0.0.1", "10.0.0.5-10"], None).unwrap();
+///
+/// // 256 from the block, one literal, six from the range.
+/// assert_eq!(set.len(), 263);
+/// ```
 pub fn to_set<S>(ips: &[S], resolver: Option<ResolverFn>) -> Result<IpSet, IpParseError>
 where
     S: AsRef<str>,
@@ -204,11 +199,10 @@ where
 /// Identifies the format of a single address expression and inserts it into an
 /// existing set.
 ///
-/// This is the grammar itself, without the list handling and the summary line
-/// [`to_set_with`] wraps around it. A caller that has already tokenized its
-/// input - an importer reading a file of targets, say - wants exactly this: one
-/// expression, inserted into a set it is accumulating, and no log line per
-/// token to show for it.
+/// This is the grammar itself, without the list handling [`to_set_with`] wraps
+/// around it. A caller that has already tokenized its input, such as an
+/// importer reading a file of targets, wants exactly this: one expression,
+/// inserted into a set it is accumulating.
 ///
 /// Nothing is inserted when the expression is refused, so a caller that collects
 /// errors and carries on is left with a set holding only what parsed.

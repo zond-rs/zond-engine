@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(column(ssh, "mac_vendor"), "Raspberry Pi Trading Ltd");
         assert_eq!(column(ssh, "os"), "Linux");
         assert_eq!(column(ssh, "os_accuracy"), "95");
-        assert_eq!(column(ssh, "roles"), "gateway");
+        assert_eq!(column(ssh, "roles"), "");
         assert_eq!(column(ssh, "rtt_median_us"), "1800");
         assert_eq!(column(ssh, "service"), "ssh");
         assert_eq!(column(ssh, "service_product"), "OpenSSH");

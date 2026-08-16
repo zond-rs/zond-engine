@@ -9,7 +9,8 @@
 //! # Which ports to ask about
 //!
 //! [`PortSet`] is the port half of a scan's target specification: what a person
-//! wrote — `"80, 443, u:53, 1000-2000"` — held as disjoint ranges per protocol.
+//! wrote, such as `"80, 443, u:53, 1000-2000"`, held as disjoint ranges per
+//! protocol.
 //!
 //! **It is built once and never mutated.** Every construction path merges and
 //! sorts before returning, and there is no method that can undo that, so a
@@ -53,7 +54,7 @@ pub enum PortSetParseError {
     /// A range was written backwards, as in `80-20`.
     #[error("Invalid port range: start ({start}) cannot be strictly greater than end ({end})")]
     InvalidRange {
-        /// The lower bound as written — which is the larger of the two.
+        /// The lower bound as written, which is the larger of the two.
         start: u16,
         /// The upper bound as written.
         end: u16,
@@ -74,9 +75,9 @@ pub enum PortSetParseError {
 /// documentation has what that buys and who relies on it.
 ///
 /// Ranges rather than a set of numbers because the specifications people write
-/// are overwhelmingly contiguous — `1-1024`, `1-65535` — and holding sixty-five
-/// thousand `u16`s to represent one of them costs memory per target group, of
-/// which a large import has many.
+/// are overwhelmingly contiguous, such as `1-1024` or `1-65535`, and holding
+/// sixty-five thousand `u16`s to represent one of them costs memory per target
+/// group, of which a large import has many.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PortSet {
     tcp: Vec<RangeInclusive<u16>>,

@@ -193,16 +193,47 @@ async fn handshake_within(
 
     let tls = timeout(budget, connect).await.ok()?.ok()?;
 
-    let certificates: Vec<Vec<u8>> = tls
-        .get_ref()
-        .1
+    let connection = tls.get_ref().1;
+
+    let certificates: Vec<Vec<u8>> = connection
         .peer_certificates()
         .unwrap_or(&[])
         .iter()
         .map(|der| der.as_ref().to_vec())
         .collect();
 
-    Some((tls, TlsInfo { certificates }))
+    // Read off the live connection: these are gone the moment the tunnel is.
+    let version = protocol_version_name(connection.protocol_version());
+    let cipher_suite = connection
+        .negotiated_cipher_suite()
+        .and_then(|suite| suite.suite().as_str());
+    let alpn = connection
+        .alpn_protocol()
+        .map(|protocol| String::from_utf8_lossy(protocol).into_owned());
+
+    Some((
+        tls,
+        TlsInfo {
+            certificates,
+            version,
+            cipher_suite,
+            alpn,
+        },
+    ))
+}
+
+/// The negotiated version under the name the RFCs give it.
+///
+/// Spelled out rather than taken from `Debug`, which renders `TLSv1_3` — a
+/// string no reader of a report expects and no other tool prints. Only the two
+/// versions [`connector`] offers are named; anything else is reported as
+/// unknown rather than guessed at.
+fn protocol_version_name(version: Option<rustls::ProtocolVersion>) -> Option<&'static str> {
+    match version? {
+        rustls::ProtocolVersion::TLSv1_3 => Some("TLSv1.3"),
+        rustls::ProtocolVersion::TLSv1_2 => Some("TLSv1.2"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

@@ -42,7 +42,7 @@ pub struct HardwareInfo {
     /// Shared rather than owned because a segment is routinely a rack of one
     /// vendor's equipment, and the string is then one allocation instead of one
     /// per host. `None` for a locally administered address, which has no
-    /// manufacturer to name — see [`vendor`](crate::model::mac::vendor).
+    /// manufacturer to name. See [`vendor`](crate::model::mac::vendor).
     pub vendor: Option<Arc<str>>,
 }
 

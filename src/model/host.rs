@@ -6,25 +6,26 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # One machine, as several probes found it
+//! # Hosts
 //!
 //! A [`Host`] is everything a scan learned about a single device. Nothing fills
-//! one in at once: an ARP reply establishes it is there and gives it a MAC, a
-//! neighbour solicitation adds an IPv6 address, a port scan adds ports, service
-//! detection names what is behind them, and every one of those arrives on its
-//! own schedule and in an order nobody controls.
+//! one in at once. An ARP reply establishes that it is there and gives it a MAC,
+//! a neighbour solicitation adds an IPv6 address, a port scan adds ports, and
+//! service detection names what is behind them. Each of those arrives on its own
+//! schedule, in an order nobody controls.
 //!
-//! **So the whole type is built around accumulating evidence, and one rule runs
-//! through it: later is not better.** Status is promoted and never lowered
-//! ([`Host::record_evidence`]); the address a host is reported under is ranked
-//! rather than overwritten ([`Host::consider_primary_ip`]); a MAC is added to
-//! the ones already seen rather than replacing them ([`Host::set_mac`]); ties
-//! keep what is already recorded. Each of those exists because the alternative
-//! makes a report depend on which probe happened to finish last — the same scan
-//! of the same network producing a different document twice.
+//! The whole type is therefore built around accumulating evidence, under one
+//! rule: later is not better. Status is promoted and never lowered, by
+//! [`Host::record_evidence`]. The address a host is reported under is ranked
+//! rather than overwritten, by [`Host::consider_primary_ip`]. A MAC is added to
+//! those already seen rather than replacing them, by [`Host::set_mac`]. Where
+//! two findings are equally good, the one already recorded wins.
 //!
-//! [`Host::merge`] applies the same rules between two records of one host, so a
-//! phase folded into another gets the answer a single phase would have.
+//! Without that rule a report would depend on which probe happened to finish
+//! last, and the same scan of the same network would produce a different
+//! document twice. [`Host::merge`] applies the same rules between two records of
+//! one host, so folding one phase into another gives what a single phase
+//! would.
 
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
@@ -48,47 +49,50 @@ pub use telemetry::HostTelemetry;
 /// The most ports one host will have recorded against it.
 ///
 /// A bound on what a single target can make this process allocate. Some devices
-/// answer affirmatively on every port asked — a tarpit does it deliberately,
-/// and a misconfigured middlebox does it by accident — and against a full
-/// 65 535-port scan that is a host record two orders of magnitude larger than
-/// any real one, multiplied by however many such devices are on the segment.
+/// answer on every port asked, whether deliberately as a tarpit or by accident
+/// as a misconfigured middlebox. Against a full 65 535-port scan that is a host
+/// record two orders of magnitude larger than any real one, multiplied by
+/// however many such devices sit on the segment.
 ///
 /// A host that reaches the cap is marked [`NetworkRole::Tarpit`] and further
-/// ports are dropped, which is the honest failure: the ports already recorded
-/// are real observations, and the marking says the list is not complete.
+/// ports are dropped. The ports already recorded are real observations, and the
+/// marking is what says the list is not complete.
 pub const MAX_PORTS_PER_HOST: usize = 1000;
 
 /// What a host turned out to be, beyond an address with ports on it.
+///
+/// A variant exists here only once something assigns it. A role nothing can
+/// infer would promise every consumer that the engine looks for it, so an empty
+/// `roles` array would mean "not one" when it really means "never asked".
+/// Gateway, DHCP and DNS attributions all belong here once a strategy can
+/// conclude them, and the enum is `#[non_exhaustive]` so that adding them costs
+/// a recompile rather than a major version.
+#[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum NetworkRole {
-    /// The default gateway for a local segment.
-    Gateway,
-    /// Serves DHCP.
-    DHCP,
-    /// Serves DNS.
-    DNS,
     /// Answered on so many ports that the engine stopped recording them.
     ///
-    /// Unlike the others this describes the *scan* rather than the host: it
-    /// says the port list is truncated at [`MAX_PORTS_PER_HOST`] and should not
-    /// be read as complete. A deliberate tarpit and a middlebox answering
-    /// everything by accident are indistinguishable from here, and both make
-    /// the ports recorded against this host meaningless.
+    /// This describes the *scan* rather than the host: it says the port list is
+    /// truncated at [`MAX_PORTS_PER_HOST`] and must not be read as complete. A
+    /// deliberate tarpit and a middlebox answering everything by accident are
+    /// indistinguishable from here, and both make the ports recorded against
+    /// this host meaningless.
     Tarpit,
 }
 
 /// A single machine, and what a scan established about it.
 ///
-/// Identity first — the addresses it answers at, its name, its hardware — then
-/// what was found on it. A host holds every address it is known by, because a
-/// dual-stack machine answering at three of them is one device and reporting it
-/// as three is the failure this type is shaped to avoid; see
-/// [`consider_primary_ip`](Self::consider_primary_ip) for which of them leads.
+/// Identity first: the addresses it answers at, its name and its hardware. Then
+/// what was found on it.
 ///
-/// [`OsFingerprint`] is boxed. It is much the largest thing a host can carry
-/// and much the rarest — most hosts in a scan never get one — so paying for it
-/// by reference keeps a `Host` cheap to move in the collections that hold
-/// thousands of them.
+/// A host holds every address it is known by. A dual-stack machine answering at
+/// three of them is one device, and reporting it as three is the failure this
+/// type is shaped to avoid. See
+/// [`consider_primary_ip`](Self::consider_primary_ip) for which address leads.
+///
+/// [`OsFingerprint`] is boxed. It is both the largest thing a host can carry and
+/// one of the rarest, since most hosts in a scan never get one, so holding it by
+/// reference keeps a `Host` cheap to move in collections of thousands.
 #[derive(Debug, Clone)]
 pub struct Host {
     /// The primary IP address used to target or identify this host.
@@ -119,8 +123,8 @@ pub struct Host {
     /// kernel chose and says nothing about which interface it left by.
     ///
     /// It is not decoration. An IPv6 link-local address is meaningless without
-    /// it — `fe80::1` names a different machine on every segment, and a socket
-    /// cannot be opened to one without the interface's scope id — so this is
+    /// it, because `fe80::1` names a different machine on every segment and a
+    /// socket cannot be opened to one without the interface's scope id. This is
     /// what makes the addresses local discovery finds usable by everything that
     /// runs after it. See [`ScopedIp`].
     zone: Option<Zone>,
@@ -226,9 +230,9 @@ impl Host {
 
     /// Records the interface this host was observed through.
     ///
-    /// Only the first is kept. A host reachable through two interfaces is a real
-    /// situation, and picking the earlier sighting is arbitrary but stable —
-    /// where overwriting would make the address a scan reports depend on which
+    /// Only the first is kept. A host reachable through two interfaces is a
+    /// real situation, and picking the earlier sighting is arbitrary but stable.
+    /// Overwriting would make the address a scan reports depend on which
     /// strategy happened to finish last.
     pub fn set_zone(&mut self, zone: Zone) {
         self.zone.get_or_insert(zone);
@@ -294,8 +298,9 @@ impl Host {
     /// So addresses are ranked, and the ranking only ever moves upward:
     ///
     /// 1. **IPv4**, because it is what a person recognises and types.
-    /// 2. **Globally scoped IPv6** — global unicast or unique-local — which
-    ///    names the host from anywhere and needs nothing else to be usable.
+    /// 2. **Globally scoped IPv6**, meaning global unicast or unique-local,
+    ///    which names the host from anywhere and needs nothing else to be
+    ///    usable.
     /// 3. **Link-local IPv6**, which names a different machine on every segment
     ///    and is meaningless without the zone that
     ///    [`scoped_ip`](Self::scoped_ip) supplies.
@@ -353,12 +358,12 @@ impl Host {
     ///
     /// This is how scanners report what they saw, and it is deliberately the
     /// only such entry point. The status is **promoted, never lowered**, on the
-    /// semantic ordering of [`HostStatus`] — the same rule
-    /// [`Host::merge`](Host::merge) applies between two records of one host, for
-    /// the same reason: a scan learns about a host from several probes arriving
-    /// in an order nobody controls, and an ICMP unreachable from a router that
-    /// happens to land after an ARP reply must not overwrite proof the host
-    /// answered for itself.
+    /// semantic ordering of [`HostStatus`]. [`Host::merge`](Host::merge)
+    /// applies the same rule between two records of one host, for the same
+    /// reason: a scan learns about a host from several probes arriving in an
+    /// order nobody controls, and an ICMP unreachable from a router that happens
+    /// to land after an ARP reply must not overwrite proof the host answered for
+    /// itself.
     ///
     /// The reason is kept whether or not the status moved. A host that is
     /// already `Up` still gains the audit trail of everything else that saw it,
@@ -382,8 +387,8 @@ impl Host {
 
     /// Replaces this host's hardware record wholesale.
     ///
-    /// For a caller holding a complete [`HardwareInfo`] — one read back from a
-    /// report, say. A single sighting goes through [`set_mac`](Self::set_mac),
+    /// For a caller holding a complete [`HardwareInfo`], such as one read back
+    /// from a report. A single sighting goes through [`set_mac`](Self::set_mac),
     /// which adds to the record instead of discarding what is already in it.
     pub fn set_hardware(&mut self, hardware: HardwareInfo) {
         self.hardware = Some(hardware);
@@ -399,17 +404,17 @@ impl Host {
     /// Records a sighting of `mac` for this host, keeping every address seen.
     ///
     /// Works by reference, unlike [`with_mac`](Self::with_mac), so a host
-    /// created by one scanner — the port scanner, which has no MAC — can be
-    /// enriched by another that learned one, whichever ran first.
+    /// created by the port scanner, which has no MAC, can still be enriched by a
+    /// scanner that learned one, whichever ran first.
     ///
     /// **Adds rather than replaces, and that is what [`HardwareInfo`] is for.**
     /// A device with two interfaces on one segment answers under two addresses,
     /// and a device randomizing its MAC answers under a series of them; both are
     /// one host, and which address it is currently using is a different question
-    /// from which it has ever used. Overwriting would answer neither — it would
-    /// leave whichever probe replied last, so [`most_recent_mac`] would report a
-    /// sighting order rather than a timeline and [`prune_stale_macs`] would have
-    /// nothing to prune.
+    /// from which it has ever used. Overwriting would answer neither, since it
+    /// leaves whichever probe replied last: [`most_recent_mac`] would report a
+    /// sighting order rather than a timeline, and [`prune_stale_macs`] would
+    /// have nothing to prune.
     ///
     /// Repeating a MAC already on record is not a no-op: it refreshes that
     /// address's last-seen time, which is what makes the two methods above mean
@@ -538,21 +543,18 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
-    /// Merges architectural findings from another `Host` record.
+    /// Folds another record of this host into this one.
     ///
-    /// This is the core aggregation method of the library, used to combine
-    /// results from multiple asynchronous scan stages into a single truth.
-    ///
-    /// - Status is promoted based on semantic ordering.
-    /// - Telemetry and OS data are merged using their respective logic.
-    /// - Port caps are enforced during aggregation.
+    /// This is how findings from separate scan stages become a single record.
+    /// Status is promoted and never lowered, telemetry and OS data merge by
+    /// their own rules, and the port cap still applies.
     ///
     /// The address the merged record leads with is decided by
     /// [`consider_primary_ip`](Self::consider_primary_ip), not by which of the
     /// two happened to be `self`. Two records of one host are two probes'
-    /// accounts of it, and the ranking exists precisely because the order those
-    /// arrive in is nobody's to control — a merge that kept the incumbent
-    /// address unconditionally would reintroduce, between phases, the same
+    /// accounts of it, and the ranking exists precisely because the order they
+    /// arrive in is nobody's to control. A merge that kept the incumbent address
+    /// unconditionally would reintroduce between phases the same
     /// machine-reported-as-two that the ranking prevents within one.
     pub fn merge(&mut self, other: Host) {
         let other_primary = other.primary_ip;
@@ -680,7 +682,7 @@ mod tests {
     /// Two records of one host are two probes' accounts of it, and which of
     /// them is `self` is an accident of arrival order. A merge that kept the
     /// incumbent address would report the same machine under its link-local on
-    /// one run and its IPv4 on the next — the failure
+    /// one run and its IPv4 on the next. That is the failure
     /// [`Host::consider_primary_ip`] exists to prevent, reintroduced one layer
     /// up where phases meet.
     #[test]
@@ -705,9 +707,9 @@ mod tests {
     }
 
     /// A device with two interfaces on one segment, or one randomizing the
-    /// address it answers under, is a single host with a history — which is the
-    /// whole of what [`HardwareInfo`] stores. Replacing on each sighting leaves
-    /// whichever probe replied last and makes
+    /// address it answers under, is a single host with a history. That history
+    /// is the whole of what [`HardwareInfo`] stores. Replacing on each sighting
+    /// leaves whichever probe replied last, and makes
     /// [`HardwareInfo::most_recent_mac`] report an arrival order rather than a
     /// timeline.
     #[test]

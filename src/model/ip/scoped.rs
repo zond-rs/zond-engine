@@ -39,7 +39,7 @@ use std::sync::Arc;
 ///
 /// Identity is the index alone. Two `Zone`s naming the same interface are the
 /// same zone whatever string was recorded alongside, and an interface's index is
-/// unique on a host for as long as the interface exists — which is longer than
+/// unique on a host for as long as the interface exists, which is longer than
 /// any one scan.
 #[derive(Debug, Clone)]
 pub struct Zone {
@@ -372,8 +372,8 @@ mod tests {
     /// the compiler. Sorting a collection of addresses has to be by address,
     /// with the zone separating link-locals that share a number; ordered
     /// zone-first, a sorted list would be grouped by interface instead, and
-    /// every consumer that walks addresses in order — a report, a merge, a
-    /// binary search — would be walking a different sequence than it reads as.
+    /// every consumer that walks addresses in order, whether a report, a merge
+    /// or a binary search, would walk a different sequence than it reads as.
     #[test]
     fn addresses_sort_by_address_with_the_zone_breaking_ties() {
         let mut addresses = vec![

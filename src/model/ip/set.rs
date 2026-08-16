@@ -6,33 +6,29 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # IP Address Sets
+//! # IP address sets
 //!
 //! [`IpSet`] holds the addresses a scan is about, as sorted non-overlapping
-//! ranges — a form in which a `/8` costs one range rather than sixteen million
+//! ranges. In that form a `/8` costs one range rather than sixteen million
 //! addresses.
 //!
-//! ## Merging is lazy, and that is a build-time concern
+//! ## Merging is lazy
 //!
-//! Insertion is constant time: it pushes to a buffer. Sorting and merging is
-//! `O(n log n)` and happens once, at [`IpSet::canonicalize`]. That split exists
-//! because a target file can name tens of thousands of ranges, and merging after
-//! each one would make loading it quadratic.
+//! Insertion is constant time, because it only appends. Sorting and merging is
+//! `O(n log n)` and happens once, when you call [`IpSet::canonicalize`]. The
+//! split exists because a target file can name tens of thousands of ranges, and
+//! merging after each one would make loading it quadratic.
 //!
-//! **The cost of that is a set that can answer wrongly while it is half built,
-//! and it is not a cost callers are asked to carry.** A set becomes canonical at
-//! the boundary where it stops being built and starts being read:
-//! [`TargetSet::new`](crate::model::target::TargetSet::new) merges what it
-//! is given and never mutates it again, so everything downstream of a
+//! You do not have to track which state a set is in. Every query is correct
+//! either way: [`contains`](IpSet::contains) and [`len`](IpSet::len) take a fast
+//! path over merged ranges when they can and a slower one when they cannot.
+//! Canonicalizing is a performance decision, not a correctness one, and the
+//! right moment for it is when a set stops being built and starts being read.
+//!
+//! Most callers never need to think about it at all, because
+//! [`TargetSet::new`](crate::model::target::TargetSet::new) canonicalizes what
+//! it is given and never mutates it again. Everything downstream of a
 //! `TargetSet` reads merged ranges by construction.
-//!
-//! [`contains`](IpSet::contains) and [`len`](IpSet::len) are correct whatever
-//! state the set is in — they take a fast path when it is clean and a slower one
-//! when it is not. There used to be a second, public, faster pair beside them
-//! guarded only by `debug_assert!`; choosing between them was the caller's
-//! problem, choosing wrong was silent in release, and a wrong answer about
-//! whether an address is in scope decides whether a reply is credited or thrown
-//! away. They are now the private fast paths of the two above.
 
 use super::range::{IpError, IpRange, Ipv4Range, Ipv6Range};
 use std::{
@@ -106,9 +102,9 @@ impl IpSet {
     /// fast path.
     ///
     /// Call it once, at the point the set stops being built and starts being
-    /// read. Doing so is not required for correctness — every query answers
-    /// correctly either way — but an unmerged set answers by scanning, and a
-    /// set read once per received packet should not be.
+    /// read. It is not required for correctness, since every query answers
+    /// correctly either way, but an unmerged set answers by scanning, and a set
+    /// read once per received packet should not be.
     pub fn canonicalize(&mut self) {
         if self.v4_dirty {
             if !self.v4.is_empty() {
@@ -154,13 +150,13 @@ impl IpSet {
     /// means one thing at one end and something else at the other. So adjacency
     /// alone is not enough to combine two ranges; they have to agree on scope.
     ///
-    /// The sort stays keyed on the address first and the zone only as a
-    /// tie-break, because [`contains_canonical`](Self::contains_canonical)
-    /// binary-searches this vector by address and would be wrong against any
-    /// other ordering. The cost is that two same-zone ranges separated by a
-    /// differently-zoned one in between are left unmerged - a slightly longer
-    /// vector describing exactly the same addresses, where the alternative is a
-    /// membership test that silently misses.
+    /// The sort is keyed on the address first and the zone only as a tie-break,
+    /// because [`contains_canonical`](Self::contains_canonical) binary-searches
+    /// this vector by address and would be wrong under any other ordering. The
+    /// cost is that two same-zone ranges with a differently-zoned one between
+    /// them are left unmerged. That produces a slightly longer vector covering
+    /// exactly the same addresses, which is much better than a membership test
+    /// that silently misses.
     fn merge_v6(&mut self) {
         self.v6.sort_by_key(|r| (r.start_addr, r.zone));
         let mut merged: Vec<Ipv6Range> = Vec::with_capacity(self.v6.len());
@@ -195,8 +191,8 @@ impl IpSet {
     ///
     /// Correct whatever state the set is in: a binary search when it is merged,
     /// and a linear scan of the unmerged ranges when it is not. The slow path
-    /// allocates nothing — a membership test is not a reason to merge a set the
-    /// caller has not finished building.
+    /// allocates nothing, because a membership test is not a reason to merge a
+    /// set the caller has not finished building.
     pub fn contains(&self, ip: &IpAddr) -> bool {
         if !self.v4_dirty && !self.v6_dirty {
             return self.contains_canonical(ip);
@@ -223,8 +219,8 @@ impl IpSet {
 
     /// The number of distinct addresses the set covers.
     ///
-    /// Overlapping ranges are counted once, which is why an unmerged set is
-    /// merged — on a clone, so that counting stays a read — before answering.
+    /// Overlapping ranges are counted once, so an unmerged set is merged before
+    /// answering. That happens on a clone, which keeps counting a read.
     /// [`len_gross`](Self::len_gross) is the cheap over-estimate for a caller
     /// that asks often.
     pub fn len(&self) -> u128 {
@@ -256,13 +252,13 @@ impl IpSet {
 
     /// Every address the set covers, one at a time, IPv4 before IPv6.
     ///
-    /// Each address is yielded once however many ranges named it, which needs
-    /// merged ranges to be true — so an unmerged set is merged on a clone
-    /// first, and iteration stays a read. A caller iterating a set it owns
-    /// should [`canonicalize`](Self::canonicalize) it instead and skip the copy.
+    /// Each address is yielded once, however many ranges named it. That needs
+    /// merged ranges, so an unmerged set is merged on a clone and iteration
+    /// stays a read. If you own the set, call
+    /// [`canonicalize`](Self::canonicalize) first and skip the copy.
     ///
     /// Yields lazily. A `/8` is sixteen million addresses and an IPv6 range can
-    /// be far more than that; nothing here materializes them.
+    /// hold far more than that, so nothing here is materialized.
     pub fn iter(&self) -> Box<dyn Iterator<Item = IpAddr> + Send + '_> {
         if self.v4_dirty || self.v6_dirty {
             let mut temp = self.clone();
@@ -279,17 +275,15 @@ impl IpSet {
 
     /// The fast path [`contains`](Self::contains) takes on a merged set.
     ///
-    /// Private, and deliberately so. It was public alongside `contains`, which
-    /// made choosing between them the caller's problem and made choosing wrong
-    /// silent: the `debug_assert!` below is the only thing separating a binary
-    /// search over merged ranges from a binary search over ranges that are not
-    /// sorted, and a release build has no `debug_assert!`. A wrong answer about
-    /// whether an address is in scope decides whether a reply is credited or
-    /// discarded.
+    /// Private, because the assertion below is the only thing separating a
+    /// binary search over sorted ranges from a binary search over unsorted
+    /// ones, and a release build compiles it out. Whether an address is in
+    /// scope decides whether a reply is credited or discarded, so that choice
+    /// is not one to leave to a caller who cannot see the set's state.
     ///
     /// # Panics
     ///
-    /// Panics in debug mode if the set has pending unmerged ranges.
+    /// In debug builds, if the set has unmerged ranges pending.
     fn contains_canonical(&self, ip: &IpAddr) -> bool {
         debug_assert!(
             !self.v4_dirty && !self.v6_dirty,
@@ -332,11 +326,11 @@ impl IpSet {
     }
 
     /// The fast path [`len`](Self::len) takes on a merged set. Private for the
-    /// reason [`contains_canonical`](Self::contains_canonical) is.
+    /// same reason [`contains_canonical`](Self::contains_canonical) is.
     ///
     /// # Panics
     ///
-    /// Panics in debug mode if the set has pending unmerged ranges.
+    /// In debug builds, if the set has unmerged ranges pending.
     fn len_canonical(&self) -> u128 {
         debug_assert!(
             !self.v4_dirty && !self.v6_dirty,
@@ -608,7 +602,7 @@ mod tests {
     /// sorted only once `canonicalize` has run, and against an unmerged one it
     /// silently misses. A wrong answer about whether an address is in scope
     /// decides whether a reply is credited or discarded, so a test that never
-    /// trips the assertion is testing nothing — it would pass with the
+    /// trips the assertion is testing nothing, and would pass with the
     /// `debug_assert!` deleted.
     ///
     /// Debug-only because that is where the assertion exists; a release build
@@ -646,7 +640,7 @@ mod tests {
     /// Two link-local ranges spanning the same numbers on two interfaces are
     /// two different sets of machines. Merged on adjacency alone they would
     /// produce one range that means one thing at one end and something else at
-    /// the other — and every interface holds an `fe80::/64`, so the mistake is
+    /// the other. Every interface holds an `fe80::/64`, so the mistake is
     /// available on any host with two of them.
     #[test]
     fn ranges_on_different_interfaces_never_merge_however_adjacent() {

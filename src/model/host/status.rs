@@ -20,8 +20,7 @@ use std::sync::Arc;
 
 /// The high-level reachability state of a network host.
 ///
-/// Variants are ordered by **semantic severity** and **reachability certainty**:
-/// `Unknown < Down < Filtered < Up`.
+/// Ordered by how strong the evidence is: `Unknown < Down < Filtered < Up`.
 ///
 /// [`Host::merge`](crate::model::host::Host::merge) and
 /// [`Host::record_evidence`](crate::model::host::Host::record_evidence) both
@@ -43,8 +42,8 @@ pub enum HostStatus {
     /// reachable in the first place, and the engine declines to guess between
     /// them.
     Unknown,
-    /// An intermediary reported this address unreachable — an ICMP host
-    /// unreachable, no route, or address unreachable, quoting a probe this scan
+    /// An intermediary reported this address unreachable, by an ICMP host
+    /// unreachable, no route, or address unreachable quoting a probe this scan
     /// sent. Never inferred from silence.
     Down,
     /// An intermediary explicitly rejected traffic to this address by policy, so
@@ -68,10 +67,10 @@ pub enum HostStatus {
 pub enum StatusProtocol {
     /// Discovered via Address Resolution Protocol (Layer 2). Usually confirms local adjacency.
     Arp,
-    /// Discovered via IPv6 Neighbor Discovery (Layer 2) — a neighbor
+    /// Discovered via IPv6 Neighbor Discovery at layer 2: a neighbor
     /// advertisement, solicited or in answer to an all-nodes solicitation. The
-    /// IPv6 counterpart of [`StatusProtocol::Arp`], and equally conclusive:
-    /// the reply came off the local segment.
+    /// IPv6 counterpart of [`StatusProtocol::Arp`], and equally conclusive,
+    /// since the reply came off the local segment.
     Ndp,
     /// Discovered via ICMP Echo Request/Reply.
     IcmpEcho,
@@ -151,7 +150,7 @@ impl StatusReason {
     /// Attributes this evidence to the address that actually sent it.
     ///
     /// Only call this when `source` is not the host the reason is recorded
-    /// against — an unqualified reason already means the host answered for
+    /// against, since an unqualified reason already means the host answered for
     /// itself.
     pub fn from_source(mut self, source: IpAddr) -> Self {
         self.source = Some(source);

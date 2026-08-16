@@ -16,7 +16,7 @@
 //!
 //! Identification is progressive. A port is named from its number the moment it
 //! is found open, then refined as a banner is read and analyzers run, so the
-//! same `Service` is merged into repeatedly and only ever improves — see
+//! same `Service` is merged into repeatedly and only ever improves. See
 //! [`Service::merge`] for the rule.
 
 /// A service identified on a port, and how sure the identification is.

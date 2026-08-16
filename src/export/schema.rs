@@ -158,9 +158,6 @@ pub fn protocol_name(protocol: Protocol) -> &'static str {
 /// The wire name of an inferred network role.
 pub fn network_role_name(role: NetworkRole) -> &'static str {
     match role {
-        NetworkRole::Gateway => "gateway",
-        NetworkRole::DHCP => "dhcp",
-        NetworkRole::DNS => "dns",
         NetworkRole::Tarpit => "tarpit",
     }
 }
@@ -1441,7 +1438,7 @@ mod tests {
         assert_eq!(host_status_name(HostStatus::Filtered), "filtered");
         assert_eq!(port_state_name(PortState::OpenFiltered), "open_filtered");
         assert_eq!(protocol_name(Protocol::Udp), "udp");
-        assert_eq!(network_role_name(NetworkRole::DHCP), "dhcp");
+        assert_eq!(network_role_name(NetworkRole::Tarpit), "tarpit");
         assert_eq!(
             stop_reason_name(StopReason::AttemptsSpent),
             "attempts_spent"

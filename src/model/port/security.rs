@@ -20,9 +20,9 @@
 //! later.
 //!
 //! Validity is reported against a time the caller supplies rather than assumed
-//! from the clock — see [`Security::is_cert_valid_at`]. A scan is read long
-//! after it ran, and "expired" answered from *now* would relabel a report every
-//! time it was opened.
+//! from the clock; see [`Security::is_cert_valid_at`]. A scan is read long
+//! after it ran, and "expired" answered from the current time would relabel a
+//! report every time it was opened.
 
 use std::time::{Duration, SystemTime};
 

@@ -94,10 +94,10 @@ mod tests {
     /// change to how a MAC renders stops every vendor resolving and nothing
     /// else goes wrong to say so.
     ///
-    /// That a registered OUI resolves to *some* vendor catches it. Asserting
-    /// *which* would pin a third-party database's spelling of a company name,
-    /// and break on a data update that this crate is not party to — a test of
-    /// the dependency rather than of the two lines here.
+    /// That a registered OUI resolves to some vendor catches it. Asserting
+    /// which one would pin a third-party database's spelling of a company name
+    /// and break on a data update this crate is not party to, which tests the
+    /// dependency rather than the two lines here.
     #[test]
     fn a_registered_oui_resolves_to_a_vendor() {
         let vmware = MacAddr::new(0x00, 0x0C, 0x29, 0xAB, 0xCD, 0xEF);

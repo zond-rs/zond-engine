@@ -33,9 +33,6 @@ pub fn resolve_zone(name: &str) -> Option<u32> {
 pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
     match keyword {
         Keyword::Lan => resolve_lan(ip_set),
-        Keyword::Vpn => Err(IpParseError::LanError(
-            "VPN resolution not implemented".into(),
-        )),
     }
 }
 

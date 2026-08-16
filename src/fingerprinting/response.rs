@@ -22,16 +22,34 @@
 //!
 //! [`TlsCertAnalyzer`]: super::tls_cert::TlsCertAnalyzer
 
-/// What a TLS handshake yielded: the certificate chain the peer presented, as
-/// raw DER, leaf first.
+/// What a TLS handshake yielded: what was negotiated, and the certificate chain
+/// the peer presented as raw DER, leaf first.
 ///
 /// Empty `certificates` still means "this port completed a TLS handshake" — a
 /// signal in itself — but the analyzers here need a leaf cert to say anything.
+///
+/// The negotiated parameters are captured here rather than re-derived later
+/// because they exist only on the live connection: once the tunnel is dropped,
+/// what version and cipher were agreed is unrecoverable without handshaking
+/// again.
 #[derive(Debug, Clone, Default)]
 pub struct TlsInfo {
     /// The presented chain in DER form, leaf first. Owned so nothing borrows the
     /// live connection.
     pub certificates: Vec<Vec<u8>>,
+    /// The protocol version agreed, as it is written in the RFCs — `"TLSv1.3"`.
+    ///
+    /// `None` for a version this engine does not offer, which cannot happen
+    /// through its own connector and can if a caller supplies its own.
+    pub version: Option<&'static str>,
+    /// The cipher suite the server selected, under its IANA name.
+    pub cipher_suite: Option<&'static str>,
+    /// The protocol agreed over ALPN, if the server chose one.
+    ///
+    /// A single value rather than a list: ALPN negotiation *selects*, so this is
+    /// what the server picked and not what it would have accepted. Nothing short
+    /// of one handshake per candidate reveals the latter.
+    pub alpn: Option<String>,
 }
 
 impl TlsInfo {

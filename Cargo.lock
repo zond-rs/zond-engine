@@ -2635,6 +2635,7 @@ dependencies = [
  "rayon",
  "regex",
  "regex-syntax",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

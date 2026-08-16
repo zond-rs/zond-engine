@@ -93,21 +93,16 @@
 //! Ordering is first-seen and therefore deterministic: two runs over the same
 //! input produce the same scan.
 //!
-//! **The saving is in the units, not in the ranges.** Merging a contiguous file
-//! down to a single range is the visible effect and it is not where the time
-//! goes: a file of deliberately non-adjacent addresses keeps all sixty-five
-//! thousand ranges and is exactly as much faster. What grouping avoids is the
-//! per-unit cost of walking a map - each [`TargetSet`] canonicalizes itself and
-//! allocates its own port vector when iterated, so sixty-five thousand units
-//! means sixty-five thousand of each.
+//! The saving is in the number of units, not in how well the addresses merge.
+//! Each [`TargetSet`] canonicalizes itself and allocates its own port vector
+//! when iterated, so sixty-five thousand units means sixty-five thousand of
+//! each. A file of deliberately non-adjacent addresses keeps every one of its
+//! ranges and still benefits by the same amount.
 //!
-//! Measured on a 65 536-line file: building grouped costs about 1.4x what
-//! building ungrouped does, and walking the result costs about a twentieth,
-//! for roughly 1.6x end to end whether or not anything merged. The one shape
-//! that loses is a file naming a *distinct* port specification on every line -
-//! as many groups as lines, nothing shared, and the grouping machinery paid for
-//! nothing. See `benches/import_bench.rs`, which carries its predictions and
-//! the two of them the numbers contradicted.
+//! On a 65 536-line file this is roughly 1.6x faster end to end, whether or not
+//! anything merged. The one shape that gains nothing is a file naming a
+//! different port specification on every line, which produces as many groups as
+//! lines.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -638,9 +633,9 @@ mod tests {
         PortSet::try_from(spec).expect("test port specification parses")
     }
 
-    /// The split that the previous implementation got wrong, in every shape it
-    /// occurs in. A first-colon split reads `fe80::1` as host `fe80` on port
-    /// `:1`, which fails to parse and drops the target entirely.
+    /// Splitting at the first colon would read `fe80::1` as host `fe80` on
+    /// port `:1`, which fails to parse and drops the target entirely. This
+    /// covers every shape that mistake can take.
     #[test]
     fn an_ipv6_address_is_never_split_at_its_own_colons() {
         for token in [

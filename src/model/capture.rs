@@ -13,7 +13,8 @@
 //! frames, and the report carries the counts to whoever reads the scan. Putting
 //! it here lets the record describe its own shape instead of borrowing it from
 //! the transport it happened to come from, and keeps a backend with no kernel
-//! buffer at all — a synthetic receive stream in a test — able to say so.
+//! buffer at all, such as a synthetic receive stream in a test, able to say
+//! so.
 
 /// What the kernel did with the frames its BPF filter admitted, cumulative over
 /// a capture's lifetime.

@@ -9,14 +9,14 @@
 //! # Why a port is in the state it is
 //!
 //! [`PortState`](super::PortState) is the verdict; [`Discovery`] is the
-//! evidence behind it — which packet decided it, when, how long it took to
+//! evidence behind it: which packet decided it, when, how long it took to
 //! arrive, and which of this host's interfaces it arrived on.
 //!
 //! Kept beside the verdict rather than folded into it because the two are read
 //! by different people for different reasons. A report renders the verdict; an
 //! operator who does not believe the verdict reads this. A TTL of 64 against a
 //! host three hops away, or a `Closed` sourced from an address that is not the
-//! target's, is how a wrong answer is caught — and none of it is recoverable
+//! target's, is how a wrong answer is caught, and none of it is recoverable
 //! once the state has been recorded on its own.
 //!
 //! Everything except the reason is optional, because an unprivileged connect

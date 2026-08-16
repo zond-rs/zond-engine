@@ -278,6 +278,7 @@ fn tls_cert_identifies_self_signed_appliance() {
         banners: Vec::new(),
         tls: Some(TlsInfo {
             certificates: vec![SELF_SIGNED_CERT.to_vec()],
+            ..TlsInfo::default()
         }),
     };
 

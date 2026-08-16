@@ -25,8 +25,8 @@ use std::{
 /// not: implementations deliberately spread their replies to keep every
 /// neighbour from answering at once, and a device asleep on wifi answers when it
 /// next wakes. Observed on a wireless segment, that difference is an order of
-/// magnitude — and it shows up as several neighbours reporting the same figure
-/// to the millisecond, which is the giveaway that it describes the probe rather
+/// magnitude. It shows up as several neighbours reporting the same figure to
+/// the millisecond, which is the giveaway that it describes the probe rather
 /// than any of them.
 ///
 /// So the two are not comparable and must not be pooled. Both are kept, and the
@@ -106,16 +106,16 @@ impl HostTelemetry {
     /// With nothing but segment-wide samples the set collapses to its
     /// **smallest**, because those are not round trips to average. Each one is
     /// the path plus however long the responder held its reply back, and that
-    /// hold-off is deliberate and unbounded — so the smallest is the tightest
-    /// bound available on the path, and every other summary of them describes
-    /// the responder's manners instead.
+    /// hold-off is deliberate and unbounded. The smallest is therefore the
+    /// tightest bound available on the path, and every other summary of them
+    /// describes the responder's manners instead.
     ///
     /// Not a refinement. A neighbour that answers one echo request promptly and
     /// a later one after a wake contributes two samples an order of magnitude
     /// apart, and their median is a figure neither reply supports. Every host
     /// answering both requests lands on the same midpoint, since they share the
-    /// pair it is derived from — so a whole segment reports a latency nothing
-    /// on it produced.
+    /// pair it is derived from, so a whole segment reports a latency nothing on
+    /// it produced.
     fn ranked(&self) -> Vec<Duration> {
         let direct: Vec<Duration> = self
             .rtt_history
@@ -154,8 +154,12 @@ impl HostTelemetry {
         });
     }
 
-    /// Adds a timed RTT measurement to the history, enforcing the sliding window cap.
-    pub fn add_rtt_at(&mut self, time: Instant, rtt: Duration) {
+    /// [`add_rtt`](Self::add_rtt) at a caller-chosen instant.
+    ///
+    /// Private: the only reason to record a sample under a time other than now
+    /// is to reconstruct a history, and a window whose ordering callers can
+    /// choose is one [`merge`](Self::merge) cannot keep in time order.
+    fn add_rtt_at(&mut self, time: Instant, rtt: Duration) {
         self.push(RttSample {
             at: time,
             rtt,
@@ -173,11 +177,6 @@ impl HostTelemetry {
         while self.rtt_history.len() > self.max_samples {
             self.rtt_history.pop_front();
         }
-    }
-
-    /// Returns the Last-Added Round-Trip Time (LARTT).
-    pub fn lartt(&self) -> Option<Duration> {
-        self.ranked().last().copied()
     }
 
     /// Returns the minimum (fastest) RTT recorded in the current window.
@@ -254,8 +253,8 @@ impl HostTelemetry {
     ///
     /// Re-sorted rather than concatenated because the two records were filled
     /// by probes running at the same time, so neither one's samples are wholly
-    /// older than the other's — and [`jitter`](Self::jitter) reads consecutive
-    /// pairs, which means an out-of-order history reports a difference between
+    /// older than the other's. [`jitter`](Self::jitter) reads consecutive
+    /// pairs, so an out-of-order history would report a difference between
     /// samples that were never consecutive.
     pub fn merge(&mut self, mut other: HostTelemetry) {
         if other.max_samples > self.max_samples {
@@ -326,7 +325,6 @@ mod tests {
         let t = HostTelemetry::new(10);
         assert_eq!(t.average_rtt(), None);
         assert_eq!(t.jitter(), None);
-        assert_eq!(t.lartt(), None);
     }
 
     /// A directed probe's answer describes the path; a segment-wide probe's
@@ -345,7 +343,6 @@ mod tests {
         assert_eq!(t.median_rtt(), Some(Duration::from_millis(6)));
         assert_eq!(t.min_rtt(), Some(Duration::from_millis(5)));
         assert_eq!(t.max_rtt(), Some(Duration::from_millis(7)));
-        assert_eq!(t.lartt(), Some(Duration::from_millis(5)));
         assert_eq!(
             t.history().len(),
             4,
@@ -390,7 +387,7 @@ mod tests {
     ///
     /// A neighbour answering one echo request promptly and a later one after a
     /// wake gives two samples an order of magnitude apart, whose median is a
-    /// figure neither reply supports — and every host answering both requests
+    /// figure neither reply supports, and every host answering both requests
     /// lands on the same midpoint, so a whole segment reports a latency nothing
     /// on it produced.
     ///

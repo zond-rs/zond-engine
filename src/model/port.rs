@@ -9,34 +9,34 @@
 //! # Ports, and what was found behind them
 //!
 //! A [`Port`] is one transport endpoint on one host, and everything a scan
-//! learned about it. That is four separate questions, kept in four separate
-//! types so that a scan which answered one of them does not have to pretend to
-//! have answered the rest:
+//! learned about it. That covers four separate questions, kept in four separate
+//! types so that a scan answering one of them does not have to pretend it
+//! answered the rest:
 //!
-//! - **Is anything there?** — [`PortState`], from [`discovery`]'s account of
-//!   the packet that decided it.
-//! - **What is it?** — [`Service`], progressively refined as better evidence
-//!   arrives.
-//! - **How is it protected?** — [`Security`], for an endpoint that negotiated
-//!   TLS.
-//! - **What did a script make of it?** — [`ScriptOutput`].
+//! | Question | Type |
+//! |---|---|
+//! | Is anything there? | [`PortState`], with [`discovery`]'s account of the packet that decided it |
+//! | What is it? | [`Service`], refined as better evidence arrives |
+//! | How is it protected? | [`Security`], for an endpoint that negotiated TLS |
+//! | What did a script make of it? | [`ScriptOutput`] |
 //!
-//! Each is an `Option`, and the absence of one means the question was not
-//! answered rather than answered negatively. A port scan that has not run
-//! service detection leaves [`Port::service`] empty; it does not record a
-//! service named "unknown", because a later pass has to be able to tell the
-//! difference between what it has yet to look at and what it looked at and
-//! could not identify.
+//! Each is an `Option`, and an absent one means the question was not answered
+//! rather than answered negatively. A port scan that has not run service
+//! detection leaves [`Port::service`] empty rather than recording a service
+//! named "unknown", because a later pass has to tell what it has yet to look at
+//! apart from what it looked at and could not identify.
 //!
 //! ## Merging is how a port is built
 //!
 //! No single probe fills a `Port` in. Techniques run in sequence, a connect
 //! fallback may repeat what a raw scan already asked, and service detection
-//! arrives afterwards — so every one of these types carries a `merge`, and the
-//! rules they merge by are the substance of this module. They agree on one
-//! thing: **a tie keeps what is already recorded.** Two probes that learned the
-//! same amount are equally good sources, and preferring the later one makes a
-//! report depend on which probe happened to finish last.
+//! arrives afterwards. Every one of these types therefore carries a `merge`, and
+//! the rules they merge by are the substance of this module.
+//!
+//! They agree on one thing: a tie keeps what is already recorded. Two probes
+//! that learned the same amount are equally good sources, and preferring the
+//! later one would make a report depend on which probe happened to finish
+//! last.
 
 use std::collections::HashMap;
 
@@ -55,39 +55,38 @@ pub use set::{PortSet, PortSetParseError};
 /// Ordered so that a set of protocols has one canonical rendering, which is what
 /// keeps two scans of the same targets producing byte-identical reports.
 ///
-/// **A variant exists here only once a scanner speaks it.** SCTP was listed
-/// before anything could probe it, and the cost was not the unused name: every
-/// `match` over this enum had to invent an answer for a case that never
-/// occurred, and [`PortSet`] invented the wrong one — it collected SCTP ports
-/// into a vector it never stored, so they vanished with no error. A protocol
-/// that cannot be probed is better absent than present and mishandled, and
-/// adding one back is a deliberate act that the compiler will walk through every
-/// site that has to decide something about it.
+/// A variant exists here only once a scanner can speak it. A protocol nobody
+/// can probe still forces every `match` over this enum to invent an answer for
+/// a case that never arises, and those invented answers fail quietly. Adding one
+/// is a deliberate act, and the compiler will walk you through every site that
+/// has to decide something about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
     /// TCP. Probed by every technique in
     /// [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique), and the
     /// only protocol the unprivileged connect fallback can speak.
     Tcp,
-    /// UDP. Answered by a service that recognises the payload sent to it, or by
-    /// an ICMP port unreachable, or — most often — by nothing at all, which is
-    /// why its silence is [`PortState::OpenFiltered`] rather than open.
+    /// UDP. Answered by a service that recognises the payload sent to it, by an
+    /// ICMP port unreachable, or most often by nothing at all. That last case is
+    /// why silence here means [`PortState::OpenFiltered`] rather than open.
     Udp,
 }
 
 /// What a scan established about a port.
 ///
-/// **Ordered from least definitive to most**, so that [`Port::merge`] promotes
-/// by an ordinary comparison and two probes disagreeing about a port resolve to
-/// whichever learned more. The ordering is a ranking of *evidence*, not of how
-/// alarming a state is: `Open` outranks `Closed` because a SYN+ACK settles the
-/// question and a RST from a filtered path does not, and the ambiguous pair sit
-/// below the two they are ambiguous between.
+/// Ordered from least definitive to most, so that [`Port::merge`] promotes by an
+/// ordinary comparison and two probes that disagree resolve to whichever learned
+/// more.
 ///
-/// Which reply produces which state depends on the probe that drew it — a RST
-/// is a closed port to a SYN and an unfiltered path to an ACK. That mapping
-/// lives in [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique),
-/// not here.
+/// The ordering ranks evidence, not how alarming a state is. `Open` outranks
+/// `Closed` because a SYN+ACK settles the question where a RST from a filtered
+/// path does not, and the two ambiguous states sit below the states they are
+/// ambiguous between.
+///
+/// Which reply produces which state depends on the probe that drew it, since a
+/// RST means a closed port to a SYN and an unfiltered path to an ACK. That
+/// mapping lives in
+/// [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortState {
@@ -122,11 +121,11 @@ pub enum PortState {
 pub enum ScriptOutput {
     /// Free text: a banner, a title, a certificate subject.
     String(String),
-    /// A whole number — a key size, a count, a version component.
+    /// A whole number, such as a key size, a count or a version component.
     Integer(i64),
-    /// A fractional measurement. **Not every `f64` compares equal to itself**,
-    /// so a `Port` carrying a NaN here is never equal to itself either; this is
-    /// why [`Port`] derives `PartialEq` and not `Eq`.
+    /// A fractional measurement. Not every `f64` compares equal to itself, so a
+    /// `Port` carrying a NaN here is never equal to itself either. That is why
+    /// [`Port`] derives `PartialEq` and not `Eq`.
     Float(f64),
     /// A yes-or-no verdict.
     Boolean(bool),
