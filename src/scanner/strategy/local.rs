@@ -283,6 +283,15 @@ pub struct LocalScanner {
     /// to interrogate, so what the kernel dropped is not knowable from inside
     /// this scanner rather than being zero.
     audit: ProbeAudit,
+    /// Why the first frame that could not be put on the wire failed, if any did.
+    ///
+    /// The count alone cannot separate a link that refused every write from a
+    /// scanner that could not build a packet, and those call for opposite
+    /// responses. Kept as the first cause rather than all of them: a segment
+    /// that refuses one write refuses the next few hundred for the same reason,
+    /// and a report carrying that reason three hundred times says nothing the
+    /// first one did not.
+    send_failure: Option<String>,
     /// What this sweep has asked the IPv6 half of the segment, and what it is
     /// still waiting to hear back.
     ///
@@ -381,7 +390,7 @@ impl HostScanner for LocalScanner {
                         match packet_iter.next() {
                             Some((packet, ip)) => {
                                 self.record_probe(ip, Instant::now());
-                                self.eth_handle.tx.send_to(&packet, None);
+                                self.emit(&packet, "first attempt");
                             },
                             None => {
                                 sending_finished = true;
@@ -409,14 +418,22 @@ impl HostScanner for LocalScanner {
 
         // A sweep whose frames never left is not a sweep that found nothing, and
         // the difference is invisible in every number a caller reads. Reported
-        // once with a count rather than once per probe, as the routed paths do.
+        // once with a count and the first cause rather than once per probe, as
+        // the routed paths do.
+        //
+        // This covers every frame the sweep emits, which is what makes it worth
+        // having: while the first attempts bypassed the audit, the one path that
+        // sends a frame per target could fail entirely and this stayed silent.
         if self.audit.sends_failed > 0 {
             self.ctx.record_failure(
                 ScannerKind::Local,
                 format!(
-                    "{} of {} probes could not be built for {}, so those addresses \
-                     are reported absent without having been asked",
-                    self.audit.sends_failed, self.audit.sends_attempted, self.identity.zone,
+                    "{} of {} frames never reached {}, so those addresses are \
+                     reported absent without having been asked: {}",
+                    self.audit.sends_failed,
+                    self.audit.sends_attempted,
+                    self.identity.zone,
+                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
                 ),
             );
         }
@@ -528,7 +545,39 @@ impl LocalScanner {
             responded: HashSet::new(),
             ipv6: Ipv6Discovery::new(target_count),
             audit: ProbeAudit::new(),
+            send_failure: None,
         })
+    }
+
+    /// Puts one frame on the segment and records what actually happened to it.
+    ///
+    /// **Every send in this scanner goes through here, and that is the point.**
+    /// The audit's counters are only worth reading if they cover every frame,
+    /// and a second send path is how they stop doing that: the sweep's own first
+    /// attempts went out beside this one for a while, uncounted, so
+    /// `sends_attempted` described the retries and nothing else while reading
+    /// like a total.
+    ///
+    /// [`DataLinkSender::send_to`] returns `Option<io::Result<()>>` and both
+    /// halves mean the frame never left — `None` when the channel had no buffer
+    /// to write into, `Some(Err(..))` when the write itself failed. Reading only
+    /// whether the *packet built* leaves `sends_failed` making a claim about
+    /// this code where a caller reads it as a claim about the link.
+    fn emit(&mut self, packet: &[u8], what: &str) -> bool {
+        match self.eth_handle.tx.send_to(packet, None) {
+            Some(Ok(())) => {
+                self.audit.record_send(true);
+                true
+            }
+            outcome => {
+                self.audit.record_send(false);
+                self.send_failure.get_or_insert_with(|| match outcome {
+                    Some(Err(e)) => format!("{what}: {e}"),
+                    _ => format!("{what}: the link-layer channel accepted no frame"),
+                });
+                false
+            }
+        }
     }
 
     /// Notes that a probe for `ip` has just gone out.
@@ -588,8 +637,7 @@ impl LocalScanner {
         match protocol::ndp::create_neighbor_solicitation(&self.identity.mac, &source_v6, target_v6)
         {
             Ok(packet) => {
-                self.audit.record_send(true);
-                self.eth_handle.tx.send_to(&packet, None);
+                self.emit(&packet, "confirming solicitation");
                 self.ipv6.record_confirmation_sent(target, now);
                 info!(
                     verbosity = 2,
@@ -598,6 +646,9 @@ impl LocalScanner {
             }
             Err(e) => {
                 self.audit.record_send(false);
+                self.send_failure.get_or_insert_with(|| {
+                    format!("confirming solicitation could not be built: {e}")
+                });
                 error!(
                     verbosity = 1,
                     "Failed to build a confirming solicitation for {target}: {e}"
@@ -623,8 +674,7 @@ impl LocalScanner {
             self.ipv6.solicitation().next_sequence(),
         ) {
             Ok(packet) => {
-                self.audit.record_send(true);
-                self.eth_handle.tx.send_to(&packet, None);
+                self.emit(&packet, "all-nodes solicitation");
                 self.ipv6.record_solicitation_sent(now);
             }
             Err(e) => {
@@ -674,8 +724,7 @@ impl LocalScanner {
 
         match packet {
             Ok(packet) => {
-                self.audit.record_send(true);
-                self.eth_handle.tx.send_to(&packet, None);
+                self.emit(&packet, "probe");
                 if target.is_ipv6() {
                     self.ipv6.record_asked(target, now);
                 } else {

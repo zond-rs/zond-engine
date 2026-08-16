@@ -43,6 +43,16 @@ fn v4(host: u8) -> IpAddr {
 /// Runs one sweep of `lan` over `targets` and returns the session to assert
 /// against.
 async fn sweep(lan: &FakeLan, targets: &[IpAddr], scope: Scope) -> ScanSession {
+    sweep_audited(lan, targets, scope).await.0
+}
+
+/// [`sweep`], keeping the context so a test can read what the scanner filed
+/// about its own run.
+async fn sweep_audited(
+    lan: &FakeLan,
+    targets: &[IpAddr],
+    scope: Scope,
+) -> (ScanSession, zond_engine::scanner::session::ScanContext) {
     let mut ips = IpSet::new();
     for ip in targets {
         ips.insert(*ip);
@@ -50,16 +60,22 @@ async fn sweep(lan: &FakeLan, targets: &[IpAddr], scope: Scope) -> ScanSession {
     ips.canonicalize();
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner =
-        LocalScanner::with_handle(scanner_interface(), ips, ctx, None, scope, lan.handle())
-            .expect("scanner builds over the simulated segment");
+    let mut scanner = LocalScanner::with_handle(
+        scanner_interface(),
+        ips,
+        ctx.clone(),
+        None,
+        scope,
+        lan.handle(),
+    )
+    .expect("scanner builds over the simulated segment");
 
     scanner
         .discover_hosts()
         .await
         .expect("sweep runs to completion");
 
-    session
+    (session, ctx)
 }
 
 /// A host that answers ARP is discovered, and its MAC is recorded from the
@@ -813,5 +829,48 @@ async fn a_small_sweep_does_not_drop_ipv6_neighbours() {
     assert!(
         session.hosts().contains(&peer_v6),
         "the neighbour answered before the sweep ended and must not be lost"
+    );
+}
+
+/// The audit counts the sweep's own first attempts, not only its retries.
+///
+/// **The number this pins used to be wrong by a whole pass.** First attempts
+/// went out through a second send path that never touched the audit, so
+/// `sends_attempted` described the retries and confirmations while reading like
+/// a total — and `sends_failed` could not see a first attempt that failed at
+/// all, which is exactly the case the scanner reports a failure for.
+///
+/// Every target answers, which is what makes the assertion mean anything: a
+/// host that replies to its first ARP request retires its own probe, so no retry
+/// is ever scheduled, and a targeted sweep sends no all-nodes solicitation
+/// either. The only frames in the run are therefore the first attempts, and the
+/// count has nowhere else to come from. Asserted as a floor because the sweep
+/// may legitimately send its own gratuitous traffic; the failing shape is
+/// *fewer*, which is a send path the audit cannot see.
+#[tokio::test]
+async fn every_frame_the_sweep_sends_is_counted() {
+    let targets = [v4(1), v4(2), v4(3), v4(4)];
+    let lan = FakeLan::new()
+        .host(targets[0], LanHost::at(PEER_A))
+        .host(targets[1], LanHost::at(PEER_B))
+        .host(targets[2], LanHost::at(MacAddr(0x02, 0, 0, 0, 0, 0xCC)))
+        .host(targets[3], LanHost::at(MacAddr(0x02, 0, 0, 0, 0, 0xDD)));
+
+    let (_session, ctx) = sweep_audited(&lan, &targets, Scope::Targeted).await;
+
+    let stats = ctx.probe_stats_snapshot();
+    let filed = stats.first().expect("the sweep files its counters");
+
+    assert!(
+        filed.sends_attempted() >= targets.len() as u64,
+        "a sweep of {} addresses that all answered on the first ask counted only \
+         {} sends, so a send path is invisible to the audit",
+        targets.len(),
+        filed.sends_attempted()
+    );
+    assert_eq!(
+        filed.sends_failed(),
+        0,
+        "the simulated segment accepts every frame"
     );
 }
