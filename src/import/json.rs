@@ -576,7 +576,7 @@ mod tests {
 
         let v6 = imported.map.units[0].ips().v6();
         assert_eq!(v6.len(), 1);
-        assert_eq!(v6[0].zone, Some(7), "the zone was dropped on the way in");
+        assert_eq!(v6[0].zone(), Some(7), "the zone was dropped on the way in");
         // The zone belongs to the link-local address and must not be pasted
         // onto the IPv4 one, which would make it unparseable.
         assert_eq!(imported.map.units[0].ips().v4().len(), 1);

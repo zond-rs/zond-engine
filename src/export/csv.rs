@@ -202,10 +202,13 @@ impl HostColumns {
                 .map(|mac| redaction.mac(&mac))
                 .unwrap_or_default(),
             mac_vendor: host.vendor().unwrap_or_default().to_string(),
-            os: host.os().map(|os| os.name.to_string()).unwrap_or_default(),
+            os: host
+                .os()
+                .map(|os| os.name().to_string())
+                .unwrap_or_default(),
             os_accuracy: host
                 .os()
-                .map(|os| os.accuracy.to_string())
+                .map(|os| os.accuracy().to_string())
                 .unwrap_or_default(),
             roles: join(roles.into_iter().map(str::to_string)),
             rtt_median_us: host

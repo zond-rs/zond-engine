@@ -63,9 +63,10 @@ pub fn hostname(name: &str) -> String {
 /// assert_eq!(redact::mac_addr(&mac), "2c:cf:67:XX:XX:XX");
 /// ```
 pub fn mac_addr(mac: &MacAddr) -> String {
+    let octets = mac.octets();
     format!(
         "{:02x}:{:02x}:{:02x}:XX:XX:XX",
-        mac.0[0], mac.0[1], mac.0[2]
+        octets[0], octets[1], octets[2]
     )
 }
 

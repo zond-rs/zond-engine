@@ -195,6 +195,7 @@ impl fmt::Display for ScopedIp {
 }
 
 /// Why a scoped address could not be read from a string.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ScopedIpError {
     #[error("not an IP address: {0}")]

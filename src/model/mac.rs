@@ -14,22 +14,96 @@
 
 use mac_oui::Oui;
 use std::fmt;
+use std::str::FromStr;
 use std::sync::OnceLock;
 
-/// A native, framework-agnostic MAC address representation.
+/// A 48-bit hardware address.
+///
+/// Ordered and hashable, so a host's addresses can be kept in a sorted map and
+/// rendered in the same order twice.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MacAddr(pub [u8; 6]);
+pub struct MacAddr([u8; 6]);
 
 impl MacAddr {
-    /// Creates a new `MacAddr` from 6 octets.
+    /// Creates a `MacAddr` from six octets, most significant first.
     pub const fn new(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) -> Self {
         Self([a, b, c, d, e, f])
+    }
+
+    /// The six octets, most significant first.
+    pub const fn octets(self) -> [u8; 6] {
+        self.0
+    }
+
+    /// Whether this address was assigned by whoever is using it rather than
+    /// allocated to a manufacturer, which the second-least-significant bit of
+    /// the first octet marks.
+    ///
+    /// There is no OUI to look up for one of these, so
+    /// [`vendor`] returns `None`. A device randomizing its address produces
+    /// them, which is worth knowing when the same host answers under a series
+    /// of addresses that share nothing.
+    pub const fn is_locally_administered(self) -> bool {
+        self.0[0] & 0b0000_0010 != 0
+    }
+
+    /// Whether this address is a group address rather than one interface's,
+    /// which the least significant bit of the first octet marks.
+    pub const fn is_multicast(self) -> bool {
+        self.0[0] & 0b0000_0001 != 0
     }
 }
 
 impl From<[u8; 6]> for MacAddr {
     fn from(octets: [u8; 6]) -> Self {
         Self(octets)
+    }
+}
+
+impl From<MacAddr> for [u8; 6] {
+    fn from(mac: MacAddr) -> Self {
+        mac.0
+    }
+}
+
+/// Why a string could not be read as a hardware address.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("'{input}' is not a MAC address: expected six hex octets separated by ':' or '-'")]
+pub struct MacAddrParseError {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl FromStr for MacAddr {
+    type Err = MacAddrParseError;
+
+    /// Reads `00:1a:2b:3c:4d:5e`, in either case, and the same address written
+    /// with `-` between the octets.
+    ///
+    /// Both separators because both are in circulation: the colon form is what
+    /// Unix tooling prints and what [`fmt::Display`] writes, and the hyphen form
+    /// is what Windows and most printed labels use.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let fail = || MacAddrParseError {
+            input: s.to_string(),
+        };
+
+        let mut octets = [0u8; 6];
+        let mut parts = s.trim().split([':', '-']);
+
+        for octet in &mut octets {
+            let part = parts.next().ok_or_else(fail)?;
+            if part.len() != 2 {
+                return Err(fail());
+            }
+            *octet = u8::from_str_radix(part, 16).map_err(|_| fail())?;
+        }
+
+        if parts.next().is_some() {
+            return Err(fail());
+        }
+
+        Ok(Self(octets))
     }
 }
 
@@ -87,7 +161,50 @@ mod tests {
     fn test_mac_from_array() {
         let arr = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
         let mac = MacAddr::from(arr);
-        assert_eq!(mac.0, arr);
+        assert_eq!(mac.octets(), arr);
+    }
+
+    /// The form `Display` writes has to be the form `FromStr` reads, or an
+    /// address cannot survive a trip through a report and back.
+    #[test]
+    fn an_address_round_trips_through_its_own_rendering() {
+        let mac = MacAddr::new(0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E);
+        assert_eq!(mac.to_string().parse(), Ok(mac));
+    }
+
+    /// The hyphenated form is what Windows and most printed labels use, and
+    /// case is not part of an address.
+    #[test]
+    fn both_separators_and_either_case_are_accepted() {
+        let mac = MacAddr::new(0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E);
+        assert_eq!("00-1A-2B-3C-4D-5E".parse(), Ok(mac));
+        assert_eq!("00:1a:2b:3c:4d:5e".parse(), Ok(mac));
+    }
+
+    #[test]
+    fn malformed_addresses_are_refused() {
+        for input in [
+            "",
+            "00:1a:2b:3c:4d",
+            "00:1a:2b:3c:4d:5e:6f",
+            "zz:1a:2b:3c:4d:5e",
+            "001a2b3c4d5e",
+        ] {
+            assert!(
+                input.parse::<MacAddr>().is_err(),
+                "'{input}' parsed as an address"
+            );
+        }
+    }
+
+    /// The bit that says an address was assigned locally rather than allocated,
+    /// which is why no vendor resolves for one.
+    #[test]
+    fn the_locally_administered_and_multicast_bits_are_read() {
+        assert!(MacAddr::new(0x02, 0, 0, 0, 0, 0).is_locally_administered());
+        assert!(!MacAddr::new(0x00, 0x0C, 0x29, 0, 0, 0).is_locally_administered());
+        assert!(MacAddr::new(0x01, 0, 0x5e, 0, 0, 0).is_multicast());
+        assert!(!MacAddr::new(0x00, 0x0C, 0x29, 0, 0, 0).is_multicast());
     }
 
     /// The database is queried with the address's [`fmt::Display`] form, so a

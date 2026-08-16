@@ -60,6 +60,7 @@ pub use set::{PortSet, PortSetParseError};
 /// a case that never arises, and those invented answers fail quietly. Adding one
 /// is a deliberate act, and the compiler will walk you through every site that
 /// has to decide something about it.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
     /// TCP. Probed by every technique in
@@ -117,6 +118,7 @@ pub enum PortState {
 /// verdict about a configuration. Rendered as a string at the point it was
 /// gathered, each of those becomes something a report has to re-parse to do
 /// anything with, and every exporter has to invent the same escaping.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScriptOutput {
     /// Free text: a banner, a title, a certificate subject.

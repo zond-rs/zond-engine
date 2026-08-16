@@ -122,16 +122,16 @@ pub(crate) fn map_ips_to_interfaces_with(
     // A range wholly inside one interface's subnet is kept intact; anything
     // else is expanded to singles for per-target route resolution.
     for range in ip_set.v4() {
-        let start = IpAddr::V4(range.start_addr);
-        let end = IpAddr::V4(range.end_addr);
+        let start = IpAddr::V4(range.start_addr());
+        let end = IpAddr::V4(range.end_addr());
         match owning_interface(&interfaces, start, end) {
             Some(idx) => local.entry(idx).or_default().insert_range(V4(*range)),
             None => singles_to_route.extend(range.to_iter()),
         }
     }
     for range in ip_set.v6() {
-        let start = IpAddr::V6(range.start_addr);
-        let end = IpAddr::V6(range.end_addr);
+        let start = IpAddr::V6(range.start_addr());
+        let end = IpAddr::V6(range.end_addr());
 
         // Checked before any interface is consulted, because consulting them is
         // exactly the mistake: they all match.
@@ -142,7 +142,7 @@ pub(crate) fn map_ips_to_interfaces_with(
         // A named interface answers the question outright. The scope id is the
         // user's own statement about which segment they meant, and it outranks
         // any prefix match.
-        if let Some(zone) = range.zone {
+        if let Some(zone) = range.zone() {
             match interfaces.iter().position(|iface| iface.index == zone) {
                 Some(idx) => local.entry(idx).or_default().insert_range(V6(*range)),
                 None => ambiguous.push(*range),

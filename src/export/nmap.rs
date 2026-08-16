@@ -268,8 +268,8 @@ fn write_host(
         writeln!(
             out,
             r#"<osmatch name="{}" accuracy="{}" line="0"/>"#,
-            Attr(&os.name),
-            os.accuracy,
+            Attr(os.name()),
+            os.accuracy(),
         )?;
         writeln!(out, "</os>")?;
     }

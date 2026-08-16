@@ -18,6 +18,7 @@ use std::{net::IpAddr, sync::Arc};
 use thiserror::Error;
 
 /// Errors that can occur during target composition and calculation.
+#[non_exhaustive]
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum TargetError {
     /// The number of targets is too large to represent in a `u128`.

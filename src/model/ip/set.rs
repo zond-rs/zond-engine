@@ -37,6 +37,7 @@ use std::{
 };
 
 /// Errors that can occur when processing an [`IpSet`].
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum IpSetError {
     /// Indicates that an invalid IP range or address was provided.
@@ -121,18 +122,16 @@ impl IpSet {
     }
 
     fn merge_v4(&mut self) {
-        self.v4.sort_by_key(|r| r.start_addr);
+        self.v4.sort_by_key(|r| r.start_addr());
         let mut merged: Vec<Ipv4Range> = Vec::with_capacity(self.v4.len());
         let mut current = self.v4[0];
 
         for next in self.v4.drain(1..) {
-            let curr_end = u32::from(current.end_addr);
-            let next_start = u32::from(next.start_addr);
+            let curr_end = u32::from(current.end_addr());
+            let next_start = u32::from(next.start_addr());
 
             if next_start <= curr_end.saturating_add(1) {
-                if next.end_addr > current.end_addr {
-                    current.end_addr = next.end_addr;
-                }
+                current.extend_end_to(next.end_addr());
             } else {
                 merged.push(current);
                 current = next;
@@ -158,18 +157,16 @@ impl IpSet {
     /// exactly the same addresses, which is much better than a membership test
     /// that silently misses.
     fn merge_v6(&mut self) {
-        self.v6.sort_by_key(|r| (r.start_addr, r.zone));
+        self.v6.sort_by_key(|r| (r.start_addr(), r.zone()));
         let mut merged: Vec<Ipv6Range> = Vec::with_capacity(self.v6.len());
         let mut current = self.v6[0];
 
         for next in self.v6.drain(1..) {
-            let curr_end = u128::from(current.end_addr);
-            let next_start = u128::from(next.start_addr);
+            let curr_end = u128::from(current.end_addr());
+            let next_start = u128::from(next.start_addr());
 
-            if next.zone == current.zone && next_start <= curr_end.saturating_add(1) {
-                if next.end_addr > current.end_addr {
-                    current.end_addr = next.end_addr;
-                }
+            if next.zone() == current.zone() && next_start <= curr_end.saturating_add(1) {
+                current.extend_end_to(next.end_addr());
             } else {
                 merged.push(current);
                 current = next;
@@ -201,16 +198,16 @@ impl IpSet {
             IpAddr::V4(v4) => {
                 let target = u32::from(*v4);
                 self.v4.iter().any(|range| {
-                    let start = u32::from(range.start_addr);
-                    let end = u32::from(range.end_addr);
+                    let start = u32::from(range.start_addr());
+                    let end = u32::from(range.end_addr());
                     target >= start && target <= end
                 })
             }
             IpAddr::V6(v6) => {
                 let target = u128::from(*v6);
                 self.v6.iter().any(|range| {
-                    let start = u128::from(range.start_addr);
-                    let end = u128::from(range.end_addr);
+                    let start = u128::from(range.start_addr());
+                    let end = u128::from(range.end_addr());
                     target >= start && target <= end
                 })
             }
@@ -294,8 +291,8 @@ impl IpSet {
                 let target = u32::from(*v4);
                 self.v4
                     .binary_search_by(|range| {
-                        let start = u32::from(range.start_addr);
-                        let end = u32::from(range.end_addr);
+                        let start = u32::from(range.start_addr());
+                        let end = u32::from(range.end_addr());
                         if target < start {
                             std::cmp::Ordering::Greater
                         } else if target > end {
@@ -310,8 +307,8 @@ impl IpSet {
                 let target = u128::from(*v6);
                 self.v6
                     .binary_search_by(|range| {
-                        let start = u128::from(range.start_addr);
-                        let end = u128::from(range.end_addr);
+                        let start = u128::from(range.start_addr());
+                        let end = u128::from(range.end_addr());
                         if target < start {
                             std::cmp::Ordering::Greater
                         } else if target > end {
@@ -388,14 +385,14 @@ impl IntoIterator for IpSet {
     fn into_iter(mut self) -> Self::IntoIter {
         self.canonicalize();
         let v4_iter = self.v4.into_iter().flat_map(|range| {
-            let start: u32 = range.start_addr.into();
-            let end: u32 = range.end_addr.into();
+            let start: u32 = range.start_addr().into();
+            let end: u32 = range.end_addr().into();
             (start..=end).map(|ip| IpAddr::V4(Ipv4Addr::from(ip)))
         });
 
         let v6_iter = self.v6.into_iter().flat_map(|range| {
-            let start: u128 = range.start_addr.into();
-            let end: u128 = range.end_addr.into();
+            let start: u128 = range.start_addr().into();
+            let end: u128 = range.end_addr().into();
             (start..=end).map(|ip| IpAddr::V6(Ipv6Addr::from(ip)))
         });
 

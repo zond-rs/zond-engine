@@ -51,9 +51,9 @@ fn router() -> Host {
     host.set_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
     host.add_script_result("uptime".to_string(), "31 days".to_string());
 
-    let mut os = OsFingerprint::new("Linux", 95);
-    os.family = Some("Unix-like".into());
-    os.generation = Some("5.15.0".into());
+    let mut os = OsFingerprint::new("Linux", 95)
+        .with_family("Unix-like")
+        .with_generation("5.15.0");
     os.add_cpe("cpe:/o:linux:linux_kernel:5.15.0");
     host.set_os(os);
 
@@ -221,9 +221,9 @@ fn hostile_host() -> Host {
     host.add_network_role(NetworkRole::Tarpit);
     host.add_script_result(HOSTILE.to_string(), HOSTILE.to_string());
 
-    let mut os = OsFingerprint::new(HOSTILE, 90);
-    os.family = Some(HOSTILE.into());
-    os.generation = Some(HOSTILE.into());
+    let mut os = OsFingerprint::new(HOSTILE, 90)
+        .with_family(HOSTILE)
+        .with_generation(HOSTILE);
     os.add_cpe(HOSTILE);
     host.set_os(os);
     host.add_rtt(Duration::from_micros(1_000));

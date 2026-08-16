@@ -1116,7 +1116,7 @@ mod tests {
         let zones: Vec<Option<u32>> = targets
             .units
             .iter()
-            .flat_map(|unit| unit.ips().v6().iter().map(|range| range.zone))
+            .flat_map(|unit| unit.ips().v6().iter().map(|range| range.zone()))
             .collect();
         assert_eq!(zones, vec![Some(7)]);
     }

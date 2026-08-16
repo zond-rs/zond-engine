@@ -214,7 +214,7 @@ impl SourceIdentity {
             if ip_set
                 .v4()
                 .iter()
-                .any(|range| net.contains(range.start_addr))
+                .any(|range| net.contains(range.start_addr()))
             {
                 ipv4 = Some(net.ip());
                 break;

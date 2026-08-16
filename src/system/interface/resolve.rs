@@ -7,14 +7,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::{info, warn};
-use std::{net::Ipv4Addr, sync::atomic::Ordering};
+use std::net::Ipv4Addr;
 
 use crate::model::{
     ip::{
         range::{IpError, IpRange, Ipv4Range},
         set::IpSet,
     },
-    parse::{IS_LAN_SCAN, IpParseError, ip::Keyword},
+    parse::{IpParseError, ip::Keyword},
 };
 use crate::system::interface;
 
@@ -71,7 +71,6 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
     let end_u32 = u32::from(net.broadcast()).saturating_sub(1);
 
     if start_u32 <= end_u32 {
-        IS_LAN_SCAN.store(true, Ordering::Relaxed);
         let range = Ipv4Range::new(Ipv4Addr::from(start_u32), Ipv4Addr::from(end_u32)).map_err(
             |e| match e {
                 IpError::InvalidRange(s, e) => IpParseError::InvalidRange(s, e),
@@ -81,7 +80,9 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
 
         info!(
             verbosity = 1,
-            "Resolved LAN: {} - {}", range.start_addr, range.end_addr
+            "Resolved LAN: {} - {}",
+            range.start_addr(),
+            range.end_addr()
         );
         set.insert_range(IpRange::V4(range));
     } else {

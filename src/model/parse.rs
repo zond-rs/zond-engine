@@ -30,26 +30,33 @@
 pub mod ip;
 pub mod target;
 
-pub use ip::{IS_LAN_SCAN, IpParseError, to_set as to_ipset};
+pub use ip::{IpParseError, names_keyword, to_set as to_ipset};
 
 use crate::model::port::PortSet;
 use crate::model::target::TargetMap;
 
-/// Parses a list of target strings (e.g. `["1.1.1.1:80,443", "8.8.8.8"]`) into a `TargetMap`.
-/// Combines per-target specified ports, or falls back to `global_ports`.
+/// Parses target expressions such as `["1.1.1.1:80,443", "8.8.8.8"]` into a
+/// [`TargetMap`], giving each one the ports it names or `global_ports` if it
+/// names none.
 ///
 /// The shape of [`target::to_target_map`] that takes a keyword resolver and
-/// nothing else. A caller that also needs interface zones or hostnames builds a
-/// [`TargetContext`](target::TargetContext) and calls that function directly.
+/// nothing else. To resolve interface zones or hostnames as well, build a
+/// [`TargetContext`](target::TargetContext) and call that function directly.
+///
+/// # Errors
+///
+/// The first expression that does not parse. Nothing is returned partially, so
+/// a caller that wants to log the bad lines and scan the rest should drive
+/// [`TargetMapBuilder`](target::TargetMapBuilder) itself.
 pub fn to_target_map(
     targets: &[String],
     global_ports: PortSet,
     resolver: Option<ip::ResolverFn>,
-) -> Result<TargetMap, anyhow::Error> {
+) -> Result<TargetMap, target::TargetParseError> {
     let mut ctx = target::TargetContext::new();
     ctx.keywords = resolver;
 
-    target::to_target_map(targets, global_ports, &ctx).map_err(anyhow::Error::from)
+    target::to_target_map(targets, global_ports, &ctx)
 }
 
 // ╔════════════════════════════════════════════╗

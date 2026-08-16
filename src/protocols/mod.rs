@@ -141,8 +141,8 @@ fn create_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> 
     let iter = ranges
         .into_iter()
         .flat_map(|range| {
-            let start: u128 = range.start_addr.into();
-            let end: u128 = range.end_addr.into();
+            let start: u128 = range.start_addr().into();
+            let end: u128 = range.end_addr().into();
             (start..=end).map(Ipv6Addr::from)
         })
         .filter_map(move |target| {
@@ -168,8 +168,8 @@ pub fn create_arp_iter(
     let iter = ranges
         .into_iter()
         .flat_map(|range| {
-            let start: u32 = range.start_addr.into();
-            let end: u32 = range.end_addr.into();
+            let start: u32 = range.start_addr().into();
+            let end: u32 = range.end_addr().into();
             (start..=end).map(Ipv4Addr::from)
         })
         .map(move |dst_addr| {

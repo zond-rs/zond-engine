@@ -227,7 +227,8 @@ impl DiscoveryPlan {
                 reason: format!(
                     "{} is link-local, so it names a different machine on every \
                      segment. Say which: {}%<interface>.",
-                    range.start_addr, range.start_addr
+                    range.start_addr(),
+                    range.start_addr()
                 ),
             });
         }
@@ -243,8 +244,8 @@ impl DiscoveryPlan {
                     "{}-{} is {} addresses: too large to probe one at a time, and \
                      routed IPv6 has no other strategy yet. Give specific addresses \
                      or a smaller prefix.",
-                    range.start_addr,
-                    range.end_addr,
+                    range.start_addr(),
+                    range.end_addr(),
                     range.len()
                 ),
             });
@@ -679,7 +680,7 @@ mod tests {
         seed_from_neighbor_table_with(&mut local, &table);
 
         let targets = local.into_values().next().unwrap();
-        let zones: Vec<Option<u32>> = targets.v6().iter().map(|range| range.zone).collect();
+        let zones: Vec<Option<u32>> = targets.v6().iter().map(|range| range.zone()).collect();
         assert!(
             zones.contains(&Some(7)),
             "the link-local needs its interface"

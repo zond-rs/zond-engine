@@ -44,21 +44,18 @@
 //! expression that is not any of the forms above comes back as
 //! [`IpParseError::Malformed`], which is the signal a caller uses to try a name.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::AtomicBool;
+use std::net::IpAddr;
 use thiserror::Error;
 
-use crate::model::ip::range::{IpError, IpRange, Ipv4Range};
+use crate::model::ip::range::{IpError, IpRange};
 use crate::model::ip::set::IpSet;
-
-/// Global indicator set to `true` if a "lan" resolution was successfully performed.
-pub static IS_LAN_SCAN: AtomicBool = AtomicBool::new(false);
 
 /// A name standing for a set of addresses only the running host can supply.
 ///
 /// Written in place of an address, and expanded by the caller's
 /// [`ResolverFn`]. This module knows the words and nothing about what they
 /// resolve to.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     /// The local segment: the network on the interface carrying this host's
@@ -68,14 +65,45 @@ pub enum Keyword {
 
 impl Keyword {
     /// The word as it is written in a target expression.
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Keyword::Lan => "lan",
         }
     }
+
+    /// The keyword `token` is, if it is one.
+    ///
+    /// Case-insensitive, and the same test [`insert_expression`] applies, so a
+    /// caller asking whether its own input names a keyword gets the answer the
+    /// parser will act on rather than a second opinion.
+    pub fn from_token(token: &str) -> Option<Self> {
+        let token = token.trim();
+        [Keyword::Lan]
+            .into_iter()
+            .find(|keyword| token.eq_ignore_ascii_case(keyword.as_str()))
+    }
+}
+
+/// Whether any of these target expressions names `keyword`.
+///
+/// A scan of the local segment is a different scan from a scan of the addresses
+/// that segment happens to contain: it sends an all-nodes echo and reads the
+/// neighbour table, where a targeted run does neither. A caller that offers the
+/// `lan` keyword therefore has to know whether it was used, and this answers
+/// from the caller's own input rather than from anything the parser remembers.
+///
+/// Splits on commas the way [`to_set`] does, so `"lan,10.0.0.0/24"` counts.
+pub fn names_keyword<S: AsRef<str>>(targets: &[S], keyword: Keyword) -> bool {
+    targets.iter().any(|target| {
+        target
+            .as_ref()
+            .split(',')
+            .any(|part| Keyword::from_token(part) == Some(keyword))
+    })
 }
 
 /// Errors encountered during the parsing or resolution of IP-related strings.
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum IpParseError {
     /// The provided CIDR prefix is longer than its address family allows.
@@ -237,14 +265,14 @@ pub fn insert_expression(
         return Ok(());
     }
 
-    if s.eq_ignore_ascii_case(Keyword::Lan.as_str()) {
-        if let Some(r) = resolver {
-            return r(Keyword::Lan, set);
-        } else {
-            return Err(IpParseError::LanError(
-                "LAN keyword used but no resolver provided".into(),
-            ));
-        }
+    if let Some(keyword) = Keyword::from_token(s) {
+        let Some(resolve) = resolver else {
+            return Err(IpParseError::LanError(format!(
+                "the `{}` keyword needs a resolver, and none was supplied",
+                keyword.as_str()
+            )));
+        };
+        return resolve(keyword, set);
     }
 
     let ip = s
@@ -278,7 +306,7 @@ fn parse_scoped(
     let IpRange::V6(v6) = range else {
         return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
     };
-    if !v6.start_addr.is_unicast_link_local() {
+    if !v6.start_addr().is_unicast_link_local() {
         return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
     }
 
@@ -286,55 +314,26 @@ fn parse_scoped(
     let index = lookup(zone).ok_or_else(|| IpParseError::UnknownInterface(zone.to_string()))?;
 
     let scoped =
-        crate::model::ip::range::Ipv6Range::scoped(v6.start_addr, v6.end_addr, Some(index))
+        crate::model::ip::range::Ipv6Range::scoped(v6.start_addr(), v6.end_addr(), Some(index))
             .map_err(map_range_error)?;
     set.insert_range(IpRange::V6(scoped));
     Ok(())
 }
 
-/// Parses hyphenated range strings into an [`IpRange`].
+/// Parses a hyphenated range, deferring to the one range grammar.
+///
+/// Written here as a thin wrapper rather than as a second implementation so
+/// that `10.0.0.1-50` cannot mean one thing through this module and fail to
+/// parse through [`IpRange::from_str`].
 fn parse_range(s: &str) -> Result<IpRange, IpParseError> {
-    let (start_str, end_str) = s
-        .split_once('-')
-        .ok_or_else(|| IpParseError::Malformed(s.into()))?;
-
-    let start_addr = start_str
-        .parse::<IpAddr>()
-        .map_err(|_| IpParseError::Malformed(s.into()))?;
-
-    match start_addr {
-        IpAddr::V4(start_v4) => {
-            let end_v4 = if let Ok(addr) = end_str.parse::<Ipv4Addr>() {
-                addr
-            } else {
-                let mut octets = start_v4.octets();
-                let parts: Vec<u8> = end_str
-                    .split('.')
-                    .map(|p| p.parse::<u8>())
-                    .collect::<Result<Vec<u8>, _>>()
-                    .map_err(|_| IpParseError::Malformed(s.into()))?;
-
-                if parts.is_empty() || parts.len() > 4 {
-                    return Err(IpParseError::Malformed(s.into()));
-                }
-
-                let offset = 4 - parts.len();
-                octets[offset..].copy_from_slice(&parts);
-                Ipv4Addr::from(octets)
-            };
-            Ipv4Range::new(start_v4, end_v4)
-                .map(IpRange::V4)
-                .map_err(map_range_error)
+    s.parse::<IpRange>().map_err(|error| match error {
+        // "not an address" rather than "a wrong address", which is what tells
+        // a caller it may be looking at a hostname.
+        IpError::InvalidFormat(_) | IpError::AddrParse(_) | IpError::PrefixParse(_) => {
+            IpParseError::Malformed(s.into())
         }
-        IpAddr::V6(start_v6) => {
-            let end_v6 = end_str
-                .parse::<Ipv6Addr>()
-                .map_err(|_| IpParseError::Malformed(s.into()))?;
-            crate::model::ip::range::Ipv6Range::new(start_v6, end_v6)
-                .map(IpRange::V6)
-                .map_err(map_range_error)
-        }
-    }
+        other => map_range_error(other),
+    })
 }
 
 /// Parses CIDR notation strings into an [`IpRange`].
@@ -376,6 +375,35 @@ fn map_range_error(e: IpError) -> IpParseError {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+    use std::str::FromStr;
+
+    /// Two public entry points read written ranges: this module's, and
+    /// [`IpSet`]'s string constructors by way of [`IpRange::from_str`]. They are
+    /// the same grammar, and a spelling either accepts the other has to accept
+    /// too, or a target file works through one API and silently fails through
+    /// the other.
+    #[test]
+    fn both_ways_into_the_parser_accept_the_same_spellings() {
+        for expression in [
+            "10.0.0.1-50",
+            "192.168.1.1-2.254",
+            "10.0.0.1-10.0.0.50",
+            "192.168.1.0/24",
+            "2001:db8::1-2001:db8::5",
+            "8.8.8.8",
+        ] {
+            let direct = to_set(&[expression], None)
+                .unwrap_or_else(|e| panic!("to_set rejected `{expression}`: {e}"));
+            let via_set = IpSet::from_str(expression)
+                .unwrap_or_else(|e| panic!("IpSet::from_str rejected `{expression}`: {e}"));
+
+            assert_eq!(
+                direct.len(),
+                via_set.len(),
+                "`{expression}` means different things through the two entry points"
+            );
+        }
+    }
 
     #[test]
     fn to_set_basic_single() {
@@ -448,7 +476,7 @@ mod tests {
         let set = to_set_with(&["fe80::aa%en0"], None, Some(zones)).expect("parses");
 
         assert_eq!(set.v6().len(), 1);
-        assert_eq!(set.v6()[0].zone, Some(7));
+        assert_eq!(set.v6()[0].zone(), Some(7));
         assert!(!set.v6()[0].is_ambiguous());
     }
 

@@ -922,7 +922,7 @@ mod tests {
         builder.push("[fe80::aa%en0]:22", &ctx).unwrap();
 
         let map = builder.build();
-        assert_eq!(map.units[0].ips().v6()[0].zone, Some(7));
+        assert_eq!(map.units[0].ips().v6()[0].zone(), Some(7));
         assert_eq!(map.units[0].ports(), &ports("22"));
     }
 

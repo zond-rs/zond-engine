@@ -33,6 +33,7 @@ use std::{
 use thiserror::Error;
 
 /// Errors associated with IP address range operations.
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq)]
 pub enum IpError {
     /// Occurs when the start address is numerically greater than the end address.
@@ -64,15 +65,18 @@ pub enum IpError {
 // IPv4 Range
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// A contiguous range of IPv4 addresses defined by a start and end point.
+/// A contiguous run of IPv4 addresses, inclusive at both ends.
 ///
-/// Both boundaries are inclusive. Stored as two `Ipv4Addr` values (8 bytes total).
+/// Eight bytes, whatever the range covers. The start is never above the end,
+/// which [`new`](Self::new) is the only way to construct one in order to
+/// guarantee: an inverted range has a length that cannot be represented and
+/// yields nothing when iterated, so the two would disagree about what it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ipv4Range {
     /// The inclusive starting address of the range.
-    pub start_addr: Ipv4Addr,
+    start_addr: Ipv4Addr,
     /// The inclusive ending address of the range.
-    pub end_addr: Ipv4Addr,
+    end_addr: Ipv4Addr,
 }
 
 impl Ipv4Range {
@@ -104,6 +108,28 @@ impl Ipv4Range {
         (start..=end).map(|ip| IpAddr::V4(Ipv4Addr::from(ip)))
     }
 
+    /// The inclusive first address.
+    pub fn start_addr(&self) -> Ipv4Addr {
+        self.start_addr
+    }
+
+    /// The inclusive last address, never lower than
+    /// [`start_addr`](Self::start_addr).
+    pub fn end_addr(&self) -> Ipv4Addr {
+        self.end_addr
+    }
+
+    /// Extends this range to reach `end`, if it does not already.
+    ///
+    /// The only mutation a range allows, and the one merging adjacent ranges
+    /// needs. Growing the end cannot put it below the start, so the ordering
+    /// invariant survives without a check.
+    pub fn extend_end_to(&mut self, end: Ipv4Addr) {
+        if end > self.end_addr {
+            self.end_addr = end;
+        }
+    }
+
     /// Checks if the given [`Ipv4Addr`] falls within this range (inclusive).
     pub fn contains(&self, ip: &Ipv4Addr) -> bool {
         let start: u32 = self.start_addr.into();
@@ -129,16 +155,16 @@ impl Ipv4Range {
 // IPv6 Range
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// A contiguous range of IPv6 addresses defined by a start and end point.
+/// A contiguous run of IPv6 addresses, inclusive at both ends, together with the
+/// interface they are valid on if they need one.
 ///
-/// Both boundaries are inclusive. Stored as two `Ipv6Addr` values plus the
-/// interface scope, if the addresses need one.
+/// The start is never above the end, for the reason [`Ipv4Range`] gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ipv6Range {
     /// The inclusive starting address of the range.
-    pub start_addr: Ipv6Addr,
+    start_addr: Ipv6Addr,
     /// The inclusive ending address of the range.
-    pub end_addr: Ipv6Addr,
+    end_addr: Ipv6Addr,
     /// The interface these addresses are valid on, as a scope id, for a range
     /// of link-local addresses.
     ///
@@ -152,7 +178,7 @@ pub struct Ipv6Range {
     /// except link-local. See
     /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for why an
     /// address that needs a zone and lacks one cannot be probed at all.
-    pub zone: Option<u32>,
+    zone: Option<u32>,
 }
 
 impl Ipv6Range {
@@ -181,6 +207,31 @@ impl Ipv6Range {
         } else {
             Err(IpError::InvalidRange(IpAddr::V6(start), IpAddr::V6(end)))
         }
+    }
+
+    /// The inclusive first address.
+    pub fn start_addr(&self) -> Ipv6Addr {
+        self.start_addr
+    }
+
+    /// The inclusive last address, never lower than
+    /// [`start_addr`](Self::start_addr).
+    pub fn end_addr(&self) -> Ipv6Addr {
+        self.end_addr
+    }
+
+    /// Extends this range to reach `end`, if it does not already. See
+    /// [`Ipv4Range::extend_end_to`].
+    pub fn extend_end_to(&mut self, end: Ipv6Addr) {
+        if end > self.end_addr {
+            self.end_addr = end;
+        }
+    }
+
+    /// The interface these addresses are valid on, as a scope id, if they need
+    /// one.
+    pub fn zone(&self) -> Option<u32> {
+        self.zone
     }
 
     /// Whether these addresses are meaningless without an interface to
@@ -303,7 +354,13 @@ impl FromStr for IpRange {
     /// Supports:
     /// - CIDR notation: `192.168.1.0/24`, `2001:db8::/32`
     /// - Hyphenated ranges: `10.0.0.1-10.0.0.5`, `::1-::f`
+    /// - Shortened IPv4 ranges, where the end continues the start's octets:
+    ///   `10.0.0.1-50`, `192.168.1.1-2.254`
     /// - Single IPs: `1.1.1.1`, `::1`
+    ///
+    /// This is the whole of the range grammar. Everything in the crate that
+    /// reads a written range ends here, so no two entry points can accept
+    /// different spellings of the same thing.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
 
@@ -320,7 +377,8 @@ impl FromStr for IpRange {
             let end_str = s[pos + 1..].trim();
 
             if let Ok(start) = start_str.parse::<Ipv4Addr>() {
-                let end = end_str.parse::<Ipv4Addr>()?;
+                let end = expand_v4_end(start, end_str)
+                    .ok_or_else(|| IpError::InvalidFormat(s.to_string()))?;
                 return Ok(IpRange::V4(Ipv4Range::new(start, end)?));
             } else if let Ok(start) = start_str.parse::<Ipv6Addr>() {
                 let end = end_str.parse::<Ipv6Addr>()?;
@@ -336,6 +394,37 @@ impl FromStr for IpRange {
             IpAddr::V6(v6) => Ok(IpRange::V6(Ipv6Range::new(v6, v6).unwrap())),
         }
     }
+}
+
+/// Reads the end of an IPv4 range, which may be written in full or as however
+/// many trailing octets differ from the start.
+///
+/// `10.0.0.1-50` ends at `10.0.0.50` and `192.168.1.1-2.254` at
+/// `192.168.2.254`: the octets given replace the same number of octets at the
+/// end of the start address. A shorthand exists because the alternative is
+/// writing an address twice to name a range within one subnet, which is the
+/// common case.
+///
+/// IPv4 only. IPv6 has no comparable form, and inventing one would make `::1-5`
+/// ambiguous with an address whose last group is hex.
+fn expand_v4_end(start: Ipv4Addr, end_str: &str) -> Option<Ipv4Addr> {
+    if let Ok(full) = end_str.parse::<Ipv4Addr>() {
+        return Some(full);
+    }
+
+    let suffix: Vec<u8> = end_str
+        .split('.')
+        .map(|part| part.parse::<u8>())
+        .collect::<Result<_, _>>()
+        .ok()?;
+
+    if suffix.is_empty() || suffix.len() > 4 {
+        return None;
+    }
+
+    let mut octets = start.octets();
+    octets[4 - suffix.len()..].copy_from_slice(&suffix);
+    Some(Ipv4Addr::from(octets))
 }
 
 /// Constructs an [`IpRange`] from an IP address and a CIDR prefix length.
@@ -502,6 +591,43 @@ mod tests {
         assert_eq!("::1/120".parse::<IpRange>().unwrap().len(), 256);
         assert_eq!("1.1.1.1-1.1.1.5".parse::<IpRange>().unwrap().len(), 5);
         assert_eq!("8.8.8.8".parse::<IpRange>().unwrap().len(), 1);
+    }
+
+    /// `new` is the only way to build a range, so the ordering it checks is a
+    /// property of every range that exists. Without that, an inverted one is
+    /// constructible and disagrees with itself: `len` cannot represent a
+    /// negative count and `to_iter` yields nothing, so a budget check and a scan
+    /// read the same value differently.
+    #[test]
+    fn a_range_can_only_be_built_in_order() {
+        let low = Ipv4Addr::new(10, 0, 0, 1);
+        let high = Ipv4Addr::new(10, 0, 0, 5);
+
+        assert!(matches!(
+            Ipv4Range::new(high, low),
+            Err(IpError::InvalidRange(_, _))
+        ));
+
+        let range = Ipv4Range::new(low, high).expect("in order");
+        assert_eq!(range.len(), 5);
+        assert_eq!(range.to_iter().count() as u64, range.len());
+    }
+
+    /// The one mutation a range allows. It only ever grows the end, which is
+    /// what keeps it unable to invert the range it is called on.
+    #[test]
+    fn extending_a_range_never_inverts_it() {
+        let mut range =
+            Ipv4Range::new(Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 5)).unwrap();
+
+        range.extend_end_to(Ipv4Addr::new(10, 0, 0, 9));
+        assert_eq!(range.end_addr(), Ipv4Addr::new(10, 0, 0, 9));
+
+        // A shorter end is not an instruction to shrink.
+        range.extend_end_to(Ipv4Addr::new(10, 0, 0, 2));
+        assert_eq!(range.end_addr(), Ipv4Addr::new(10, 0, 0, 9));
+        assert!(range.end_addr() >= range.start_addr());
+        assert_eq!(range.to_iter().count() as u64, range.len());
     }
 
     #[test]

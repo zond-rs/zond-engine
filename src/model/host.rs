@@ -502,10 +502,7 @@ impl Host {
 
     /// Returns the hardware vendor, if hardware info is available.
     pub fn vendor(&self) -> Option<&str> {
-        self.hardware
-            .as_ref()
-            .and_then(|h| h.vendor.as_ref())
-            .map(|v| &**v)
+        self.hardware.as_ref().and_then(HardwareInfo::vendor)
     }
 
     /// Returns `true` if this host is confirmed to be on the network

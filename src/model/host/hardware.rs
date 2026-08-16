@@ -43,7 +43,7 @@ pub struct HardwareInfo {
     /// vendor's equipment, and the string is then one allocation instead of one
     /// per host. `None` for a locally administered address, which has no
     /// manufacturer to name. See [`vendor`](crate::model::mac::vendor).
-    pub vendor: Option<Arc<str>>,
+    vendor: Option<Arc<str>>,
 }
 
 impl HardwareInfo {
@@ -71,6 +71,12 @@ impl HardwareInfo {
         if self.vendor.is_none() {
             self.vendor = mac::vendor(&mac).map(Arc::from);
         }
+    }
+
+    /// The manufacturer the OUI attributes this hardware to, if the database
+    /// recognises it.
+    pub fn vendor(&self) -> Option<&str> {
+        self.vendor.as_deref()
     }
 
     /// Returns a read-only view of all recorded MAC addresses and their
@@ -144,10 +150,9 @@ mod tests {
     #[test]
     fn hardware_vendor_assignment() {
         let mac = MacAddr::new(0x00, 0x0C, 0x29, 0xAB, 0xCD, 0xEF);
-        let mut hw = HardwareInfo::new(mac);
-        hw.vendor = Some(Arc::from("VMware, Inc."));
+        let hw = HardwareInfo::new(mac);
 
-        assert_eq!(hw.vendor.as_deref().unwrap(), "VMware, Inc.");
+        assert_eq!(hw.vendor(), Some("VMware, Inc"));
         assert!(hw.macs().contains_key(&mac));
     }
 

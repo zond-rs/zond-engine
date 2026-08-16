@@ -1087,11 +1087,11 @@ impl<'a> OsDto<'a> {
     /// Renders an OS fingerprint.
     pub fn new(os: &'a OsFingerprint) -> Self {
         Self {
-            name: &os.name,
-            family: os.family.as_deref(),
-            generation: os.generation.as_deref(),
-            vendor: os.vendor.as_deref(),
-            accuracy: os.accuracy,
+            name: os.name(),
+            family: os.family(),
+            generation: os.generation(),
+            vendor: os.vendor(),
+            accuracy: os.accuracy(),
             cpe: os.cpes().iter().map(|cpe| &**cpe).collect(),
         }
     }
@@ -1136,7 +1136,7 @@ impl<'a> HardwareDto<'a> {
         Self {
             mac: hardware.most_recent_mac().map(|mac| redaction.mac(&mac)),
             macs,
-            vendor: hardware.vendor.as_deref(),
+            vendor: hardware.vendor(),
         }
     }
 }

@@ -38,6 +38,7 @@ pub const DEFAULT_PORTSET_PORTS: &str = "22, 80, 443, 445, 3389";
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Errors that can occur when parsing a port range string.
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PortSetParseError {
     /// A port was not a number, or was too large to be one. Ports are 16-bit,

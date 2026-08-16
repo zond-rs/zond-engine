@@ -33,6 +33,7 @@ use std::{
 /// weaker one is used only where there is nothing better: for the neighbour that
 /// answers the segment-wide probe and no other, an upper bound is the only
 /// latency there is, and it beats a blank.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RttSource {
     /// A reply to a probe aimed at this host alone. A round trip.
@@ -68,9 +69,12 @@ pub struct HostTelemetry {
     /// Ordered chronologically: oldest at the front, newest at the back.
     rtt_history: VecDeque<RttSample>,
 
-    /// The maximum number of RTT samples to maintain.
-    /// If this limit is reached, adding a new sample will purge the oldest one.
-    pub max_samples: usize,
+    /// How many samples the window holds before the oldest is dropped.
+    ///
+    /// Private because lowering it has to trim `rtt_history` to match, and a
+    /// field a caller can set directly would leave the two disagreeing. See
+    /// [`set_max_samples`](Self::set_max_samples).
+    max_samples: usize,
 
     /// The Time-to-Live (TTL) value from the most recently received response.
     pub ttl: Option<u8>,
@@ -87,6 +91,24 @@ impl HostTelemetry {
             max_samples,
             ttl: None,
             distance_hops: None,
+        }
+    }
+
+    /// How many samples the window holds.
+    pub fn max_samples(&self) -> usize {
+        self.max_samples
+    }
+
+    /// Resizes the window, discarding the oldest samples if it shrinks.
+    ///
+    /// Trimming here rather than at the next insertion means the history never
+    /// holds more than the window says it does, so a caller reading
+    /// [`history`](Self::history) immediately afterwards sees what it asked
+    /// for.
+    pub fn set_max_samples(&mut self, max_samples: usize) {
+        self.max_samples = max_samples;
+        while self.rtt_history.len() > self.max_samples {
+            self.rtt_history.pop_front();
         }
     }
 
@@ -492,7 +514,7 @@ mod tests {
         let mut t1 = HostTelemetry::new(3);
         let t2 = HostTelemetry::new(10);
         t1.merge(t2);
-        assert_eq!(t1.max_samples, 10);
+        assert_eq!(t1.max_samples(), 10);
     }
 
     #[test]

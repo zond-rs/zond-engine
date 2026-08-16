@@ -27,24 +27,28 @@ pub const MAX_CPES_PER_OS: usize = 50;
 /// gaps. See [`merge`](Self::merge).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OsFingerprint {
-    /// The operating system's name (e.g. `"Linux"`, `"Windows"`).
+    /// The operating system's name, such as `"Linux"` or `"Windows"`.
     ///
     /// Shared rather than owned because a scan of any size finds the same few
     /// names over and over, and the string is then one allocation across the
     /// whole result rather than one per host.
-    pub name: Arc<str>,
+    name: Arc<str>,
 
-    /// The broad OS family (e.g., "Unix-like", "Windows NT").
-    pub family: Option<Arc<str>>,
+    /// The broad family, such as `"Unix-like"` or `"Windows NT"`.
+    family: Option<Arc<str>>,
 
-    /// The version or generation (e.g., "5.15.0", "11").
-    pub generation: Option<Arc<str>>,
+    /// The version or generation, such as `"5.15.0"` or `"11"`.
+    generation: Option<Arc<str>>,
 
-    /// The specific vendor (e.g., "Canonical", "Microsoft").
-    pub vendor: Option<Arc<str>>,
+    /// The vendor, such as `"Canonical"` or `"Microsoft"`.
+    vendor: Option<Arc<str>>,
 
-    /// The confidence score of this identification as a percentage (0-100).
-    pub accuracy: u8,
+    /// How sure this identification is, as a percentage.
+    ///
+    /// Private because [`new`](Self::new) clamps it to 100 and
+    /// [`merge`](Self::merge) ranks findings by it. A value above 100 would
+    /// outrank a completed match and could never be displaced.
+    accuracy: u8,
 
     /// A bounded set of Common Platform Enumeration (CPE) identifiers.
     cpe: BTreeSet<Arc<str>>,
@@ -61,7 +65,7 @@ impl OsFingerprint {
     /// # use std::sync::Arc;
     /// # use zond_engine::model::host::OsFingerprint;
     /// let os = OsFingerprint::new("Ubuntu Linux", 95);
-    /// assert_eq!(os.accuracy, 95);
+    /// assert_eq!(os.accuracy(), 95);
     /// ```
     pub fn new(name: impl Into<Arc<str>>, accuracy: u8) -> Self {
         Self {
@@ -72,6 +76,49 @@ impl OsFingerprint {
             accuracy: accuracy.min(100),
             cpe: BTreeSet::new(),
         }
+    }
+
+    /// The operating system's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The broad family, if one was identified.
+    pub fn family(&self) -> Option<&str> {
+        self.family.as_deref()
+    }
+
+    /// The version or generation, if one was identified.
+    pub fn generation(&self) -> Option<&str> {
+        self.generation.as_deref()
+    }
+
+    /// The vendor, if one was identified.
+    pub fn vendor(&self) -> Option<&str> {
+        self.vendor.as_deref()
+    }
+
+    /// How sure this identification is, from 0 to 100.
+    pub fn accuracy(&self) -> u8 {
+        self.accuracy
+    }
+
+    /// Builder method to set the broad family.
+    pub fn with_family(mut self, family: impl Into<Arc<str>>) -> Self {
+        self.family = Some(family.into());
+        self
+    }
+
+    /// Builder method to set the version or generation.
+    pub fn with_generation(mut self, generation: impl Into<Arc<str>>) -> Self {
+        self.generation = Some(generation.into());
+        self
+    }
+
+    /// Builder method to set the vendor.
+    pub fn with_vendor(mut self, vendor: impl Into<Arc<str>>) -> Self {
+        self.vendor = Some(vendor.into());
+        self
     }
 
     /// Adds a CPE identifier to the fingerprint, provided the internal limit
@@ -152,7 +199,7 @@ mod tests {
     #[test]
     fn os_accuracy_clamping() {
         let os = OsFingerprint::new("Linux", 200);
-        assert_eq!(os.accuracy, 100);
+        assert_eq!(os.accuracy(), 100);
     }
 
     #[test]
@@ -166,24 +213,23 @@ mod tests {
         let mut os1 = OsFingerprint::new("Linux", 50);
         let os2 = OsFingerprint::new("Ubuntu", 90);
         os1.merge(os2);
-        assert_eq!(&*os1.name, "Ubuntu");
+        assert_eq!(os1.name(), "Ubuntu");
     }
 
     #[test]
     fn os_merge_equal_accuracy_collision() {
         // Test deterministic "first-wins" for conflicting metadata at equal accuracy
-        let mut os1 = OsFingerprint::new("Linux", 80);
-        os1.family = Some(Arc::from("Old Family"));
+        let mut os1 = OsFingerprint::new("Linux", 80).with_family("Old Family");
 
-        let mut os2 = OsFingerprint::new("Linux", 80);
-        os2.family = Some(Arc::from("New Family"));
-        os2.generation = Some(Arc::from("New Gen"));
+        let os2 = OsFingerprint::new("Linux", 80)
+            .with_family("New Family")
+            .with_generation("New Gen");
 
         os1.merge(os2);
 
         // Should keep "Old Family" (first) but adopt "New Gen" (gap filled)
-        assert_eq!(os1.family.as_deref(), Some("Old Family"));
-        assert_eq!(os1.generation.as_deref(), Some("New Gen"));
+        assert_eq!(os1.family(), Some("Old Family"));
+        assert_eq!(os1.generation(), Some("New Gen"));
     }
 
     #[test]

@@ -39,8 +39,8 @@ pub fn is_on_link(intf: &NetworkInterface, ips: &mut IpSet) -> bool {
         let mut range_covered = false;
         for iface_ipnet in &intf.ips {
             if let pnet::ipnetwork::IpNetwork::V4(network) = iface_ipnet
-                && network.contains(range.start_addr)
-                && network.contains(range.end_addr)
+                && network.contains(range.start_addr())
+                && network.contains(range.end_addr())
             {
                 range_covered = true;
                 break;
