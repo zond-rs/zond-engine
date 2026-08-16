@@ -232,6 +232,72 @@ mod tests {
         assert_eq!(ts.total_targets().unwrap(), 256);
     }
 
+    /// The cross product is the whole purpose of the type, and a count alone
+    /// does not pin it: two different pairings of the same addresses and ports
+    /// produce the same total. This pins the triples.
+    #[test]
+    fn a_set_yields_every_address_paired_with_every_port() {
+        let ts = TargetSet::new(mock_ip_set("10.0.0.1-10.0.0.2"), mock_port_set("80, u:53"));
+
+        let mut targets: Vec<(String, u16, Protocol)> = ts
+            .iter()
+            .map(|target| (target.ip.to_string(), target.port, target.protocol))
+            .collect();
+        targets.sort();
+
+        assert_eq!(
+            targets,
+            vec![
+                ("10.0.0.1".to_string(), 53, Protocol::Udp),
+                ("10.0.0.1".to_string(), 80, Protocol::Tcp),
+                ("10.0.0.2".to_string(), 53, Protocol::Udp),
+                ("10.0.0.2".to_string(), 80, Protocol::Tcp),
+            ]
+        );
+    }
+
+    /// A map's iterator is a flattening of its units, in the order they were
+    /// added — which is what makes two runs over one input scan in one order.
+    #[test]
+    fn a_map_iterates_its_units_in_the_order_they_were_added() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(mock_ip_set("10.0.0.1"), mock_port_set("80")));
+        map.add_unit(TargetSet::new(
+            mock_ip_set("10.0.0.2"),
+            mock_port_set("u:53"),
+        ));
+
+        let targets: Vec<(String, u16, Protocol)> = map
+            .iter()
+            .map(|target| (target.ip.to_string(), target.port, target.protocol))
+            .collect();
+
+        assert_eq!(
+            targets,
+            vec![
+                ("10.0.0.1".to_string(), 80, Protocol::Tcp),
+                ("10.0.0.2".to_string(), 53, Protocol::Udp),
+            ]
+        );
+    }
+
+    /// `::/0` is 2^128 addresses, which [`IpSet::len`] already saturates to
+    /// `u128::MAX`. One port still fits; two do not, and the multiplication has
+    /// to refuse rather than wrap — a scan of the entire address space
+    /// reported as a small number is the one answer a budget check must never
+    /// be given.
+    #[test]
+    fn a_target_count_too_large_to_represent_is_refused_rather_than_wrapped() {
+        let two_ports = TargetSet::new(mock_ip_set("::/0"), mock_port_set("80, 443"));
+        assert_eq!(
+            two_ports.total_targets(),
+            Err(TargetError::CapacityOverflow)
+        );
+
+        let one_port = TargetSet::new(mock_ip_set("::/0"), mock_port_set("80"));
+        assert_eq!(one_port.total_targets().unwrap(), u128::MAX);
+    }
+
     #[test]
     fn target_map_aggregation() {
         let mut map = TargetMap::new();

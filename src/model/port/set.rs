@@ -434,6 +434,20 @@ mod tests {
         assert!(port_set.has_udp(5353));
     }
 
+    /// `Default` parses a string constant and unwraps the result, so a typo in
+    /// [`DEFAULT_PORTSET_PORTS`] is a panic rather than a compile error.
+    /// Nothing else in the crate calls it, which means without this the panic
+    /// would surface at a consumer's first use.
+    #[test]
+    fn the_default_port_set_parses_and_holds_the_ports_it_names() {
+        let set = PortSet::default();
+
+        for port in [22, 80, 443, 445, 3389] {
+            assert!(set.has_tcp(port), "{port} is named in the default set");
+        }
+        assert_eq!(set.len(), 5, "and nothing else is");
+    }
+
     #[test]
     fn set_overlap_and_adjacency_merging() {
         // Overlap: 1-10 and 5-15 should be 1-15

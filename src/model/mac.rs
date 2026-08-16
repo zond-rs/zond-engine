@@ -90,17 +90,27 @@ mod tests {
         assert_eq!(mac.0, arr);
     }
 
+    /// The database is queried with the address's [`fmt::Display`] form, so a
+    /// change to how a MAC renders stops every vendor resolving and nothing
+    /// else goes wrong to say so.
+    ///
+    /// That a registered OUI resolves to *some* vendor catches it. Asserting
+    /// *which* would pin a third-party database's spelling of a company name,
+    /// and break on a data update that this crate is not party to — a test of
+    /// the dependency rather than of the two lines here.
     #[test]
-    fn test_vendor_lookup() {
-        let mac = MacAddr::new(0x00, 0x0C, 0x29, 0xAB, 0xCD, 0xEF);
-        let vendor = vendor(&mac);
-        assert_eq!(vendor, Some("VMware, Inc".to_string()));
+    fn a_registered_oui_resolves_to_a_vendor() {
+        let vmware = MacAddr::new(0x00, 0x0C, 0x29, 0xAB, 0xCD, 0xEF);
+        assert!(vendor(&vmware).is_some());
     }
 
+    /// The second bit of the first octet marks an address as locally
+    /// administered, which means it was assigned by whoever is using it rather
+    /// than allocated to a manufacturer. There is no OUI to resolve, and no
+    /// data update can give it one.
     #[test]
-    fn test_unknown_vendor_lookup() {
-        let mac = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x00); // Locally administered
-        let vendor = vendor(&mac);
-        assert_eq!(vendor, None);
+    fn a_locally_administered_address_has_no_vendor() {
+        let local = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x00);
+        assert_eq!(vendor(&local), None);
     }
 }

@@ -64,33 +64,31 @@ pub fn to_target_map(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
 
+    /// [`to_target_map`] is the only thing this module defines rather than
+    /// re-exports, and the grammar it wraps is tested where the grammar lives.
+    /// What is worth pinning here is the wrapping itself: a context built from
+    /// a keyword resolver and nothing else still parses literal targets, and
+    /// still groups them by port specification.
     #[test]
-    fn facade_ip_resolution() {
-        let inputs = vec!["127.0.0.1", "10.0.0.1-5"];
+    fn the_facade_builds_a_map_from_targets_that_need_no_resolver() {
+        let targets = ["10.0.0.1:22".to_string(), "10.0.0.2".to_string()];
+        let map = to_target_map(&targets, PortSet::try_from("80").unwrap(), None)
+            .expect("literal addresses need nothing resolved");
 
-        let set = to_ipset(&inputs, None).expect("Facade should resolve IP targets");
-
-        assert_eq!(set.len(), 6);
-        assert!(set.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
-        assert!(set.contains(&"10.0.0.3".parse::<IpAddr>().unwrap()));
+        assert_eq!(map.units.len(), 2, "port 22, and the default 80");
+        assert_eq!(map.gross_targets().unwrap(), 2);
     }
 
+    /// The lookups this shape does *not* take are the point of it. A target
+    /// needing one is refused rather than silently dropped, so a scan never
+    /// covers less than its input said it would.
     #[test]
-    fn facade_empty_input() {
-        let inputs: Vec<&str> = vec![];
-        let result = to_ipset(&inputs, None);
+    fn the_facade_refuses_a_target_it_cannot_resolve() {
+        let targets = ["scanme.example".to_string()];
+        let error = to_target_map(&targets, PortSet::try_from("80").unwrap(), None)
+            .expect_err("a hostname needs a lookup this shape cannot take");
 
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), IpParseError::EmptySet);
-    }
-
-    #[test]
-    fn facade_comma_splitting() {
-        let inputs = vec!["1.1.1.1, 2.2.2.2"];
-        let set = to_ipset(&inputs, None).unwrap();
-
-        assert_eq!(set.len(), 2);
+        assert!(error.to_string().contains("scanme.example"), "{error}");
     }
 }

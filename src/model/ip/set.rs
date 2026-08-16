@@ -582,15 +582,81 @@ mod tests {
         assert_eq!(set.len(), 100);
     }
 
+    /// The guard is the only thing that makes the private fast paths safe to
+    /// have at all: `contains_canonical` binary-searches a vector that is
+    /// sorted only once `canonicalize` has run, and against an unmerged one it
+    /// silently misses. A wrong answer about whether an address is in scope
+    /// decides whether a reply is credited or discarded, so a test that never
+    /// trips the assertion is testing nothing — it would pass with the
+    /// `debug_assert!` deleted.
+    ///
+    /// Debug-only because that is where the assertion exists; a release build
+    /// compiles it out and takes the silently-wrong path this pins.
     #[test]
-    fn canonical_queries_panics_in_debug() {
-        #[cfg(debug_assertions)]
-        {
-            let set = IpSet::from_iter(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
-            // from_iter already canonicalizes
-            assert!(!set.v4_dirty);
-            assert!(set.contains_canonical(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        }
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "must be canonicalized")]
+    fn a_membership_query_on_an_unmerged_set_trips_the_guard() {
+        let mut set = IpSet::new();
+        set.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        // Deliberately not canonicalized.
+        set.contains_canonical(&IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+
+    /// And the same for the count, which has its own guard for its own reason.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "must be canonicalized")]
+    fn a_count_on_an_unmerged_set_trips_the_guard() {
+        let mut set = IpSet::new();
+        set.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        set.len_canonical();
+    }
+
+    /// The case the guards let through, and the one the public `contains`
+    /// delegates to once the set is merged.
+    #[test]
+    fn a_membership_query_on_a_merged_set_answers() {
+        let set = IpSet::from_iter(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+        assert!(!set.v4_dirty, "from_iter canonicalizes");
+        assert!(set.contains_canonical(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert_eq!(set.len_canonical(), 1);
+    }
+
+    /// Two link-local ranges spanning the same numbers on two interfaces are
+    /// two different sets of machines. Merged on adjacency alone they would
+    /// produce one range that means one thing at one end and something else at
+    /// the other — and every interface holds an `fe80::/64`, so the mistake is
+    /// available on any host with two of them.
+    #[test]
+    fn ranges_on_different_interfaces_never_merge_however_adjacent() {
+        let one: Ipv6Addr = "fe80::1".parse().unwrap();
+        let five: Ipv6Addr = "fe80::5".parse().unwrap();
+        let six: Ipv6Addr = "fe80::6".parse().unwrap();
+        let ten: Ipv6Addr = "fe80::a".parse().unwrap();
+
+        let mut split = IpSet::new();
+        split.push_v6_range(Ipv6Range::scoped(one, five, Some(4)).unwrap());
+        split.push_v6_range(Ipv6Range::scoped(six, ten, Some(9)).unwrap());
+        split.canonicalize();
+
+        assert_eq!(split.v6().len(), 2, "adjacent, but on two segments");
+
+        // The same numbers on one interface are one segment's worth of
+        // machines, and do merge — or the zone check would be refusing
+        // everything rather than refusing the right thing.
+        let mut joined = IpSet::new();
+        joined.push_v6_range(Ipv6Range::scoped(one, five, Some(4)).unwrap());
+        joined.push_v6_range(Ipv6Range::scoped(six, ten, Some(4)).unwrap());
+        joined.canonicalize();
+
+        assert_eq!(joined.v6().len(), 1);
+
+        // Membership still answers across the split. This is what keeps the
+        // sort keyed on the address with the zone only breaking ties: any
+        // other ordering leaves `contains_canonical` binary-searching a vector
+        // it cannot navigate.
+        assert!(split.contains(&IpAddr::V6(five)));
+        assert!(split.contains(&IpAddr::V6(six)));
     }
 }
 

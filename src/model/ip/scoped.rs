@@ -368,6 +368,31 @@ mod tests {
         assert_eq!(parsed.zone().map(Zone::name), Some("en0"));
     }
 
+    /// The field order is load-bearing, and nothing about it is enforced by
+    /// the compiler. Sorting a collection of addresses has to be by address,
+    /// with the zone separating link-locals that share a number; ordered
+    /// zone-first, a sorted list would be grouped by interface instead, and
+    /// every consumer that walks addresses in order — a report, a merge, a
+    /// binary search — would be walking a different sequence than it reads as.
+    #[test]
+    fn addresses_sort_by_address_with_the_zone_breaking_ties() {
+        let mut addresses = vec![
+            ScopedIp::scoped(link_local(), en1()),
+            ScopedIp::unscoped(global()),
+            ScopedIp::scoped(link_local(), en0()),
+        ];
+        addresses.sort();
+
+        assert_eq!(
+            addresses,
+            vec![
+                ScopedIp::unscoped(global()),
+                ScopedIp::scoped(link_local(), en0()),
+                ScopedIp::scoped(link_local(), en1()),
+            ]
+        );
+    }
+
     #[test]
     fn an_unscoped_address_renders_bare() {
         assert_eq!(ScopedIp::unscoped(global()).to_string(), "2001:db8::1");

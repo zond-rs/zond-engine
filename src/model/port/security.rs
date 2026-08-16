@@ -125,15 +125,33 @@ impl Security {
 
     /// Returns `true` if the certificate is currently valid, but expires within the given threshold.
     ///
+    /// A certificate that has *already* expired is not expiring: it is a
+    /// different problem, reported by [`is_cert_valid`](Self::is_cert_valid),
+    /// and folding the two together would bury an outage in a renewal queue.
+    ///
     /// # Examples
     ///
     /// ```
-    /// use std::time::Duration;
-    /// # use zond_engine::model::port::{Security, CertificateInfo};
-    /// # let mut sec = Security::new();
+    /// use std::time::{Duration, SystemTime};
+    /// use zond_engine::model::port::{CertificateInfo, Security};
     ///
-    /// // Check if the certificate expires in the next 30 days
-    /// let expires_soon = sec.is_cert_expiring(Duration::from_secs(86400 * 30));
+    /// let thirty_days = Duration::from_secs(86_400 * 30);
+    /// let ten_days = Duration::from_secs(86_400 * 10);
+    ///
+    /// let security = Security::new().with_certificate(CertificateInfo::new(
+    ///     "test.local",
+    ///     vec![],
+    ///     "Local CA",
+    ///     SystemTime::now() - thirty_days,
+    ///     SystemTime::now() + ten_days,
+    ///     "RSA",
+    ///     2048,
+    ///     "deadbeef",
+    /// ));
+    ///
+    /// assert!(security.is_cert_valid());
+    /// assert!(security.is_cert_expiring(thirty_days), "it has ten days left");
+    /// assert!(!security.is_cert_expiring(Duration::from_secs(86_400 * 5)));
     /// ```
     pub fn is_cert_expiring(&self, threshold: Duration) -> bool {
         let now = SystemTime::now();
