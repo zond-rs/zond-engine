@@ -9,16 +9,15 @@
 //! # Ports, and what was found behind them
 //!
 //! A [`Port`] is one transport endpoint on one host, and everything a scan
-//! learned about it. That covers four separate questions, kept in four separate
-//! types so that a scan answering one of them does not have to pretend it
-//! answered the rest:
+//! learned about it. That covers three separate questions, kept in three
+//! separate types so that a scan answering one of them does not have to pretend
+//! it answered the rest:
 //!
 //! | Question | Type |
 //! |---|---|
 //! | Is anything there? | [`PortState`], with [`discovery`]'s account of the packet that decided it |
 //! | What is it? | [`Service`], refined as better evidence arrives |
 //! | How is it protected? | [`Security`], for an endpoint that negotiated TLS |
-//! | What did a script make of it? | [`ScriptOutput`] |
 //!
 //! Each is an `Option`, and an absent one means the question was not answered
 //! rather than answered negatively. A port scan that has not run service
@@ -37,8 +36,6 @@
 //! that learned the same amount are equally good sources, and preferring the
 //! later one would make a report depend on which probe happened to finish
 //! last.
-
-use std::collections::HashMap;
 
 pub mod discovery;
 pub mod security;
@@ -110,34 +107,6 @@ pub enum PortState {
     Open,
 }
 
-/// A value produced by a scanning script, in whatever shape the script found
-/// it.
-///
-/// Typed rather than stringly-typed because the consumers are machines as often
-/// as people: a list of CVEs, a table of host keys and their sizes, a boolean
-/// verdict about a configuration. Rendered as a string at the point it was
-/// gathered, each of those becomes something a report has to re-parse to do
-/// anything with, and every exporter has to invent the same escaping.
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq)]
-pub enum ScriptOutput {
-    /// Free text: a banner, a title, a certificate subject.
-    String(String),
-    /// A whole number, such as a key size, a count or a version component.
-    Integer(i64),
-    /// A fractional measurement. Not every `f64` compares equal to itself, so a
-    /// `Port` carrying a NaN here is never equal to itself either. That is why
-    /// [`Port`] derives `PartialEq` and not `Eq`.
-    Float(f64),
-    /// A yes-or-no verdict.
-    Boolean(bool),
-    /// An ordered sequence, where the order is part of what was found.
-    List(Vec<ScriptOutput>),
-    /// Named fields. Unordered, so an exporter that needs a stable rendering
-    /// sorts the keys itself.
-    Map(HashMap<String, ScriptOutput>),
-}
-
 /// One transport endpoint on one host, and everything a scan learned about it.
 ///
 /// The number and protocol identify it; everything else is a finding, and is
@@ -162,10 +131,6 @@ pub struct Port {
 
     /// Low-level discovery telemetry (TTL, reason for state, RTT).
     discovery: Option<Discovery>,
-
-    /// Extensible map for scan scripts and custom detection engines.
-    /// Wrapped in an Option to avoid heap allocation for filtered/dropped ports.
-    scripts: Option<HashMap<String, ScriptOutput>>,
 }
 
 impl Port {
@@ -178,7 +143,6 @@ impl Port {
             service: None,
             security: None,
             discovery: None,
-            scripts: None,
         }
     }
 
@@ -237,11 +201,6 @@ impl Port {
         self.discovery.as_ref()
     }
 
-    /// Returns the script output map, if any.
-    pub fn scripts(&self) -> Option<&HashMap<String, ScriptOutput>> {
-        self.scripts.as_ref()
-    }
-
     /// Builder method to attach service information.
     pub fn with_service(mut self, service: Service) -> Self {
         self.service = Some(service);
@@ -260,18 +219,11 @@ impl Port {
         self
     }
 
-    /// Builder method to insert a structured script output.
-    pub fn add_script(mut self, key: impl Into<String>, output: ScriptOutput) -> Self {
-        let scripts = self.scripts.get_or_insert_with(HashMap::new);
-        scripts.insert(key.into(), output);
-        self
-    }
-
     /// Merges architectural findings from another Port record into this one.
     ///
     /// Prioritizes the most definitive port state. Merges nested `Service`,
     /// `Security`, and `Discovery` metadata progressively.
-    pub fn merge(&mut self, mut other: Port) {
+    pub fn merge(&mut self, other: Port) {
         // The state this port held before the merge. Step 4 has to judge the
         // incoming telemetry against what it actually had to beat, and step 1
         // has already overwritten `self.state` by the time it runs.
@@ -317,14 +269,6 @@ impl Port {
         if other.discovery.is_some() && (other.state > previous_state || self.discovery.is_none()) {
             self.discovery = other.discovery;
         }
-
-        // 5. Merge Scripts (Overwrite on key collision, assuming newer is better)
-        if let Some(other_scripts) = other.scripts.take() {
-            let self_scripts = self.scripts.get_or_insert_with(HashMap::new);
-            for (key, value) in other_scripts {
-                self_scripts.insert(key, value);
-            }
-        }
     }
 }
 
@@ -357,33 +301,6 @@ mod tests {
         let mut p3 = Port::new(443, Protocol::Tcp, PortState::Unfiltered);
         p3.merge(Port::new(443, Protocol::Tcp, PortState::Closed));
         assert_eq!(p3.state(), PortState::Closed);
-    }
-
-    #[test]
-    fn structured_scripts_merge_correctly() {
-        let mut port = Port::new(80, Protocol::Tcp, PortState::Open)
-            .add_script("http-title", ScriptOutput::String("Index".into()));
-
-        // Add a complex nested script result
-        let mut ssh_keys = HashMap::new();
-        ssh_keys.insert("rsa".into(), ScriptOutput::Integer(2048));
-        ssh_keys.insert("ed25519".into(), ScriptOutput::Integer(256));
-
-        let other = Port::new(80, Protocol::Tcp, PortState::Open)
-            .add_script("ssh-hostkey", ScriptOutput::Map(ssh_keys));
-
-        port.merge(other);
-
-        let scripts = port.scripts.as_ref().unwrap();
-        assert_eq!(scripts.len(), 2);
-        assert!(matches!(
-            scripts.get("http-title"),
-            Some(ScriptOutput::String(_))
-        ));
-        assert!(matches!(
-            scripts.get("ssh-hostkey"),
-            Some(ScriptOutput::Map(_))
-        ));
     }
 
     /// Telemetry explains a verdict, so a probe that did not improve the

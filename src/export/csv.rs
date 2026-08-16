@@ -171,7 +171,6 @@ struct HostColumns {
     os_accuracy: String,
     roles: String,
     rtt_median_us: String,
-    ttl: String,
     first_seen: String,
     last_seen: String,
 }
@@ -215,11 +214,6 @@ impl HostColumns {
                 .median_rtt()
                 .map(|rtt| rtt.as_micros().to_string())
                 .unwrap_or_default(),
-            ttl: host
-                .telemetry()
-                .ttl
-                .map(|ttl| ttl.to_string())
-                .unwrap_or_default(),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
         }
@@ -237,7 +231,6 @@ impl HostColumns {
         row.push(&self.os_accuracy);
         row.push(&self.roles);
         row.push(&self.rtt_median_us);
-        row.push(&self.ttl);
         row.push(&self.first_seen);
         row.push(&self.last_seen);
     }

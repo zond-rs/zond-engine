@@ -31,7 +31,7 @@ use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
 use crate::model::port::Port;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     net::IpAddr,
     time::SystemTime,
 };
@@ -135,9 +135,6 @@ pub struct Host {
     /// Inferred roles based on network location or discovered services.
     network_roles: HashSet<NetworkRole>,
 
-    /// Extensible map for scan script results (e.g., Nmap NSE output).
-    scripts: Option<HashMap<String, String>>,
-
     /// The timestamp of the first discovery event for this host.
     first_seen: SystemTime,
 
@@ -181,7 +178,6 @@ impl Host {
             zone: None,
             telemetry: HostTelemetry::default(),
             network_roles: HashSet::new(),
-            scripts: None,
             first_seen: now,
             last_seen: now,
             ports: BTreeMap::new(),
@@ -259,11 +255,6 @@ impl Host {
     /// Returns inferred roles based on network location or discovered services.
     pub fn network_roles(&self) -> &HashSet<NetworkRole> {
         &self.network_roles
-    }
-
-    /// Returns the map of scan script results.
-    pub fn scripts(&self) -> Option<&HashMap<String, String>> {
-        self.scripts.as_ref()
     }
 
     /// Returns the timestamp of the first discovery event.
@@ -466,14 +457,6 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
-    /// Adds or updates a script result and bumps `last_seen`.
-    pub fn add_script_result(&mut self, key: String, value: String) {
-        self.scripts
-            .get_or_insert_with(HashMap::new)
-            .insert(key, value);
-        self.last_seen = SystemTime::now();
-    }
-
     /// Returns the minimum recorded RTT.
     pub fn min_rtt(&self) -> Option<std::time::Duration> {
         self.telemetry.min_rtt()
@@ -590,11 +573,6 @@ impl Host {
 
         self.telemetry.merge(other.telemetry);
         self.network_roles.extend(other.network_roles);
-
-        if let Some(other_scripts) = other.scripts {
-            let self_scripts = self.scripts.get_or_insert_with(HashMap::new);
-            self_scripts.extend(other_scripts);
-        }
 
         for (_, port) in other.ports {
             self.add_port(port);

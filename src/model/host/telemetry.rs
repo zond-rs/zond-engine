@@ -75,12 +75,6 @@ pub struct HostTelemetry {
     /// field a caller can set directly would leave the two disagreeing. See
     /// [`set_max_samples`](Self::set_max_samples).
     max_samples: usize,
-
-    /// The Time-to-Live (TTL) value from the most recently received response.
-    pub ttl: Option<u8>,
-
-    /// The calculated network distance in hops, derived from TTL or traceroute probes.
-    pub distance_hops: Option<u8>,
 }
 
 impl HostTelemetry {
@@ -89,8 +83,6 @@ impl HostTelemetry {
         Self {
             rtt_history: VecDeque::with_capacity(max_samples),
             max_samples,
-            ttl: None,
-            distance_hops: None,
         }
     }
 
@@ -299,13 +291,6 @@ impl HostTelemetry {
         let start_idx = combined.len().saturating_sub(self.max_samples);
         self.rtt_history
             .extend(combined.into_iter().skip(start_idx));
-
-        if self.ttl.is_none() {
-            self.ttl = other.ttl;
-        }
-        if self.distance_hops.is_none() {
-            self.distance_hops = other.distance_hops;
-        }
     }
 }
 

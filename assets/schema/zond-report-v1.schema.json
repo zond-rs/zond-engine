@@ -482,7 +482,6 @@
         "ports",
         "first_seen",
         "last_seen",
-        "scripts",
         "zone",
         "families"
       ],
@@ -538,12 +537,7 @@
           "items": { "$ref": "#/$defs/port" }
         },
         "first_seen": { "$ref": "#/$defs/timestamp" },
-        "last_seen": { "$ref": "#/$defs/timestamp" },
-        "scripts": {
-          "description": "Host-level script results, keyed by script name.",
-          "type": "object",
-          "additionalProperties": { "type": "string" }
-        }
+        "last_seen": { "$ref": "#/$defs/timestamp" }
       }
     },
 
@@ -629,9 +623,7 @@
         "rtt_avg_us",
         "rtt_max_us",
         "jitter_us",
-        "samples",
-        "ttl",
-        "distance_hops"
+        "samples"
       ],
       "properties": {
         "rtt_min_us": {
@@ -654,12 +646,6 @@
         "samples": {
           "description": "How many samples the figures above are drawn from.",
           "$ref": "#/$defs/count"
-        },
-        "ttl": { "$ref": "#/$defs/ttl" },
-        "distance_hops": {
-          "type": ["integer", "null"],
-          "minimum": 0,
-          "maximum": 255
         }
       }
     },
@@ -673,8 +659,7 @@
         "state",
         "service",
         "security",
-        "discovery",
-        "scripts"
+        "discovery"
       ],
       "properties": {
         "port": {
@@ -701,11 +686,6 @@
         },
         "discovery": {
           "oneOf": [{ "$ref": "#/$defs/discovery" }, { "type": "null" }]
-        },
-        "scripts": {
-          "description": "Port-level script results, keyed by script name. Scripts produce arbitrary nested data, so this is the one place in the document without a fixed shape. A non-finite float, which JSON cannot express, is emitted as null.",
-          "type": "object",
-          "additionalProperties": true
         }
       }
     },

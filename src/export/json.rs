@@ -305,12 +305,6 @@ mod tests {
         assert!(bare["telemetry"]["rtt_median_us"].is_null());
         assert!(bare["ports"].as_array().expect("a port array").is_empty());
         assert!(
-            bare["scripts"]
-                .as_object()
-                .expect("a script map")
-                .is_empty()
-        );
-        assert!(
             bare["reasons"]
                 .as_array()
                 .expect("a reason array")
@@ -385,18 +379,6 @@ mod tests {
         compact["generated_at"] = Value::Null;
 
         assert_eq!(indented, compact);
-    }
-
-    /// A script that produces a value JSON cannot express must not take the
-    /// rest of the report down with it.
-    #[test]
-    fn a_non_finite_script_value_does_not_fail_the_export() {
-        let document = exported(&fixture::report());
-        let scripts = &document["hosts"][0]["ports"][0]["scripts"];
-
-        assert_eq!(scripts["broken-probe"], Value::Null);
-        assert_eq!(scripts["hostkey-bits"], 2048);
-        assert_eq!(scripts["nested"]["a"], 1);
     }
 
     /// The engine writes into whatever it is handed, and a destination that

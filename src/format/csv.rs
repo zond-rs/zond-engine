@@ -18,7 +18,7 @@
 
 /// The column names, in order. Host columns first, then the port columns that
 /// are empty on a host with no ports.
-pub const COLUMNS: [&str; 25] = [
+pub const COLUMNS: [&str; 24] = [
     "ip",
     "hostname",
     "status",
@@ -30,7 +30,6 @@ pub const COLUMNS: [&str; 25] = [
     "os_accuracy",
     "roles",
     "rtt_median_us",
-    "ttl",
     "first_seen",
     "last_seen",
     "port",

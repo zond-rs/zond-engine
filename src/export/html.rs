@@ -85,7 +85,7 @@ use crate::export::schema::{
 use crate::export::time::rfc3339;
 use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::model::host::{Host, HostStatus};
-use crate::model::port::{Port, PortState, ScriptOutput};
+use crate::model::port::{Port, PortState};
 use crate::scanner::report::ScanReport;
 
 /// The stylesheet inlined into every report.
@@ -592,22 +592,6 @@ fn write_host(
     write_host_facts(out, &dto)?;
     write_ports(out, host, &dto)?;
 
-    if !dto.scripts.is_empty() {
-        writeln!(
-            out,
-            "<div class=\"block\">\n<div class=\"block-title\">scripts</div>\n<dl class=\"facts\">"
-        )?;
-        for (name, value) in &dto.scripts {
-            writeln!(
-                out,
-                "<dt>{name}</dt><dd class=\"pre\">{value}</dd>",
-                name = Text(name),
-                value = Text(value),
-            )?;
-        }
-        writeln!(out, "</dl>\n</div>")?;
-    }
-
     writeln!(out, "</div>\n</article>")?;
     Ok(())
 }
@@ -669,18 +653,6 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
             &format!("{} median{}", duration(median), dim(&detail)),
         )?;
     }
-
-    let mut path = Vec::new();
-    if let Some(ttl) = telemetry.ttl {
-        path.push(format!("ttl {ttl}"));
-    }
-    if let Some(hops) = telemetry.distance_hops {
-        path.push(format!(
-            "{hops} {}",
-            plural(usize::from(hops), "hop", "hops")
-        ));
-    }
-    fact(out, "path", &path.join(" · "))?;
 
     let mut evidence = String::new();
     for reason in &dto.reasons {
@@ -868,15 +840,6 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
             "<dt>probe</dt><dd>{}{}</dd>",
             esc(&discovery.timestamp),
             dim(&detail)
-        );
-    }
-
-    for (name, value) in &dto.scripts {
-        let _ = write!(
-            facts,
-            "<dt>{}</dt><dd class=\"pre\">{}</dd>",
-            Text(name),
-            script_value(value.0)
         );
     }
 
@@ -1326,35 +1289,6 @@ fn dim(parts: &[String]) -> String {
         return String::new();
     }
     format!(" <span class=\"dim\">{}</span>", parts.join(" · "))
-}
-
-/// A script's structured output, rendered as escaped text.
-///
-/// Maps are emitted in sorted key order and a non-finite float as `null`, which
-/// is what the same value serializes to in the JSON document.
-fn script_value(value: &ScriptOutput) -> String {
-    match value {
-        ScriptOutput::String(text) => esc(text),
-        ScriptOutput::Integer(number) => number.to_string(),
-        ScriptOutput::Float(number) if number.is_finite() => number.to_string(),
-        ScriptOutput::Float(_) => "null".to_string(),
-        ScriptOutput::Boolean(flag) => flag.to_string(),
-        ScriptOutput::List(values) => {
-            let rendered: Vec<String> = values.iter().map(script_value).collect();
-            format!("[{}]", rendered.join(", "))
-        }
-        ScriptOutput::Map(entries) => {
-            let sorted: std::collections::BTreeMap<&str, &ScriptOutput> = entries
-                .iter()
-                .map(|(key, value)| (key.as_str(), value))
-                .collect();
-            let rendered: Vec<String> = sorted
-                .iter()
-                .map(|(key, value)| format!("{}: {}", Text(key), script_value(value)))
-                .collect();
-            format!("{{{}}}", rendered.join(", "))
-        }
-    }
 }
 
 /// Renders microseconds the way somebody reads them.

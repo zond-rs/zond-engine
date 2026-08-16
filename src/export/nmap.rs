@@ -212,7 +212,11 @@ fn write_host(
         r#"<status state="{}" reason="{}" reason_ttl="{}"/>"#,
         host_state(host.status()),
         Attr(status_reason(host.status())),
-        host.telemetry().ttl.unwrap_or(0),
+        // nmap puts the TTL of the packet that established the host's state
+        // here. This engine does not record one, and the attribute is required,
+        // so it is written as zero -- which is also what nmap writes when its
+        // own probe did not carry a usable TTL.
+        0,
     )?;
 
     // Every address, so a dual-stack host is one record with two addresses,

@@ -29,8 +29,7 @@ use crate::model::host::{
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::{
-    CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, ScriptOutput, Security,
-    Service,
+    CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
 };
 use crate::scanner::report::{
     BUCKET_BOUNDS_MS, PhaseRecorder, ProbeStats, ScanKind, ScanReport, StopReason, TargetScope,
@@ -49,7 +48,6 @@ fn router() -> Host {
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
     host.set_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
-    host.add_script_result("uptime".to_string(), "31 days".to_string());
 
     let mut os = OsFingerprint::new("Linux", 95)
         .with_family("Unix-like")
@@ -84,16 +82,9 @@ fn ssh_port() -> Port {
         .with_ttl(64)
         .with_source_ip(ip(50));
 
-    let mut nested = std::collections::HashMap::new();
-    nested.insert("a".to_string(), ScriptOutput::Integer(1));
-    nested.insert("b".to_string(), ScriptOutput::Boolean(true));
-
     Port::new(22, Protocol::Tcp, PortState::Open)
         .with_service(service)
         .with_discovery(discovery)
-        .add_script("hostkey-bits", ScriptOutput::Integer(2048))
-        .add_script("broken-probe", ScriptOutput::Float(f64::NAN))
-        .add_script("nested", ScriptOutput::Map(nested))
 }
 
 /// A port carrying a certificate, whose subject names a machine.
@@ -219,7 +210,6 @@ fn hostile_host() -> Host {
     // The one role anything assigns, carried here so the corpus still exercises
     // a non-empty `roles` array through every exporter.
     host.add_network_role(NetworkRole::Tarpit);
-    host.add_script_result(HOSTILE.to_string(), HOSTILE.to_string());
 
     let mut os = OsFingerprint::new(HOSTILE, 90)
         .with_family(HOSTILE)
@@ -257,18 +247,10 @@ fn hostile_port() -> Port {
         .add_alpn(HOSTILE)
         .with_certificate(certificate);
 
-    let mut nested = std::collections::HashMap::new();
-    nested.insert(
-        HOSTILE.to_string(),
-        ScriptOutput::String(HOSTILE.to_string()),
-    );
-
     Port::new(8443, Protocol::Tcp, PortState::Open)
         .with_service(service)
         .with_security(security)
         .with_discovery(Discovery::new(ScanResponse::TcpSynAck).with_source_ip(ip(50)))
-        .add_script(HOSTILE, ScriptOutput::String(HOSTILE.to_string()))
-        .add_script(HOSTILE, ScriptOutput::Map(nested))
 }
 
 /// A report whose every attacker-controlled string is [`HOSTILE`].

@@ -60,7 +60,6 @@
 //! [`Host`]: crate::model::host::Host
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
 
@@ -78,8 +77,7 @@ use crate::model::host::{
 };
 use crate::model::ip::range::IpRange;
 use crate::model::port::{
-    CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, ScriptOutput, Security,
-    Service,
+    CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
 };
 use crate::scanner::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, ScanKind, ScanPhase, ScanReport, ScanSettings,
@@ -972,8 +970,6 @@ pub struct HostDto<'a> {
     pub first_seen: String,
     /// When it was last updated.
     pub last_seen: String,
-    /// Host-level script results, keyed by script name.
-    pub scripts: BTreeMap<&'a str, &'a str>,
 }
 
 impl<'a> HostDto<'a> {
@@ -1026,15 +1022,6 @@ impl<'a> HostDto<'a> {
                 .collect(),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
-            scripts: host
-                .scripts()
-                .map(|scripts| {
-                    scripts
-                        .iter()
-                        .map(|(key, value)| (key.as_str(), value.as_str()))
-                        .collect()
-                })
-                .unwrap_or_default(),
         }
     }
 }
@@ -1162,10 +1149,6 @@ pub struct TelemetryDto {
     pub jitter_us: Option<u64>,
     /// How many samples the figures above are drawn from.
     pub samples: usize,
-    /// The TTL of the most recent response.
-    pub ttl: Option<u8>,
-    /// Network distance in hops, where it could be derived.
-    pub distance_hops: Option<u8>,
 }
 
 impl TelemetryDto {
@@ -1178,8 +1161,6 @@ impl TelemetryDto {
             rtt_max_us: micros_opt(telemetry.max_rtt()),
             jitter_us: micros_opt(telemetry.jitter()),
             samples: telemetry.history().len(),
-            ttl: telemetry.ttl,
-            distance_hops: telemetry.distance_hops,
         }
     }
 }
@@ -1203,8 +1184,6 @@ pub struct PortDto<'a> {
     pub security: Option<SecurityDto<'a>>,
     /// How the state was established.
     pub discovery: Option<DiscoveryDto<'a>>,
-    /// Port-level script results, keyed by script name.
-    pub scripts: BTreeMap<&'a str, ScriptValueDto<'a>>,
 }
 
 impl<'a> PortDto<'a> {
@@ -1219,15 +1198,6 @@ impl<'a> PortDto<'a> {
                 .security()
                 .map(|security| SecurityDto::new(security, options)),
             discovery: port.discovery().map(DiscoveryDto::new),
-            scripts: port
-                .scripts()
-                .map(|scripts| {
-                    scripts
-                        .iter()
-                        .map(|(key, value)| (key.as_str(), ScriptValueDto(value)))
-                        .collect()
-                })
-                .unwrap_or_default(),
         }
     }
 }
@@ -1363,50 +1333,6 @@ impl<'a> DiscoveryDto<'a> {
             rtt_us: micros_opt(discovery.rtt()),
             ttl: discovery.ttl(),
             source_ip: discovery.source_ip().map(|ip| ip.to_string()),
-        }
-    }
-}
-
-/// A structured script result, rendered as the natural JSON value.
-///
-/// Scripts produce arbitrary nested data, so this is the one place in the
-/// document without a fixed shape. Maps are emitted in sorted key order, and a
-/// non-finite float - which has no JSON representation - is emitted as `null`
-/// rather than failing the whole export.
-#[derive(Debug, Clone)]
-pub struct ScriptValueDto<'a>(pub &'a ScriptOutput);
-
-impl Serialize for ScriptValueDto<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-
-        match self.0 {
-            ScriptOutput::String(value) => serializer.serialize_str(value),
-            ScriptOutput::Integer(value) => serializer.serialize_i64(*value),
-            ScriptOutput::Float(value) if value.is_finite() => serializer.serialize_f64(*value),
-            // NaN and the infinities are not JSON numbers. A script that
-            // produces one must not take the rest of the report down with it.
-            ScriptOutput::Float(_) => serializer.serialize_none(),
-            ScriptOutput::Boolean(value) => serializer.serialize_bool(*value),
-            ScriptOutput::List(values) => {
-                let mut seq = serializer.serialize_seq(Some(values.len()))?;
-                for value in values {
-                    seq.serialize_element(&ScriptValueDto(value))?;
-                }
-                seq.end()
-            }
-            ScriptOutput::Map(entries) => {
-                let sorted: BTreeMap<&str, &ScriptOutput> = entries
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value))
-                    .collect();
-
-                let mut map = serializer.serialize_map(Some(sorted.len()))?;
-                for (key, value) in sorted {
-                    map.serialize_entry(key, &ScriptValueDto(value))?;
-                }
-                map.end()
-            }
         }
     }
 }
