@@ -214,6 +214,11 @@ impl Port {
     /// Prioritizes the most definitive port state. Merges nested `Service`,
     /// `Security`, and `Discovery` metadata progressively.
     pub fn merge(&mut self, mut other: Port) {
+        // The state this port held before the merge. Step 4 has to judge the
+        // incoming telemetry against what it actually had to beat, and step 1
+        // has already overwritten `self.state` by the time it runs.
+        let previous_state = self.state;
+
         // 1. Merge State (Upgrades ambiguous states to definitive ones)
         self.state = std::cmp::max(self.state, other.state);
 
@@ -235,9 +240,23 @@ impl Port {
             }
         }
 
-        // 4. Merge Discovery (Usually keep the first discovery, unless we upgraded to Open)
-        // If the other probe resulted in a higher confidence state, adopt its telemetry.
-        if other.state >= self.state && other.discovery.is_some() {
+        // 4. Merge Discovery.
+        //
+        // The telemetry explains the state, so it follows the state. A probe
+        // that upgraded this port carries the account of why it is now Open,
+        // and that account replaces whatever explained the weaker verdict; a
+        // probe that did not upgrade it explains a verdict this port no longer
+        // holds, and the RTT and TTL of a `NoResponse` say nothing about a port
+        // something has since answered on.
+        //
+        // A tie keeps the incumbent, which is the rule every other merge in
+        // this module follows. Two probes reaching the same verdict are equally
+        // good accounts of it, and preferring the later one would make the
+        // recorded telemetry depend on which probe happened to finish last.
+        //
+        // A port with no telemetry at all takes whatever is offered: an
+        // explanation of a weaker verdict still beats none.
+        if other.discovery.is_some() && (other.state > previous_state || self.discovery.is_none()) {
             self.discovery = other.discovery;
         }
 
@@ -307,6 +326,43 @@ mod tests {
             scripts.get("ssh-hostkey"),
             Some(ScriptOutput::Map(_))
         ));
+    }
+
+    /// Telemetry explains a verdict, so a probe that did not improve the
+    /// verdict does not get to rewrite the account of it. Two probes reaching
+    /// the same state are equally good accounts, and preferring the later one
+    /// makes the record depend on which probe happened to finish last.
+    #[test]
+    fn a_tie_keeps_the_telemetry_already_on_record() {
+        let mut first = Port::new(22, Protocol::Tcp, PortState::Open)
+            .with_discovery(Discovery::new(ScanResponse::TcpSynAck).with_ttl(64));
+        let second = Port::new(22, Protocol::Tcp, PortState::Open)
+            .with_discovery(Discovery::new(ScanResponse::TcpSynAck).with_ttl(128));
+
+        first.merge(second);
+
+        assert_eq!(
+            first.discovery().expect("telemetry survives").ttl(),
+            Some(64)
+        );
+    }
+
+    /// A probe that lost the state comparison still explains something, and a
+    /// port holding no telemetry at all has nothing to lose by taking it.
+    #[test]
+    fn a_port_with_no_telemetry_adopts_a_weaker_probes() {
+        let mut open = Port::new(22, Protocol::Tcp, PortState::Open);
+        let filtered = Port::new(22, Protocol::Tcp, PortState::Filtered)
+            .with_discovery(Discovery::new(ScanResponse::NoResponse));
+
+        open.merge(filtered);
+
+        assert_eq!(open.state(), PortState::Open, "the weaker state loses");
+        assert_eq!(
+            open.discovery().expect("adopted").reason(),
+            &ScanResponse::NoResponse,
+            "but its account of itself is better than none"
+        );
     }
 
     #[test]

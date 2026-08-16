@@ -33,7 +33,6 @@ use thiserror::Error;
 
 use crate::model::ip::range::{IpError, IpRange, Ipv4Range};
 use crate::model::ip::set::IpSet;
-use crate::success;
 
 /// Global indicator set to `true` if a "lan" resolution was successfully performed.
 pub static IS_LAN_SCAN: AtomicBool = AtomicBool::new(false);
@@ -56,8 +55,13 @@ impl Keyword {
 /// Errors encountered during the parsing or resolution of IP-related strings.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum IpParseError {
-    /// The provided CIDR prefix is outside the valid IPv4 range of 0-32.
-    #[error("Invalid CIDR prefix: {0} (must be 0-32)")]
+    /// The provided CIDR prefix is longer than its address family allows.
+    ///
+    /// Both bounds are named because the variant carries the prefix and not the
+    /// family it was written against, and a reader told only the IPv4 rule after
+    /// mistyping an IPv6 prefix is being sent to shorten an address that was
+    /// never too long.
+    #[error("Invalid CIDR prefix: {0} (0-32 for IPv4, 0-128 for IPv6)")]
     InvalidPrefix(u8),
 
     /// The start address of a range is numerically higher than the end address.
@@ -162,10 +166,6 @@ where
     if set.is_empty() {
         return Err(IpParseError::EmptySet);
     }
-
-    let len = set.len();
-    let suffix = if len == 1 { "" } else { "es" };
-    success!("{len} IP address{suffix} resolved successfully");
 
     Ok(set)
 }
@@ -387,6 +387,20 @@ mod tests {
         let input = vec!["192.168.1.1/33"];
         let result = to_set(&input, None);
         assert_eq!(result.unwrap_err(), IpParseError::InvalidPrefix(33));
+    }
+
+    /// The error carries the prefix and not the family it was written against,
+    /// so its message has to name both bounds. Told only the IPv4 rule, whoever
+    /// mistyped an IPv6 prefix is sent to shorten an address that was never too
+    /// long.
+    #[test]
+    fn a_prefix_error_names_the_bound_for_both_families() {
+        let v6 = to_set(&["2001:db8::/129"], None).unwrap_err();
+        assert_eq!(v6, IpParseError::InvalidPrefix(129));
+        assert!(v6.to_string().contains("0-128"), "{v6}");
+
+        let v4 = to_set(&["192.168.1.1/33"], None).unwrap_err();
+        assert!(v4.to_string().contains("0-32"), "{v4}");
     }
 
     #[test]

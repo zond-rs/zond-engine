@@ -1099,12 +1099,11 @@ impl LocalScanner {
         // bookkeeping.
         let mut is_new_ip = false;
         let is_new_host = self.ctx.write_host(primary_ip, |host| {
-            // Set the MAC whether we just created the host or the port scanner
+            // Recorded whether we just created the host or the port scanner
             // created it first, so enrichment order doesn't decide whether a MAC
-            // is recorded. Only the first MAC seen for the host is kept.
-            if host.mac().is_none() {
-                host.set_mac(source_mac.into_core());
-            }
+            // is recorded. Repeating one already on record refreshes its
+            // last-seen time, which is what `HardwareInfo` keeps them for.
+            host.set_mac(source_mac.into_core());
             host.set_zone(self.identity.zone.clone());
 
             // The protocol name is the whole of the evidence here - a reply came

@@ -20,6 +20,17 @@
 //! back up to would be pulled into the foundation with it, and the layering
 //! below it would stop meaning anything.
 //!
+//! **Nothing here reports to a user, either.** A value in this module is
+//! returned, never announced. A leaf that logs on its own behalf writes into
+//! output whose shape it cannot see, at a verbosity it was not told, and the
+//! caller — who knows what it asked for and what it is going to do with the
+//! answer — is the only one placed to decide whether any of it is worth saying.
+//! Counting a target set to announce its size is not free either: an [`IpSet`]
+//! that has just been built is unmerged, so `len` clones and merges the whole of
+//! it to produce a number nobody may read.
+//!
+//! [`IpSet`]: ip::set::IpSet
+//!
 //! ## What belongs here
 //!
 //! **A type belongs here when more than one module has to agree on it; a type

@@ -17,6 +17,7 @@
 //! hardware, OS, and service discovery data into a single forensic record.
 
 use crate::model::ip::scoped::{ScopedIp, Zone};
+use crate::model::mac::MacAddr;
 use crate::model::port::Port;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -354,24 +355,49 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
-    /// Sets the hardware info and bumps `last_seen`.
+    /// Replaces this host's hardware record wholesale.
+    ///
+    /// For a caller holding a complete [`HardwareInfo`] — one read back from a
+    /// report, say. A single sighting goes through [`set_mac`](Self::set_mac),
+    /// which adds to the record instead of discarding what is already in it.
     pub fn set_hardware(&mut self, hardware: HardwareInfo) {
         self.hardware = Some(hardware);
         self.last_seen = SystemTime::now();
     }
 
-    /// Builder method to set the hardware MAC and return Self.
-    pub fn with_mac(mut self, mac: crate::model::mac::MacAddr) -> Self {
+    /// Builder method to record a MAC sighting and return Self.
+    pub fn with_mac(mut self, mac: MacAddr) -> Self {
         self.set_mac(mac);
         self
     }
 
-    /// Sets the hardware MAC on an existing host. Unlike [`Host::with_mac`],
-    /// this works by reference, so a host created by one scanner (e.g. the
-    /// port scanner, which has no MAC) can be enriched with a MAC learned by
-    /// another (the ARP-based local scanner) regardless of which ran first.
-    pub fn set_mac(&mut self, mac: crate::model::mac::MacAddr) {
-        self.set_hardware(HardwareInfo::new(mac));
+    /// Records a sighting of `mac` for this host, keeping every address seen.
+    ///
+    /// Works by reference, unlike [`with_mac`](Self::with_mac), so a host
+    /// created by one scanner — the port scanner, which has no MAC — can be
+    /// enriched by another that learned one, whichever ran first.
+    ///
+    /// **Adds rather than replaces, and that is what [`HardwareInfo`] is for.**
+    /// A device with two interfaces on one segment answers under two addresses,
+    /// and a device randomizing its MAC answers under a series of them; both are
+    /// one host, and which address it is currently using is a different question
+    /// from which it has ever used. Overwriting would answer neither — it would
+    /// leave whichever probe replied last, so [`most_recent_mac`] would report a
+    /// sighting order rather than a timeline and [`prune_stale_macs`] would have
+    /// nothing to prune.
+    ///
+    /// Repeating a MAC already on record is not a no-op: it refreshes that
+    /// address's last-seen time, which is what makes the two methods above mean
+    /// anything.
+    ///
+    /// [`most_recent_mac`]: HardwareInfo::most_recent_mac
+    /// [`prune_stale_macs`]: HardwareInfo::prune_stale_macs
+    pub fn set_mac(&mut self, mac: MacAddr) {
+        match &mut self.hardware {
+            Some(hardware) => hardware.add_mac(mac),
+            None => self.hardware = Some(HardwareInfo::new(mac)),
+        }
+        self.last_seen = SystemTime::now();
     }
 
     /// Adds a single RTT measurement and bumps `last_seen`.
@@ -440,7 +466,7 @@ impl Host {
     }
 
     /// Returns the most recent MAC address, if hardware info is available.
-    pub fn mac(&self) -> Option<crate::model::mac::MacAddr> {
+    pub fn mac(&self) -> Option<MacAddr> {
         self.hardware.as_ref().and_then(|h| h.most_recent_mac())
     }
 
@@ -495,8 +521,20 @@ impl Host {
     /// - Status is promoted based on semantic ordering.
     /// - Telemetry and OS data are merged using their respective logic.
     /// - Port caps are enforced during aggregation.
+    ///
+    /// The address the merged record leads with is decided by
+    /// [`consider_primary_ip`](Self::consider_primary_ip), not by which of the
+    /// two happened to be `self`. Two records of one host are two probes'
+    /// accounts of it, and the ranking exists precisely because the order those
+    /// arrive in is nobody's to control — a merge that kept the incumbent
+    /// address unconditionally would reintroduce, between phases, the same
+    /// machine-reported-as-two that the ranking prevents within one.
     pub fn merge(&mut self, other: Host) {
+        let other_primary = other.primary_ip;
+
         self.ips.extend(other.ips);
+        self.consider_primary_ip(other_primary);
+
         if self.hostname.is_none() {
             self.hostname = other.hostname;
         }
@@ -612,6 +650,59 @@ mod tests {
 
         h1.merge(h2);
         assert_eq!(h1.status(), HostStatus::Filtered);
+    }
+
+    /// Two records of one host are two probes' accounts of it, and which of
+    /// them is `self` is an accident of arrival order. A merge that kept the
+    /// incumbent address would report the same machine under its link-local on
+    /// one run and its IPv4 on the next — the failure
+    /// [`Host::consider_primary_ip`] exists to prevent, reintroduced one layer
+    /// up where phases meet.
+    #[test]
+    fn merging_two_records_of_one_host_applies_the_same_address_ranking() {
+        let v4: IpAddr = "192.0.2.10".parse().unwrap();
+        let lla: IpAddr = "fe80::10".parse().unwrap();
+
+        let mut into_link_local = Host::new(lla);
+        into_link_local.merge(Host::new(v4));
+        assert_eq!(into_link_local.primary_ip(), v4);
+
+        let mut into_v4 = Host::new(v4);
+        into_v4.merge(Host::new(lla));
+        assert_eq!(
+            into_v4.primary_ip(),
+            v4,
+            "and the ranking never moves back down"
+        );
+
+        assert_eq!(into_link_local.ips().len(), 2, "nothing is discarded");
+        assert_eq!(into_v4.ips().len(), 2);
+    }
+
+    /// A device with two interfaces on one segment, or one randomizing the
+    /// address it answers under, is a single host with a history — which is the
+    /// whole of what [`HardwareInfo`] stores. Replacing on each sighting leaves
+    /// whichever probe replied last and makes
+    /// [`HardwareInfo::most_recent_mac`] report an arrival order rather than a
+    /// timeline.
+    #[test]
+    fn every_mac_a_host_answers_under_stays_on_its_record() {
+        let first = MacAddr::new(0x02, 0, 0, 0, 0, 1);
+        let second = MacAddr::new(0x02, 0, 0, 0, 0, 2);
+
+        let mut host = Host::new(IP_ADDR);
+        host.set_mac(first);
+        host.set_mac(second);
+
+        let hardware = host.hardware().expect("a sighting was recorded");
+        assert_eq!(hardware.macs().len(), 2);
+        assert!(hardware.macs().contains_key(&first));
+        assert!(hardware.macs().contains_key(&second));
+        assert_eq!(
+            host.mac(),
+            Some(second),
+            "and the newest is the one the host leads with"
+        );
     }
 
     #[test]
