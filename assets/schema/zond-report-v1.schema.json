@@ -592,7 +592,7 @@
     },
 
     "hardware": {
-      "description": "Physical hardware identity. The engine's per-address last-seen readings are monotonic and mean nothing outside the scanning process, so they are not exported.",
+      "description": "Physical hardware identity. The engine records when each address was last seen; those readings are not exported, because the addresses themselves are what identifies the hardware and a consumer comparing two scans has each report's own timestamps to work from.",
       "type": "object",
       "additionalProperties": false,
       "required": ["mac", "macs", "vendor"],

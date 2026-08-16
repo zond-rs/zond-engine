@@ -124,7 +124,9 @@ async fn fingerprint_one(target: ScopedIp, port_number: u16) -> Option<(IpAddr, 
 /// update. [`Port::merge`] is confidence-driven, so the fingerprint overwrites
 /// the discovery phase's name-only baseline.
 fn write_back(ctx: &ScanContext, ip: IpAddr, port: Port) {
-    ctx.update_host(ip, |host| host.add_port(port));
+    ctx.update_host(ip, |host| {
+        host.add_port(port);
+    });
 }
 
 // ╔════════════════════════════════════════════╗

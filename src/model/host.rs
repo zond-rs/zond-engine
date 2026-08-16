@@ -267,14 +267,6 @@ impl Host {
         self.last_seen
     }
 
-    /// Updates the primary IP, ensures it exists in the `ips` set,
-    /// and bumps the `last_seen` timestamp.
-    pub fn set_primary_ip(&mut self, ip: IpAddr) {
-        self.primary_ip = ip;
-        self.ips.insert(ip);
-        self.last_seen = SystemTime::now();
-    }
-
     /// Offers `candidate` as the address this host is reported under, taking it
     /// only if it identifies the host better than the current one.
     ///
@@ -332,9 +324,19 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
-    /// Updates the reachability status and bumps `last_seen`.
+    /// Raises the reachability status to `status`, if that is an improvement.
+    ///
+    /// Promotes and never lowers, the same rule
+    /// [`record_evidence`](Self::record_evidence) applies and for the same
+    /// reason: probes answer in an order nobody controls, and a late ICMP
+    /// unreachable must not overwrite proof the host answered for itself. This
+    /// is the entry point for a caller that has a status and no
+    /// [`StatusReason`] to attach to it; where there is a reason, prefer
+    /// `record_evidence`, which keeps the audit trail as well.
     pub fn set_status(&mut self, status: HostStatus) {
-        self.status = status;
+        if status > self.status {
+            self.status = status;
+        }
         self.last_seen = SystemTime::now();
     }
 
@@ -443,8 +445,8 @@ impl Host {
         self
     }
 
-    /// Adds multiple RTT measurements and bumps `last_seen`.
-    pub fn set_rtts(&mut self, rtts: impl IntoIterator<Item = std::time::Duration>) {
+    /// Records several round-trip measurements at once.
+    pub fn add_rtts(&mut self, rtts: impl IntoIterator<Item = std::time::Duration>) {
         for rtt in rtts {
             self.telemetry.add_rtt(rtt);
         }
@@ -504,15 +506,16 @@ impl Host {
         self.ports.len()
     }
 
-    /// Ingests a new port finding.
+    /// Records a port finding, merging it with what is already known about that
+    /// port.
     ///
-    /// If the port is already known, it is merged with the existing record.
-    /// If the total port count exceeds [`MAX_PORTS_PER_HOST`], the port is ignored
-    /// and the host is assigned the [`NetworkRole::Tarpit`] role.
-    pub fn add_port(&mut self, new_port: Port) {
+    /// Returns whether the finding was recorded. `false` means the host is at
+    /// [`MAX_PORTS_PER_HOST`] and has been marked [`NetworkRole::Tarpit`]; the
+    /// caller is told rather than left to assume the port list is complete.
+    pub fn add_port(&mut self, new_port: Port) -> bool {
         if self.ports.len() >= MAX_PORTS_PER_HOST && !self.ports.contains_key(&new_port.number()) {
             self.network_roles.insert(NetworkRole::Tarpit);
-            return;
+            return false;
         }
 
         self.ports
@@ -521,6 +524,7 @@ impl Host {
             .or_insert(new_port);
 
         self.last_seen = SystemTime::now();
+        true
     }
 
     /// Folds another record of this host into this one.
@@ -574,7 +578,7 @@ impl Host {
         self.telemetry.merge(other.telemetry);
         self.network_roles.extend(other.network_roles);
 
-        for (_, port) in other.ports {
+        for port in other.ports.into_values() {
             self.add_port(port);
         }
 
@@ -619,14 +623,34 @@ mod tests {
 
     static IP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 100));
 
+    /// A status only ever improves. The rule lives on every entry point that
+    /// can set one, not just on `record_evidence`, or a caller reaching for the
+    /// plain setter quietly opts out of it.
     #[test]
-    fn host_primary_ip_invariant() {
+    fn a_status_is_never_lowered_by_the_plain_setter() {
         let mut host = Host::new(IP_ADDR);
-        let fresh_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
-        host.set_primary_ip(fresh_ip);
 
-        assert_eq!(host.primary_ip(), fresh_ip);
-        assert!(host.ips().contains(&fresh_ip));
+        host.set_status(HostStatus::Up);
+        host.set_status(HostStatus::Down);
+        assert_eq!(host.status(), HostStatus::Up);
+
+        let mut climbing = Host::new(IP_ADDR);
+        climbing.set_status(HostStatus::Down);
+        climbing.set_status(HostStatus::Up);
+        assert_eq!(climbing.status(), HostStatus::Up);
+    }
+
+    /// A dropped port is a truncated list, and the caller is the only one that
+    /// can decide what to do about it.
+    #[test]
+    fn add_port_reports_whether_the_finding_was_recorded() {
+        let mut host = Host::new(IP_ADDR);
+        for i in 0..MAX_PORTS_PER_HOST {
+            assert!(host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Open)));
+        }
+
+        assert!(!host.add_port(Port::new(9999, Protocol::Tcp, PortState::Open)));
+        assert!(host.network_roles().contains(&NetworkRole::Tarpit));
     }
 
     #[test]

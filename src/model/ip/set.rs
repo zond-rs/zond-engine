@@ -74,8 +74,8 @@ impl IpSet {
     /// documentation for why.
     pub fn insert(&mut self, ip: IpAddr) {
         match ip {
-            IpAddr::V4(v4) => self.push_v4_range(Ipv4Range::new(v4, v4).unwrap()),
-            IpAddr::V6(v6) => self.push_v6_range(Ipv6Range::new(v6, v6).unwrap()),
+            IpAddr::V4(v4) => self.push_v4_range(Ipv4Range::single(v4)),
+            IpAddr::V6(v6) => self.push_v6_range(Ipv6Range::single(v6)),
         }
     }
 
@@ -401,15 +401,18 @@ impl IntoIterator for IpSet {
 }
 
 impl Extend<IpAddr> for IpSet {
+    /// Marks only the families that actually gained a range.
+    ///
+    /// A set is merged per family, so extending with IPv4 addresses alone must
+    /// not put IPv6 membership back on its slow path, and extending with
+    /// nothing must not undo a `canonicalize` that has already run.
     fn extend<T: IntoIterator<Item = IpAddr>>(&mut self, iter: T) {
         for ip in iter {
             match ip {
-                IpAddr::V4(v4) => self.v4.push(Ipv4Range::new(v4, v4).unwrap()),
-                IpAddr::V6(v6) => self.v6.push(Ipv6Range::new(v6, v6).unwrap()),
+                IpAddr::V4(v4) => self.push_v4_range(Ipv4Range::single(v4)),
+                IpAddr::V6(v6) => self.push_v6_range(Ipv6Range::single(v6)),
             }
         }
-        self.v4_dirty = true;
-        self.v6_dirty = true;
     }
 }
 
@@ -426,13 +429,8 @@ impl FromIterator<IpRange> for IpSet {
     fn from_iter<I: IntoIterator<Item = IpRange>>(iter: I) -> Self {
         let mut set = IpSet::new();
         for range in iter {
-            match range {
-                IpRange::V4(r) => set.v4.push(r),
-                IpRange::V6(r) => set.v6.push(r),
-            }
+            set.insert_range(range);
         }
-        set.v4_dirty = true;
-        set.v6_dirty = true;
         set.canonicalize();
         set
     }
@@ -442,11 +440,15 @@ impl FromIterator<IpSet> for IpSet {
     fn from_iter<I: IntoIterator<Item = IpSet>>(iter: I) -> Self {
         let mut master = IpSet::new();
         for set in iter {
-            master.v4.extend(set.v4);
-            master.v6.extend(set.v6);
+            if !set.v4.is_empty() {
+                master.v4.extend(set.v4);
+                master.v4_dirty = true;
+            }
+            if !set.v6.is_empty() {
+                master.v6.extend(set.v6);
+                master.v6_dirty = true;
+            }
         }
-        master.v4_dirty = true;
-        master.v6_dirty = true;
         master.canonicalize();
         master
     }
@@ -573,6 +575,25 @@ mod tests {
         set.canonicalize();
         assert_eq!(set.len_canonical(), 0);
         assert!(set.v4().is_empty());
+    }
+
+    /// A set is merged per family, so work on one must not undo the other's
+    /// canonical state. Marking both put IPv6 membership back on its linear
+    /// path every time an IPv4 address arrived.
+    #[test]
+    fn extending_one_family_leaves_the_other_canonical() {
+        let mut set = IpSet::from_iter(vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]);
+        assert!(!set.v4_dirty && !set.v6_dirty, "from_iter canonicalizes");
+
+        set.extend([IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+
+        assert!(set.v4_dirty, "the family that gained a range");
+        assert!(!set.v6_dirty, "and only that one");
+
+        // And extending with nothing does not undo a merge that already ran.
+        let mut untouched = IpSet::from_iter(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+        untouched.extend([]);
+        assert!(!untouched.v4_dirty && !untouched.v6_dirty);
     }
 
     #[test]

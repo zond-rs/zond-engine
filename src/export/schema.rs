@@ -1232,7 +1232,7 @@ impl<'a> ServiceDto<'a> {
             vendor: service.vendor(),
             version: service.version(),
             extrainfo: service.extrainfo(),
-            cpe: service.cpe().iter().map(String::as_str).collect(),
+            cpe: service.cpe().iter().map(AsRef::as_ref).collect(),
         }
     }
 }
@@ -1256,7 +1256,7 @@ impl<'a> SecurityDto<'a> {
         Self {
             tls_version: security.tls_version(),
             cipher_suite: security.cipher_suite(),
-            alpn: security.alpn().iter().map(String::as_str).collect(),
+            alpn: security.alpn().iter().map(AsRef::as_ref).collect(),
             certificate: security
                 .certificate()
                 .map(|cert| CertificateDto::new(cert, options)),

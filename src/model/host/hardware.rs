@@ -22,9 +22,14 @@
 //! [`HardwareInfo::most_recent_mac`] can answer the first question and
 //! [`HardwareInfo::prune_stale_macs`] can bound the record on a monitor that
 //! runs for days against a segment full of randomizing devices.
+//!
+//! Those timestamps are wall-clock [`SystemTime`], matching
+//! [`Host::first_seen`](crate::model::host::Host::first_seen), so they mean the
+//! same thing to a report as they do to the process that recorded them and can
+//! be compared against a cutoff a person chose.
 
 use crate::model::mac::{self, MacAddr};
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{collections::BTreeMap, sync::Arc, time::SystemTime};
 
 /// The MAC addresses a host has answered under, and who made its hardware.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +39,7 @@ pub struct HardwareInfo {
     /// A `BTreeMap` so that iteration order is the addresses' own and not a
     /// hash seed's: a report listing them twice must list them the same way
     /// twice.
-    macs: BTreeMap<MacAddr, Instant>,
+    macs: BTreeMap<MacAddr, SystemTime>,
 
     /// The manufacturer the OUI attributes the hardware to, if the database
     /// recognises it.
@@ -52,7 +57,7 @@ impl HardwareInfo {
     /// The vendor is resolved automatically from the MAC's OUI, if known.
     pub fn new(mac: MacAddr) -> Self {
         let mut macs = BTreeMap::new();
-        macs.insert(mac, Instant::now());
+        macs.insert(mac, SystemTime::now());
 
         Self {
             macs,
@@ -66,7 +71,7 @@ impl HardwareInfo {
     /// If no vendor has been identified yet, this attempts to resolve one
     /// from the newly observed MAC's OUI.
     pub fn add_mac(&mut self, mac: MacAddr) {
-        self.macs.insert(mac, Instant::now());
+        self.macs.insert(mac, SystemTime::now());
 
         if self.vendor.is_none() {
             self.vendor = mac::vendor(&mac).map(Arc::from);
@@ -82,7 +87,7 @@ impl HardwareInfo {
     /// Returns a read-only view of all recorded MAC addresses and their
     /// last-seen timestamps.
     #[inline]
-    pub fn macs(&self) -> &BTreeMap<MacAddr, Instant> {
+    pub fn macs(&self) -> &BTreeMap<MacAddr, SystemTime> {
         &self.macs
     }
 
@@ -107,7 +112,7 @@ impl HardwareInfo {
     /// Discarding an address discards the evidence that the host ever used it,
     /// so the cutoff is the caller's to choose: it is the age past which they
     /// would no longer act on the information.
-    pub fn prune_stale_macs(&mut self, cutoff: Instant) {
+    pub fn prune_stale_macs(&mut self, cutoff: SystemTime) {
         self.macs.retain(|_, last_seen| *last_seen >= cutoff);
     }
 
@@ -162,8 +167,8 @@ mod tests {
         let mac_new = MacAddr::new(2, 2, 2, 2, 2, 2);
 
         let mut hw = HardwareInfo::new(mac_old);
-        let future_time = Instant::now() + Duration::from_secs(60);
-        hw.macs.insert(mac_new, future_time);
+        hw.macs
+            .insert(mac_new, SystemTime::now() + Duration::from_secs(60));
 
         assert_eq!(hw.most_recent_mac(), Some(mac_new));
     }
@@ -184,10 +189,10 @@ mod tests {
         let mac_drop = MacAddr::new(2, 2, 2, 2, 2, 2);
 
         let mut hw = HardwareInfo::new(mac_keep);
-        let past_time = Instant::now() - Duration::from_secs(3600);
-        hw.macs.insert(mac_drop, past_time);
+        hw.macs
+            .insert(mac_drop, SystemTime::now() - Duration::from_secs(3600));
 
-        let cutoff = Instant::now() - Duration::from_secs(1800);
+        let cutoff = SystemTime::now() - Duration::from_secs(1800);
         hw.prune_stale_macs(cutoff);
 
         assert_eq!(hw.macs().len(), 1);

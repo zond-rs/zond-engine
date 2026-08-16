@@ -126,11 +126,10 @@ impl TargetSet {
         let ports_arc: Arc<[(u16, Protocol)]> = self.ports.to_vec().into();
 
         self.ips.iter().flat_map(move |ip| {
-            let local_ports = Arc::clone(&ports_arc);
-            (0..local_ports.len()).map(move |i| Target {
-                ip,
-                port: local_ports[i].0,
-                protocol: local_ports[i].1,
+            let ports = Arc::clone(&ports_arc);
+            (0..ports.len()).map(move |i| {
+                let (port, protocol) = ports[i];
+                Target { ip, port, protocol }
             })
         })
     }

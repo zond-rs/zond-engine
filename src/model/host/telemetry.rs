@@ -109,45 +109,47 @@ impl HostTelemetry {
         &self.rtt_history
     }
 
-    /// The samples every statistic is computed from.
+    /// Whether this host produced a reply to a probe aimed at it alone.
+    ///
+    /// One such reply retires the whole segment-wide class, so this is what
+    /// every statistic below branches on.
+    fn has_direct(&self) -> bool {
+        self.rtt_history
+            .iter()
+            .any(|sample| sample.source == RttSource::Direct)
+    }
+
+    /// The direct samples, oldest first.
     ///
     /// A host is described by the best evidence it produced, not by the average
     /// of good evidence and bad. One direct reply is a better account of the
-    /// path than a dozen broadcast ones, so a single direct sample retires the
-    /// whole weaker class, and what remains is a set of ordinary round trips
-    /// that the usual statistics describe properly.
-    ///
-    /// With nothing but segment-wide samples the set collapses to its
-    /// **smallest**, because those are not round trips to average. Each one is
-    /// the path plus however long the responder held its reply back, and that
-    /// hold-off is deliberate and unbounded. The smallest is therefore the
-    /// tightest bound available on the path, and every other summary of them
-    /// describes the responder's manners instead.
-    ///
-    /// Not a refinement. A neighbour that answers one echo request promptly and
-    /// a later one after a wake contributes two samples an order of magnitude
-    /// apart, and their median is a figure neither reply supports. Every host
-    /// answering both requests lands on the same midpoint, since they share the
-    /// pair it is derived from, so a whole segment reports a latency nothing on
-    /// it produced.
-    fn ranked(&self) -> Vec<Duration> {
-        let direct: Vec<Duration> = self
-            .rtt_history
+    /// path than a dozen segment-wide ones, so a single direct sample retires
+    /// the whole weaker class, and what remains is a set of ordinary round trips
+    /// the usual statistics describe properly.
+    fn direct(&self) -> impl Iterator<Item = Duration> + '_ {
+        self.rtt_history
             .iter()
             .filter(|sample| sample.source == RttSource::Direct)
             .map(|sample| sample.rtt)
-            .collect();
+    }
 
-        if !direct.is_empty() {
-            return direct;
-        }
-
-        self.rtt_history
-            .iter()
-            .map(|sample| sample.rtt)
-            .min()
-            .into_iter()
-            .collect()
+    /// The one figure a host with nothing but segment-wide samples is described
+    /// by: the smallest of them.
+    ///
+    /// Those are not round trips to average. Each is the path plus however long
+    /// the responder held its reply back, and that hold-off is deliberate and
+    /// unbounded, so the smallest is the tightest bound available on the path
+    /// and every other summary of them describes the responder's manners
+    /// instead.
+    ///
+    /// Not a refinement. A neighbour that answers one echo request promptly and
+    /// a later one after a wake contributes two samples an order of magnitude
+    /// apart, whose median is a figure neither reply supports. Every host
+    /// answering both requests lands on that same midpoint, since they share the
+    /// pair it is derived from, so a whole segment would report a latency
+    /// nothing on it produced.
+    fn tightest_bound(&self) -> Option<Duration> {
+        self.rtt_history.iter().map(|sample| sample.rtt).min()
     }
 
     /// Adds a new RTT measurement at the current system time.
@@ -195,12 +197,20 @@ impl HostTelemetry {
 
     /// Returns the minimum (fastest) RTT recorded in the current window.
     pub fn min_rtt(&self) -> Option<Duration> {
-        self.ranked().into_iter().min()
+        if self.has_direct() {
+            self.direct().min()
+        } else {
+            self.tightest_bound()
+        }
     }
 
     /// Returns the maximum (slowest) RTT recorded in the current window.
     pub fn max_rtt(&self) -> Option<Duration> {
-        self.ranked().into_iter().max()
+        if self.has_direct() {
+            self.direct().max()
+        } else {
+            self.tightest_bound()
+        }
     }
 
     /// Returns the median RTT across all samples in the current window.
@@ -213,7 +223,11 @@ impl HostTelemetry {
     ///
     /// Returns `None` if no samples have been recorded yet.
     pub fn median_rtt(&self) -> Option<Duration> {
-        let mut sorted: Vec<Duration> = self.ranked();
+        if !self.has_direct() {
+            return self.tightest_bound();
+        }
+
+        let mut sorted: Vec<Duration> = self.direct().collect();
         if sorted.is_empty() {
             return None;
         }
@@ -230,12 +244,17 @@ impl HostTelemetry {
 
     /// Calculates the arithmetic mean RTT from all samples in the window.
     pub fn average_rtt(&self) -> Option<Duration> {
-        let ranked = self.ranked();
-        if ranked.is_empty() {
-            return None;
+        if !self.has_direct() {
+            return self.tightest_bound();
         }
-        let sum: Duration = ranked.iter().sum();
-        Some(sum / ranked.len() as u32)
+
+        let (sum, count) = self
+            .direct()
+            .fold((Duration::ZERO, 0u32), |(sum, count), rtt| {
+                (sum + rtt, count + 1)
+            });
+
+        (count > 0).then(|| sum / count)
     }
 
     /// Calculates the network jitter as the **Average Absolute Difference**
@@ -244,17 +263,20 @@ impl HostTelemetry {
     /// Jitter provides a measure of network stability. A high jitter relative
     /// to the average RTT often indicates network congestion or bufferbloat.
     pub fn jitter(&self) -> Option<Duration> {
-        let ranked = self.ranked();
-        if ranked.len() < 2 {
-            return None;
+        // Only the direct samples have consecutive pairs worth differencing:
+        // the weaker class collapses to a single figure, which has no jitter.
+        let mut samples = self.direct();
+        let mut previous = samples.next()?;
+
+        let mut total = Duration::ZERO;
+        let mut gaps = 0u32;
+        for rtt in samples {
+            total += rtt.abs_diff(previous);
+            previous = rtt;
+            gaps += 1;
         }
 
-        let mut total_diff = Duration::ZERO;
-        for pair in ranked.windows(2) {
-            total_diff += pair[1].abs_diff(pair[0]);
-        }
-
-        Some(total_diff / (ranked.len() - 1) as u32)
+        (gaps > 0).then(|| total / gaps)
     }
 
     /// Folds another record's samples into this one, keeping the combined

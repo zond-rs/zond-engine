@@ -19,6 +19,7 @@
 //! traceable to a value set below.
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::ZondConfig;
@@ -75,7 +76,7 @@ fn ssh_port() -> Port {
         .with_product("OpenSSH")
         .with_vendor("OpenBSD")
         .with_version("8.9p1")
-        .add_cpe("cpe:/a:openbsd:openssh:8.9p1");
+        .with_cpe("cpe:/a:openbsd:openssh:8.9p1");
 
     let discovery = Discovery::new(ScanResponse::TcpSynAck)
         .with_rtt(Duration::from_micros(1_450))
@@ -91,20 +92,19 @@ fn ssh_port() -> Port {
 fn https_port() -> Port {
     let certificate = CertificateInfo::new(
         "router.local",
-        vec!["www.router.local".to_string()],
         "Local CA",
         std::time::UNIX_EPOCH + Duration::from_secs(1_767_225_600),
         std::time::UNIX_EPOCH + Duration::from_secs(1_798_761_600),
-        "ECDSA",
-        256,
         "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-    );
+    )
+    .with_sans([Arc::from("www.router.local")])
+    .with_public_key("ECDSA", 256);
 
     let security = Security::new()
         .with_tls_version("TLSv1.3")
         .with_cipher_suite("TLS_AES_256_GCM_SHA384")
-        .add_alpn("h2")
-        .add_alpn("http/1.1")
+        .with_alpn("h2")
+        .with_alpn("http/1.1")
         .with_certificate(certificate);
 
     Port::new(443, Protocol::Tcp, PortState::Open).with_security(security)
@@ -228,23 +228,22 @@ fn hostile_port() -> Port {
         .with_product(HOSTILE)
         .with_vendor(HOSTILE)
         .with_version(HOSTILE)
-        .add_cpe(HOSTILE);
+        .with_cpe(HOSTILE);
 
     let certificate = CertificateInfo::new(
         HOSTILE,
-        vec![HOSTILE.to_string()],
         HOSTILE,
         std::time::UNIX_EPOCH + Duration::from_secs(1_767_225_600),
         std::time::UNIX_EPOCH + Duration::from_secs(1_798_761_600),
         HOSTILE,
-        256,
-        HOSTILE,
-    );
+    )
+    .with_sans([Arc::from(HOSTILE)])
+    .with_public_key(HOSTILE, 256);
 
     let security = Security::new()
         .with_tls_version(HOSTILE)
         .with_cipher_suite(HOSTILE)
-        .add_alpn(HOSTILE)
+        .with_alpn(HOSTILE)
         .with_certificate(certificate);
 
     Port::new(8443, Protocol::Tcp, PortState::Open)

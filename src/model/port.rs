@@ -161,9 +161,13 @@ impl Port {
         self.state
     }
 
-    /// Updates the port discovery state.
+    /// Raises the recorded state to `state`, if that is more definitive.
+    ///
+    /// Promotes and never lowers, on the same ordering [`merge`](Self::merge)
+    /// uses. A second probe that learned less about a port does not get to
+    /// unlearn what the first established.
     pub fn set_state(&mut self, state: PortState) {
-        self.state = state;
+        self.state = std::cmp::max(self.state, state);
     }
 
     /// Returns the service identification, if any.

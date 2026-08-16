@@ -24,19 +24,25 @@
 //! after it ran, and "expired" answered from the current time would relabel a
 //! report every time it was opened.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// Information about transport security (TLS/SSL) successfully negotiated on a port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Security {
-    /// The specific TLS version negotiated (e.g., "TLSv1.3").
-    tls_version: Option<String>,
+    /// The TLS version negotiated, such as `"TLSv1.3"`.
+    ///
+    /// Shared rather than owned: a scan of any size negotiates the same two or
+    /// three versions and the same handful of cipher suites across every TLS
+    /// port it touches.
+    tls_version: Option<Arc<str>>,
 
-    /// The cipher suite selected by the server (e.g., "TLS_AES_256_GCM_SHA384").
-    cipher_suite: Option<String>,
+    /// The cipher suite the server selected, such as
+    /// `"TLS_AES_256_GCM_SHA384"`.
+    cipher_suite: Option<Arc<str>>,
 
-    /// Application-Layer Protocol Negotiation (ALPN) protocols supported (e.g., ["h2", "http/1.1"]).
-    alpn: Vec<String>,
+    /// The protocols agreed over ALPN, such as `["h2"]`.
+    alpn: Vec<Arc<str>>,
 
     /// Public key information and lifecycle summaries for the presented X.509 certificate.
     certificate: Option<CertificateInfo>,
@@ -64,7 +70,7 @@ impl Security {
     }
 
     /// Returns the negotiated ALPN protocols.
-    pub fn alpn(&self) -> &[String] {
+    pub fn alpn(&self) -> &[Arc<str>] {
         &self.alpn
     }
 
@@ -74,23 +80,31 @@ impl Security {
     }
 
     /// Builder method to set the negotiated TLS version.
-    pub fn with_tls_version(mut self, version: impl Into<String>) -> Self {
+    pub fn with_tls_version(mut self, version: impl Into<Arc<str>>) -> Self {
         self.tls_version = Some(version.into());
         self
     }
 
     /// Builder method to set the negotiated cipher suite.
-    pub fn with_cipher_suite(mut self, cipher: impl Into<String>) -> Self {
+    pub fn with_cipher_suite(mut self, cipher: impl Into<Arc<str>>) -> Self {
         self.cipher_suite = Some(cipher.into());
         self
     }
 
-    /// Builder method to add an ALPN protocol string.
-    pub fn add_alpn(mut self, protocol: impl Into<String>) -> Self {
-        let proto_str = protocol.into();
-        if !self.alpn.contains(&proto_str) {
-            self.alpn.push(proto_str);
+    /// Records an ALPN protocol, if it is not already recorded.
+    ///
+    /// Takes `&mut self`, so a record already attached to a port can be added
+    /// to; [`with_alpn`](Self::with_alpn) is the builder form.
+    pub fn add_alpn(&mut self, protocol: impl Into<Arc<str>>) {
+        let protocol = protocol.into();
+        if !self.alpn.contains(&protocol) {
+            self.alpn.push(protocol);
         }
+    }
+
+    /// Builder form of [`add_alpn`](Self::add_alpn).
+    pub fn with_alpn(mut self, protocol: impl Into<Arc<str>>) -> Self {
+        self.add_alpn(protocol);
         self
     }
 
@@ -153,12 +167,9 @@ impl Security {
     ///
     /// let security = Security::new().with_certificate(CertificateInfo::new(
     ///     "test.local",
-    ///     vec![],
     ///     "Local CA",
     ///     SystemTime::now() - thirty_days,
     ///     SystemTime::now() + ten_days,
-    ///     "RSA",
-    ///     2048,
     ///     "deadbeef",
     /// ));
     ///
@@ -188,14 +199,18 @@ impl Default for Security {
 /// A parsed summary of a service's X.509 security certificate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertificateInfo {
-    /// The Common Name (CN) of the certificate subject.
-    common_name: String,
+    /// The Common Name of the certificate subject.
+    common_name: Arc<str>,
 
-    /// Subject Alternative Names (SANs) associated with the certificate.
-    sans: Vec<String>,
+    /// Every other name the certificate claims, from its Subject Alternative
+    /// Name extension.
+    sans: Vec<Arc<str>>,
 
-    /// The name of the Issuing Certificate Authority (CA).
-    issuer: String,
+    /// The Common Name of the issuing authority.
+    ///
+    /// Shared rather than owned, because an estate's certificates come from a
+    /// handful of issuers and most of them from one internal CA.
+    issuer: Arc<str>,
 
     /// The timestamp when the certificate becomes valid.
     validity_start: SystemTime,
@@ -203,39 +218,60 @@ pub struct CertificateInfo {
     /// The timestamp when the certificate expires.
     validity_end: SystemTime,
 
-    /// The type of public key used (e.g., "RSA", "ECDSA", "Ed25519").
-    pubkey_type: String,
+    /// The public key algorithm, such as `"RSA"` or `"EC"`.
+    pubkey_type: Arc<str>,
 
     /// The size of the public key in bits (e.g., 2048, 4096, 256).
     pubkey_bits: u32,
 
-    /// The SHA-256 fingerprint of the raw DER-encoded certificate.
-    fingerprint_sha256: String,
+    /// The SHA-256 fingerprint of the raw DER, lowercase hex.
+    fingerprint_sha256: Arc<str>,
 }
 
 impl CertificateInfo {
-    /// Creates a new certificate information record.
-    #[allow(clippy::too_many_arguments)]
+    /// Creates a certificate record from what identifies it: who it is for,
+    /// who issued it, the window it is valid in, and its fingerprint.
+    ///
+    /// The names it also claims and the key it carries are attached with
+    /// [`with_sans`](Self::with_sans) and
+    /// [`with_public_key`](Self::with_public_key). Splitting them off keeps the
+    /// required arguments few enough to read at a call site, where eight
+    /// positional ones included two adjacent `SystemTime`s that could be
+    /// swapped without any diagnostic.
     pub fn new(
-        common_name: impl Into<String>,
-        sans: Vec<String>,
-        issuer: impl Into<String>,
+        common_name: impl Into<Arc<str>>,
+        issuer: impl Into<Arc<str>>,
         validity_start: SystemTime,
         validity_end: SystemTime,
-        pubkey_type: impl Into<String>,
-        pubkey_bits: u32,
-        fingerprint_sha256: impl Into<String>,
+        fingerprint_sha256: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             common_name: common_name.into(),
-            sans,
+            sans: Vec::new(),
             issuer: issuer.into(),
             validity_start,
             validity_end,
-            pubkey_type: pubkey_type.into(),
-            pubkey_bits,
+            pubkey_type: Arc::from("unknown"),
+            pubkey_bits: 0,
             fingerprint_sha256: fingerprint_sha256.into(),
         }
+    }
+
+    /// Builder method to attach the other names the certificate claims.
+    pub fn with_sans(mut self, sans: impl IntoIterator<Item = Arc<str>>) -> Self {
+        self.sans = sans.into_iter().collect();
+        self
+    }
+
+    /// Builder method to attach the public key's algorithm and size in bits.
+    ///
+    /// Both together, because neither is worth much alone: `2048` means nothing
+    /// without knowing it is RSA, and a size of zero is how an unparseable key
+    /// is reported.
+    pub fn with_public_key(mut self, kind: impl Into<Arc<str>>, bits: u32) -> Self {
+        self.pubkey_type = kind.into();
+        self.pubkey_bits = bits;
+        self
     }
 
     /// Returns the Common Name (CN) of the certificate.
@@ -244,7 +280,7 @@ impl CertificateInfo {
     }
 
     /// Returns the Subject Alternative Names (SANs).
-    pub fn sans(&self) -> &[String] {
+    pub fn sans(&self) -> &[Arc<str>] {
         &self.sans
     }
 
@@ -307,16 +343,9 @@ mod tests {
             now + Duration::from_secs(end_offset as u64)
         };
 
-        CertificateInfo::new(
-            "test.local",
-            vec!["*.test.local".into()],
-            "Local CA",
-            start,
-            end,
-            "RSA",
-            2048,
-            "deadbeef",
-        )
+        CertificateInfo::new("test.local", "Local CA", start, end, "deadbeef")
+            .with_sans([Arc::from("*.test.local")])
+            .with_public_key("RSA", 2048)
     }
 
     #[test]
@@ -324,8 +353,8 @@ mod tests {
         let sec = Security::new()
             .with_tls_version("TLSv1.3")
             .with_cipher_suite("TLS_AES_256_GCM_SHA384")
-            .add_alpn("h2")
-            .add_alpn("http/1.1");
+            .with_alpn("h2")
+            .with_alpn("http/1.1");
 
         assert_eq!(sec.tls_version(), Some("TLSv1.3"));
         assert_eq!(sec.cipher_suite(), Some("TLS_AES_256_GCM_SHA384"));
@@ -336,19 +365,19 @@ mod tests {
     fn security_merge_logic() {
         let mut s1 = Security::new()
             .with_tls_version("TLSv1.2")
-            .add_alpn("http/1.1");
+            .with_alpn("http/1.1");
 
         let s2 = Security::new()
             .with_cipher_suite("AES128-GCM")
-            .add_alpn("h2")
-            .add_alpn("http/1.1"); // Should be deduplicated
+            .with_alpn("h2")
+            .with_alpn("http/1.1"); // Should be deduplicated
 
         s1.merge(s2);
 
         assert_eq!(s1.tls_version(), Some("TLSv1.2"));
         assert_eq!(s1.cipher_suite(), Some("AES128-GCM"));
         assert_eq!(s1.alpn().len(), 2);
-        assert!(s1.alpn().contains(&"h2".to_string()));
+        assert!(s1.alpn().iter().any(|p| &**p == "h2"));
     }
 
     #[test]

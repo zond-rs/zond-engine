@@ -108,6 +108,19 @@ impl Ipv4Range {
         (start..=end).map(|ip| IpAddr::V4(Ipv4Addr::from(ip)))
     }
 
+    /// A range covering the single address `addr`.
+    ///
+    /// Infallible, because one address is trivially in order with itself. That
+    /// is what keeps the callers that hold one address from writing
+    /// `new(addr, addr).unwrap()` and teaching a reader that constructing a
+    /// range can panic.
+    pub const fn single(addr: Ipv4Addr) -> Self {
+        Self {
+            start_addr: addr,
+            end_addr: addr,
+        }
+    }
+
     /// The inclusive first address.
     pub fn start_addr(&self) -> Ipv4Addr {
         self.start_addr
@@ -138,16 +151,19 @@ impl Ipv4Range {
         ip_u32 >= start && ip_u32 <= end
     }
 
-    /// Returns the number of IP addresses in the range.
+    /// How many addresses the range covers, never fewer than one.
+    ///
+    /// There is deliberately no `is_empty`: both bounds are inclusive and
+    /// [`new`](Self::new) refuses an inverted range, so a range always holds at
+    /// least one address and the answer would be `false` every time it was
+    /// asked. [`IpSet::is_empty`](crate::model::ip::set::IpSet::is_empty) next
+    /// door means something real, which is exactly what makes an always-false
+    /// one here a trap.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u64 {
         let s_u32: u64 = u32::from(self.start_addr) as u64;
         let e_u32: u64 = u32::from(self.end_addr) as u64;
         (e_u32 - s_u32) + 1
-    }
-
-    /// Returns true if the range contains no addresses.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 }
 
@@ -209,6 +225,16 @@ impl Ipv6Range {
         }
     }
 
+    /// A range covering the single address `addr`, on no particular interface.
+    /// The counterpart of [`Ipv4Range::single`].
+    pub const fn single(addr: Ipv6Addr) -> Self {
+        Self {
+            start_addr: addr,
+            end_addr: addr,
+            zone: None,
+        }
+    }
+
     /// The inclusive first address.
     pub fn start_addr(&self) -> Ipv6Addr {
         self.start_addr
@@ -266,7 +292,8 @@ impl Ipv6Range {
         ip_u128 >= start && ip_u128 <= end
     }
 
-    /// Returns the number of IP addresses in the range.
+    /// How many addresses the range covers, never fewer than one. See
+    /// [`Ipv4Range::len`] for why there is no `is_empty` beside it.
     ///
     /// `::/0` covers 2^128 addresses, which is one more than a `u128` can hold,
     /// so the count saturates at [`u128::MAX`]. That is an undercount of one
@@ -275,15 +302,11 @@ impl Ipv6Range {
     /// alternative to a wrapping subtraction that reports the whole of IPv6 as
     /// *nothing*. A budget check is the main reader of this, and reporting zero
     /// would wave through precisely the target it exists to stop.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u128 {
         let s_u128: u128 = u128::from(self.start_addr);
         let e_u128: u128 = u128::from(self.end_addr);
         (e_u128 - s_u128).saturating_add(1)
-    }
-
-    /// Returns true if the range contains no addresses.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 }
 
@@ -332,17 +355,14 @@ impl IpRange {
         }
     }
 
-    /// Returns the total number of IP addresses in the range.
+    /// How many addresses the range covers, never fewer than one. See
+    /// [`Ipv4Range::len`] for why there is no `is_empty` beside it.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u128 {
         match self {
             IpRange::V4(r) => r.len() as u128,
             IpRange::V6(r) => r.len(),
         }
-    }
-
-    /// Returns true if the range contains no addresses.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 }
 

@@ -47,11 +47,94 @@ pub struct CaptureCounts {
 impl std::ops::Add for CaptureCounts {
     type Output = Self;
 
+    /// Saturating, like every other count in the model.
+    ///
+    /// These come from a kernel and are summed across however many captures a
+    /// scan opened. A total too large to represent is still enormous, where a
+    /// wrapped one reads as a quiet capture and would be believed.
     fn add(self, other: Self) -> Self {
         Self {
-            received: self.received + other.received,
-            dropped: self.dropped + other.dropped,
-            if_dropped: self.if_dropped + other.if_dropped,
+            received: self.received.saturating_add(other.received),
+            dropped: self.dropped.saturating_add(other.dropped),
+            if_dropped: self.if_dropped.saturating_add(other.if_dropped),
         }
+    }
+}
+
+impl std::ops::AddAssign for CaptureCounts {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
+impl std::iter::Sum for CaptureCounts {
+    /// Totals a scan's captures. Empty sums to all zeros, which is what a scan
+    /// that opened no capture observed.
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), |total, counts| total + counts)
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_add_field_by_field() {
+        let total: CaptureCounts = [
+            CaptureCounts {
+                received: 10,
+                dropped: 1,
+                if_dropped: 0,
+            },
+            CaptureCounts {
+                received: 5,
+                dropped: 0,
+                if_dropped: 2,
+            },
+        ]
+        .into_iter()
+        .sum();
+
+        assert_eq!(total.received, 15);
+        assert_eq!(total.dropped, 1);
+        assert_eq!(total.if_dropped, 2);
+    }
+
+    /// A wrapped total reads as a quiet capture, which is the one conclusion
+    /// these counts exist to prevent anybody reaching.
+    #[test]
+    fn a_total_too_large_to_represent_saturates_rather_than_wrapping() {
+        let huge = CaptureCounts {
+            received: u64::MAX,
+            dropped: u64::MAX,
+            if_dropped: u64::MAX,
+        };
+        let one = CaptureCounts {
+            received: 1,
+            dropped: 1,
+            if_dropped: 1,
+        };
+
+        let total = huge + one;
+
+        assert_eq!(total.received, u64::MAX);
+        assert_eq!(total.dropped, u64::MAX);
+        assert_eq!(total.if_dropped, u64::MAX);
+    }
+
+    #[test]
+    fn an_empty_sum_is_all_zeros() {
+        let total: CaptureCounts = std::iter::empty().sum();
+        assert_eq!(total, CaptureCounts::default());
     }
 }

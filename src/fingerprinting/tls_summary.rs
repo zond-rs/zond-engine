@@ -33,6 +33,7 @@
 //! worth reporting. Validity is recorded as two instants and left for the reader
 //! to compare against whatever time they care about.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use x509_parser::prelude::*;
@@ -57,7 +58,7 @@ pub fn security(tls: &TlsInfo) -> Security {
         record = record.with_cipher_suite(cipher);
     }
     if let Some(alpn) = &tls.alpn {
-        record = record.add_alpn(alpn.clone());
+        record = record.with_alpn(alpn.as_str());
     }
     if let Some(certificate) = tls.leaf().and_then(certificate_info) {
         record = record.with_certificate(certificate);
@@ -78,16 +79,17 @@ fn certificate_info(der: &[u8]) -> Option<CertificateInfo> {
     let validity = cert.validity();
     let (pubkey_type, pubkey_bits) = public_key_summary(&cert);
 
-    Some(CertificateInfo::new(
-        first_common_name(cert.subject()).unwrap_or_default(),
-        subject_alt_names(&cert),
-        first_common_name(cert.issuer()).unwrap_or_default(),
-        asn1_to_system_time(validity.not_before),
-        asn1_to_system_time(validity.not_after),
-        pubkey_type,
-        pubkey_bits,
-        fingerprint_sha256(der),
-    ))
+    Some(
+        CertificateInfo::new(
+            first_common_name(cert.subject()).unwrap_or_default(),
+            first_common_name(cert.issuer()).unwrap_or_default(),
+            asn1_to_system_time(validity.not_before),
+            asn1_to_system_time(validity.not_after),
+            fingerprint_sha256(der),
+        )
+        .with_sans(subject_alt_names(&cert))
+        .with_public_key(pubkey_type, pubkey_bits),
+    )
 }
 
 /// The first `CN=` in a distinguished name.
@@ -97,11 +99,11 @@ fn certificate_info(der: &[u8]) -> Option<CertificateInfo> {
 /// have an opinion about. Non-UTF-8 attributes are skipped rather than rendered
 /// lossily — a mangled name compares unequal to itself across two scans, which
 /// is worse than an absent one.
-fn first_common_name(name: &X509Name<'_>) -> Option<String> {
+fn first_common_name(name: &X509Name<'_>) -> Option<Arc<str>> {
     name.iter_common_name()
         .next()
         .and_then(|attr| attr.as_str().ok())
-        .map(str::to_owned)
+        .map(Arc::from)
 }
 
 /// Every name the certificate claims, from its Subject Alternative Name
@@ -114,7 +116,7 @@ fn first_common_name(name: &X509Name<'_>) -> Option<String> {
 ///
 /// An absent extension yields an empty list, which is what it means: modern
 /// certificates put every name here, and one with none claims only its `CN`.
-fn subject_alt_names(cert: &X509Certificate<'_>) -> Vec<String> {
+fn subject_alt_names(cert: &X509Certificate<'_>) -> Vec<Arc<str>> {
     let Ok(Some(extension)) = cert.subject_alternative_name() else {
         return Vec::new();
     };
@@ -124,7 +126,7 @@ fn subject_alt_names(cert: &X509Certificate<'_>) -> Vec<String> {
         .general_names
         .iter()
         .filter_map(|name| match name {
-            GeneralName::DNSName(dns) => Some((*dns).to_owned()),
+            GeneralName::DNSName(dns) => Some(Arc::from(*dns)),
             GeneralName::IPAddress(bytes) => render_ip_san(bytes),
             _ => None,
         })
@@ -133,15 +135,15 @@ fn subject_alt_names(cert: &X509Certificate<'_>) -> Vec<String> {
 
 /// An `IPAddress` SAN, which is stored as raw octets: four for IPv4, sixteen for
 /// IPv6. Any other length is a malformed extension and is dropped.
-fn render_ip_san(bytes: &[u8]) -> Option<String> {
+fn render_ip_san(bytes: &[u8]) -> Option<Arc<str>> {
     match bytes.len() {
         4 => {
             let octets: [u8; 4] = bytes.try_into().ok()?;
-            Some(std::net::Ipv4Addr::from(octets).to_string())
+            Some(Arc::from(std::net::Ipv4Addr::from(octets).to_string()))
         }
         16 => {
             let octets: [u8; 16] = bytes.try_into().ok()?;
-            Some(std::net::Ipv6Addr::from(octets).to_string())
+            Some(Arc::from(std::net::Ipv6Addr::from(octets).to_string()))
         }
         _ => None,
     }
@@ -179,14 +181,14 @@ fn public_key_summary(cert: &X509Certificate<'_>) -> (&'static str, u32) {
 /// with `openssl x509 -fingerprint -sha256` and with every other scanner's. Hex
 /// without separators, because a fingerprint is compared and grepped far more
 /// often than it is read aloud.
-fn fingerprint_sha256(der: &[u8]) -> String {
+fn fingerprint_sha256(der: &[u8]) -> Arc<str> {
     let digest = ring::digest::digest(&ring::digest::SHA256, der);
     let mut hex = String::with_capacity(digest.as_ref().len() * 2);
     for byte in digest.as_ref() {
         use std::fmt::Write;
         let _ = write!(hex, "{byte:02x}");
     }
-    hex
+    Arc::from(hex)
 }
 
 /// An ASN.1 time as a [`SystemTime`].
@@ -255,9 +257,10 @@ mod tests {
         let cert = info();
         let names = cert.sans();
 
-        assert!(names.contains(&"zond-device.local".to_string()));
-        assert!(names.contains(&"appliance.zond.internal".to_string()));
-        assert!(names.contains(&"10.0.0.5".to_string()), "the IP SAN too");
+        let names: Vec<&str> = names.iter().map(|name| &**name).collect();
+        assert!(names.contains(&"zond-device.local"));
+        assert!(names.contains(&"appliance.zond.internal"));
+        assert!(names.contains(&"10.0.0.5"), "the IP SAN too");
     }
 
     /// Recorded as two instants, so a report read years later reports the
@@ -291,7 +294,7 @@ mod tests {
 
         assert_eq!(record.tls_version(), Some("TLSv1.3"));
         assert_eq!(record.cipher_suite(), Some("TLS13_AES_256_GCM_SHA384"));
-        assert_eq!(record.alpn(), ["h2".to_string()]);
+        assert_eq!(record.alpn(), [Arc::<str>::from("h2")]);
         assert!(
             record.certificate().is_none(),
             "unparseable is absent, not fabricated"
