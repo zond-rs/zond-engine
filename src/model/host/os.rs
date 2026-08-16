@@ -19,17 +19,19 @@ use std::{collections::BTreeSet, sync::Arc};
 /// targets or runaway scanning scripts.
 pub const MAX_CPES_PER_OS: usize = 50;
 
-/// A high-fidelity record of a host's identified operating system.
+/// A host's operating system as one technique identified it, and how sure that
+/// technique was.
 ///
-/// `OsFingerprint` uses an accuracy-based merging strategy: higher accuracy
-/// findings overwrite lower accuracy ones, while findings with identical
-/// accuracy are combined to fill missing fields.
+/// The accuracy is what makes several techniques combinable: a better-informed
+/// finding replaces a worse one and equally-informed ones fill each other's
+/// gaps. See [`merge`](Self::merge).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OsFingerprint {
-    /// The primary OS name (e.g., "Linux", "Windows").
+    /// The operating system's name (e.g. `"Linux"`, `"Windows"`).
     ///
-    /// This field should ideally be provided by a string interner to maximize
-    /// memory deduplication across broad scan results.
+    /// Shared rather than owned because a scan of any size finds the same few
+    /// names over and over, and the string is then one allocation across the
+    /// whole result rather than one per host.
     pub name: Arc<str>,
 
     /// The broad OS family (e.g., "Unix-like", "Windows NT").

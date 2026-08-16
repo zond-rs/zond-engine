@@ -6,11 +6,37 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Port Discovery and Metadata
+//! # Ports, and what was found behind them
 //!
-//! This module defines the core types for identifying and detailing network services.
-//! It is architected for future-proof service fingerprinting, security analysis,
-//! and structured script execution telemetry.
+//! A [`Port`] is one transport endpoint on one host, and everything a scan
+//! learned about it. That is four separate questions, kept in four separate
+//! types so that a scan which answered one of them does not have to pretend to
+//! have answered the rest:
+//!
+//! - **Is anything there?** — [`PortState`], from [`discovery`]'s account of
+//!   the packet that decided it.
+//! - **What is it?** — [`Service`], progressively refined as better evidence
+//!   arrives.
+//! - **How is it protected?** — [`Security`], for an endpoint that negotiated
+//!   TLS.
+//! - **What did a script make of it?** — [`ScriptOutput`].
+//!
+//! Each is an `Option`, and the absence of one means the question was not
+//! answered rather than answered negatively. A port scan that has not run
+//! service detection leaves [`Port::service`] empty; it does not record a
+//! service named "unknown", because a later pass has to be able to tell the
+//! difference between what it has yet to look at and what it looked at and
+//! could not identify.
+//!
+//! ## Merging is how a port is built
+//!
+//! No single probe fills a `Port` in. Techniques run in sequence, a connect
+//! fallback may repeat what a raw scan already asked, and service detection
+//! arrives afterwards — so every one of these types carries a `merge`, and the
+//! rules they merge by are the substance of this module. They agree on one
+//! thing: **a tie keeps what is already recorded.** Two probes that learned the
+//! same amount are equally good sources, and preferring the later one makes a
+//! report depend on which probe happened to finish last.
 
 use std::collections::HashMap;
 
@@ -39,15 +65,29 @@ pub use set::{PortSet, PortSetParseError};
 /// site that has to decide something about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
+    /// TCP. Probed by every technique in
+    /// [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique), and the
+    /// only protocol the unprivileged connect fallback can speak.
     Tcp,
+    /// UDP. Answered by a service that recognises the payload sent to it, or by
+    /// an ICMP port unreachable, or — most often — by nothing at all, which is
+    /// why its silence is [`PortState::OpenFiltered`] rather than open.
     Udp,
 }
 
-/// The reachability state of a specific port.
+/// What a scan established about a port.
 ///
-/// The order of these variants is strictly defined from least definitive to
-/// most definitive. This allows `Port::merge()` to automatically upgrade
-/// ambiguous states into concrete ones using standard Ord comparisons.
+/// **Ordered from least definitive to most**, so that [`Port::merge`] promotes
+/// by an ordinary comparison and two probes disagreeing about a port resolve to
+/// whichever learned more. The ordering is a ranking of *evidence*, not of how
+/// alarming a state is: `Open` outranks `Closed` because a SYN+ACK settles the
+/// question and a RST from a filtered path does not, and the ambiguous pair sit
+/// below the two they are ambiguous between.
+///
+/// Which reply produces which state depends on the probe that drew it — a RST
+/// is a closed port to a SYN and an unfiltered path to an ACK. That mapping
+/// lives in [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique),
+/// not here.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortState {
@@ -70,30 +110,44 @@ pub enum PortState {
     Open,
 }
 
-/// Structured data returned by a scanning script or vulnerability engine.
+/// A value produced by a scanning script, in whatever shape the script found
+/// it.
 ///
-/// Replaces legacy stringly-typed script outputs, allowing modern engines
-/// to return complex nested data (e.g., parsed JSON directories, lists of CVEs).
+/// Typed rather than stringly-typed because the consumers are machines as often
+/// as people: a list of CVEs, a table of host keys and their sizes, a boolean
+/// verdict about a configuration. Rendered as a string at the point it was
+/// gathered, each of those becomes something a report has to re-parse to do
+/// anything with, and every exporter has to invent the same escaping.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScriptOutput {
+    /// Free text: a banner, a title, a certificate subject.
     String(String),
+    /// A whole number — a key size, a count, a version component.
     Integer(i64),
+    /// A fractional measurement. **Not every `f64` compares equal to itself**,
+    /// so a `Port` carrying a NaN here is never equal to itself either; this is
+    /// why [`Port`] derives `PartialEq` and not `Eq`.
     Float(f64),
+    /// A yes-or-no verdict.
     Boolean(bool),
+    /// An ordered sequence, where the order is part of what was found.
     List(Vec<ScriptOutput>),
+    /// Named fields. Unordered, so an exporter that needs a stable rendering
+    /// sorts the keys itself.
     Map(HashMap<String, ScriptOutput>),
 }
 
-/// A comprehensive "Rich" model representing a service endpoint discovered on a host.
+/// One transport endpoint on one host, and everything a scan learned about it.
 ///
-/// Unlike a simple port number, a `Port` captures the full lifecycle of a service:
-/// how it was found, its security posture, and its functional identity.
+/// The number and protocol identify it; everything else is a finding, and is
+/// absent until something establishes it. See the module documentation for what
+/// the four optional halves each answer and why they are kept apart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Port {
     /// The 16-bit port number.
     number: u16,
 
-    /// The transport protocol (TCP/UDP/SCTP).
+    /// The transport protocol this endpoint is reached over.
     protocol: Protocol,
 
     /// The discovered state of the port.
@@ -152,9 +206,12 @@ impl Port {
         self.service.as_ref()
     }
 
-    /// Returns the high-level service name (e.g., "ssh"), if identified.
+    /// Returns the high-level service name (e.g. `"ssh"`), if one was
+    /// identified.
     ///
-    /// This is a convenience helper for migrating from the legacy `service_info` model.
+    /// The name alone, for a caller rendering a column of them.
+    /// [`service`](Self::service) has the version, product and confidence that
+    /// say how much the name is worth.
     pub fn service_name(&self) -> Option<&str> {
         self.service.as_ref().map(|s| s.name())
     }

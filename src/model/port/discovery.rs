@@ -6,22 +6,38 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Discovery Telemetry
+//! # Why a port is in the state it is
 //!
-//! This module provides the [`Discovery`] model, capturing low-level
-//! network details gathered during the initial port identification phase.
-//! It is designed to safely handle both high-level connect scans and
-//! low-level raw socket telemetry.
+//! [`PortState`](super::PortState) is the verdict; [`Discovery`] is the
+//! evidence behind it — which packet decided it, when, how long it took to
+//! arrive, and which of this host's interfaces it arrived on.
+//!
+//! Kept beside the verdict rather than folded into it because the two are read
+//! by different people for different reasons. A report renders the verdict; an
+//! operator who does not believe the verdict reads this. A TTL of 64 against a
+//! host three hops away, or a `Closed` sourced from an address that is not the
+//! target's, is how a wrong answer is caught — and none of it is recoverable
+//! once the state has been recorded on its own.
+//!
+//! Everything except the reason is optional, because an unprivileged connect
+//! attempt knows only that it succeeded or failed: there is no header to read a
+//! TTL from and no interface it can name.
 
 use std::{
     net::IpAddr,
     time::{Duration, SystemTime},
 };
 
-/// Low-level network response types identified during scanning.
+/// The packet that settled a port's state, named rather than interpreted.
 ///
-/// Marked as non-exhaustive to allow for future protocol support (e.g., SCTP)
-/// without breaking SemVer guarantees in the 1.x release cycle.
+/// What any of these *means* depends on the probe that provoked it, which is
+/// [`TcpScanTechnique::verdict`](crate::model::technique::TcpScanTechnique::verdict)'s
+/// job. Recording the segment rather than the conclusion is what lets a reader
+/// disagree with the conclusion.
+///
+/// `#[non_exhaustive]`: a scan learns to recognise new replies as it learns to
+/// send new probes, and a consumer matching on this should pay for that with a
+/// recompile rather than with a major version.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ScanResponse {

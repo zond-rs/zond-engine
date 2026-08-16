@@ -20,15 +20,30 @@ use thiserror::Error;
 /// Errors that can occur during target composition and calculation.
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum TargetError {
+    /// The number of targets is too large to represent in a `u128`.
+    ///
+    /// Reachable: `::/0` is already `u128::MAX` addresses, so any second port
+    /// overflows. Reported rather than wrapped, because a scan of the entire
+    /// address space reported as a small number is the one answer a budget
+    /// check must never be handed.
     #[error("Target calculation resulted in an integer overflow")]
     CapacityOverflow,
 }
 
-/// Represents a single, atomic connection attempt.
+/// One address, one port, one protocol: the smallest thing a scan can ask
+/// about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Target {
+    /// The address to probe.
+    ///
+    /// Bare, with no zone. A target set is produced by a scan that already
+    /// knows which interface it is bound to — see
+    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for where the interface
+    /// is carried when it matters.
     pub ip: IpAddr,
+    /// The port to probe.
     pub port: u16,
+    /// Which transport to probe it over.
     pub protocol: Protocol,
 }
 
@@ -105,10 +120,13 @@ impl TargetSet {
             .ok_or(TargetError::CapacityOverflow)
     }
 
-    /// Creates a lazy iterator over every IP/Port combination. Performs lazy normalization.
+    /// Every address paired with every port, lazily.
     ///
-    /// This uses `Arc` internally to prevent O(N) memory allocations when iterating
-    /// over massive subnets (e.g., /8 or IPv6 ranges).
+    /// Nothing is normalized here and nothing needs to be: the addresses were
+    /// merged when the set was constructed. Nothing is materialized either — a
+    /// `/8` on a thousand ports is 16 billion targets, so they are produced one
+    /// at a time and the port list is shared behind an `Arc` rather than cloned
+    /// per address.
     pub fn iter(&self) -> impl Iterator<Item = Target> + Send + '_ {
         let ports_arc: Arc<[(u16, Protocol)]> = self.ports.to_vec().into();
 

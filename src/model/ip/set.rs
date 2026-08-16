@@ -8,13 +8,14 @@
 
 //! # IP Address Sets
 //!
-//! This module provides the [`IpSet`] model, a high-performance container for managing
-//! large collections of unique IP addresses.
+//! [`IpSet`] holds the addresses a scan is about, as sorted non-overlapping
+//! ranges — a form in which a `/8` costs one range rather than sixteen million
+//! addresses.
 //!
 //! ## Merging is lazy, and that is a build-time concern
 //!
-//! Insertion is $O(1)$: it pushes to a buffer. Sorting and merging is
-//! $O(N \log N)$ and happens once, at [`IpSet::canonicalize`]. That split exists
+//! Insertion is constant time: it pushes to a buffer. Sorting and merging is
+//! `O(n log n)` and happens once, at [`IpSet::canonicalize`]. That split exists
 //! because a target file can name tens of thousands of ranges, and merging after
 //! each one would make loading it quadratic.
 //!
@@ -72,7 +73,8 @@ impl IpSet {
 
     /// Adds a single IP address to the set.
     ///
-    /// This is a fast $O(1)$ operation that defers merging.
+    /// Constant time: it appends and defers the merge. See the module
+    /// documentation for why.
     pub fn insert(&mut self, ip: IpAddr) {
         match ip {
             IpAddr::V4(v4) => self.push_v4_range(Ipv4Range::new(v4, v4).unwrap()),
@@ -100,10 +102,13 @@ impl IpSet {
         self.v6_dirty = true;
     }
 
-    /// Manually triggers sorting and merging of all internal ranges.
+    /// Sorts and merges the ranges, so that every read afterwards takes its
+    /// fast path.
     ///
-    /// Call this after bulk insertions to prepare the set for high-performance
-    /// read-only queries or multithreaded scanning.
+    /// Call it once, at the point the set stops being built and starts being
+    /// read. Doing so is not required for correctness — every query answers
+    /// correctly either way — but an unmerged set answers by scanning, and a
+    /// set read once per received packet should not be.
     pub fn canonicalize(&mut self) {
         if self.v4_dirty {
             if !self.v4.is_empty() {
@@ -188,7 +193,10 @@ impl IpSet {
     /// it is bound to one segment already, so the scope is established by which
     /// scanner is asking rather than by this test.
     ///
-    /// Performs lazy merging on a clone if needed.
+    /// Correct whatever state the set is in: a binary search when it is merged,
+    /// and a linear scan of the unmerged ranges when it is not. The slow path
+    /// allocates nothing — a membership test is not a reason to merge a set the
+    /// caller has not finished building.
     pub fn contains(&self, ip: &IpAddr) -> bool {
         if !self.v4_dirty && !self.v6_dirty {
             return self.contains_canonical(ip);
@@ -213,7 +221,12 @@ impl IpSet {
         }
     }
 
-    /// Returns the total count of unique IP addresses. Performs lazy merging on a clone if needed.
+    /// The number of distinct addresses the set covers.
+    ///
+    /// Overlapping ranges are counted once, which is why an unmerged set is
+    /// merged — on a clone, so that counting stays a read — before answering.
+    /// [`len_gross`](Self::len_gross) is the cheap over-estimate for a caller
+    /// that asks often.
     pub fn len(&self) -> u128 {
         if !self.v4_dirty && !self.v6_dirty {
             self.len_canonical()
@@ -241,7 +254,15 @@ impl IpSet {
         self.v4_len().saturating_add(self.v6_len())
     }
 
-    /// Returns an iterator over every individual IP address. Performs lazy merging on a clone if needed.
+    /// Every address the set covers, one at a time, IPv4 before IPv6.
+    ///
+    /// Each address is yielded once however many ranges named it, which needs
+    /// merged ranges to be true — so an unmerged set is merged on a clone
+    /// first, and iteration stays a read. A caller iterating a set it owns
+    /// should [`canonicalize`](Self::canonicalize) it instead and skip the copy.
+    ///
+    /// Yields lazily. A `/8` is sixteen million addresses and an IPv6 range can
+    /// be far more than that; nothing here materializes them.
     pub fn iter(&self) -> Box<dyn Iterator<Item = IpAddr> + Send + '_> {
         if self.v4_dirty || self.v6_dirty {
             let mut temp = self.clone();

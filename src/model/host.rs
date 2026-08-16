@@ -6,15 +6,25 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Host Model
+//! # One machine, as several probes found it
 //!
-//! This module defines the [`Host`] entity, which represents a single network
-//! equipment or device.
+//! A [`Host`] is everything a scan learned about a single device. Nothing fills
+//! one in at once: an ARP reply establishes it is there and gives it a MAC, a
+//! neighbour solicitation adds an IPv6 address, a port scan adds ports, service
+//! detection names what is behind them, and every one of those arrives on its
+//! own schedule and in an order nobody controls.
 //!
-//! The `Host` model is architected as an **aggregate of findings**. It is
-//! specifically designed to be enriched over multiple asynchronous scanning
-//! stages, leveraging high-performance merging logic to collate reachability,
-//! hardware, OS, and service discovery data into a single forensic record.
+//! **So the whole type is built around accumulating evidence, and one rule runs
+//! through it: later is not better.** Status is promoted and never lowered
+//! ([`Host::record_evidence`]); the address a host is reported under is ranked
+//! rather than overwritten ([`Host::consider_primary_ip`]); a MAC is added to
+//! the ones already seen rather than replacing them ([`Host::set_mac`]); ties
+//! keep what is already recorded. Each of those exists because the alternative
+//! makes a report depend on which probe happened to finish last — the same scan
+//! of the same network producing a different document twice.
+//!
+//! [`Host::merge`] applies the same rules between two records of one host, so a
+//! phase folded into another gets the answer a single phase would have.
 
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
@@ -35,35 +45,50 @@ pub use os::OsFingerprint;
 pub use status::{HostStatus, StatusProtocol, StatusReason};
 pub use telemetry::HostTelemetry;
 
-/// The absolute maximum number of open ports to record per host.
+/// The most ports one host will have recorded against it.
 ///
-/// This serves as a security boundary against network "tarpits" (devices that
-/// report every possible port as open), which could otherwise trigger an
-/// Out-Of-Memory (OOM) crash in the scanner.
+/// A bound on what a single target can make this process allocate. Some devices
+/// answer affirmatively on every port asked — a tarpit does it deliberately,
+/// and a misconfigured middlebox does it by accident — and against a full
+/// 65 535-port scan that is a host record two orders of magnitude larger than
+/// any real one, multiplied by however many such devices are on the segment.
+///
+/// A host that reaches the cap is marked [`NetworkRole::Tarpit`] and further
+/// ports are dropped, which is the honest failure: the ports already recorded
+/// are real observations, and the marking says the list is not complete.
 pub const MAX_PORTS_PER_HOST: usize = 1000;
 
-/// Specialized network roles identified during host discovery.
+/// What a host turned out to be, beyond an address with ports on it.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum NetworkRole {
-    /// Identifies the default gateway for a local subnet.
+    /// The default gateway for a local segment.
     Gateway,
-    /// Identifies a host providing DHCP services.
+    /// Serves DHCP.
     DHCP,
-    /// Identifies a host providing DNS services.
+    /// Serves DNS.
     DNS,
-    /// Identifies a host that has triggered defensive limits (e.g., reporting
-    /// an impossible number of open ports).
+    /// Answered on so many ports that the engine stopped recording them.
+    ///
+    /// Unlike the others this describes the *scan* rather than the host: it
+    /// says the port list is truncated at [`MAX_PORTS_PER_HOST`] and should not
+    /// be read as complete. A deliberate tarpit and a middlebox answering
+    /// everything by accident are indistinguishable from here, and both make
+    /// the ports recorded against this host meaningless.
     Tarpit,
 }
 
-/// A comprehensive identity and state record for a network-reachable host.
+/// A single machine, and what a scan established about it.
 ///
-/// A `Host` is the primary unit of work for the Zond scanner. It holds
-/// multi-homed IP data, forensic hardware IDs, and a history of network
-/// performance metrics.
+/// Identity first — the addresses it answers at, its name, its hardware — then
+/// what was found on it. A host holds every address it is known by, because a
+/// dual-stack machine answering at three of them is one device and reporting it
+/// as three is the failure this type is shaped to avoid; see
+/// [`consider_primary_ip`](Self::consider_primary_ip) for which of them leads.
 ///
-/// Large metadata blocks (like [`OsFingerprint`]) are stored in Boxes to
-/// minimize the overall stack size of the `Host` struct.
+/// [`OsFingerprint`] is boxed. It is much the largest thing a host can carry
+/// and much the rarest — most hosts in a scan never get one — so paying for it
+/// by reference keeps a `Host` cheap to move in the collections that hold
+/// thousands of them.
 #[derive(Debug, Clone)]
 pub struct Host {
     /// The primary IP address used to target or identify this host.

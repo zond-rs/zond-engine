@@ -6,20 +6,26 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Port Targeting and Range Management
+//! # Which ports to ask about
 //!
-//! This module provides the [`PortSet`] model, a high-performance, thread-safe
-//! container for defining which TCP and UDP ports should be scanned.
+//! [`PortSet`] is the port half of a scan's target specification: what a person
+//! wrote — `"80, 443, u:53, 1000-2000"` — held as disjoint ranges per protocol.
 //!
-//! ## Overview
+//! **It is built once and never mutated.** Every construction path merges and
+//! sorts before returning, and there is no method that can undo that, so a
+//! `PortSet` is canonical from the moment it exists. Two consequences follow,
+//! and both are relied on elsewhere:
 //!
-//! `PortSet` is designed to be parsed once at startup and read concurrently
-//! by thousands of worker threads. It features:
-//! * **Zero-Lock Concurrency**: Immutable read access (`&self`) via eager canonicalization.
-//! * **High-Speed Lookups**: Internal binary search over collapsed `RangeInclusive` sets.
-//! * **Smart Parsing**: Human-friendly string parsing (e.g., `"80, 443, u:53, 1000-2000"`).
+//! - Membership is a binary search over sorted disjoint ranges, and it takes
+//!   `&self`. A set can be shared across every worker in a scan with no lock,
+//!   because there is nothing for a lock to protect.
+//! - `Hash` agrees with `Eq`. Two sets holding the same ports hold identical
+//!   range vectors whatever order or spelling produced them, which is what lets
+//!   [`TargetMapBuilder`](crate::model::parse::target::TargetMapBuilder) group
+//!   targets by port specification in constant time per target rather than by
+//!   scanning the groups it has so far.
 
-use crate::model::port::Protocol; // Adjust path as necessary
+use crate::model::port::Protocol;
 use std::{num::ParseIntError, ops::RangeInclusive, str::FromStr};
 use thiserror::Error;
 
@@ -33,17 +39,25 @@ pub const DEFAULT_PORTSET_PORTS: &str = "22, 80, 443, 445, 3389";
 /// Errors that can occur when parsing a port range string.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PortSetParseError {
-    /// The input string could not be parsed as a 16-bit integer.
+    /// A port was not a number, or was too large to be one. Ports are 16-bit,
+    /// so `70000` fails here rather than wrapping to `4464`.
     #[error("Failed to parse port from '{input}': {source}")]
     InvalidPort {
+        /// The token as written, so a user can find it in what they typed.
         input: String,
+        /// Why it did not parse.
         #[source]
         source: ParseIntError,
     },
 
-    /// The range start is higher than the end (e.g., "80-20").
+    /// A range was written backwards, as in `80-20`.
     #[error("Invalid port range: start ({start}) cannot be strictly greater than end ({end})")]
-    InvalidRange { start: u16, end: u16 },
+    InvalidRange {
+        /// The lower bound as written — which is the larger of the two.
+        start: u16,
+        /// The upper bound as written.
+        end: u16,
+    },
 
     /// The input segment did not match any known port or range format.
     #[error("Malformed port specification, expected a single port or a range: '{0}'")]
@@ -54,17 +68,15 @@ pub enum PortSetParseError {
 // PortSet Core Model
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// A collection of TCP and UDP port ranges used for target discovery.
+/// The TCP and UDP ports a scan asks about, as sorted disjoint ranges.
 ///
-/// Under the hood, this stores disjoint ranges. Upon creation, all ranges
-/// are merged and sorted (canonicalized) to ensure `O(log N)` lookup times
-/// via binary search.
+/// Canonical from construction and immutable afterwards; the module
+/// documentation has what that buys and who relies on it.
 ///
-/// `Hash` agrees with `Eq` because every construction path canonicalizes and
-/// there is no mutator to undo it: two sets holding the same ports hold
-/// byte-identical range vectors, whatever order or spelling they were written
-/// in. That is what lets a caller group targets by their port specification in
-/// constant time per target rather than by scanning the groups it has so far.
+/// Ranges rather than a set of numbers because the specifications people write
+/// are overwhelmingly contiguous — `1-1024`, `1-65535` — and holding sixty-five
+/// thousand `u16`s to represent one of them costs memory per target group, of
+/// which a large import has many.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PortSet {
     tcp: Vec<RangeInclusive<u16>>,
@@ -124,8 +136,10 @@ impl PortSet {
         self.iter().collect()
     }
 
-    /// Checks if a specific TCP port is in the target set.
-    /// Uses a highly optimized binary search over disjoint ranges.
+    /// Whether `port` is in the TCP half of the set.
+    ///
+    /// A binary search over disjoint sorted ranges, which the type is
+    /// canonical-by-construction in order to allow.
     pub fn has_tcp(&self, port: u16) -> bool {
         self.tcp
             .binary_search_by(|range| {
@@ -140,8 +154,8 @@ impl PortSet {
             .is_ok()
     }
 
-    /// Checks if a specific UDP port is in the target set.
-    /// Uses a highly optimized binary search over disjoint ranges.
+    /// Whether `port` is in the UDP half of the set. The counterpart of
+    /// [`has_tcp`](Self::has_tcp).
     pub fn has_udp(&self, port: u16) -> bool {
         self.udp
             .binary_search_by(|range| {

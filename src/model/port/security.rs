@@ -6,10 +6,23 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Port Security and Encryption Metadata
+//! # What a TLS endpoint negotiated
 //!
-//! This module provides the [`Security`] model, focused on capturing TLS/SSL
-//! negotiated parameters, ALPN records, and X.509 certificate lifecycles.
+//! [`Security`] is what a completed handshake established about a port: the
+//! version and cipher agreed, the protocols offered over ALPN, and a summary of
+//! the certificate presented.
+//!
+//! **The certificate is summarized, not stored.** A chain is kilobytes and a
+//! report may hold thousands; what a reader acts on is the name it was issued
+//! to, who issued it, when it expires and its fingerprint, so those are kept
+//! and the DER is not. A caller needing the chain itself has to re-fetch it,
+//! which is the right trade for a record meant to be written to a file and read
+//! later.
+//!
+//! Validity is reported against a time the caller supplies rather than assumed
+//! from the clock — see [`Security::is_cert_valid_at`]. A scan is read long
+//! after it ran, and "expired" answered from *now* would relabel a report every
+//! time it was opened.
 
 use std::time::{Duration, SystemTime};
 

@@ -244,11 +244,19 @@ impl HostTelemetry {
         Some(total_diff / (ranked.len() - 1) as u32)
     }
 
-    /// Merges telemetry from another record, Ensuring chronological sortedness
-    /// and prioritizing the newest data points.
+    /// Folds another record's samples into this one, keeping the combined
+    /// history in time order and dropping the oldest of it past the window.
     ///
-    /// If the incoming record has a larger `max_samples` configuration, this
-    /// telemetry container will upgrade its own window size to match.
+    /// The window widens to the larger of the two, never narrows: two records
+    /// of one host disagreeing about how much history to keep are two callers'
+    /// requests, and honouring the smaller would discard samples the other
+    /// asked for.
+    ///
+    /// Re-sorted rather than concatenated because the two records were filled
+    /// by probes running at the same time, so neither one's samples are wholly
+    /// older than the other's — and [`jitter`](Self::jitter) reads consecutive
+    /// pairs, which means an out-of-order history reports a difference between
+    /// samples that were never consecutive.
     pub fn merge(&mut self, mut other: HostTelemetry) {
         if other.max_samples > self.max_samples {
             self.max_samples = other.max_samples;

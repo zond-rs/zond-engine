@@ -6,31 +6,43 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Hardware Information
+//! # The hardware behind an address
 //!
-//! This module defines the [`HardwareInfo`] model for identifying physical
-//! network characteristics. It records hardware addresses (MACs) and vendor
-//! metadata derived from the Organiztionally Unique Identifier (OUI).
+//! [`HardwareInfo`] records the MAC addresses a host has answered under and the
+//! vendor its OUI attributes it to.
 //!
-//! The model handles modern network complexities such as MAC randomization
-//! and multi-homed hosts by tracking a history of all seen addresses.
+//! **A history rather than a single address, because one host genuinely has
+//! several.** A machine with two interfaces on one segment answers under two;
+//! a phone or laptop randomizing its address answers under a series. Keeping
+//! only the newest would answer "which address is it using now" and lose
+//! "which has it used", and the second question is the one that identifies a
+//! device across a randomization.
+//!
+//! Each address carries when it was last seen, so
+//! [`HardwareInfo::most_recent_mac`] can answer the first question and
+//! [`HardwareInfo::prune_stale_macs`] can bound the record on a monitor that
+//! runs for days against a segment full of randomizing devices.
 
 use crate::model::mac::{self, MacAddr};
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
-/// Physical hardware identification and auditing data for a network host.
-///
-/// `HardwareInfo` tracks multiple MAC addresses to support multi-NIC hosts
-/// and to detect "MAC hopping" on randomized devices.
+/// The MAC addresses a host has answered under, and who made its hardware.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardwareInfo {
-    /// Discovered MAC addresses and the last time they were observed.
-    pub(crate) macs: BTreeMap<MacAddr, Instant>,
-
-    /// The hardware vendor identified from the MAC OUI (e.g., "Apple", "Dell").
+    /// Every MAC seen for this host, against the last time each was.
     ///
-    /// This field should ideally be shared via an `Arc` to minimize heap
-    /// allocations across thousands of identical host records.
+    /// A `BTreeMap` so that iteration order is the addresses' own and not a
+    /// hash seed's: a report listing them twice must list them the same way
+    /// twice.
+    macs: BTreeMap<MacAddr, Instant>,
+
+    /// The manufacturer the OUI attributes the hardware to, if the database
+    /// recognises it.
+    ///
+    /// Shared rather than owned because a segment is routinely a rack of one
+    /// vendor's equipment, and the string is then one allocation instead of one
+    /// per host. `None` for a locally administered address, which has no
+    /// manufacturer to name — see [`vendor`](crate::model::mac::vendor).
     pub vendor: Option<Arc<str>>,
 }
 
@@ -79,11 +91,16 @@ impl HardwareInfo {
             .map(|(mac, _)| *mac)
     }
 
-    /// Removes all MAC address records that were last seen before the given `cutoff`.
+    /// Forgets every address not seen since `cutoff`.
     ///
-    /// This is a critical forensic cleanup step for long-running monitors in
-    /// environments with aggressive MAC randomization, preventing memory
-    /// exhaustion from "ghost" hardware records.
+    /// The record grows by one address every time a device randomizes its MAC,
+    /// and on a segment full of phones that is a steady trickle with no natural
+    /// end. A scan is short enough not to care; a monitor watching one segment
+    /// for days is not, and this is what bounds it.
+    ///
+    /// Discarding an address discards the evidence that the host ever used it,
+    /// so the cutoff is the caller's to choose: it is the age past which they
+    /// would no longer act on the information.
     pub fn prune_stale_macs(&mut self, cutoff: Instant) {
         self.macs.retain(|_, last_seen| *last_seen >= cutoff);
     }

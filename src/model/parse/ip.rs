@@ -6,26 +6,43 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Network Target Parser
+//! # Addresses, as a person writes them
 //!
-//! This module provides the logic to resolve abstract input strings into a concrete,
-//! deduplicated [`IpSet`]. It acts as the translation layer between user intent
-//! (CLI arguments, configuration strings) and the underlying network models.
+//! The grammar that turns what someone typed into an [`IpSet`]. This is the
+//! address half of a target expression; the ports after it are
+//! [`super::target`]'s business.
 //!
-//! ## Supported Formats
+//! ## What it accepts
 //!
-//! The parser recognizes several distinct IPv4 formats:
+//! | Written | Means |
+//! |---|---|
+//! | `127.0.0.1`, `2001:db8::1` | one address |
+//! | `192.168.1.0/24`, `2001:db8::/64` | a CIDR block |
+//! | `10.0.0.1-10.0.0.50` | a range, both ends written out |
+//! | `10.0.0.1-50`, `192.168.1.1-2.254` | a range whose end continues the start's octets |
+//! | `fe80::1%en0` | a link-local address on a named interface |
+//! | `lan` | a keyword, resolved by the caller |
 //!
-//! * **Single IP**: Standard dotted-decimal notation (e.g., `127.0.0.1`).
-//! * **CIDR Block**: Network address with a prefix length (e.g., `192.168.1.0/24`).
-//! * **Explicit Range**: Two full IPs separated by a hyphen (e.g., `10.0.0.1-10.0.0.50`).
-//! * **Shortened Range**: An IP followed by a hyphen and a partial suffix (e.g., `10.0.0.1-50` or `192.168.1.1-2.254`).
-//! * **Keywords**: Special identifiers like `lan`, which resolve dynamically based on the host's active interface.
+//! The shortened range is IPv4 only: the end is read as however many trailing
+//! octets it names, so `10.0.0.1-50` ends at `10.0.0.50` and `192.168.1.1-2.254`
+//! at `192.168.2.254`. IPv6 has no comparable form, and inventing one would
+//! make `::1-5` ambiguous with hex.
 //!
-//! ## Merging Behavior
+//! ## What it cannot do for itself
 //!
-//! All inputs are resolved into an [`IpSet`]. The parser ensures that overlapping
-//! or adjacent inputs are merged into contiguous ranges to optimize scanning performance.
+//! Resolving `lan` means reading this host's interface table, and resolving
+//! `%en0` means looking up a name in it. Both arrive as caller-supplied
+//! functions ([`ResolverFn`], [`ZoneResolverFn`]) rather than being called
+//! directly, which is what keeps this module free of any knowledge of the
+//! machine it runs on. An expression needing a lookup the caller did not supply
+//! is **refused**, never silently dropped: a scan that covers less than its
+//! input said it covers is a wrong answer that looks like a right one.
+//!
+//! Hostnames are not resolved here at all — that is
+//! [`super::target::TargetMapBuilder`]'s, because whether a name may be looked
+//! up is a policy question and this grammar has no business deciding it. An
+//! expression that is not any of the forms above comes back as
+//! [`IpParseError::Malformed`], which is the signal a caller uses to try a name.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::AtomicBool;
@@ -37,13 +54,27 @@ use crate::model::ip::set::IpSet;
 /// Global indicator set to `true` if a "lan" resolution was successfully performed.
 pub static IS_LAN_SCAN: AtomicBool = AtomicBool::new(false);
 
+/// A name standing for a set of addresses only the running host can supply.
+///
+/// Written in place of an address, and expanded by the caller's
+/// [`ResolverFn`] — this module knows the words and nothing about what they
+/// resolve to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
+    /// The local segment: the network on the interface carrying this host's
+    /// default route. The only keyword the grammar recognises.
     Lan,
+    /// The network on the far side of an active VPN tunnel.
+    ///
+    /// **Named but not implemented.** No resolver expands it and
+    /// [`insert_expression`] does not match it, so `vpn` written as a target is
+    /// not read as a keyword at all — it falls through to the hostname path and
+    /// is reported as a name that does not resolve.
     Vpn,
 }
 
 impl Keyword {
+    /// The word as it is written in a target expression.
     pub fn as_str(&self) -> &'static str {
         match self {
             Keyword::Lan => "lan",

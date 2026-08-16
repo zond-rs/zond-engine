@@ -6,17 +6,25 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # IP Range Management
+//! # Contiguous runs of addresses
 //!
-//! This module provides models and utilities for managing contiguous ranges of
-//! IP addresses (both IPv4 and IPv6). It is designed for high-performance network
-//! scanning, where efficient storage and quick membership tests are critical.
+//! A range is two addresses and everything between them, inclusive at both
+//! ends. It is how this engine holds a `/24` or a `/8` without holding the
+//! addresses themselves — the unit [`IpSet`](super::set::IpSet) is built out
+//! of, and the reason a target set naming sixteen million addresses costs two
+//! words.
 //!
-//! Key components:
-//! - [`Ipv4Range`]: specialized 8-byte container for IPv4 corridors.
-//! - [`Ipv6Range`]: specialized 32-byte container for IPv6 corridors.
-//! - [`IpRange`]: a unified enum for protocol-agnostic API usage.
-//! - [`cidr_range`]: constructor for ranges from CIDR notation.
+//! [`Ipv4Range`] and [`Ipv6Range`] are separate rather than one type over
+//! `IpAddr` because the arithmetic differs in kind: a v4 range is 8 bytes and
+//! its length always fits a `u64`, a v6 range is 32 and its length can exceed
+//! what a `u128` holds. [`IpRange`] is the enum over the two, for callers that
+//! do not care which family they were handed.
+//!
+//! **The two families are never comparable.** A v4 address is not in a v6 range
+//! whatever the numbers say, and `::ffff:10.0.0.1` is an IPv6 address here even
+//! though it names an IPv4 one. Membership across families is `false` rather
+//! than an error, because the callers are filtering received packets and a
+//! packet of the wrong family is simply not one they asked about.
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},

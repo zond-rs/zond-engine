@@ -6,14 +6,20 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Service Identification
+//! # What is listening
 //!
-//! This module provides the [`Service`] model, detailing network services
-//! and their specific implementation details. It supports progressive
-//! fingerprinting, allowing low-confidence guesses to be upgraded as
-//! deeper script and protocol analysis finishes.
+//! A [`Service`] is an identification, and every identification here carries
+//! the confidence that says how much to believe it. That number is the point of
+//! the type: a guess from a port-number table and a conclusion from a completed
+//! protocol handshake are both "ssh", and a consumer that cannot tell them
+//! apart will report the first as if it were the second.
+//!
+//! Identification is progressive. A port is named from its number the moment it
+//! is found open, then refined as a banner is read and analyzers run, so the
+//! same `Service` is merged into repeatedly and only ever improves — see
+//! [`Service::merge`] for the rule.
 
-/// Information about a detected service on a network port.
+/// A service identified on a port, and how sure the identification is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     /// The high-level service protocol name (e.g., "ssh", "http", "postgresql").
@@ -43,11 +49,11 @@ pub struct Service {
 }
 
 impl Service {
-    /// Creates a new service record with a baseline confidence score.
+    /// Creates a service identity named `name`, believed to the degree
+    /// `confidence` says.
     ///
-    /// Creates a new service identity.
-    ///
-    /// The `confidence` value is clamped to a maximum of 100.
+    /// `confidence` is clamped to 100, so a caller computing a score cannot
+    /// produce one that outranks a completed handshake.
     pub fn new(name: impl Into<String>, confidence: u8) -> Self {
         Self {
             name: name.into(),

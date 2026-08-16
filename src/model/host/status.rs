@@ -23,9 +23,11 @@ use std::sync::Arc;
 /// Variants are ordered by **semantic severity** and **reachability certainty**:
 /// `Unknown < Down < Filtered < Up`.
 ///
-/// This ordering is critical for the [`Host::merge`](crate::model::host::Host::merge) logic:
-/// if one scan identifies a host as `Down` but a concurrent high-fidelity scan
-/// identifies it as `Up`, the `Up` status will prevail.
+/// [`Host::merge`](crate::model::host::Host::merge) and
+/// [`Host::record_evidence`](crate::model::host::Host::record_evidence) both
+/// promote along it and never lower: a router's ICMP unreachable arriving after
+/// the host's own ARP reply must not overwrite proof the host answered for
+/// itself.
 ///
 /// The ordering is only defensible because of the rule below, which every
 /// producer of a status obeys: **silence never moves the status.** Each variant
