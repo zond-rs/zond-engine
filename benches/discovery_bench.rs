@@ -47,6 +47,19 @@
 //! came from packets that went missing, a deadline that fired too early, or
 //! replies that arrived and were not recognized.
 //!
+//! Those lines are then **summarised across runs**, per scanner, which is the
+//! only form in which they answer anything. One run's `found-at` histogram on a
+//! segment of sleeping wireless devices is noise; five runs' is a distribution,
+//! and a deadline can be argued about against a distribution.
+//!
+//! The line to read is `tail`: what share of each run happened *after* its last
+//! reply. Near zero means the scan was cut off with answers still arriving and
+//! more patience buys more hosts. Near one means the answer was complete long
+//! before the run ended and the deadline is spending time rather than finding
+//! anything. **Both produce the same host count and the same stop reason**, so
+//! nothing else in this output distinguishes them - and they call for opposite
+//! changes.
+//!
 //! Raw sockets and `libpcap` both need root:
 //!
 //! ```text
@@ -102,6 +115,7 @@ use zond_engine::model::host::Host;
 use zond_engine::model::parse::IS_LAN_SCAN;
 use zond_engine::model::parse::ip::to_set_with as to_ipset_with;
 use zond_engine::scanner;
+use zond_engine::scanner::report::{BUCKET_BOUNDS_MS, ProbeStats};
 use zond_engine::system::interface;
 
 /// What counts as "the same thing found twice".
@@ -295,6 +309,10 @@ async fn main() {
     // one that is reliably discovered from one that is discovered by luck; the
     // addresses and evidence are what say which half of the engine found it.
     let mut devices: HashMap<Device, DeviceRecord> = HashMap::new();
+    // What each instrumented scanner filed, kept per run and per scanner. One
+    // run's audit line answers nothing on a segment this variable, and mixing a
+    // local sweep's timings with a routed one's answers worse than nothing.
+    let mut audits: Vec<(String, ProbeStats, Duration)> = Vec::new();
 
     for run in 1..=runs {
         let started = Instant::now();
@@ -330,6 +348,16 @@ async fn main() {
             );
         }
 
+        for phase in report.phases() {
+            for stats in phase.probe_stats() {
+                audits.push((
+                    format!("{:?}", stats.scanner()).to_lowercase(),
+                    stats.clone(),
+                    stats.elapsed(),
+                ));
+            }
+        }
+
         println!(
             "  run {run:>2}: {:>4}/{total} hosts in {elapsed:.2?}",
             found.len()
@@ -338,6 +366,7 @@ async fn main() {
     }
 
     summarize(total, runs, &results, &devices);
+    summarize_audit(&audits);
     if roster {
         print_roster(&devices);
     }
@@ -471,4 +500,171 @@ fn print_roster(devices: &HashMap<Device, DeviceRecord>) {
         );
     }
     println!();
+}
+
+/// What the instrumented scanners said about their own runs, gathered across
+/// every run rather than left one line at a time in the log.
+///
+/// **The line that matters is `tail`.** A sweep that stops while answers are
+/// still arriving and a sweep that waits two seconds for nothing produce the
+/// same host count and the same stop reason, and the only thing separating them
+/// is how long the run continued after its last finding. Read one run at a time
+/// that number is noise; read across five it is the difference between a
+/// deadline that is too short and one that is too long, which are opposite
+/// changes.
+///
+/// Split per scanner, because a local sweep answers in single-digit
+/// milliseconds and a routed one in hundreds. Averaged together they describe
+/// neither.
+fn summarize_audit(audits: &[(String, ProbeStats, Duration)]) {
+    if audits.is_empty() {
+        return;
+    }
+
+    let mut scanners: BTreeSet<&str> = BTreeSet::new();
+    for (name, _, _) in audits {
+        scanners.insert(name.as_str());
+    }
+
+    for scanner in scanners {
+        let filed: Vec<&(String, ProbeStats, Duration)> = audits
+            .iter()
+            .filter(|(name, _, _)| name == scanner)
+            .collect();
+
+        println!("  audit   {scanner}, {} run(s)", filed.len());
+
+        // Stop reasons, in descending order of how often each happened. A
+        // single reason across every run is itself the finding: a sweep that
+        // always stops the same way is never finishing for its own reasons.
+        let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, stats, _) in &filed {
+            *reasons
+                .entry(format!("{:?}", stats.stop_reason()))
+                .or_default() += 1;
+        }
+        let reasons: Vec<String> = reasons
+            .iter()
+            .map(|(reason, count)| format!("{reason} {count}"))
+            .collect();
+        println!("    stopped   {}", reasons.join(", "));
+
+        let attempted: u64 = filed.iter().map(|(_, s, _)| s.sends_attempted()).sum();
+        let failed: u64 = filed.iter().map(|(_, s, _)| s.sends_failed()).sum();
+        println!(
+            "    sends     {attempted} attempted, {failed} failed{}",
+            if failed > 0 {
+                "  <- frames that never reached the segment"
+            } else {
+                ""
+            }
+        );
+
+        summarize_found_at(&filed);
+        summarize_tail(&filed);
+    }
+    println!();
+}
+
+/// When hosts were credited, summed over every run.
+///
+/// Printed cumulatively because the question is never "how many landed in this
+/// bucket" but "how much of the answer was already in by here" - which is what a
+/// deadline has to be set against.
+fn summarize_found_at(filed: &[&(String, ProbeStats, Duration)]) {
+    let mut totals = vec![0u64; BUCKET_BOUNDS_MS.len() + 1];
+    for (_, stats, _) in filed {
+        for (slot, count) in stats.found_at().iter().enumerate() {
+            totals[slot] += count;
+        }
+    }
+
+    let found: u64 = totals.iter().sum();
+    if found == 0 {
+        println!("    found-at  nothing was credited");
+        return;
+    }
+
+    let mut running = 0u64;
+    let mut cells = Vec::new();
+    for (slot, count) in totals.iter().enumerate() {
+        running += count;
+        if *count == 0 {
+            continue;
+        }
+        let label = match BUCKET_BOUNDS_MS.get(slot) {
+            Some(bound) => format!("<={bound}ms"),
+            None => ">1s".to_string(),
+        };
+        cells.push(format!(
+            "{label} {count} ({:.0}%)",
+            (running as f64 / found as f64) * 100.0
+        ));
+    }
+    println!("    found-at  {}", cells.join("  "));
+}
+
+/// How much of each run happened after its last finding.
+///
+/// Reported as a share of the run rather than as a duration, because the
+/// absolute number is meaningless across scanners: a connect probe of loopback
+/// finishes in microseconds and a segment sweep takes seconds, and the same
+/// millisecond gap means opposite things in the two.
+///
+/// Near zero means the scan was cut off with answers still arriving, and every
+/// millisecond added to the deadline buys another host. Near one means the
+/// opposite - the answer was complete long before the run ended, and the
+/// deadline is spending time rather than finding anything. Both produce the same
+/// host count and the same stop reason, which is the whole reason this is here.
+fn summarize_tail(filed: &[&(String, ProbeStats, Duration)]) {
+    let mut shares: Vec<(f64, Duration, Duration)> = filed
+        .iter()
+        .filter_map(|(_, stats, elapsed)| {
+            let last = stats.last_reply()?;
+            let gap = elapsed.saturating_sub(last);
+            (elapsed.as_secs_f64() > 0.0)
+                .then(|| (gap.as_secs_f64() / elapsed.as_secs_f64(), gap, *elapsed))
+        })
+        .collect();
+
+    if shares.is_empty() {
+        println!("    tail      no run recorded a reply");
+        return;
+    }
+
+    shares.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (median, gap, elapsed) = shares[shares.len() / 2];
+    let (lowest, _, _) = shares[0];
+
+    println!(
+        "    tail      median {:.0}% of the run happened after its last reply \
+({gap:.2?} of {elapsed:.2?})",
+        median * 100.0
+    );
+
+    // Stated as what the number rules out rather than as a verdict. One sitting
+    // on one segment cannot decide a deadline, and an instrument that announces
+    // a conclusion is the one nobody re-checks.
+    let reading = if lowest < 0.05 {
+        "at least one run was still being answered when it stopped"
+    } else if median > 0.5 {
+        "no run was cut off while it was still being answered"
+    } else {
+        "runs stopped neither immediately after an answer nor long after one"
+    };
+    println!("              {reading}");
+
+    // Deliberately not "so the deadline is not the constraint", which this
+    // cannot show. It measures the gap after the last *credited* reply, and a
+    // device found by overhearing an advertisement is credited whenever it
+    // happens to speak - so a longer run has more chances to overhear one even
+    // though nothing was in flight when the shorter run ended. Ruling out "cut
+    // off mid-answer" is not the same as ruling out "more time finds more", and
+    // only varying the deadline and watching the union answers the second.
+    if median > 0.5 {
+        println!(
+            "              (whether a longer run would find more is a different \
+question: vary the deadline and watch the union)"
+        );
+    }
 }

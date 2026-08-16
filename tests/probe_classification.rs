@@ -27,9 +27,10 @@ use std::time::Duration;
 
 use common::fake_net::{FakeNet, Layer4, Policy, Stack, Unreachable};
 use common::*;
-use zond_engine::model::host::HostStatus;
+use zond_engine::model::host::{HostStatus, StatusProtocol, StatusReason};
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
+use zond_engine::scanner::report::StopReason;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
@@ -656,4 +657,62 @@ async fn every_udp_probe_leaves_from_the_scan_source_port() {
         3,
         "each target should have been probed exactly once"
     );
+}
+
+/// A host already in the store is still credited to the sweep that found it.
+///
+/// **This is the port-scan phase in miniature.** There, discovery runs as
+/// enrichment beside the port scanner, so the host is almost always in the store
+/// before a single discovery reply arrives. Crediting on store novelty — which
+/// is what `ScanContext::write_host` reports — meant every one of the sweep's own
+/// answers read as "not new": the audit reported nothing found, and
+/// `responded_count` never reached the target count, so the `AllResponded` exit
+/// was unavailable in exactly the phase where discovery is cheapest.
+///
+/// The pre-seeded host is what makes the test bite. Without it the store is
+/// empty, store novelty and the sweep's own first sighting coincide, and the
+/// defect is invisible — which is why it survived until an audit line was read
+/// on a real segment.
+#[tokio::test]
+async fn a_host_already_in_the_store_is_still_credited_to_this_sweep() {
+    let net = FakeNet::new(Layer4::Tcp).host(TARGET, 443, Policy::open());
+    let (session, ctx) = ScanSession::new();
+
+    // What a port scanner beside this sweep would already have written.
+    ctx.update_host(TARGET, |host| {
+        host.record_evidence(
+            HostStatus::Up,
+            StatusReason::new(StatusProtocol::Tcp, "seen by the port scanner"),
+        );
+    });
+
+    let mut scanner = RoutedScanner::with_transport(
+        vec![RoutedTarget {
+            target: TARGET,
+            source: SCANNER_V4.into(),
+        }],
+        ctx.clone(),
+        None,
+        net.transport(),
+    );
+    scanner
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    let stats = ctx.probe_stats_snapshot();
+    let filed = stats.first().expect("the sweep files its counters");
+
+    assert_eq!(
+        filed.hosts_found(),
+        1,
+        "the sweep answered for a host it probed, so it found one - whoever else \
+         had already written it into the store"
+    );
+    assert_eq!(
+        filed.stop_reason(),
+        StopReason::AllResponded,
+        "its only target answered, so the sweep had nothing left to wait for"
+    );
+    assert!(session.hosts().contains(&TARGET));
 }

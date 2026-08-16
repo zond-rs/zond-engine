@@ -23,7 +23,7 @@ mod probe_scan;
 mod udp_scan;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::IpAddr,
     time::{Duration, Instant},
 };
@@ -366,8 +366,25 @@ pub struct RoutedScanner {
     /// time. Together they are the configured rate; see [`pacing_for`].
     send_tick: Duration,
     batch: usize,
-    /// How many distinct addresses have responded so far.
-    responded_count: usize,
+    /// The targets *this sweep* has seen answer.
+    ///
+    /// A set rather than a counter, and kept here rather than read off the
+    /// store, because the two answer different questions. `write_host` reports
+    /// whether the **store** gained a host, which in a discovery-only phase is
+    /// the same thing and in a port-scan phase is not: discovery runs there as
+    /// enrichment beside the port scanner, the host almost always exists
+    /// already, and every one of this sweep's own answers would report "not
+    /// new". The count then never reaches `ips.len()`, so the
+    /// [`AllResponded`](StopReason::AllResponded) exit is silently unavailable
+    /// in exactly the phase where discovery is cheapest.
+    ///
+    /// Not taken from the [`ProbeLedger`] either, though it is the obvious
+    /// source. `resolve` retires a probe, so a duplicate reply correctly reports
+    /// nothing — but an exhausted probe is drained out of the ledger entirely,
+    /// and a reply arriving after that would go uncredited. This is the same
+    /// shape [`LocalScanner`](super::local::LocalScanner) settled on when its
+    /// mirror of this defect was fixed.
+    responded: HashSet<IpAddr>,
     /// Per-run counters, so a sweep that finds fewer hosts than it should can be
     /// attributed to loss, to its own deadline, or to correlation rather than
     /// guessed at. Reported once when the loop exits.
@@ -400,7 +417,7 @@ impl HostScanner for RoutedScanner {
             let now = Instant::now();
             self.service_retries(now);
 
-            let all_responded = self.ips.len() == self.responded_count as u128;
+            let all_responded = self.ips.len() == self.responded.len() as u128;
             if self.ctx.handle.should_stop() {
                 break StopReason::Aborted;
             }
@@ -579,7 +596,7 @@ impl RoutedScanner {
             retries: VecDeque::new(),
             send_tick,
             batch,
-            responded_count: 0,
+            responded: HashSet::new(),
             audit: ProbeAudit::new(),
             send_failure: None,
         }
@@ -618,7 +635,10 @@ impl RoutedScanner {
         // Host mutation only; the guard is dropped and the event emitted inside
         // `write_host`, so the deadline and DNS follow-ups below never run under
         // the store lock.
-        let is_new = self.ctx.write_host(ip, |host| {
+        // Evidence goes in whatever this sweep has seen before; the return
+        // value is deliberately ignored, because it reports store novelty and
+        // the decisions below are about *this sweep's* first sighting.
+        self.ctx.write_host(ip, |host| {
             // A TCP segment from a probed address is proof of a live stack
             // whichever flags it carries: a SYN+ACK and a RST both require the
             // host to have received the probe and answered it. Discovery already
@@ -636,8 +656,7 @@ impl RoutedScanner {
             !was_up
         });
 
-        if is_new {
-            self.responded_count += 1;
+        if self.responded.insert(ip) {
             self.audit
                 .record_host_found(resolution.and_then(|resolution| resolution.answered_attempt));
             self.deadline.mark_activity();
