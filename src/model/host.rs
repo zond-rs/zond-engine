@@ -713,7 +713,10 @@ mod tests {
         // And a repeat of one of them still merges with its own protocol.
         host.add_port(Port::new(53, Protocol::Tcp, PortState::Open));
         assert_eq!(host.port_count(), 2);
-        assert_eq!(host.ports().next().expect("tcp/53").state(), PortState::Open);
+        assert_eq!(
+            host.ports().next().expect("tcp/53").state(),
+            PortState::Open
+        );
     }
 
     /// A dropped port is a truncated list, and the caller is the only one that
@@ -902,7 +905,11 @@ mod tests {
         for scoped in ["2001:db8::10", "fd00::10"] {
             let mut host = Host::new(lla);
             host.consider_primary_ip(scoped.parse().unwrap());
-            assert_eq!(host.primary_ip().to_string(), scoped, "{scoped} names the host");
+            assert_eq!(
+                host.primary_ip().to_string(),
+                scoped,
+                "{scoped} names the host"
+            );
         }
 
         for useless in ["::1", "::", "ff02::1"] {

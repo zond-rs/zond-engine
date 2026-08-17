@@ -488,7 +488,6 @@ impl RawPortScan for TcpPortScanner {
             }
         });
     }
-
 }
 
 /// What a RST proves, said in the terms of the probe that drew it.

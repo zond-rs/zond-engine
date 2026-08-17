@@ -275,8 +275,7 @@ mod tests {
         );
 
         let router: IpAddr = "192.0.2.1".parse().expect("a valid address");
-        let attributed =
-            StatusReason::basic(StatusProtocol::IcmpUnreachable).from_source(router);
+        let attributed = StatusReason::basic(StatusProtocol::IcmpUnreachable).from_source(router);
 
         assert_eq!(attributed.source, Some(router));
         assert_eq!(attributed.details, None);

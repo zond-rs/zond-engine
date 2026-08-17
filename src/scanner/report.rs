@@ -657,12 +657,7 @@ impl PhaseRecorder {
     /// clock says when the scan happened, the monotonic one says how long it
     /// took. Deriving the second from the first would let an NTP correction
     /// during a long sweep report a duration that never elapsed.
-    pub fn start(
-        kind: ScanKind,
-        privileged: bool,
-        targets: TargetScope,
-        cfg: &ZondConfig,
-    ) -> Self {
+    pub fn start(kind: ScanKind, privileged: bool, targets: TargetScope, cfg: &ZondConfig) -> Self {
         Self {
             kind,
             started_at: SystemTime::now(),

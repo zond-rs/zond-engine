@@ -269,7 +269,10 @@ impl fmt::Display for TcpScanTechnique {
 /// The list is built from [`TcpScanTechnique::ALL`] rather than written out, so
 /// a technique added there appears in the error that exists to enumerate them.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unknown TCP scan technique '{input}', expected one of: {}", Self::expected())]
+#[error(
+    "unknown TCP scan technique '{input}', expected one of: {}",
+    Self::expected()
+)]
 pub struct UnknownTechnique {
     /// What the caller wrote.
     pub input: String,
@@ -344,11 +347,17 @@ mod tests {
     /// built from `ALL` rather than from a list that has to be remembered.
     #[test]
     fn an_unknown_name_is_rejected_with_the_ones_that_would_work() {
-        let error = "stealth".parse::<TcpScanTechnique>().unwrap_err().to_string();
+        let error = "stealth"
+            .parse::<TcpScanTechnique>()
+            .unwrap_err()
+            .to_string();
 
         assert!(error.contains("stealth"));
         for technique in TcpScanTechnique::ALL {
-            assert!(error.contains(technique.name()), "{technique} is missing: {error}");
+            assert!(
+                error.contains(technique.name()),
+                "{technique} is missing: {error}"
+            );
         }
     }
 

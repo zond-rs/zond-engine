@@ -286,10 +286,7 @@ mod tests {
     fn a_map_iterates_its_units_in_the_order_they_were_added() {
         let mut map = TargetMap::new();
         map.add_unit(TargetSet::new(ips("10.0.0.1"), ports("80")));
-        map.add_unit(TargetSet::new(
-            ips("10.0.0.2"),
-            ports("u:53"),
-        ));
+        map.add_unit(TargetSet::new(ips("10.0.0.2"), ports("u:53")));
 
         let targets: Vec<(String, u16, Protocol)> = map
             .iter()
@@ -326,10 +323,7 @@ mod tests {
     #[test]
     fn a_maps_total_is_the_sum_of_its_units() {
         let mut map = TargetMap::new();
-        map.add_unit(TargetSet::new(
-            ips("10.0.0.1-10.0.0.5"),
-            ports("80,443"),
-        ));
+        map.add_unit(TargetSet::new(ips("10.0.0.1-10.0.0.5"), ports("80,443")));
         assert_eq!(map.gross_targets().unwrap(), 10);
     }
 }

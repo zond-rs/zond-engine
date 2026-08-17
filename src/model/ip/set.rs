@@ -309,10 +309,7 @@ impl IpSet {
                 let target = u128::from(*v6);
                 self.v6_runs().any(|run| {
                     holds(run, target, |range| {
-                        (
-                            u128::from(range.start_addr()),
-                            u128::from(range.end_addr()),
-                        )
+                        (u128::from(range.start_addr()), u128::from(range.end_addr()))
                     })
                 })
             }

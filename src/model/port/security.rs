@@ -422,7 +422,10 @@ mod tests {
         ));
 
         assert!(security.is_cert_valid_at(scanned_at));
-        assert!(security.is_cert_expiring_at(day * 30, scanned_at), "ten days left");
+        assert!(
+            security.is_cert_expiring_at(day * 30, scanned_at),
+            "ten days left"
+        );
         assert!(!security.is_cert_expiring_at(day * 5, scanned_at));
 
         // Read a year later, the same record says the certificate had already

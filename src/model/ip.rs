@@ -79,23 +79,23 @@ mod tests {
     #[test]
     fn the_range_iana_allocates_global_unicast_from_is_what_is_tested() {
         for global in [
-            "2000::",             // the first address of the range
-            "3fff:ffff::ffff",    // and the last
-            "2001:db8::1",        // documentation, unusual but globally scoped
-            "2001::1",            // Teredo, which does turn up on consumer segments
-            "2002::1",            // 6to4
+            "2000::",          // the first address of the range
+            "3fff:ffff::ffff", // and the last
+            "2001:db8::1",     // documentation, unusual but globally scoped
+            "2001::1",         // Teredo, which does turn up on consumer segments
+            "2002::1",         // 6to4
         ] {
             let addr: Ipv6Addr = global.parse().expect("a valid address");
             assert!(is_global_unicast(&addr), "{global}");
         }
 
         for local in [
-            "1fff:ffff::",  // just below the range
-            "4000::",       // just above it
-            "fe80::1",      // link-local: a different machine on every segment
-            "fd00::1",      // unique-local
-            "::1",          // loopback
-            "ff02::1",      // multicast
+            "1fff:ffff::", // just below the range
+            "4000::",      // just above it
+            "fe80::1",     // link-local: a different machine on every segment
+            "fd00::1",     // unique-local
+            "::1",         // loopback
+            "ff02::1",     // multicast
         ] {
             let addr: Ipv6Addr = local.parse().expect("a valid address");
             assert!(!is_global_unicast(&addr), "{local}");
