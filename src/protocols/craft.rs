@@ -1,0 +1,1154 @@
+// Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors
+//
+// This file is part of Zond Engine, licensed under the GNU Affero General
+// Public License, version 3 or later. See the LICENSE file for details, or
+// <https://www.gnu.org/licenses/agpl-3.0.html>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! # Building a packet field by field
+//!
+//! The other half of this module. [`tcp::create_probe`](super::tcp::create_probe)
+//! and its neighbours build the handful of packets a scan needs, correctly and
+//! with nothing to decide. This is for everything else: a packet you describe
+//! yourself, layer by layer, including one that is deliberately wrong.
+//!
+//! ```
+//! use zond_engine::protocols::craft::{Ipv4, Packet, Tcp, tcp_flags};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let bytes = Packet::new()
+//!     .push(Ipv4::new("192.0.2.1".parse()?, "192.0.2.9".parse()?))
+//!     .push(Tcp::new(50_000, 80).with_flags(tcp_flags::SYN))
+//!     .build()?;
+//! # assert_eq!(bytes.len(), 40);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## One rule: [`Field`]
+//!
+//! A header has two kinds of field. Most are simply yours — a port, a TTL, a
+//! flag. A few are *derived*: a length that counts what is inside, a checksum
+//! computed over it, a protocol number naming the layer below. Those are the
+//! interesting ones, because a scanner wants them right and somebody probing a
+//! stack's error handling wants them wrong.
+//!
+//! Every derived field is a [`Field<T>`](Field), which is [`Computed`] by
+//! default and [`Exact`] when you say otherwise:
+//!
+//! ```
+//! use zond_engine::protocols::craft::{Field, Ipv4};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let src = "192.0.2.1".parse()?;
+//! let dst = "192.0.2.9".parse()?;
+//!
+//! // The header a stack would accept.
+//! let correct = Ipv4::new(src, dst);
+//!
+//! // The same header claiming to be shorter than it is, with a checksum that
+//! // was never computed.
+//! let wrong = Ipv4 {
+//!     total_length: Field::Exact(4),
+//!     checksum: Field::Exact(0),
+//!     ..Ipv4::new(src, dst)
+//! };
+//! # let _ = (correct, wrong);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! That is the whole of the malformed-packet story. There is no separate
+//! "corrupt" API and no flag that turns validation off, because a packet with
+//! one wrong field and nineteen right ones is what actually finds bugs in a
+//! stack, and an all-or-nothing switch cannot express it.
+//!
+//! ## Why the fields are public
+//!
+//! Everywhere else in this crate a type hides its fields, because it has an
+//! invariant worth protecting: a [`Host`](crate::model::host::Host)'s status
+//! only ever climbs, a [`PortSet`](crate::model::port::PortSet) is always
+//! canonical. A header has no such invariant. Being able to write a value that
+//! is wrong *is the feature*, so there is nothing for an accessor to defend and
+//! a great deal for it to get in the way of.
+//!
+//! So these are plain data: public fields, [`Default`], and functional update
+//! syntax for the common case of changing one thing. The `with_*` methods are
+//! there for chaining and do nothing a struct literal could not.
+//!
+//! ## What it costs
+//!
+//! Nothing the scanner pays. The presets are written in terms of these types,
+//! so there is one implementation rather than two, but a preset knows its own
+//! sizes and builds into an exact buffer; a [`Packet`] allocates per layer
+//! because it cannot know what it is holding until it is asked to build.
+//!
+//! [`Computed`]: Field::Computed
+//! [`Exact`]: Field::Exact
+
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+use pnet::datalink::MacAddr;
+use pnet::packet::ethernet::{EtherType, EtherTypes, MutableEthernetPacket};
+use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use pnet::packet::ipv4::{MutableIpv4Packet, checksum as ipv4_checksum};
+use pnet::packet::ipv6::MutableIpv6Packet;
+use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
+use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
+
+use crate::protocols::error::{PacketError, Result};
+use crate::protocols::sizes::{
+    ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN, TCP_HDR_LEN, UDP_HDR_LEN,
+};
+
+/// TCP header flag bits, re-exported so a caller building a [`Tcp`] header does
+/// not have to reach into the probe builders for them.
+pub use crate::protocols::tcp::flags as tcp_flags;
+
+/// A header field the builder can work out for itself, unless you would rather
+/// it did not.
+///
+/// See the [module documentation](self) for what this is for. In short:
+/// [`Computed`](Self::Computed) writes the value a conformant stack expects,
+/// and [`Exact`](Self::Exact) writes precisely what you give it, wrong or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Field<T> {
+    /// Work it out from the packet being built. The correct value.
+    #[default]
+    Computed,
+    /// Write exactly this, whether or not it is correct.
+    Exact(T),
+}
+
+impl<T> Field<T> {
+    /// The value to write, given what the builder worked out.
+    ///
+    /// `computed` is evaluated only when it is needed, so a caller overriding a
+    /// checksum does not pay for computing the one it is discarding.
+    fn resolve(self, computed: impl FnOnce() -> T) -> T {
+        match self {
+            Self::Computed => computed(),
+            Self::Exact(value) => value,
+        }
+    }
+
+    /// Whether this field was given a value rather than left to the builder.
+    pub const fn is_exact(&self) -> bool {
+        matches!(self, Self::Exact(_))
+    }
+
+    /// The value, if one was given.
+    pub fn exact(self) -> Option<T> {
+        match self {
+            Self::Computed => None,
+            Self::Exact(value) => Some(value),
+        }
+    }
+}
+
+impl<T> From<T> for Field<T> {
+    /// So `checksum: 0.into()` reads as well as `Field::Exact(0)`.
+    fn from(value: T) -> Self {
+        Self::Exact(value)
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Headers
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// An Ethernet II header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ethernet {
+    /// The address the frame claims to come from.
+    pub source: MacAddr,
+    /// The address it is aimed at.
+    pub destination: MacAddr,
+    /// What the frame carries. Computed from the layer inside it.
+    pub ethertype: Field<EtherType>,
+}
+
+impl Ethernet {
+    /// A frame from `source` to `destination`, carrying whatever is pushed
+    /// after it.
+    pub fn new(source: MacAddr, destination: MacAddr) -> Self {
+        Self {
+            source,
+            destination,
+            ethertype: Field::Computed,
+        }
+    }
+
+    /// Declares an ethertype rather than taking it from the layer inside.
+    #[must_use]
+    pub fn with_ethertype(mut self, ethertype: EtherType) -> Self {
+        self.ethertype = Field::Exact(ethertype);
+        self
+    }
+}
+
+/// An IPv4 header.
+///
+/// Twenty bytes plus whatever [`options`](Self::options) holds. The default
+/// matches what this engine's own probes send: don't-fragment set, a random
+/// identification, and a TTL of [`HOP_LIMIT_ROUTED`](super::ip::HOP_LIMIT_ROUTED).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ipv4 {
+    /// Where the packet claims to come from.
+    pub source: Ipv4Addr,
+    /// Where it is going.
+    pub destination: Ipv4Addr,
+    /// Differentiated services, six bits.
+    pub dscp: u8,
+    /// Explicit congestion notification, two bits.
+    pub ecn: u8,
+    /// The fragment identifier. Computed at random, which is what a stack does.
+    pub identification: Field<u16>,
+    /// The three-bit flags field. See [`ipv4_flags`].
+    pub flags: u8,
+    /// Where this fragment sits in the original datagram, in eight-byte units.
+    pub fragment_offset: u16,
+    /// How many hops the packet may cross.
+    pub ttl: u8,
+    /// What the packet carries. Computed from the layer inside it.
+    pub protocol: Field<IpNextHeaderProtocol>,
+    /// Header and payload together. Computed from the packet being built.
+    pub total_length: Field<u16>,
+    /// The header checksum. Computed over the finished header.
+    pub checksum: Field<u16>,
+    /// Header options, padded by the caller to a four-byte boundary.
+    pub options: Vec<u8>,
+}
+
+/// IPv4 fragmentation flags, in the three-bit field
+/// [`Ipv4::flags`] carries.
+pub mod ipv4_flags {
+    /// The packet may not be fragmented in transit.
+    pub const DONT_FRAGMENT: u8 = 0b010;
+    /// More fragments follow this one.
+    pub const MORE_FRAGMENTS: u8 = 0b001;
+}
+
+impl Ipv4 {
+    /// A header from `source` to `destination`, with every derived field left
+    /// for the builder and the defaults this engine's probes use.
+    pub fn new(source: Ipv4Addr, destination: Ipv4Addr) -> Self {
+        Self {
+            source,
+            destination,
+            dscp: 0,
+            ecn: 0,
+            identification: Field::Computed,
+            flags: ipv4_flags::DONT_FRAGMENT,
+            fragment_offset: 0,
+            ttl: super::ip::HOP_LIMIT_ROUTED,
+            protocol: Field::Computed,
+            total_length: Field::Computed,
+            checksum: Field::Computed,
+            options: Vec::new(),
+        }
+    }
+
+    /// Sets how many hops the packet may cross.
+    #[must_use]
+    pub fn with_ttl(mut self, ttl: u8) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    /// Writes `checksum` instead of computing one.
+    #[must_use]
+    pub fn with_checksum(mut self, checksum: u16) -> Self {
+        self.checksum = Field::Exact(checksum);
+        self
+    }
+
+    /// Writes `total_length` instead of measuring the packet.
+    #[must_use]
+    pub fn with_total_length(mut self, total_length: u16) -> Self {
+        self.total_length = Field::Exact(total_length);
+        self
+    }
+
+    /// How long this header is once its options are counted.
+    fn header_len(&self) -> usize {
+        IP_V4_HDR_LEN + self.options.len()
+    }
+}
+
+/// An IPv6 header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ipv6 {
+    /// Where the packet claims to come from.
+    pub source: Ipv6Addr,
+    /// Where it is going.
+    pub destination: Ipv6Addr,
+    /// Traffic class, eight bits.
+    pub traffic_class: u8,
+    /// The flow label, twenty bits. Computed at random.
+    pub flow_label: Field<u32>,
+    /// What follows this header. Computed from the layer inside it.
+    pub next_header: Field<IpNextHeaderProtocol>,
+    /// Everything after this header. Computed from the packet being built.
+    pub payload_length: Field<u16>,
+    /// How many hops the packet may cross. See
+    /// [`HOP_LIMIT_ON_LINK`](super::ip::HOP_LIMIT_ON_LINK) and its neighbours
+    /// for the three values that matter and why.
+    pub hop_limit: u8,
+}
+
+impl Ipv6 {
+    /// A header from `source` to `destination`, with the routed hop limit.
+    pub fn new(source: Ipv6Addr, destination: Ipv6Addr) -> Self {
+        Self {
+            source,
+            destination,
+            traffic_class: 0,
+            flow_label: Field::Computed,
+            next_header: Field::Computed,
+            payload_length: Field::Computed,
+            hop_limit: super::ip::HOP_LIMIT_ROUTED,
+        }
+    }
+
+    /// Sets how many hops the packet may cross.
+    #[must_use]
+    pub fn with_hop_limit(mut self, hop_limit: u8) -> Self {
+        self.hop_limit = hop_limit;
+        self
+    }
+
+    /// Writes `payload_length` instead of measuring the packet.
+    #[must_use]
+    pub fn with_payload_length(mut self, payload_length: u16) -> Self {
+        self.payload_length = Field::Exact(payload_length);
+        self
+    }
+}
+
+/// A TCP header and whatever it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tcp {
+    /// The port the segment claims to come from.
+    pub source_port: u16,
+    /// The port it is aimed at.
+    pub destination_port: u16,
+    /// The sequence number.
+    pub sequence: u32,
+    /// The acknowledgement number, meaningful only with
+    /// [`ACK`](tcp_flags::ACK) set.
+    pub acknowledgement: u32,
+    /// The flag bits. See [`tcp_flags`].
+    pub flags: u8,
+    /// The receive window advertised.
+    pub window: u16,
+    /// The urgent pointer, meaningful only with [`URG`](tcp_flags::URG) set.
+    pub urgent_pointer: u16,
+    /// How long the header is, in four-byte words. Computed from the options.
+    ///
+    /// The field a stack uses to find the payload, so an exact value smaller
+    /// than the real header makes the receiver read option bytes as data, and a
+    /// larger one makes it read data as options.
+    pub data_offset: Field<u8>,
+    /// The checksum, over the segment and an IP pseudo-header. Computed.
+    pub checksum: Field<u16>,
+    /// Header options, as raw bytes, padded by the caller to a four-byte
+    /// boundary.
+    pub options: Vec<u8>,
+    /// The segment's payload.
+    pub payload: Vec<u8>,
+}
+
+impl Tcp {
+    /// A bare segment from `source_port` to `destination_port`, with no flags
+    /// set and every derived field left for the builder.
+    pub fn new(source_port: u16, destination_port: u16) -> Self {
+        Self {
+            source_port,
+            destination_port,
+            sequence: 0,
+            acknowledgement: 0,
+            flags: 0,
+            window: 1024,
+            urgent_pointer: 0,
+            data_offset: Field::Computed,
+            checksum: Field::Computed,
+            options: Vec::new(),
+            payload: Vec::new(),
+        }
+    }
+
+    /// Sets the flag bits, replacing any already set. See [`tcp_flags`].
+    #[must_use]
+    pub fn with_flags(mut self, flags: u8) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    /// Sets the sequence number.
+    #[must_use]
+    pub fn with_sequence(mut self, sequence: u32) -> Self {
+        self.sequence = sequence;
+        self
+    }
+
+    /// Sets the acknowledgement number.
+    #[must_use]
+    pub fn with_acknowledgement(mut self, acknowledgement: u32) -> Self {
+        self.acknowledgement = acknowledgement;
+        self
+    }
+
+    /// Writes `checksum` instead of computing one.
+    #[must_use]
+    pub fn with_checksum(mut self, checksum: u16) -> Self {
+        self.checksum = Field::Exact(checksum);
+        self
+    }
+
+    /// Attaches a payload.
+    #[must_use]
+    pub fn with_payload(mut self, payload: impl Into<Vec<u8>>) -> Self {
+        self.payload = payload.into();
+        self
+    }
+
+    /// How long this header is once its options are counted.
+    fn header_len(&self) -> usize {
+        TCP_HDR_LEN + self.options.len()
+    }
+
+    /// This segment's bytes, checksummed against `addresses`.
+    ///
+    /// The addresses are a parameter because a TCP checksum covers a
+    /// pseudo-header built from them, and a segment does not carry them. Pass
+    /// `None` to leave the checksum zero, which is what a caller assembling a
+    /// fragment to embed elsewhere wants.
+    ///
+    /// [`Packet::build`] calls this with the addresses of the IP layer it
+    /// found. A preset that already knows them calls it directly and skips
+    /// building a header it would only throw away.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError::FamilyMismatch`] when the two addresses are of different
+    /// families.
+    pub fn to_bytes(&self, addresses: Option<(IpAddr, IpAddr)>) -> Result<Vec<u8>> {
+        write_tcp(self, Vec::new(), addresses)
+    }
+}
+
+/// A UDP header and whatever it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Udp {
+    /// The port the datagram claims to come from.
+    pub source_port: u16,
+    /// The port it is aimed at.
+    pub destination_port: u16,
+    /// Header and payload together. Computed from the packet being built.
+    pub length: Field<u16>,
+    /// The checksum, over the datagram and an IP pseudo-header. Computed.
+    ///
+    /// Optional over IPv4 and mandatory over IPv6: RFC 8200 §8.1 requires a
+    /// receiver to discard a zero-checksum datagram, so
+    /// `Field::Exact(0)` over IPv6 builds something that never arrives.
+    pub checksum: Field<u16>,
+    /// The datagram's payload.
+    pub payload: Vec<u8>,
+}
+
+impl Udp {
+    /// A bare datagram from `source_port` to `destination_port`.
+    pub fn new(source_port: u16, destination_port: u16) -> Self {
+        Self {
+            source_port,
+            destination_port,
+            length: Field::Computed,
+            checksum: Field::Computed,
+            payload: Vec::new(),
+        }
+    }
+
+    /// Attaches a payload.
+    #[must_use]
+    pub fn with_payload(mut self, payload: impl Into<Vec<u8>>) -> Self {
+        self.payload = payload.into();
+        self
+    }
+
+    /// Writes `checksum` instead of computing one.
+    #[must_use]
+    pub fn with_checksum(mut self, checksum: u16) -> Self {
+        self.checksum = Field::Exact(checksum);
+        self
+    }
+
+    /// This datagram's bytes, checksummed against `addresses`. The UDP
+    /// counterpart of [`Tcp::to_bytes`], and the same rules apply.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError::FamilyMismatch`] when the two addresses are of different
+    /// families, and [`PacketError::TooLong`] for a payload the length field
+    /// cannot describe.
+    pub fn to_bytes(&self, addresses: Option<(IpAddr, IpAddr)>) -> Result<Vec<u8>> {
+        write_udp(self, Vec::new(), addresses)
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Stacking
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// One header in a [`Packet`], outermost first.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layer {
+    /// An Ethernet II header.
+    Ethernet(Ethernet),
+    /// An IPv4 header.
+    Ipv4(Ipv4),
+    /// An IPv6 header.
+    Ipv6(Ipv6),
+    /// A TCP header and its payload.
+    Tcp(Tcp),
+    /// A UDP header and its payload.
+    Udp(Udp),
+    /// Bytes written exactly as given, for a protocol nothing here models yet.
+    Raw(Vec<u8>),
+}
+
+macro_rules! layer_from {
+    ($($variant:ident($ty:ty)),* $(,)?) => {
+        $(impl From<$ty> for Layer {
+            fn from(header: $ty) -> Self {
+                Self::$variant(header)
+            }
+        })*
+    };
+}
+
+layer_from!(
+    Ethernet(Ethernet),
+    Ipv4(Ipv4),
+    Ipv6(Ipv6),
+    Tcp(Tcp),
+    Udp(Udp),
+    Raw(Vec<u8>),
+);
+
+impl Layer {
+    /// What an enclosing header should call this one, if it is computing its
+    /// own protocol number.
+    fn ip_protocol(&self) -> Option<IpNextHeaderProtocol> {
+        match self {
+            Self::Tcp(_) => Some(IpNextHeaderProtocols::Tcp),
+            Self::Udp(_) => Some(IpNextHeaderProtocols::Udp),
+            _ => None,
+        }
+    }
+
+    /// What an enclosing Ethernet header should call this one.
+    fn ethertype(&self) -> Option<EtherType> {
+        match self {
+            Self::Ipv4(_) => Some(EtherTypes::Ipv4),
+            Self::Ipv6(_) => Some(EtherTypes::Ipv6),
+            _ => None,
+        }
+    }
+}
+
+/// A packet described as a stack of headers, outermost first.
+///
+/// See the [module documentation](self) for the idea and an example. Push what
+/// you want, in the order it appears on the wire, and call [`build`](Self::build).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Packet {
+    layers: Vec<Layer>,
+}
+
+impl Packet {
+    /// An empty packet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a header inside everything pushed so far.
+    #[must_use]
+    pub fn push(mut self, layer: impl Into<Layer>) -> Self {
+        self.layers.push(layer.into());
+        self
+    }
+
+    /// The layers, outermost first.
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
+    /// The layers, for a caller editing a packet it did not build.
+    pub fn layers_mut(&mut self) -> &mut Vec<Layer> {
+        &mut self.layers
+    }
+
+    /// Serializes the packet.
+    ///
+    /// Built from the inside out, because a derived length cannot be known
+    /// until what it counts has been written. The one exception is a transport
+    /// checksum, which needs the addresses of the IP header *outside* it, so
+    /// those are found up front.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError::TooLong`] when a computed length will not fit its field,
+    /// and [`PacketError::FamilyMismatch`] when a transport layer sits inside
+    /// an IP header of a family its addresses do not match. A field written
+    /// with [`Field::Exact`] is never checked, which is the point of it.
+    pub fn build(&self) -> Result<Vec<u8>> {
+        let addresses = self.enclosing_addresses();
+
+        let mut bytes = Vec::new();
+        // What the layer being written should call the one just written, when
+        // it is working its own protocol or ethertype out.
+        let mut inner: Option<&Layer> = None;
+
+        for layer in self.layers.iter().rev() {
+            bytes = write_layer(layer, bytes, inner, addresses)?;
+            inner = Some(layer);
+        }
+
+        Ok(bytes)
+    }
+
+    /// The addresses a transport checksum's pseudo-header is built from, taken
+    /// from the outermost IP layer.
+    fn enclosing_addresses(&self) -> Option<(IpAddr, IpAddr)> {
+        self.layers.iter().find_map(|layer| match layer {
+            Layer::Ipv4(h) => Some((IpAddr::V4(h.source), IpAddr::V4(h.destination))),
+            Layer::Ipv6(h) => Some((IpAddr::V6(h.source), IpAddr::V6(h.destination))),
+            _ => None,
+        })
+    }
+}
+
+/// Writes `layer` around `payload`, returning the two together.
+fn write_layer(
+    layer: &Layer,
+    payload: Vec<u8>,
+    inner: Option<&Layer>,
+    addresses: Option<(IpAddr, IpAddr)>,
+) -> Result<Vec<u8>> {
+    match layer {
+        Layer::Raw(bytes) => Ok([bytes.as_slice(), payload.as_slice()].concat()),
+        Layer::Ethernet(header) => write_ethernet(header, payload, inner),
+        Layer::Ipv4(header) => write_ipv4(header, payload, inner),
+        Layer::Ipv6(header) => write_ipv6(header, payload, inner),
+        Layer::Tcp(header) => write_tcp(header, payload, addresses),
+        Layer::Udp(header) => write_udp(header, payload, addresses),
+    }
+}
+
+fn write_ethernet(header: &Ethernet, payload: Vec<u8>, inner: Option<&Layer>) -> Result<Vec<u8>> {
+    let mut bytes = vec![0u8; ETH_HDR_LEN];
+    {
+        let mut eth =
+            MutableEthernetPacket::new(&mut bytes).expect("a header-sized buffer holds a header");
+        eth.set_source(header.source);
+        eth.set_destination(header.destination);
+        eth.set_ethertype(
+            header
+                .ethertype
+                .resolve(|| inner.and_then(Layer::ethertype).unwrap_or(EtherTypes::Ipv4)),
+        );
+    }
+    bytes.extend_from_slice(&payload);
+    Ok(bytes)
+}
+
+fn write_ipv4(header: &Ipv4, payload: Vec<u8>, inner: Option<&Layer>) -> Result<Vec<u8>> {
+    let header_len = header.header_len();
+    let total = header_len + payload.len();
+    let total_length = match header.total_length {
+        Field::Exact(value) => value,
+        Field::Computed => u16::try_from(total).map_err(|_| {
+            PacketError::too_long("the IPv4 total length", header_len, payload.len())
+        })?,
+    };
+
+    let mut bytes = vec![0u8; header_len];
+    {
+        let mut ipv4 =
+            MutableIpv4Packet::new(&mut bytes).expect("a header-sized buffer holds a header");
+        ipv4.set_version(4);
+        ipv4.set_header_length((header_len / 4) as u8);
+        ipv4.set_dscp(header.dscp);
+        ipv4.set_ecn(header.ecn);
+        ipv4.set_total_length(total_length);
+        ipv4.set_identification(header.identification.resolve(rand::random));
+        ipv4.set_flags(header.flags);
+        ipv4.set_fragment_offset(header.fragment_offset);
+        ipv4.set_ttl(header.ttl);
+        ipv4.set_next_level_protocol(header.protocol.resolve(|| {
+            inner
+                .and_then(Layer::ip_protocol)
+                .unwrap_or(IpNextHeaderProtocols::Tcp)
+        }));
+        ipv4.set_source(header.source);
+        ipv4.set_destination(header.destination);
+        if !header.options.is_empty() {
+            bytes[IP_V4_HDR_LEN..header_len].copy_from_slice(&header.options);
+        }
+    }
+    {
+        let mut ipv4 =
+            MutableIpv4Packet::new(&mut bytes).expect("a header-sized buffer holds a header");
+        let sum = header
+            .checksum
+            .resolve(|| ipv4_checksum(&ipv4.to_immutable()));
+        ipv4.set_checksum(sum);
+    }
+
+    bytes.extend_from_slice(&payload);
+    Ok(bytes)
+}
+
+fn write_ipv6(header: &Ipv6, payload: Vec<u8>, inner: Option<&Layer>) -> Result<Vec<u8>> {
+    let payload_length = match header.payload_length {
+        Field::Exact(value) => value,
+        Field::Computed => u16::try_from(payload.len())
+            .map_err(|_| PacketError::too_long("the IPv6 payload length", 0, payload.len()))?,
+    };
+
+    let mut bytes = vec![0u8; IP_V6_HDR_LEN];
+    {
+        let mut ipv6 =
+            MutableIpv6Packet::new(&mut bytes).expect("a header-sized buffer holds a header");
+        ipv6.set_version(6);
+        ipv6.set_traffic_class(header.traffic_class);
+        ipv6.set_flow_label(header.flow_label.resolve(rand::random));
+        ipv6.set_payload_length(payload_length);
+        ipv6.set_next_header(header.next_header.resolve(|| {
+            inner
+                .and_then(Layer::ip_protocol)
+                .unwrap_or(IpNextHeaderProtocols::Tcp)
+        }));
+        ipv6.set_hop_limit(header.hop_limit);
+        ipv6.set_source(header.source);
+        ipv6.set_destination(header.destination);
+    }
+    bytes.extend_from_slice(&payload);
+    Ok(bytes)
+}
+
+fn write_tcp(
+    header: &Tcp,
+    payload: Vec<u8>,
+    addresses: Option<(IpAddr, IpAddr)>,
+) -> Result<Vec<u8>> {
+    let header_len = header.header_len();
+    let mut bytes = vec![0u8; header_len];
+    bytes.extend_from_slice(&header.payload);
+    bytes.extend_from_slice(&payload);
+
+    {
+        let mut tcp =
+            MutableTcpPacket::new(&mut bytes).expect("a header-sized buffer holds a header");
+        tcp.set_source(header.source_port);
+        tcp.set_destination(header.destination_port);
+        tcp.set_sequence(header.sequence);
+        tcp.set_acknowledgement(header.acknowledgement);
+        tcp.set_data_offset(header.data_offset.resolve(|| (header_len / 4) as u8));
+        tcp.set_flags(header.flags);
+        tcp.set_window(header.window);
+        tcp.set_urgent_ptr(header.urgent_pointer);
+        tcp.set_checksum(0);
+        if !header.options.is_empty() {
+            bytes[TCP_HDR_LEN..header_len].copy_from_slice(&header.options);
+        }
+    }
+
+    let sum = match header.checksum {
+        Field::Exact(value) => value,
+        Field::Computed => {
+            let segment = TcpPacket::new(&bytes).expect("just written");
+            transport_checksum(
+                addresses,
+                |src, dst| pnet::packet::tcp::ipv4_checksum(&segment, src, dst),
+                |src, dst| pnet::packet::tcp::ipv6_checksum(&segment, src, dst),
+            )?
+        }
+    };
+    MutableTcpPacket::new(&mut bytes)
+        .expect("a header-sized buffer holds a header")
+        .set_checksum(sum);
+
+    Ok(bytes)
+}
+
+fn write_udp(
+    header: &Udp,
+    payload: Vec<u8>,
+    addresses: Option<(IpAddr, IpAddr)>,
+) -> Result<Vec<u8>> {
+    let body_len = header.payload.len() + payload.len();
+    let length = match header.length {
+        Field::Exact(value) => value,
+        Field::Computed => u16::try_from(UDP_HDR_LEN + body_len)
+            .map_err(|_| PacketError::too_long("the UDP length", UDP_HDR_LEN, body_len))?,
+    };
+
+    let mut bytes = vec![0u8; UDP_HDR_LEN];
+    bytes.extend_from_slice(&header.payload);
+    bytes.extend_from_slice(&payload);
+
+    {
+        let mut udp =
+            MutableUdpPacket::new(&mut bytes).expect("a header-sized buffer holds a header");
+        udp.set_source(header.source_port);
+        udp.set_destination(header.destination_port);
+        udp.set_length(length);
+        udp.set_checksum(0);
+    }
+
+    let sum = match header.checksum {
+        Field::Exact(value) => value,
+        Field::Computed => {
+            let datagram = UdpPacket::new(&bytes).expect("just written");
+            let computed = transport_checksum(
+                addresses,
+                |src, dst| pnet::packet::udp::ipv4_checksum(&datagram, src, dst),
+                |src, dst| pnet::packet::udp::ipv6_checksum(&datagram, src, dst),
+            )?;
+            // Zero in this field means "not computed" (RFC 768), so a genuine
+            // result of zero is sent as its ones-complement equivalent.
+            if computed == 0 { 0xFFFF } else { computed }
+        }
+    };
+    MutableUdpPacket::new(&mut bytes)
+        .expect("a header-sized buffer holds a header")
+        .set_checksum(sum);
+
+    Ok(bytes)
+}
+
+/// Runs whichever checksum the enclosing IP layer calls for.
+///
+/// A transport layer with no IP header around it has no pseudo-header to
+/// checksum over, so it gets zero: the caller is building a fragment to embed
+/// somewhere else, and inventing addresses for it would be worse than leaving
+/// the field for them to set.
+fn transport_checksum(
+    addresses: Option<(IpAddr, IpAddr)>,
+    v4: impl FnOnce(&Ipv4Addr, &Ipv4Addr) -> u16,
+    v6: impl FnOnce(&Ipv6Addr, &Ipv6Addr) -> u16,
+) -> Result<u16> {
+    match addresses {
+        None => Ok(0),
+        Some((IpAddr::V4(src), IpAddr::V4(dst))) => Ok(v4(&src, &dst)),
+        Some((IpAddr::V6(src), IpAddr::V6(dst))) => Ok(v6(&src, &dst)),
+        Some((src, dst)) => Err(PacketError::FamilyMismatch { src, dst }),
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pnet::packet::Packet as _;
+    use pnet::packet::ethernet::EthernetPacket;
+    use pnet::packet::ipv4::Ipv4Packet;
+    use pnet::packet::ipv6::Ipv6Packet;
+
+    const V4_SRC: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+    const V4_DST: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 9);
+    const MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 1);
+
+    fn v6(s: &str) -> Ipv6Addr {
+        s.parse().expect("a valid address")
+    }
+
+    // ── The default is a correct packet ──────────────────────────────────────
+
+    /// Left alone, every derived field is the value a conformant stack expects.
+    /// That is what makes the overrides below mean something: a caller who
+    /// changes one field changes only that field.
+    #[test]
+    fn a_packet_nobody_overrode_is_one_a_stack_would_accept() {
+        let bytes = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Tcp::new(50_000, 80).with_flags(tcp_flags::SYN))
+            .build()
+            .expect("builds");
+
+        let ip = Ipv4Packet::new(&bytes).expect("an IPv4 header");
+        assert_eq!(ip.get_total_length() as usize, bytes.len());
+        assert_eq!(ip.get_next_level_protocol(), IpNextHeaderProtocols::Tcp);
+        assert_eq!(
+            ip.get_checksum(),
+            ipv4_checksum(&Ipv4Packet::new(&bytes[..20]).expect("header")),
+            "the header checksums itself"
+        );
+
+        let tcp = TcpPacket::new(ip.payload()).expect("a TCP header");
+        assert_eq!(tcp.get_data_offset(), 5);
+        assert_eq!(tcp.get_flags(), tcp_flags::SYN);
+        assert_ne!(tcp.get_checksum(), 0, "checksummed over the pseudo-header");
+    }
+
+    /// The enclosing header works out what it is carrying, so a caller who
+    /// swaps the transport does not have to remember to change the protocol
+    /// number alongside it.
+    #[test]
+    fn an_enclosing_header_names_what_is_inside_it() {
+        let over_udp = Packet::new()
+            .push(Ethernet::new(MAC, MacAddr::broadcast()))
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Udp::new(50_000, 53))
+            .build()
+            .expect("builds");
+
+        let eth = EthernetPacket::new(&over_udp).expect("a frame");
+        assert_eq!(eth.get_ethertype(), EtherTypes::Ipv4);
+        assert_eq!(
+            Ipv4Packet::new(eth.payload())
+                .expect("an IPv4 header")
+                .get_next_level_protocol(),
+            IpNextHeaderProtocols::Udp
+        );
+
+        let over_v6 = Packet::new()
+            .push(Ethernet::new(MAC, MacAddr::broadcast()))
+            .push(Ipv6::new(v6("2001:db8::1"), v6("2001:db8::2")))
+            .push(Tcp::new(50_000, 80))
+            .build()
+            .expect("builds");
+
+        let eth = EthernetPacket::new(&over_v6).expect("a frame");
+        assert_eq!(eth.get_ethertype(), EtherTypes::Ipv6);
+        assert_eq!(
+            Ipv6Packet::new(eth.payload())
+                .expect("an IPv6 header")
+                .get_next_header(),
+            IpNextHeaderProtocols::Tcp
+        );
+    }
+
+    /// The checksum covers a pseudo-header built from the addresses of the IP
+    /// layer outside the transport, which is the one thing a layer cannot see
+    /// by looking inward. Getting it from the wrong place is invisible until a
+    /// real stack drops the packet.
+    #[test]
+    fn a_transport_checksum_covers_the_addresses_of_the_layer_around_it() {
+        let checksum_with = |dst: Ipv4Addr| {
+            let bytes = Packet::new()
+                .push(Ipv4::new(V4_SRC, dst))
+                .push(Tcp::new(50_000, 80).with_flags(tcp_flags::SYN))
+                .build()
+                .expect("builds");
+            let ip = Ipv4Packet::new(&bytes).expect("header");
+            TcpPacket::new(ip.payload())
+                .expect("segment")
+                .get_checksum()
+        };
+
+        assert_ne!(
+            checksum_with(V4_DST),
+            checksum_with(Ipv4Addr::new(192, 0, 2, 10)),
+            "the destination is part of what is summed"
+        );
+    }
+
+    // ── Overrides ────────────────────────────────────────────────────────────
+
+    /// The point of the whole design: one wrong field, every other one still
+    /// right. A packet that is wrong in nineteen ways is rejected by the first
+    /// check a stack runs and tells you nothing about the rest.
+    #[test]
+    fn an_exact_field_is_written_verbatim_and_nothing_else_moves() {
+        let bytes = Packet::new()
+            .push(Ipv4 {
+                total_length: Field::Exact(4),
+                ..Ipv4::new(V4_SRC, V4_DST)
+            })
+            .push(Tcp::new(50_000, 80).with_flags(tcp_flags::SYN))
+            .build()
+            .expect("a wrong length is not an error, it is the request");
+
+        let ip = Ipv4Packet::new(&bytes).expect("an IPv4 header");
+        assert_eq!(ip.get_total_length(), 4, "written as asked");
+        assert_eq!(bytes.len(), 40, "and the packet is its real size");
+        assert_eq!(
+            ip.get_next_level_protocol(),
+            IpNextHeaderProtocols::Tcp,
+            "the fields nobody touched are still correct"
+        );
+
+        // Read at a fixed offset rather than through `payload()`, which trusts
+        // the length field and so hands back nothing. That a parser is already
+        // misled by this packet is the point of building it.
+        assert!(ip.payload().is_empty(), "a reader believes the header");
+        let tcp = TcpPacket::new(&bytes[20..]).expect("the segment is really there");
+        assert_ne!(tcp.get_checksum(), 0, "and is checksummed correctly");
+        assert_eq!(tcp.get_destination(), 80);
+    }
+
+    /// A checksum of zero is a real thing to want to send and is exactly what
+    /// `Computed` would never produce, so it is the clearest test that an
+    /// override is honoured rather than validated away.
+    #[test]
+    fn a_deliberately_wrong_checksum_survives_to_the_wire() {
+        let bytes = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST).with_checksum(0))
+            .push(Tcp::new(50_000, 80).with_checksum(0xDEAD))
+            .build()
+            .expect("builds");
+
+        let ip = Ipv4Packet::new(&bytes).expect("an IPv4 header");
+        assert_eq!(ip.get_checksum(), 0);
+        assert_eq!(
+            TcpPacket::new(ip.payload()).expect("tcp").get_checksum(),
+            0xDEAD
+        );
+    }
+
+    /// A data offset larger than the header makes a receiver read payload as
+    /// options, and one smaller makes it read options as payload. Both are
+    /// worth being able to send and neither is something the builder should
+    /// second-guess.
+    #[test]
+    fn a_data_offset_that_lies_about_the_header_is_written_as_given() {
+        let bytes = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Tcp {
+                data_offset: Field::Exact(15),
+                ..Tcp::new(50_000, 80)
+            })
+            .build()
+            .expect("builds");
+
+        let ip = Ipv4Packet::new(&bytes).expect("header");
+        assert_eq!(
+            TcpPacket::new(ip.payload()).expect("tcp").get_data_offset(),
+            15
+        );
+    }
+
+    // ── Refusals ─────────────────────────────────────────────────────────────
+
+    /// A *computed* length that will not fit its field is refused, because the
+    /// caller asked for the correct value and there is not one. An exact one is
+    /// written whatever it says, which is the previous test.
+    #[test]
+    fn a_computed_length_that_cannot_fit_is_refused() {
+        let refused = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Udp::new(50_000, 53).with_payload(vec![0u8; u16::MAX as usize]))
+            .build();
+
+        assert!(
+            matches!(refused, Err(PacketError::TooLong { .. })),
+            "got {refused:?}"
+        );
+    }
+
+    /// A packet may be edited after it is described, which is how a caller
+    /// works from a template. Swapping the IP layer for another family has to
+    /// carry the transport checksum with it rather than leaving one computed
+    /// against the old pseudo-header.
+    #[test]
+    fn editing_the_ip_layer_moves_the_checksum_that_depends_on_it() {
+        let mut packet = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Tcp::new(50_000, 80).with_flags(tcp_flags::SYN));
+        let over_v4 = packet.build().expect("builds");
+
+        packet.layers_mut()[0] = Layer::Ipv6(Ipv6::new(v6("2001:db8::1"), v6("2001:db8::2")));
+        let over_v6 = packet.build().expect("builds");
+
+        let v4_sum = TcpPacket::new(&over_v4[20..]).expect("tcp").get_checksum();
+        let v6_sum = TcpPacket::new(&over_v6[40..]).expect("tcp").get_checksum();
+        assert_ne!(
+            v4_sum, v6_sum,
+            "the pseudo-header changed, so the checksum must have"
+        );
+    }
+
+    /// A transport layer with no IP header around it is a fragment the caller
+    /// means to embed somewhere else, so it gets a zero checksum rather than an
+    /// invented pseudo-header.
+    #[test]
+    fn a_bare_transport_layer_builds_without_inventing_addresses() {
+        let bytes = Packet::new()
+            .push(Tcp::new(50_000, 80).with_flags(tcp_flags::SYN))
+            .build()
+            .expect("builds");
+
+        assert_eq!(bytes.len(), 20);
+        assert_eq!(TcpPacket::new(&bytes).expect("tcp").get_checksum(), 0);
+    }
+
+    // ── Payloads and options ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_payload_is_counted_by_every_length_above_it() {
+        let bytes = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Udp::new(50_000, 53).with_payload(b"hello".to_vec()))
+            .build()
+            .expect("builds");
+
+        let ip = Ipv4Packet::new(&bytes).expect("header");
+        assert_eq!(ip.get_total_length() as usize, 20 + 8 + 5);
+        assert_eq!(
+            UdpPacket::new(ip.payload()).expect("udp").get_length(),
+            8 + 5
+        );
+        assert_eq!(&bytes[bytes.len() - 5..], b"hello");
+    }
+
+    /// Options lengthen the header, so the data offset that finds the payload
+    /// has to move with them.
+    #[test]
+    fn tcp_options_move_the_data_offset_that_finds_the_payload() {
+        let bytes = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Tcp {
+                // One four-byte option: kind 2, length 4, MSS 1412.
+                options: vec![2, 4, 0x05, 0x84],
+                payload: b"body".to_vec(),
+                ..Tcp::new(50_000, 80)
+            })
+            .build()
+            .expect("builds");
+
+        let ip = Ipv4Packet::new(&bytes).expect("header");
+        let tcp = TcpPacket::new(ip.payload()).expect("tcp");
+        assert_eq!(tcp.get_data_offset(), 6, "twenty bytes plus one word");
+        assert_eq!(tcp.payload(), b"body");
+    }
+
+    /// Bytes nothing here models yet still go on the wire, so a protocol this
+    /// module has not learned is not a wall.
+    #[test]
+    fn a_raw_layer_is_written_exactly_as_given() {
+        let bytes = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Layer::Raw(vec![0xDE, 0xAD, 0xBE, 0xEF]))
+            .build()
+            .expect("builds");
+
+        assert_eq!(&bytes[20..], &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(
+            Ipv4Packet::new(&bytes).expect("header").get_total_length(),
+            24
+        );
+    }
+}

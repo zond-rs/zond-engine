@@ -6,10 +6,33 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # IP headers, and reading what a frame carries
+//!
+//! The network layer: the two headers this engine writes, the hop limits it
+//! writes into them, and the readers that pull an address or a payload back out
+//! of a captured frame.
+//!
+//! ## The kernel is not in this path
+//!
+//! These headers go straight onto the wire over a link-layer send, so every
+//! field has to be right here. Nothing downstream fills in a length, corrects a
+//! checksum or picks a fragmentation flag, and a receiver silently drops what
+//! it cannot parse. That is why the builders compute their own checksums and
+//! why a length that will not fit its field is refused rather than truncated.
+//!
+//! ## The readers decline rather than guess
+//!
+//! Everything that reads a captured frame here stops at the fixed header: an
+//! IPv6 packet carrying extension headers is reported as not-ICMPv6 rather than
+//! walked, and a fragmented IPv4 packet is not reassembled. That is the safe
+//! direction for discovery, which would rather miss a frame than credit a host
+//! on a reading it is not sure of, and none of the probes this engine sends
+//! elicit either shape.
+
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use crate::protocols::error::{PacketError, Result};
 use crate::protocols::sizes::{IP_V4_HDR_LEN, IP_V6_HDR_LEN, UDP_HDR_LEN};
-use anyhow::Context;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::icmpv6::echo_reply::EchoReplyPacket;
@@ -24,32 +47,53 @@ const WORD_LEN: usize = 4;
 /// packets that should never be fragmented in transit.
 const DONT_FRAGMENT: u8 = 0b010;
 
+/// The default time to live on a routed probe, matching
+/// [`HOP_LIMIT_ROUTED`](self::HOP_LIMIT_ROUTED), IPv6's name for the same
+/// field.
+const DEFAULT_TTL: u8 = HOP_LIMIT_ROUTED;
+
 /// Builds a 20-byte IPv4 header (no options) for a packet carrying
 /// `payload_length` bytes of `next_protocol` from `src_addr` to `dst_addr`.
 ///
-/// The header checksum is computed over the finished header. The kernel is
-/// not in this path - these headers are emitted straight onto the wire via a
-/// Layer-2 send - so every field, including the checksum, has to be correct
-/// here or the receiver drops the packet.
+/// The header checksum is computed over the finished header, because nothing
+/// downstream will do it; see the module documentation.
+///
+/// # Errors
+///
+/// [`PacketError::TooLong`] when the payload and the header together exceed
+/// what the 16-bit total-length field can describe, which is 65 515 bytes of
+/// payload. Refused rather than truncated: a wrapped value describes a packet
+/// shorter than its own header, and every receiver drops it.
 pub fn create_ipv4_header(
     src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
     payload_length: u16,
     next_protocol: IpNextHeaderProtocol,
-) -> anyhow::Result<Vec<u8>> {
+) -> Result<Vec<u8>> {
+    let total_length = (IP_V4_HDR_LEN as u32 + payload_length as u32)
+        .try_into()
+        .map_err(|_| {
+            PacketError::too_long(
+                "the IPv4 total length",
+                IP_V4_HDR_LEN,
+                payload_length as usize,
+            )
+        })?;
+
     let mut buffer: [u8; IP_V4_HDR_LEN] = [0; IP_V4_HDR_LEN];
     {
+        // Infallible: the buffer is exactly the header this writes into it.
         let mut ipv4: MutableIpv4Packet =
-            MutableIpv4Packet::new(&mut buffer[..]).context("creating ipv4 packet")?;
+            MutableIpv4Packet::new(&mut buffer[..]).expect("a header-sized buffer holds a header");
         ipv4.set_version(4);
         ipv4.set_header_length((IP_V4_HDR_LEN / WORD_LEN) as u8);
         ipv4.set_dscp(0);
         ipv4.set_ecn(0);
-        ipv4.set_total_length(IP_V4_HDR_LEN as u16 + payload_length);
+        ipv4.set_total_length(total_length);
         ipv4.set_identification(rand::random());
         ipv4.set_flags(DONT_FRAGMENT);
         ipv4.set_fragment_offset(0);
-        ipv4.set_ttl(64);
+        ipv4.set_ttl(DEFAULT_TTL);
         ipv4.set_next_level_protocol(next_protocol);
         ipv4.set_source(src_addr);
         ipv4.set_destination(dst_addr);
@@ -97,17 +141,22 @@ pub const HOP_LIMIT_ROUTED: u8 = 64;
 /// must survive every router between here and its target. Getting it wrong is
 /// silent in one direction — an on-link probe with a large hop limit still
 /// works — and total in the other.
+///
+/// Infallible, unlike its IPv4 counterpart: the payload length is its own
+/// field here rather than a total that has to include the header, so every
+/// `u16` a caller can pass is one the field can hold.
 pub fn create_ipv6_header(
     src_addr: Ipv6Addr,
     dst_addr: Ipv6Addr,
     payload_length: u16,
     next_protocol: IpNextHeaderProtocol,
     hop_limit: u8,
-) -> anyhow::Result<Vec<u8>> {
+) -> Vec<u8> {
     let mut buffer: [u8; IP_V6_HDR_LEN] = [0; IP_V6_HDR_LEN];
     {
+        // Infallible: the buffer is exactly the header this writes into it.
         let mut ipv6: MutableIpv6Packet =
-            MutableIpv6Packet::new(&mut buffer[..]).context("creating ipv6 packet")?;
+            MutableIpv6Packet::new(&mut buffer[..]).expect("a header-sized buffer holds a header");
         ipv6.set_version(6);
         ipv6.set_traffic_class(0);
         ipv6.set_flow_label(rand::random());
@@ -117,23 +166,34 @@ pub fn create_ipv6_header(
         ipv6.set_source(src_addr);
         ipv6.set_destination(dst_addr);
     }
-    Ok(buffer.to_vec())
+    buffer.to_vec()
 }
 
-pub fn get_ipv6_src_addr_from_eth(frame: &EthernetPacket) -> anyhow::Result<Ipv6Addr> {
-    let ipv6_packet: Ipv6Packet = Ipv6Packet::new(frame.payload()).context(format!(
-        "truncated or invalid ipv6 packet (payload len {})",
-        frame.payload().len()
-    ))?;
-    Ok(ipv6_packet.get_source())
+/// The address an Ethernet-framed IPv6 packet was sent from.
+///
+/// # Errors
+///
+/// [`PacketError::Truncated`] when the frame carries too few bytes for a
+/// header.
+pub fn get_ipv6_src_addr_from_eth(frame: &EthernetPacket) -> Result<Ipv6Addr> {
+    Ok(ipv6_from_eth(frame)?.get_source())
 }
 
-pub fn get_ipv6_dst_addr_from_eth(frame: &EthernetPacket) -> anyhow::Result<Ipv6Addr> {
-    let ipv6_packet: Ipv6Packet = Ipv6Packet::new(frame.payload()).context(format!(
-        "truncated or invalid ipv6 packet (payload len {})",
-        frame.payload().len()
-    ))?;
-    Ok(ipv6_packet.get_destination())
+/// The address an Ethernet-framed IPv6 packet was sent to.
+///
+/// # Errors
+///
+/// [`PacketError::Truncated`] when the frame carries too few bytes for a
+/// header.
+pub fn get_ipv6_dst_addr_from_eth(frame: &EthernetPacket) -> Result<Ipv6Addr> {
+    Ok(ipv6_from_eth(frame)?.get_destination())
+}
+
+/// The IPv6 packet inside `frame`, or why it could not be read.
+fn ipv6_from_eth<'a>(frame: &'a EthernetPacket<'a>) -> Result<Ipv6Packet<'a>> {
+    Ipv6Packet::new(frame.payload()).ok_or_else(|| {
+        PacketError::truncated("an IPv6 packet", IP_V6_HDR_LEN, frame.payload().len())
+    })
 }
 
 /// The ICMPv6 message type an Ethernet-framed IPv6 packet carries, or `None` if
@@ -211,10 +271,63 @@ pub fn udp_payload_from_eth<'a>(frame: &'a EthernetPacket<'a>, port: u16) -> Opt
     datagram.get(UDP_HDR_LEN..)
 }
 
-pub fn get_ipv4_addr_from_eth(frame: &EthernetPacket) -> anyhow::Result<Ipv4Addr> {
-    let ipv4_packet: Ipv4Packet = Ipv4Packet::new(frame.payload()).context(format!(
-        "truncated or invalid ipv4 packet (payload len {})",
-        frame.payload().len()
-    ))?;
+/// The address an Ethernet-framed IPv4 packet was sent from.
+///
+/// # Errors
+///
+/// [`PacketError::Truncated`] when the frame carries too few bytes for a
+/// header.
+pub fn get_ipv4_addr_from_eth(frame: &EthernetPacket) -> Result<Ipv4Addr> {
+    let ipv4_packet = Ipv4Packet::new(frame.payload()).ok_or_else(|| {
+        PacketError::truncated("an IPv4 packet", IP_V4_HDR_LEN, frame.payload().len())
+    })?;
     Ok(ipv4_packet.get_source())
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pnet::packet::ip::IpNextHeaderProtocols;
+
+    const V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+
+    /// The largest payload the total-length field can describe, and the first
+    /// one it cannot.
+    ///
+    /// The field counts the header as well, so it runs out twenty bytes before
+    /// the payload does. Past that the addition used to wrap: in release a
+    /// payload of 65 516 produced a header claiming a total length of zero, and
+    /// 65 535 one claiming nineteen, which is shorter than the header itself.
+    /// A receiver drops both, and the scan reads that as a firewall.
+    ///
+    /// In debug the same addition panicked instead, so the two build profiles
+    /// disagreed about whether this was a crash or a wrong answer.
+    #[test]
+    fn a_payload_too_large_for_the_length_field_is_refused_rather_than_wrapped() {
+        let largest = u16::MAX as usize - IP_V4_HDR_LEN;
+
+        let header = create_ipv4_header(V4, V4, largest as u16, IpNextHeaderProtocols::Tcp)
+            .expect("the largest describable payload");
+        assert_eq!(
+            Ipv4Packet::new(&header).expect("parses").get_total_length(),
+            u16::MAX
+        );
+
+        for oversize in [largest + 1, u16::MAX as usize] {
+            let refused = create_ipv4_header(V4, V4, oversize as u16, IpNextHeaderProtocols::Tcp);
+            assert!(
+                matches!(refused, Err(PacketError::TooLong { .. })),
+                "a payload of {oversize} produced {refused:?}"
+            );
+        }
+    }
 }

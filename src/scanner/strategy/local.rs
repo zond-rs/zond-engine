@@ -26,6 +26,7 @@
 
 mod discovery;
 mod ipv6;
+mod probes;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -310,13 +311,12 @@ impl HostScanner for LocalScanner {
     }
 
     async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
-        let mut packet_iter = protocol::eth_packet_iter(
+        let mut packet_iter = probes::eth_packet_iter(
             &self.identity.mac,
             &self.identity.ipv4,
             &self.identity.link_local_ipv6,
             &self.ip_set,
-        )
-        .map_err(|e| StrategyError::Probe(format!("{e:#}")))?;
+        );
 
         // The first all-nodes echo is owed immediately, so it goes out at the
         // head of the sweep rather than behind every ARP request. It is the one
@@ -634,27 +634,14 @@ impl LocalScanner {
             return;
         };
 
-        match protocol::ndp::create_neighbor_solicitation(&self.identity.mac, &source_v6, target_v6)
-        {
-            Ok(packet) => {
-                self.emit(&packet, "confirming solicitation");
-                self.ipv6.record_confirmation_sent(target, now);
-                info!(
-                    verbosity = 2,
-                    "Asked {target} directly, having only overheard it"
-                );
-            }
-            Err(e) => {
-                self.audit.record_send(false);
-                self.send_failure.get_or_insert_with(|| {
-                    format!("confirming solicitation could not be built: {e}")
-                });
-                error!(
-                    verbosity = 1,
-                    "Failed to build a confirming solicitation for {target}: {e}"
-                );
-            }
-        }
+        let packet =
+            protocol::ndp::create_neighbor_solicitation(&self.identity.mac, &source_v6, target_v6);
+        self.emit(&packet, "confirming solicitation");
+        self.ipv6.record_confirmation_sent(target, now);
+        info!(
+            verbosity = 2,
+            "Asked {target} directly, having only overheard it"
+        );
     }
 
     /// Sends the all-nodes solicitation again.
@@ -667,27 +654,14 @@ impl LocalScanner {
             return;
         };
 
-        match protocol::icmp::create_all_nodes_echo_request_v6(
+        let packet = protocol::icmp::create_all_nodes_echo_request_v6(
             &self.identity.mac,
             &link_local,
             self.ipv6.solicitation().identifier,
             self.ipv6.solicitation().next_sequence(),
-        ) {
-            Ok(packet) => {
-                self.emit(&packet, "all-nodes solicitation");
-                self.ipv6.record_solicitation_sent(now);
-            }
-            Err(e) => {
-                self.audit.record_send(false);
-                error!(
-                    verbosity = 1,
-                    "Failed to rebuild all-nodes solicitation: {e}"
-                );
-                // Recorded anyway, so a solicitation that cannot be built stops
-                // being owed instead of holding the sweep open forever.
-                self.ipv6.record_solicitation_sent(now);
-            }
-        }
+        );
+        self.emit(&packet, "all-nodes solicitation");
+        self.ipv6.record_solicitation_sent(now);
     }
 
     /// Rebuilds and sends the probe for `target`, whichever kind its address
@@ -722,22 +696,11 @@ impl LocalScanner {
             }
         };
 
-        match packet {
-            Ok(packet) => {
-                self.emit(&packet, "probe");
-                if target.is_ipv6() {
-                    self.ipv6.record_asked(target, now);
-                } else {
-                    self.ledger.arm(target, target, (), now);
-                }
-            }
-            // Not armed, so the ledger's charge for this attempt stands and the
-            // address runs out of attempts on schedule rather than waiting
-            // outstanding forever.
-            Err(e) => {
-                self.audit.record_send(false);
-                error!(verbosity = 1, "Failed to rebuild probe for {target}: {e}");
-            }
+        self.emit(&packet, "probe");
+        if target.is_ipv6() {
+            self.ipv6.record_asked(target, now);
+        } else {
+            self.ledger.arm(target, target, (), now);
         }
     }
 

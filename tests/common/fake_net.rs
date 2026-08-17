@@ -902,9 +902,7 @@ fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8], layer4: Layer4) -> Optio
     };
     let header = match (scanner, target) {
         (IpAddr::V4(s), IpAddr::V4(d)) => ip::create_ipv4_header(s, d, len, protocol).ok()?,
-        (IpAddr::V6(s), IpAddr::V6(d)) => {
-            ip::create_ipv6_header(s, d, len, protocol, HOP_LIMIT).ok()?
-        }
+        (IpAddr::V6(s), IpAddr::V6(d)) => ip::create_ipv6_header(s, d, len, protocol, HOP_LIMIT),
         _ => return None,
     };
 

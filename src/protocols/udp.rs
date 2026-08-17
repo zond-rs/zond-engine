@@ -6,20 +6,20 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # UDP datagrams
+//!
+//! The datagram a UDP port probe puts on the wire.
+//!
+//! Thinner than its TCP counterpart because UDP is thinner: there is no
+//! handshake to correlate against, so every probe in a scan leaves from one
+//! fixed source port and that port is the whole of the scan's identity on the
+//! wire. What makes an open port answer at all is the payload, which is
+//! [`payload`](crate::scanner::payload)'s business rather than this module's.
+
 use std::net::IpAddr;
 
-use anyhow::Context;
-use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
-
-const UDP_HDR_LEN: usize = 8;
-
-/// The value carried in place of a computed checksum of zero.
-///
-/// Zero in that field means "no checksum was computed" (RFC 768), so a genuine
-/// result of zero has to be sent as its ones-complement equivalent instead.
-/// Both encode the same arithmetic; only one of them is distinguishable from
-/// "not computed".
-const CHECKSUM_NONE_SUBSTITUTE: u16 = 0xFFFF;
+use crate::protocols::craft;
+use crate::protocols::error::Result;
 
 /// Builds a UDP datagram from `src_addr` to `dst_addr`, checksummed over the
 /// IP pseudo-header.
@@ -33,42 +33,23 @@ const CHECKSUM_NONE_SUBSTITUTE: u16 = 0xFFFF;
 /// requires a receiver to discard a zero-checksum UDP datagram - so a v6 probe
 /// built without one never reaches the port it is aimed at, and the scan reads
 /// the resulting silence as `OpenFiltered`.
+///
+/// # Errors
+///
+/// [`FamilyMismatch`](crate::protocols::error::PacketError::FamilyMismatch)
+/// when the addresses are of different families, and
+/// [`TooLong`](crate::protocols::error::PacketError::TooLong) for a payload the
+/// 16-bit length field cannot describe.
 pub fn create_packet(
     src_addr: &IpAddr,
     dst_addr: &IpAddr,
     src_port: u16,
     dst_port: u16,
     payload: Vec<u8>,
-) -> anyhow::Result<Vec<u8>> {
-    let total_len: usize = UDP_HDR_LEN + payload.len();
-    let mut buffer: Vec<u8> = vec![0u8; total_len];
-    {
-        let mut udp: MutableUdpPacket =
-            MutableUdpPacket::new(&mut buffer).context("creating udp packet")?;
-        udp.set_source(src_port);
-        udp.set_destination(dst_port);
-        udp.set_length(total_len as u16);
-        udp.set_payload(&payload);
-        udp.set_checksum(0);
-
-        let udp_packet: UdpPacket = udp.to_immutable();
-        let checksum = match (src_addr, dst_addr) {
-            (IpAddr::V4(src), IpAddr::V4(dst)) => {
-                pnet::packet::udp::ipv4_checksum(&udp_packet, src, dst)
-            }
-            (IpAddr::V6(src), IpAddr::V6(dst)) => {
-                pnet::packet::udp::ipv6_checksum(&udp_packet, src, dst)
-            }
-            _ => anyhow::bail!("IP version mismatch between {src_addr} and {dst_addr}"),
-        };
-
-        udp.set_checksum(if checksum == 0 {
-            CHECKSUM_NONE_SUBSTITUTE
-        } else {
-            checksum
-        });
-    }
-    Ok(buffer)
+) -> Result<Vec<u8>> {
+    craft::Udp::new(src_port, dst_port)
+        .with_payload(payload)
+        .to_bytes(Some((*src_addr, *dst_addr)))
 }
 
 // ╔════════════════════════════════════════════╗
@@ -83,6 +64,12 @@ pub fn create_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocols::sizes::UDP_HDR_LEN;
+    use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
+
+    /// The value RFC 768 substitutes for a computed checksum of zero, since
+    /// zero in that field means "not computed".
+    const CHECKSUM_NONE_SUBSTITUTE: u16 = 0xFFFF;
     use pnet::packet::Packet;
     use std::net::{Ipv4Addr, Ipv6Addr};
 

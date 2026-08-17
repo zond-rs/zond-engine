@@ -6,10 +6,20 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # ICMPv6 echo
+//!
+//! The all-nodes echo request a sweep puts to a whole segment at once.
+//!
+//! Optional to answer, unlike the neighbor solicitation in [`ndp`](super::ndp):
+//! Windows and many embedded stacks ignore it. What it offers in exchange is a
+//! reply that can be *timed*. RFC 4443 requires an echo reply to carry back the
+//! request's identifier and sequence unchanged, so a scanner that remembers
+//! which values it sent knows which request an answer belongs to, and a
+//! solicitation, identical on the wire from one attempt to the next, never can.
+
 use crate::protocols::ethernet;
 use crate::protocols::ip;
 use crate::protocols::sizes::{ETH_HDR_LEN, ICMP_V6_ECHO_REQ_LEN, IP_V6_HDR_LEN};
-use anyhow::Context;
 use pnet::datalink::MacAddr;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::EtherTypes;
@@ -43,30 +53,31 @@ pub fn create_all_nodes_echo_request_v6(
     src_addr: &Ipv6Addr,
     identifier: u16,
     sequence: u16,
-) -> anyhow::Result<Vec<u8>> {
+) -> Vec<u8> {
     let dst_mac: MacAddr = MacAddr::new(0x33, 0x33, 0, 0, 0, 1);
     let dst_addr: Ipv6Addr = Ipv6Addr::new(0xff02, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1);
-    let eth_header: Vec<u8> = ethernet::make_header(*src_mac, dst_mac, EtherTypes::Ipv6)?;
+    let eth_header: Vec<u8> = ethernet::make_header(*src_mac, dst_mac, EtherTypes::Ipv6);
     let ipv6_header: Vec<u8> = ip::create_ipv6_header(
         *src_addr,
         dst_addr,
         PAYLOAD_LENGTH,
         NEXT_PROTOCOL,
         ip::HOP_LIMIT_ON_LINK,
-    )?;
+    );
     let mut icmp_packet: [u8; ICMP_V6_ECHO_REQ_LEN] = [0u8; ICMP_V6_ECHO_REQ_LEN];
 
     {
+        // Infallible: every buffer here is exactly the message written into it.
         let mut icmp: MutableEchoRequestPacket =
             MutableEchoRequestPacket::new(&mut icmp_packet[..])
-                .context("failed to create echo request packet")?;
+                .expect("an echo-sized buffer holds an echo request");
         icmp.set_icmpv6_type(Icmpv6Types::EchoRequest);
         icmp.set_icmpv6_code(Icmpv6Codes::NoCode);
         icmp.set_identifier(identifier);
         icmp.set_sequence_number(sequence);
         let icmp_imm: EchoRequestPacket = icmp.to_immutable();
         let icmp_pkt: Icmpv6Packet =
-            Icmpv6Packet::new(icmp_imm.packet()).context("failed to create ICMPv6 packet")?;
+            Icmpv6Packet::new(icmp_imm.packet()).expect("an echo request is an ICMPv6 message");
         let csm = checksum(&icmp_pkt, src_addr, &dst_addr);
         icmp.set_checksum(csm);
     }
@@ -76,5 +87,5 @@ pub fn create_all_nodes_echo_request_v6(
     final_packet.extend_from_slice(&ipv6_header);
     final_packet.extend_from_slice(&icmp_packet);
 
-    Ok(final_packet)
+    final_packet
 }

@@ -209,7 +209,6 @@ mod tests {
 
     fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
         arp::create_packet(&PEER_MAC, LOCAL_MAC, &sender_ip, Ipv4Addr::new(10, 0, 0, 1))
-            .expect("failed to build ARP test frame")
     }
 
     /// An Ethernet-framed IPv6 packet to `destination`, carrying `body` as
@@ -220,16 +219,14 @@ mod tests {
             PEER_MAC,
             LOCAL_MAC,
             pnet::packet::ethernet::EtherTypes::Ipv6,
-        )
-        .expect("failed to build Ethernet header");
+        );
         let ip_header = ip_protocol::create_ipv6_header(
             source,
             destination,
             body.len() as u16,
             protocol,
             ip_protocol::HOP_LIMIT_ON_LINK,
-        )
-        .expect("failed to build IPv6 header");
+        );
 
         [eth_header, ip_header, body.to_vec()].concat()
     }

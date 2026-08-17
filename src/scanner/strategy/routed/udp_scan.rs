@@ -287,7 +287,6 @@ impl UdpPortScanner {
             .record_host_found(resolution.answered_attempt);
         self.record_port(target.0, target.1, state, Some(sender));
     }
-
 }
 
 /// The port a direct UDP reply answers for, if the datagram is addressed to
@@ -686,7 +685,6 @@ mod tests {
             }
             (IpAddr::V6(s), IpAddr::V6(d)) => {
                 ip::create_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
-                    .unwrap()
             }
             _ => panic!("IP version mismatch in test fixture"),
         };

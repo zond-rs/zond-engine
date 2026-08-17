@@ -296,13 +296,13 @@ pub fn build_ethernet_frame(
         ),
         (IpAddr::V6(s), IpAddr::V6(d)) => (
             EtherTypes::Ipv6,
-            ip::create_ipv6_header(s, d, payload_len, protocol, ip::HOP_LIMIT_ROUTED)?,
+            ip::create_ipv6_header(s, d, payload_len, protocol, ip::HOP_LIMIT_ROUTED),
         ),
         _ => anyhow::bail!("IP version mismatch between {src} and {dst}"),
     };
 
     let mut frame = Vec::with_capacity(ETH_HDR_LEN + ip_header.len() + segment.len());
-    frame.extend_from_slice(&ethernet::make_header(src_mac, dst_mac, ethertype)?);
+    frame.extend_from_slice(&ethernet::make_header(src_mac, dst_mac, ethertype));
     frame.extend_from_slice(&ip_header);
     frame.extend_from_slice(segment);
     Ok(frame)
@@ -367,8 +367,7 @@ mod tests {
             payload.len() as u16,
             IpNextHeaderProtocols::Udp,
             ip::HOP_LIMIT_ROUTED,
-        )
-        .unwrap();
+        );
         let packet: Vec<u8> = header.into_iter().chain(payload).collect();
 
         let parsed = parse_ip_segment(&packet).unwrap();
@@ -470,7 +469,6 @@ mod tests {
             first,
             ip::HOP_LIMIT_ROUTED,
         )
-        .unwrap()
         .into_iter()
         .chain(chain.iter().copied())
         .chain(segment.iter().copied())

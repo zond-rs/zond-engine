@@ -137,8 +137,7 @@ impl EthernetSender {
         let mut channels = self.channels.lock().unwrap();
         let channel = self.channel_for(&mut channels, interface)?;
 
-        let request = arp::create_packet(&src_mac, MacAddr::zero(), &src_ip, target)
-            .context("building ARP request")?;
+        let request = arp::create_packet(&src_mac, MacAddr::zero(), &src_ip, target);
         channel
             .tx
             .send_to(&request, None)

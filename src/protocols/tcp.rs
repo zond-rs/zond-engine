@@ -39,10 +39,12 @@
 
 use std::net::IpAddr;
 
-use anyhow::Context;
-use pnet::packet::tcp::{MutableTcpPacket, TcpOption, TcpPacket};
+use pnet::packet::tcp::TcpPacket;
 
 use crate::model::technique::{TcpReply, TcpScanTechnique};
+use crate::protocols::craft;
+use crate::protocols::error::{PacketError, Result};
+use crate::protocols::sizes::TCP_HDR_LEN;
 
 /// TCP header flag bits, in the order they sit in the header.
 pub mod flags {
@@ -54,10 +56,10 @@ pub mod flags {
     pub const URG: u8 = 1 << 5;
 }
 
-/// A header with no options: every probe but the SYN.
-const TCP_HDR_LEN: usize = 20;
 /// A header with room for the MSS option a SYN carries.
+#[cfg(test)]
 const TCP_HDR_LEN_WITH_MSS: usize = 24;
+#[cfg(test)]
 const WORD_IN_BYTES: usize = 4;
 
 /// The receive window every probe advertises.
@@ -141,59 +143,42 @@ pub fn create_probe(
     src_port: u16,
     dst_port: u16,
     nonce: u32,
-) -> anyhow::Result<Vec<u8>> {
+) -> Result<Vec<u8>> {
     let flags = probe_flags(technique);
+
+    let mut segment = craft::Tcp::new(src_port, dst_port).with_flags(flags);
+    segment.window = PROBE_WINDOW;
+
+    match nonce_field(flags) {
+        NonceField::Sequence { .. } => {
+            segment.sequence = nonce;
+            segment.acknowledgement = 0;
+        }
+        NonceField::Acknowledgement => {
+            segment.sequence = rand::random();
+            segment.acknowledgement = nonce;
+        }
+    }
 
     // Options are for a SYN alone. An MSS announcement on a FIN is meaningless
     // to the receiver and distinctive to anything watching, and these
     // techniques are chosen for being unremarkable.
-    let with_mss = flags & flags::SYN != 0;
-    let header_len = if with_mss {
-        TCP_HDR_LEN_WITH_MSS
-    } else {
-        TCP_HDR_LEN
-    };
-
-    let mut buffer: Vec<u8> = vec![0u8; header_len];
-    {
-        let mut tcp: MutableTcpPacket =
-            MutableTcpPacket::new(&mut buffer).context("creating tcp packet")?;
-        tcp.set_source(src_port);
-        tcp.set_destination(dst_port);
-        tcp.set_data_offset((header_len / WORD_IN_BYTES) as u8);
-        tcp.set_flags(flags);
-        tcp.set_window(PROBE_WINDOW);
-        tcp.set_checksum(0);
-
-        match nonce_field(flags) {
-            NonceField::Sequence { .. } => {
-                tcp.set_sequence(nonce);
-                tcp.set_acknowledgement(0);
-            }
-            NonceField::Acknowledgement => {
-                tcp.set_sequence(rand::random());
-                tcp.set_acknowledgement(nonce);
-            }
-        }
-
-        if with_mss {
-            tcp.set_options(&[TcpOption::mss(PROBE_MSS)]);
-        }
-
-        let tcp_packet: TcpPacket = tcp.to_immutable();
-        let checksum = match (src_addr, dst_addr) {
-            (IpAddr::V4(src), IpAddr::V4(dst)) => {
-                pnet::packet::tcp::ipv4_checksum(&tcp_packet, src, dst)
-            }
-            (IpAddr::V6(src), IpAddr::V6(dst)) => {
-                pnet::packet::tcp::ipv6_checksum(&tcp_packet, src, dst)
-            }
-            _ => anyhow::bail!("IP version mismatch"),
-        };
-
-        tcp.set_checksum(checksum);
+    if flags & flags::SYN != 0 {
+        segment.options = mss_option(PROBE_MSS);
     }
-    Ok(buffer)
+
+    // The checksum covers a pseudo-header built from both addresses, which is
+    // why they are parameters. Written through `craft` rather than by hand, so
+    // this probe and a hand-crafted segment cannot come to disagree about what
+    // a TCP header is.
+    segment.to_bytes(Some((*src_addr, *dst_addr)))
+}
+
+/// The maximum-segment-size option, as the four bytes a TCP header carries it
+/// in: kind 2, length 4, then the value.
+fn mss_option(mss: u16) -> Vec<u8> {
+    let [high, low] = mss.to_be_bytes();
+    vec![2, 4, high, low]
 }
 
 /// The nonce `reply` implies, read from whichever field `technique` expects it
@@ -264,8 +249,14 @@ pub fn quoted_nonce(technique: TcpScanTechnique, quoted: &QuotedProbe) -> Option
     }
 }
 
-pub fn from_u8(bytes: &'_ [u8]) -> anyhow::Result<TcpPacket<'_>> {
-    TcpPacket::new(bytes).context("truncated or invalid TCP packet")
+/// Reads `bytes` as a TCP segment.
+///
+/// # Errors
+///
+/// [`PacketError::Truncated`] when there are too few bytes for a header.
+pub fn from_u8(bytes: &'_ [u8]) -> Result<TcpPacket<'_>> {
+    TcpPacket::new(bytes)
+        .ok_or_else(|| PacketError::truncated("a TCP segment", TCP_HDR_LEN, bytes.len()))
 }
 
 /// Classifies a received segment as one of the two answers a port probe can
@@ -294,6 +285,7 @@ pub fn classify_probe_response(packet: &TcpPacket) -> Option<TcpReply> {
 mod tests {
     use super::*;
     use pnet::packet::Packet;
+    use pnet::packet::tcp::MutableTcpPacket;
     use std::net::Ipv4Addr;
 
     const SRC: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));

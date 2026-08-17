@@ -42,6 +42,10 @@ pub const ARP_LEN: usize = 28;
 /// would add four bytes.
 pub const ETH_HDR_LEN: usize = 14;
 
+/// A TCP header with no options, which is every probe this engine sends but
+/// the SYN.
+pub const TCP_HDR_LEN: usize = 20;
+
 /// A UDP header: source port, destination port, length, checksum.
 pub const UDP_HDR_LEN: usize = 8;
 

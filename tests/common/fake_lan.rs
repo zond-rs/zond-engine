@@ -602,7 +602,7 @@ fn arp_reply(
     scanner_mac: MacAddr,
     scanner_ip: Ipv4Addr,
 ) -> Option<Vec<u8>> {
-    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Arp).ok()?;
+    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Arp);
 
     let mut payload = [0u8; ARP_LEN];
     {
@@ -651,15 +651,14 @@ fn neighbor_advertisement(
         advert.set_target_addr(target);
     }
 
-    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6).ok()?;
+    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6);
     let ipv6 = ip::create_ipv6_header(
         from,
         scanner_ip,
         body.len() as u16,
         IpNextHeaderProtocols::Icmpv6,
         ip::HOP_LIMIT_NDP,
-    )
-    .ok()?;
+    );
 
     let mut frame = Vec::with_capacity(MIN_ETH_FRAME);
     frame.extend_from_slice(&header);
@@ -718,15 +717,14 @@ fn mdns_response(
         datagram.set_checksum(sum);
     }
 
-    let header = ethernet::make_header(announcer, scanner_mac, EtherTypes::Ipv6).ok()?;
+    let header = ethernet::make_header(announcer, scanner_mac, EtherTypes::Ipv6);
     let ipv6 = ip::create_ipv6_header(
         source,
         scanner_ip,
         u16::try_from(udp.len()).ok()?,
         IpNextHeaderProtocols::Udp,
         ip::HOP_LIMIT_ON_LINK,
-    )
-    .ok()?;
+    );
 
     let mut frame = Vec::with_capacity(MIN_ETH_FRAME);
     frame.extend_from_slice(&header);
@@ -777,15 +775,14 @@ fn icmpv6_echo_reply(
         echo.set_sequence_number(sequence);
     }
 
-    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6).ok()?;
+    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6);
     let ipv6 = ip::create_ipv6_header(
         host_ip,
         scanner_ip,
         body.len() as u16,
         IpNextHeaderProtocols::Icmpv6,
         ip::HOP_LIMIT_ON_LINK,
-    )
-    .ok()?;
+    );
 
     let mut frame = Vec::with_capacity(MIN_ETH_FRAME);
     frame.extend_from_slice(&header);

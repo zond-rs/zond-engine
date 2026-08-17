@@ -39,7 +39,6 @@
 //! being ignored by the network card of almost every other neighbour — the
 //! filtering happens in hardware rather than in a stack.
 
-use anyhow::Context;
 use pnet::datalink::MacAddr;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
@@ -117,21 +116,22 @@ pub fn create_neighbor_solicitation(
     src_mac: &MacAddr,
     src_addr: &Ipv6Addr,
     target: Ipv6Addr,
-) -> anyhow::Result<Vec<u8>> {
+) -> Vec<u8> {
     let group = solicited_node_multicast(target);
-    let eth_header = ethernet::make_header(*src_mac, multicast_mac(group), EtherTypes::Ipv6)?;
+    let eth_header = ethernet::make_header(*src_mac, multicast_mac(group), EtherTypes::Ipv6);
     let ipv6_header = ip::create_ipv6_header(
         *src_addr,
         group,
         MESSAGE_LEN as u16,
         IpNextHeaderProtocols::Icmpv6,
         ip::HOP_LIMIT_NDP,
-    )?;
+    );
 
     let mut message = [0u8; MESSAGE_LEN];
     {
+        // Infallible: every buffer here is exactly the message written into it.
         let mut solicit = MutableNeighborSolicitPacket::new(&mut message[..])
-            .context("failed to create neighbor solicitation")?;
+            .expect("a solicitation-sized buffer holds a solicitation");
         solicit.set_icmpv6_type(Icmpv6Types::NeighborSolicit);
         solicit.set_icmpv6_code(Icmpv6Code(0));
         solicit.set_reserved(0);
@@ -143,8 +143,8 @@ pub fn create_neighbor_solicitation(
             data: src_mac.octets().to_vec(),
         }]);
 
-        let icmp = Icmpv6Packet::new(solicit.packet())
-            .context("failed to read back the solicitation for checksumming")?;
+        let icmp =
+            Icmpv6Packet::new(solicit.packet()).expect("a solicitation is an ICMPv6 message");
         let sum = checksum(&icmp, src_addr, &group);
         solicit.set_checksum(sum);
     }
@@ -153,7 +153,7 @@ pub fn create_neighbor_solicitation(
     frame.extend_from_slice(&eth_header);
     frame.extend_from_slice(&ipv6_header);
     frame.extend_from_slice(&message);
-    Ok(frame)
+    frame
 }
 
 /// The address a neighbor advertisement is announcing, if `frame` is one.
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn a_solicitation_carries_the_hop_limit_the_rfc_requires() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
-        let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target).unwrap();
+        let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
 
         let eth = EthernetPacket::new(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn a_solicitation_is_addressed_to_the_targets_group() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0x11aa, 0xbbcc);
-        let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target).unwrap();
+        let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
 
         let eth = EthernetPacket::new(&frame).unwrap();
         assert_eq!(
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn a_solicitation_names_its_target_and_offers_a_return_address() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
-        let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target).unwrap();
+        let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
 
         let eth = EthernetPacket::new(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn a_solicitation_is_checksummed() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
-        let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target).unwrap();
+        let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
 
         let eth = EthernetPacket::new(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
@@ -314,15 +314,14 @@ mod tests {
             advert.set_target_addr(target);
         }
 
-        let eth = ethernet::make_header(SRC_MAC, SRC_MAC, EtherTypes::Ipv6).unwrap();
+        let eth = ethernet::make_header(SRC_MAC, SRC_MAC, EtherTypes::Ipv6);
         let ipv6 = ip::create_ipv6_header(
             target,
             src_addr(),
             message.len() as u16,
             IpNextHeaderProtocols::Icmpv6,
             ip::HOP_LIMIT_NDP,
-        )
-        .unwrap();
+        );
 
         [eth, ipv6, message].concat()
     }

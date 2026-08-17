@@ -6,28 +6,38 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use crate::protocols::error::{PacketError, Result};
 use crate::protocols::ethernet;
 use crate::protocols::sizes::{ARP_LEN, MIN_ETH_FRAME_NO_FCS};
-use anyhow::Context;
 use pnet::datalink::MacAddr;
 use pnet::packet::Packet;
 use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use std::net::Ipv4Addr;
 
+/// Builds a broadcast ARP request asking who holds `dst_addr`.
+///
+/// `dst_mac` is written into the request's target hardware address, the field
+/// RFC 826 leaves undefined in a request. The frame itself is always broadcast,
+/// because that is what a request is: the whole point is that the holder of the
+/// address is not yet known.
+///
+/// Infallible. Every buffer here is exactly the header written into it, and the
+/// frame is padded to a fixed length.
 pub fn create_packet(
     src_mac: &MacAddr,
     dst_mac: MacAddr,
     src_addr: &Ipv4Addr,
     dst_addr: Ipv4Addr,
-) -> anyhow::Result<Vec<u8>> {
+) -> Vec<u8> {
     let eth_header: Vec<u8> =
-        ethernet::make_header(*src_mac, MacAddr::broadcast(), EtherTypes::Arp)?;
+        ethernet::make_header(*src_mac, MacAddr::broadcast(), EtherTypes::Arp);
 
     let mut arp_buffer: [u8; ARP_LEN] = [0u8; ARP_LEN];
     {
+        // Infallible: the buffer is exactly the packet this writes into it.
         let mut arp_packet: MutableArpPacket = MutableArpPacket::new(&mut arp_buffer)
-            .context("failed to create mutable ARP packet")?;
+            .expect("an ARP-sized buffer holds an ARP packet");
         arp_packet.set_hardware_type(ArpHardwareTypes::Ethernet);
         arp_packet.set_protocol_type(EtherTypes::Ipv4);
         arp_packet.set_hw_addr_len(6);
@@ -45,14 +55,19 @@ pub fn create_packet(
     final_packet.extend_from_slice(&arp_buffer);
     final_packet.resize(MIN_ETH_FRAME_NO_FCS, 0u8);
 
-    Ok(final_packet)
+    final_packet
 }
 
-pub fn get_ipv4_addr_from_eth(eth_packet: &EthernetPacket) -> anyhow::Result<Ipv4Addr> {
-    let arp_packet: ArpPacket = ArpPacket::new(eth_packet.payload()).context(format!(
-        "truncated or invalid ARP packet (payload len {})",
-        eth_packet.payload().len()
-    ))?;
+/// The address the sender of an ARP frame claims to hold.
+///
+/// # Errors
+///
+/// [`PacketError::Truncated`] when the frame carries too few bytes to be an
+/// ARP packet.
+pub fn get_ipv4_addr_from_eth(eth_packet: &EthernetPacket) -> Result<Ipv4Addr> {
+    let arp_packet = ArpPacket::new(eth_packet.payload()).ok_or_else(|| {
+        PacketError::truncated("an ARP packet", ARP_LEN, eth_packet.payload().len())
+    })?;
     Ok(arp_packet.get_sender_proto_addr())
 }
 
@@ -88,7 +103,8 @@ mod tests {
                         payload.len()
                     ));
                 }
-                let arp = ArpPacket::new(payload).context("failed to parse ARP packet")?;
+                let arp = ArpPacket::new(payload)
+                    .ok_or_else(|| anyhow::anyhow!("failed to parse ARP packet"))?;
                 Ok(IpAddr::V4(arp.get_sender_proto_addr()))
             }
             _ => Err(anyhow::anyhow!("not an ARP packet")),
@@ -130,8 +146,7 @@ mod tests {
         let src_addr = Ipv4Addr::new(192, 168, 1, 10);
         let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
 
-        let buffer =
-            create_packet(&src_mac, dst_mac, &src_addr, dst_addr).expect("Packet creation failed");
+        let buffer = create_packet(&src_mac, dst_mac, &src_addr, dst_addr);
 
         assert!(buffer.len() >= 60);
 

@@ -6,26 +6,42 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use anyhow::Context;
+//! # Ethernet framing
+//!
+//! The outermost header on everything the link-layer paths send, and the first
+//! thing read off everything they capture.
+//!
+//! Fourteen bytes with no options and no VLAN tag, which is why building one
+//! cannot fail: the buffer is exactly the header written into it. Reading one
+//! can, because the bytes come off the wire.
+
 use pnet::datalink::MacAddr;
 use pnet::packet::ethernet::{EtherType, EthernetPacket, MutableEthernetPacket};
 
+use crate::protocols::error::{PacketError, Result};
 use crate::protocols::sizes::ETH_HDR_LEN;
 
-pub fn make_header(src_mac: MacAddr, dst_mac: MacAddr, et: EtherType) -> anyhow::Result<Vec<u8>> {
+/// Builds the Ethernet header carrying `et` from `src_mac` to `dst_mac`.
+pub fn make_header(src_mac: MacAddr, dst_mac: MacAddr, et: EtherType) -> Vec<u8> {
     let mut buffer: [u8; ETH_HDR_LEN] = [0; ETH_HDR_LEN];
     {
+        // Infallible: the buffer is exactly the header this writes into it.
         let mut eth: MutableEthernetPacket = MutableEthernetPacket::new(&mut buffer[..])
-            .context("failed to create mutable Ethernet packet")?;
+            .expect("a header-sized buffer holds a header");
         eth.set_source(src_mac);
         eth.set_destination(dst_mac);
         eth.set_ethertype(et);
     }
-    Ok(buffer.to_vec())
+    buffer.to_vec()
 }
 
-pub fn get_packet_from_u8(frame_bytes: &'_ [u8]) -> anyhow::Result<EthernetPacket<'_>> {
-    let eth_packet: EthernetPacket =
-        EthernetPacket::new(frame_bytes).context("truncated or invalid Ethernet frame")?;
-    Ok(eth_packet)
+/// Reads `frame_bytes` as an Ethernet frame.
+///
+/// # Errors
+///
+/// [`PacketError::Truncated`] when there are too few bytes for a header, which
+/// is what a cut-short capture looks like from here.
+pub fn get_packet_from_u8(frame_bytes: &'_ [u8]) -> Result<EthernetPacket<'_>> {
+    EthernetPacket::new(frame_bytes)
+        .ok_or_else(|| PacketError::truncated("an Ethernet frame", ETH_HDR_LEN, frame_bytes.len()))
 }
