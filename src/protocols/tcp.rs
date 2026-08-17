@@ -254,7 +254,7 @@ pub fn quoted_nonce(technique: TcpScanTechnique, quoted: &QuotedProbe) -> Option
 /// # Errors
 ///
 /// [`PacketError::Truncated`] when there are too few bytes for a header.
-pub fn from_u8(bytes: &'_ [u8]) -> Result<TcpPacket<'_>> {
+pub fn parse(bytes: &'_ [u8]) -> Result<TcpPacket<'_>> {
     TcpPacket::new(bytes)
         .ok_or_else(|| PacketError::truncated("a TCP segment", TCP_HDR_LEN, bytes.len()))
 }

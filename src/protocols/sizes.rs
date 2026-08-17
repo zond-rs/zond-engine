@@ -24,8 +24,13 @@
 /// A DNS header: transaction id, flags, and four section counts.
 pub const DNS_HDR_LEN: usize = 12;
 
-/// An ICMPv6 echo request: type, code, checksum, identifier, sequence.
-pub const ICMP_V6_ECHO_REQ_LEN: usize = 8;
+/// An ICMP header of either family: type, code, checksum, and four bytes whose
+/// meaning depends on the type. An echo carries its identifier and sequence in
+/// those four.
+pub const ICMP_HDR_LEN: usize = 8;
+
+/// An ICMPv6 echo request with no payload, which is [`ICMP_HDR_LEN`] exactly.
+pub const ICMP_V6_ECHO_REQ_LEN: usize = ICMP_HDR_LEN;
 
 /// An IPv4 header with no options, which is what this engine emits.
 pub const IP_V4_HDR_LEN: usize = 20;

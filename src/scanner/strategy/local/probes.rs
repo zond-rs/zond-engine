@@ -165,7 +165,6 @@ fn create_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> 
 pub fn create_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) -> PacketIter {
     let local_mac = *local_mac;
     let src_ip = *src_ip;
-    let dst_mac = MacAddr::broadcast();
 
     let ranges: Vec<Ipv4Range> = ip_set.v4().to_vec();
 
@@ -177,20 +176,12 @@ pub fn create_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) -
             (start..=end).map(Ipv4Addr::from)
         })
         .map(move |dst_addr| {
-            let packet = arp::create_packet(&local_mac, dst_mac, &src_ip, dst_addr);
+            let packet = arp::create_request(&local_mac, &src_ip, dst_addr);
             (packet, IpAddr::V4(dst_addr))
         });
 
     Box::new(iter)
 }
-
-/// The address `frame` came from, whichever of the three shapes it is.
-///
-/// # Errors
-///
-/// [`PacketError::UnsupportedEtherType`] for anything else, which in
-/// promiscuous capture is the ordinary case rather than a fault, and
-/// [`PacketError::Truncated`] for a frame too short to read.
 
 #[cfg(test)]
 mod tests {

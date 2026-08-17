@@ -302,7 +302,7 @@ pub fn build_ethernet_frame(
     };
 
     let mut frame = Vec::with_capacity(ETH_HDR_LEN + ip_header.len() + segment.len());
-    frame.extend_from_slice(&ethernet::make_header(src_mac, dst_mac, ethertype));
+    frame.extend_from_slice(&ethernet::create_header(src_mac, dst_mac, ethertype));
     frame.extend_from_slice(&ip_header);
     frame.extend_from_slice(segment);
     Ok(frame)

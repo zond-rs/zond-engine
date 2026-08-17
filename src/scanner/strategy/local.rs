@@ -677,12 +677,7 @@ impl LocalScanner {
                 let Some(source_v4) = self.identity.ipv4 else {
                     return;
                 };
-                protocol::arp::create_packet(
-                    &self.identity.mac,
-                    MacAddr::broadcast(),
-                    &source_v4,
-                    target_v4,
-                )
+                protocol::arp::create_request(&self.identity.mac, &source_v4, target_v4)
             }
             IpAddr::V6(target_v6) => {
                 let Some(source_v6) = self.identity.link_local_ipv6 else {
@@ -730,7 +725,7 @@ impl LocalScanner {
     /// otherwise keep extending it — and a lead that arrives after the sweep
     /// would have ended belongs to the next scan.
     fn absorb_mdns(&mut self, frame: &EthernetPacket) -> bool {
-        let Some(payload) = protocol::ip::udp_payload_from_eth(frame, protocol::mdns::PORT) else {
+        let Some(payload) = protocol::ip::udp_payload(frame, protocol::mdns::PORT) else {
             return false;
         };
         if self.deadline.has_expired() {
@@ -813,7 +808,7 @@ impl LocalScanner {
     /// Validates an incoming frame, then handles a discovery reply in two steps:
     /// working out what it means, and recording that in shared scan state.
     fn process_eth_packet(&mut self, bytes: &[u8], now: Instant) -> anyhow::Result<()> {
-        let eth_frame: EthernetPacket = ethernet::get_packet_from_u8(bytes)?;
+        let eth_frame: EthernetPacket = ethernet::parse(bytes)?;
 
         let source_mac = eth_frame.get_source();
         if source_mac == self.identity.mac {
@@ -821,7 +816,7 @@ impl LocalScanner {
             return Err(FrameRejected::SelfSourcedPacket.into());
         }
 
-        let source_addr: IpAddr = protocol::get_ip_addr_from_eth(&eth_frame)?;
+        let source_addr: IpAddr = protocol::source_address(&eth_frame)?;
 
         if self.absorb_mdns(&eth_frame) {
             return Ok(());

@@ -366,7 +366,7 @@ impl DataLinkSender for FakeSegment {
             // the frame: one asks the whole segment, the other asks about one
             // address, and answering them identically is what let the engine
             // credit an echo reply to neighbour discovery for as long as it did.
-            EtherTypes::Ipv6 => match ip::icmpv6_type_from_eth(&frame) {
+            EtherTypes::Ipv6 => match ip::icmpv6_type(&frame) {
                 Some(Icmpv6Types::NeighborSolicit) => self.answer_neighbor_solicit(&frame),
                 Some(Icmpv6Types::EchoRequest) => self.answer_all_nodes_echo(&frame),
                 _ => {}
@@ -439,7 +439,7 @@ impl FakeSegment {
         if self.unsolicited.is_empty() || frame.get_ethertype() != EtherTypes::Ipv6 {
             return;
         }
-        let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
+        let Ok(scanner_ip) = ip::ipv6_source(frame) else {
             return;
         };
         let scanner_mac = frame.get_source();
@@ -462,7 +462,7 @@ impl FakeSegment {
         if self.announcements.is_empty() || frame.get_ethertype() != EtherTypes::Ipv6 {
             return;
         }
-        let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
+        let Ok(scanner_ip) = ip::ipv6_source(frame) else {
             return;
         };
         let scanner_mac = frame.get_source();
@@ -485,7 +485,7 @@ impl FakeSegment {
     /// sending — replying is not optional in the way replying to a multicast
     /// echo is.
     fn answer_neighbor_solicit(&mut self, frame: &EthernetPacket) {
-        let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
+        let Ok(scanner_ip) = ip::ipv6_source(frame) else {
             return;
         };
         let Some(target) = solicited_target(frame) else {
@@ -517,7 +517,7 @@ impl FakeSegment {
     /// Unlike ARP this probe is not sent per target: one multicast goes out and
     /// any neighbour may answer, so every declared IPv6 host gets the chance to.
     fn answer_all_nodes_echo(&mut self, frame: &EthernetPacket) {
-        let Ok(scanner_ip) = ip::get_ipv6_src_addr_from_eth(frame) else {
+        let Ok(scanner_ip) = ip::ipv6_source(frame) else {
             return;
         };
         // Read off the request rather than assumed, so a neighbour answers the
@@ -602,7 +602,7 @@ fn arp_reply(
     scanner_mac: MacAddr,
     scanner_ip: Ipv4Addr,
 ) -> Option<Vec<u8>> {
-    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Arp);
+    let header = ethernet::create_header(host_mac, scanner_mac, EtherTypes::Arp);
 
     let mut payload = [0u8; ARP_LEN];
     {
@@ -651,7 +651,7 @@ fn neighbor_advertisement(
         advert.set_target_addr(target);
     }
 
-    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6);
+    let header = ethernet::create_header(host_mac, scanner_mac, EtherTypes::Ipv6);
     let ipv6 = ip::create_ipv6_header(
         from,
         scanner_ip,
@@ -717,7 +717,7 @@ fn mdns_response(
         datagram.set_checksum(sum);
     }
 
-    let header = ethernet::make_header(announcer, scanner_mac, EtherTypes::Ipv6);
+    let header = ethernet::create_header(announcer, scanner_mac, EtherTypes::Ipv6);
     let ipv6 = ip::create_ipv6_header(
         source,
         scanner_ip,
@@ -775,7 +775,7 @@ fn icmpv6_echo_reply(
         echo.set_sequence_number(sequence);
     }
 
-    let header = ethernet::make_header(host_mac, scanner_mac, EtherTypes::Ipv6);
+    let header = ethernet::create_header(host_mac, scanner_mac, EtherTypes::Ipv6);
     let ipv6 = ip::create_ipv6_header(
         host_ip,
         scanner_ip,

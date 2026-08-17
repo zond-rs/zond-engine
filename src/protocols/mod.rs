@@ -28,6 +28,21 @@
 //! knows which, so that verdict lives on
 //! [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique) instead.
 //!
+//! ## How things are named
+//!
+//! The module already says which protocol, so a function name does not repeat
+//! it. Four shapes cover everything here:
+//!
+//! | Shape | Means | Example |
+//! |---|---|---|
+//! | `create_*` | builds bytes to send | [`arp::create_request`] |
+//! | `parse` | reads bytes into a view of them | [`tcp::parse`] |
+//! | a plain noun | reads one thing out of a frame | [`ip::ipv6_source`] |
+//! | `classify_*` | says which of a few answers arrived | [`tcp::classify_probe_response`] |
+//!
+//! A reader takes the frame or the bytes and nothing else, so its parameter
+//! already says where it is reading from and the name does not have to.
+//!
 //! ## Building a packet usually cannot fail
 //!
 //! Most builders here write a fixed-size header into a buffer they allocate
@@ -73,11 +88,11 @@ use std::net::IpAddr;
 /// anything else, which under promiscuous capture is the ordinary case rather
 /// than a fault, and [`Truncated`](error::PacketError::Truncated) for a frame
 /// too short to read.
-pub fn get_ip_addr_from_eth(frame: &EthernetPacket) -> error::Result<IpAddr> {
+pub fn source_address(frame: &EthernetPacket) -> error::Result<IpAddr> {
     match frame.get_ethertype() {
-        EtherTypes::Arp => Ok(IpAddr::V4(arp::get_ipv4_addr_from_eth(frame)?)),
-        EtherTypes::Ipv4 => Ok(IpAddr::V4(ip::get_ipv4_addr_from_eth(frame)?)),
-        EtherTypes::Ipv6 => Ok(IpAddr::V6(ip::get_ipv6_src_addr_from_eth(frame)?)),
+        EtherTypes::Arp => Ok(IpAddr::V4(arp::sender_address(frame)?)),
+        EtherTypes::Ipv4 => Ok(IpAddr::V4(ip::ipv4_source(frame)?)),
+        EtherTypes::Ipv6 => Ok(IpAddr::V6(ip::ipv6_source(frame)?)),
         other => Err(error::PacketError::UnsupportedEtherType(other.0)),
     }
 }

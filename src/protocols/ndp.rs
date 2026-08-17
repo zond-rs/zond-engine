@@ -40,25 +40,30 @@
 //! filtering happens in hardware rather than in a stack.
 
 use pnet::datalink::MacAddr;
-use pnet::packet::Packet;
+use pnet::packet::Packet as _;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use pnet::packet::icmpv6::ndp::{
-    MutableNeighborSolicitPacket, NdpOption, NdpOptionTypes, NeighborAdvertPacket,
-};
-use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, checksum};
+use pnet::packet::icmpv6::Icmpv6Types;
+use pnet::packet::icmpv6::ndp::NeighborAdvertPacket;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use std::net::Ipv6Addr;
 
-use crate::protocols::sizes::{ETH_HDR_LEN, IP_V6_HDR_LEN};
-use crate::protocols::{ethernet, ip};
+use crate::protocols::craft::{Ethernet, Field, Icmpv6, Ipv6, Packet};
+use crate::protocols::ip;
 
-/// A neighbor solicitation carrying one source link-layer address option: the
-/// 24-byte message (type, code, checksum, reserved, target) plus an 8-byte
-/// option.
-const SOLICIT_LEN: usize = 24;
+/// What a solicitation carries after the shared ICMPv6 header: the sixteen-byte
+/// target address. The four reserved bytes before it are the header's own
+/// type-specific field.
+const SOLICIT_BODY_LEN: usize = 16;
+
+/// A source link-layer address option: type, length, and six bytes of MAC.
 const OPTION_LEN: usize = 8;
-const MESSAGE_LEN: usize = SOLICIT_LEN + OPTION_LEN;
-const TOTAL_LEN: usize = ETH_HDR_LEN + IP_V6_HDR_LEN + MESSAGE_LEN;
+
+/// ICMPv6 neighbor solicitation, RFC 4861.
+const NEIGHBOR_SOLICIT: u8 = 135;
+
+/// The option that tells the answering neighbour where to reply, so it does not
+/// have to solicit us back first. RFC 4861 §4.6.1.
+const NDP_OPTION_SOURCE_LL_ADDR: u8 = 1;
 
 /// The first two octets of the Ethernet address IPv6 multicast maps onto
 /// (RFC 2464 §7), the remaining four being the low 32 bits of the group.
@@ -118,42 +123,34 @@ pub fn create_neighbor_solicitation(
     target: Ipv6Addr,
 ) -> Vec<u8> {
     let group = solicited_node_multicast(target);
-    let eth_header = ethernet::make_header(*src_mac, multicast_mac(group), EtherTypes::Ipv6);
-    let ipv6_header = ip::create_ipv6_header(
-        *src_addr,
-        group,
-        MESSAGE_LEN as u16,
-        IpNextHeaderProtocols::Icmpv6,
-        ip::HOP_LIMIT_NDP,
-    );
 
-    let mut message = [0u8; MESSAGE_LEN];
-    {
-        // Infallible: every buffer here is exactly the message written into it.
-        let mut solicit = MutableNeighborSolicitPacket::new(&mut message[..])
-            .expect("a solicitation-sized buffer holds a solicitation");
-        solicit.set_icmpv6_type(Icmpv6Types::NeighborSolicit);
-        solicit.set_icmpv6_code(Icmpv6Code(0));
-        solicit.set_reserved(0);
-        solicit.set_target_addr(target);
-        solicit.set_options(&[NdpOption {
-            option_type: NdpOptionTypes::SourceLLAddr,
-            // In units of 8 bytes, counting the type and length bytes.
-            length: 1,
-            data: src_mac.octets().to_vec(),
-        }]);
+    // The message body a solicitation carries after the shared ICMP header:
+    // four reserved bytes, the target address, then the source link-layer
+    // address option. Written out because it is not an echo, which is the only
+    // ICMPv6 shape `craft::Icmpv6` names.
+    let mut body = Vec::with_capacity(SOLICIT_BODY_LEN + OPTION_LEN);
+    body.extend_from_slice(&target.octets());
+    body.push(NDP_OPTION_SOURCE_LL_ADDR);
+    // In units of eight bytes, counting the type and length bytes themselves.
+    body.push(1);
+    body.extend_from_slice(&src_mac.octets());
 
-        let icmp =
-            Icmpv6Packet::new(solicit.packet()).expect("a solicitation is an ICMPv6 message");
-        let sum = checksum(&icmp, src_addr, &group);
-        solicit.set_checksum(sum);
-    }
+    let message = Icmpv6 {
+        icmp_type: NEIGHBOR_SOLICIT,
+        code: 0,
+        checksum: Field::Computed,
+        // The four reserved bytes sit where an echo puts its identifier and
+        // sequence, and RFC 4861 requires them to be zero.
+        rest_of_header: [0; 4],
+        payload: body,
+    };
 
-    let mut frame = Vec::with_capacity(TOTAL_LEN);
-    frame.extend_from_slice(&eth_header);
-    frame.extend_from_slice(&ipv6_header);
-    frame.extend_from_slice(&message);
-    frame
+    Packet::new()
+        .push(Ethernet::new(*src_mac, multicast_mac(group)).with_ethertype(EtherTypes::Ipv6))
+        .push(Ipv6::new(*src_addr, group).with_hop_limit(ip::HOP_LIMIT_NDP))
+        .push(message)
+        .build()
+        .expect("a solicitation fits every length field it is counted by")
 }
 
 /// The address a neighbor advertisement is announcing, if `frame` is one.
@@ -193,7 +190,10 @@ pub fn advertised_target(frame: &EthernetPacket) -> Option<Ipv6Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocols::ethernet;
+    use crate::protocols::sizes::ETH_HDR_LEN;
     use pnet::packet::icmpv6::Icmpv6Type;
+    use pnet::packet::icmpv6::ndp::NdpOptionTypes;
     use pnet::packet::icmpv6::ndp::{MutableNeighborAdvertPacket, NeighborSolicitPacket};
     use pnet::packet::ipv6::Ipv6Packet;
 
@@ -314,7 +314,7 @@ mod tests {
             advert.set_target_addr(target);
         }
 
-        let eth = ethernet::make_header(SRC_MAC, SRC_MAC, EtherTypes::Ipv6);
+        let eth = ethernet::create_header(SRC_MAC, SRC_MAC, EtherTypes::Ipv6);
         let ipv6 = ip::create_ipv6_header(
             target,
             src_addr(),

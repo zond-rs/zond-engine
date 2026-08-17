@@ -165,12 +165,12 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
         // it comes back to one. Not proof the frame is addressed to *us* - that
         // needs an address this trait deliberately does not have - but it rules
         // out the multicast and global traffic a promiscuous capture also sees.
-        let destination = ip::get_ipv6_dst_addr_from_eth(frame)?;
+        let destination = ip::ipv6_destination(frame)?;
         if !destination.is_unicast_link_local() {
             return Ok(ProtocolMatch::Unhandled);
         }
 
-        match ip::icmpv6_echo_token_from_eth(frame) {
+        match ip::icmpv6_echo_token(frame) {
             Some((identifier, sequence)) => Ok(ProtocolMatch::AllNodes {
                 identifier,
                 sequence,
@@ -208,14 +208,14 @@ mod tests {
     const ICMPV6_ECHO_LEN: usize = 8;
 
     fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
-        arp::create_packet(&PEER_MAC, LOCAL_MAC, &sender_ip, Ipv4Addr::new(10, 0, 0, 1))
+        arp::create_request(&PEER_MAC, &sender_ip, Ipv4Addr::new(10, 0, 0, 1))
     }
 
     /// An Ethernet-framed IPv6 packet to `destination`, carrying `body` as
     /// `protocol`.
     fn ipv6_frame(destination: Ipv6Addr, protocol: IpNextHeaderProtocol, body: &[u8]) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
-        let eth_header = ethernet::make_header(
+        let eth_header = ethernet::create_header(
             PEER_MAC,
             LOCAL_MAC,
             pnet::packet::ethernet::EtherTypes::Ipv6,

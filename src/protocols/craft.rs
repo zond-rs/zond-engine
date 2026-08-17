@@ -90,7 +90,10 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use pnet::datalink::MacAddr;
+use pnet::packet::arp::{ArpHardwareTypes, ArpOperation, MutableArpPacket};
 use pnet::packet::ethernet::{EtherType, EtherTypes, MutableEthernetPacket};
+use pnet::packet::icmp::IcmpPacket;
+use pnet::packet::icmpv6::Icmpv6Packet;
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet::packet::ipv4::{MutableIpv4Packet, checksum as ipv4_checksum};
 use pnet::packet::ipv6::MutableIpv6Packet;
@@ -99,7 +102,7 @@ use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
 
 use crate::protocols::error::{PacketError, Result};
 use crate::protocols::sizes::{
-    ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN, TCP_HDR_LEN, UDP_HDR_LEN,
+    ARP_LEN, ETH_HDR_LEN, ICMP_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN, TCP_HDR_LEN, UDP_HDR_LEN,
 };
 
 /// TCP header flag bits, re-exported so a caller building a [`Tcp`] header does
@@ -185,6 +188,13 @@ impl Ethernet {
     pub fn with_ethertype(mut self, ethertype: EtherType) -> Self {
         self.ethertype = Field::Exact(ethertype);
         self
+    }
+
+    /// This header alone. A caller that does not declare an
+    /// [`ethertype`](Self::ethertype) and pushes nothing after it gets IPv4,
+    /// since there is nothing to read one from.
+    pub fn header_bytes(&self) -> Vec<u8> {
+        write_ethernet(self, Vec::new(), None).expect("nothing here can overflow")
     }
 }
 
@@ -275,6 +285,45 @@ impl Ipv4 {
     fn header_len(&self) -> usize {
         IP_V4_HDR_LEN + self.options.len()
     }
+
+    /// This header alone, sized and checksummed for a packet carrying
+    /// `payload_length` bytes after it.
+    ///
+    /// For a caller assembling the layers itself, which is what the transport
+    /// does when it already holds a finished segment. [`Packet::build`] is the
+    /// easier road when the payload is to hand.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError::TooLong`] when header and payload together exceed what
+    /// the total-length field can describe.
+    pub fn header_bytes(&self, payload_length: u16) -> Result<Vec<u8>> {
+        let mut bytes = write_ipv4(self, Vec::new(), None)?;
+        let total_length = match self.total_length {
+            Field::Exact(value) => value,
+            Field::Computed => (self.header_len() as u32 + u32::from(payload_length))
+                .try_into()
+                .map_err(|_| {
+                    PacketError::too_long(
+                        "the IPv4 total length",
+                        self.header_len(),
+                        payload_length as usize,
+                    )
+                })?,
+        };
+
+        // Rewritten and re-checksummed, because the length the header claims is
+        // part of what the checksum covers.
+        let mut ipv4 =
+            MutableIpv4Packet::new(&mut bytes).expect("a header-sized buffer holds a header");
+        ipv4.set_total_length(total_length);
+        ipv4.set_checksum(0);
+        let sum = self
+            .checksum
+            .resolve(|| ipv4_checksum(&ipv4.to_immutable()));
+        ipv4.set_checksum(sum);
+        Ok(bytes)
+    }
 }
 
 /// An IPv6 header.
@@ -324,6 +373,17 @@ impl Ipv6 {
     pub fn with_payload_length(mut self, payload_length: u16) -> Self {
         self.payload_length = Field::Exact(payload_length);
         self
+    }
+
+    /// This header alone, declaring `payload_length` bytes after it. The IPv6
+    /// counterpart of [`Ipv4::header_bytes`], and infallible for the reason
+    /// that one is not: the field counts the payload rather than the total.
+    pub fn header_bytes(&self, payload_length: u16) -> Vec<u8> {
+        let declared = Ipv6 {
+            payload_length: Field::Exact(self.payload_length.resolve(|| payload_length)),
+            ..self.clone()
+        };
+        write_ipv6(&declared, Vec::new(), None).expect("nothing here can overflow")
     }
 }
 
@@ -497,6 +557,303 @@ impl Udp {
     }
 }
 
+/// An ICMPv4 message.
+///
+/// The four bytes after the checksum mean different things to different message
+/// types, so they are carried as [`rest_of_header`](Self::rest_of_header) rather
+/// than named. [`echo_request`](Self::echo_request) fills them in for the one
+/// type a scan sends; anything else is yours to lay out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Icmpv4 {
+    /// The message type. 8 is an echo request, 0 an echo reply, 3 destination
+    /// unreachable.
+    pub icmp_type: u8,
+    /// The code, whose meaning depends on the type.
+    pub code: u8,
+    /// The checksum, over the whole message. Computed.
+    ///
+    /// Unlike its IPv6 counterpart this covers the ICMP message alone, with no
+    /// pseudo-header, so it does not depend on the addresses around it.
+    pub checksum: Field<u16>,
+    /// The four type-specific bytes between the checksum and the payload. An
+    /// echo carries its identifier and sequence here.
+    pub rest_of_header: [u8; 4],
+    /// Whatever follows the header.
+    pub payload: Vec<u8>,
+}
+
+impl Icmpv4 {
+    /// An echo request carrying `identifier` and `sequence`.
+    ///
+    /// RFC 792 requires a reply to echo both back unchanged, which is what lets
+    /// a scanner tell one of its own requests from another and both from
+    /// somebody else's ping.
+    pub fn echo_request(identifier: u16, sequence: u16) -> Self {
+        Self::echo(ECHO_REQUEST_V4, identifier, sequence)
+    }
+
+    /// An echo reply carrying `identifier` and `sequence`.
+    pub fn echo_reply(identifier: u16, sequence: u16) -> Self {
+        Self::echo(ECHO_REPLY_V4, identifier, sequence)
+    }
+
+    fn echo(icmp_type: u8, identifier: u16, sequence: u16) -> Self {
+        let [id_hi, id_lo] = identifier.to_be_bytes();
+        let [seq_hi, seq_lo] = sequence.to_be_bytes();
+        Self {
+            icmp_type,
+            code: 0,
+            checksum: Field::Computed,
+            rest_of_header: [id_hi, id_lo, seq_hi, seq_lo],
+            payload: Vec::new(),
+        }
+    }
+
+    /// Attaches a payload, which an echo reply is required to send back.
+    #[must_use]
+    pub fn with_payload(mut self, payload: impl Into<Vec<u8>>) -> Self {
+        self.payload = payload.into();
+        self
+    }
+
+    /// Writes `checksum` instead of computing one.
+    #[must_use]
+    pub fn with_checksum(mut self, checksum: u16) -> Self {
+        self.checksum = Field::Exact(checksum);
+        self
+    }
+
+    /// This message's bytes.
+    ///
+    /// Takes no addresses, unlike [`Icmpv6::to_bytes`]: an ICMPv4 checksum
+    /// covers the message alone.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = icmp_body(
+            self.icmp_type,
+            self.code,
+            self.rest_of_header,
+            &self.payload,
+        );
+        let sum = self.checksum.resolve(|| {
+            let message = IcmpPacket::new(&bytes).expect("just written");
+            pnet::packet::icmp::checksum(&message)
+        });
+        bytes[2..4].copy_from_slice(&sum.to_be_bytes());
+        bytes
+    }
+}
+
+/// An ICMPv6 message.
+///
+/// The IPv6 counterpart of [`Icmpv4`], with one difference that matters: its
+/// checksum covers an IPv6 pseudo-header as well as the message, so it depends
+/// on the addresses of the header around it. See [`to_bytes`](Self::to_bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Icmpv6 {
+    /// The message type. 128 is an echo request, 129 an echo reply, 135 a
+    /// neighbor solicitation.
+    pub icmp_type: u8,
+    /// The code, whose meaning depends on the type.
+    pub code: u8,
+    /// The checksum, over the message and an IPv6 pseudo-header. Computed.
+    pub checksum: Field<u16>,
+    /// The four type-specific bytes between the checksum and the payload.
+    pub rest_of_header: [u8; 4],
+    /// Whatever follows the header.
+    pub payload: Vec<u8>,
+}
+
+impl Icmpv6 {
+    /// An echo request carrying `identifier` and `sequence`.
+    pub fn echo_request(identifier: u16, sequence: u16) -> Self {
+        Self::echo(ECHO_REQUEST_V6, identifier, sequence)
+    }
+
+    /// An echo reply carrying `identifier` and `sequence`.
+    pub fn echo_reply(identifier: u16, sequence: u16) -> Self {
+        Self::echo(ECHO_REPLY_V6, identifier, sequence)
+    }
+
+    fn echo(icmp_type: u8, identifier: u16, sequence: u16) -> Self {
+        let [id_hi, id_lo] = identifier.to_be_bytes();
+        let [seq_hi, seq_lo] = sequence.to_be_bytes();
+        Self {
+            icmp_type,
+            code: 0,
+            checksum: Field::Computed,
+            rest_of_header: [id_hi, id_lo, seq_hi, seq_lo],
+            payload: Vec::new(),
+        }
+    }
+
+    /// Attaches a payload.
+    #[must_use]
+    pub fn with_payload(mut self, payload: impl Into<Vec<u8>>) -> Self {
+        self.payload = payload.into();
+        self
+    }
+
+    /// Writes `checksum` instead of computing one.
+    #[must_use]
+    pub fn with_checksum(mut self, checksum: u16) -> Self {
+        self.checksum = Field::Exact(checksum);
+        self
+    }
+
+    /// This message's bytes, checksummed against `addresses`.
+    ///
+    /// The addresses are required for a computed checksum and ignored for an
+    /// exact one. `None` leaves a computed checksum zero, which over IPv6 is
+    /// not merely wrong but fatal: RFC 4443 has no "no checksum" encoding, so a
+    /// receiver discards it.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError::FamilyMismatch`] when the addresses are not both IPv6.
+    pub fn to_bytes(&self, addresses: Option<(IpAddr, IpAddr)>) -> Result<Vec<u8>> {
+        let mut bytes = icmp_body(
+            self.icmp_type,
+            self.code,
+            self.rest_of_header,
+            &self.payload,
+        );
+
+        let sum = match self.checksum {
+            Field::Exact(value) => value,
+            Field::Computed => {
+                let message = Icmpv6Packet::new(&bytes).expect("just written");
+                match addresses {
+                    None => 0,
+                    Some((IpAddr::V6(src), IpAddr::V6(dst))) => {
+                        pnet::packet::icmpv6::checksum(&message, &src, &dst)
+                    }
+                    Some((src, dst)) => return Err(PacketError::FamilyMismatch { src, dst }),
+                }
+            }
+        };
+        bytes[2..4].copy_from_slice(&sum.to_be_bytes());
+        Ok(bytes)
+    }
+}
+
+/// An ICMP message with its checksum left zero, for either family.
+///
+/// The two share a layout — type, code, checksum, four type-specific bytes,
+/// payload — and differ only in what the checksum covers.
+fn icmp_body(icmp_type: u8, code: u8, rest_of_header: [u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(ICMP_HDR_LEN + payload.len());
+    bytes.push(icmp_type);
+    bytes.push(code);
+    bytes.extend_from_slice(&[0, 0]);
+    bytes.extend_from_slice(&rest_of_header);
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// ICMPv4 echo request, RFC 792.
+const ECHO_REQUEST_V4: u8 = 8;
+/// ICMPv4 echo reply, RFC 792.
+const ECHO_REPLY_V4: u8 = 0;
+/// ICMPv6 echo request, RFC 4443.
+const ECHO_REQUEST_V6: u8 = 128;
+/// ICMPv6 echo reply, RFC 4443.
+const ECHO_REPLY_V6: u8 = 129;
+
+/// An ARP packet over Ethernet and IPv4.
+///
+/// Twenty-eight bytes with no payload, so nothing here is derived and every
+/// field is simply yours. It is in this module anyway, because the interesting
+/// ARP packets are the ones a preset would not build: a reply nobody asked for,
+/// a request claiming an address that is not yours, a hardware length that does
+/// not match the addresses beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Arp {
+    /// Request or reply. See [`arp_operations`].
+    pub operation: u16,
+    /// How long a hardware address is, in bytes. Six for Ethernet.
+    pub hw_addr_len: u8,
+    /// How long a protocol address is, in bytes. Four for IPv4.
+    pub proto_addr_len: u8,
+    /// The hardware address the sender claims.
+    pub sender_hw_addr: MacAddr,
+    /// The protocol address the sender claims.
+    pub sender_proto_addr: Ipv4Addr,
+    /// The hardware address being asked about. Undefined in a request, which
+    /// is why a request conventionally leaves it zero.
+    pub target_hw_addr: MacAddr,
+    /// The protocol address being asked about.
+    pub target_proto_addr: Ipv4Addr,
+}
+
+/// ARP operation codes, RFC 826.
+pub mod arp_operations {
+    /// Who holds this address?
+    pub const REQUEST: u16 = 1;
+    /// I do.
+    pub const REPLY: u16 = 2;
+}
+
+impl Arp {
+    /// A request asking who holds `target_proto_addr`.
+    ///
+    /// The target hardware address is left zero, which is what RFC 826 expects
+    /// of a request and what every ordinary stack sends. Filling it with
+    /// anything else is legal and makes the probe distinctive, which is the
+    /// opposite of what a scan wants.
+    pub fn request(
+        sender_hw_addr: MacAddr,
+        sender_proto_addr: Ipv4Addr,
+        target_proto_addr: Ipv4Addr,
+    ) -> Self {
+        Self {
+            operation: arp_operations::REQUEST,
+            hw_addr_len: 6,
+            proto_addr_len: 4,
+            sender_hw_addr,
+            sender_proto_addr,
+            target_hw_addr: MacAddr::zero(),
+            target_proto_addr,
+        }
+    }
+
+    /// A reply announcing that `sender_hw_addr` holds `sender_proto_addr`.
+    pub fn reply(
+        sender_hw_addr: MacAddr,
+        sender_proto_addr: Ipv4Addr,
+        target_hw_addr: MacAddr,
+        target_proto_addr: Ipv4Addr,
+    ) -> Self {
+        Self {
+            operation: arp_operations::REPLY,
+            hw_addr_len: 6,
+            proto_addr_len: 4,
+            sender_hw_addr,
+            sender_proto_addr,
+            target_hw_addr,
+            target_proto_addr,
+        }
+    }
+
+    /// This packet's bytes. Nothing here is derived, so nothing can fail.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![0u8; ARP_LEN];
+        {
+            let mut arp =
+                MutableArpPacket::new(&mut bytes).expect("an ARP-sized buffer holds an ARP packet");
+            arp.set_hardware_type(ArpHardwareTypes::Ethernet);
+            arp.set_protocol_type(EtherTypes::Ipv4);
+            arp.set_hw_addr_len(self.hw_addr_len);
+            arp.set_proto_addr_len(self.proto_addr_len);
+            arp.set_operation(ArpOperation(self.operation));
+            arp.set_sender_hw_addr(self.sender_hw_addr);
+            arp.set_sender_proto_addr(self.sender_proto_addr);
+            arp.set_target_hw_addr(self.target_hw_addr);
+            arp.set_target_proto_addr(self.target_proto_addr);
+        }
+        bytes
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Stacking
 // ══════════════════════════════════════════════════════════════════════════════
@@ -515,6 +872,12 @@ pub enum Layer {
     Tcp(Tcp),
     /// A UDP header and its payload.
     Udp(Udp),
+    /// An ICMPv4 message.
+    Icmpv4(Icmpv4),
+    /// An ICMPv6 message.
+    Icmpv6(Icmpv6),
+    /// An ARP packet.
+    Arp(Arp),
     /// Bytes written exactly as given, for a protocol nothing here models yet.
     Raw(Vec<u8>),
 }
@@ -535,6 +898,9 @@ layer_from!(
     Ipv6(Ipv6),
     Tcp(Tcp),
     Udp(Udp),
+    Icmpv4(Icmpv4),
+    Icmpv6(Icmpv6),
+    Arp(Arp),
     Raw(Vec<u8>),
 );
 
@@ -545,6 +911,8 @@ impl Layer {
         match self {
             Self::Tcp(_) => Some(IpNextHeaderProtocols::Tcp),
             Self::Udp(_) => Some(IpNextHeaderProtocols::Udp),
+            Self::Icmpv4(_) => Some(IpNextHeaderProtocols::Icmp),
+            Self::Icmpv6(_) => Some(IpNextHeaderProtocols::Icmpv6),
             _ => None,
         }
     }
@@ -554,6 +922,7 @@ impl Layer {
         match self {
             Self::Ipv4(_) => Some(EtherTypes::Ipv4),
             Self::Ipv6(_) => Some(EtherTypes::Ipv6),
+            Self::Arp(_) => Some(EtherTypes::Arp),
             _ => None,
         }
     }
@@ -645,6 +1014,9 @@ fn write_layer(
         Layer::Ipv6(header) => write_ipv6(header, payload, inner),
         Layer::Tcp(header) => write_tcp(header, payload, addresses),
         Layer::Udp(header) => write_udp(header, payload, addresses),
+        Layer::Icmpv4(message) => Ok([message.to_bytes(), payload].concat()),
+        Layer::Icmpv6(message) => Ok([message.to_bytes(addresses)?, payload].concat()),
+        Layer::Arp(packet) => Ok([packet.to_bytes(), payload].concat()),
     }
 }
 

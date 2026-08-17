@@ -31,6 +31,7 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use crate::protocols::craft;
 use crate::protocols::error::{PacketError, Result};
 use crate::protocols::sizes::{IP_V4_HDR_LEN, IP_V6_HDR_LEN, UDP_HDR_LEN};
 use pnet::packet::Packet;
@@ -38,19 +39,10 @@ use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::icmpv6::echo_reply::EchoReplyPacket;
 use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Type, Icmpv6Types};
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
-use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet, checksum};
-use pnet::packet::ipv6::{Ipv6Packet, MutableIpv6Packet};
+use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::ipv6::Ipv6Packet;
 
 const WORD_LEN: usize = 4;
-/// The "Don't Fragment" bit, expressed in the 3-bit flags field that
-/// `MutableIpv4Packet::set_flags` writes. Our probes are single, minimal
-/// packets that should never be fragmented in transit.
-const DONT_FRAGMENT: u8 = 0b010;
-
-/// The default time to live on a routed probe, matching
-/// [`HOP_LIMIT_ROUTED`](self::HOP_LIMIT_ROUTED), IPv6's name for the same
-/// field.
-const DEFAULT_TTL: u8 = HOP_LIMIT_ROUTED;
 
 /// Builds a 20-byte IPv4 header (no options) for a packet carrying
 /// `payload_length` bytes of `next_protocol` from `src_addr` to `dst_addr`.
@@ -70,38 +62,11 @@ pub fn create_ipv4_header(
     payload_length: u16,
     next_protocol: IpNextHeaderProtocol,
 ) -> Result<Vec<u8>> {
-    let total_length = (IP_V4_HDR_LEN as u32 + payload_length as u32)
-        .try_into()
-        .map_err(|_| {
-            PacketError::too_long(
-                "the IPv4 total length",
-                IP_V4_HDR_LEN,
-                payload_length as usize,
-            )
-        })?;
-
-    let mut buffer: [u8; IP_V4_HDR_LEN] = [0; IP_V4_HDR_LEN];
-    {
-        // Infallible: the buffer is exactly the header this writes into it.
-        let mut ipv4: MutableIpv4Packet =
-            MutableIpv4Packet::new(&mut buffer[..]).expect("a header-sized buffer holds a header");
-        ipv4.set_version(4);
-        ipv4.set_header_length((IP_V4_HDR_LEN / WORD_LEN) as u8);
-        ipv4.set_dscp(0);
-        ipv4.set_ecn(0);
-        ipv4.set_total_length(total_length);
-        ipv4.set_identification(rand::random());
-        ipv4.set_flags(DONT_FRAGMENT);
-        ipv4.set_fragment_offset(0);
-        ipv4.set_ttl(DEFAULT_TTL);
-        ipv4.set_next_level_protocol(next_protocol);
-        ipv4.set_source(src_addr);
-        ipv4.set_destination(dst_addr);
-        let csm = checksum(&ipv4.to_immutable());
-        ipv4.set_checksum(csm);
+    craft::Ipv4 {
+        protocol: craft::Field::Exact(next_protocol),
+        ..craft::Ipv4::new(src_addr, dst_addr)
     }
-
-    Ok(buffer.to_vec())
+    .header_bytes(payload_length)
 }
 
 /// How far a packet meant for this segment may travel.
@@ -152,21 +117,11 @@ pub fn create_ipv6_header(
     next_protocol: IpNextHeaderProtocol,
     hop_limit: u8,
 ) -> Vec<u8> {
-    let mut buffer: [u8; IP_V6_HDR_LEN] = [0; IP_V6_HDR_LEN];
-    {
-        // Infallible: the buffer is exactly the header this writes into it.
-        let mut ipv6: MutableIpv6Packet =
-            MutableIpv6Packet::new(&mut buffer[..]).expect("a header-sized buffer holds a header");
-        ipv6.set_version(6);
-        ipv6.set_traffic_class(0);
-        ipv6.set_flow_label(rand::random());
-        ipv6.set_payload_length(payload_length);
-        ipv6.set_next_header(next_protocol);
-        ipv6.set_hop_limit(hop_limit);
-        ipv6.set_source(src_addr);
-        ipv6.set_destination(dst_addr);
+    craft::Ipv6 {
+        next_header: craft::Field::Exact(next_protocol),
+        ..craft::Ipv6::new(src_addr, dst_addr).with_hop_limit(hop_limit)
     }
-    buffer.to_vec()
+    .header_bytes(payload_length)
 }
 
 /// The address an Ethernet-framed IPv6 packet was sent from.
@@ -175,8 +130,8 @@ pub fn create_ipv6_header(
 ///
 /// [`PacketError::Truncated`] when the frame carries too few bytes for a
 /// header.
-pub fn get_ipv6_src_addr_from_eth(frame: &EthernetPacket) -> Result<Ipv6Addr> {
-    Ok(ipv6_from_eth(frame)?.get_source())
+pub fn ipv6_source(frame: &EthernetPacket) -> Result<Ipv6Addr> {
+    Ok(ipv6_packet(frame)?.get_source())
 }
 
 /// The address an Ethernet-framed IPv6 packet was sent to.
@@ -185,12 +140,12 @@ pub fn get_ipv6_src_addr_from_eth(frame: &EthernetPacket) -> Result<Ipv6Addr> {
 ///
 /// [`PacketError::Truncated`] when the frame carries too few bytes for a
 /// header.
-pub fn get_ipv6_dst_addr_from_eth(frame: &EthernetPacket) -> Result<Ipv6Addr> {
-    Ok(ipv6_from_eth(frame)?.get_destination())
+pub fn ipv6_destination(frame: &EthernetPacket) -> Result<Ipv6Addr> {
+    Ok(ipv6_packet(frame)?.get_destination())
 }
 
 /// The IPv6 packet inside `frame`, or why it could not be read.
-fn ipv6_from_eth<'a>(frame: &'a EthernetPacket<'a>) -> Result<Ipv6Packet<'a>> {
+fn ipv6_packet<'a>(frame: &'a EthernetPacket<'a>) -> Result<Ipv6Packet<'a>> {
     Ipv6Packet::new(frame.payload()).ok_or_else(|| {
         PacketError::truncated("an IPv6 packet", IP_V6_HDR_LEN, frame.payload().len())
     })
@@ -204,7 +159,7 @@ fn ipv6_from_eth<'a>(frame: &'a EthernetPacket<'a>) -> Result<Ipv6Packet<'a>> {
 /// direction to be wrong in for a discovery check - it declines to credit a
 /// frame it cannot read rather than guessing at its type - and the probes this
 /// interprets replies to elicit no extension headers.
-pub fn icmpv6_type_from_eth(frame: &EthernetPacket) -> Option<Icmpv6Type> {
+pub fn icmpv6_type(frame: &EthernetPacket) -> Option<Icmpv6Type> {
     let packet = Ipv6Packet::new(frame.payload())?;
     if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
         return None;
@@ -220,7 +175,7 @@ pub fn icmpv6_type_from_eth(frame: &EthernetPacket) -> Option<Icmpv6Type> {
 /// which is what lets a scanner recognize the answer to a particular probe of
 /// its own. Without them an echo reply proves only that its sender exists;
 /// with them it also says when the question was asked.
-pub fn icmpv6_echo_token_from_eth(frame: &EthernetPacket) -> Option<(u16, u16)> {
+pub fn icmpv6_echo_token(frame: &EthernetPacket) -> Option<(u16, u16)> {
     let packet = Ipv6Packet::new(frame.payload())?;
     if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
         return None;
@@ -240,9 +195,9 @@ pub fn icmpv6_echo_token_from_eth(frame: &EthernetPacket) -> Option<(u16, u16)> 
 /// Reads the fixed IPv6 header's next-header field rather than walking the
 /// extension chain, and the IPv4 header's protocol field without reassembling
 /// fragments — both the same conservative direction as
-/// [`icmpv6_type_from_eth`]: a frame that cannot be read plainly is declined
+/// [`icmpv6_type`]: a frame that cannot be read plainly is declined
 /// rather than guessed at.
-pub fn udp_payload_from_eth<'a>(frame: &'a EthernetPacket<'a>, port: u16) -> Option<&'a [u8]> {
+pub fn udp_payload<'a>(frame: &'a EthernetPacket<'a>, port: u16) -> Option<&'a [u8]> {
     let packet = frame.payload();
 
     // Offsets rather than `packet.payload()`, because a pnet view owns the
@@ -277,7 +232,7 @@ pub fn udp_payload_from_eth<'a>(frame: &'a EthernetPacket<'a>, port: u16) -> Opt
 ///
 /// [`PacketError::Truncated`] when the frame carries too few bytes for a
 /// header.
-pub fn get_ipv4_addr_from_eth(frame: &EthernetPacket) -> Result<Ipv4Addr> {
+pub fn ipv4_source(frame: &EthernetPacket) -> Result<Ipv4Addr> {
     let ipv4_packet = Ipv4Packet::new(frame.payload()).ok_or_else(|| {
         PacketError::truncated("an IPv4 packet", IP_V4_HDR_LEN, frame.payload().len())
     })?;

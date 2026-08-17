@@ -36,7 +36,8 @@
 //! sudo -E target/release/deps/ndp_pace-<hash> 1
 //! sudo -E target/release/deps/ndp_pace-<hash> 20
 //! sudo -E target/release/deps/ndp_pace-<hash> 100
-//! ```//!
+//! ```
+//!
 //! Built with `--no-run` and invoked directly, for the reason `verify_scan`
 //! gives: cargo passes its own arguments through to a `harness = false` target,
 //! and this one reads argv.
@@ -74,7 +75,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
-use pnet::datalink::{MacAddr, NetworkInterface};
+use pnet::datalink::NetworkInterface;
 use pnet::packet::Packet;
 use pnet::packet::arp::{ArpOperations, ArpPacket};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
@@ -324,21 +325,23 @@ async fn main() {
                     continue;
                 };
 
-                match ndp::create_neighbor_solicitation(&mac, &source, target) {
-                    Ok(packet) => {
-                        let now = Instant::now();
-                        handle.tx.send_to(&packet, None);
-                        index_of.insert(target, probes.len());
-                        probes.push(Probe { target, sent_at: now, answered_at: None });
-                        last_sent_at = now;
-                    }
-                    // Counted rather than dropped: an address that was never
-                    // asked is not evidence about pacing either way.
-                    Err(e) => {
-                        eprintln!("could not build a solicitation for {target}: {e}");
-                        unasked.push(target);
-                    }
+                let packet = ndp::create_neighbor_solicitation(&mac, &source, target);
+                let now = Instant::now();
+
+                // Recorded only if the frame actually left. A probe the channel
+                // refused is not evidence about pacing either way, and counting
+                // it would report an address as silent that was never asked -
+                // which is the one direction this instrument must not err in,
+                // since it would make every arm look worse the busier the link
+                // was.
+                if !left_the_host(handle.tx.send_to(&packet, None)) {
+                    unasked.push(target);
+                    continue;
                 }
+
+                index_of.insert(target, probes.len());
+                probes.push(Probe { target, sent_at: now, answered_at: None });
+                last_sent_at = now;
             }
 
             _ = flood_ticker.tick(), if flood_source.is_some() && flood_host < 254 => {
@@ -352,12 +355,17 @@ async fn main() {
                 if target == from {
                     continue;
                 }
-                if let Ok(packet) = arp::create_packet(&mac, MacAddr::broadcast(), &from, target) {
-                    let now = Instant::now();
-                    handle.tx.send_to(&packet, None);
-                    arp_index.insert(target, arp_probes.len());
-                    arp_probes.push((target, now, None));
+                let packet = arp::create_request(&mac, &from, target);
+                let now = Instant::now();
+
+                // Same rule as the solicitation above: a request that never
+                // left is not one the segment declined to answer.
+                if !left_the_host(handle.tx.send_to(&packet, None)) {
+                    continue;
                 }
+
+                arp_index.insert(target, arp_probes.len());
+                arp_probes.push((target, now, None));
             }
 
             _ = tokio::time::sleep(Duration::from_millis(50)), if !sending => {}
@@ -365,6 +373,26 @@ async fn main() {
     }
 
     report(&probes, &unasked, interval, &arp_probes, flood);
+}
+
+/// Whether a frame handed to the channel actually reached the wire.
+///
+/// `send_to` reports `None` when the channel had no buffer to write into and
+/// `Some(Err(..))` when the write itself failed, and both mean the frame never
+/// left. Reading only whether the packet *built* is how a measurement comes to
+/// count probes that were never sent.
+fn left_the_host(outcome: Option<std::io::Result<()>>) -> bool {
+    match outcome {
+        Some(Ok(())) => true,
+        Some(Err(e)) => {
+            eprintln!("ndp_pace: a frame could not be sent: {e}");
+            false
+        }
+        None => {
+            eprintln!("ndp_pace: the link-layer channel accepted no frame");
+            false
+        }
+    }
 }
 
 /// The sender address of an ARP reply, or `None` for any other frame.
@@ -394,6 +422,10 @@ fn report(
             None => println!("{:<46} {:>10}", probe.target.to_string(), "silent"),
         }
     }
+    // Addresses whose solicitation never reached the wire. Listed apart from
+    // the silent ones because they are a fault in this host rather than an
+    // answer from the segment, and folding them together would understate
+    // every arm they appear in.
     for target in unasked {
         println!("{:<46} {:>10}", target.to_string(), "not sent");
     }
