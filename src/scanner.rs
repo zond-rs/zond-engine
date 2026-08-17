@@ -503,7 +503,7 @@ fn build_port_scanner(
     for step in plan.into_steps() {
         match step.into_scanner(ctx.clone(), target_count, tuning) {
             Ok(scanner) => {
-                opened.push(step.kind());
+                opened.push(step);
                 scanners.push(scanner);
             }
             Err(e) => ctx.record_failure(step.kind(), e.to_string()),
@@ -583,17 +583,20 @@ fn ensure_coverage(
 /// alongside a raw scan — it is the raw paths that yield a MAC and an RTT — and
 /// whether a raw scan is happening is answerable only after the sockets were
 /// asked for, not from the privilege the process holds.
+///
+/// The steps are kept rather than their [`ScannerKind`]s, because "did this
+/// need raw sockets" is the question being asked and a strategy's name is a
+/// different fact about it. Answered from the name, this silently stopped
+/// enriching every scan whose technique was not a SYN.
 struct BuiltPortScan {
     scanner: Box<dyn PortScanner>,
-    opened: Vec<ScannerKind>,
+    opened: Vec<plan::PortScanStep>,
 }
 
 impl BuiltPortScan {
     /// Whether any raw-socket strategy is among what opened.
     fn opened_raw(&self) -> bool {
-        self.opened
-            .iter()
-            .any(|kind| matches!(kind, ScannerKind::SynPort | ScannerKind::UdpPort))
+        self.opened.iter().any(plan::PortScanStep::is_raw)
     }
 }
 
@@ -718,6 +721,34 @@ mod tests {
             .iter()
             .flat_map(|scanner| scanner.supported_protocols())
             .collect()
+    }
+
+    /// Host enrichment is keyed on whether a raw scan is happening, and a raw
+    /// scan is one whatever segment its probes carry. Read off the strategy's
+    /// name instead, a FIN scan stopped counting as raw the moment it stopped
+    /// being called `syn_port`, and every non-SYN privileged scan quietly lost
+    /// its MAC addresses and round trips.
+    #[test]
+    fn a_raw_scan_earns_enrichment_whichever_technique_it_carries() {
+        for technique in TcpScanTechnique::ALL {
+            let built = BuiltPortScan {
+                scanner: Box::new(StubScanner(vec![Protocol::Tcp])),
+                opened: vec![plan::PortScanStep::RawTcp { technique }],
+            };
+            assert!(built.opened_raw(), "a raw {technique} scan is still raw");
+        }
+
+        let unprivileged = BuiltPortScan {
+            scanner: Box::new(StubScanner(vec![Protocol::Tcp])),
+            opened: vec![
+                plan::PortScanStep::ConnectTcp,
+                plan::PortScanStep::ConnectUdp,
+            ],
+        };
+        assert!(
+            !unprivileged.opened_raw(),
+            "a connect scan has no MAC or round trip to offer"
+        );
     }
 
     /// With no privileged scanner at all, both connect fallbacks stand in.

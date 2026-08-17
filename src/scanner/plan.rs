@@ -325,9 +325,14 @@ pub enum PortScanStep {
 
 impl PortScanStep {
     /// Which strategy this step becomes.
+    ///
+    /// The raw TCP name depends on the technique, because
+    /// [`ScannerKind::SynPort`] means a half-open connection attempt was made
+    /// and the flag probes make none. [`ScannerKind::for_raw_tcp`] is where
+    /// that rule lives, so a step and the scanner it builds cannot disagree.
     pub fn kind(&self) -> ScannerKind {
         match self {
-            Self::RawTcp { .. } => ScannerKind::SynPort,
+            Self::RawTcp { technique } => ScannerKind::for_raw_tcp(*technique),
             Self::RawUdp => ScannerKind::UdpPort,
             Self::ConnectTcp => ScannerKind::Connect,
             Self::ConnectUdp => ScannerKind::ConnectUdp,
@@ -340,6 +345,19 @@ impl PortScanStep {
             Self::RawTcp { .. } | Self::ConnectTcp => Protocol::Tcp,
             Self::RawUdp | Self::ConnectUdp => Protocol::Udp,
         }
+    }
+
+    /// Whether this step needs raw sockets.
+    ///
+    /// Asked after a scan is assembled, to decide whether host enrichment is
+    /// worth running: ARP, ICMPv6 and raw TCP are what yield a MAC and a round
+    /// trip, and the connect fallbacks yield neither.
+    ///
+    /// A property of the step rather than of its [`kind`](Self::kind), because
+    /// the two answer different questions. Read off the name instead, this went
+    /// wrong the moment a technique stopped being called `syn_port`.
+    pub fn is_raw(&self) -> bool {
+        matches!(self, Self::RawTcp { .. } | Self::RawUdp)
     }
 
     /// Opens whatever this step needs and hands back the strategy to run.
@@ -728,6 +746,59 @@ mod tests {
             "the refusal has to name the technique: {}",
             plan.refusals()[0].reason
         );
+    }
+
+    /// A step and the scanner it becomes have to answer to the same name, or a
+    /// failure lands in the report under one strategy and the same scanner's
+    /// later failures under another.
+    ///
+    /// [`ScannerKind::SynPort`] is the one that matters. It is documented to
+    /// mean a half-open connection attempt was made, and a plan that called
+    /// every raw TCP step by that name attributed a FIN scan's socket failure
+    /// to `syn_port` when no SYN was ever sent.
+    #[test]
+    fn a_step_reports_under_the_same_name_as_the_scanner_it_builds() {
+        use crate::scanner::session::ScanSession;
+        use crate::scanner::strategy::routed::TcpPortScanner;
+        use crate::transport::probe::{ProbeSender, ProbeTransport, SendError};
+
+        struct Unsendable;
+        impl ProbeSender for Unsendable {
+            fn send(&self, _: &[u8], _: IpAddr, _: IpAddr) -> Result<(), SendError> {
+                Ok(())
+            }
+        }
+
+        let (_session, ctx) = ScanSession::new();
+        for technique in TcpScanTechnique::ALL {
+            let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let scanner = TcpPortScanner::with_transport(
+                interface::SourceResolver::from_interfaces(&[]),
+                ctx.clone(),
+                technique,
+                ProbeTransport::from_parts(Box::new(Unsendable), rx),
+                1,
+            );
+
+            assert_eq!(
+                PortScanStep::RawTcp { technique }.kind(),
+                scanner.kind(),
+                "a {technique} step and its scanner disagree about what to call themselves"
+            );
+        }
+    }
+
+    /// Host enrichment runs beside a raw scan because the raw paths are what
+    /// yield a MAC and an RTT. Which technique the raw TCP scanner carries has
+    /// no bearing on that, so every one of them has to count as raw.
+    #[test]
+    fn every_raw_step_is_recognisable_as_one() {
+        for technique in TcpScanTechnique::ALL {
+            assert!(PortScanStep::RawTcp { technique }.is_raw(), "{technique}");
+        }
+        assert!(PortScanStep::RawUdp.is_raw());
+        assert!(!PortScanStep::ConnectTcp.is_raw());
+        assert!(!PortScanStep::ConnectUdp.is_raw());
     }
 
     /// The technique outlives the steps, because whether a connect scanner may

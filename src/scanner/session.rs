@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tracing::error;
 
 use crate::model::host::Host;
+use crate::model::technique::TcpScanTechnique;
 use crate::scanner::handle::ScanHandle;
 use crate::scanner::report::{ProbeStats, ScannerFailure};
 
@@ -60,6 +61,24 @@ pub enum ScannerKind {
     UdpPort,
     /// Composite scanner that delegates to protocol-specific scanners.
     Composite,
+}
+
+impl ScannerKind {
+    /// What a raw TCP scan carrying `technique` reports itself as.
+    ///
+    /// One function because the answer has to be the same everywhere it is
+    /// asked, and it is asked twice: once by the plan, to attribute a step that
+    /// could not open its socket, and once by the running scanner, to attribute
+    /// anything that went wrong afterwards. Two spellings meant one strategy
+    /// filed its failures under two names depending on when it failed, and the
+    /// planning half called every technique [`SynPort`](Self::SynPort) whether
+    /// or not a SYN was involved.
+    pub const fn for_raw_tcp(technique: TcpScanTechnique) -> Self {
+        match technique {
+            TcpScanTechnique::Syn => Self::SynPort,
+            _ => Self::TcpPort,
+        }
+    }
 }
 
 /// Lightweight notifications for the status of an ongoing scan.

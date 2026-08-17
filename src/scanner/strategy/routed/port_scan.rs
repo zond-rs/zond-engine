@@ -600,11 +600,12 @@ impl PortScanner for TcpPortScanner {
     /// The flag-probe techniques are a different question asked of the same
     /// scanner, and calling their failures `syn_port` would be a plain untruth;
     /// which of them ran is in the phase's settings.
+    ///
+    /// The rule itself lives on [`ScannerKind::for_raw_tcp`], because
+    /// [`PortScanStep`](crate::scanner::plan::PortScanStep) has to reach the
+    /// same answer when it attributes a socket that would not open.
     fn kind(&self) -> ScannerKind {
-        match self.technique {
-            TcpScanTechnique::Syn => ScannerKind::SynPort,
-            _ => ScannerKind::TcpPort,
-        }
+        ScannerKind::for_raw_tcp(self.technique)
     }
 
     fn supported_protocols(&self) -> Vec<Protocol> {
