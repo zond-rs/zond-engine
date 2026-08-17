@@ -90,6 +90,32 @@ pub struct Refusal {
     pub reason: String,
 }
 
+impl Refusal {
+    /// The TCP half left undone because `technique` cannot be expressed without
+    /// raw sockets.
+    ///
+    /// A connect scan completes handshakes, so it answers roughly the question
+    /// a SYN scan asks. It cannot send a FIN, a flagless segment or a bare ACK,
+    /// so it cannot answer what any of those were asked, and substituting it
+    /// silently would hand back verdicts from a technique nobody chose.
+    ///
+    /// Written once because it is reached from two places, and they are not
+    /// redundant: [`PortScanPlan::build`] refuses ahead of time when there are
+    /// no raw sockets to be had, while the scan's own coverage check refuses
+    /// after the fact when a raw socket was expected and would not open. Same
+    /// cause, same words, two moments at which it becomes knowable.
+    pub fn technique_needs_raw_sockets(technique: TcpScanTechnique) -> Self {
+        Self {
+            scanner: ScannerKind::for_raw_tcp(technique),
+            reason: format!(
+                "the {technique} technique needs raw sockets, which this process does \
+                 not have, and a connect scan answers a different question - so no TCP \
+                 port was probed"
+            ),
+        }
+    }
+}
+
 /// One strategy a discovery sweep intends to run.
 ///
 /// Each variant names a way of reaching a target and the targets it was given.
@@ -450,15 +476,7 @@ impl PortScanPlan {
             steps.push(PortScanStep::ConnectTcp);
             steps.push(PortScanStep::ConnectUdp);
         } else {
-            refusals.push(Refusal {
-                scanner: ScannerKind::TcpPort,
-                reason: format!(
-                    "the {} technique needs raw sockets, which this process does not \
-                     have, and a connect scan answers a different question - so no TCP \
-                     port was probed",
-                    cfg.tcp_technique
-                ),
-            });
+            refusals.push(Refusal::technique_needs_raw_sockets(cfg.tcp_technique));
             steps.push(PortScanStep::ConnectUdp);
         }
 

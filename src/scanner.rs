@@ -498,6 +498,14 @@ fn build_port_scanner(
     }
 
     let technique = plan.technique();
+    // Read before the steps are consumed. A protocol the plan never intended to
+    // cover has already been refused above, in the same words, and must not be
+    // refused a second time by the coverage check below.
+    let intended: Vec<Protocol> = [Protocol::Tcp, Protocol::Udp]
+        .into_iter()
+        .filter(|protocol| plan.covers(*protocol))
+        .collect();
+
     let mut scanners: Vec<Box<dyn PortScanner>> = Vec::new();
     let mut opened = Vec::new();
     for step in plan.into_steps() {
@@ -512,7 +520,7 @@ fn build_port_scanner(
 
     BuiltPortScan {
         scanner: Box::new(strategy::composite::CompositePortScanner::new(
-            ensure_coverage(scanners, ctx, technique),
+            ensure_coverage(scanners, ctx, technique, &intended),
         )),
         opened,
     }
@@ -539,35 +547,39 @@ fn build_port_scanner(
 /// is worse for the caller and honest, where a silent substitution would hand
 /// back verdicts from a technique they did not choose - and no field in the
 /// report would say so.
+///
+/// **`intended` is what keeps this from repeating the plan.** A protocol the
+/// plan never meant to cover was already refused, in the words
+/// [`Refusal::technique_needs_raw_sockets`](plan::Refusal::technique_needs_raw_sockets)
+/// supplies, and saying it again puts one cause in the report twice. What is
+/// left for this function is the narrower case the plan could not foresee: a
+/// protocol it did intend, whose socket would not open.
 fn ensure_coverage(
     mut scanners: Vec<Box<dyn PortScanner>>,
     ctx: &ScanContext,
     technique: TcpScanTechnique,
+    intended: &[Protocol],
 ) -> Vec<Box<dyn PortScanner>> {
     let covered: Vec<Protocol> = scanners
         .iter()
         .flat_map(|scanner| scanner.supported_protocols())
         .collect();
 
-    if !covered.contains(&Protocol::Tcp) {
+    let missing = |protocol: Protocol| intended.contains(&protocol) && !covered.contains(&protocol);
+
+    if missing(Protocol::Tcp) {
         if technique.finds_open_ports() {
             scanners.push(Box::new(strategy::connect::ConnectPortScanner::new(
                 ctx.clone(),
                 pacing::limits::CONNECT_CONCURRENCY,
             )));
         } else {
-            ctx.record_failure(
-                ScannerKind::TcpPort,
-                format!(
-                    "the {technique} technique needs raw sockets, which this process \
-                     does not have, and a connect scan answers a different question - so \
-                     no TCP port was probed",
-                ),
-            );
+            let refusal = plan::Refusal::technique_needs_raw_sockets(technique);
+            ctx.record_failure(refusal.scanner, refusal.reason);
         }
     }
 
-    if !covered.contains(&Protocol::Udp) {
+    if missing(Protocol::Udp) {
         scanners.push(Box::new(strategy::connect::ConnectUdpPortScanner::new(
             ctx.clone(),
             pacing::limits::CONNECT_CONCURRENCY,
@@ -695,6 +707,7 @@ async fn spawn_resolver(dns_rx: UnboundedReceiver<IpAddr>) -> JoinHandle<Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scanner::report::ScannerFailure;
 
     /// A scanner that claims a protocol and does nothing, standing in for a
     /// privileged strategy that was built successfully.
@@ -715,12 +728,50 @@ mod tests {
         }
     }
 
+    /// A plan that meant to cover both protocols, which is every plan except
+    /// the one that refused a technique its fallback cannot express.
+    const BOTH: &[Protocol] = &[Protocol::Tcp, Protocol::Udp];
+
     fn covered(scanners: Vec<Box<dyn PortScanner>>) -> Vec<Protocol> {
         let (_session, ctx) = ScanSession::new();
-        ensure_coverage(scanners, &ctx, TcpScanTechnique::Syn)
+        ensure_coverage(scanners, &ctx, TcpScanTechnique::Syn, BOTH)
             .iter()
             .flat_map(|scanner| scanner.supported_protocols())
             .collect()
+    }
+
+    /// The plan refuses what it can foresee and `ensure_coverage` catches what
+    /// only the attempt reveals. Both had the same words for the same cause, so
+    /// an unprivileged flag-probe scan recorded the identical failure twice:
+    /// once from the plan's refusal and once from the coverage check that did
+    /// not know the plan had already spoken.
+    ///
+    /// A consumer counting failures over-reports, and one rendering them shows
+    /// the same paragraph to a user twice.
+    #[test]
+    fn a_refusal_the_plan_already_made_is_not_recorded_again() {
+        let cfg = ZondConfig {
+            tcp_technique: TcpScanTechnique::Fin,
+            ..ZondConfig::default()
+        };
+        let (_session, ctx) = ScanSession::new();
+
+        let _built = build_port_scanner(
+            plan::PortScanPlan::build(&cfg, false),
+            &ctx,
+            0,
+            cfg.probe_tuning(),
+        );
+
+        let failures = ctx.take_failures();
+        assert_eq!(
+            failures.len(),
+            1,
+            "one cause, one entry: {:?}",
+            failures.iter().map(ScannerFailure::reason).collect::<Vec<_>>()
+        );
+        assert_eq!(failures[0].scanner(), ScannerKind::TcpPort);
+        assert!(failures[0].reason().contains("fin"));
     }
 
     /// Host enrichment is keyed on whether a raw scan is happening, and a raw
@@ -777,10 +828,14 @@ mod tests {
     /// for a technique it cannot express, an unprivileged scan has to leave the
     /// TCP half undone and say so - a silent substitution would hand back
     /// verdicts from a technique nobody chose.
+    ///
+    /// The case is a plan that *did* intend TCP, whose raw socket then would
+    /// not open. A plan that never intended it refused before reaching here;
+    /// see `a_refusal_the_plan_already_made_is_not_recorded_again`.
     #[test]
     fn a_technique_the_fallback_cannot_express_is_reported_rather_than_substituted() {
         let (_session, ctx) = ScanSession::new();
-        let scanners = ensure_coverage(Vec::new(), &ctx, TcpScanTechnique::Fin);
+        let scanners = ensure_coverage(Vec::new(), &ctx, TcpScanTechnique::Fin, BOTH);
         let protocols: Vec<Protocol> = scanners
             .iter()
             .flat_map(|scanner| scanner.supported_protocols())
@@ -824,8 +879,34 @@ mod tests {
             ],
             &ctx,
             TcpScanTechnique::Syn,
+            BOTH,
         );
         // Two scanners in, two scanners out: nothing was added beside them.
         assert_eq!(scanners.len(), 2);
+    }
+
+    /// The mirror of the double-record: a plan that never intended TCP gets no
+    /// connect fallback for it either, however open-port-finding the technique
+    /// would have been. Nothing intended it, so there is nothing to stand in
+    /// for.
+    #[test]
+    fn a_protocol_the_plan_left_out_gains_no_fallback_and_no_second_refusal() {
+        let (_session, ctx) = ScanSession::new();
+        let scanners = ensure_coverage(
+            Vec::new(),
+            &ctx,
+            TcpScanTechnique::Fin,
+            &[Protocol::Udp],
+        );
+
+        let protocols: Vec<Protocol> = scanners
+            .iter()
+            .flat_map(|scanner| scanner.supported_protocols())
+            .collect();
+        assert_eq!(protocols, vec![Protocol::Udp]);
+        assert!(
+            ctx.take_failures().is_empty(),
+            "the plan already said why, in the same words"
+        );
     }
 }
