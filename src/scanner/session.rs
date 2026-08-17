@@ -311,6 +311,13 @@ impl FailureLog {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *entries)
     }
+
+    fn snapshot(&self) -> Vec<ScannerFailure> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
 /// The shared, cloneable handles that every scanning strategy needs: somewhere to
@@ -430,6 +437,23 @@ impl ScanContext {
         self.failures.drain()
     }
 
+    /// The strategy failures filed so far, left in place.
+    ///
+    /// The reading counterpart of [`record_failure`](Self::record_failure), and
+    /// the same shape as
+    /// [`probe_stats_snapshot`](Self::probe_stats_snapshot) for the same
+    /// reason: a caller driving strategies themselves needs to see what went
+    /// wrong without waiting for a phase to close, and a live event stream only
+    /// answers for a consumer that happened to be listening.
+    ///
+    /// Non-destructive on purpose. Draining belongs to
+    /// [`PhaseRecorder::finish`](crate::scanner::report::PhaseRecorder::finish),
+    /// and a caller who could do it here would leave the report claiming a
+    /// clean run over a scan that lost work.
+    pub fn failures_snapshot(&self) -> Vec<ScannerFailure> {
+        self.failures.snapshot()
+    }
+
     /// Upserts the host at `ip`, applies `update`, and unconditionally announces
     /// the change. The convenience form of [`write_host`](Self::write_host) for
     /// the paths that always record a finding worth emitting - a port state, a
@@ -516,6 +540,19 @@ mod tests {
             other => panic!("expected a ScannerFailed event, got {other:?}"),
         }
         assert_eq!(ctx.take_failures().len(), 1);
+    }
+
+    /// A caller driving strategies themselves reads failures without closing a
+    /// phase, so the snapshot has to leave the log alone. Draining here would
+    /// take the failure out from under the report that is supposed to carry it.
+    #[test]
+    fn snapshotting_failures_leaves_them_for_the_report() {
+        let (_session, ctx) = ScanSession::new();
+        ctx.record_failure(ScannerKind::Local, "eth0: no address".into());
+
+        assert_eq!(ctx.failures_snapshot().len(), 1);
+        assert_eq!(ctx.failures_snapshot().len(), 1, "reading is not taking");
+        assert_eq!(ctx.take_failures().len(), 1, "and the report still gets it");
     }
 
     #[test]

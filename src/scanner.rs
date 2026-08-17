@@ -43,6 +43,16 @@
 //! opened, run it, and read the store. Nothing here needs a cargo feature —
 //! this is a supported way to use the engine, not a test hatch.
 //!
+//! A scan driven this way produces the same record as one the engine ran.
+//! [`PhaseRecorder`](report::PhaseRecorder) takes the scope and settings before
+//! the strategies start and closes into a [`ScanReport`] when they finish, so a
+//! self-orchestrated scan reaches the exporters on the same terms
+//! [`discover`] and [`scan`] do. What a strategy filed along the way is
+//! readable before then through
+//! [`ScanContext::failures_snapshot`](session::ScanContext::failures_snapshot)
+//! and
+//! [`probe_stats_snapshot`](session::ScanContext::probe_stats_snapshot).
+//!
 //! ```no_run
 //! use zond_engine::config::ZondConfig;
 //! use zond_engine::model::parse::ip::to_set;

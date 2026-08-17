@@ -592,15 +592,51 @@ impl ScanPhase {
     }
 }
 
-/// Carries a phase's metadata from the entry point that knows it to the task
-/// that closes the record.
+/// Carries a phase's metadata from the moment a scan starts to the moment it
+/// ends, and closes the record when it does.
 ///
-/// The scope and settings of a scan are only knowable before it starts - the
-/// target set moves into the strategies that consume it - while the duration
+/// The scope and settings of a scan are only knowable before it starts, because
+/// the target set moves into the strategies that consume it, while the duration
 /// and the failures are only knowable after it ends. This holds the first half
-/// across the spawned task so both halves land in one [`ScanPhase`], instead of
-/// leaving a half-built report somewhere for the task to find.
-pub(crate) struct PhaseRecorder {
+/// until the second is available, so both land in one [`ScanPhase`] rather than
+/// leaving a half-built report somewhere for the closing code to find.
+///
+/// # Building a report from your own orchestration
+///
+/// [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan) use
+/// this internally, and it is public so that a caller running strategies
+/// themselves can produce the same [`ScanReport`] the engine does. Without it
+/// a self-orchestrated scan could read its own findings but never write the
+/// record of them, and so could never reach an
+/// [`Exporter`](crate::export::Exporter).
+///
+/// Take it before the scan, hand it the context afterwards:
+///
+/// ```no_run
+/// use zond_engine::ZondConfig;
+/// use zond_engine::model::parse::ip::to_set;
+/// use zond_engine::scanner::report::{PhaseRecorder, ScanKind, TargetScope};
+/// use zond_engine::scanner::session::ScanSession;
+///
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let cfg = ZondConfig::default();
+/// let (session, ctx) = ScanSession::new();
+///
+/// // Recorded before the targets move into a strategy, since what a scan was
+/// // asked to cover is only knowable here.
+/// let mut targets = to_set(&["192.168.1.0/24"], None, None)?;
+/// let scope = TargetScope::from_ip_set(&mut targets);
+/// let recorder = PhaseRecorder::start(ScanKind::Discovery, false, scope, &cfg);
+///
+/// // ... build strategies against `ctx` and run them ...
+///
+/// let report = recorder.finish(&ctx);
+/// println!("{} hosts", report.summary().hosts_total);
+/// # let _ = session;
+/// # Ok(())
+/// # }
+/// ```
+pub struct PhaseRecorder {
     kind: ScanKind,
     started_at: SystemTime,
     started: Instant,
@@ -612,11 +648,16 @@ pub(crate) struct PhaseRecorder {
 impl PhaseRecorder {
     /// Opens a phase record, taking the clock readings that bound it.
     ///
+    /// Call this before the scan starts. `targets` is the scope the phase was
+    /// asked to cover, which has to be read while the target set is still in
+    /// hand; `privileged` is whether the strategies about to run hold the raw
+    /// sockets they need.
+    ///
     /// Both clocks are read because they answer different questions: the wall
     /// clock says when the scan happened, the monotonic one says how long it
     /// took. Deriving the second from the first would let an NTP correction
     /// during a long sweep report a duration that never elapsed.
-    pub(crate) fn start(
+    pub fn start(
         kind: ScanKind,
         privileged: bool,
         targets: TargetScope,
@@ -634,9 +675,16 @@ impl PhaseRecorder {
 
     /// Closes the record, snapshotting the hosts the scan wrote into `ctx`.
     ///
-    /// Called once, from the end of the spawned scan task, so the snapshot is
-    /// taken after every strategy has stopped writing.
-    pub(crate) fn finish(self, ctx: &ScanContext) -> ScanReport {
+    /// Call this once, after every strategy has stopped writing, or the
+    /// snapshot describes a scan that was still running.
+    ///
+    /// The failures and probe statistics filed against `ctx` are *taken* rather
+    /// than copied, so a context reused for a second phase starts empty and
+    /// cannot hand the same failure to two reports. Anything that needs to read
+    /// them without closing a phase has
+    /// [`ScanContext::failures_snapshot`](crate::scanner::session::ScanContext::failures_snapshot)
+    /// and its probe-statistics counterpart.
+    pub fn finish(self, ctx: &ScanContext) -> ScanReport {
         let phase = ScanPhase {
             kind: self.kind,
             started_at: self.started_at,
@@ -1186,6 +1234,33 @@ mod tests {
         report.merge(clean);
 
         assert!(report.is_partial());
+        assert_eq!(report.failures().count(), 1);
+    }
+
+    /// A caller running strategies themselves has to be able to produce the
+    /// report the engine produces, or the whole third altitude stops at the
+    /// live store: findings readable, nothing exportable.
+    ///
+    /// This walks that path with no strategies in it, since what is being
+    /// pinned is that every piece is reachable and the halves meet, not what a
+    /// scanner would have written.
+    #[test]
+    fn a_self_orchestrated_scan_can_close_its_own_phase() {
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+
+        let mut targets = IpSet::from_str("192.168.0.1-192.168.0.4").expect("a valid range");
+        let scope = TargetScope::from_ip_set(&mut targets);
+        let recorder = PhaseRecorder::start(ScanKind::Discovery, false, scope, &cfg);
+
+        ctx.update_host(ip(1), |host| host.set_status(HostStatus::Up));
+        ctx.record_failure(ScannerKind::Local, "eth0: no address".into());
+
+        let report = recorder.finish(&ctx);
+
+        assert_eq!(report.host_count(), 1);
+        assert_eq!(report.phases()[0].targets().addresses(), 4);
+        assert!(report.is_partial(), "the failure has to reach the record");
         assert_eq!(report.failures().count(), 1);
     }
 
