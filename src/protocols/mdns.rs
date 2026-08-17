@@ -8,7 +8,14 @@
 
 //! # Multicast DNS
 //!
-//! Reads the hosts an mDNS message names.
+//! Builds a forward mDNS query, and reads the hosts an mDNS message names.
+//!
+//! [`create_query`] asks for a `.local` name's addresses; [`extract_hosts`]
+//! reads the addresses out of the answer. The two are the wire-format half of
+//! resolution and know nothing about sockets: sending the query on the multicast
+//! group and reading the reply belong to [`crate::resolve`], the same way
+//! [`crate::protocols::dns`] leaves the query socket to
+//! [`crate::scanner::resolver`].
 //!
 //! A hostname comes from the *owner* of an address record: `raspberrypi.local.
 //! A 192.168.0.150` says that this address belongs to that name, and says it
@@ -23,8 +30,8 @@
 //! grouped by owner, and each group comes back as its own [`MdnsHost`], so a
 //! name is never paired with an address that belongs to a different machine.
 
-use anyhow::{Context, Result};
-use dns_parser::{Packet, RData};
+use anyhow::{Context, Result, anyhow};
+use dns_parser::{Builder, Packet, QueryClass, QueryType, RData};
 use std::{
     collections::{BTreeMap, HashSet},
     net::IpAddr,
@@ -34,6 +41,33 @@ use crate::protocols::dns;
 
 /// The port multicast DNS is spoken on, in both directions.
 pub const PORT: u16 = 5353;
+
+/// Builds a forward mDNS query for the addresses of `name`.
+///
+/// Asks for A and AAAA together in one message, so a single exchange learns a
+/// host's addresses in both families rather than costing a query each. The
+/// trailing dot a fully-qualified `.local` name may carry is stripped, since the
+/// wire form never includes it.
+///
+/// The transaction ID is zero, as RFC 6762 §18.1 requires of a multicast query.
+/// That is not how the answer is correlated: an mDNS response echoes no ID worth
+/// trusting, so the caller matches the address records back to the name they own
+/// (see [`extract_hosts`]), which is the same reason the reverse path in
+/// [`crate::protocols::dns`] correlates on the question name. The query is left a
+/// plain one — the unicast-response bit is not set — because the resolver sends
+/// it from an ephemeral port, and a responder seeing a query from any port other
+/// than 5353 must answer it directly under the legacy rule of RFC 6762 §6.7.
+pub fn create_query(name: &str) -> Result<Vec<u8>> {
+    let name = name.trim_end_matches('.');
+
+    let mut builder = Builder::new_query(0, false);
+    builder.add_question(name, false, QueryType::A, QueryClass::IN);
+    builder.add_question(name, false, QueryType::AAAA, QueryClass::IN);
+
+    builder
+        .build()
+        .map_err(|partial| anyhow!("failed to build mDNS query ({} bytes)", partial.len()))
+}
 
 /// One host as an mDNS message described it.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -182,6 +216,46 @@ mod tests {
     #[test]
     fn bytes_that_are_not_dns_are_rejected() {
         assert!(extract_hosts(b"not dns").is_err());
+    }
+
+    /// A query has to be a DNS message a responder will parse, ask about the
+    /// name it was given, and carry the zero ID a multicast query is required
+    /// to. Building bytes a responder would drop would fail silently as a
+    /// network that never answers.
+    #[test]
+    fn a_forward_query_asks_for_the_name_in_both_families() {
+        let query = create_query("raspberrypi.local").expect("the query builds");
+        let packet = Packet::parse(&query).expect("a responder can parse it");
+
+        assert!(packet.header.query, "it is a query, not a response");
+        assert_eq!(packet.header.id, 0, "a multicast query carries the zero ID");
+
+        let asked: Vec<_> = packet
+            .questions
+            .iter()
+            .map(|q| (q.qname.to_string(), q.qtype))
+            .collect();
+        assert_eq!(
+            asked,
+            vec![
+                ("raspberrypi.local".to_string(), QueryType::A),
+                ("raspberrypi.local".to_string(), QueryType::AAAA),
+            ]
+        );
+    }
+
+    /// The wire form of a name never carries the trailing dot, so a
+    /// fully-qualified name must reach the wire without it or the question names
+    /// something one label longer than the host.
+    #[test]
+    fn a_trailing_dot_is_stripped_from_the_question() {
+        let query = create_query("printer.local.").expect("the query builds");
+        let packet = Packet::parse(&query).expect("parses");
+
+        assert_eq!(
+            packet.questions.first().map(|q| q.qname.to_string()),
+            Some("printer.local".to_string())
+        );
     }
 
     enum Rdata<'a> {

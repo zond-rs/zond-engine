@@ -126,6 +126,10 @@
 //!   requires touching them.
 //! - [`system`] — interfaces, routing, and whether the process may open raw
 //!   sockets. The one place the engine asks the host about itself.
+//! - [`resolve`] — turning the names a person writes into the addresses a scan
+//!   probes, over unicast DNS and multicast DNS. It runs before a scan, deciding
+//!   what it covers; the reverse direction, naming hosts a scan has found, is the
+//!   scanner's own [`resolver`](scanner::resolver).
 //! - [`fingerprinting`] — identifying the service behind an open port.
 //! - [`scanner`] — the two entry points, the [`plan`](scanner::plan) behind
 //!   them, and the [`strategy`](scanner::strategy) implementations behind that,
@@ -151,6 +155,7 @@ pub mod format;
 pub mod import;
 pub mod model;
 pub mod protocols;
+pub mod resolve;
 pub mod scanner;
 pub mod system;
 pub mod transport;
@@ -173,6 +178,7 @@ pub use crate::model::ip::set::IpSet;
 pub use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 pub use crate::model::target::{Target, TargetMap, TargetSet};
 pub use crate::model::technique::TcpScanTechnique;
+pub use crate::resolve::{ResolveConfig, Resolver};
 pub use crate::scanner::handle::ScanHandle;
 pub use crate::scanner::report::{ScanReport, ScanSummary};
 pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
