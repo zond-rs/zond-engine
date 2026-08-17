@@ -64,12 +64,9 @@ use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{ProbeKind, ProbeTransport};
 
 use super::icmp_error::{self, Unreachable};
-use super::probe_scan::{self, AuditLabels, RawPortScan, RawProbeScan};
+use super::probe_scan::{self, AuditLabels, ProbeTarget, RawPortScan, RawProbeScan};
 use super::send_udp;
 use crate::scanner::audit::ProbeAudit;
-
-/// The probe a reply refers to: the `(address, port)` it was sent to.
-type ProbeTarget = (IpAddr, u16);
 
 /// Outstanding probes and the schedule they are retried on.
 ///

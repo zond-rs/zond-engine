@@ -31,8 +31,14 @@ use std::{num::ParseIntError, ops::RangeInclusive, str::FromStr};
 use thiserror::Error;
 
 /// The ports [`PortSet::common_discovery`] names: a handful that answer often
-/// enough to be worth asking every host about.
-pub const COMMON_DISCOVERY_PORTS: &str = "22, 80, 443, 445, 3389";
+/// enough to be worth asking every host about, across Linux, Windows and
+/// networking gear.
+///
+/// SSH, HTTP, HTTPS, SMB and RDP. Numbers rather than a written specification,
+/// so that everything reaching for this list reaches for the same one: the
+/// unprivileged discovery sweep probes exactly these, and a second spelling
+/// somewhere else is a second list to keep in step.
+pub const COMMON_DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Error Types
@@ -101,8 +107,16 @@ impl PortSet {
     /// A deliberate choice rather than a neutral value, which is why it is not
     /// [`Default`]. A caller that scans this set is scanning what this crate
     /// picked, and should have said so.
+    ///
+    /// Built from the numbers rather than by parsing a written specification.
+    /// The round trip was a fallible call on a constant this module owns, so a
+    /// typo in the constant was a panic at a consumer's first call rather than
+    /// something the compiler could catch.
     pub fn common_discovery() -> Self {
-        Self::try_from(COMMON_DISCOVERY_PORTS).expect("the discovery ports are a valid spec")
+        COMMON_DISCOVERY_PORTS
+            .iter()
+            .map(|&port| (port, Protocol::Tcp))
+            .collect()
     }
 
     /// Returns the total number of unique port/protocol combinations.
@@ -486,20 +500,28 @@ mod tests {
 
     /// Two claims, and the second is why the first is written here.
     ///
-    /// `common_discovery` parses a string constant and unwraps it, so a typo in
-    /// [`COMMON_DISCOVERY_PORTS`] is a panic rather than a compile error, and
-    /// without a test the panic surfaces at a consumer's first call.
+    /// Two claims, and the second is why the first is written here.
+    ///
+    /// `common_discovery` is the set every caller that wants this crate's
+    /// opinion reaches for, including the unprivileged discovery sweep, so what
+    /// it holds has to be exactly what [`COMMON_DISCOVERY_PORTS`] names. A
+    /// second list somewhere else was how the sweep and this set could come to
+    /// disagree with nothing reporting it.
     ///
     /// And `Default` is empty. It named those same five ports once, which meant
     /// every struct deriving `Default` around a `PortSet` — `TargetSet` among
     /// them — silently carried a scan specification nobody wrote.
     #[test]
-    fn the_discovery_set_parses_and_default_stays_empty() {
+    fn the_discovery_set_is_what_the_constant_names_and_default_stays_empty() {
         let set = PortSet::common_discovery();
-        for port in [22, 80, 443, 445, 3389] {
+        for &port in COMMON_DISCOVERY_PORTS {
             assert!(set.has_tcp(port), "{port} is named in the discovery set");
         }
-        assert_eq!(set.len(), 5, "and nothing else is");
+        assert_eq!(
+            set.len(),
+            COMMON_DISCOVERY_PORTS.len(),
+            "and nothing else is"
+        );
 
         assert!(PortSet::default().is_empty());
         assert_eq!(PortSet::default(), PortSet::new());

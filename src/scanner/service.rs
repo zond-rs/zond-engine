@@ -39,7 +39,7 @@ use tokio::time::timeout;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::scanner::pool::ProbePool;
-use crate::scanner::session::ScanContext;
+use crate::scanner::session::{ScanContext, ScannerKind};
 
 /// Fingerprints every open TCP port currently in the store, upgrading each
 /// port's service in place.
@@ -55,11 +55,16 @@ pub async fn detect(ctx: &ScanContext) {
         return;
     }
 
-    let mut pool = ProbePool::new(CONNECT_CONCURRENCY, |fingerprinted, _audit| {
-        if let Some((ip, port)) = fingerprinted {
-            write_back(ctx, ip, port);
-        }
-    });
+    let mut pool = ProbePool::new(
+        CONNECT_CONCURRENCY,
+        ctx.clone(),
+        ScannerKind::Connect,
+        |fingerprinted, _audit| {
+            if let Some((ip, port)) = fingerprinted {
+                write_back(ctx, ip, port);
+            }
+        },
+    );
 
     for (target, port) in targets {
         if ctx.handle.should_stop() {

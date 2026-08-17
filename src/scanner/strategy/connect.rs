@@ -44,9 +44,6 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-/// Most common ports across Linux, Windows, and Networking gear.
-const DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
-
 /// Adapts the unprivileged [`discover`] strategy to [`HostScanner`], so it can
 /// be spawned alongside [`LocalScanner`](super::local::LocalScanner) and
 /// [`RoutedScanner`](super::routed::RoutedScanner) from a single explorer list.
@@ -167,9 +164,12 @@ impl PortScanner for ConnectUdpPortScanner {
 
     async fn scan(&mut self, mut rx: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         let ctx = self.ctx.clone();
-        let mut pool = ProbePool::new(self.concurrency, |probed, audit: &mut ProbeAudit| {
-            absorb_probe(&ctx, probed, audit)
-        });
+        let mut pool = ProbePool::new(
+            self.concurrency,
+            self.ctx.clone(),
+            self.kind(),
+            |probed, audit: &mut ProbeAudit| absorb_probe(&ctx, probed, audit),
+        );
 
         let mut probes = 0u128;
         let mut reason = StopReason::AttemptsSpent;
@@ -203,9 +203,12 @@ pub async fn scan(
     ctx: ScanContext,
 ) -> Result<(), StrategyError> {
     let folder = ctx.clone();
-    let mut pool = ProbePool::new(concurrency_limit, |probed, audit: &mut ProbeAudit| {
-        absorb_probe(&folder, probed, audit)
-    });
+    let mut pool = ProbePool::new(
+        concurrency_limit,
+        ctx.clone(),
+        ScannerKind::Connect,
+        |probed, audit: &mut ProbeAudit| absorb_probe(&folder, probed, audit),
+    );
 
     let mut probes = 0u128;
     let mut reason = StopReason::AttemptsSpent;
@@ -464,20 +467,21 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
 /// or distant links still register.
 pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError> {
     let mut target_map = TargetMap::new();
-    // Built from the numbers rather than by formatting them into a string and
-    // parsing it back. The round trip was a fallible call on a constant this
-    // module owns, which meant a `?` on an error that could not happen and a
-    // signature that had to admit it.
-    let port_set = PortSet::from_iter(DISCOVERY_PORTS.iter().map(|&port| (port, Protocol::Tcp)));
-    target_map.add_unit(TargetSet::new(ips, port_set));
+    // The same list `PortSet::common_discovery` names, taken from there rather
+    // than spelled again here. Two copies of five port numbers is two copies to
+    // keep in step, and nothing would have reported them drifting apart.
+    target_map.add_unit(TargetSet::new(ips, PortSet::common_discovery()));
 
     let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
     let mut rx = dispatcher.run_shuffled(&ctx.handle);
     let found_hosts = Arc::new(DashSet::new());
     let folder = ctx.clone();
-    let mut pool = ProbePool::new(DISCOVERY_CONCURRENCY, |probed, audit: &mut ProbeAudit| {
-        absorb_host(&folder, probed, audit)
-    });
+    let mut pool = ProbePool::new(
+        DISCOVERY_CONCURRENCY,
+        ctx.clone(),
+        ScannerKind::Connect,
+        |probed, audit: &mut ProbeAudit| absorb_host(&folder, probed, audit),
+    );
 
     let mut probes = 0u128;
     let mut reason = StopReason::AttemptsSpent;

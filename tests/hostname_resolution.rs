@@ -18,13 +18,13 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
-use dashmap::DashMap;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 use zond_engine::model::host::Host;
 use zond_engine::scanner::resolver::HostnameResolver;
+use zond_engine::scanner::session::{HostStore, ScanSession};
 use zond_engine::transport::capture::CapturedSegment;
 use zond_engine::transport::probe::{ProbeSender, ProbeTransport, SendError};
 
@@ -162,7 +162,7 @@ async fn resolve(
     servers: Vec<SocketAddr>,
     targets: &[IpAddr],
     sniffed: Vec<CapturedSegment>,
-) -> Arc<DashMap<IpAddr, Host>> {
+) -> HostStore {
     let (dns_tx, dns_rx) = mpsc::unbounded_channel();
     let (capture_tx, capture_rx) = mpsc::unbounded_channel();
     let transport = ProbeTransport::from_parts(Box::new(SilentSender), capture_rx);
@@ -170,9 +170,9 @@ async fn resolve(
     let resolver = HostnameResolver::with_transport(dns_rx, transport, servers)
         .expect("a resolver over loopback servers");
 
-    let store: Arc<DashMap<IpAddr, Host>> = Arc::new(DashMap::new());
+    let (session, ctx) = ScanSession::new();
     for address in [ROUTER, PRINTER, PI] {
-        store.insert(ip(address), Host::new(ip(address)));
+        ctx.update_host(ip(address), |host| *host = Host::new(ip(address)));
     }
 
     for segment in sniffed {
@@ -185,11 +185,11 @@ async fn resolve(
     drop(capture_tx);
 
     let mut resolver = resolver.run().await;
-    resolver.resolve_hosts(Arc::clone(&store));
-    store
+    resolver.resolve_hosts(&ctx);
+    session.hosts().clone()
 }
 
-fn hostname(store: &Arc<DashMap<IpAddr, Host>>, address: &str) -> Option<String> {
+fn hostname(store: &HostStore, address: &str) -> Option<String> {
     store
         .get(&ip(address))
         .and_then(|host| host.hostname().map(str::to_string))

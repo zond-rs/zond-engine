@@ -26,6 +26,7 @@ use tokio::task::JoinSet;
 
 use crate::error;
 use crate::scanner::audit::ProbeAudit;
+use crate::scanner::session::{ScanContext, ScannerKind};
 
 /// A bounded pool of in-flight probe tasks.
 ///
@@ -48,6 +49,16 @@ pub struct ProbePool<R, F: FnMut(R, &mut ProbeAudit)> {
     limit: usize,
     fold: F,
     audit: ProbeAudit,
+    /// Where a probe that panicked is reported, and how many did.
+    ///
+    /// A panicked task takes its target's verdict with it, so the scan covers
+    /// less than it was asked to. That is the same kind of narrowing every
+    /// other one in the engine records, and it has to reach the same place: a
+    /// log line is the one channel a library consumer never sees.
+    ctx: ScanContext,
+    /// Which strategy a panic is attributed to.
+    kind: ScannerKind,
+    panicked: usize,
 }
 
 impl<R, F> ProbePool<R, F>
@@ -57,12 +68,18 @@ where
 {
     /// Builds an empty pool that keeps at most `limit` probes in flight and
     /// applies `fold` to each finished probe's output.
-    pub fn new(limit: usize, fold: F) -> Self {
+    ///
+    /// `kind` names the strategy this pool is probing for, so a panic can be
+    /// attributed to it in the report.
+    pub fn new(limit: usize, ctx: ScanContext, kind: ScannerKind, fold: F) -> Self {
         Self {
             set: JoinSet::new(),
             limit,
             fold,
             audit: ProbeAudit::new(),
+            ctx,
+            kind,
+            panicked: 0,
         }
     }
 
@@ -86,11 +103,28 @@ where
         self.set.spawn(task);
     }
 
-    /// Awaits every probe still in flight, folding each result. Call once the
-    /// source is exhausted so no finished work is dropped.
+    /// Awaits every probe still in flight, folding each result, then reports
+    /// any that panicked.
+    ///
+    /// Call once the source is exhausted, so no finished work is dropped. The
+    /// panic count is filed here rather than as each one happens: a defect that
+    /// takes down one probe usually takes down every probe like it, and a
+    /// report carrying that same entry a thousand times says nothing the first
+    /// one did not.
     pub async fn drain(&mut self) {
         while !self.set.is_empty() {
             self.reap().await;
+        }
+
+        if self.panicked > 0 {
+            self.ctx.record_failure(
+                self.kind,
+                format!(
+                    "{} probe(s) panicked and their targets have no verdict; this is a \
+                     defect in the engine rather than a fact about the network",
+                    self.panicked
+                ),
+            );
         }
     }
 
@@ -98,14 +132,18 @@ where
     /// pool is empty.
     ///
     /// A probe task that panicked surfaces here as a
-    /// [`JoinError`](tokio::task::JoinError). The pool never aborts its tasks, so
-    /// this only ever means a genuine panic in probe code, which is a bug. It is
-    /// logged and the sweep continues rather than propagating the error, so one
-    /// defective probe cannot sink the whole scan while still not vanishing unseen.
+    /// [`JoinError`](tokio::task::JoinError). The pool never aborts its tasks,
+    /// so this only ever means a genuine panic in probe code, which is a bug.
+    /// It is counted and the sweep continues rather than propagating the error,
+    /// so one defective probe cannot sink the whole scan; [`drain`](Self::drain)
+    /// reports the total, which is what keeps it from vanishing unseen.
     async fn reap(&mut self) {
         match self.set.join_next().await {
             Some(Ok(output)) => (self.fold)(output, &mut self.audit),
-            Some(Err(e)) => error!("probe task panicked: {e}"),
+            Some(Err(e)) => {
+                self.panicked += 1;
+                error!("probe task panicked: {e}");
+            }
             None => {}
         }
     }

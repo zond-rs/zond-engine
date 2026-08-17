@@ -72,12 +72,9 @@ use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};
 // the same kind of network path, so they share one adaptive-deadline profile
 // rather than keeping two copies in step.
 use super::icmp_error::{self, Unreachable};
-use super::probe_scan::{self, AuditLabels, RawPortScan, RawProbeScan};
+use super::probe_scan::{self, AuditLabels, ProbeTarget, RawPortScan, RawProbeScan};
 use super::{DEADLINE_CONFIG, RETRY_POLICY};
 use crate::scanner::audit::ProbeAudit;
-
-/// The probe a reply refers to: the `(address, port)` it was sent to.
-type ProbeTarget = (IpAddr, u16);
 
 /// What identifies one attempt of a probe on the wire.
 ///

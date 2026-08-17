@@ -6,6 +6,41 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # A scan while it is running
+//!
+//! The live half of what a scan produces. [`ScanReport`](super::report) is the
+//! record afterwards; everything here describes the present moment and keeps no
+//! history.
+//!
+//! It comes in two halves that share one store, handed out by
+//! [`ScanSession::new`]:
+//!
+//! - [`ScanSession`] is the reading half, for whoever asked for the scan: the
+//!   hosts found so far ([`HostStore`]), the stream saying when that changed
+//!   ([`ScanEvents`]), and the means to stop
+//!   ([`ScanHandle`]).
+//! - [`ScanContext`] is the writing half, for the strategies. Every scanner is
+//!   built with one, and it is how findings, failures and probe counters enter
+//!   the scan.
+//!
+//! ## Why the writing half is not just the map
+//!
+//! [`ScanContext::write_host`] is the single door a host finding goes through,
+//! and that is what lets the ordering it depends on be written once. It takes
+//! the store's guard, runs the caller's edit under it, drops the guard, and
+//! only then announces the change, so the map is never locked across a channel
+//! send. Handing a strategy the raw map instead would hand it that ordering to
+//! get wrong, and would make the version of a third-party concurrency crate
+//! part of this crate's semver.
+//!
+//! ## Why a failure is written down twice
+//!
+//! Once to the event stream, for a consumer watching, and once to a log the
+//! report drains at the end. An event nobody listens for is an event that never
+//! happened: a caller that simply awaits the scan and reads the hosts would
+//! otherwise have no way to learn that a strategy died, and "the network is
+//! empty" and "the raw scanner never started" would be the same answer.
+
 use dashmap::DashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -393,6 +428,29 @@ impl ScanContext {
             let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
         }
         is_new
+    }
+
+    /// Reads the host at `ip`, if there is one, without cloning it.
+    ///
+    /// The counterpart of [`write_host`](Self::write_host), and a closure for
+    /// the same reason: the store's guard is held for the duration of `read`
+    /// and released before this returns, so a caller cannot keep it across an
+    /// await. Take what you need out of the host and let the guard go.
+    ///
+    /// `read` must not touch this context again. The guard it runs under is the
+    /// store's own, and reaching back into the store from inside it deadlocks.
+    pub fn read_host<R>(&self, ip: &IpAddr, read: impl FnOnce(&Host) -> R) -> Option<R> {
+        self.store.get(ip).map(|entry| read(entry.value()))
+    }
+
+    /// Every address a host is currently recorded under.
+    ///
+    /// A snapshot, so a caller may write to the store while walking it.
+    /// [`write_host`](Self::write_host) takes the store's own lock, and holding
+    /// an iterator over the map while calling it would deadlock against
+    /// whichever shard the iterator is on.
+    pub fn host_addresses(&self) -> Vec<IpAddr> {
+        self.store.iter().map(|entry| *entry.key()).collect()
     }
 
     /// The single place a strategy failure enters the record.

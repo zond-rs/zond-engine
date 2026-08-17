@@ -6,6 +6,18 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # Stopping a scan
+//!
+//! One flag and two methods. A scan spawns strategies that outlive the call
+//! that started them, so something has to reach across into all of them at
+//! once, and that something has to be cheap enough to read on every pass of
+//! every probing loop.
+//!
+//! [`ScanHandle`] is that flag. Everything else about stopping a scan follows
+//! from what it deliberately is not: it does not cancel tasks, it does not
+//! discard findings, and it cannot be undone. The type's own documentation has
+//! the argument for each.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 

@@ -43,13 +43,9 @@ use crate::protocols::{
     dns,
     mdns::{self, MdnsHost},
 };
-use crate::{
-    error, info,
-    model::{host::Host, ip},
-    warn,
-};
+use crate::scanner::session::ScanContext;
+use crate::{error, info, model::ip, warn};
 use anyhow::Context;
-use dashmap::DashMap;
 use pnet::packet::{Packet, udp::UdpPacket};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -377,32 +373,48 @@ impl HostnameResolver {
 
     /// Writes every collected name back into the host store.
     ///
-    /// For each host it walks the IPs the host is known by and applies whatever the
-    /// caches hold for them: a DNS hostname when the host has none yet, and any
-    /// mDNS record, which can supply a hostname and additional IPs. Consumed
-    /// entries are removed from the caches as they are applied.
-    pub fn resolve_hosts(&mut self, store: Arc<DashMap<IpAddr, Host>>) {
-        for mut host_entry in store.iter_mut() {
-            let host = host_entry.value_mut();
-            let ips_to_check = host.ips().clone();
+    /// For each host it walks the IPs the host is known by and applies whatever
+    /// the caches hold for them: a DNS hostname when the host has none yet, and
+    /// any mDNS record, which can supply a hostname and additional IPs.
+    /// Consumed entries are removed from the caches as they are applied.
+    ///
+    /// Written through [`ScanContext::write_host`] like every other finding, so
+    /// a name reaches the event stream as well as the store. Applied by
+    /// iterating the map directly it did not, and a consumer watching a scan
+    /// saw its hosts arrive unnamed and never heard they had been named.
+    ///
+    /// The addresses are collected before any of them is written. `write_host`
+    /// takes the store's own lock, and taking it while iterating the map would
+    /// deadlock against whichever shard the iterator is holding.
+    pub fn resolve_hosts(&mut self, ctx: &ScanContext) {
+        for key in ctx.host_addresses() {
+            let (hostname_map, mdns_cache) = (&mut self.hostname_map, &mut self.mdns_cache);
 
-            for ip in ips_to_check {
-                // Prefer a hostname learned over unicast DNS.
-                if host.hostname().is_none()
-                    && let Some(hostname) = self.hostname_map.remove(&ip)
-                {
-                    host.set_hostname(Some(hostname));
-                }
+            ctx.write_host(key, |host| {
+                let mut named = false;
 
-                // An mDNS record can fill in a missing hostname and extra IPs.
-                if let Some(mdns_host) = self.mdns_cache.remove(&ip) {
-                    if host.hostname().is_none() {
-                        host.set_hostname(Some(mdns_host.hostname));
+                for ip in host.ips().clone() {
+                    // Prefer a hostname learned over unicast DNS.
+                    if host.hostname().is_none()
+                        && let Some(hostname) = hostname_map.remove(&ip)
+                    {
+                        host.set_hostname(Some(hostname));
+                        named = true;
                     }
 
-                    host.extend_ips(mdns_host.ips);
+                    // An mDNS record can fill in a missing hostname and extra IPs.
+                    if let Some(mdns_host) = mdns_cache.remove(&ip) {
+                        if host.hostname().is_none() {
+                            host.set_hostname(Some(mdns_host.hostname));
+                        }
+
+                        host.extend_ips(mdns_host.ips);
+                        named = true;
+                    }
                 }
-            }
+
+                named
+            });
         }
     }
 
@@ -599,12 +611,13 @@ fn push_unique(servers: &mut Vec<SocketAddr>, server: SocketAddr) {
 
 /// Active-only reverse resolution for the unprivileged scan path.
 ///
-/// Without raw sockets there is nothing to sniff, so this issues a reverse lookup
-/// through the system resolver for every host in `store` that still lacks a
-/// hostname. The lookups run concurrently, and each answer is written straight
-/// back onto its host. Any failure to build the resolver leaves the store
-/// untouched, since a scan without hostnames is still a useful scan.
-pub async fn resolve_hosts_async(store: Arc<DashMap<IpAddr, Host>>) {
+/// Without raw sockets there is nothing to sniff, so this issues a reverse
+/// lookup through the system resolver for every host that still lacks a
+/// hostname. The lookups run concurrently, and each answer is written back
+/// through [`ScanContext::write_host`] so it announces itself like any other
+/// finding. Any failure to build the resolver leaves the store untouched, since
+/// a scan without hostnames is still a useful scan.
+pub async fn resolve_hosts_async(ctx: &ScanContext) {
     use hickory_resolver::TokioResolver;
 
     let Ok(builder) = TokioResolver::builder_tokio() else {
@@ -616,11 +629,17 @@ pub async fn resolve_hosts_async(store: Arc<DashMap<IpAddr, Host>>) {
 
     let mut set = tokio::task::JoinSet::new();
 
+    // Keyed by the address the host is stored under rather than by
+    // `primary_ip`, so the write below lands on the entry that was read. The
+    // two agree for most hosts and not for one whose leading address changed
+    // after it was first credited.
     let mut ips_to_resolve = Vec::new();
-    for host_entry in store.iter() {
-        let host = host_entry.value();
-        if host.hostname().is_none() {
-            ips_to_resolve.push(host.primary_ip());
+    for key in ctx.host_addresses() {
+        let unnamed = ctx
+            .read_host(&key, |host| host.hostname().is_none())
+            .unwrap_or(false);
+        if unnamed {
+            ips_to_resolve.push(key);
         }
     }
 
@@ -643,11 +662,10 @@ pub async fn resolve_hosts_async(store: Arc<DashMap<IpAddr, Host>>) {
     }
 
     while let Some(Ok((ip, Some(name)))) = set.join_next().await {
-        if let Some(mut host_entry) = store.get_mut(&ip) {
-            host_entry
-                .value_mut()
-                .set_hostname(Some(name.trim_end_matches('.').to_string()));
-        }
+        ctx.write_host(ip, |host| {
+            host.set_hostname(Some(name.trim_end_matches('.').to_string()));
+            true
+        });
     }
 }
 
@@ -661,5 +679,96 @@ fn is_queryable(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V6(ipv6_addr) => ip::is_global_unicast(ipv6_addr),
         IpAddr::V4(_ipv4_addr) => true,
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::host::HostStatus;
+    use crate::scanner::session::{ScanEvent, ScanSession};
+    use crate::transport::probe::{ProbeSender, SendError};
+    use std::net::Ipv4Addr;
+
+    struct Silent;
+    impl ProbeSender for Silent {
+        fn send(&self, _: &[u8], _: IpAddr, _: IpAddr) -> Result<(), SendError> {
+            Ok(())
+        }
+    }
+
+    /// A resolver holding one name for `ip`, with no sockets behind it.
+    fn resolver_holding(ip: IpAddr, hostname: &str) -> HostnameResolver {
+        let (_tx, dns_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut resolver = HostnameResolver::with_transport(
+            dns_rx,
+            ProbeTransport::from_parts(Box::new(Silent), reply_rx),
+            // Never queried. `resolve_hosts` only folds the caches into the
+            // store, but the constructor insists on somewhere to send to.
+            vec!["127.0.0.1:53".parse().expect("a valid socket address")],
+        )
+        .expect("a loopback query target binds");
+        resolver.hostname_map.insert(ip, hostname.to_string());
+        resolver
+    }
+
+    /// A hostname is a finding like any other, so attaching one has to announce
+    /// itself. Writing straight into the map bypassed
+    /// [`ScanContext::write_host`], which owns the lock-then-announce ordering,
+    /// so a consumer watching the event stream saw a host appear without a name
+    /// and never heard that it had gained one.
+    #[tokio::test]
+    async fn attaching_a_hostname_announces_it_like_any_other_finding() {
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+        let (mut session, ctx) = ScanSession::new();
+
+        ctx.update_host(ip, |host| host.set_status(HostStatus::Up));
+        while session.events().try_recv().is_some() {}
+
+        resolver_holding(ip, "printer.local").resolve_hosts(&ctx);
+
+        assert_eq!(
+            session
+                .hosts()
+                .get(&ip)
+                .and_then(|h| h.hostname().map(String::from)),
+            Some("printer.local".to_string())
+        );
+        assert!(
+            matches!(session.events().try_recv(), Some(ScanEvent::HostUpdated(at)) if at == ip),
+            "the name reached the store without reaching the stream"
+        );
+    }
+
+    /// A resolver with nothing for a host must not announce a change it did not
+    /// make, or every scan ends with one spurious event per host.
+    #[tokio::test]
+    async fn a_host_the_resolver_has_nothing_for_is_left_alone() {
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11));
+        let (mut session, ctx) = ScanSession::new();
+
+        ctx.update_host(ip, |host| host.set_status(HostStatus::Up));
+        while session.events().try_recv().is_some() {}
+
+        resolver_holding(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 99)), "other").resolve_hosts(&ctx);
+
+        assert!(
+            session
+                .hosts()
+                .get(&ip)
+                .and_then(|h| h.hostname().map(String::from))
+                .is_none()
+        );
+        assert!(session.events().try_recv().is_none(), "nothing changed");
     }
 }
