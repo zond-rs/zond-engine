@@ -59,8 +59,7 @@ use crate::model::target::Target;
 use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
 use crate::scanner::pacing::deadline::AdaptiveDeadline;
-use crate::scanner::pacing::retry::{Due, ProbeLedger, RetryPolicy};
-use crate::scanner::report::StopReason;
+use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::service;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{PortScanner, StrategyError};
@@ -73,7 +72,7 @@ use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};
 // the same kind of network path, so they share one adaptive-deadline profile
 // rather than keeping two copies in step.
 use super::icmp_error::{self, Unreachable};
-use super::probe_scan::RawProbeScan;
+use super::probe_scan::{self, AuditLabels, RawPortScan, RawProbeScan};
 use super::{DEADLINE_CONFIG, RETRY_POLICY};
 use crate::scanner::audit::ProbeAudit;
 
@@ -90,7 +89,7 @@ type ProbeTarget = (IpAddr, u16);
 /// acknowledgement answers, and a scanner that varies the value the reply echoes
 /// does not have that problem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TcpToken {
+pub struct TcpToken {
     nonce: u32,
 }
 
@@ -226,58 +225,6 @@ impl TcpPortScanner {
         }
     }
 
-    fn send_probe(&mut self, target: Target) {
-        if target.protocol != Protocol::Tcp {
-            return;
-        }
-        self.probe(target.ip, target.port, Instant::now());
-    }
-
-    /// Sends one probe at `(ip, port)` and records the attempt.
-    ///
-    /// Used for the first attempt and every retry alike. Nothing about the probe
-    /// is kept between attempts and none of it needs to be: the packet is built
-    /// afresh from the target, which is both cheaper than buffering it and
-    /// required, since every attempt must carry its own nonce.
-    ///
-    /// A probe that cannot be sent is simply not armed. The ledger has already
-    /// charged the attempt by the time a retry reaches here, so an unroutable
-    /// target still exhausts on schedule rather than waiting outstanding
-    /// forever.
-    fn probe(&mut self, ip: IpAddr, port: u16, now: Instant) {
-        let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(verbosity = 2, "No route to {ip}; skipping {ip}:{port}");
-            return;
-        };
-
-        let token = send_tcp_probe(
-            self.core.transport.tx.as_ref(),
-            self.technique,
-            self.core.src_port,
-            src_addr,
-            ip,
-            port,
-            &mut self.core.send_failure,
-        );
-        self.core.audit.record_send(token.is_some());
-
-        if let Some(token) = token {
-            self.core.ledger.arm(ip, (ip, port), token, now);
-        }
-    }
-
-    /// Routes one captured reply to whichever half of the classification can
-    /// read it.
-    ///
-    /// ICMP only reaches here for a technique that asked for it; see
-    /// [`TcpScanTechnique::reads_icmp_errors`].
-    fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
-        match reply.protocol {
-            IpNextHeaderProtocols::Tcp => self.handle_tcp_reply(reply.source, &reply.bytes, now),
-            _ => self.handle_icmp_error(reply, now),
-        }
-    }
-
     /// Matches a TCP segment against an outstanding probe and, if it answers
     /// one, classifies it and records the port's state.
     fn handle_tcp_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
@@ -398,45 +345,89 @@ impl TcpPortScanner {
         self.record_port(key.0, key.1, state, sender);
     }
 
-    /// Resends everything due and writes off everything that has run out of
-    /// attempts.
+    /// Which protocol a host verdict from this scan is credited to.
     ///
-    /// Exhaustion is what makes a silent verdict mean something: nothing
-    /// arrived across every attempt, rather than nothing arrived once. What that
-    /// silence *is* depends on the technique - a firewall for the two that any
-    /// live stack would have answered, an open port or a firewall for the four
-    /// that an open port is required to ignore - which is
-    /// [`TcpScanTechnique::silence_means`]. It is deliberately not treated as
-    /// activity, so it never extends the scan's own deadline.
-    fn service_retries(&mut self, now: Instant) {
-        self.core.ledger.drain_due(now, &mut self.core.due);
-
-        // Taken so the sends below can borrow `self` mutably; the buffer itself
-        // is reused, so this costs no allocation.
-        let due = std::mem::take(&mut self.core.due);
-        for event in &due {
-            match *event {
-                Due::Retry {
-                    key: (ip, port), ..
-                } => self.probe(ip, port, now),
-                Due::Exhausted((ip, port)) => {
-                    self.record_port(ip, port, self.technique.silence_means(), None)
-                }
-            }
+    /// [`StatusProtocol::TcpSyn`] means what it has always meant, so a report
+    /// naming it still describes a half-open connection attempt. Every other
+    /// technique credits [`StatusProtocol::Tcp`], with the probe that drew the
+    /// answer named in the reason's details.
+    const fn status_protocol(&self) -> StatusProtocol {
+        match self.technique {
+            TcpScanTechnique::Syn => StatusProtocol::TcpSyn,
+            _ => StatusProtocol::Tcp,
         }
-        self.core.due = due;
-        self.core.due.clear();
+    }
+}
+
+impl RawPortScan for TcpPortScanner {
+    type Token = TcpToken;
+
+    fn core(&self) -> &RawProbeScan<TcpToken> {
+        &self.core
     }
 
-    /// Gives every probe still outstanding when the scan stops the verdict its
-    /// technique reads silence as.
+    fn core_mut(&mut self) -> &mut RawProbeScan<TcpToken> {
+        &mut self.core
+    }
+
+    fn protocol(&self) -> Protocol {
+        Protocol::Tcp
+    }
+
+    /// What silence means here is the technique's to say: a firewall for the
+    /// two probes any live stack would have answered, an open port or a
+    /// firewall for the four an open port is required to ignore.
+    fn silence_means(&self) -> PortState {
+        self.technique.silence_means()
+    }
+
+    /// "unanswered" rather than either verdict, because which one silence
+    /// produces depends on the technique and the message is about probes that
+    /// never left at all.
+    fn audit_labels(&self) -> AuditLabels {
+        AuditLabels {
+            tag: "tcp-port",
+            silence: "unanswered",
+        }
+    }
+
+    /// Sends one probe at `(ip, port)` and records the attempt.
     ///
-    /// [`service_retries`](Self::service_retries) retires most probes as their
-    /// budgets run out; what reaches here are the ones still mid-schedule when
-    /// the scan itself ended.
-    fn resolve_remaining(&mut self) {
-        for (ip, port) in self.core.ledger.drain_unresolved() {
-            self.record_port(ip, port, self.technique.silence_means(), None);
+    /// Nothing about the probe is kept between attempts and none of it needs to
+    /// be: the packet is built afresh from the target, which is both cheaper
+    /// than buffering it and required, since every attempt must carry its own
+    /// nonce.
+    fn probe(&mut self, ip: IpAddr, port: u16, now: Instant) {
+        let Some(src_addr) = self.core.resolver.resolve(ip) else {
+            error!(verbosity = 2, "No route to {ip}; skipping {ip}:{port}");
+            return;
+        };
+
+        let token = send_tcp_probe(
+            self.core.transport.tx.as_ref(),
+            self.technique,
+            self.core.src_port,
+            src_addr,
+            ip,
+            port,
+            &mut self.core.send_failure,
+        );
+        self.core.audit.record_send(token.is_some());
+
+        if let Some(token) = token {
+            self.core.ledger.arm(ip, (ip, port), token, now);
+        }
+    }
+
+    /// Routes one captured reply to whichever half of the classification can
+    /// read it.
+    ///
+    /// ICMP only reaches here for a technique that asked for it; see
+    /// [`TcpScanTechnique::reads_icmp_errors`].
+    fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
+        match reply.protocol {
+            IpNextHeaderProtocols::Tcp => self.handle_tcp_reply(reply.source, &reply.bytes, now),
+            _ => self.handle_icmp_error(reply, now),
         }
     }
 
@@ -501,18 +492,6 @@ impl TcpPortScanner {
         });
     }
 
-    /// Which protocol a host verdict from this scan is credited to.
-    ///
-    /// [`StatusProtocol::TcpSyn`] means what it has always meant, so a report
-    /// naming it still describes a half-open connection attempt. Every other
-    /// technique credits [`StatusProtocol::Tcp`], with the probe that drew the
-    /// answer named in the reason's details.
-    const fn status_protocol(&self) -> StatusProtocol {
-        match self.technique {
-            TcpScanTechnique::Syn => StatusProtocol::TcpSyn,
-            _ => StatusProtocol::Tcp,
-        }
-    }
 }
 
 /// What a RST proves, said in the terms of the probe that drew it.
@@ -622,60 +601,8 @@ impl PortScanner for TcpPortScanner {
     /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes
     /// are outstanding, and retries are serviced before new targets are taken,
     /// since a retry is an obligation the scan already owns.
-    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
-        let mut sending_finished = false;
-        let mut probes = 0u128;
-
-        // The loop yields why it stopped, so the audit cannot report a reason
-        // the code never actually took.
-        let reason = loop {
-            // Read once per iteration and reused throughout it: a scan at rate
-            // takes this path constantly, and the arithmetic below only needs
-            // the instants to agree with each other.
-            let now = Instant::now();
-            self.service_retries(now);
-
-            if let Some(reason) = self.core.stop_reason(sending_finished) {
-                break reason;
-            }
-
-            // Both are read off `self` before the `select!`, which borrows the
-            // receive half mutably for the duration of the statement.
-            let admitting = self.core.admitting(sending_finished);
-            let tick = self.core.tick_delay(now);
-
-            tokio::select! {
-                target = targets.recv(), if admitting => {
-                    match target {
-                        Some(target) => {
-                            probes += 1;
-                            self.send_probe(target);
-                        }
-                        None => sending_finished = true,
-                    }
-                }
-
-                res = self.core.transport.rx.recv() => {
-                    match res {
-                        Some(reply) => {
-                            self.core.audit.record_segment();
-                            self.handle_reply(&reply, Instant::now());
-                        }
-                        None => break StopReason::StreamClosed,
-                    }
-                }
-
-                // Wakes when the next probe is due, so a retry is sent on time
-                // even though nothing is arriving to wake the loop otherwise.
-                _ = tokio::time::sleep(tick) => {}
-            }
-        };
-
-        self.resolve_remaining();
-
-        let kind = self.kind();
-        self.core
-            .finish(kind, "tcp-port", "unanswered", probes, reason);
+    async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
+        probe_scan::run(self, targets).await;
         Ok(())
     }
 

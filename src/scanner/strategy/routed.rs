@@ -53,11 +53,13 @@ use crate::scanner::strategy::{HostScanner, StrategyError};
 pub use port_scan::TcpPortScanner;
 pub use udp_scan::UdpPortScanner;
 
-// The machinery both raw port scanners are built from. Exported alongside them
-// because a caller writing a third one — SCTP INIT, or a protocol this engine
-// does not speak yet — needs the same stop conditions and the same audit tail,
-// and reimplementing those is how the two here would have drifted apart.
-pub use probe_scan::{ProbeTarget, RawProbeScan};
+// The machinery both raw port scanners are built from: the state, the loop
+// that drives it, and the short list of protocol facts the loop cannot supply
+// itself. Exported alongside them because a caller writing a third one — SCTP
+// INIT, or a protocol this engine does not speak yet — needs the same stop
+// conditions and the same audit tail, and reimplementing those is how the two
+// here would have drifted apart.
+pub use probe_scan::{AuditLabels, ProbeTarget, RawPortScan, RawProbeScan, run};
 
 /// How long a routed sweep or port scan runs and how it adapts.
 ///

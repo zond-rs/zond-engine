@@ -44,7 +44,7 @@
 //! this is a supported way to use the engine, not a test hatch.
 //!
 //! A scan driven this way produces the same record as one the engine ran.
-//! [`PhaseRecorder`](report::PhaseRecorder) takes the scope and settings before
+//! [`report::PhaseRecorder`] takes the scope and settings before
 //! the strategies start and closes into a [`ScanReport`] when they finish, so a
 //! self-orchestrated scan reaches the exporters on the same terms
 //! [`discover`] and [`scan`] do. What a strategy filed along the way is
