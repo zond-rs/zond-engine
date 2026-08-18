@@ -39,6 +39,7 @@ use tokio::sync::mpsc;
 use crate::model::capture::{CaptureCounts, IpObservation};
 use crate::transport::frame::{self, LinkType};
 use crate::{error, info, warn};
+use pnet::util::MacAddr;
 
 /// Largest capture we ever need: a scan reply is a bare TCP/UDP segment, but
 /// snapping generously costs nothing and avoids ever truncating one.
@@ -93,6 +94,23 @@ pub struct CapturedSegment {
     ///
     /// [`ProbeTransport::from_parts`]: crate::transport::probe::ProbeTransport::from_parts
     pub observation: Option<IpObservation>,
+
+    /// The hardware address the frame carrying this segment came from, where the
+    /// link had one.
+    ///
+    /// Carried because it is the only thing here that can say whether a reply
+    /// came from the host it claims to. Anything answering in a host's place uses
+    /// that host's IP address, so [`source`](Self::source) cannot tell a genuine
+    /// answer from an intercepted one; this can, on an on-link segment.
+    ///
+    /// **Not a vendor lookup.** An off-link reply carries the last-hop router's
+    /// address and looks no different from here. See
+    /// [`frame::source_mac`](crate::transport::frame::source_mac) for the full
+    /// argument.
+    ///
+    /// `None` on a tunnel, loopback or raw-IP link, which prepend no addresses,
+    /// and on a synthetic stream. Never "the sender had none".
+    pub source_mac: Option<MacAddr>,
 }
 
 impl CapturedSegment {
@@ -108,6 +126,7 @@ impl CapturedSegment {
             protocol,
             bytes,
             observation: None,
+            source_mac: None,
         }
     }
 }
@@ -357,6 +376,7 @@ fn reader_loop(
                             protocol: parsed.protocol,
                             bytes: parsed.payload.to_vec(),
                             observation: Some(parsed.observation),
+                            source_mac: frame::source_mac(link, packet.data),
                         })
                         .is_err()
                 {

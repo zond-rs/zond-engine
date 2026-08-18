@@ -139,6 +139,49 @@ fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
     }
 }
 
+/// The hardware address a captured frame came from, where the link has one.
+///
+/// # What this is for, and what it is not for
+///
+/// It answers **"did this reply come from the host whose address it claims?"**,
+/// and that is a question the source *IP* structurally cannot answer: anything
+/// answering in a host's place — a transparent proxy, a DNS interceptor, a
+/// firewall resetting on a host's behalf — uses that host's address, so the IP
+/// header of a forged answer and a real one are identical. The hardware address
+/// is not, and on an on-link segment it settles the matter outright.
+///
+/// It is a poor basis for **vendor attribution**, which is the use it looks like
+/// it has. A reply from off-link carries the last-hop router's address, not the
+/// sender's, and the two are indistinguishable from here — so an OUI lookup
+/// against this would confidently report the router's manufacturer as the host's.
+/// Where a vendor is actually wanted, it belongs to the on-link discovery path
+/// ([`crate::system::neighbors`] and the local scanner), which knows a neighbour
+/// is a neighbour.
+///
+/// `None` where there is genuinely nothing to read: a `DLT_NULL`/`DLT_LOOP`
+/// tunnel or loopback link prepends an address-family word and no addresses at
+/// all, a `DLT_RAW` link prepends nothing, and a frame too short to hold an
+/// Ethernet header describes nothing. `None` never means "the sender had no
+/// hardware address".
+pub fn source_mac(link: LinkType, frame: &[u8]) -> Option<MacAddr> {
+    match link {
+        // Offsets 0..6 destination, 6..12 source, then the EtherType. A VLAN tag
+        // sits *after* both addresses, so unlike the payload offset this one does
+        // not move for a tagged frame — which is exactly the mistake to avoid,
+        // since a tag-shifted read lands in the middle of the EtherType and the
+        // start of the IP header and yields a plausible-looking address.
+        LinkType::Ethernet => Some(MacAddr::new(
+            *frame.get(6)?,
+            *frame.get(7)?,
+            *frame.get(8)?,
+            *frame.get(9)?,
+            *frame.get(10)?,
+            *frame.get(11)?,
+        )),
+        LinkType::NullLoop | LinkType::Raw | LinkType::Unsupported(_) => None,
+    }
+}
+
 /// One parsed IP packet: its endpoints, the Layer-4 protocol it carries, and
 /// that Layer-4 segment.
 ///
@@ -559,6 +602,60 @@ mod tests {
         let parsed = parse_captured_segment(LinkType::Ethernet, &frame).unwrap();
         assert_eq!(parsed.source, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)));
         assert_eq!(parsed.payload, &payload);
+    }
+
+    /// The addresses sit before the EtherType, so a VLAN tag does not move them —
+    /// unlike the payload offset, which it does move. Reading them at a
+    /// tag-shifted offset lands across the EtherType and the start of the IP
+    /// header and yields a perfectly plausible-looking address, which is why both
+    /// framings are pinned here rather than only the plain one.
+    #[test]
+    fn the_source_hardware_address_does_not_move_for_a_vlan_tag() {
+        let sender = MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
+        let inner = ipv4_packet(Ipv4Addr::new(198, 51, 100, 9), &[4, 2]);
+
+        let plain = build_ethernet_frame(
+            sender,
+            MacAddr::new(1, 1, 1, 1, 1, 1),
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)),
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+            TCP,
+            &[4, 2],
+        )
+        .unwrap();
+        assert_eq!(source_mac(LinkType::Ethernet, &plain), Some(sender));
+
+        let mut tagged = vec![0u8; ETH_HDR_LEN];
+        tagged[6..12].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01]);
+        tagged[12] = 0x81; // 0x8100 VLAN
+        tagged[13] = 0x00;
+        tagged.extend_from_slice(&[0x00, 0x64]); // VLAN id 100
+        tagged.extend_from_slice(&[0x08, 0x00]); // inner EtherType IPv4
+        tagged.extend_from_slice(&inner);
+        assert_eq!(source_mac(LinkType::Ethernet, &tagged), Some(sender));
+    }
+
+    /// A link that prepends no addresses has none to report, and that is not the
+    /// same claim as "the sender had none". Every one of these carries IP traffic
+    /// this engine captures on, so each has to answer `None` deliberately rather
+    /// than by reading six bytes of somebody's IP header.
+    #[test]
+    fn a_link_without_hardware_addresses_reports_none() {
+        let packet = ipv4_packet(Ipv4Addr::new(10, 0, 0, 1), &[1, 2, 3, 4]);
+
+        // A tunnel or loopback link prepends a four-byte address-family word.
+        let mut framed = vec![2, 0, 0, 0];
+        framed.extend_from_slice(&packet);
+        assert!(source_mac(LinkType::NullLoop, &framed).is_none());
+
+        // A raw-IP link prepends nothing at all.
+        assert!(source_mac(LinkType::Raw, &packet).is_none());
+
+        assert!(source_mac(LinkType::Unsupported(42), &packet).is_none());
+
+        // Too short to hold an Ethernet header. Reading past it would be a
+        // panic on a frame chosen by whoever is on the wire.
+        assert!(source_mac(LinkType::Ethernet, &[0u8; 8]).is_none());
     }
 
     #[test]

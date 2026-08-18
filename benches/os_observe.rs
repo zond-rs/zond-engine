@@ -119,20 +119,30 @@
 //!
 //! ```text
 //! # fish
-//! sudo -E (command ls -t (path filter -fx target/release/deps/os_observe-*))[1] 192.168.0.0/24
+//! set bin (command ls -t (path filter -fx target/release/deps/os_observe-*))[1]
+//! test -x "$bin"; and sudo -E $bin 192.168.0.0/24
 //!
 //! # bash / zsh
-//! sudo -E "$(find target/release/deps -name 'os_observe-*' -type f -perm -u+x | xargs ls -t | head -1)" 192.168.0.0/24
+//! bin=$(find target/release/deps -name 'os_observe-*' -type f -perm -u+x -print0 \
+//!       | xargs -0 ls -t 2>/dev/null | head -1)
+//! [ -x "$bin" ] && sudo -E "$bin" 192.168.0.0/24 || echo "not built yet"
 //! ```
 //!
-//! `command ls` and the quoted `$(...)` are not decoration. An interactive shell
-//! that aliases `ls` to `eza` or `lsd` silently changes what `-t` means — in
-//! `eza` it takes an argument and swallows the first path — and the substitution
-//! comes back empty, at which point `sudo` treats the target address as the
-//! command to run. Asking for executables (`-fx`, `-perm -u+x`) rather than
-//! filtering out `.d` and `.o` says what is actually meant and cannot be caught
-//! out by an artifact extension nobody listed.
+//! **Guard the result before running it.** `path filter` is a fish builtin and
+//! `$(...)[1]` is fish array syntax; neither exists in bash, so the two forms are
+//! not interchangeable. And unguarded, both fail in the same confusing way when
+//! nothing has been built: `find` matches nothing, `xargs ls -t` runs with no
+//! arguments and lists the *current directory* instead, and `sudo` is handed the
+//! first entry in the repository as a command to run. The error then names a
+//! directory nobody mentioned.
 //!
+//! `command ls` is not decoration either. An interactive shell that aliases `ls`
+//! to `eza` or `lsd` silently changes what `-t` means — in `eza` it takes an
+//! argument and swallows the first path — and the substitution comes back empty
+//! again. Asking for executables (`-fx`, `-perm -u+x`) rather than filtering out
+//! `.d` and `.o` says what is actually meant and cannot be caught out by an
+//! artifact extension nobody listed.
+//!//!
 //! ## Reading the table
 //!
 //! One row per host, per arm, per distinct **flag combination** that came back.
@@ -178,6 +188,7 @@ use std::time::{Duration, Instant};
 
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::tcp::TcpPacket;
+use pnet::util::MacAddr;
 use tokio::time::timeout;
 
 use zond_engine::model::capture::IpObservation;
@@ -364,6 +375,14 @@ struct Observed {
     timestamp: bool,
     /// The option bytes verbatim, so nothing above is the only record.
     raw_options: String,
+    /// Who actually put this frame on the wire, where the link says.
+    ///
+    /// The column that says whether a row describes the host in the address
+    /// beside it. Everything else here can be produced by something answering in
+    /// that host's place, because an interceptor uses the target's IP address;
+    /// this cannot. Two hosts on one segment reporting one hardware address are
+    /// one machine answering for both.
+    source_mac: Option<String>,
 }
 
 /// The flag byte as letters, in the conventional header order.
@@ -685,7 +704,7 @@ async fn run_pass(
             continue;
         }
 
-        let row = describe(&segment, observation);
+        let row = describe(&segment, observation, reply.source_mac);
         // Recorded against the address *probed*, not the one that answered: this
         // is what the port scan concluded about a target, and a reply arriving
         // from elsewhere still resolves that target's port. The row above keys on
@@ -706,7 +725,11 @@ async fn run_pass(
 }
 
 /// Everything one reply says, read once.
-fn describe(segment: &TcpPacket<'_>, observation: IpObservation) -> Observed {
+fn describe(
+    segment: &TcpPacket<'_>,
+    observation: IpObservation,
+    source_mac: Option<MacAddr>,
+) -> Observed {
     let options = segment.get_options_raw();
     let walked = walk_options(options);
 
@@ -740,6 +763,7 @@ fn describe(segment: &TcpPacket<'_>, observation: IpObservation) -> Observed {
         window_scale: walked.window_scale,
         timestamp: walked.timestamp,
         raw_options: options.iter().map(|b| format!("{b:02x}")).collect(),
+        source_mac: source_mac.map(|mac| mac.to_string()),
     }
 }
 
@@ -900,6 +924,66 @@ fn print_rows(observed: &Seen) {
             } else {
                 &row.raw_options
             }
+        );
+    }
+
+    print_provenance(observed);
+}
+
+/// Which hardware address each answer actually came from.
+///
+/// Printed apart from the feature table because it is not a feature: it says
+/// whether the row above it describes the host in its address column at all.
+/// Everything else this instrument reads can be produced by something answering
+/// in a host's place — an interceptor, a proxy, a firewall resetting on a host's
+/// behalf — because all of those use the target's IP address and the reply looks
+/// entirely ordinary. The hardware address does not, and **several addresses
+/// resolving to one of them is the signature of exactly that**.
+///
+/// On a link that prepends no addresses — loopback, a tunnel, raw IP — there is
+/// nothing to read and the column is empty. That is not evidence of anything.
+fn print_provenance(observed: &Seen) {
+    let mut senders: BTreeMap<&str, BTreeSet<IpAddr>> = BTreeMap::new();
+    let mut unknown: BTreeSet<IpAddr> = BTreeSet::new();
+    for ((address, _, _), (_, row)) in observed {
+        match row.source_mac.as_deref() {
+            Some(mac) => senders.entry(mac).or_default().insert(*address),
+            None => unknown.insert(*address),
+        };
+    }
+
+    if senders.is_empty() {
+        return;
+    }
+
+    println!("\nwho actually sent each answer");
+    for (mac, addresses) in &senders {
+        let shared = addresses.len() > 1;
+        println!(
+            "  {mac}  {} address{}{}",
+            addresses.len(),
+            if shared { "es" } else { "" },
+            if shared {
+                "   <- one machine answering for several"
+            } else {
+                ""
+            }
+        );
+        for address in addresses {
+            println!("      {address}");
+        }
+    }
+
+    if !unknown.is_empty() {
+        println!(
+            "  {} address(es) arrived over a link with no hardware addresses to read",
+            unknown.len()
+        );
+    }
+
+    if senders.values().any(|addresses| addresses.len() > 1) {
+        println!(
+            "\n  One hardware address answering for several IP addresses means those rows \n               describe that machine, not the hosts they are filed under. Read every feature \n               of the shared rows as belonging to whatever holds that address."
         );
     }
 }
