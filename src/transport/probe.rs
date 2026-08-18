@@ -482,11 +482,11 @@ mod tests {
         assert_eq!(sent, vec![(vec![0xAA, 0xBB], src, dst)]);
 
         // A reply pushed onto the capture stream is observed on rx unchanged.
-        let reply = CapturedSegment {
-            source: dst,
-            protocol: pnet::packet::ip::IpNextHeaderProtocols::Udp,
-            bytes: vec![1, 2, 3],
-        };
+        let reply = CapturedSegment::synthetic(
+            dst,
+            pnet::packet::ip::IpNextHeaderProtocols::Udp,
+            vec![1, 2, 3],
+        );
         reply_tx.send(reply.clone()).unwrap();
         assert_eq!(transport.rx.recv().await, Some(reply));
     }

@@ -36,7 +36,7 @@ use pnet::packet::ip::IpNextHeaderProtocol;
 use std::os::unix::io::AsRawFd;
 use tokio::sync::mpsc;
 
-use crate::model::capture::CaptureCounts;
+use crate::model::capture::{CaptureCounts, IpObservation};
 use crate::transport::frame::{self, LinkType};
 use crate::{error, info, warn};
 
@@ -61,8 +61,8 @@ const READ_TIMEOUT_MS: i32 = 100;
 /// never goes idle, and that is precisely when a buffer overflows.
 const STATS_EVERY_FRAMES: u32 = 128;
 
-/// One reply lifted off the wire: the Layer-4 segment, who sent it, and which
-/// protocol it is.
+/// One reply lifted off the wire: the Layer-4 segment, who sent it, which
+/// protocol it is, and what its IP header said on the way past.
 ///
 /// The protocol is carried rather than inferred because a filter may admit
 /// more than one - a UDP port scan watches for both direct UDP replies and the
@@ -76,6 +76,40 @@ pub struct CapturedSegment {
     pub protocol: IpNextHeaderProtocol,
     /// The Layer-4 segment, link and IP headers already stripped.
     pub bytes: Vec<u8>,
+    /// What the IP header this segment arrived under said about the stack that
+    /// sent it, or `None` if there was no IP header to read.
+    ///
+    /// `None` is not "nothing notable was in it". It means this segment did not
+    /// come off a wire at all: a synthetic receive stream built through
+    /// [`ProbeTransport::from_parts`] hands over Layer-4 bytes it composed
+    /// itself, and there is no header behind them to have observed. Reporting a
+    /// default TTL and a zero identifier for one would claim a measurement
+    /// nobody took, which is the same reason
+    /// [`CaptureGuard::counts`](CaptureGuard::counts) is optional rather than
+    /// zero.
+    ///
+    /// A test that wants to exercise something reading these can of course
+    /// supply one — the point is only that it has to say so.
+    ///
+    /// [`ProbeTransport::from_parts`]: crate::transport::probe::ProbeTransport::from_parts
+    pub observation: Option<IpObservation>,
+}
+
+impl CapturedSegment {
+    /// A segment with no IP header behind it, for a receive stream that composed
+    /// its Layer-4 bytes rather than capturing them.
+    ///
+    /// Exists so the ordinary synthetic case is one call rather than a struct
+    /// literal ending in `observation: None`, and so that adding a further
+    /// observed field later does not break every test that builds one.
+    pub fn synthetic(source: IpAddr, protocol: IpNextHeaderProtocol, bytes: Vec<u8>) -> Self {
+        Self {
+            source,
+            protocol,
+            bytes,
+            observation: None,
+        }
+    }
 }
 
 /// The parsed receive stream produced by a running capture: [`CapturedSegment`]s
@@ -322,6 +356,7 @@ fn reader_loop(
                             source: parsed.source,
                             protocol: parsed.protocol,
                             bytes: parsed.payload.to_vec(),
+                            observation: Some(parsed.observation),
                         })
                         .is_err()
                 {

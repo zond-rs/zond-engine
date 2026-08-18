@@ -176,6 +176,211 @@ impl std::str::FromStr for ScanEffort {
     }
 }
 
+/// How far a scan goes to identify the operating system behind a host.
+///
+/// Four levels, ordered by what they put on the wire. The ordering is the point:
+/// each level is a superset of the one below it, so raising the level only ever
+/// adds evidence and never trades one technique for another. That is what makes
+/// [`is_active`](Self::is_active) — "may this send packets of its own?" — a
+/// question with a single answer, and what lets a front end offer this as a dial
+/// rather than a menu.
+///
+/// # Why the default is on
+///
+/// [`Passive`](Self::Passive) sends **nothing at all**. Every signal it reads is
+/// already in a reply the scan drew for another reason: the hop count, the
+/// fragmentation policy and the identifier in an IP header the capture used to
+/// arrive at, and the window and options of a segment the port scanner was
+/// waiting for anyway. A scan with it on and a scan with it off emit
+/// byte-identical traffic and take the same time, so there is nothing for a
+/// caller to weigh, and defaulting it off would mean a finding thrown away for
+/// no consideration.
+///
+/// [`Off`](Self::Off) exists all the same, for the caller who wants a report to
+/// contain only what was asked for, and for reproducing a run that predates any
+/// of this.
+///
+/// # Why the higher levels are not
+///
+/// From [`Active`](Self::Active) upward this costs packets, and unusual ones:
+/// probes exist to be identified by how a stack mishandles them, so they are by
+/// construction the traffic an intrusion-detection system was written to notice.
+/// Sending them has to be asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OsDetection {
+    /// Level 0. Identify nothing, and record nothing about the stacks that
+    /// answered.
+    Off,
+
+    /// Level 1, and the default. Read the operating system out of replies the
+    /// scan already drew, and send nothing extra.
+    ///
+    /// Answers at the level of a family — the shape of a stack, not its version
+    /// — and answers only for hosts that replied to something. A host that
+    /// answered no probe at all leaves nothing to read.
+    #[default]
+    Passive,
+
+    /// Level 2. Everything [`Passive`](Self::Passive) reads, plus probes of this
+    /// engine's own aimed at the hosts whose replies were not enough.
+    ///
+    /// Ordinary, well-formed packets that stacks are simply known to answer
+    /// differently. The traffic is unremarkable in shape but it is extra, it is
+    /// addressed at hosts the caller may only have meant to enumerate, and it is
+    /// spent on the hosts where passive evidence was thin rather than on
+    /// everything.
+    Active,
+
+    /// Level 3. Everything [`Active`](Self::Active) sends, plus probes that are
+    /// deliberately malformed.
+    ///
+    /// Reserved fields set, flag combinations no connection produces, headers
+    /// that disagree with their own lengths. These separate stacks that agree on
+    /// everything legal, which is what version-level identification comes down
+    /// to — and they are the packets most likely to be logged, most likely to be
+    /// dropped by anything in the path, and the only ones here with any chance of
+    /// upsetting what receives them.
+    Aggressive,
+}
+
+impl OsDetection {
+    /// Every level, ordered from least effort to most. The index of a level in
+    /// this array is its [`level`](Self::level) number.
+    pub const ALL: [OsDetection; 4] = [
+        OsDetection::Off,
+        OsDetection::Passive,
+        OsDetection::Active,
+        OsDetection::Aggressive,
+    ];
+
+    /// The name this level is written under, wherever it arrives as text.
+    pub const fn name(self) -> &'static str {
+        match self {
+            OsDetection::Off => "off",
+            OsDetection::Passive => "passive",
+            OsDetection::Active => "active",
+            OsDetection::Aggressive => "aggressive",
+        }
+    }
+
+    /// The number this level is written as, for a front end that offers it as a
+    /// dial rather than a word.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::config::OsDetection;
+    ///
+    /// assert_eq!(OsDetection::default().level(), 1);
+    /// ```
+    pub const fn level(self) -> u8 {
+        match self {
+            OsDetection::Off => 0,
+            OsDetection::Passive => 1,
+            OsDetection::Active => 2,
+            OsDetection::Aggressive => 3,
+        }
+    }
+
+    /// The level with this number, or `None` past the highest there is.
+    ///
+    /// Deliberately not saturating. A caller who writes `9` meaning "as much as
+    /// possible" has written something this engine does not offer, and silently
+    /// giving them the top level would hide it — the same reasoning that makes
+    /// [`from_str`](Self::from_str) refuse a name it does not know rather than
+    /// fall back to the default.
+    pub const fn from_level(level: u8) -> Option<Self> {
+        match level {
+            0 => Some(OsDetection::Off),
+            1 => Some(OsDetection::Passive),
+            2 => Some(OsDetection::Active),
+            3 => Some(OsDetection::Aggressive),
+            _ => None,
+        }
+    }
+
+    /// Whether identification happens at all.
+    pub const fn is_enabled(self) -> bool {
+        !matches!(self, OsDetection::Off)
+    }
+
+    /// Whether this level may put probes of its own on the wire.
+    ///
+    /// The question every caller with a reason to care is actually asking. A
+    /// scan that must add no traffic of its own, and a report that has to say
+    /// whether it did, both turn on this and not on which level was chosen.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::config::OsDetection;
+    ///
+    /// assert!(!OsDetection::Passive.is_active(), "the default sends nothing");
+    /// assert!(OsDetection::Aggressive.is_active());
+    /// ```
+    pub const fn is_active(self) -> bool {
+        matches!(self, OsDetection::Active | OsDetection::Aggressive)
+    }
+}
+
+impl fmt::Display for OsDetection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The error parsing an [`OsDetection`] returns, carrying the values that would
+/// have worked so a front end can print it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "unknown OS detection level '{input}', expected one of: off, passive, active, aggressive \
+     (or 0, 1, 2, 3)"
+)]
+pub struct UnknownOsDetection {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl FromStr for OsDetection {
+    type Err = UnknownOsDetection;
+
+    /// Parses a level by name or by number, ignoring case and surrounding
+    /// whitespace, so a choice arriving as text - from an argument, a form
+    /// field, a settings file - needs no mapping table of its own.
+    ///
+    /// Both spellings are accepted because both are how this is written in
+    /// practice: a settings file says `passive`, and a command line says `2`.
+    /// Splitting them across two entry points would put the correspondence
+    /// between the word and the number in whoever called this, and two front ends
+    /// would eventually disagree about it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::config::OsDetection;
+    ///
+    /// assert_eq!("Aggressive".parse(), Ok(OsDetection::Aggressive));
+    /// assert_eq!("0".parse(), Ok(OsDetection::Off));
+    /// assert!("maximum".parse::<OsDetection>().is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let written = s.trim().to_ascii_lowercase();
+
+        if let Ok(level) = written.parse::<u8>()
+            && let Some(detection) = Self::from_level(level)
+        {
+            return Ok(detection);
+        }
+
+        Self::ALL
+            .into_iter()
+            .find(|detection| detection.name() == written)
+            .ok_or_else(|| UnknownOsDetection {
+                input: s.to_string(),
+            })
+    }
+}
+
 /// User control over retransmission, applied on top of each scanner's own
 /// profile.
 ///
@@ -330,6 +535,14 @@ pub struct ZondConfig {
     /// satisfy. Defaults to
     /// [`ScanEffort::Balanced`].
     pub retry: RetryConfig,
+
+    /// How far the scan goes to identify the operating system behind each host.
+    ///
+    /// Defaults to [`OsDetection::Passive`], which reads what the replies the
+    /// scan already drew happen to say and emits nothing of its own. The higher
+    /// levels send probes and have to be asked for; see [`OsDetection`] for what
+    /// each one puts on the wire.
+    pub os_detection: OsDetection,
 }
 
 impl ZondConfig {
@@ -341,5 +554,69 @@ impl ZondConfig {
             max_probe_rate: self.max_probe_rate,
             tcp_technique: self.tcp_technique,
         }
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A level's number is written down in three places — the position in
+    /// [`OsDetection::ALL`], the arm in `level`, and the arm in `from_level` —
+    /// and a fifth level added to two of them would leave a name and a number
+    /// that quietly disagree. Nothing else would notice: both spellings would
+    /// still parse, and a front end offering the dial would simply select the
+    /// wrong thing.
+    #[test]
+    fn every_os_detection_level_agrees_with_its_number() {
+        for (index, detection) in OsDetection::ALL.into_iter().enumerate() {
+            assert_eq!(usize::from(detection.level()), index);
+            assert_eq!(OsDetection::from_level(detection.level()), Some(detection));
+        }
+
+        let past_the_end = OsDetection::ALL.len() as u8;
+        assert_eq!(
+            OsDetection::from_level(past_the_end),
+            None,
+            "a level this engine does not offer is refused, not rounded down to the highest"
+        );
+    }
+
+    /// Where the wire cost begins. The default level promises to emit nothing at
+    /// all, and that promise is what makes it safe to leave on for every scan —
+    /// so which levels answer `true` here is a behavioural contract, not an
+    /// implementation detail.
+    #[test]
+    fn os_detection_sends_nothing_below_the_active_level() {
+        assert!(!OsDetection::Off.is_active());
+        assert!(!OsDetection::Passive.is_active());
+        assert!(OsDetection::Active.is_active());
+        assert!(OsDetection::Aggressive.is_active());
+
+        assert!(!OsDetection::default().is_active(), "the default is silent");
+        assert!(OsDetection::default().is_enabled(), "and it is still on");
+    }
+
+    /// The two spellings are one setting, so a name and its number have to parse
+    /// to the same level. A front end reading `2` from a flag and `active` from a
+    /// settings file must not get two different scans.
+    #[test]
+    fn an_os_detection_level_parses_the_same_by_name_and_by_number() {
+        for detection in OsDetection::ALL {
+            assert_eq!(detection.name().parse(), Ok(detection));
+            assert_eq!(detection.level().to_string().parse(), Ok(detection));
+        }
+
+        assert!("4".parse::<OsDetection>().is_err());
+        assert!("passive-ish".parse::<OsDetection>().is_err());
     }
 }

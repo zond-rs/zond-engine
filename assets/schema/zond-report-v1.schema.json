@@ -257,7 +257,8 @@
         "retry",
         "max_probe_rate",
         "dns_enabled",
-        "redact"
+        "redact",
+        "os_detection"
       ],
       "properties": {
         "send_mode": {
@@ -281,6 +282,10 @@
         "redact": {
           "description": "Whether the caller asked the scan to mask identifying detail. Distinct from export redaction, which is chosen when the report is written and is visible in what this document actually contains.",
           "type": "boolean"
+        },
+        "os_detection": {
+          "description": "How far the phase went to identify the operating system behind each host. A host reported without one means different things at each level: at `off` nothing looked, and at any other level something looked and did not conclude. The level also bounds how much of the phase's traffic the engine originated for this purpose - `off` and `passive` originate none at all, reading only replies drawn for other reasons, while `active` sends well-formed probes of its own and `aggressive` sends deliberately malformed ones as well.",
+          "enum": ["off", "passive", "active", "aggressive"]
         }
       }
     },

@@ -979,11 +979,7 @@ mod tests {
         packet.set_icmp_code(code);
         packet.set_payload(&quotation);
 
-        CapturedSegment {
-            source: from,
-            protocol: IpNextHeaderProtocols::Icmp,
-            bytes,
-        }
+        CapturedSegment::synthetic(from, IpNextHeaderProtocols::Icmp, bytes)
     }
 
     /// The probe under the IP header a router would have echoed back with it.

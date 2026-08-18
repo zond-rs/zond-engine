@@ -656,11 +656,7 @@ mod tests {
         protocol: pnet::packet::ip::IpNextHeaderProtocol,
         bytes: Vec<u8>,
     ) -> CapturedSegment {
-        CapturedSegment {
-            source,
-            protocol,
-            bytes,
-        }
+        CapturedSegment::synthetic(source, protocol, bytes)
     }
 
     /// A direct UDP reply from `src_port`, addressed back to `dst_port`.

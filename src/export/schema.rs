@@ -693,6 +693,13 @@ pub struct SettingsDto {
     /// from export redaction, which is chosen when the report is written and is
     /// visible in what this document actually contains.
     pub redact: bool,
+    /// How far the phase went to identify operating systems: `off`, `passive`,
+    /// `active` or `aggressive`.
+    ///
+    /// A host with no operating system reported reads differently at each: `off`
+    /// means nothing looked. It also says how much of this phase's traffic the
+    /// engine originated for this purpose — `off` and `passive` originate none.
+    pub os_detection: &'static str,
 }
 
 impl SettingsDto {
@@ -705,6 +712,7 @@ impl SettingsDto {
             max_probe_rate: settings.max_probe_rate,
             dns_enabled: settings.dns_enabled,
             redact: settings.redact,
+            os_detection: settings.os_detection.name(),
         }
     }
 }

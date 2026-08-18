@@ -949,9 +949,10 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         out,
         "wire",
         &format!(
-            "{} · send {} · {rate} · {dns}",
+            "{} · send {} · {rate} · {dns} · os {}",
             esc(settings.tcp_technique),
-            esc(settings.send_mode)
+            esc(settings.send_mode),
+            esc(settings.os_detection)
         ),
     )?;
 

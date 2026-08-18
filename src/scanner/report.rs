@@ -63,7 +63,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RetryConfig;
-use crate::config::{SendMode, ZondConfig};
+use crate::config::{OsDetection, SendMode, ZondConfig};
 use crate::model::capture::CaptureCounts;
 use crate::model::host::{Host, HostStatus};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
@@ -228,6 +228,14 @@ pub struct ScanSettings {
     pub dns_enabled: bool,
     /// Whether the caller asked for identifying detail to be masked.
     pub redact: bool,
+    /// How far the phase went to identify the operating system behind each host.
+    ///
+    /// A host reported without one is a different finding depending on this: at
+    /// [`OsDetection::Off`] nothing looked, and at any other level something
+    /// looked and found nothing conclusive. The level also bounds how much of
+    /// this phase's traffic the engine originated — see
+    /// [`OsDetection::is_active`].
+    pub os_detection: OsDetection,
 }
 
 impl From<&ZondConfig> for ScanSettings {
@@ -239,6 +247,7 @@ impl From<&ZondConfig> for ScanSettings {
             max_probe_rate: cfg.max_probe_rate,
             dns_enabled: !cfg.no_dns,
             redact: cfg.redact,
+            os_detection: cfg.os_detection,
         }
     }
 }

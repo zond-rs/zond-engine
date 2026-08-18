@@ -22,6 +22,7 @@
 use boon::{Compiler, Schemas};
 use serde_json::Value;
 
+use crate::config::OsDetection;
 use crate::export::schema::SCHEMA_VERSION;
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
 use crate::model::technique::TcpScanTechnique;
@@ -140,6 +141,29 @@ fn every_technique_the_engine_runs_is_a_value_the_schema_accepts() {
         assert!(
             accepted.contains(&Value::from(technique.name())),
             "the schema does not accept `{technique}`, which a scan can be asked for"
+        );
+    }
+}
+
+/// Every OS detection level the engine can be asked for is a value the published
+/// schema accepts.
+///
+/// Same reasoning as the techniques above, and the same blind spot without it:
+/// the document tests exercise whichever level the fixture happens to carry, so
+/// a fifth level could be added, exported, and pass every one of them while
+/// producing documents no consumer's validator accepts. This fails at the point
+/// the variant is added instead.
+#[test]
+fn every_os_detection_level_the_engine_runs_is_a_value_the_schema_accepts() {
+    let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
+    let accepted = schema["$defs"]["settings"]["properties"]["os_detection"]["enum"]
+        .as_array()
+        .expect("the schema names the levels it accepts");
+
+    for detection in OsDetection::ALL {
+        assert!(
+            accepted.contains(&Value::from(detection.name())),
+            "the schema does not accept `{detection}`, which a scan can be asked for"
         );
     }
 }

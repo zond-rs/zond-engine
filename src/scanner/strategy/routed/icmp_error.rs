@@ -232,11 +232,7 @@ mod tests {
         packet.set_icmp_code(code);
         packet.set_payload(&quoted);
 
-        CapturedSegment {
-            source: TARGET_V4,
-            protocol: IpNextHeaderProtocols::Icmp,
-            bytes,
-        }
+        CapturedSegment::synthetic(TARGET_V4, IpNextHeaderProtocols::Icmp, bytes)
     }
 
     fn error_v6(code: Icmpv6Code) -> CapturedSegment {
@@ -250,11 +246,7 @@ mod tests {
         packet.set_icmpv6_code(code);
         packet.set_payload(&payload);
 
-        CapturedSegment {
-            source: TARGET_V6,
-            protocol: IpNextHeaderProtocols::Icmpv6,
-            bytes,
-        }
+        CapturedSegment::synthetic(TARGET_V6, IpNextHeaderProtocols::Icmpv6, bytes)
     }
 
     /// What `reply` establishes, for the tests that assert on the reason alone.

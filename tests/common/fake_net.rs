@@ -780,11 +780,11 @@ impl FakeLink {
             tcp.set_checksum(checksum);
         }
 
-        Some(CapturedSegment {
-            source: target,
-            protocol: IpNextHeaderProtocols::Tcp,
-            bytes: buffer,
-        })
+        Some(CapturedSegment::synthetic(
+            target,
+            IpNextHeaderProtocols::Tcp,
+            buffer,
+        ))
     }
 
     /// A UDP datagram from the probed port back to the scanner's source port,
@@ -798,11 +798,11 @@ impl FakeLink {
         let bytes =
             udp::create_packet(&target, &scanner, probe.port, probe.reply_port, Vec::new()).ok()?;
 
-        Some(CapturedSegment {
-            source: target,
-            protocol: IpNextHeaderProtocols::Udp,
+        Some(CapturedSegment::synthetic(
+            target,
+            IpNextHeaderProtocols::Udp,
             bytes,
-        })
+        ))
     }
 
     /// An ICMP Destination Unreachable quoting the probe.
@@ -829,11 +829,11 @@ impl FakeLink {
                 icmp.set_icmp_code(reason.v4());
                 icmp.set_payload(&quoted);
 
-                Some(CapturedSegment {
-                    source: target,
-                    protocol: IpNextHeaderProtocols::Icmp,
-                    bytes: buffer,
-                })
+                Some(CapturedSegment::synthetic(
+                    target,
+                    IpNextHeaderProtocols::Icmp,
+                    buffer,
+                ))
             }
             IpAddr::V6(_) => {
                 let mut payload = vec![0u8; ICMPV6_UNUSED_LEN];
@@ -845,11 +845,11 @@ impl FakeLink {
                 icmp.set_icmpv6_code(reason.v6());
                 icmp.set_payload(&payload);
 
-                Some(CapturedSegment {
-                    source: target,
-                    protocol: IpNextHeaderProtocols::Icmpv6,
-                    bytes: buffer,
-                })
+                Some(CapturedSegment::synthetic(
+                    target,
+                    IpNextHeaderProtocols::Icmpv6,
+                    buffer,
+                ))
             }
         }
     }

@@ -48,6 +48,7 @@ use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::ipv6::Ipv6Packet;
 use pnet::util::MacAddr;
 
+use crate::model::capture::{IpObservation, Ipv4Observation, Ipv6Observation};
 use crate::protocols::ethernet;
 use crate::protocols::ip;
 use crate::protocols::sizes::{ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN};
@@ -99,6 +100,14 @@ impl LinkType {
 /// plus the real EtherType) precede the payload.
 const ETHERTYPE_VLAN: u16 = 0x8100;
 const VLAN_TAG_LEN: usize = 4;
+
+/// The don't-fragment and more-fragments bits within an IPv4 header's
+/// three-bit flags field, as `pnet` hands it back. The mirror of
+/// [`ipv4_flags`](crate::protocols::craft::ipv4_flags) on the send side, named
+/// here rather than shared because reading a captured header and writing one
+/// are different jobs and only one of them may write a value that is wrong.
+const IPV4_DONT_FRAGMENT: u8 = 0b010;
+const IPV4_MORE_FRAGMENTS: u8 = 0b001;
 
 /// Strips `frame`'s link-layer header according to `link`, returning the IP
 /// packet within, or `None` if the frame is too short, carries a non-IP
@@ -154,6 +163,14 @@ pub struct IpSegment<'a> {
     pub protocol: IpNextHeaderProtocol,
     /// The Layer-4 segment: the bytes after the IP header.
     pub payload: &'a [u8],
+    /// What the rest of the IP header said about the stack that wrote it.
+    ///
+    /// Kept because the header is parsed here and nowhere else. Everything
+    /// downstream sees a Layer-4 segment with the IP header already gone, so a
+    /// field dropped at this line is not recoverable at any later one — and
+    /// three of these are among the cheapest identifying signals a reply
+    /// carries. They cost six bytes to keep and a second packet to re-obtain.
+    pub observation: IpObservation,
 }
 
 /// Parses an IP packet into its endpoints, protocol, and Layer-4 segment,
@@ -179,6 +196,14 @@ pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
                 destination: IpAddr::V4(packet.get_destination()),
                 protocol: packet.get_next_level_protocol(),
                 payload: ip_bytes.get(header_len..)?,
+                observation: IpObservation::V4(Ipv4Observation {
+                    ttl: packet.get_ttl(),
+                    identification: packet.get_identification(),
+                    dont_fragment: packet.get_flags() & IPV4_DONT_FRAGMENT != 0,
+                    more_fragments: packet.get_flags() & IPV4_MORE_FRAGMENTS != 0,
+                    dscp: packet.get_dscp(),
+                    ecn: packet.get_ecn(),
+                }),
             })
         }
         6 => {
@@ -190,6 +215,11 @@ pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
                 destination: IpAddr::V6(packet.get_destination()),
                 protocol,
                 payload: ip_bytes.get(offset..)?,
+                observation: IpObservation::V6(Ipv6Observation {
+                    hop_limit: packet.get_hop_limit(),
+                    traffic_class: packet.get_traffic_class(),
+                    flow_label: packet.get_flow_label(),
+                }),
             })
         }
         _ => None,
@@ -375,6 +405,87 @@ mod tests {
         assert_eq!(parsed.destination, IpAddr::V6(Ipv6Addr::LOCALHOST));
         assert_eq!(parsed.protocol, IpNextHeaderProtocols::Udp);
         assert_eq!(parsed.payload, &payload);
+    }
+
+    /// The fields a stack is identified by, read out of bytes laid out by hand
+    /// from RFC 791 rather than by this crate's own writer.
+    ///
+    /// Written as literal bytes on purpose. Building the fixture with
+    /// [`crate::protocols::craft`] would check that this parser agrees with that
+    /// builder, which is two views of one understanding — the same shape of
+    /// mistake as a simulator that emits what the parser already accepts. The
+    /// offsets below come from the specification, so a field read from the wrong
+    /// place fails here instead of shipping as a signature nobody can match.
+    #[test]
+    fn an_ipv4_header_yields_the_fields_its_stack_chose() {
+        let mut packet = vec![0u8; IP_V4_HDR_LEN];
+        packet[0] = 0x45; // version 4, 5-word header
+        packet[1] = 0x8B; // DSCP 0b100010 = 34, ECN 0b11 = 3
+        packet[2..4].copy_from_slice(&(IP_V4_HDR_LEN as u16).to_be_bytes());
+        packet[4..6].copy_from_slice(&0xBEEFu16.to_be_bytes()); // identification
+        packet[6] = 0x40; // don't-fragment set, more-fragments clear
+        packet[8] = 57; // TTL
+        packet[9] = TCP.0;
+
+        let IpObservation::V4(observed) = parse_ip_segment(&packet).unwrap().observation else {
+            panic!("an IPv4 packet observes an IPv4 header");
+        };
+
+        assert_eq!(observed.ttl, 57);
+        assert_eq!(observed.identification, 0xBEEF);
+        assert!(observed.dont_fragment);
+        assert!(!observed.more_fragments);
+        assert_eq!(observed.dscp, 34);
+        assert_eq!(observed.ecn, 3);
+    }
+
+    /// Don't-fragment and more-fragments are adjacent bits of one three-bit
+    /// field, and swapping them is invisible: both readings parse, both produce
+    /// a plausible packet, and the only symptom is a stack rule that never
+    /// matches. This pins each bit to the meaning RFC 791 gives it.
+    #[test]
+    fn the_two_fragment_bits_are_not_each_other() {
+        let observe = |flag_byte: u8| {
+            let mut packet = vec![0u8; IP_V4_HDR_LEN];
+            packet[0] = 0x45;
+            packet[6] = flag_byte;
+            packet[9] = TCP.0;
+            match parse_ip_segment(&packet).unwrap().observation {
+                IpObservation::V4(observed) => observed,
+                IpObservation::V6(_) => panic!("an IPv4 packet observes an IPv4 header"),
+            }
+        };
+
+        // Bit 6 of the byte is DF; bit 5 is MF.
+        let dont_fragment = observe(0b0100_0000);
+        assert!(dont_fragment.dont_fragment && !dont_fragment.more_fragments);
+
+        let more_fragments = observe(0b0010_0000);
+        assert!(more_fragments.more_fragments && !more_fragments.dont_fragment);
+        assert!(
+            IpObservation::V4(more_fragments).is_fragment(),
+            "a datagram with more to come is a fragment, and its headers describe only this piece"
+        );
+    }
+
+    /// Traffic class and flow label share a 32-bit word with the version nibble
+    /// and neither is byte-aligned, so both are read with a shift and a mask and
+    /// both are easy to read one nibble out. Hand-laid bytes per RFC 8200.
+    #[test]
+    fn an_ipv6_header_yields_the_fields_across_its_first_word() {
+        let mut packet = vec![0u8; IP_V6_HDR_LEN];
+        // version 6, traffic class 0x8B, flow label 0x12345.
+        packet[0..4].copy_from_slice(&0x68B1_2345u32.to_be_bytes());
+        packet[6] = TCP.0;
+        packet[7] = 57; // hop limit
+
+        let IpObservation::V6(observed) = parse_ip_segment(&packet).unwrap().observation else {
+            panic!("an IPv6 packet observes an IPv6 header");
+        };
+
+        assert_eq!(observed.hop_limit, 57);
+        assert_eq!(observed.traffic_class, 0x8B);
+        assert_eq!(observed.flow_label, 0x12345);
     }
 
     /// A header length below the fixed 20 bytes would slice back into the
