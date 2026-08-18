@@ -40,6 +40,8 @@
 
 pub mod model;
 
+pub mod os;
+
 mod analyzer;
 mod db;
 mod http;
