@@ -58,7 +58,7 @@ pub mod flags {
 
 /// A header with room for the MSS option a SYN carries.
 #[cfg(test)]
-const TCP_HDR_LEN_WITH_MSS: usize = 24;
+const TCP_HDR_LEN_WITH_OPTIONS: usize = TCP_HDR_LEN + SYN_OPTIONS_LEN;
 #[cfg(test)]
 const WORD_IN_BYTES: usize = 4;
 
@@ -72,6 +72,10 @@ const PROBE_WINDOW: u16 = 1024;
 /// The maximum segment size advertised on a SYN, sized to clear the common
 /// tunnel overheads without inviting fragmentation.
 const PROBE_MSS: u16 = 1412;
+
+/// How long the option list on a SYN is: twenty bytes, which is already a
+/// multiple of four and so needs no padding.
+const SYN_OPTIONS_LEN: usize = 20;
 
 /// The flags each technique's probe carries.
 ///
@@ -136,6 +140,29 @@ const fn nonce_field(flags: u8) -> NonceField {
 /// a segment without the ACK flag - and a random sequence number where the
 /// segment claims to be acknowledging something, since a Maimon or ACK probe
 /// announcing sequence zero is an oddity a filter can match on.
+///
+/// # What a SYN offers, and why it is not just an MSS
+///
+/// A SYN carries the option list an ordinary client carries: maximum segment
+/// size, SACK-permitted, a timestamp and a window scale. That is not politeness.
+/// It is the only way to learn what the peer supports, because **TCP option
+/// negotiation is reciprocal**: RFC 7323 §2.2 permits a window scale in a
+/// SYN+ACK only if the SYN carried one, §3.2 says the same of timestamps, and
+/// RFC 2018 §2 of SACK-permitted. A peer reports the options it was *asked*
+/// about and nothing more, so a SYN offering only an MSS draws back only an MSS
+/// from every stack alike, and the shape of a reply — the strongest thing a
+/// single answer says about the machine that sent it — is erased before it is
+/// ever read.
+///
+/// Measured rather than assumed: against a labelled segment, every host with an
+/// open port named four more options when asked about four more, and not one
+/// port on any host changed its verdict between the two option lists. The
+/// experiment is `benches/os_observe.rs` and the record is
+/// `docs/os-fingerprinting.md`.
+///
+/// It costs one packet, the same one, twenty bytes longer. If anything it is
+/// *less* remarkable on the wire than the bare version, since a real connection
+/// attempt looks like this and an MSS-only SYN does not.
 pub fn create_probe(
     technique: TcpScanTechnique,
     src_addr: &IpAddr,
@@ -160,11 +187,11 @@ pub fn create_probe(
         }
     }
 
-    // Options are for a SYN alone. An MSS announcement on a FIN is meaningless
-    // to the receiver and distinctive to anything watching, and these
-    // techniques are chosen for being unremarkable.
+    // Options are for a SYN alone. An announcement on a FIN is meaningless to the
+    // receiver and distinctive to anything watching, and these techniques are
+    // chosen for being unremarkable.
     if flags & flags::SYN != 0 {
-        segment.options = mss_option(PROBE_MSS);
+        segment.options = syn_options(PROBE_MSS);
     }
 
     // The checksum covers a pseudo-header built from both addresses, which is
@@ -176,9 +203,19 @@ pub fn create_probe(
 
 /// The maximum-segment-size option, as the four bytes a TCP header carries it
 /// in: kind 2, length 4, then the value.
-fn mss_option(mss: u16) -> Vec<u8> {
+fn syn_options(mss: u16) -> Vec<u8> {
     let [high, low] = mss.to_be_bytes();
-    vec![2, 4, high, low]
+    let timestamp: u32 = rand::random();
+
+    let mut options = Vec::with_capacity(SYN_OPTIONS_LEN);
+    options.extend_from_slice(&[2, 4, high, low]); // maximum segment size
+    options.extend_from_slice(&[4, 2]); // SACK permitted
+    options.extend_from_slice(&[8, 10]); // timestamp: kind, length
+    options.extend_from_slice(&timestamp.to_be_bytes()); // TSval
+    options.extend_from_slice(&0u32.to_be_bytes()); // TSecr, nothing to echo yet
+    options.push(1); // NOP, aligning what follows
+    options.extend_from_slice(&[3, 3, 7]); // window scale
+    options
 }
 
 /// The nonce `reply` implies, read from whichever field `technique` expects it
@@ -378,7 +415,7 @@ mod tests {
     /// anything else - these techniques are chosen for being unremarkable.
     #[test]
     fn only_a_syn_probe_carries_options() {
-        assert_eq!(probe(TcpScanTechnique::Syn).len(), TCP_HDR_LEN_WITH_MSS);
+        assert_eq!(probe(TcpScanTechnique::Syn).len(), TCP_HDR_LEN_WITH_OPTIONS);
         for technique in [
             TcpScanTechnique::Fin,
             TcpScanTechnique::Null,
@@ -388,6 +425,37 @@ mod tests {
         ] {
             assert_eq!(probe(technique).len(), TCP_HDR_LEN, "{technique}");
         }
+    }
+
+    /// A peer answers about the options it was *asked* about — a SYN+ACK may
+    /// carry a window scale, a timestamp or SACK-permitted only if the SYN did
+    /// (RFC 7323 §2.2 and §3.2, RFC 2018 §2). So an option this probe stops
+    /// offering is an answer the engine stops being able to read, from every
+    /// stack at once, and nothing downstream would report the loss: replies
+    /// would simply become identical across operating systems. Measured on a
+    /// labelled segment before it was relied on — see `docs/os-fingerprinting.md`.
+    #[test]
+    fn a_syn_offers_every_option_it_wants_answered() {
+        let probe = probe(TcpScanTechnique::Syn);
+        let options = &probe[TCP_HDR_LEN..];
+
+        // Kind, then length for everything but the single-byte no-op.
+        assert_eq!(options[0..2], [2, 4], "maximum segment size");
+        assert_eq!(options[4..6], [4, 2], "SACK permitted");
+        assert_eq!(options[6..8], [8, 10], "timestamp");
+        assert_eq!(options[16], 1, "no-op, aligning what follows");
+        assert_eq!(options[17..20], [3, 3, 7], "window scale");
+
+        // The timestamp a SYN carries has nothing to echo yet, and a non-zero
+        // value there claims to be acknowledging a clock nobody sent.
+        assert_eq!(options[12..16], [0, 0, 0, 0], "TSecr");
+
+        assert_eq!(
+            options.len() % 4,
+            0,
+            "the header is measured in four-byte words, so an option list that is \
+             not a multiple of four needs padding it does not have"
+        );
     }
 
     #[test]

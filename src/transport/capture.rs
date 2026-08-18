@@ -105,8 +105,7 @@ pub struct CapturedSegment {
     ///
     /// **Not a vendor lookup.** An off-link reply carries the last-hop router's
     /// address and looks no different from here. See
-    /// [`frame::source_mac`](crate::transport::frame::source_mac) for the full
-    /// argument.
+    /// [`frame::source_mac`] for the full argument.
     ///
     /// `None` on a tunnel, loopback or raw-IP link, which prepend no addresses,
     /// and on a synthetic stream. Never "the sender had none".

@@ -383,6 +383,14 @@ struct Observed {
     /// this cannot. Two hosts on one segment reporting one hardware address are
     /// one machine answering for both.
     source_mac: Option<String>,
+    /// Whether that address has the locally-administered bit set — that is,
+    /// whether it was made up rather than assigned to a manufacturer.
+    ///
+    /// Recorded because it is the difference between an address that identifies
+    /// hardware and one that deliberately does not. It says nothing about which
+    /// operating system chose it: randomisation is a privacy default, and several
+    /// unrelated systems ship it.
+    locally_administered: Option<bool>,
 }
 
 /// The flag byte as letters, in the conventional header order.
@@ -764,6 +772,10 @@ fn describe(
         timestamp: walked.timestamp,
         raw_options: options.iter().map(|b| format!("{b:02x}")).collect(),
         source_mac: source_mac.map(|mac| mac.to_string()),
+        // Bit 1 of the first octet, per IEEE 802: clear means the address was
+        // assigned from a manufacturer's OUI, set means whoever sent it made it
+        // up.
+        locally_administered: source_mac.map(|mac| mac.0 & 0b10 != 0),
     }
 }
 
@@ -945,9 +957,16 @@ fn print_rows(observed: &Seen) {
 fn print_provenance(observed: &Seen) {
     let mut senders: BTreeMap<&str, BTreeSet<IpAddr>> = BTreeMap::new();
     let mut unknown: BTreeSet<IpAddr> = BTreeSet::new();
+    let mut randomised: BTreeMap<&str, bool> = BTreeMap::new();
     for ((address, _, _), (_, row)) in observed {
         match row.source_mac.as_deref() {
-            Some(mac) => senders.entry(mac).or_default().insert(*address),
+            Some(mac) => {
+                senders.entry(mac).or_default().insert(*address);
+                if let Some(local) = row.locally_administered {
+                    randomised.insert(mac, local);
+                }
+                true
+            }
             None => unknown.insert(*address),
         };
     }
@@ -960,7 +979,12 @@ fn print_provenance(observed: &Seen) {
     for (mac, addresses) in &senders {
         let shared = addresses.len() > 1;
         println!(
-            "  {mac}  {} address{}{}",
+            "  {mac}  {:<9} {} address{}{}",
+            match randomised.get(mac) {
+                Some(true) => "randomised",
+                Some(false) => "vendor",
+                None => "",
+            },
             addresses.len(),
             if shared { "es" } else { "" },
             if shared {
@@ -978,6 +1002,18 @@ fn print_provenance(observed: &Seen) {
         println!(
             "  {} address(es) arrived over a link with no hardware addresses to read",
             unknown.len()
+        );
+    }
+
+    let made_up = randomised.values().filter(|local| **local).count();
+    if made_up > 0 {
+        println!(
+            "\n  {made_up} of {} answered from a made-up hardware address (the \
+             locally-administered\n  bit is set), so no vendor can be read from it. That is a \
+             privacy default and not\n  an operating system: several unrelated systems ship \
+             it, and a segment whose\n  randomising devices happen to share an OS will make it \
+             look like one.",
+            randomised.len()
         );
     }
 
@@ -1156,6 +1192,48 @@ fn print_state_agreement(
         );
         return;
     }
+
+    // A host that disagreed on *every* port it was asked about was not weighing
+    // the option list — it was absent for one of the two passes. A sleeping
+    // wireless device does exactly this, and so did a host whose hardware address
+    // this machine had not yet learned. Counting those alongside a genuine
+    // single-port difference buries the one that means something: fourteen
+    // "disagreements" from one phone reads as a serious result and is not one.
+    //
+    // The signature is all-or-nothing per host. A stack objecting to an option
+    // list would answer some ports and not others, because that is what having
+    // open and closed ports means.
+    let mut probed_per_host: BTreeMap<IpAddr, usize> = BTreeMap::new();
+    for (address, _) in probed {
+        *probed_per_host.entry(*address).or_default() += 1;
+    }
+    let mut disagreed_per_host: BTreeMap<IpAddr, usize> = BTreeMap::new();
+    for (address, _, _, _) in &disagreements {
+        *disagreed_per_host.entry(*address).or_default() += 1;
+    }
+    let absent: BTreeSet<IpAddr> = disagreed_per_host
+        .iter()
+        .filter(|(address, count)| probed_per_host.get(address) == Some(count))
+        .map(|(address, _)| *address)
+        .collect();
+    let absent_rows: usize = absent
+        .iter()
+        .filter_map(|address| disagreed_per_host.get(address))
+        .sum();
+
+    if !absent.is_empty() {
+        println!(
+            "\n  {absent_rows} of those are {} host(s) that disagreed on *every* port asked, \n               which is a host present for one pass and not the other rather than a stack \n               weighing options:",
+            absent.len()
+        );
+        for address in &absent {
+            println!("      {address}");
+        }
+    }
+    println!(
+        "\n  {} disagreement(s) on hosts that answered both passes. Those are the ones \n           that say anything about the option list.",
+        disagreements.len() - absent_rows
+    );
 
     println!(
         "\n  {:<16} {:>5} {:<10} {:<10} direction",
