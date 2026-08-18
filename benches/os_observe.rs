@@ -19,9 +19,9 @@
 //!
 //! ## Two arms, because our own probe is part of the measurement
 //!
-//! The first run of this instrument disproved the assumption it was built on.
-//! Every SYN+ACK on a mixed segment came back carrying **only** an MSS option —
-//! no SACK-permitted, no timestamp, no window scale — which is not what any of
+//! The first run disproved the assumption the design was built on. Every SYN+ACK
+//! on a mixed segment came back carrying **only** an MSS option — no
+//! SACK-permitted, no timestamp, no window scale — which is not what any of
 //! Linux, Windows or macOS is documented to send, and identical across all
 //! three. The cause is not the hosts. TCP option negotiation is **reciprocal**:
 //! RFC 7323 §2.2 permits a window scale in a SYN+ACK only if the SYN carried
@@ -30,32 +30,86 @@
 //! and nothing else, so the option layout — the strongest single feature in the
 //! design — was being suppressed by this engine's own probe.
 //!
-//! So there are two arms, one SYN each, sent to every target and port:
+//! So there are two arms, one SYN each:
 //!
 //! * **mss-only** — `tcp::create_probe` verbatim, which is what the SYN port
 //!   scanner sends today. Not a reproduction of it; the actual function.
 //! * **negotiating** — the same segment field for field, same window, same MSS,
 //!   nonce in the same place, offering the option set an ordinary client offers.
 //!
-//! The `what the offered options changed` block is the result: how many hosts
-//! name more options when asked about more. It is the number that decides
-//! whether the shipped SYN should carry the fuller option list, and it is a
-//! question about this engine, not about the hosts.
-//!
 //! Neither arm sends anything a port scan would not. Both are a single SYN, and
 //! the negotiating one looks *more* like an ordinary connection attempt than the
 //! MSS-only one does, because that is what it is shaped like.
 //!
+//! ## Why the arms run as separate passes, from separate source ports
+//!
+//! The second run showed why this matters, by getting it wrong. With both arms
+//! sent back to back from **one** source port, the negotiating arm drew no
+//! SYN+ACK from any open port at all, while the MSS-only arm drew one from every
+//! one of them — and open ports additionally produced a reply carrying neither
+//! SYN nor RST, which nothing had predicted.
+//!
+//! Both effects are one cause. Two SYNs from the same source port to the same
+//! host and port are the same **4-tuple**, so the second does not arrive as a
+//! second connection attempt: the first has already put the peer in
+//! SYN-RECEIVED, and a SYN whose sequence number falls outside that connection's
+//! window is answered with a *challenge ACK* (RFC 793 §3.9, and RFC 5961 §4
+//! makes it mandatory) rather than a fresh SYN+ACK. So the second arm was not
+//! measuring the peer's stack; it was measuring the state the first arm had put
+//! it in. Closed ports hold no state, which is exactly why both arms drew
+//! identical resets from them and the result looked partly plausible.
+//!
+//! Each arm therefore runs as a complete pass of its own, with its own source
+//! port and its own transport, separated by a settle period. This is the lesson
+//! `docs/os-fingerprinting.md` §7 records from the NDP work restated: when two
+//! probes look alike on the wire, build the arm that sends only one.
+//!
+//! ## Running it
+//!
 //! ```text
 //! cargo bench --no-run --bench os_observe
-//! sudo -E target/release/deps/os_observe-<hash> 192.168.0.0/24 22,80,443,445
+//! sudo -E target/release/deps/os_observe-<hash> <target> [ports] [rate]
 //! ```
+//!
+//! `rate` is probes per second, defaulting to 5000. It matters more than it
+//! looks: this instrument sends **one probe per host, port and arm and never
+//! retransmits** — a second probe from the same source port would be a duplicate
+//! on the same 4-tuple and draw a challenge ACK rather than a fresh answer — so
+//! first-attempt loss lands straight in the result as a host that did not answer.
+//! Pacing is the whole budget for coverage here. The achieved rate is printed
+//! beside the requested one, because a pacer delivering a rate other than the one
+//! it was given has already made one of this project's measurements wrong.
+//!
+//! ## The safety gate
+//!
+//! `does the fuller option list change any port verdict?` is the block that
+//! decides whether the shipped SYN may carry the fuller option list, and it is a
+//! different question from whether the fuller list reveals more. A probe that
+//! reveals four extra options and loses one open port is not an improvement: the
+//! port table is what every other finding in a scan hangs off.
+//!
+//! Run it wide, and run it across a routed path as well as the local segment —
+//! everything on-link has no middlebox in front of it, and a middlebox is the
+//! thing most likely to object to an option list:
+//!
+//! ```text
+//! # local segment, wide port list, gently paced
+//! sudo -E <binary> 192.168.0.0/24 21,22,23,25,53,80,110,143,443,445,3389,5432,8080,8443 1000
+//!
+//! # a routed path, where something in the middle gets a say
+//! sudo -E <binary> 1.1.1.1 53,80,443 1000
+//! ```
+//!
+//! A disagreement is **not** proof of refusal. With one probe per port and no
+//! retransmission, first-attempt loss and deliberate refusal are the same
+//! observation. Lower the rate and re-run: a real refusal reproduces, and loss
+//! moves around.
 //!
 //! Built with `--no-run` and invoked directly rather than through `cargo bench`,
 //! for the reason `verify_scan` gives, plus one this needs anyway: it wants root,
 //! and `sudo cargo` would run the build as root and leave `target/` owned by it.
 //!
-//! ## Finding the binary you just built
+//! ### Finding the binary you just built
 //!
 //! A `harness = false` bench builds to a hashed name, several accumulate across
 //! rebuilds, and nothing warns you that the one you ran is not the one you
@@ -81,8 +135,13 @@
 //!
 //! ## Reading the table
 //!
-//! One row per reply. Nothing in it is inferred:
+//! One row per host, per arm, per distinct **flag combination** that came back.
+//! Nothing in it is inferred:
 //!
+//! * `flags` is the TCP flag byte as letters, so a reply this instrument has no
+//!   name for is identified rather than filed under "other". It is part of the
+//!   row key for the same reason: a challenge ACK and a SYN+ACK from one host are
+//!   two facts, and folding them together loses the more surprising one.
 //! * `hops_left` is the TTL or hop limit **as it arrived**, already decremented
 //!   once per router crossed. `start>=` beside it is the smallest of the usual
 //!   initial values that is not below it, which is a lower bound on what the
@@ -93,16 +152,19 @@
 //!   `M` maximum segment size, `S` SACK permitted, `K` a SACK block, `T`
 //!   timestamp, `N` no-op, `W` window scale, `E` end of list, `?n` anything
 //!   else. The *order* is the interesting part — it is chosen by whoever wrote
-//!   the stack and copied by nobody.
+//!   the stack and copied by nobody. A reset carries no options at all, whatever
+//!   was offered, so a host with no open port cannot produce this column.
 //! * `raw` is the option bytes in hex, so a row can be re-read by hand if the
 //!   letters above turn out to have lost something.
 //!
-//! The summary at the end groups rows by their whole feature vector. Hosts
-//! running the same stack collapse into one line; the number of distinct lines
-//! is the number of stacks the segment holds, before anyone has said which is
-//! which. **Label them by hand, from outside** — from what the machines are
-//! known to be, never from what a fingerprint said — and that labelled table is
-//! the corpus phases 3 and 4 are built and measured against.
+//! `what the offered options changed` compares the two arms on their SYN+ACK
+//! rows, since that is the only segment options live in. The summary then groups
+//! by everything describing the stack rather than the path, per arm and per reply
+//! kind, and counts **distinct hosts** — a host answering two ways is one host.
+//!
+//! Label the groups by hand, from outside — from what the machines are known to
+//! be, never from what a fingerprint said — and that labelled table is the corpus
+//! phases 3 and 4 are built and measured against.
 //!
 //! ## What it cannot see
 //!
@@ -110,18 +172,19 @@
 //! rewrote it. Run it on the segment the hosts are actually on, note the
 //! interface, and do not merge two runs taken over different paths.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::tcp::TcpPacket;
 use tokio::time::timeout;
 
 use zond_engine::model::capture::IpObservation;
+use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::parse::ip::to_set;
 use zond_engine::model::technique::TcpScanTechnique;
-use zond_engine::protocols::craft;
-use zond_engine::protocols::tcp;
+use zond_engine::protocols::{craft, tcp};
 use zond_engine::system::interface::SourceResolver;
 use zond_engine::transport::probe::{ProbeKind, ProbeTransport};
 
@@ -129,16 +192,48 @@ use zond_engine::transport::probe::{ProbeKind, ProbeTransport};
 /// or home segment is most likely to have open. Only one has to answer.
 const DEFAULT_PORTS: &str = "22,80,443,445,3389,8080";
 
-/// How long to keep reading replies after the last probe goes out.
+/// How long to keep reading replies after the last probe of a pass goes out.
 ///
 /// Generous, because this is not measuring latency and a slow answer is worth
 /// exactly as much as a fast one here — the features being read are the same in
 /// both.
 const LISTEN_FOR: Duration = Duration::from_secs(4);
 
+/// How long to wait between passes.
+///
+/// A pass leaves half-open connections behind it on every open port it found: it
+/// never completes a handshake, so each peer sits in SYN-RECEIVED until
+/// something clears it. This host's own kernel does clear them — a SYN+ACK
+/// arriving for a port no socket owns draws a reset — but that happens on its
+/// own schedule, and a peer still holding the connection would answer the next
+/// pass's SYN with a challenge ACK instead of a SYN+ACK. Waiting is what keeps
+/// the second arm measuring the stack rather than the first arm's leftovers.
+const SETTLE_BETWEEN_PASSES: Duration = Duration::from_secs(3);
+
 /// How long to wait on the receive channel before checking whether the listening
 /// window has closed.
 const RECV_TICK: Duration = Duration::from_millis(200);
+
+/// The initial hop counters a lower bound is reported against. Not a claim that
+/// a stack uses one of these — it is the set that makes `start>=` a useful
+/// column, and a host whose real initial value is not here still reports a
+/// correct bound.
+const COMMON_INITIAL_HOPS: [u8; 4] = [32, 64, 128, 255];
+
+/// How fast probes go on the wire by default, in probes per second.
+///
+/// Paced at all because this instrument has **no retransmission** — one probe per
+/// host, port and arm, since a second probe from the same source port would be a
+/// duplicate on the same 4-tuple and draw a challenge ACK rather than a fresh
+/// answer. With no retry to recover a lost probe, first-attempt loss lands
+/// directly in the result as a host that "did not answer", and a burst loses
+/// most of its first attempt on a policed or wireless path. Pacing is what buys
+/// coverage here, and it is the whole budget for it.
+const DEFAULT_RATE: u32 = 5_000;
+
+/// What each arm concluded about each port, which is what the agreement check
+/// compares. Absent means the probe went out and nothing came back.
+type Outcomes = BTreeMap<(IpAddr, u16), &'static str>;
 
 /// The maximum segment size both arms advertise, matching what
 /// `tcp::create_probe` sends so the *only* difference between them is the
@@ -149,25 +244,20 @@ const PROBE_MSS: u16 = 1412;
 /// same reason.
 const PROBE_WINDOW: u16 = 1024;
 
-/// Everything read, keyed by the host, the arm that asked, and which segment
+/// Everything read, keyed by the host, the arm that asked, and the flag byte that
 /// came back.
 ///
-/// The reply kind is part of the key rather than folded away because a RST and a
-/// SYN+ACK from the *same* host are the only way to tell a stack's policy from a
-/// segment type's. Both of this segment's SYN+ACK hosts set don't-fragment with a
-/// zero identifier and both of its RST hosts did neither — which reads as a
-/// stack difference and is equally consistent with a code path difference, and
-/// nothing that keeps one reply per host can separate the two.
-type Seen = BTreeMap<(IpAddr, ProbeVariant, &'static str), (u16, Observed)>;
+/// The flag byte is part of the key rather than folded away for two reasons. A
+/// reset and a SYN+ACK from the *same* host are the only way to tell a stack's
+/// policy from a per-segment-type code path — the first run showed every SYN+ACK
+/// host setting don't-fragment with a zero identifier and every reset host doing
+/// neither, which reads as a stack difference and is equally consistent with two
+/// code paths, and nothing keyed by host alone can separate them. And a reply
+/// carrying some third combination is the most interesting thing a pass can find;
+/// keying by host would discard it as a duplicate.
+type Seen = BTreeMap<(IpAddr, ProbeVariant, u8), (u16, Observed)>;
 
 /// Which SYN drew a reply.
-///
-/// Two arms, because TCP option negotiation is **reciprocal** and that turns out
-/// to decide the whole question. RFC 7323 §2.2 permits a window scale in a
-/// SYN+ACK only if the SYN carried one; RFC 7323 §3.2 says the same of
-/// timestamps, and RFC 2018 §2 of SACK-permitted. A peer therefore reports the
-/// options *it was asked about*, not the options it supports — so what a probe
-/// declines to offer, its answer cannot reveal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ProbeVariant {
     /// What this engine's SYN scan sends today: an MSS announcement and nothing
@@ -176,11 +266,6 @@ enum ProbeVariant {
 
     /// The same SYN, offering the option set an ordinary client offers — MSS,
     /// SACK-permitted, timestamp, window scale.
-    ///
-    /// Not an extra packet and not a stranger one. It is *one* SYN, exactly as
-    /// the other arm is, and it looks more like a real connection attempt than
-    /// the MSS-only probe does, because a real connection attempt is what it is
-    /// shaped like.
     Negotiating,
 }
 
@@ -253,12 +338,6 @@ fn negotiating_options() -> Vec<u8> {
     options
 }
 
-/// The initial hop counters a lower bound is reported against. Not a claim that
-/// a stack uses one of these — it is the set that makes `start>=` a useful
-/// column, and a host whose real initial value is not here still reports a
-/// correct bound.
-const COMMON_INITIAL_HOPS: [u8; 4] = [32, 64, 128, 255];
-
 /// Everything one reply said, in the order the table prints it.
 ///
 /// The IP half and the TCP half are kept in one record because they were read
@@ -266,9 +345,9 @@ const COMMON_INITIAL_HOPS: [u8; 4] = [32, 64, 128, 255];
 /// invite counting them as two independent observations, which they are not.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Observed {
-    /// `SYN+ACK` or `RST`, which decides how much of the rest exists at all — a
-    /// reset carries no options worth reading.
-    reply: &'static str,
+    /// The TCP flag byte, verbatim. Every other reading of what kind of reply
+    /// this is derives from here rather than being recorded beside it.
+    flags: u8,
     hops_left: u8,
     /// `None` for IPv6, which has no identification field.
     ip_id: Option<u16>,
@@ -287,182 +366,42 @@ struct Observed {
     raw_options: String,
 }
 
-#[tokio::main]
-async fn main() {
-    let mut args = std::env::args().skip(1);
-    let target = args.next().unwrap_or_else(|| {
-        eprintln!("usage: os_observe <target> [ports]");
-        std::process::exit(2);
-    });
-    let ports = args.next().unwrap_or_else(|| DEFAULT_PORTS.to_string());
-
-    // No resolver, deliberately: an instrument that silently followed whatever
-    // DNS answered with would be measuring a moving target.
-    let addresses = match to_set(&[target.as_str()], None, None) {
-        Ok(addresses) => addresses,
-        Err(e) => {
-            eprintln!("cannot read target `{target}`: {e}");
-            std::process::exit(2);
-        }
-    };
-    let ports: Vec<u16> = ports
-        .split(',')
-        .filter_map(|port| port.trim().parse().ok())
+/// The flag byte as letters, in the conventional header order.
+fn flag_letters(flags: u8) -> String {
+    let named = [
+        (tcp::flags::URG, 'U'),
+        (tcp::flags::ACK, 'A'),
+        (tcp::flags::PSH, 'P'),
+        (tcp::flags::RST, 'R'),
+        (tcp::flags::SYN, 'S'),
+        (tcp::flags::FIN, 'F'),
+    ];
+    let letters: String = named
+        .into_iter()
+        .filter(|(bit, _)| flags & bit != 0)
+        .map(|(_, letter)| letter)
         .collect();
-    if ports.is_empty() {
-        eprintln!("no usable port in `{ports:?}`");
-        std::process::exit(2);
+
+    if letters.is_empty() {
+        "none".to_string()
+    } else {
+        letters
     }
-
-    let src_port: u16 = rand::random_range(50_000..u16::MAX);
-    let mut transport = match ProbeTransport::open(ProbeKind::TcpProbe {
-        reply_port: src_port,
-        icmp_errors: false,
-    }) {
-        Ok(transport) => transport,
-        Err(e) => {
-            eprintln!("cannot open a probe transport: {e}");
-            eprintln!("this needs root: it opens a raw socket and a capture.");
-            std::process::exit(1);
-        }
-    };
-
-    let mut resolver = SourceResolver::from_system();
-    // nonce -> which probe it belongs to, so a reply names its own target and its
-    // own arm rather than being attributed to whichever is closest in the list.
-    let mut sent: BTreeMap<u32, (IpAddr, u16, ProbeVariant)> = BTreeMap::new();
-
-    for address in addresses.iter() {
-        let Some(source) = resolver.resolve(address) else {
-            eprintln!("no source address reaches {address}, skipping");
-            continue;
-        };
-        for &port in &ports {
-            for variant in ProbeVariant::ALL {
-                let nonce: u32 = rand::random();
-                let segment = match variant.build(&source, &address, src_port, port, nonce) {
-                    Ok(segment) => segment,
-                    Err(e) => {
-                        eprintln!(
-                            "cannot build a {} probe for {address}:{port}: {e:#}",
-                            variant.name()
-                        );
-                        continue;
-                    }
-                };
-                match transport.tx.send(&segment, source, address) {
-                    Ok(()) => {
-                        sent.insert(nonce, (address, port, variant));
-                    }
-                    Err(e) => eprintln!("cannot send to {address}:{port}: {e}"),
-                }
-            }
-        }
-    }
-
-    println!("sent {} probes from port {src_port}", sent.len());
-    println!("listening for {LISTEN_FOR:?}\n");
-
-    // One row per host, per arm, per kind of reply. A second SYN+ACK from a host
-    // that already gave one adds nothing a row does not say; a *RST* from that
-    // host says something no SYN+ACK can. The IP identification field is the one
-    // thing that would need several samples of the same kind, and reading its
-    // policy is phase 6's job.
-    let mut observed: Seen = BTreeMap::new();
-    let until = Instant::now() + LISTEN_FOR;
-
-    while Instant::now() < until {
-        let Ok(Some(reply)) = timeout(RECV_TICK, transport.rx.recv()).await else {
-            continue;
-        };
-        if reply.protocol != IpNextHeaderProtocols::Tcp {
-            continue;
-        }
-        let Ok(segment) = tcp::parse(&reply.bytes) else {
-            continue;
-        };
-        if segment.get_destination() != src_port {
-            continue;
-        }
-        // A reply is this instrument's only if it echoes back a nonce this
-        // instrument sent. Without the check, any TCP segment reaching the
-        // capture is read as an answer, and a busy host produces a table of
-        // other people's connections.
-        let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment);
-        let Some(&(address, port, variant)) = sent.get(&nonce) else {
-            continue;
-        };
-        // The address that answered, not the one probed: they differ when
-        // something in the path answered on the host's behalf, and that is worth
-        // seeing rather than papering over.
-        if reply.source != address {
-            eprintln!("{address}:{port} was answered by {}", reply.source);
-        }
-
-        let Some(observation) = reply.observation else {
-            eprintln!("{}: no IP header was kept for this reply", reply.source);
-            continue;
-        };
-        if observation.is_fragment() {
-            eprintln!("{}: reply arrived fragmented, skipping", reply.source);
-            continue;
-        }
-
-        let row = describe(&segment, observation);
-        observed
-            .entry((reply.source, variant, row.reply))
-            .or_insert((port, row));
-    }
-
-    print_rows(&observed);
-    print_negotiation_effect(&observed);
-    print_summary(&observed);
 }
 
-/// Everything one reply says, read once.
-fn describe(segment: &pnet::packet::tcp::TcpPacket<'_>, observation: IpObservation) -> Observed {
-    let flags = segment.get_flags();
-    let reply = if flags & tcp::flags::SYN != 0 && flags & tcp::flags::ACK != 0 {
-        "SYN+ACK"
-    } else if flags & tcp::flags::RST != 0 {
+/// Which of the answers a SYN can draw this is.
+///
+/// Three outcomes, and the third is not a catch-all for noise: a segment with
+/// ACK alone is a *challenge ACK*, which only a host already holding a half-open
+/// connection sends, and which therefore says a listener is there. The engine's
+/// `tcp::classify_probe_response` discards it; see `docs/bugs.md`.
+fn kind(flags: u8) -> &'static str {
+    if flags & tcp::flags::RST != 0 {
         "RST"
+    } else if flags & tcp::flags::SYN != 0 && flags & tcp::flags::ACK != 0 {
+        "SYN+ACK"
     } else {
         "other"
-    };
-
-    let options = segment.get_options_raw();
-    let walked = walk_options(options);
-
-    let (ip_id, dont_fragment, traffic, flow_label) = match observation {
-        IpObservation::V4(v4) => (
-            Some(v4.identification),
-            v4.dont_fragment,
-            format!("dscp={} ecn={}", v4.dscp, v4.ecn),
-            None,
-        ),
-        IpObservation::V6(v6) => (
-            None,
-            // An IPv6 datagram is never fragmented in transit, so the question
-            // the IPv4 bit answers is settled by the protocol here.
-            true,
-            format!("class={}", v6.traffic_class),
-            Some(v6.flow_label),
-        ),
-    };
-
-    Observed {
-        reply,
-        hops_left: observation.remaining_hops(),
-        ip_id,
-        dont_fragment,
-        traffic,
-        flow_label,
-        window: segment.get_window(),
-        layout: walked.layout,
-        mss: walked.mss,
-        window_scale: walked.window_scale,
-        timestamp: walked.timestamp,
-        raw_options: options.iter().map(|b| format!("{b:02x}")).collect(),
     }
 }
 
@@ -493,6 +432,314 @@ impl Observed {
             window_scale: self.window_scale,
             timestamp: self.timestamp,
         }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let mut args = std::env::args().skip(1);
+    let target = args.next().unwrap_or_else(|| {
+        eprintln!("usage: os_observe <target> [ports]");
+        std::process::exit(2);
+    });
+    let ports = args.next().unwrap_or_else(|| DEFAULT_PORTS.to_string());
+    let rate: u32 = args
+        .next()
+        .and_then(|arg| arg.parse().ok())
+        .unwrap_or(DEFAULT_RATE)
+        .max(1);
+
+    // No resolver, deliberately: an instrument that silently followed whatever
+    // DNS answered with would be measuring a moving target.
+    let addresses = match to_set(&[target.as_str()], None, None) {
+        Ok(addresses) => addresses,
+        Err(e) => {
+            eprintln!("cannot read target `{target}`: {e}");
+            std::process::exit(2);
+        }
+    };
+    let ports: Vec<u16> = ports
+        .split(',')
+        .filter_map(|port| port.trim().parse().ok())
+        .collect();
+    if ports.is_empty() {
+        eprintln!("no usable port in the port list");
+        std::process::exit(2);
+    }
+
+    let mut resolver = SourceResolver::from_system();
+    let mut observed: Seen = BTreeMap::new();
+    let mut outcomes: BTreeMap<ProbeVariant, Outcomes> = BTreeMap::new();
+    let mut probed: BTreeSet<(IpAddr, u16)> = BTreeSet::new();
+
+    // A warm-up pass, discarded entire. Without it the *first* arm is systematically
+    // penalised, and not by the network: a raw-socket send to an on-link address
+    // whose hardware address this host has not learned yet fails outright with
+    // "host is down" while the kernel resolves it, so a host that is up and
+    // listening can go unprobed in pass one and be probed cleanly in pass two.
+    // That produces a clean-looking, entirely false result — every port of such a
+    // host reads as "gained under the fuller option list", when what changed was
+    // this machine's neighbour cache. Paying that cost once, before either arm
+    // counts, is what makes the two arms comparable.
+    //
+    // The engine does not need this: it retransmits, so a probe lost to a cold
+    // cache goes out again. This instrument cannot, since a second probe from one
+    // source port is a duplicate on the same 4-tuple.
+    println!("warm-up pass (discarded): teaching this host the segment's neighbours");
+    let _ = run_pass(
+        ProbeVariant::MssOnly,
+        &addresses,
+        &ports,
+        rate,
+        &mut resolver,
+    )
+    .await;
+
+    for variant in ProbeVariant::ALL {
+        println!("\nsettling for {SETTLE_BETWEEN_PASSES:?} before the next pass");
+        tokio::time::sleep(SETTLE_BETWEEN_PASSES).await;
+        let pass = run_pass(variant, &addresses, &ports, rate, &mut resolver).await;
+        observed.extend(pass.observed);
+        outcomes.insert(variant, pass.outcomes);
+        probed.extend(pass.probed);
+    }
+
+    println!();
+    print_rows(&observed);
+    print_negotiation_effect(&observed);
+    print_state_agreement(&outcomes, &probed);
+    print_summary(&observed);
+}
+
+/// One pass's results: what was read, what each port concluded, and what was
+/// asked in the first place.
+///
+/// The third is not redundant. A port that answered and a port that was never
+/// probed are the same absence in the first two, and completely different
+/// findings — the distinction the engine's own `send_failure` field exists to
+/// preserve.
+struct Pass {
+    observed: Seen,
+    outcomes: Outcomes,
+    probed: BTreeSet<(IpAddr, u16)>,
+}
+
+/// Runs one arm end to end: its own source port, its own transport, its own
+/// listening window.
+///
+/// A pass of its own per arm is the whole point — see the module docs. Sharing a
+/// source port across arms makes the second arm's SYN a duplicate of the first
+/// arm's on the same 4-tuple, and what comes back then describes the connection
+/// the first arm opened rather than the stack that holds it.
+async fn run_pass(
+    variant: ProbeVariant,
+    addresses: &IpSet,
+    ports: &[u16],
+    rate: u32,
+    resolver: &mut SourceResolver,
+) -> Pass {
+    let src_port: u16 = rand::random_range(50_000..u16::MAX);
+    let mut transport = match ProbeTransport::open(ProbeKind::TcpProbe {
+        reply_port: src_port,
+        icmp_errors: false,
+    }) {
+        Ok(transport) => transport,
+        Err(e) => {
+            eprintln!("cannot open a probe transport: {e}");
+            eprintln!("this needs root: it opens a raw socket and a capture.");
+            std::process::exit(1);
+        }
+    };
+
+    // nonce -> which probe it belongs to, so a reply names its own target rather
+    // than being attributed to whichever address is closest in the list.
+    let mut sent: BTreeMap<u32, (IpAddr, u16)> = BTreeMap::new();
+    let mut probed: BTreeSet<(IpAddr, u16)> = BTreeSet::new();
+    let mut failures: BTreeMap<String, usize> = BTreeMap::new();
+
+    // Derived batch-first, per the pacing rule this project learned the hard way:
+    // a batch cannot be smaller than one probe, so computing a batch from a fixed
+    // tick silently rounds every rate below the tick frequency up to it, and two
+    // arms of a rate sweep become the same arm. Take the interval from the batch
+    // instead.
+    let batch = (rate / 1_000).max(1);
+    let interval = Duration::from_micros(u64::from(batch) * 1_000_000 / u64::from(rate));
+    let mut in_batch = 0u32;
+    let send_began = Instant::now();
+
+    for address in addresses.iter() {
+        let Some(source) = resolver.resolve(address) else {
+            eprintln!("no source address reaches {address}, skipping");
+            continue;
+        };
+        for &port in ports {
+            let nonce: u32 = rand::random();
+            let segment = match variant.build(&source, &address, src_port, port, nonce) {
+                Ok(segment) => segment,
+                Err(e) => {
+                    eprintln!(
+                        "cannot build a {} probe for {address}:{port}: {e:#}",
+                        variant.name()
+                    );
+                    continue;
+                }
+            };
+            match transport.tx.send(&segment, source, address) {
+                Ok(()) => {
+                    // Recorded *after* a successful send, which is the whole
+                    // point of recording it. A probe the kernel refused to put on
+                    // the wire is not a port that stayed silent, and counting the
+                    // two together makes a scan of a mostly-empty range look like
+                    // a range of mostly-silent hosts.
+                    sent.insert(nonce, (address, port));
+                    probed.insert((address, port));
+                }
+                Err(e) => {
+                    // Counted, not printed. A /24 with a dozen hosts on it
+                    // produces thousands of these — the kernel cannot resolve a
+                    // next hop for an address nobody is using — and a wall of
+                    // them buries every other line this instrument writes. One
+                    // example of each distinct message is enough to recognise
+                    // which failure it is.
+                    *failures.entry(format!("{e}")).or_insert(0usize) += 1;
+                }
+            }
+
+            in_batch += 1;
+            if in_batch >= batch {
+                in_batch = 0;
+                tokio::time::sleep(interval).await;
+            }
+        }
+    }
+
+    // The rate achieved, not the rate asked for. A pacer that quietly delivers a
+    // different rate than it was configured with has already turned one arm of a
+    // sweep into a duplicate of another on this project once; printing what
+    // happened is what keeps that from being invisible. Sub-millisecond intervals
+    // are the usual reason the two differ — the timer's granularity is about a
+    // millisecond, so a batch of one cannot be paced faster than that.
+    let elapsed = send_began.elapsed().as_secs_f64();
+    let achieved = if elapsed > 0.0 {
+        sent.len() as f64 / elapsed
+    } else {
+        f64::INFINITY
+    };
+    let refused: usize = failures.values().sum();
+    println!(
+        "{} pass: sent {} probes from port {src_port} in {elapsed:.2}s \
+         (asked {rate}/s, achieved {achieved:.0}/s), listening for {LISTEN_FOR:?}",
+        variant.name(),
+        sent.len()
+    );
+    if refused > 0 {
+        // Printed per arm, because an asymmetry here is the first thing to
+        // suspect when the two arms disagree: a probe the kernel would not send
+        // in one pass and did send in the next is a difference in this host's
+        // neighbour cache, not a difference in what the target thinks of the
+        // option list.
+        println!("  {refused} probe(s) the host would not send:");
+        for (reason, count) in &failures {
+            println!("    {count:>6} x {reason}");
+        }
+    }
+
+    let mut observed: Seen = BTreeMap::new();
+    let mut outcomes: Outcomes = BTreeMap::new();
+    let until = Instant::now() + LISTEN_FOR;
+
+    while Instant::now() < until {
+        let Ok(Some(reply)) = timeout(RECV_TICK, transport.rx.recv()).await else {
+            continue;
+        };
+        if reply.protocol != IpNextHeaderProtocols::Tcp {
+            continue;
+        }
+        let Ok(segment) = tcp::parse(&reply.bytes) else {
+            continue;
+        };
+        if segment.get_destination() != src_port {
+            continue;
+        }
+        // A reply is this pass's only if it echoes back a nonce this pass sent.
+        // Without the check, any TCP segment reaching the capture is read as an
+        // answer, and a busy host produces a table of other people's
+        // connections.
+        let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment);
+        let Some(&(address, port)) = sent.get(&nonce) else {
+            continue;
+        };
+        // The address that answered, not the one probed: they differ when
+        // something in the path answered on the host's behalf, and that is worth
+        // seeing rather than papering over.
+        if reply.source != address {
+            eprintln!("{address}:{port} was answered by {}", reply.source);
+        }
+
+        let Some(observation) = reply.observation else {
+            eprintln!("{}: no IP header was kept for this reply", reply.source);
+            continue;
+        };
+        if observation.is_fragment() {
+            eprintln!("{}: reply arrived fragmented, skipping", reply.source);
+            continue;
+        }
+
+        let row = describe(&segment, observation);
+        // Recorded against the address *probed*, not the one that answered: this
+        // is what the port scan concluded about a target, and a reply arriving
+        // from elsewhere still resolves that target's port. The row above keys on
+        // the answering address, because that is whose stack it describes.
+        outcomes
+            .entry((address, port))
+            .or_insert_with(|| kind(row.flags));
+        observed
+            .entry((reply.source, variant, row.flags))
+            .or_insert((port, row));
+    }
+
+    Pass {
+        observed,
+        outcomes,
+        probed,
+    }
+}
+
+/// Everything one reply says, read once.
+fn describe(segment: &TcpPacket<'_>, observation: IpObservation) -> Observed {
+    let options = segment.get_options_raw();
+    let walked = walk_options(options);
+
+    let (ip_id, dont_fragment, traffic, flow_label) = match observation {
+        IpObservation::V4(v4) => (
+            Some(v4.identification),
+            v4.dont_fragment,
+            format!("dscp={} ecn={}", v4.dscp, v4.ecn),
+            None,
+        ),
+        IpObservation::V6(v6) => (
+            None,
+            // An IPv6 datagram is never fragmented in transit, so the question
+            // the IPv4 bit answers is settled by the protocol here.
+            true,
+            format!("class={}", v6.traffic_class),
+            Some(v6.flow_label),
+        ),
+    };
+
+    Observed {
+        flags: segment.get_flags(),
+        hops_left: observation.remaining_hops(),
+        ip_id,
+        dont_fragment,
+        traffic,
+        flow_label,
+        window: segment.get_window(),
+        layout: walked.layout,
+        mss: walked.mss,
+        window_scale: walked.window_scale,
+        timestamp: walked.timestamp,
+        raw_options: options.iter().map(|b| format!("{b:02x}")).collect(),
     }
 }
 
@@ -583,6 +830,13 @@ fn initial_hops_at_least(hops_left: u8) -> u8 {
         .unwrap_or(u8::MAX)
 }
 
+/// Renders an optional value, or `-` where there is none. A dash is not zero:
+/// several of these fields do not exist in one address family or one segment
+/// type, and printing `0` for an absent field invents a measurement.
+fn or_dash<T: std::fmt::Display>(value: Option<T>) -> String {
+    value.map_or_else(|| "-".to_string(), |value| value.to_string())
+}
+
 fn print_rows(observed: &Seen) {
     if observed.is_empty() {
         println!("nothing answered.");
@@ -590,10 +844,11 @@ fn print_rows(observed: &Seen) {
     }
 
     println!(
-        "{:<18} {:<12} {:>5}  {:<8} {:>4} {:>7} {:>7} {:>6} {:>3} {:<18} {:>6} {:>3} {:>3}  traffic",
+        "{:<16} {:<12} {:>5} {:<6} {:<8} {:>4} {:>7} {:>7} {:>6} {:>3} {:<16} {:>6} {:>3} {:>3}  traffic",
         "address",
         "probe",
         "port",
+        "flags",
         "reply",
         "hops",
         "start>=",
@@ -606,17 +861,17 @@ fn print_rows(observed: &Seen) {
         "ts"
     );
 
-    for ((address, variant, _), (port, row)) in observed {
+    for ((address, variant, flags), (port, row)) in observed {
         println!(
-            "{:<18} {:<12} {:>5}  {:<8} {:>4} {:>7} {:>7} {:>6} {:>3} {:<18} {:>6} {:>3} {:>3}  {}{}",
+            "{:<16} {:<12} {:>5} {:<6} {:<8} {:>4} {:>7} {:>7} {:>6} {:>3} {:<16} {:>6} {:>3} {:>3}  {}{}",
             address.to_string(),
             variant.name(),
             port,
-            row.reply,
+            flag_letters(*flags),
+            kind(*flags),
             row.hops_left,
             initial_hops_at_least(row.hops_left),
-            row.ip_id
-                .map_or_else(|| "-".to_string(), |id| id.to_string()),
+            or_dash(row.ip_id),
             row.window,
             if row.dont_fragment { "yes" } else { "no" },
             if row.layout.is_empty() {
@@ -624,9 +879,8 @@ fn print_rows(observed: &Seen) {
             } else {
                 &row.layout
             },
-            row.mss.map_or_else(|| "-".to_string(), |m| m.to_string()),
-            row.window_scale
-                .map_or_else(|| "-".to_string(), |w| w.to_string()),
+            or_dash(row.mss),
+            or_dash(row.window_scale),
             if row.timestamp { "yes" } else { "no" },
             row.traffic,
             row.flow_label
@@ -635,11 +889,12 @@ fn print_rows(observed: &Seen) {
     }
 
     println!("\nraw option bytes");
-    for ((address, variant, _), (_, row)) in observed {
+    for ((address, variant, flags), (_, row)) in observed {
         println!(
-            "  {:<18} {:<12} {}",
+            "  {:<16} {:<12} {:<6} {}",
             address.to_string(),
             variant.name(),
+            flag_letters(*flags),
             if row.raw_options.is_empty() {
                 "-"
             } else {
@@ -654,45 +909,50 @@ fn print_rows(observed: &Seen) {
 /// The number this instrument exists to produce. TCP option negotiation is
 /// reciprocal, so a peer answers about the options it was *asked* about — which
 /// means the option layout, the strongest single feature available, is decided as
-/// much by our probe as by their stack. This says by how much: how many hosts
-/// revealed a longer layout under the negotiating SYN than under the MSS-only one
-/// that the port scanner sends today.
+/// much by our probe as by their stack. This says by how much.
 fn print_negotiation_effect(observed: &Seen) {
-    let addresses: std::collections::BTreeSet<IpAddr> =
-        observed.keys().map(|(address, _, _)| *address).collect();
+    let addresses: BTreeSet<IpAddr> = observed.keys().map(|(address, _, _)| *address).collect();
     if addresses.is_empty() {
         return;
     }
 
     println!("\nwhat the offered options changed");
     println!(
-        "  {:<18} {:<18} {:<18} verdict",
+        "  {:<16} {:<18} {:<18} verdict",
         "address", "mss-only", "negotiating"
     );
 
     let mut revealed = 0usize;
     let mut unchanged = 0usize;
-    let mut incomparable = 0usize;
+    let mut no_open_port = 0usize;
+    let mut one_armed = 0usize;
 
     for address in &addresses {
-        // Compared on the SYN+ACK rows, because that is where options live: a RST
-        // carries none whatever was offered, so a host with only closed ports
-        // cannot answer this question either way.
-        let synack = |variant| observed.get(&(*address, variant, "SYN+ACK"));
+        // Compared on the SYN+ACK rows, because that is where options live: a
+        // reset carries none whatever was offered, so a host with only closed
+        // ports cannot answer this question either way.
+        let synack = |variant| {
+            observed
+                .iter()
+                .find(|((host, arm, flags), _)| {
+                    host == address && *arm == variant && kind(*flags) == "SYN+ACK"
+                })
+                .map(|(_, (_, row))| row)
+        };
         let mss_only = synack(ProbeVariant::MssOnly);
         let negotiating = synack(ProbeVariant::Negotiating);
 
-        let show = |row: Option<&(u16, Observed)>| match row {
-            Some((_, row)) if row.layout.is_empty() => format!("{} (none)", row.reply),
-            Some((_, row)) => row.layout.clone(),
-            None => "no reply".to_string(),
+        let show = |row: Option<&Observed>| match row {
+            Some(row) if row.layout.is_empty() => "no options".to_string(),
+            Some(row) => row.layout.clone(),
+            None => "no SYN+ACK".to_string(),
         };
 
         // Counted by option *count*, not string length: a layout is a list, and
         // "did the peer name more options" is the question, not "is the text
         // longer".
-        let count = |row: Option<&(u16, Observed)>| {
-            row.map(|(_, row)| {
+        let count = |row: Option<&Observed>| {
+            row.map(|row| {
                 if row.layout.is_empty() {
                     0
                 } else {
@@ -701,34 +961,38 @@ fn print_negotiation_effect(observed: &Seen) {
             })
         };
 
+        let anything_at_all = observed
+            .keys()
+            .any(|(host, _, flags)| host == address && kind(*flags) == "SYN+ACK");
+
         let verdict = match (count(mss_only), count(negotiating)) {
             (Some(before), Some(after)) if after > before => {
                 revealed += 1;
                 format!("+{} option(s) revealed", after - before)
             }
             (Some(before), Some(after)) if after < before => {
-                incomparable += 1;
+                one_armed += 1;
                 format!("-{} option(s), unexpected", before - after)
             }
             (Some(_), Some(_)) => {
                 unchanged += 1;
                 "no change".to_string()
             }
-            (None, None) => {
-                incomparable += 1;
-                // Every reply this host gave was a reset, and a reset carries no
-                // options at all. Not a gap in the measurement — a limit on what
-                // a closed port can ever say.
+            _ if !anything_at_all => {
+                no_open_port += 1;
+                // Every reply this host gave was a reset or a bare ACK, and
+                // neither carries options. Not a gap in the measurement — a limit
+                // on what a closed port can ever say.
                 "no open port, so no options".to_string()
             }
             _ => {
-                incomparable += 1;
+                one_armed += 1;
                 "only one arm drew a SYN+ACK".to_string()
             }
         };
 
         println!(
-            "  {:<18} {:<18} {:<18} {verdict}",
+            "  {:<16} {:<18} {:<18} {verdict}",
             address.to_string(),
             show(mss_only),
             show(negotiating),
@@ -736,81 +1000,214 @@ fn print_negotiation_effect(observed: &Seen) {
     }
 
     println!(
-        "\n  {revealed} host(s) revealed more, {unchanged} unchanged, \
-         {incomparable} not comparable, out of {} that answered either arm",
+        "\n  of {} host(s) that answered: {revealed} revealed more, {unchanged} unchanged, \
+         {no_open_port} with no open port, {one_armed} answered only one arm",
         addresses.len()
     );
-    if revealed > 0 {
+    if one_armed > 0 {
         println!(
-            "  The layout is decided partly by what the probe offers. A rule set \n               authored against the mss-only arm would be authored against this \n               engine's probe rather than against the hosts."
+            "  A host answering only one arm is not a result. Both arms are one SYN each,\n  \
+             so an open port that answers one and not the other is either loss or\n  \
+             leftover half-open state — re-run before reading anything into it."
         );
     }
 }
 
-/// Groups the rows by [`StackShape`], so hosts running one stack collapse to one
-/// line and the number of groups is the number of distinct stacks the segment
-/// holds.
+/// **The safety gate.** Whether the two arms concluded the same thing about every
+/// port they both asked about.
+///
+/// This is the question that decides whether the shipped SYN may carry the fuller
+/// option list, and it is separate from whether the fuller list reveals more. A
+/// probe that reveals four extra options and loses one open port is not an
+/// improvement; the port table is what every other finding in a scan hangs off.
+///
+/// The dangerous direction is asymmetric and reported as such. An open port under
+/// one arm and silence under the other means something dropped the probe or its
+/// answer — a host that dislikes the option list, or a middlebox in the path — and
+/// that is a coverage regression. Silence under both is not a finding either way.
+///
+/// **A disagreement here is not proof of refusal.** This instrument sends one
+/// probe per port per arm and cannot retransmit — a second probe from the same
+/// source port would be a duplicate on the same 4-tuple — so first-attempt loss
+/// and deliberate refusal look identical. Lower the rate and re-run before
+/// concluding anything from a small number of disagreements; a real refusal
+/// reproduces and loss moves around.
+fn print_state_agreement(
+    outcomes: &BTreeMap<ProbeVariant, Outcomes>,
+    probed: &BTreeSet<(IpAddr, u16)>,
+) {
+    let Some(mss_only) = outcomes.get(&ProbeVariant::MssOnly) else {
+        return;
+    };
+    let Some(negotiating) = outcomes.get(&ProbeVariant::Negotiating) else {
+        return;
+    };
+
+    let mut agreed = 0usize;
+    let mut silent_both = 0usize;
+    let mut disagreements: Vec<(IpAddr, u16, &'static str, &'static str)> = Vec::new();
+
+    for &(address, port) in probed {
+        let before = mss_only.get(&(address, port)).copied();
+        let after = negotiating.get(&(address, port)).copied();
+        match (before, after) {
+            (None, None) => silent_both += 1,
+            (a, b) if a == b => agreed += 1,
+            (a, b) => {
+                disagreements.push((address, port, a.unwrap_or("silent"), b.unwrap_or("silent")))
+            }
+        }
+    }
+
+    println!("\ndoes the fuller option list change any port verdict?");
+    println!(
+        "  {} port(s) probed: {agreed} agreed, {} disagreed, {silent_both} silent under both",
+        probed.len(),
+        disagreements.len()
+    );
+
+    if disagreements.is_empty() {
+        println!(
+            "  No port concluded differently. This is the gate the shipped probe has to pass."
+        );
+        return;
+    }
+
+    println!(
+        "\n  {:<16} {:>5} {:<10} {:<10} direction",
+        "address", "port", "mss-only", "negotiating"
+    );
+    let mut lost = 0usize;
+    let mut gained = 0usize;
+    for (address, port, before, after) in &disagreements {
+        // "lost" means the fuller option list drew *less* than the MSS-only probe
+        // did. That is the only direction that argues against the change.
+        let direction = match (*before, *after) {
+            ("silent", _) => {
+                gained += 1;
+                "gained under the fuller list"
+            }
+            (_, "silent") => {
+                lost += 1;
+                "LOST under the fuller list"
+            }
+            _ => "different reply, both answered",
+        };
+        println!(
+            "  {:<16} {port:>5} {before:<10} {after:<10} {direction}",
+            address.to_string()
+        );
+    }
+
+    println!(
+        "\n  {lost} lost, {gained} gained. Re-run at a lower rate before reading either as \n           refusal: with one probe per port and no retransmission, loss and refusal are \n           the same observation here."
+    );
+}
+
+/// Groups the rows by [`StackShape`], per arm and per reply kind, so hosts
+/// running one stack collapse to one line.
+///
+/// Split by reply kind as well as by arm because a reset and a SYN+ACK describe
+/// different code paths in the same stack, and counting them as two stacks would
+/// double every host that gave both. Counted by **distinct host**, for the same
+/// reason: a host answering three ways is one machine.
 fn print_summary(observed: &Seen) {
     if observed.is_empty() {
         return;
     }
 
-    // Grouped per arm, not across them: the two arms ask different questions, and
-    // collapsing a host's answers together would report one stack as two.
-    let mut groups: BTreeMap<(ProbeVariant, StackShape), Vec<IpAddr>> = BTreeMap::new();
-    for ((address, variant, _), (_, row)) in observed {
+    let mut groups: BTreeMap<(ProbeVariant, &'static str, StackShape), BTreeSet<IpAddr>> =
+        BTreeMap::new();
+    for ((address, variant, flags), (_, row)) in observed {
         groups
-            .entry((*variant, row.shape()))
+            .entry((*variant, kind(*flags), row.shape()))
             .or_default()
-            .push(*address);
+            .insert(*address);
     }
 
     for arm in ProbeVariant::ALL {
-        let of_this_arm: Vec<_> = groups
-            .iter()
-            .filter(|((variant, _), _)| *variant == arm)
-            .collect();
-        if of_this_arm.is_empty() {
-            continue;
-        }
-        let hosts: usize = of_this_arm
-            .iter()
-            .map(|(_, addresses)| addresses.len())
-            .sum();
+        for reply in ["SYN+ACK", "RST", "other"] {
+            let of_this_slice: Vec<_> = groups
+                .iter()
+                .filter(|((variant, seen, _), _)| *variant == arm && *seen == reply)
+                .collect();
+            if of_this_slice.is_empty() {
+                continue;
+            }
+            let hosts: BTreeSet<IpAddr> = of_this_slice
+                .iter()
+                .flat_map(|(_, addresses)| addresses.iter().copied())
+                .collect();
 
-        println!(
-            "\nunder the {} probe: {} distinct stack{} across {hosts} host{}",
-            arm.name(),
-            of_this_arm.len(),
-            if of_this_arm.len() == 1 { "" } else { "s" },
-            if hosts == 1 { "" } else { "s" },
-        );
-        for ((_, shape), addresses) in of_this_arm {
             println!(
-                "  layout={:<18} window={:<6} df={:<5} mss={} ws={} ts={}  ({} host{})",
-                if shape.layout.is_empty() {
-                    "-"
-                } else {
-                    &shape.layout
-                },
-                shape.window,
-                shape.dont_fragment,
-                shape.mss.map_or_else(|| "-".to_string(), |m| m.to_string()),
-                shape
-                    .window_scale
-                    .map_or_else(|| "-".to_string(), |w| w.to_string()),
-                shape.timestamp,
-                addresses.len(),
-                if addresses.len() == 1 { "" } else { "s" },
+                "\n{} probe, {reply} replies: {} distinct shape{} across {} host{}",
+                arm.name(),
+                of_this_slice.len(),
+                if of_this_slice.len() == 1 { "" } else { "s" },
+                hosts.len(),
+                if hosts.len() == 1 { "" } else { "s" },
             );
-            for address in addresses {
-                println!("      {address}");
+            for ((_, _, shape), addresses) in of_this_slice {
+                println!(
+                    "  layout={:<16} window={:<6} df={:<5} mss={:<6} ws={:<3} ts={}",
+                    if shape.layout.is_empty() {
+                        "-"
+                    } else {
+                        &shape.layout
+                    },
+                    shape.window,
+                    shape.dont_fragment,
+                    or_dash(shape.mss),
+                    or_dash(shape.window_scale),
+                    shape.timestamp,
+                );
+                for address in addresses {
+                    println!("      {address}");
+                }
             }
         }
     }
 
+    print_zero_hop_note(observed);
+
     println!(
         "\nLabel each group from what the machine is known to be, not from what \
          any fingerprint says about it."
+    );
+}
+
+/// Names the hosts whose reply crossed no router at all.
+///
+/// A hop counter that arrives at exactly one of the usual initial values has been
+/// decremented zero times. On the local segment that is simply what on-link means.
+/// On a **routed** target it means the answer did not come from where it claims
+/// to: something in the path — a transparent proxy, a DNS interceptor, a captive
+/// portal — answered on the target's behalf, and every feature in its row belongs
+/// to that middlebox rather than to the host named in the address column.
+///
+/// Worth a line of its own because the source address does not give it away. An
+/// interceptor answers *as* the target, so the row looks entirely ordinary and the
+/// "answered by" warning never fires.
+fn print_zero_hop_note(observed: &Seen) {
+    let untraversed: BTreeSet<IpAddr> = observed
+        .iter()
+        .filter(|(_, (_, row))| COMMON_INITIAL_HOPS.contains(&row.hops_left))
+        .map(|((address, _, _), _)| *address)
+        .collect();
+
+    if untraversed.is_empty() {
+        return;
+    }
+
+    println!(
+        "\n{} host(s) answered with a hop counter at its initial value, so no router \
+         was crossed:",
+        untraversed.len()
+    );
+    for address in &untraversed {
+        println!("      {address}");
+    }
+    println!(
+        "  Expected for anything on this segment. For a target that should be routed, it \n           means something local answered in its place, and the row describes that instead."
     );
 }
