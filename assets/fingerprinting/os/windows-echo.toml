@@ -1,0 +1,43 @@
+# Windows NT family, seen through a ping rather than a handshake.
+#
+# The handshake rule in `windows.toml` needs something listening, and that is a
+# real limit rather than a detail: a stock Windows firewall **drops** rather than
+# refuses, so a desktop with no service exposed emits nothing at all and no rule
+# reading a TCP reply can ever reach it. Two labelled Windows hosts measured on a
+# real segment answered none of fourteen ports. A great many such machines still
+# answer an echo request.
+#
+# This rule tests the hop counter and nothing else, which is unusual in this
+# corpus and is deliberate. An initial 128 is an NT-family fact: the Unix-alikes
+# start at 64 and network equipment at 255, so on this one field the families do
+# not overlap and the rule is unambiguous despite naming one predicate.
+#
+# The two ICMP fields this schema can also test are left unstated on purpose.
+# Whether this family echoes a non-zero request code back or writes zero, and
+# whether it returns the payload unchanged, are things this engine has not
+# confirmed — and a predicate authored from a guess produces a rule that matches
+# nothing while looking correct, which is the failure the corpus test cannot see.
+# `ECHO_PROBE_CODE` exists so the question is at least *asked* on the wire;
+# filling these in is a one-run confirmation away.
+provenance = "published"
+weight = 0.8
+notes = "An initial TTL of 128 is the long-standing NT-family default, against 64 for the Unix-alikes and 255 for network equipment. States the hop counter alone: this family's ICMP code and payload behaviour are not confirmed by this engine and are left unstated rather than guessed. Weighted below the handshake rule because one field is one field. Unconfirmed against hardware by this engine."
+
+[os]
+family = "Windows"
+vendor = "Microsoft"
+
+[match]
+reply = "echo_reply"
+initial_hops = { equals = 128 }
+
+# The shape this rule expects, written from the same published default rather
+# than from an observation. It is not evidence that a Windows host answers this
+# way; it is what the rule claims, written down so that editing the rule out of
+# agreement with its own claim fails a test, and so the cross-family check has an
+# echo-shaped observation to try every other family's rules against.
+[[example]]
+source = "expected shape from the published NT-family initial TTL; not an observation"
+reply = "echo_reply"
+remaining_hops = 128
+dont_fragment = true

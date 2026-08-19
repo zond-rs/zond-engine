@@ -187,7 +187,23 @@ fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
         mss,
         timestamps,
         sack_permitted,
+        echo_code,
+        echo_payload_intact,
     );
+
+    // A TCP example without a window has recorded nothing about the field its
+    // rule most likely keys on, and the schema cannot require it: an echo reply
+    // has no window at all. So the requirement is stated here, per reply kind,
+    // where it can be.
+    for example in &def.example {
+        if example.reply != os_schema::ReplyKind::EchoReply && example.window.is_none() {
+            panic!(
+                "{file}: '{family}' has a {:?} example with no window; only an echo \
+                 example may omit one",
+                example.reply
+            );
+        }
+    }
 
     // The one defect that is worse than a build failure. A rule testing nothing
     // matches every reply of its kind and names every host that ever answers as

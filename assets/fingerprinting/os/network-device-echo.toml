@@ -1,0 +1,27 @@
+# Network equipment, seen through a ping.
+#
+# The counterpart of `network-device.toml` for a device with no TCP port open at
+# all, which is the ordinary state of a switch, an access point or a printer's
+# management plane on a segment where nobody has enabled remote management.
+# Those devices answer a ping almost universally, and the hop counter is the
+# whole of what this class has in common — see the handshake rule for why it
+# states no option predicate either.
+#
+# A reply cannot satisfy this and the Windows echo rule at once: one requires a
+# counter of 255 and the other 128.
+provenance = "published"
+weight = 0.8
+notes = "An initial TTL of 255 is the long-standing convention for routers, switches and embedded management stacks. The shared property of this class is the hop counter, not a stack, so this states it alone. Unconfirmed against hardware by this engine."
+
+[os]
+family = "Network device"
+
+[match]
+reply = "echo_reply"
+initial_hops = { equals = 255 }
+
+[[example]]
+source = "expected shape: an embedded management stack starting its hop counter at the maximum; not an observation"
+reply = "echo_reply"
+remaining_hops = 255
+dont_fragment = true

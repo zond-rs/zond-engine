@@ -343,12 +343,7 @@ impl StackObservation {
     /// is correct and says nothing. A rule needing better than that is a rule
     /// that cannot be written from one reply.
     pub fn initial_hops_at_least(&self) -> u8 {
-        const COMMON: [u8; 4] = [32, 64, 128, 255];
-        let arrived = self.ip.remaining_hops();
-        COMMON
-            .into_iter()
-            .find(|start| *start >= arrived)
-            .unwrap_or(u8::MAX)
+        initial_hops_at_least(self.ip.remaining_hops())
     }
 
     /// One line saying what this observation held, for a report to carry beside a
@@ -423,6 +418,170 @@ impl StackObservation {
             }
         }
         out
+    }
+}
+
+/// Everything one ICMP echo reply says about the stack that sent it.
+///
+/// A separate type from [`StackObservation`] rather than a widening of it,
+/// because the two share nothing below the IP header: an echo reply has no
+/// window, no options and no sequence number, and a type whose TCP half was
+/// optional would make every reader ask "which kind is this?" at every field
+/// instead of once.
+///
+/// **The reason to send one at all** is the host a TCP scan cannot describe. A
+/// machine with no open and no closed port answers nothing this crate's port
+/// scanner sends, and every feature the passive path reads starts from a reply.
+/// A great many such hosts still answer a ping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EchoObservation {
+    /// What the IP header this reply arrived under said. The initial hop
+    /// counter is the strongest thing here, and it is the same field, read the
+    /// same way, as on a TCP reply.
+    pub ip: IpObservation,
+
+    /// The code byte the reply carried.
+    ///
+    /// RFC 792 and RFC 4443 §4.2 both define the code of an echo message as
+    /// zero, and neither says what a responder should do when a request arrives
+    /// carrying something else. Stacks disagree: some echo the request's code
+    /// back, some write zero regardless. That disagreement is only visible if
+    /// the request asked the question — a probe sending code zero learns
+    /// nothing, since both behaviours produce zero.
+    pub code: u8,
+
+    /// How many payload bytes came back.
+    pub payload_len: usize,
+
+    /// Whether those bytes are the ones that were sent.
+    ///
+    /// Both RFCs require the data of an echo request to be returned unchanged,
+    /// so this is conformance rather than preference — but a responder that
+    /// truncates, pads, or rewrites has said something about itself, and a
+    /// scanner that never checked would read the reply as ordinary.
+    pub payload_intact: bool,
+}
+
+impl EchoObservation {
+    /// Reads an echo reply, given what its IP header said and what was sent.
+    ///
+    /// `message` is the ICMP message with the IP header already stripped —
+    /// exactly what [`CapturedSegment::bytes`] holds. `sent_payload` is the
+    /// payload of the request this answers, which is the only way to know
+    /// whether what came back is what went out.
+    ///
+    /// `None` when there are too few bytes for the eight-byte echo header.
+    ///
+    /// [`CapturedSegment::bytes`]: crate::transport::capture::CapturedSegment::bytes
+    pub fn from_echo_reply(ip: IpObservation, message: &[u8], sent_payload: &[u8]) -> Option<Self> {
+        // Type, code, checksum, identifier, sequence — then the payload.
+        let header: &[u8; 8] = message.first_chunk()?;
+        let payload = &message[8..];
+        Some(Self {
+            ip,
+            code: header[1],
+            payload_len: payload.len(),
+            payload_intact: payload == sent_payload,
+        })
+    }
+}
+
+impl EchoObservation {
+    /// One line saying what this reply held, for a report to carry beside a
+    /// verdict.
+    ///
+    /// Written for a person, like its TCP counterpart, and to the same rule:
+    /// nothing should parse it, the typed fields are right here.
+    pub fn summary(&self) -> String {
+        let mut out = format!(
+            "echo hops>={}",
+            initial_hops_at_least(self.ip.remaining_hops())
+        );
+        if let IpObservation::V4(v4) = self.ip
+            && v4.dont_fragment
+        {
+            out.push_str(" df");
+        }
+        out.push_str(&format!(" code={}", self.code));
+        out.push_str(&format!(" payload={}", self.payload_len));
+        if !self.payload_intact {
+            // Worth a word of its own: both RFCs require the payload back
+            // unchanged, so this names a stack doing something unusual rather
+            // than reporting a size.
+            out.push_str(" altered");
+        }
+        out
+    }
+}
+
+/// One reply a rule can be asked about.
+///
+/// The matcher takes this rather than a single observation type because a rule
+/// declares which reply it reads, and the two kinds have no fields in common
+/// below the IP header. A rule written for a handshake tested against an echo
+/// reply fails on the reply kind before any predicate is reached; a rule that
+/// somehow named a TCP field *and* an echo reply fails because the value is
+/// absent, which is the same "the peer did not say" rule the matcher already
+/// applies everywhere else.
+#[derive(Debug, Clone)]
+pub enum StackReply {
+    /// A TCP reply: a handshake or a refusal.
+    Tcp(StackObservation),
+    /// An answer to a ping.
+    Echo(EchoObservation),
+}
+
+impl StackReply {
+    /// What the IP header said, whichever kind this is.
+    pub fn ip(&self) -> IpObservation {
+        match self {
+            StackReply::Tcp(observed) => observed.ip,
+            StackReply::Echo(observed) => observed.ip,
+        }
+    }
+
+    /// One line saying what this reply held, for a report to carry beside a
+    /// verdict.
+    pub fn summary(&self) -> String {
+        match self {
+            StackReply::Tcp(observed) => observed.summary(),
+            StackReply::Echo(observed) => observed.summary(),
+        }
+    }
+
+    /// The smallest common initial hop counter this reply's is consistent with.
+    ///
+    /// The same reading on both kinds, because it is the same field: the hop
+    /// counter belongs to the IP header, and a stack does not use a different
+    /// starting value for its pings than for its refusals. See
+    /// [`StackObservation::initial_hops_at_least`] for what the bound means.
+    pub fn initial_hops_at_least(&self) -> u8 {
+        initial_hops_at_least(self.ip().remaining_hops())
+    }
+}
+
+/// The smallest of the usual initial hop counters that `arrived` could have been
+/// decremented from.
+///
+/// A bound, not a guess: a host further away than the gap between two of these
+/// is reported against the higher one, which is still true.
+fn initial_hops_at_least(arrived: u8) -> u8 {
+    const COMMON: [u8; 4] = [32, 64, 128, 255];
+    COMMON
+        .into_iter()
+        .find(|start| *start >= arrived)
+        .unwrap_or(u8::MAX)
+}
+
+impl From<StackObservation> for StackReply {
+    fn from(observed: StackObservation) -> Self {
+        StackReply::Tcp(observed)
+    }
+}
+
+impl From<EchoObservation> for StackReply {
+    fn from(observed: EchoObservation) -> Self {
+        StackReply::Echo(observed)
     }
 }
 

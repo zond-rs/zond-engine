@@ -829,6 +829,7 @@
         "connect",
         "connect_udp",
         "udp_port",
+        "os_echo",
         "composite"
       ]
     }

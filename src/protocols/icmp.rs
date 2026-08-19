@@ -38,14 +38,28 @@ use pnet::datalink::MacAddr;
 use pnet::packet::ethernet::EtherTypes;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// The link-layer and IPv6 addresses of the all-nodes group, which every IPv6
-/// host on a segment joins (RFC 4291 §2.7.1).
+/// The code an OS-fingerprinting echo request carries.
+///
+/// **Non-zero on purpose, and that is the whole point of it.** RFC 792 and
+/// RFC 4443 §4.2 define an echo's code as zero and neither says what a responder
+/// should do with anything else, so stacks differ — some echo the request's code
+/// back, some write zero regardless. A probe sending zero cannot tell those
+/// apart, because both answer zero.
+///
+/// This is the same trap the TCP option layout fell into and it is worth naming
+/// as one: a documented difference between stacks is only *observable* if the
+/// probe asks the question. Nine carries no meaning of its own; it is simply a
+/// value no conformant echo would carry by accident.
+pub const ECHO_PROBE_CODE: u8 = 9;
+
 /// An IPv4 echo reply's type number (RFC 792).
 const ECHO_REPLY_V4: u8 = 0;
 /// An IPv6 echo reply's type number (RFC 4443 §4.2). Different from the IPv4
 /// one, like every other number these two protocols share a name for.
 const ECHO_REPLY_V6: u8 = 129;
 
+/// The link-layer and IPv6 addresses of the all-nodes group, which every IPv6
+/// host on a segment joins (RFC 4291 §2.7.1).
 const ALL_NODES_MAC: MacAddr = MacAddr(0x33, 0x33, 0, 0, 0, 1);
 const ALL_NODES_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
@@ -152,6 +166,9 @@ fn echo_frame_v6(
 /// so its length and contents are part of what a probe asks — a stack that
 /// truncates it, or returns something else, has said something about itself.
 ///
+/// `code` is part of the question too, and a probe sending zero is asking
+/// nothing: see [`ECHO_PROBE_CODE`].
+///
 /// Both addresses are taken because an ICMPv6 checksum covers a pseudo-header
 /// built from them. An ICMPv4 checksum does not, and `src` is unused there.
 ///
@@ -164,17 +181,22 @@ fn echo_frame_v6(
 pub fn create_echo_request_message(
     src_addr: IpAddr,
     dst_addr: IpAddr,
+    code: u8,
     identifier: u16,
     sequence: u16,
     payload: &[u8],
 ) -> Result<Vec<u8>> {
     match (src_addr, dst_addr) {
-        (IpAddr::V4(_), IpAddr::V4(_)) => Ok(Icmpv4::echo_request(identifier, sequence)
-            .with_payload(payload)
-            .to_bytes()),
-        (IpAddr::V6(_), IpAddr::V6(_)) => Icmpv6::echo_request(identifier, sequence)
-            .with_payload(payload)
-            .to_bytes(Some((src_addr, dst_addr))),
+        (IpAddr::V4(_), IpAddr::V4(_)) => {
+            let mut message = Icmpv4::echo_request(identifier, sequence).with_payload(payload);
+            message.code = code;
+            Ok(message.to_bytes())
+        }
+        (IpAddr::V6(_), IpAddr::V6(_)) => {
+            let mut message = Icmpv6::echo_request(identifier, sequence).with_payload(payload);
+            message.code = code;
+            message.to_bytes(Some((src_addr, dst_addr)))
+        }
         (src, dst) => Err(super::error::PacketError::FamilyMismatch { src, dst }),
     }
 }
@@ -285,11 +307,11 @@ pub fn create_echo_request(
 }
 
 // ╔════════════════════════════════════════════╗
-// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ████████╗███████╗███████╗██████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
 // ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
 // ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
-// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ██║   ███████╗███████╗   ██║   ███████║ ║
 // ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
 // ╚════════════════════════════════════════════╝
 
@@ -489,6 +511,7 @@ mod tests {
         let message = create_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
+            0,
             ID,
             SEQ,
             b"payload",
@@ -501,6 +524,40 @@ mod tests {
         assert_eq!(&message[8..], b"payload");
     }
 
+    /// The code has to reach the wire, because a probe sending zero asks nothing.
+    ///
+    /// The behaviour this whole field exists to observe — whether a responder
+    /// echoes a non-zero code or writes zero — is invisible to a conformant
+    /// request, since both stacks answer zero to a zero. A builder that dropped
+    /// the code would produce a probe that always looked like it worked and
+    /// never discriminated anything.
+    #[test]
+    fn the_probe_code_is_written_into_the_message() {
+        let probe = create_echo_request_message(
+            IpAddr::from([192, 0, 2, 1]),
+            IpAddr::from([192, 0, 2, 9]),
+            ECHO_PROBE_CODE,
+            ID,
+            SEQ,
+            &[],
+        )
+        .expect("one family");
+        assert_eq!(probe[1], ECHO_PROBE_CODE);
+        assert_ne!(ECHO_PROBE_CODE, 0, "a zero code asks nothing");
+
+        // And over IPv6, where the code is also covered by the checksum.
+        let v6_probe = create_echo_request_message(
+            IpAddr::V6(v6("2001:db8::1")),
+            IpAddr::V6(v6("2001:db8::9")),
+            ECHO_PROBE_CODE,
+            ID,
+            SEQ,
+            &[],
+        )
+        .expect("one family");
+        assert_eq!(v6_probe[1], ECHO_PROBE_CODE);
+    }
+
     /// A conformant responder echoes the payload back, so its length and
     /// contents are part of the question a probe asks.
     #[test]
@@ -508,6 +565,7 @@ mod tests {
         let empty = create_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
+            0,
             ID,
             SEQ,
             &[],
@@ -518,6 +576,7 @@ mod tests {
         let long = create_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
+            0,
             ID,
             SEQ,
             &[0xA5; 120],
@@ -535,6 +594,7 @@ mod tests {
         let v4 = create_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
+            0,
             ID,
             SEQ,
             &[],
@@ -545,6 +605,7 @@ mod tests {
         let v6_message = create_echo_request_message(
             IpAddr::V6(v6("2001:db8::1")),
             IpAddr::V6(v6("2001:db8::9")),
+            0,
             ID,
             SEQ,
             &[],
@@ -567,6 +628,7 @@ mod tests {
         let message = create_echo_request_message(
             IpAddr::V6(v6("2001:db8::1")),
             IpAddr::V6(v6("2001:db8::9")),
+            0,
             ID,
             SEQ,
             &[],
@@ -581,6 +643,7 @@ mod tests {
         let elsewhere = create_echo_request_message(
             IpAddr::V6(v6("2001:db8::1")),
             IpAddr::V6(v6("2001:db8::a")),
+            0,
             ID,
             SEQ,
             &[],
@@ -600,6 +663,7 @@ mod tests {
             create_echo_request_message(
                 IpAddr::from([192, 0, 2, 1]),
                 IpAddr::V6(v6("2001:db8::9")),
+                0,
                 ID,
                 SEQ,
                 &[],

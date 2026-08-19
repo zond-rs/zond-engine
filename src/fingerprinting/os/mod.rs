@@ -86,7 +86,9 @@ mod verdict;
 #[cfg(test)]
 mod corpus;
 
-pub use observation::{Quirks, StackObservation, TcpOptionKind, Timestamps};
+pub use observation::{
+    EchoObservation, Quirks, StackObservation, StackReply, TcpOptionKind, Timestamps,
+};
 // The schema an `assets/fingerprinting/os` rule is authored against. Exported so
 // a consumer writing rules of their own is held to the same shape rather than
 // discovering it when one is silently dropped, exactly as the service signature
@@ -100,5 +102,6 @@ pub use signature::{
 };
 pub use text::{OsMetadata, evidence_from as banner_evidence};
 pub use verdict::{
-    MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict, classify, classify_reply,
+    MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict, classify,
+    classify_echo_reply, classify_reply,
 };

@@ -30,6 +30,7 @@
 use crate::model::capture::{IpObservation, Ipv4Observation};
 
 use super::db::RuleDb;
+use super::observation::StackReply;
 use super::observation::{StackObservation, TcpOptionKind};
 use super::rules;
 use super::signature::{Example, Provenance, ReplyKind};
@@ -41,7 +42,34 @@ use super::signature::{Example, Provenance, ReplyKind};
 /// host answered with — and not the frame they arrived in. The parse from bytes
 /// has its own tests, against option lists recorded verbatim off the wire; this
 /// tests the rules.
-fn observation_from(example: &Example) -> StackObservation {
+fn observation_from(example: &Example) -> StackReply {
+    // An echo example shares only the IP header with a TCP one, so it is built
+    // here rather than threaded through the TCP construction below with every
+    // field left empty. A rule for one kind is never applied to the other, so
+    // the two paths never meet after this point.
+    if example.reply == ReplyKind::EchoReply {
+        return StackReply::Echo(super::observation::EchoObservation {
+            ip: IpObservation::V4(Ipv4Observation {
+                ttl: example.remaining_hops,
+                identification: 0,
+                dont_fragment: example.dont_fragment,
+                more_fragments: false,
+                dscp: 0,
+                ecn: 0,
+            }),
+            code: example.echo_code,
+            // Length is not an authored field: what a rule can say about the
+            // payload is whether it came back unchanged, and an example
+            // recording that has nothing to say about how long it was.
+            payload_len: 0,
+            payload_intact: example.echo_payload_intact,
+        });
+    }
+
+    tcp_observation_from(example)
+}
+
+fn tcp_observation_from(example: &Example) -> StackReply {
     let layout = example
         .option_layout
         .split(',')
@@ -61,9 +89,11 @@ fn observation_from(example: &Example) -> StackObservation {
     let flags = match example.reply {
         ReplyKind::SynAck => crate::protocols::tcp::flags::SYN | crate::protocols::tcp::flags::ACK,
         ReplyKind::Reset => crate::protocols::tcp::flags::RST,
+        // Unreachable: the caller returns before this for an echo example.
+        ReplyKind::EchoReply => unreachable!("an echo example is built above"),
     };
 
-    StackObservation {
+    StackReply::Tcp(StackObservation {
         flags,
         ip: IpObservation::V4(Ipv4Observation {
             ttl: example.remaining_hops,
@@ -73,7 +103,7 @@ fn observation_from(example: &Example) -> StackObservation {
             dscp: 0,
             ecn: 0,
         }),
-        window: example.window,
+        window: example.window.unwrap_or_default(),
         option_layout: layout,
         mss: example.mss,
         window_scale: example.window_scale,
@@ -82,7 +112,7 @@ fn observation_from(example: &Example) -> StackObservation {
             .then_some(super::observation::Timestamps { value: 1, echo: 0 }),
         sack_permitted: example.sack_permitted,
         quirks: Default::default(),
-    }
+    })
 }
 
 /// A rule that no longer matches the host it was written for has stopped
@@ -258,8 +288,12 @@ fn a_handshake_rule_is_never_satisfied_by_a_reset() {
         .find(|example| example.reply == ReplyKind::SynAck)
         .expect("the corpus ships a handshake example");
 
-    let mut as_reset = observation_from(example);
+    let mut as_reset = match observation_from(example) {
+        StackReply::Tcp(observed) => observed,
+        StackReply::Echo(_) => unreachable!("the example was chosen as a handshake"),
+    };
     as_reset.flags = crate::protocols::tcp::flags::RST;
+    let as_reset = StackReply::Tcp(as_reset);
 
     for rule in db.rules() {
         assert!(
@@ -329,12 +363,16 @@ fn the_cross_family_check_catches_a_rule_that_is_too_loose() {
     // it is not about. Nor is moving the hop counter to 255, which is precisely
     // what the network-device rule looks for. So this changes the option layout
     // to one nothing emits, and leaves the counter where no rule keys on it.
-    let mut elsewhere = observed.clone();
+    let mut elsewhere = match observed.clone() {
+        StackReply::Tcp(observed) => observed,
+        StackReply::Echo(_) => unreachable!("the example was chosen as a handshake"),
+    };
     elsewhere.option_layout = vec![
         TcpOptionKind::MaximumSegmentSize,
         TcpOptionKind::Sack,
         TcpOptionKind::Other(99),
     ];
+    let elsewhere = StackReply::Tcp(elsewhere);
     let matched: Vec<&str> = RuleDb::global()
         .matching(&elsewhere)
         .map(|rule| rule.os.family.as_str())
@@ -402,4 +440,66 @@ fn no_rule_names_a_real_address_or_host() {
          measured, not which one:\n{}",
         offenders.join("\n")
     );
+}
+
+/// The echo rules reach a host the TCP rules cannot, and name it.
+///
+/// The point of sending a ping at all: a stock Windows firewall drops rather
+/// than refuses, so a desktop with nothing listening answers no TCP probe and
+/// every handshake rule in the corpus is unreachable for it.
+#[test]
+fn an_echo_reply_alone_can_name_a_family() {
+    let windows = echo_reply(128);
+    let verdict = super::verdict::classify(RuleDb::global(), &windows)
+        .expect("an echo reply with a Windows hop counter names Windows");
+    assert_eq!(verdict.family, "Windows");
+
+    let device = echo_reply(255);
+    let verdict = super::verdict::classify(RuleDb::global(), &device)
+        .expect("an echo reply with an infrastructure hop counter names one");
+    assert_eq!(verdict.family, "Network device");
+}
+
+/// A ping from a Unix-alike is deliberately **not** named, and this test is the
+/// record of why.
+///
+/// Linux, macOS and the BSDs all start the counter at 64, so on an echo reply —
+/// which carries no options, no window and no sequence number — there is nothing
+/// left to tell them apart. A rule keyed on 64 alone would name every one of
+/// them as whichever family it happened to claim, and would be confidently
+/// wrong for most hosts it matched. Reporting nothing is the correct answer.
+///
+/// This fails the moment somebody adds that rule, which is the intent: the fix
+/// is a second field the reply actually carries — whether a non-zero request
+/// code comes back, whether the payload returns unchanged — not a looser rule.
+#[test]
+fn an_echo_reply_from_a_unix_hop_counter_names_nothing() {
+    let unix_like = echo_reply(64);
+    let matched: Vec<&str> = RuleDb::global()
+        .matching(&unix_like)
+        .map(|rule| rule.os.family.as_str())
+        .collect();
+    assert!(
+        matched.is_empty(),
+        "an echo reply with a hop counter of 64 was named {matched:?}, but Linux, \
+         macOS and the BSDs all start there and an echo reply carries nothing \
+         else to separate them"
+    );
+}
+
+/// An echo-shaped reply with `hops` left, for the two tests above.
+fn echo_reply(hops: u8) -> StackReply {
+    StackReply::Echo(super::observation::EchoObservation {
+        ip: IpObservation::V4(Ipv4Observation {
+            ttl: hops,
+            identification: 0,
+            dont_fragment: true,
+            more_fragments: false,
+            dscp: 0,
+            ecn: 0,
+        }),
+        code: crate::protocols::icmp::ECHO_PROBE_CODE,
+        payload_len: 28,
+        payload_intact: true,
+    })
 }

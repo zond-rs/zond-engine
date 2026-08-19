@@ -83,6 +83,13 @@ pub enum ReplyKind {
     SynAck,
     /// A refusal.
     Reset,
+    /// An answer to a ping.
+    ///
+    /// The only reply kind here that a host with no open **and** no closed port
+    /// can produce, which is the whole reason for sending one. It carries no
+    /// TCP fields at all, so a rule reading it names the IP-level features and
+    /// the two ICMP ones and nothing else.
+    EchoReply,
 }
 
 /// Where a rule's values came from.
@@ -223,6 +230,24 @@ pub struct MatchRule {
 
     /// Whether the reply said it accepts selective acknowledgement.
     pub sack_permitted: Option<Predicate<bool>>,
+
+    /// The code byte an echo reply carried.
+    ///
+    /// **Only meaningful against a probe that sent a non-zero code.** RFC 792
+    /// and RFC 4443 §4.2 define an echo's code as zero and say nothing about
+    /// what a responder should do with anything else, so stacks differ: some
+    /// echo the request's code back and some write zero. A probe sending zero
+    /// cannot tell the two apart, because both answer zero — the same
+    /// reciprocity trap the TCP option layout fell into, in a different field.
+    /// Every rule shipped here is written against the code
+    /// [`ECHO_PROBE_CODE`](crate::protocols::icmp::ECHO_PROBE_CODE) sends.
+    pub echo_code: Option<Predicate<u8>>,
+
+    /// Whether an echo reply returned the payload it was sent, unchanged.
+    ///
+    /// Required by both RFCs, so this is conformance rather than preference and
+    /// a rule naming it is naming an *unusual* stack.
+    pub echo_payload_intact: Option<Predicate<bool>>,
 }
 
 /// One observation a rule is required to match, recorded from a real host.
@@ -250,7 +275,14 @@ pub struct Example {
     #[serde(default)]
     pub option_layout: String,
     /// The advertised window, as written.
-    pub window: u16,
+    ///
+    /// Optional in the schema and **required for a TCP example**, which
+    /// `build.rs` enforces. An echo reply has no window, and defaulting the
+    /// field to zero instead would let a handshake example omit the single most
+    /// load-bearing value it records and still parse — recording a window of
+    /// zero, which no stack advertises, as though it had been measured.
+    #[serde(default)]
+    pub window: Option<u16>,
     /// The announced maximum segment size.
     pub mss: Option<u16>,
     /// The window scale shift count.
@@ -261,6 +293,18 @@ pub struct Example {
     /// Whether selective acknowledgement was permitted.
     #[serde(default)]
     pub sack_permitted: bool,
+    /// The code an echo reply carried. Ignored for a TCP example.
+    #[serde(default)]
+    pub echo_code: u8,
+    /// Whether an echo reply returned its payload unchanged. Ignored for a TCP
+    /// example, and `true` by default because that is what both RFCs require —
+    /// an example recording the conformant case should not have to say so.
+    #[serde(default = "yes")]
+    pub echo_payload_intact: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// One authored rule: who it names, what it tests, and what it must match.

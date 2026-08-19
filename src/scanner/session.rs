@@ -94,6 +94,14 @@ pub enum ScannerKind {
     ConnectUdp,
     /// Privileged raw UDP port scanning.
     UdpPort,
+    /// The active operating-system echo probe, sent at the hosts the passive
+    /// sources could not name.
+    ///
+    /// Named apart from the port scanners because it answers a different
+    /// question about a different dimension: not which ports a host has, but
+    /// which stack answered the ping. A report attributing an echo probe to any
+    /// other strategy would describe traffic nobody sent.
+    OsEcho,
     /// Composite scanner that delegates to protocol-specific scanners.
     Composite,
 }
@@ -576,11 +584,11 @@ impl ScanSession {
 }
 
 // ╔════════════════════════════════════════════╗
-// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ████████╗███████╗███████╗██████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
 // ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
 // ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
-// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ██║   ███████╗███████╗   ██║   ███████║ ║
 // ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
 // ╚════════════════════════════════════════════╝
 

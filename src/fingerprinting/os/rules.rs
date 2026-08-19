@@ -30,7 +30,7 @@
 //! this rule accepts" are different, and treating the first as the second would
 //! let a reset satisfy a rule written for a handshake.
 
-use super::observation::StackObservation;
+use super::observation::{StackObservation, StackReply};
 use super::signature::{MatchRule, Predicate, ReplyKind};
 
 /// Whether a predicate accepts `value`.
@@ -82,8 +82,12 @@ fn accepts_optional<T: PartialOrd>(predicate: &Option<Predicate<T>>, value: Opti
 /// translating a public corpus would bring, very much do — and the shape of the
 /// code should not have to change when they arrive.
 struct Prepared<'a> {
-    observed: &'a StackObservation,
-    layout: String,
+    reply: &'a StackReply,
+    /// Everything below is `None` for a reply that has no such field, so a rule
+    /// naming a TCP field fails against an echo reply by the ordinary
+    /// "the peer did not say" rule rather than by a special case.
+    tcp: Option<&'a StackObservation>,
+    layout: Option<String>,
     initial_hops: u8,
     dont_fragment: bool,
     window_units: Option<u16>,
@@ -91,17 +95,24 @@ struct Prepared<'a> {
 }
 
 impl<'a> Prepared<'a> {
-    fn new(observed: &'a StackObservation) -> Self {
-        let (window_units, window_remainder) = match observed.window_in_units() {
+    fn new(reply: &'a StackReply) -> Self {
+        let tcp = match reply {
+            StackReply::Tcp(observed) => Some(observed),
+            StackReply::Echo(_) => None,
+        };
+        let (window_units, window_remainder) = match tcp.and_then(|o| o.window_in_units()) {
             Some((units, remainder)) => (Some(units), Some(remainder)),
             None => (None, None),
         };
         Self {
-            observed,
-            layout: observed.layout_string(),
-            initial_hops: observed.initial_hops_at_least(),
+            reply,
+            tcp,
+            layout: tcp.map(StackObservation::layout_string),
+            // The IP header is the one thing both kinds have, so these two are
+            // read off the reply rather than off the TCP half.
+            initial_hops: reply.initial_hops_at_least(),
             dont_fragment: matches!(
-                observed.ip,
+                reply.ip(),
                 crate::model::capture::IpObservation::V4(v4) if v4.dont_fragment
             ),
             window_units,
@@ -111,9 +122,11 @@ impl<'a> Prepared<'a> {
 
     /// Whether `rule` describes the observation this was prepared from.
     fn matches(&self, rule: &MatchRule) -> bool {
-        let kind_agrees = match rule.reply {
-            ReplyKind::SynAck => self.observed.is_syn_ack(),
-            ReplyKind::Reset => self.observed.is_reset(),
+        let kind_agrees = match (rule.reply, self.reply) {
+            (ReplyKind::SynAck, StackReply::Tcp(observed)) => observed.is_syn_ack(),
+            (ReplyKind::Reset, StackReply::Tcp(observed)) => observed.is_reset(),
+            (ReplyKind::EchoReply, StackReply::Echo(_)) => true,
+            _ => false,
         };
         if !kind_agrees {
             return false;
@@ -122,16 +135,29 @@ impl<'a> Prepared<'a> {
         // Cheapest and most selective first: the integer comparisons reject the
         // overwhelming majority of a large rule set before the string comparison
         // is ever reached.
+        let echo = match self.reply {
+            StackReply::Echo(observed) => Some(observed),
+            StackReply::Tcp(_) => None,
+        };
+
         accepts_optional(&rule.initial_hops, Some(&self.initial_hops))
-            && accepts_optional(&rule.window, Some(&self.observed.window))
+            && accepts_optional(&rule.dont_fragment, Some(&self.dont_fragment))
+            && accepts_optional(&rule.window, self.tcp.map(|o| &o.window))
             && accepts_optional(&rule.window_units, self.window_units.as_ref())
             && accepts_optional(&rule.window_remainder, self.window_remainder.as_ref())
-            && accepts_optional(&rule.window_scale, self.observed.window_scale.as_ref())
-            && accepts_optional(&rule.mss, self.observed.mss.as_ref())
-            && accepts_optional(&rule.dont_fragment, Some(&self.dont_fragment))
-            && accepts_optional(&rule.timestamps, Some(&self.observed.timestamps.is_some()))
-            && accepts_optional(&rule.sack_permitted, Some(&self.observed.sack_permitted))
-            && accepts_optional(&rule.option_layout, Some(&self.layout))
+            && accepts_optional(
+                &rule.window_scale,
+                self.tcp.and_then(|o| o.window_scale.as_ref()),
+            )
+            && accepts_optional(&rule.mss, self.tcp.and_then(|o| o.mss.as_ref()))
+            && accepts_optional(
+                &rule.timestamps,
+                self.tcp.map(|o| o.timestamps.is_some()).as_ref(),
+            )
+            && accepts_optional(&rule.sack_permitted, self.tcp.map(|o| &o.sack_permitted))
+            && accepts_optional(&rule.option_layout, self.layout.as_ref())
+            && accepts_optional(&rule.echo_code, echo.map(|o| &o.code))
+            && accepts_optional(&rule.echo_payload_intact, echo.map(|o| &o.payload_intact))
     }
 }
 
@@ -143,20 +169,20 @@ impl<'a> Prepared<'a> {
 ///
 /// The reply kind is checked first and is not optional: a rule written for a
 /// handshake must never be applied to a reset, whatever else agrees.
-pub fn matches(rule: &MatchRule, observed: &StackObservation) -> bool {
-    Prepared::new(observed).matches(rule)
+pub fn matches(rule: &MatchRule, reply: &StackReply) -> bool {
+    Prepared::new(reply).matches(rule)
 }
 
 /// Every rule in `rules` that describes `observed`, with the derived values
 /// computed once for the whole set.
 pub(super) fn matching<'a>(
     rules: &'a [super::signature::OsDefinition],
-    observed: &'a StackObservation,
+    reply: &'a StackReply,
 ) -> impl Iterator<Item = &'a super::signature::OsDefinition> {
     // Moved into the closure so it is built once and lives as long as the
     // iterator, rather than per rule. The iterator stays lazy: a caller wanting
     // only the first match pays for only the rules before it.
-    let prepared = Prepared::new(observed);
+    let prepared = Prepared::new(reply);
     rules
         .iter()
         .filter(move |rule| prepared.matches(&rule.r#match))

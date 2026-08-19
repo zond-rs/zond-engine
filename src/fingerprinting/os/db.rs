@@ -64,7 +64,7 @@
 
 use std::sync::OnceLock;
 
-use super::observation::StackObservation;
+use super::observation::StackReply;
 use super::rules;
 use super::signature::OsDefinition;
 
@@ -107,10 +107,7 @@ impl RuleDb {
     /// evidence in hand, and it is not this layer's to answer — two rules
     /// agreeing on a family and disagreeing on a version is a *result*, not a
     /// tie to be broken here.
-    pub fn matching<'a>(
-        &'a self,
-        observed: &'a StackObservation,
-    ) -> impl Iterator<Item = &'a OsDefinition> {
-        rules::matching(&self.rules, observed)
+    pub fn matching<'a>(&'a self, reply: &'a StackReply) -> impl Iterator<Item = &'a OsDefinition> {
+        rules::matching(&self.rules, reply)
     }
 }

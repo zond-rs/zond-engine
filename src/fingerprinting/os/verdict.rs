@@ -51,7 +51,7 @@
 use crate::model::host::OsFingerprint;
 
 use super::db::RuleDb;
-use super::observation::StackObservation;
+use super::observation::{StackObservation, StackReply};
 use super::signature::{OsDefinition, Provenance};
 
 /// The most a single reply's stack shape may claim on its own.
@@ -181,7 +181,7 @@ impl OsVerdict {
     }
 }
 
-/// Names the operating system behind `observed`, or nothing.
+/// Names the operating system behind `reply`, or nothing.
 ///
 /// # How several matches are scored
 ///
@@ -202,8 +202,8 @@ impl OsVerdict {
 ///
 /// Returns `None` when no rule matched, when the matches contradict each other,
 /// or when the result scores below [`MIN_REPORTABLE_ACCURACY`].
-pub fn classify(db: &RuleDb, observed: &StackObservation) -> Option<OsVerdict> {
-    let matched: Vec<&OsDefinition> = db.matching(observed).collect();
+pub fn classify(db: &RuleDb, reply: &StackReply) -> Option<OsVerdict> {
+    let matched: Vec<&OsDefinition> = db.matching(reply).collect();
     let (first, rest) = matched.split_first()?;
 
     // A family the matches do not share is a contradiction, not a ranking.
@@ -254,11 +254,11 @@ pub fn classify(db: &RuleDb, observed: &StackObservation) -> Option<OsVerdict> {
         cpe: agreed(|rule| &rule.os.cpe),
         accuracy,
         source: OsSource::TcpStack,
-        evidence: observed.summary(),
+        evidence: reply.summary(),
     })
 }
 
-/// Names the operating system behind a reply, from bytes.
+/// Names the operating system behind a TCP reply, from bytes.
 ///
 /// The whole path in one call, for a caller who has a TCP segment and what its
 /// IP header said: build the observation, ask the shipped rules, return what can
@@ -268,7 +268,21 @@ pub fn classify_reply(
     segment: &[u8],
 ) -> Option<OsVerdict> {
     let observed = StackObservation::from_tcp(ip, segment)?;
-    classify(RuleDb::global(), &observed)
+    classify(RuleDb::global(), &observed.into())
+}
+
+/// Names the operating system behind an echo reply, from bytes.
+///
+/// The counterpart of [`classify_reply`] for the reply a host with no open and
+/// no closed port can still give. `sent_payload` is what the request carried,
+/// which is the only way to know whether what came back is what went out.
+pub fn classify_echo_reply(
+    ip: crate::model::capture::IpObservation,
+    message: &[u8],
+    sent_payload: &[u8],
+) -> Option<OsVerdict> {
+    let observed = super::observation::EchoObservation::from_echo_reply(ip, message, sent_payload)?;
+    classify(RuleDb::global(), &observed.into())
 }
 
 // ╔════════════════════════════════════════════╗
@@ -416,7 +430,8 @@ mod tests {
             ip(),
             &segment(flags::SYN | flags::ACK, 65_160, &DEBIAN_BOOKWORM),
         )
-        .unwrap();
+        .unwrap()
+        .into();
 
         assert_eq!(db.matching(&observed).count(), 2, "both rules match");
         assert!(

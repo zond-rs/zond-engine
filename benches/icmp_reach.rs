@@ -17,8 +17,14 @@
 //!
 //! So the question here is yes or no. Send an echo to each target over the raw
 //! ICMP socket, print what came back, and say whether the reply crossed a
-//! router. If the routed line stays empty the ICMP half of phase 6 does not
-//! work and nothing built on it will either.
+//! router. The request carries [`ECHO_PROBE_CODE`] rather than a conformant
+//! zero, because that is what the fingerprinting probe sends and a path that
+//! drops one is worth finding out about here rather than later — the code that
+//! comes back is printed, and it is itself a discriminator. If the routed line
+//! stays empty the ICMP half of phase 6 does not work and nothing built on it
+//! will either.
+//!
+//! [`ECHO_PROBE_CODE`]: zond_engine::protocols::icmp::ECHO_PROBE_CODE
 //!
 //! ```text
 //! cargo bench --no-run --bench icmp_reach
@@ -105,15 +111,20 @@ async fn main() {
             println!("{address}: no source address reaches it");
             continue;
         };
-        let message =
-            match icmp::create_echo_request_message(source, address, identifier, sequence, PAYLOAD)
-            {
-                Ok(message) => message,
-                Err(e) => {
-                    println!("{address}: cannot build an echo request: {e}");
-                    continue;
-                }
-            };
+        let message = match icmp::create_echo_request_message(
+            source,
+            address,
+            icmp::ECHO_PROBE_CODE,
+            identifier,
+            sequence,
+            PAYLOAD,
+        ) {
+            Ok(message) => message,
+            Err(e) => {
+                println!("{address}: cannot build an echo request: {e}");
+                continue;
+            }
+        };
         match transport.tx.send(&message, source, address) {
             Ok(()) => {
                 sent.insert(sequence, address);
@@ -154,6 +165,7 @@ async fn main() {
             continue;
         };
 
+        let code = reply.bytes.get(1).copied().unwrap_or_default();
         let echoed = reply.bytes.len().saturating_sub(8);
         let intact = reply.bytes.get(8..).is_some_and(|tail| tail == PAYLOAD);
         let hops = reply
@@ -174,7 +186,7 @@ async fn main() {
         answered.insert(
             asked,
             format!(
-                "hops left {hops}; {echoed} payload byte(s) back, {}{from}",
+                "hops left {hops}; code {code} back; {echoed} payload byte(s) back, {}{from}",
                 if intact { "intact" } else { "CHANGED" },
             ),
         );
