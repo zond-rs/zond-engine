@@ -312,6 +312,16 @@ pub fn classify_probe_response(packet: &TcpPacket) -> Option<TcpReply> {
         Some(TcpReply::Rst)
     } else if flags & flags::SYN != 0 && flags & flags::ACK != 0 {
         Some(TcpReply::SynAck)
+    } else if flags & flags::ACK != 0 && flags & (flags::SYN | flags::FIN) == 0 {
+        // ACK and nothing structural beside it: a challenge ACK, which a stack
+        // sends for a segment that does not fit a connection it already holds.
+        // Checked last, so a SYN+ACK and a RST+ACK are classified as what they
+        // are first — this is the *remainder* of the acknowledging segments, not
+        // a competing reading of them.
+        //
+        // FIN is excluded because a FIN+ACK is a peer closing a connection, which
+        // is a statement about a conversation rather than an answer to a probe.
+        Some(TcpReply::ChallengeAck)
     } else {
         None
     }
@@ -584,12 +594,44 @@ mod tests {
         );
     }
 
+    /// An acknowledgement with nothing structural beside it is a *challenge
+    /// ACK*: a stack saying the segment does not fit a connection it already
+    /// holds (RFC 793 §3.9, and RFC 5961 §4 for a SYN specifically). Only a host
+    /// with a half-open connection sends one, and only a listener has one — so
+    /// this is positive evidence about a port rather than the noise it was read
+    /// as before.
+    ///
+    /// It is the reply a *retransmitted* SYN draws when the first SYN+ACK was
+    /// lost, which is why discarding it lost open ports on exactly the paths
+    /// retransmission exists for. See `docs/bugs.md`.
     #[test]
-    fn ignores_unrelated_flag_combinations() {
+    fn classifies_a_bare_ack_as_a_challenge() {
         let bytes = packet_with_flags(flags::ACK);
         assert_eq!(
             classify_probe_response(&TcpPacket::new(&bytes).unwrap()),
-            None
+            Some(TcpReply::ChallengeAck)
         );
+    }
+
+    /// The segments that are still nothing to do with a probe. Each carries
+    /// something the challenge reading must not swallow: a FIN+ACK is a peer
+    /// closing a conversation, a bare SYN is somebody opening one, and a lone
+    /// PSH or URG acknowledges nothing at all.
+    #[test]
+    fn ignores_unrelated_flag_combinations() {
+        for flags in [
+            flags::ACK | flags::FIN,
+            flags::SYN,
+            flags::PSH,
+            flags::URG,
+            0,
+        ] {
+            let bytes = packet_with_flags(flags);
+            assert_eq!(
+                classify_probe_response(&TcpPacket::new(&bytes).unwrap()),
+                None,
+                "flags {flags:#04b} answer no probe"
+            );
+        }
     }
 }

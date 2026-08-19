@@ -58,7 +58,7 @@ use crate::fingerprinting::os;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
-use crate::model::technique::TcpScanTechnique;
+use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols::tcp;
 use crate::scanner::pacing::deadline::AdaptiveDeadline;
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
@@ -276,7 +276,7 @@ impl TcpPortScanner {
             nonce: tcp::echoed_nonce(self.technique, &tcp_packet),
         };
         let key = (ip, tcp_packet.get_source());
-        self.resolve_probe(key, Some(token), state, None, now);
+        self.resolve_probe(key, Some(token), state, None, Some(reply), now);
 
         self.identify_stack(ip, state, captured);
     }
@@ -376,7 +376,14 @@ impl TcpPortScanner {
             // rejected the probe on the host's behalf, which is a filter and
             // not a closed port.
             Unreachable::Port | Unreachable::Prohibited => {
-                self.resolve_probe(key, token, PortState::Filtered, Some(reply.source), now);
+                self.resolve_probe(
+                    key,
+                    token,
+                    PortState::Filtered,
+                    Some(reply.source),
+                    None,
+                    now,
+                );
             }
         }
     }
@@ -394,6 +401,7 @@ impl TcpPortScanner {
         token: Option<TcpToken>,
         state: PortState,
         sender: Option<IpAddr>,
+        drawn_by: Option<TcpReply>,
         now: Instant,
     ) {
         let Some(resolution) = self.core.ledger.resolve(&key, token, now) else {
@@ -412,7 +420,7 @@ impl TcpPortScanner {
             .audit
             .record_host_found(resolution.answered_attempt);
 
-        self.record_port(key.0, key.1, state, sender);
+        self.record_port_drawn_by(key.0, key.1, state, sender, drawn_by);
     }
 
     /// Which protocol a host verdict from this scan is credited to.
@@ -523,11 +531,47 @@ impl RawPortScan for TcpPortScanner {
     ///   Silence is not evidence about a host, and promoting it would make
     ///   `is_alive()` true for a host that has never sent a packet.
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState, sender: Option<IpAddr>) {
+        // The shared loop reaches a verdict from a spent budget rather than from
+        // a packet, so it has no reply to name. Everything a reply *did* draw
+        // goes through the fuller form below.
+        self.record_port_drawn_by(ip, port_num, state, sender, None);
+    }
+}
+
+impl TcpPortScanner {
+    /// [`record_port`](RawPortScan::record_port), also saying which reply
+    /// produced the verdict.
+    ///
+    /// Kept off the shared trait because it is a TCP concept: the UDP scanner
+    /// implements the same trait and has no notion of a segment's flags, and
+    /// widening the shared signature to carry one would put a protocol's
+    /// vocabulary into the machinery both protocols share.
+    fn record_port_drawn_by(
+        &mut self,
+        ip: IpAddr,
+        port_num: u16,
+        state: PortState,
+        sender: Option<IpAddr>,
+        drawn_by: Option<TcpReply>,
+    ) {
         let port = crate::fingerprinting::baseline_port(port_num, Protocol::Tcp, state);
         let evidence = match (state, sender) {
+            // Both routes to an open port, told apart. A handshake is the peer
+            // accepting the connection; a challenge ACK is the peer saying it is
+            // *already* half-open on one, which only a listener can be. Same
+            // verdict, materially different evidence, and a report that called
+            // the second a handshake would be describing a packet nobody sent.
             (PortState::Open, _) => Some((
                 HostStatus::Up,
-                StatusReason::new(StatusProtocol::TcpSyn, "syn-ack from a probed port"),
+                StatusReason::new(
+                    StatusProtocol::TcpSyn,
+                    match drawn_by {
+                        Some(TcpReply::ChallengeAck) => {
+                            "challenge ack from a probed port, so a listener holds it half-open"
+                        }
+                        _ => "syn-ack from a probed port",
+                    },
+                ),
             )),
             // Both verdicts a RST can produce: closed for the techniques that
             // read it as an absent listener, unfiltered for the ACK scan, which

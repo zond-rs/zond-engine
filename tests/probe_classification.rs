@@ -781,3 +781,87 @@ async fn a_scan_names_no_operating_system_from_a_closed_port_alone() {
         "a reset carries no options, so it can name no operating system"
     );
 }
+
+// ── The lost-answer path ─────────────────────────────────────────────────────
+
+/// An open port whose first answer never arrived is still reported open.
+///
+/// The defect this covers, recorded in `docs/bugs.md` and found while measuring
+/// something else. The sequence is ordinary and the failure was silent:
+///
+/// 1. A SYN reaches an open port, which accepts and holds the connection.
+/// 2. The SYN+ACK is lost. This host never sees it, so it never resets it, and
+///    the target goes on holding a connection nobody is coming back for.
+/// 3. The scan retransmits — carrying a *fresh* nonce, deliberately, so a late
+///    reply names the attempt it answers.
+/// 4. That SYN does not fit the held connection, so the target challenges it
+///    rather than answering it (RFC 793 §3.9, RFC 5961 §4).
+///
+/// Every retransmission after the first draws a challenge, all of them were
+/// discarded as noise, and the port resolved `Filtered` once the budget ran out
+/// — an open port reported firewalled on a lossy path, which is precisely the
+/// case retransmission exists to rescue.
+///
+/// It stayed invisible because the ordinary path never reaches step 2: when the
+/// SYN+ACK *does* arrive, this host's kernel resets it — no socket owns the
+/// scan's source port — which clears the target's half-open connection, so the
+/// next attempt meets a listener in LISTEN and gets a clean handshake.
+///
+/// And no test could reach it, because the simulated network answered each probe
+/// from its flags alone. A stateless target cannot answer a second SYN
+/// differently from the first, so the defect was unreachable by construction.
+#[tokio::test]
+async fn an_open_port_whose_first_answer_was_lost_is_still_found() {
+    // The probe lands and the answer vanishes, which is what leaves the target
+    // holding a connection the scanner knows nothing about.
+    let (session, _net) = syn_scan(&[(80, Policy::open().drop_first_reply(1))]).await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 80),
+        Some(PortState::Open),
+        "the retransmission drew a challenge, which only a listener can send"
+    );
+}
+
+/// And the report says which of the two answers it was.
+///
+/// Same verdict, materially different evidence: a handshake is the peer
+/// accepting a connection, a challenge is the peer saying it is already holding
+/// one. Calling the second a handshake would describe a packet nobody sent, and
+/// the distinction is what lets somebody reading a report tell a clean scan from
+/// one that fought a lossy path.
+#[tokio::test]
+async fn the_report_distinguishes_a_challenge_from_a_handshake() {
+    let (session, _net) = syn_scan(&[(80, Policy::open().drop_first_reply(1))]).await;
+    let host = session.hosts().get(&TARGET).expect("host recorded");
+
+    assert!(
+        host.reasons().iter().any(|reason| reason
+            .details
+            .as_deref()
+            .unwrap_or("")
+            .contains("challenge ack")),
+        "the evidence should name what actually arrived, got {:?}",
+        host.reasons()
+            .iter()
+            .map(|r| r.details.as_deref().unwrap_or("-").to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The guard that keeps the above from being a licence to believe any bare ACK.
+///
+/// A challenge is trusted because it acknowledges a probe *this scan sent*, and
+/// the ledger checks that. Somebody else's session carries sequence numbers from
+/// a conversation the scan is not part of, and must resolve nothing however many
+/// ACKs it produces.
+#[tokio::test]
+async fn a_bare_ack_from_another_conversation_still_resolves_nothing() {
+    let (session, _net) = syn_scan(&[(80, Policy::established())]).await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 80),
+        Some(PortState::Filtered),
+        "an ACK that answers none of this scan's probes is not evidence about the port"
+    );
+}

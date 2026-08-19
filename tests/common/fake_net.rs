@@ -192,6 +192,12 @@ pub enum Reply {
     /// kernel drops it and this reply never reaches a scanner at all - which is
     /// the asymmetry worth testing, since the two families must still conclude
     /// the same thing.
+    ///
+    /// Its sequence and acknowledgement belong to a conversation this scan is not
+    /// part of, because that is what makes it somebody else's. A bare ACK that
+    /// *does* acknowledge one of this scan's probes is a different segment
+    /// entirely — a challenge, from a port already holding a connection open —
+    /// and the nonce is what separates them.
     Established,
 }
 
@@ -277,6 +283,14 @@ pub enum Loss {
 pub struct Policy {
     reply: Reply,
     loss: Loss,
+    /// Replies the target sends and the scanner never receives.
+    ///
+    /// A different failure from [`loss`](Self::loss), and the difference is the
+    /// whole point of having both: a lost *probe* leaves the target with no
+    /// memory of it, while a lost *reply* leaves the target holding a connection
+    /// the scanner does not know exists. What the scanner's next probe draws is
+    /// not another first answer, and only this can reproduce that.
+    reply_loss: Loss,
     delay: Duration,
     /// Deliver the reply twice. A duplicate is normal on a real network (the
     /// host retransmits because our ACK never came) and must not be counted as
@@ -327,6 +341,7 @@ impl Policy {
         Self {
             reply,
             loss: Loss::None,
+            reply_loss: Loss::None,
             delay: Duration::ZERO,
             duplicated: false,
         }
@@ -335,6 +350,18 @@ impl Policy {
     /// Swallows the first `n` probes to this target. See [`Loss::First`].
     pub fn drop_first(mut self, n: u32) -> Self {
         self.loss = Loss::First(n);
+        self
+    }
+
+    /// Lets the first `n` probes *arrive* and swallows what they drew.
+    ///
+    /// The failure a scanner cannot tell from [`drop_first`](Self::drop_first)
+    /// and a target very much can. The port has accepted a connection attempt
+    /// and is holding it half-open; the scanner, having heard nothing, retries.
+    /// What comes back then is a challenge and not a handshake, and reproducing
+    /// that needs the probe to land and the answer to vanish.
+    pub fn drop_first_reply(mut self, n: u32) -> Self {
+        self.reply_loss = Loss::First(n);
         self
     }
 
@@ -406,6 +433,17 @@ struct State {
     rng: SplitMix64,
     /// Probes seen per target, which is what [`Loss::First`] counts against.
     attempts: HashMap<(IpAddr, u16), u32>,
+    /// Replies withheld per target, which is what [`Loss::First`] on
+    /// `reply_loss` counts against.
+    withheld: HashMap<(IpAddr, u16), u32>,
+    /// Connections a listening port is holding half-open, against the sequence
+    /// number it is next expecting from the scanner.
+    ///
+    /// A real stack keeps this and a stateless simulator cannot, which is why
+    /// this file could not reproduce a whole class of defect: a second SYN on a
+    /// connection already half-open is not a second connection attempt, and what
+    /// comes back is not a second handshake.
+    half_open: HashMap<(IpAddr, u16), u32>,
     log: Vec<Probe>,
 }
 
@@ -428,6 +466,8 @@ impl FakeNet {
             state: Arc::new(Mutex::new(State {
                 rng: SplitMix64::new(seed),
                 attempts: HashMap::new(),
+                withheld: HashMap::new(),
+                half_open: HashMap::new(),
                 log: Vec::new(),
             })),
         }
@@ -532,7 +572,16 @@ impl ProbeSender for FakeLink {
             return Ok(());
         }
 
-        for reply in self.replies_to(&probe, policy.reply, src, dst) {
+        let replies = self.replies_to(&probe, policy.reply, src, dst);
+
+        // Checked *after* the answer has been worked out, which is the whole
+        // difference from `loss`: the target has already accepted the connection
+        // and is holding it, and only the scanner is left without an answer.
+        if self.withhold(dst, probe.port, policy.reply_loss) {
+            return Ok(());
+        }
+
+        for reply in replies {
             self.deliver(reply, policy);
         }
 
@@ -594,6 +643,29 @@ impl FakeLink {
     /// Counting and the coin flip happen together under one lock, so probes
     /// racing in from a concurrent scan still consume the generator in a single
     /// well-defined order.
+    /// Whether the answer this probe drew is swallowed on the way back.
+    ///
+    /// Counted separately from [`admit`](Self::admit), against its own tally, so
+    /// a policy can lose probes and replies independently — and, importantly,
+    /// this does not write to the probe log: the probe *arrived*, and a log
+    /// saying otherwise would misreport what the target saw.
+    fn withhold(&self, target: IpAddr, port: u16, loss: Loss) -> bool {
+        if loss == Loss::None {
+            return false;
+        }
+
+        let mut state = self.state.lock().expect("fake net state");
+        let withheld = state.withheld.entry((target, port)).or_insert(0);
+        *withheld += 1;
+        let nth = *withheld;
+
+        match loss {
+            Loss::None => false,
+            Loss::First(n) => nth <= n,
+            Loss::Rate(p) => state.rng.next_unit() < p,
+        }
+    }
+
     fn admit(&self, target: IpAddr, port: u16, loss: Loss) -> bool {
         let mut state = self.state.lock().expect("fake net state");
 
@@ -633,7 +705,23 @@ impl FakeLink {
 
             (Layer4::Tcp, Reply::Open) => self.tcp_answer(probe, scanner, target, true),
             (Layer4::Tcp, Reply::Closed) => self.tcp_answer(probe, scanner, target, false),
-            (Layer4::Tcp, Reply::Established) => self.tcp_reply(probe, scanner, target, ACK),
+            (Layer4::Tcp, Reply::Established) => {
+                // Sequence numbers belonging to a conversation this scan is not
+                // part of, which is the whole of what makes this segment
+                // somebody else's.
+                //
+                // It used to be built with `tcp_reply`, which acknowledges the
+                // probe — so the simulated "unrelated traffic" carried this
+                // scan's own nonce and was indistinguishable, on the wire, from a
+                // segment genuinely answering it. The test resting on it passed
+                // for the wrong reason: the engine was declining every bare ACK,
+                // rather than declining the ones that answer nothing.
+                //
+                // A real third-party ACK matching a probe's nonce is a one-in-2^32
+                // coincidence, and the nonce is exactly what tells the two apart.
+                let (seq, ack) = (self.next_u32(), self.next_u32());
+                self.tcp_segment(probe, scanner, target, ACK, seq, ack)
+            }
             (Layer4::Tcp, Reply::Unreachable(reason)) => {
                 self.icmp_reply(probe, scanner, target, reason)
             }
@@ -691,8 +779,48 @@ impl FakeLink {
         let carries = |flag: u8| probe.flags & flag != 0;
 
         if carries(SYN) {
-            let flags = if listening { SYN | ACK } else { RST | ACK };
-            return self.tcp_reply(probe, scanner, target, flags);
+            if !listening {
+                return self.tcp_reply(probe, scanner, target, RST | ACK);
+            }
+
+            // A listener accepts, and then *remembers*. What it is next expecting
+            // from this peer is the sequence number just after the SYN it
+            // accepted, and a later SYN carrying anything else does not belong to
+            // that connection.
+            //
+            // RFC 793 §3.9 requires an unacceptable segment to be acknowledged
+            // rather than answered, and RFC 5961 §4 makes that mandatory for a
+            // SYN specifically, to close the blind-reset window. The reply is an
+            // acknowledgement of the *first* attempt — it carries `RCV.NXT` —
+            // which is why it correlates back to a probe the scanner may have
+            // stopped waiting for.
+            let expecting = probe.seq.wrapping_add(1);
+            let held = {
+                let mut state = self.state.lock().expect("fake net state");
+                match state.half_open.get(&(target, probe.port)).copied() {
+                    Some(rcv_nxt) => Some(rcv_nxt),
+                    None => {
+                        state.half_open.insert((target, probe.port), expecting);
+                        None
+                    }
+                }
+            };
+
+            return match held {
+                // A retransmission of the very same SYN: the connection is
+                // already open on exactly this sequence, so the handshake is
+                // simply sent again.
+                Some(rcv_nxt) if rcv_nxt == expecting => {
+                    self.tcp_reply(probe, scanner, target, SYN | ACK)
+                }
+                // A different SYN on a connection already held: challenged, not
+                // answered.
+                Some(rcv_nxt) => {
+                    let snd_nxt = self.next_u32();
+                    self.tcp_segment(probe, scanner, target, ACK, snd_nxt, rcv_nxt)
+                }
+                None => self.tcp_reply(probe, scanner, target, SYN | ACK),
+            };
         }
 
         // The quirk this exists to model, and the whole of the Maimon finding:

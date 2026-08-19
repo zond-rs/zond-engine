@@ -31,7 +31,7 @@ use std::{
 use crate::config::ProbeTuning;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
-use crate::model::technique::TcpScanTechnique;
+use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols as protocol;
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
@@ -318,15 +318,28 @@ fn send_udp(
     }
 }
 
-/// Whether `bytes` is one of the two segments a SYN probe can draw.
+/// Whether `bytes` is one of the two segments a SYN probe can draw *and be
+/// credited for without correlating it*.
 ///
 /// A SYN+ACK and a RST each require the target to have received the probe and
 /// answered it, and nothing else a SYN elicits sets either flag. Anything else
 /// from the same address is traffic that happens to share a host with the scan.
+///
+/// **A challenge ACK is deliberately excluded, though it is a genuine answer.**
+/// It says a listener holds a connection half-open, which the port scanner acts
+/// on — but the port scanner earns that by checking the probe's nonce against
+/// its ledger, and this sweep has no ledger and checks nothing. A bare ACK is
+/// the commonest segment on any network: every established connection emits a
+/// stream of them, and a scan of an address somebody is talking to would credit
+/// the host on the strength of that conversation. The flags of a SYN+ACK or a
+/// RST are their own correlation; the flags of an ACK are not.
+///
+/// The asymmetry is the point. Evidence usable where it can be tied to a probe
+/// is not usable where it cannot.
 fn answers_a_syn_probe(bytes: &[u8]) -> bool {
     TcpPacket::new(bytes)
         .and_then(|tcp| protocol::tcp::classify_probe_response(&tcp))
-        .is_some()
+        .is_some_and(|reply| !matches!(reply, TcpReply::ChallengeAck))
 }
 
 pub struct RoutedScanner {

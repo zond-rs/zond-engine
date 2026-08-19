@@ -76,6 +76,23 @@ pub enum TcpReply {
     SynAck,
     /// RST: a refusal. Which refusal depends on what was asked.
     Rst,
+
+    /// ACK alone: a *challenge ACK*, and the only reply here that is not an
+    /// answer to the probe that drew it.
+    ///
+    /// A stack sends one when a SYN arrives for a connection it is already
+    /// half-open on and the sequence number does not fit that connection's
+    /// window (RFC 793 §3.9 requires an acknowledgement for an unacceptable
+    /// segment; RFC 5961 §4 makes it mandatory for a SYN specifically, to close
+    /// the blind-reset window). It carries `RCV.NXT`, which acknowledges the
+    /// **earlier** attempt that opened the connection rather than the one that
+    /// provoked this.
+    ///
+    /// **Only a host holding a half-open connection sends one, and only a
+    /// listener holds one.** A closed port has no state to challenge from; it
+    /// resets. So this is positive evidence of an open port, arriving by a
+    /// different route than a handshake.
+    ChallengeAck,
 }
 
 /// How a TCP port is probed.
@@ -203,6 +220,20 @@ impl TcpScanTechnique {
             // stack saying nothing holds that port.
             (Self::Syn, TcpReply::SynAck) => Some(PortState::Open),
             (Self::Syn, TcpReply::Rst) => Some(PortState::Closed),
+
+            // A challenge ACK means a stack is already half-open on this
+            // connection, which only a listener is. It reaches this scan on the
+            // path that matters: when a SYN+ACK is lost, this host never resets
+            // it, the peer stays in SYN-RECEIVED, and every retransmission draws
+            // one of these instead of a fresh handshake. Reading it as noise
+            // reported those ports filtered — an open port on a lossy path,
+            // which is exactly the case retransmission exists for.
+            (Self::Syn, TcpReply::ChallengeAck) => Some(PortState::Open),
+
+            // No other technique opens a connection, so none can legitimately
+            // provoke a challenge. A bare ACK drawn by a FIN or an ACK probe is
+            // somebody else's traffic that happened to carry the right nonce, and
+            // resolving a port on it would be resolving it on a coincidence.
 
             // A RST is what only a closed port is obliged to send; the silence
             // of an open one is handled by `silence_means`.
