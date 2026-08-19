@@ -57,6 +57,10 @@ mod tls_summary;
 
 #[cfg(test)]
 mod corpus;
+// Kept apart from `pattern` because `build.rs` loads that file with `#[path]`
+// and has no `proptest`; see the module docs.
+#[cfg(test)]
+mod pattern_properties;
 
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::SignatureDb;

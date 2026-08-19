@@ -218,7 +218,6 @@ impl CompiledPattern {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
     const LIMIT: usize = 32 * 1024 * 1024;
 
@@ -289,25 +288,5 @@ mod tests {
         assert_eq!(compile(r"^ab$", LIMIT).unwrap().captures_len(), 1); // group 0 only
         assert_eq!(compile(r"^(a)(b)$", LIMIT).unwrap().captures_len(), 3); // + two groups
         assert_eq!(compile(r"^(\w+)\s+\1$", LIMIT).unwrap().captures_len(), 2); // fancy: + one
-    }
-
-    proptest! {
-        /// The backtracking engine must *terminate* on any input — the
-        /// backtrack-step limit is what guarantees it. This drives a backref
-        /// pattern (which forces the fancy engine) against arbitrary strings; the
-        /// test completing at all is the evidence that no input hangs or panics.
-        #[test]
-        fn fancy_engine_matching_terminates_on_any_input(input in "(?s).*") {
-            let compiled = compile(r"^(\w+)\s+\1$", LIMIT).unwrap();
-            let _ = compiled.identify(&input, None);
-        }
-
-        /// Even a pattern built for catastrophic backtracking stays bounded: fed
-        /// adversarial all-`a` inputs of growing length, each match still returns.
-        #[test]
-        fn catastrophic_pattern_stays_bounded(len in 0usize..64) {
-            let compiled = compile(r"(a+)+\1c", LIMIT).unwrap();
-            let _ = compiled.identify(&"a".repeat(len), None);
-        }
     }
 }
