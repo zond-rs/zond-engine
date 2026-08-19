@@ -172,7 +172,14 @@ fn best_match(db: &SignatureDb, indices: &[usize], response: &str) -> Option<Evi
         .filter_map(|&idx| db.signature(idx).identify(response))
         // Replace only on a strictly better match, so the lowest index wins ties.
         .reduce(|best, m| if m.quality > best.quality { m } else { best })
-        .map(|m| m.evidence)
+        // The match's operating-system reading travels on the evidence it
+        // becomes. It is retained by `ServiceVerdict` rather than ranked by it —
+        // the resolver ranks services, and what a banner implies about the
+        // machine is a different question with different rules.
+        .map(|m| Evidence {
+            os: m.os,
+            ..m.evidence
+        })
 }
 
 /// Marks `evidence` with the tunnel its response was read through (so a banner

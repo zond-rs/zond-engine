@@ -123,6 +123,7 @@ impl<'a> Prepared<'a> {
         // overwhelming majority of a large rule set before the string comparison
         // is ever reached.
         accepts_optional(&rule.initial_hops, Some(&self.initial_hops))
+            && accepts_optional(&rule.window, Some(&self.observed.window))
             && accepts_optional(&rule.window_units, self.window_units.as_ref())
             && accepts_optional(&rule.window_remainder, self.window_remainder.as_ref())
             && accepts_optional(&rule.window_scale, self.observed.window_scale.as_ref())

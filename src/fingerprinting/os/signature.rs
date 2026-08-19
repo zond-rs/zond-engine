@@ -178,6 +178,24 @@ pub struct MatchRule {
     /// [`StackObservation::layout_string`]: super::StackObservation::layout_string
     pub option_layout: Option<Predicate<String>>,
 
+    /// The advertised window exactly as written.
+    ///
+    /// **For stacks that advertise a constant**, which is the other of the two
+    /// ways a stack picks a window and the one
+    /// [`window_units`](Self::window_units) cannot express. Darwin announces
+    /// 65535 — the largest value the field holds — whatever the path's segment
+    /// size is, so its window is not a multiple of anything and the derived
+    /// figures move with the path for no reason belonging to the sender: at an
+    /// MSS of 1460 it reads `45 x 1448 + 375`, and at 1360 it reads
+    /// `48 x 1348 + 831`. A rule keyed on those would match one path and not the
+    /// next.
+    ///
+    /// Use this where the stack picks a number, and
+    /// [`window_units`](Self::window_units) where it picks a multiple. Using
+    /// this for a stack of the second kind is the mistake it exists to prevent
+    /// on the first: the raw value then moves with whatever the probe offered.
+    pub window: Option<Predicate<u16>>,
+
     /// The advertised window as a multiple of the effective segment size.
     ///
     /// **This rather than the raw window.** A stack counts its window in units

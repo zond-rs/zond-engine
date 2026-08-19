@@ -180,6 +180,7 @@ fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
         initial_hops,
         dont_fragment,
         option_layout,
+        window,
         window_units,
         window_remainder,
         window_scale,

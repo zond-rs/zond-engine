@@ -36,6 +36,7 @@ use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
 use tokio::time::timeout;
 
+use crate::fingerprinting::os;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::scanner::pool::ProbePool;
@@ -60,8 +61,8 @@ pub async fn detect(ctx: &ScanContext) {
         ctx.clone(),
         ScannerKind::Connect,
         |fingerprinted, _audit| {
-            if let Some((ip, port)) = fingerprinted {
-                write_back(ctx, ip, port);
+            if let Some((ip, port, about_the_host)) = fingerprinted {
+                write_back(ctx, ip, port, about_the_host);
             }
         },
     );
@@ -97,14 +98,18 @@ fn open_tcp_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16)> {
 }
 
 /// Connects to one open port and fingerprints it, returning the upgraded [`Port`]
-/// or `None` if the connection could not be established (the port keeps whatever
-/// the discovery phase already recorded).
+/// and whatever the service said about the machine behind it, or `None` if the
+/// connection could not be established (the port keeps whatever the discovery
+/// phase already recorded).
 ///
 /// A link-local address with no interface recorded against it yields no socket
 /// address at all, and is skipped with a word about why. Attempting the
 /// connection anyway would fail with an error describing the network, which is a
 /// claim about the neighbour rather than about what this host knows.
-async fn fingerprint_one(target: ScopedIp, port_number: u16) -> Option<(IpAddr, Port)> {
+async fn fingerprint_one(
+    target: ScopedIp,
+    port_number: u16,
+) -> Option<(IpAddr, Port, Vec<os::OsEvidence>)> {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
             verbosity = 1,
@@ -121,16 +126,46 @@ async fn fingerprint_one(target: ScopedIp, port_number: u16) -> Option<(IpAddr, 
     // Seed the same baseline the connect scanner uses, then let the engine
     // refine it over the live connection.
     let port = crate::fingerprinting::baseline_port(port_number, Protocol::Tcp, PortState::Open);
-    let port = crate::fingerprinting::fingerprint_tcp(stream, port).await;
-    Some((ip, port))
+    let (port, about_the_host) =
+        crate::fingerprinting::fingerprint_tcp_detailed(stream, port).await;
+    Some((ip, port, about_the_host))
 }
 
 /// Folds a freshly fingerprinted port back into its host and announces the
 /// update. [`Port::merge`] is confidence-driven, so the fingerprint overwrites
 /// the discovery phase's name-only baseline.
-fn write_back(ctx: &ScanContext, ip: IpAddr, port: Port) {
+///
+/// `about_the_host` is what the service said about the *machine*, which is a
+/// different finding filed in a different place: the service belongs to the port,
+/// the operating system to the host.
+fn write_back(ctx: &ScanContext, ip: IpAddr, port: Port, about_the_host: Vec<os::OsEvidence>) {
     ctx.update_host(ip, |host| {
         host.add_port(port);
+
+        if about_the_host.is_empty() {
+            return;
+        }
+
+        // Folded together with what the host's hardware says, and with whatever
+        // a stack reading already concluded — the point of the evidence bus is
+        // that a banner agreeing with the wire is worth more than either.
+        let mut evidence = about_the_host;
+        if let Some(hardware) = host.hardware().and_then(os::hardware_evidence) {
+            evidence.push(hardware);
+        }
+        let Some(resolved) = os::resolve(evidence) else {
+            return;
+        };
+
+        let fingerprint = resolved.to_fingerprint();
+        match host.os() {
+            Some(existing) => {
+                let mut merged = existing.clone();
+                merged.merge(fingerprint);
+                host.set_os(merged);
+            }
+            None => host.set_os(fingerprint),
+        }
     });
 }
 

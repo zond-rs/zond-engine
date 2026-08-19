@@ -95,17 +95,37 @@ impl Analyzer for HttpHeadersAnalyzer {
         )];
 
         // The `Server` header: the long-tail product/version signal.
-        if let Some((product, version)) = http.header("server").and_then(parse_server) {
-            let confidence = if version.is_some() {
-                Confidence::Strong
-            } else {
-                Confidence::Probable
-            };
-            let mut server = Evidence::new(SourceId::HttpHeaders, confidence)
-                .with_service("http")
-                .with_product(product);
-            server.version = version;
-            evidence.push(stamp(server, ctx));
+        if let Some(header) = http.header("server") {
+            if let Some((product, version)) = parse_server(header) {
+                let confidence = if version.is_some() {
+                    Confidence::Strong
+                } else {
+                    Confidence::Probable
+                };
+                let mut server = Evidence::new(SourceId::HttpHeaders, confidence)
+                    .with_service("http")
+                    .with_product(product);
+                server.version = version;
+                evidence.push(stamp(server, ctx));
+            }
+
+            // And the same header, whole, against the signature set — which is
+            // what reaches the imported rules that name an *operating system*.
+            //
+            // They cannot be reached any other way. Those patterns are written
+            // against a `Server` value and anchored at both ends
+            // (`^Microsoft-IIS/6.0$`), so matching them against a whole response
+            // fails however much of the response is right. That single mismatch
+            // hid the largest family of operating-system-bearing rules in the
+            // corpus — the web servers, which map a server version to a precise
+            // Windows release — behind an analyzer that had the exact text they
+            // wanted sitting in a local.
+            if let Some(os) = os_from(header) {
+                let mut carrier =
+                    Evidence::new(SourceId::HttpHeaders, Confidence::Probable).with_service("http");
+                carrier.os = Some(os);
+                evidence.push(stamp(carrier, ctx));
+            }
         }
 
         // `X-Powered-By`: a *secondary* technology (PHP, ASP.NET, Express). It
@@ -129,6 +149,38 @@ impl Analyzer for HttpHeadersAnalyzer {
 fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
     evidence.tunnel = ctx.tunnel;
     evidence
+}
+
+/// What the signature set makes of one header value, as an operating system.
+///
+/// Matched globally rather than through the port index: a rule naming a system
+/// from a `Server` value is registered under whatever service it belongs to, not
+/// under port 80, so narrowing by port would skip exactly the rules wanted here.
+/// The literal prefilter keeps that affordable — it selects a handful of
+/// candidates out of thousands before any regex is compiled.
+///
+/// Only the strongest match contributes. A `Server` value that matches several
+/// rules has matched several statements about one machine, and taking them all
+/// would count one header as corroborating itself.
+///
+/// Costs 22–37 µs per header, measured — slowest when nothing matches, since a
+/// miss compiles and tries every candidate the prefilter selected. Paid once per
+/// open HTTP port, against a path that has already spent a TCP connect and up to
+/// half a second waiting for the banner, so it does not show.
+fn os_from(header: &str) -> Option<crate::fingerprinting::os::OsEvidence> {
+    use crate::fingerprinting::prefilter::Prefilter;
+
+    let db = crate::fingerprinting::SignatureDb::global();
+    db.prefilter()
+        .candidates(header)
+        .into_iter()
+        .filter_map(|index| db.signature(index).identify(header))
+        .filter_map(|matched| matched.os)
+        .max_by(|a, b| {
+            a.confidence
+                .partial_cmp(&b.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
 }
 
 /// Splits a `Server` header value into a product and optional version.
@@ -399,5 +451,83 @@ mod tests {
             &Collected::default(),
         );
         assert!(evidence.iter().all(|e| e.tunnel == Some(Tunnel::Tls)));
+    }
+}
+
+#[cfg(test)]
+mod os_from_headers {
+    use super::*;
+    use crate::fingerprinting::response::Collected;
+
+    /// The seam this exists to close, checked against the shipped corpus rather
+    /// than a fixture.
+    ///
+    /// A real `Server` header, through the real analyzer, has to reach the
+    /// imported rule that maps that server version to a Windows release. Before
+    /// this, the rule was compiled into the database and unreachable: it is
+    /// anchored to a header *value*, and the matcher only ever saw whole
+    /// responses.
+    #[test]
+    fn a_server_header_reaches_the_rules_that_name_a_windows_release() {
+        let evidence = HttpHeadersAnalyzer.analyze(
+            &PortContext {
+                port: 80,
+                addr: None,
+                tunnel: None,
+            },
+            &ResponseSet::from_banners(vec![
+                "HTTP/1.1 200 OK\r\nServer: Microsoft-IIS/6.0\r\nContent-Length: 0\r\n\r\n"
+                    .to_string(),
+            ]),
+            &Collected::default(),
+        );
+
+        let os = evidence
+            .iter()
+            .find_map(|e| e.os.as_ref())
+            .expect("the Server value reaches the operating-system rules");
+
+        assert_eq!(os.family, "Windows");
+        assert_eq!(
+            os.product.as_deref(),
+            Some("Windows Server 2003"),
+            "and carries the precise release the corpus knows, not just the family"
+        );
+    }
+
+    /// The failure mode this replaced. Matching the whole response against rules
+    /// anchored to a header value cannot succeed, and looks exactly like a corpus
+    /// that has no such rule — so the check is that the *response* form still
+    /// fails while the extracted form works.
+    #[test]
+    fn the_whole_response_is_not_what_those_rules_match() {
+        use crate::fingerprinting::prefilter::Prefilter;
+
+        let response = "HTTP/1.1 200 OK\r\nServer: Microsoft-IIS/6.0\r\nContent-Length: 0\r\n\r\n";
+        let db = crate::fingerprinting::SignatureDb::global();
+
+        let from_response = db
+            .prefilter()
+            .candidates(response)
+            .into_iter()
+            .filter_map(|index| db.signature(index).identify(response))
+            .find_map(|matched| matched.os);
+
+        assert!(
+            from_response.is_none(),
+            "if this ever starts matching, the rules changed shape and `os_from` \
+             should be reconsidered rather than left as a workaround"
+        );
+        assert!(
+            os_from("Microsoft-IIS/6.0").is_some(),
+            "while the value those rules are written against does match"
+        );
+    }
+
+    /// A server the corpus knows nothing about must name no operating system,
+    /// rather than falling through to whichever rule is loosest.
+    #[test]
+    fn a_server_the_corpus_does_not_know_names_nothing() {
+        assert!(os_from("SomeServer/1.0").is_none());
     }
 }

@@ -97,6 +97,10 @@ const PUBLISHED_ACCURACY: f32 = 50.0;
 pub enum OsSource {
     /// The shape of a single TCP reply.
     TcpStack,
+    /// The vendor a host's hardware address is registered to.
+    HardwareVendor,
+    /// Text a service volunteered about the system it runs on.
+    ServiceBanner,
 }
 
 /// What the rules concluded about one observation.
@@ -126,6 +130,31 @@ pub struct OsVerdict {
 }
 
 impl OsVerdict {
+    /// Presents this verdict as one item for [`resolve`](super::resolve) to fold
+    /// against other sources.
+    ///
+    /// The accuracy becomes a probability, because that is the scale the
+    /// combining arithmetic works on — a percentage summed against another
+    /// percentage means nothing, where two probabilities for one hypothesis
+    /// combine exactly.
+    ///
+    /// A whole reply is one item, never one per field. Its hop counter, window
+    /// and option layout are consequences of one stack build and agree by
+    /// construction; scoring them apart would count a single observation several
+    /// times over and manufacture confidence out of nothing.
+    pub fn as_evidence(&self) -> super::evidence::OsEvidence {
+        super::evidence::OsEvidence {
+            source: self.source,
+            family: self.family.clone(),
+            vendor: self.vendor.clone(),
+            product: self.product.clone(),
+            version: self.version.clone(),
+            cpe: self.cpe.clone(),
+            confidence: f32::from(self.accuracy) / 100.0,
+            evidence: self.evidence.clone(),
+        }
+    }
+
     /// Projects onto the model's [`OsFingerprint`].
     ///
     /// The name is the most specific thing the rules supported: a product where
@@ -393,6 +422,99 @@ mod tests {
         assert!(
             classify(&db, &observed).is_none(),
             "and the contradiction is reported as no answer, not as the heavier rule"
+        );
+    }
+}
+
+#[cfg(test)]
+mod second_family {
+    use super::*;
+    use crate::model::capture::{IpObservation, Ipv4Observation};
+    use crate::protocols::tcp::flags;
+
+    /// The options a Mac answered with, rebuilt from the values measured off it:
+    /// maximum segment size 1460, no-op, window scale 6, two no-ops, a
+    /// timestamp, SACK-permitted, and the trailing end-of-list that no other
+    /// family in the corpus writes.
+    fn darwin_options() -> Vec<u8> {
+        let mut options = vec![2, 4, 0x05, 0xb4]; // MSS 1460
+        options.push(1); // NOP
+        options.extend_from_slice(&[3, 3, 6]); // window scale 6
+        options.push(1); // NOP
+        options.push(1); // NOP
+        options.extend_from_slice(&[8, 10]); // timestamp
+        options.extend_from_slice(&0x1122_3344u32.to_be_bytes());
+        options.extend_from_slice(&0x5566_7788u32.to_be_bytes());
+        options.extend_from_slice(&[4, 2]); // SACK permitted
+        options.push(0); // end of list
+        options.push(0); // padding to a four-byte boundary
+        options
+    }
+
+    fn segment(flag_byte: u8, window: u16, options: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 20 + options.len()];
+        bytes[0..2].copy_from_slice(&22u16.to_be_bytes());
+        bytes[2..4].copy_from_slice(&50_000u16.to_be_bytes());
+        bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+        bytes[12] = (((20 + options.len()) / 4) as u8) << 4;
+        bytes[13] = flag_byte;
+        bytes[14..16].copy_from_slice(&window.to_be_bytes());
+        bytes[20..].copy_from_slice(options);
+        bytes
+    }
+
+    fn ip() -> IpObservation {
+        IpObservation::V4(Ipv4Observation {
+            ttl: 64,
+            identification: 0,
+            dont_fragment: true,
+            more_fragments: false,
+            dscp: 0,
+            ecn: 0,
+        })
+    }
+
+    /// The corpus now holds a second family confirmed on hardware, which is what
+    /// makes the Linux rules falsifiable: until there was something else for a
+    /// reply to be named, "everything is Linux" and "the rules work" produced the
+    /// same output.
+    ///
+    /// Darwin shares its hop counter with Linux, so nothing in the IP header
+    /// separates them. The option order does, in every position.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_measured_darwin_reply_is_named_macos_and_not_linux() {
+        let observed = classify_reply(
+            ip(),
+            &segment(flags::SYN | flags::ACK, 65_535, &darwin_options()),
+        )
+        .expect("a labelled Mac is identified");
+
+        assert_eq!(observed.family, "macOS");
+        assert_eq!(observed.vendor.as_deref(), Some("Apple"));
+
+        // Confirmed against hardware, so it scores as a measured rule rather
+        // than a published one.
+        assert_eq!(observed.accuracy, MEASURED_ACCURACY as u8);
+    }
+
+    /// The window is where the two families differ in kind rather than in value.
+    /// Linux counts its window in segments; Darwin announces the largest number
+    /// the field holds, whatever the path. A rule that read the second as though
+    /// it were the first would match one network and not the next.
+    #[test]
+    fn a_flat_window_is_not_read_as_a_multiple() {
+        let observed = StackObservation::from_tcp(
+            ip(),
+            &segment(flags::SYN | flags::ACK, 65_535, &darwin_options()),
+        )
+        .expect("the reply parses");
+
+        assert_eq!(observed.window, 65_535);
+        assert_eq!(observed.effective_mss(), Some(1448));
+        assert_eq!(
+            observed.window_in_units(),
+            Some((45, 375)),
+            "the derived figures exist, and describe the path rather than the sender"
         );
     }
 }

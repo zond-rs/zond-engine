@@ -25,6 +25,7 @@
 
 use std::sync::OnceLock;
 
+use crate::fingerprinting::os::OsMetadata;
 use crate::fingerprinting::signature::{MAX_COMPILED_REGEX_BYTES, MatchRule};
 use crate::warn;
 
@@ -42,6 +43,15 @@ pub struct Signature {
     pattern: String,
     /// `None` until first use; `Some(None)` if the pattern failed to compile.
     compiled: OnceLock<Option<CompiledPattern>>,
+
+    /// What this rule says about the operating system underneath the service,
+    /// where it says anything.
+    ///
+    /// Boxed, and absent on most signatures: 2290 of the 4732 shipped rules name
+    /// no operating system, and a scan holds every signature at once. Kept at all
+    /// because dropping it is what made a full imported OS corpus invisible to
+    /// the engine that compiled it.
+    os: Option<Box<OsMetadata>>,
 }
 
 impl Signature {
@@ -55,7 +65,18 @@ impl Signature {
             version_group: rule.version_group,
             pattern: rule.pattern.clone(),
             compiled: OnceLock::new(),
+            os: rule
+                .metadata
+                .as_ref()
+                .and_then(OsMetadata::from_map)
+                .map(Box::new),
         }
+    }
+
+    /// What this signature says about the operating system, before its templates
+    /// are resolved against a match.
+    pub fn os_metadata(&self) -> Option<&OsMetadata> {
+        self.os.as_deref()
     }
 
     /// The raw pattern, for build-time literal extraction by the prefilter.
@@ -91,10 +112,16 @@ impl Signature {
     /// [`MatchQuality`] for ranking it against other signatures that match the
     /// same response. `None` if the pattern does not match.
     pub fn identify(&self, response: &str) -> Option<Match> {
-        let version = self
-            .compiled()?
-            .identify(response, self.version_group)?
-            .version;
+        // Capture groups are collected only for a signature whose operating-system
+        // metadata has templates to fill from them. Most have neither, and this
+        // runs against every candidate signature for every banner.
+        let wants_captures = self.os.is_some();
+        let matched = self.compiled()?.identify_with_captures(
+            response,
+            self.version_group,
+            wants_captures,
+        )?;
+        let version = matched.version;
 
         // A captured version is a materially stronger signal than a bare match.
         let confidence = if version.is_some() {
@@ -119,6 +146,9 @@ impl Signature {
         Some(Match {
             evidence,
             quality: MatchQuality { confidence, detail },
+            os: self.os.as_deref().and_then(|metadata| {
+                super::os::banner_evidence(metadata, matched.captures.as_deref().unwrap_or(&[]))
+            }),
         })
     }
 }
@@ -129,6 +159,15 @@ impl Signature {
 pub struct Match {
     pub evidence: Evidence,
     pub quality: MatchQuality,
+    /// What this match says about the operating system underneath the service,
+    /// with its templates already resolved against the capture groups.
+    ///
+    /// A separate field rather than more fields on [`Evidence`] because it
+    /// answers a different question and is resolved by a different set of rules.
+    /// A banner identifies a *service*; that it also implies a host is a second
+    /// inference, weaker than the first, and one a caller uninterested in
+    /// operating systems should be able to ignore entirely.
+    pub os: Option<crate::fingerprinting::os::OsEvidence>,
 }
 
 /// How specific a signature's match is, for ranking competing matches against

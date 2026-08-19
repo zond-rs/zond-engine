@@ -1,7 +1,9 @@
 # macOS, iOS and iPadOS — the Darwin family.
 #
-# From published stack characteristics; `provenance = "published"` and the rule
-# scores accordingly until confirmed here.
+# Written from documented Darwin defaults and then **confirmed against hardware**
+# — a Mac answering on port 22, with every predicted field holding — so the rule
+# is `measured` and scores as such. The values below are the ones observed, not
+# the ones expected.
 #
 # Darwin's TCP is BSD-derived and writes its SYN+ACK options in an order nothing
 # else uses: maximum segment size, no-op, window scale, two no-ops, timestamp,
@@ -23,8 +25,8 @@
 # because a phone or tablet has nothing listening. This rule needs an open port,
 # which in practice means a Mac with Remote Login, screen sharing or file sharing
 # turned on.
-provenance = "published"
-notes = "Documented Darwin defaults: initial TTL 64, SYN+ACK option order M,N,W,N,N,T,S,E with a trailing end-of-list, window scale 6, timestamps on. Covers iOS and iPadOS, which share the kernel and are indistinguishable at this layer. Unconfirmed against hardware by this engine."
+provenance = "measured"
+notes = "Confirmed on a Mac with Remote Login enabled, 2026-08-18: every predicted field held. Covers iOS and iPadOS, which share the kernel and are indistinguishable at this layer — that part remains inference from the shared kernel rather than observation."
 
 [os]
 family = "macOS"
@@ -36,13 +38,23 @@ initial_hops = { equals = 64 }
 option_layout = { equals = "M,N,W,N,N,T,S,E" }
 timestamps = { equals = true }
 sack_permitted = { equals = true }
+
+# A range rather than the 6 that was measured. One Mac is one Mac, and a scale
+# is a release-time default that moves; pinning it would over-fit this rule to
+# the machine that happened to confirm it. What identifies this family is the
+# option order, which is unlike anything else in the corpus in every position —
+# the scale only has to be plausible.
 window_scale = { range = [4, 8] }
 
-# The shape this rule expects, from the same published defaults rather than from
-# an observation. See the note in `windows.toml` for why one is written down at
-# all when nothing was measured.
+# The raw window, not a multiple of the segment size, because this stack picks a
+# number rather than a multiple. 65535 is the largest the field holds, and it is
+# what was measured regardless of the path — so the derived figures (`45 x 1448 +
+# 375` at this MSS, `48 x 1348 + 831` at another) describe the path rather than
+# the sender, and a rule keyed on them would match one network and not the next.
+window = { equals = 65535 }
+
 [[example]]
-source = "expected shape from published Darwin defaults; not an observation"
+source = "a Mac with Remote Login enabled, answering on port 22; measured on a LAN 2026-08-18"
 reply = "syn_ack"
 remaining_hops = 64
 dont_fragment = true

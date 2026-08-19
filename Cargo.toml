@@ -203,6 +203,10 @@ name = "os_observe"
 harness = false
 
 [[bench]]
+name = "os_rules"
+harness = false
+
+[[bench]]
 name = "resolve"
 harness = false
 

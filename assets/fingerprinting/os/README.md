@@ -38,8 +38,8 @@ which is what `published` records and what confirming one promotes.
 | family | provenance | notes |
 |---|---|---|
 | Linux | measured | two shapes across four labelled hosts, one with a known kernel |
+| macOS | measured | confirmed on a Mac; covers iOS and iPadOS, which share the kernel and are indistinguishable at this layer |
 | Windows | published | NT-family defaults; a stock firewall drops, so this needs a host with something listening |
-| macOS | published | Darwin defaults; covers iOS and iPadOS, which are indistinguishable at this layer |
 | FreeBSD | published | distinguished from Darwin by option order |
 | Network device | published | the hop counter alone; deliberately states no option predicate |
 
@@ -59,6 +59,38 @@ of detail in its reports; its own corpus should not be the leak.
 `no_rule_names_a_real_address_or_host` in `src/fingerprinting/os/corpus.rs`
 fails the build on anything address-shaped outside the documentation ranges.
 
+## Before adding a rule: check what already exists
+
+Rules that name an operating system live in **three** places, because they read
+three different things, and one of the files holding them is over two thousand
+lines long. Searching by hand is not realistic, so there is a query:
+
+```
+cargo bench --no-run --bench os_rules
+target/release/deps/os_rules-<hash> windows
+```
+
+It reads every corpus at once and reports what already names a match, grouped by
+which kind of rule it is and which file it is in. With no argument it lists every
+family the corpora know — 2239 rules across roughly forty families — which is the
+other question worth asking before deciding something is missing. No privileges
+and no network; it reads the asset tree.
+
+The three kinds, and why they are not one directory:
+
+| kind | reads | lives in |
+|---|---|---|
+| stack rule | the shape of a TCP reply | `assets/fingerprinting/os/` |
+| operating-system name rule | an OS string a service reported (SMB, SNMP) | the imported corpus |
+| service rule | a service banner, naming an OS as a side effect | the imported corpus, per protocol |
+
+The third is the largest — over half the shipped signatures carry `os.*`
+metadata — and it cannot move here: those files **are** the service corpus, matched
+by the service pipeline, and the operating system is something they mention rather
+than what they are for. Moving them would mean either duplicating them or breaking
+service detection, and would separate the imported files from the attribution that
+belongs with them.
+
 ## Authoring
 
 A predicate sets exactly one of `equals`, `any_of` or `range`. A field the rule
@@ -69,4 +101,19 @@ family's rules.
 
 Two fields are not what they look like, and both are documented on the schema:
 `option_layout` is a joint fact about the peer *and* the probe, and
-`window_units` exists because the raw window moves when the probe changes.
+`window_units` exists because an MSS-derived window moves when the probe changes.
+
+**Pick the right window predicate**, because a stack chooses its window in one of
+two ways and the wrong one fails on a different network rather than on this one:
+
+- `window_units` — for a stack that counts its window in segments. Linux does:
+  the same host answers `20 x 1460` to a bare probe and `20 x 1448` to one that
+  negotiates a timestamp, and the twenty is the part that belongs to the sender.
+- `window` — for a stack that announces a number. Darwin does: 65535 whatever the
+  path, so the derived figures shift with the path MSS (`45 x 1448 + 375` here,
+  `48 x 1348 + 831` elsewhere) and describe the network rather than the host.
+
+Predicate on what the stack chose, and leave the rest unstated. A measured rule
+records everything observed in its `example`; it does not have to *test*
+everything it recorded, and pinning a value that varies by release over-fits the
+rule to the one machine that confirmed it.

@@ -224,6 +224,7 @@ fn every_rule_tests_something() {
             r#match.initial_hops.is_some(),
             r#match.dont_fragment.is_some(),
             r#match.option_layout.is_some(),
+            r#match.window.is_some(),
             r#match.window_units.is_some(),
             r#match.window_remainder.is_some(),
             r#match.window_scale.is_some(),

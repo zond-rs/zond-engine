@@ -98,6 +98,15 @@ pub struct PatternMatch {
     /// The captured version string. `None` means the pattern matched but named
     /// no version group, or the group did not participate in the match.
     pub version: Option<String>,
+
+    /// Every capture group, index 0 being the whole match, when the caller asked
+    /// for them via
+    /// [`identify_with_captures`](CompiledPattern::identify_with_captures).
+    ///
+    /// `None` means they were not requested, never that the pattern had none —
+    /// collecting them allocates, and the rules that need them are a minority of
+    /// a corpus matched thousands of times per banner.
+    pub captures: Option<Vec<String>>,
 }
 
 /// Compiles `pattern`, trying the linear engine first and the bounded
@@ -154,24 +163,55 @@ impl CompiledPattern {
     /// module is shared by both, and each uses a different subset.
     #[allow(dead_code)]
     pub fn identify(&self, text: &str, version_group: Option<u8>) -> Option<PatternMatch> {
-        let version = match self {
-            CompiledPattern::Fast(regex) => {
-                let captures = regex.captures(text)?;
-                version_group
+        self.identify_with_captures(text, version_group, false)
+    }
+
+    /// [`identify`](Self::identify), optionally keeping every capture group.
+    ///
+    /// The groups are wanted only by the rules that carry `{capture:N}` templates
+    /// in their metadata, which is a minority of a large corpus — so collecting
+    /// them is asked for rather than always done. On the hot path of a scan that
+    /// matches thousands of signatures against a banner, the allocation per match
+    /// is the whole cost of this function.
+    ///
+    /// Index 0 is the whole match, matching the numbering a pattern's own groups
+    /// use and the numbering `version_group` is written against. An unmatched
+    /// optional group yields an empty string rather than being skipped, so a
+    /// template naming it resolves to nothing instead of to the next group along.
+    pub fn identify_with_captures(
+        &self,
+        text: &str,
+        version_group: Option<u8>,
+        keep_captures: bool,
+    ) -> Option<PatternMatch> {
+        macro_rules! extract {
+            ($captures:expr) => {{
+                let captures = $captures;
+                let version = version_group
                     .and_then(|group| captures.get(group as usize))
-                    .map(|m| m.as_str().to_string())
-            }
-            CompiledPattern::Fancy(regex) => {
-                // `Err` is a bounded runtime failure (backtrack limit / stack
-                // overflow); `Ok(None)` is a clean non-match. Both mean "no
-                // match" here.
-                let captures = regex.captures(text).ok()??;
-                version_group
-                    .and_then(|group| captures.get(group as usize))
-                    .map(|m| m.as_str().to_string())
-            }
+                    .map(|m| m.as_str().to_string());
+                let groups = keep_captures.then(|| {
+                    (0..captures.len())
+                        .map(|index| {
+                            captures
+                                .get(index)
+                                .map(|m| m.as_str().to_string())
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<String>>()
+                });
+                (version, groups)
+            }};
+        }
+
+        let (version, captures) = match self {
+            CompiledPattern::Fast(regex) => extract!(regex.captures(text)?),
+            // `Err` is a bounded runtime failure (backtrack limit / stack
+            // overflow); `Ok(None)` is a clean non-match. Both mean "no match"
+            // here.
+            CompiledPattern::Fancy(regex) => extract!(regex.captures(text).ok()??),
         };
-        Some(PatternMatch { version })
+        Some(PatternMatch { version, captures })
     }
 }
 

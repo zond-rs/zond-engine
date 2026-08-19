@@ -75,9 +75,12 @@
 //! same question was asked of both.
 
 mod db;
+mod evidence;
+mod hardware;
 mod observation;
 mod rules;
 mod signature;
+mod text;
 mod verdict;
 
 #[cfg(test)]
@@ -89,10 +92,13 @@ pub use observation::{Quirks, StackObservation, TcpOptionKind, Timestamps};
 // discovering it when one is silently dropped, exactly as the service signature
 // schema is.
 pub use db::RuleDb;
+pub use evidence::{MAX_FUSED_ACCURACY, OsEvidence, resolve};
+pub use hardware::evidence_from as hardware_evidence;
 pub use rules::{accepts, matches};
 pub use signature::{
     Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,
 };
+pub use text::{OsMetadata, evidence_from as banner_evidence};
 pub use verdict::{
     MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict, classify, classify_reply,
 };

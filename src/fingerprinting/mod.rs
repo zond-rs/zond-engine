@@ -130,13 +130,31 @@ pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
 ///
 /// If nothing identifies, a trimmed printable banner is attached as a
 /// last-resort label rather than leaving the port unannotated.
-pub async fn fingerprint_tcp(stream: TcpStream, mut port: Port) -> Port {
+pub async fn fingerprint_tcp(stream: TcpStream, port: Port) -> Port {
+    fingerprint_tcp_detailed(stream, port).await.0
+}
+
+/// [`fingerprint_tcp`], also returning what the service said about the *machine*.
+///
+/// Over half the shipped signature corpus carries operating-system metadata, and
+/// a banner naming a distribution — `OpenSSH_9.6p1 Debian` — is the most direct
+/// statement a host ever makes about itself. It is read here because this is
+/// where the text already is; no probe is added to collect it.
+///
+/// Separate from [`fingerprint_tcp`] rather than replacing it because the two
+/// findings belong to different places: the service belongs to the port, and what
+/// it implies about the operating system belongs to the host. A caller with no
+/// host to file it against should not have to handle it.
+pub async fn fingerprint_tcp_detailed(
+    stream: TcpStream,
+    mut port: Port,
+) -> (Port, Vec<os::OsEvidence>) {
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target.
     let addr = stream.peer_addr().ok();
     let (responses, tunnel) = gather(stream, port.number()).await;
     if responses.is_empty() {
-        return port;
+        return (port, Vec::new());
     }
 
     // Recorded before the response set is handed off, and independently of what
@@ -151,8 +169,15 @@ pub async fn fingerprint_tcp(stream: TcpStream, mut port: Port) -> Port {
     // Analysis runs off the reactor. Keep a last-resort banner label before the
     // response set is handed to the blocking pool.
     let fallback = first_printable(&responses.banners);
+    let mut about_the_host = Vec::new();
     match analyze(port.number(), addr, responses, tunnel).await {
         Some(verdict) if !verdict.is_empty() => {
+            // Taken from the whole retained evidence set rather than from the
+            // winning service alone: a host running two identifiable services
+            // says the same thing about itself twice, and a signature that lost
+            // the ranking for *service* may still be the one that named the
+            // operating system.
+            about_the_host.extend(verdict.evidence.iter().filter_map(|e| e.os.clone()));
             if let Some(service) = verdict.to_service() {
                 port.set_service(service);
             }
@@ -164,7 +189,7 @@ pub async fn fingerprint_tcp(stream: TcpStream, mut port: Port) -> Port {
         }
     }
 
-    port
+    (port, about_the_host)
 }
 
 /// Collects everything the transport can learn from the port over the network,

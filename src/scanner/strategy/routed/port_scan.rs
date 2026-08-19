@@ -303,21 +303,36 @@ impl TcpPortScanner {
         let Some(observation) = captured.observation else {
             return;
         };
-        let Some(verdict) = os::classify_reply(observation, &captured.bytes) else {
+        let Some(stack) = os::classify_reply(observation, &captured.bytes) else {
             return;
         };
 
-        // `merge` ranks by accuracy and fills gaps on a tie, so a host probed on
-        // several open ports accumulates rather than overwrites, and a later
-        // technique that knows more still wins.
-        let fingerprint = verdict.to_fingerprint();
-        self.core.ctx.update_host(ip, |host| match host.os() {
-            Some(existing) => {
-                let mut merged = existing.clone();
-                merged.merge(fingerprint.clone());
-                host.set_os(merged);
+        self.core.ctx.update_host(ip, |host| {
+            // Everything known about this host from a different source, folded in
+            // beside the stack reading. Only the hardware vendor today, and it is
+            // worth too little to name a host alone — its value is agreeing with
+            // the wire and carrying a verdict past what one packet supports.
+            let mut evidence = vec![stack.as_evidence()];
+            if let Some(hardware) = host.hardware().and_then(os::hardware_evidence) {
+                evidence.push(hardware);
             }
-            None => host.set_os(fingerprint.clone()),
+
+            let Some(resolved) = os::resolve(evidence) else {
+                return;
+            };
+
+            // `merge` ranks by accuracy and fills gaps on a tie, so a host probed
+            // on several open ports accumulates rather than overwrites, and a
+            // later technique that knows more still wins.
+            let fingerprint = resolved.to_fingerprint();
+            match host.os() {
+                Some(existing) => {
+                    let mut merged = existing.clone();
+                    merged.merge(fingerprint);
+                    host.set_os(merged);
+                }
+                None => host.set_os(fingerprint),
+            }
         });
     }
 

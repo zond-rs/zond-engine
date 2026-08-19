@@ -100,7 +100,10 @@ impl Tunnel {
 /// actually learned. The resolver merges fields across evidence, so a TLS
 /// analyzer supplying `product` and a banner analyzer supplying `version` combine
 /// into one verdict.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Comparable but not [`Eq`]: [`os`](Self::os) carries a confidence, which is a
+/// float, and a value nobody can write down exactly is not one two observations
+/// should be claimed to share.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Evidence {
     pub service: Option<String>,
     pub product: Option<String>,
@@ -126,6 +129,17 @@ pub struct Evidence {
     pub port_confirmed: bool,
     pub confidence: Confidence,
     pub source: SourceId,
+    /// What this observation said about the *machine*, as distinct from the
+    /// service.
+    ///
+    /// Carried alongside rather than folded into the fields above because it
+    /// answers a different question and is resolved by different rules. A banner
+    /// identifies a service directly; that it also implies an operating system is
+    /// a second, weaker inference — a container names the image it was built
+    /// from, not the kernel it runs on. `ServiceVerdict` retains its whole
+    /// evidence set, so this reaches a caller without the resolver having to
+    /// rank it.
+    pub os: Option<crate::fingerprinting::os::OsEvidence>,
 }
 
 impl Evidence {
@@ -141,6 +155,7 @@ impl Evidence {
             cpe: None,
             tunnel: None,
             port_confirmed: false,
+            os: None,
             confidence,
             source,
         }
@@ -183,7 +198,10 @@ impl Evidence {
 /// Keeping every contributing [`Evidence`] (not just the winner) is deliberate:
 /// provenance is a product feature — it makes results explainable and
 /// signatures tunable.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Comparable but not [`Eq`], for the reason [`Evidence`] is not: the
+/// observations it retains carry a confidence, and a float is not something two
+/// verdicts should be claimed to share exactly.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ServiceVerdict {
     pub service: Option<String>,
     pub product: Option<String>,
