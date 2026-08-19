@@ -40,6 +40,12 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// The link-layer and IPv6 addresses of the all-nodes group, which every IPv6
 /// host on a segment joins (RFC 4291 §2.7.1).
+/// An IPv4 echo reply's type number (RFC 792).
+const ECHO_REPLY_V4: u8 = 0;
+/// An IPv6 echo reply's type number (RFC 4443 §4.2). Different from the IPv4
+/// one, like every other number these two protocols share a name for.
+const ECHO_REPLY_V6: u8 = 129;
+
 const ALL_NODES_MAC: MacAddr = MacAddr(0x33, 0x33, 0, 0, 0, 1);
 const ALL_NODES_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
@@ -131,6 +137,107 @@ fn echo_frame_v6(
         .push(Icmpv6::echo_request(identifier, sequence))
         .build()
         .expect("an echo request fits every length field it is counted by")
+}
+
+/// Builds an echo request as a **message**, with no IP or Ethernet header
+/// around it, for a caller sending over a raw Layer-4 socket.
+///
+/// The other builders here produce whole Ethernet frames, which need a
+/// destination hardware address and so only reach a neighbour on the local
+/// segment. This is the form that reaches a host behind a router: the kernel
+/// supplies the IP header and does the routing, exactly as it does for the TCP
+/// and UDP probes.
+///
+/// `payload` is echoed back by a conformant responder (RFC 792, RFC 4443 §4.2),
+/// so its length and contents are part of what a probe asks — a stack that
+/// truncates it, or returns something else, has said something about itself.
+///
+/// Both addresses are taken because an ICMPv6 checksum covers a pseudo-header
+/// built from them. An ICMPv4 checksum does not, and `src` is unused there.
+///
+/// # Errors
+///
+/// [`PacketError::FamilyMismatch`](super::error::PacketError::FamilyMismatch)
+/// when the two addresses are not of the same family, and
+/// [`PacketError`](super::error::PacketError) from the IPv6 checksum for a
+/// payload too large to be counted.
+pub fn create_echo_request_message(
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
+    identifier: u16,
+    sequence: u16,
+    payload: &[u8],
+) -> Result<Vec<u8>> {
+    match (src_addr, dst_addr) {
+        (IpAddr::V4(_), IpAddr::V4(_)) => Ok(Icmpv4::echo_request(identifier, sequence)
+            .with_payload(payload)
+            .to_bytes()),
+        (IpAddr::V6(_), IpAddr::V6(_)) => Icmpv6::echo_request(identifier, sequence)
+            .with_payload(payload)
+            .to_bytes(Some((src_addr, dst_addr))),
+        (src, dst) => Err(super::error::PacketError::FamilyMismatch { src, dst }),
+    }
+}
+
+/// What an ICMP message arriving at an echo scan turned out to be.
+///
+/// Deliberately shallow. It separates the answers a caller can act on from the
+/// traffic a promiscuous, unnarrowed capture brings up alongside them, and does
+/// not interpret any of them further — an error means something different to
+/// each probe that could have drawn it, which is the reasoning
+/// [`tcp::classify_probe_response`](super::tcp::classify_probe_response) already
+/// records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EchoReply {
+    /// An echo reply carrying back the identifier this scan sent, and the
+    /// sequence number naming which request it answers.
+    Ours { sequence: u16 },
+    /// An echo reply, but to somebody else's ping.
+    ///
+    /// Not folded in with the message below. A capture this wide sees every ping
+    /// on the host, and a scan counting these separately can tell "the filter is
+    /// noisy" from "the target answered something unexpected".
+    SomebodyElses,
+    /// An ICMP message that is not an echo reply at all — most usefully an
+    /// error, which says the probe was stopped rather than answered.
+    ///
+    /// The type is carried rather than named because the two families number
+    /// their messages differently and a name would have to say which.
+    Other { icmp_type: u8 },
+    /// Too few bytes to be an ICMP message.
+    Truncated,
+}
+
+/// Reads one ICMP message and says whether it answers this scan.
+///
+/// `over_ipv6` selects which numbering to read the type under, and it is a
+/// parameter rather than a guess because **an ICMP message does not say which
+/// family it belongs to**: type 0 is an IPv4 echo reply and also a perfectly
+/// ordinary reserved value over IPv6, and type 128 is an IPv6 echo *request*
+/// while over IPv4 it is unassigned. A caller has the address the reply came
+/// from and therefore knows; a reader that guessed would be wrong silently.
+///
+/// The identifier is checked rather than assumed because the kernel filter
+/// cannot check it: it sits past a header whose length is not fixed over IPv6.
+/// Everything the capture admits therefore arrives here, including every other
+/// ping on the host.
+pub fn classify_echo_reply(message: &[u8], identifier: u16, over_ipv6: bool) -> EchoReply {
+    let Ok((seen_identifier, sequence)) = echo_token(message) else {
+        return EchoReply::Truncated;
+    };
+    let icmp_type = message[0];
+    let expected = if over_ipv6 {
+        ECHO_REPLY_V6
+    } else {
+        ECHO_REPLY_V4
+    };
+    if icmp_type != expected {
+        return EchoReply::Other { icmp_type };
+    }
+    if seen_identifier != identifier {
+        return EchoReply::SomebodyElses;
+    }
+    EchoReply::Ours { sequence }
 }
 
 /// The identifier and sequence an echo message carries, for either family.
@@ -367,5 +474,221 @@ mod tests {
             SEQ,
         );
         assert!(mismatched.is_err(), "two families cannot make one packet");
+    }
+    /// The message form starts at the ICMP header and nowhere else.
+    ///
+    /// Pinned because the mistake it guards against is silent and this module
+    /// invites it: every other builder here returns a whole Ethernet frame, and
+    /// handing one of those to a raw Layer-4 socket puts a second IP header on
+    /// the wire inside the first. The receiver would read the outer header, find
+    /// what it thinks is an ICMP message, and see an Ethernet header where the
+    /// type byte should be. Reading the token straight out of the first eight
+    /// bytes is the cheapest way to say "this begins where it claims to".
+    #[test]
+    fn the_message_form_carries_no_headers_of_its_own() {
+        let message = create_echo_request_message(
+            IpAddr::from([192, 0, 2, 1]),
+            IpAddr::from([192, 0, 2, 9]),
+            ID,
+            SEQ,
+            b"payload",
+        )
+        .expect("one family");
+
+        let parsed = IcmpPacket::new(&message).expect("an ICMP message");
+        assert_eq!(parsed.get_icmp_type(), IcmpTypes::EchoRequest);
+        assert_eq!(echo_token(&message).expect("a token"), (ID, SEQ));
+        assert_eq!(&message[8..], b"payload");
+    }
+
+    /// A conformant responder echoes the payload back, so its length and
+    /// contents are part of the question a probe asks.
+    #[test]
+    fn a_payload_is_carried_verbatim_and_may_be_empty() {
+        let empty = create_echo_request_message(
+            IpAddr::from([192, 0, 2, 1]),
+            IpAddr::from([192, 0, 2, 9]),
+            ID,
+            SEQ,
+            &[],
+        )
+        .expect("one family");
+        assert_eq!(empty.len(), 8);
+
+        let long = create_echo_request_message(
+            IpAddr::from([192, 0, 2, 1]),
+            IpAddr::from([192, 0, 2, 9]),
+            ID,
+            SEQ,
+            &[0xA5; 120],
+        )
+        .expect("one family");
+        assert_eq!(&long[8..], &[0xA5; 120]);
+    }
+
+    /// The two families are two protocols, and the type number is the visible
+    /// half of that: 8 is an IPv4 echo request and 128 an IPv6 one. A message
+    /// built with the wrong one is not rejected anywhere — it simply goes
+    /// unanswered, and a scan reads that as a silent host.
+    #[test]
+    fn each_family_gets_its_own_message_type() {
+        let v4 = create_echo_request_message(
+            IpAddr::from([192, 0, 2, 1]),
+            IpAddr::from([192, 0, 2, 9]),
+            ID,
+            SEQ,
+            &[],
+        )
+        .expect("one family");
+        assert_eq!(v4[0], 8);
+
+        let v6_message = create_echo_request_message(
+            IpAddr::V6(v6("2001:db8::1")),
+            IpAddr::V6(v6("2001:db8::9")),
+            ID,
+            SEQ,
+            &[],
+        )
+        .expect("one family");
+        assert_eq!(
+            Icmpv6Packet::new(&v6_message)
+                .expect("an ICMPv6 message")
+                .get_icmpv6_type(),
+            Icmpv6Types::EchoRequest
+        );
+    }
+
+    /// An ICMPv6 checksum covers a pseudo-header built from both addresses, and
+    /// RFC 4443 has no encoding for "no checksum" — a zero one is not merely
+    /// wrong, it is discarded. So the addresses have to reach the checksum, and
+    /// a builder that dropped them would produce a message nothing ever answers.
+    #[test]
+    fn an_ipv6_message_is_checksummed_against_its_addresses() {
+        let message = create_echo_request_message(
+            IpAddr::V6(v6("2001:db8::1")),
+            IpAddr::V6(v6("2001:db8::9")),
+            ID,
+            SEQ,
+            &[],
+        )
+        .expect("one family");
+        let checksum = u16::from_be_bytes([message[2], message[3]]);
+        assert_ne!(checksum, 0);
+
+        // A different destination is a different pseudo-header and so a
+        // different checksum. Without this the test above passes for a builder
+        // that computes over the message alone, which is the ICMPv4 rule.
+        let elsewhere = create_echo_request_message(
+            IpAddr::V6(v6("2001:db8::1")),
+            IpAddr::V6(v6("2001:db8::a")),
+            ID,
+            SEQ,
+            &[],
+        )
+        .expect("one family");
+        assert_ne!(
+            checksum,
+            u16::from_be_bytes([elsewhere[2], elsewhere[3]]),
+            "the checksum did not depend on the destination"
+        );
+    }
+
+    /// Two families in one call is a caller error, not something to guess at.
+    #[test]
+    fn a_mixed_pair_of_addresses_is_refused() {
+        assert!(
+            create_echo_request_message(
+                IpAddr::from([192, 0, 2, 1]),
+                IpAddr::V6(v6("2001:db8::9")),
+                ID,
+                SEQ,
+                &[],
+            )
+            .is_err()
+        );
+    }
+
+    /// The scan's own reply is the one carrying back the identifier it sent.
+    #[test]
+    fn a_reply_is_ours_only_when_it_carries_our_identifier() {
+        let ours = Icmpv4::echo_reply(ID, SEQ).to_bytes();
+        assert_eq!(
+            classify_echo_reply(&ours, ID, false),
+            EchoReply::Ours { sequence: SEQ }
+        );
+
+        let theirs = Icmpv4::echo_reply(ID ^ 0xFFFF, SEQ).to_bytes();
+        assert_eq!(
+            classify_echo_reply(&theirs, ID, false),
+            EchoReply::SomebodyElses
+        );
+    }
+
+    /// The two families number their messages differently, and reading one under
+    /// the other's numbering is the mistake worth a test of its own.
+    ///
+    /// An IPv4 echo reply is type 0 and an IPv6 one is 129. Read an IPv6 reply
+    /// as IPv4 and it is not an echo reply at all; read an IPv4 reply as IPv6
+    /// and the same. Both directions are silent — the scan sees a message it
+    /// cannot use and files the host as unanswered.
+    #[test]
+    fn a_reply_is_read_under_its_own_family_numbering() {
+        let v4 = Icmpv4::echo_reply(ID, SEQ).to_bytes();
+        let v6 = Icmpv6::echo_reply(ID, SEQ)
+            .to_bytes(Some((
+                IpAddr::V6(v6("2001:db8::1")),
+                IpAddr::V6(v6("2001:db8::9")),
+            )))
+            .expect("one family");
+
+        assert_eq!(
+            classify_echo_reply(&v4, ID, false),
+            EchoReply::Ours { sequence: SEQ }
+        );
+        assert_eq!(
+            classify_echo_reply(&v6, ID, true),
+            EchoReply::Ours { sequence: SEQ }
+        );
+
+        assert_eq!(
+            classify_echo_reply(&v6, ID, false),
+            EchoReply::Other { icmp_type: 129 },
+            "an IPv6 reply read as IPv4"
+        );
+        assert_eq!(
+            classify_echo_reply(&v4, ID, true),
+            EchoReply::Other { icmp_type: 0 },
+            "an IPv4 reply read as IPv6"
+        );
+    }
+
+    /// An error is not an echo reply, and saying so is the whole verdict: what
+    /// it means depends on what was being probed, which this does not know.
+    #[test]
+    fn an_error_is_reported_as_itself() {
+        // Destination unreachable, code 13 — administratively prohibited.
+        let error = Icmpv4 {
+            icmp_type: 3,
+            code: 13,
+            checksum: super::super::craft::Field::Computed,
+            rest_of_header: [0; 4],
+            payload: vec![0; 8],
+        }
+        .to_bytes();
+        assert_eq!(
+            classify_echo_reply(&error, ID, false),
+            EchoReply::Other { icmp_type: 3 }
+        );
+    }
+
+    /// Too short to hold a token is not "somebody else's": a scan counting the
+    /// two together cannot tell a noisy filter from a malformed answer.
+    #[test]
+    fn a_message_too_short_to_carry_a_token_says_so() {
+        assert_eq!(
+            classify_echo_reply(&[0, 0, 0], ID, false),
+            EchoReply::Truncated
+        );
+        assert_eq!(classify_echo_reply(&[], ID, false), EchoReply::Truncated);
     }
 }

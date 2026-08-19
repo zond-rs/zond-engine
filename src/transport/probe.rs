@@ -74,6 +74,24 @@ pub enum ProbeKind {
     },
     /// UDP service probes (DNS / mDNS) and their replies, over IPv4.
     UdpResolve,
+    /// ICMP echo requests and the replies and errors they draw, over both
+    /// address families.
+    ///
+    /// The kind a scan uses to ask a host something its TCP stack cannot be made
+    /// to answer — a host with no open and no closed port still answers a ping,
+    /// and what it puts in the reply is a property of the same stack.
+    IcmpEcho {
+        /// The identifier every echo in the scan carries, and so the one its
+        /// replies carry back.
+        ///
+        /// RFC 792 and RFC 4443 §4.2 both require a reply to echo the
+        /// identifier and sequence back unchanged, which is the only thing that
+        /// separates this scan's answers from every other ping on the host —
+        /// and unlike a port, it cannot be expressed in a kernel filter, since
+        /// it sits past a header whose length is not fixed over IPv6. So it is
+        /// matched in userspace and this field is what a caller matches against.
+        identifier: u16,
+    },
     /// UDP port probes and their ICMP unreachable / direct UDP replies.
     UdpProbe {
         /// The source port every probe in the scan is sent from, and so the
@@ -91,21 +109,32 @@ impl ProbeKind {
         match self {
             ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => TransportType::TcpLayer4,
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => TransportType::UdpLayer4,
+            ProbeKind::IcmpEcho { .. } => TransportType::IcmpLayer4,
         }
     }
 
-    /// The IP protocol number this kind's probes are, for a sender that writes
-    /// the IP header itself.
+    /// The IP protocol numbers this kind's probes are, one per address family,
+    /// for a sender that writes the IP header itself.
     ///
     /// The raw-socket path never needs this - the kernel derives it from the
     /// socket's protocol - but a Layer-2 sender builds the header by hand and
     /// has nothing else to read it from. A wrong number here is invisible
     /// locally and fatal remotely: the datagram arrives and is handed to the
     /// wrong protocol handler, so it is simply never answered.
-    fn ip_protocol(self) -> IpNextHeaderProtocol {
+    fn ip_protocols(self) -> IpProtocols {
         match self {
-            ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => IpNextHeaderProtocols::Tcp,
-            ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => IpNextHeaderProtocols::Udp,
+            ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => {
+                IpProtocols::same(IpNextHeaderProtocols::Tcp)
+            }
+            ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => {
+                IpProtocols::same(IpNextHeaderProtocols::Udp)
+            }
+            // The one kind whose two families are different protocols rather
+            // than one protocol over two address sizes.
+            ProbeKind::IcmpEcho { .. } => IpProtocols {
+                v4: IpNextHeaderProtocols::Icmp,
+                v6: IpNextHeaderProtocols::Icmpv6,
+            },
         }
     }
 
@@ -171,6 +200,20 @@ impl ProbeKind {
             ProbeKind::UdpProbe { reply_port } => {
                 format!("icmp or icmp6 or (udp and dst port {reply_port})")
             }
+            // Unnarrowed, and it has to be. The identifier that separates this
+            // scan's replies from every other ping on the host sits four bytes
+            // into the ICMP message, which is `proto[x]` indexing — expressible
+            // over IPv4 and not over IPv6, whose next-header chain puts the
+            // message at no fixed offset. Narrowing one family and not the other
+            // would make the IPv6 half of every scan silently different from the
+            // IPv4 half, which is the shape of defect that cost this crate its
+            // whole IPv6 receive path once already. So both halves come up whole
+            // and the identifier is matched in userspace.
+            //
+            // The errors are wanted as well as the replies: a host that answers
+            // an echo with "administratively prohibited" has told you something,
+            // and it did not come from the host's own stack.
+            ProbeKind::IcmpEcho { .. } => "icmp or icmp6".to_string(),
         }
     }
 }
@@ -219,6 +262,38 @@ impl SendError {
 /// be safe to share across threads.
 pub trait ProbeSender: Send + Sync {
     fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError>;
+}
+
+/// The IP protocol number a kind's probes carry, per address family.
+///
+/// A pair rather than one value because [`ProbeKind::IcmpEcho`] is two
+/// protocols: ICMP is next-header 1 and ICMPv6 is 58. Every other kind names the
+/// same protocol twice, which [`same`](Self::same) says out loud rather than
+/// leaving to a reader to notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpProtocols {
+    /// What an IPv4 header carrying this kind's probes says it carries.
+    pub v4: IpNextHeaderProtocol,
+    /// What an IPv6 header carrying this kind's probes says it carries.
+    pub v6: IpNextHeaderProtocol,
+}
+
+impl IpProtocols {
+    /// One protocol under both families.
+    pub const fn same(protocol: IpNextHeaderProtocol) -> Self {
+        Self {
+            v4: protocol,
+            v6: protocol,
+        }
+    }
+
+    /// The number to stamp into a header addressed to `destination`.
+    pub const fn for_destination(self, destination: IpAddr) -> IpNextHeaderProtocol {
+        match destination {
+            IpAddr::V4(_) => self.v4,
+            IpAddr::V6(_) => self.v6,
+        }
+    }
 }
 
 /// Why a probe transport could not be opened.
@@ -371,7 +446,7 @@ impl ProbeTransport {
     /// interface - only a tunnel or loopback - in which case the raw-IP
     /// transport from [`open`](Self::open) is the correct choice.
     pub fn open_ethernet(kind: ProbeKind) -> Result<Self, TransportError> {
-        let sender = EthernetSender::from_system(kind.ip_protocol()).ok_or_else(|| {
+        let sender = EthernetSender::from_system(kind.ip_protocols()).ok_or_else(|| {
             TransportError::NoEthernetInterface(
                 "the host has only tunnel or loopback interfaces".to_string(),
             )
@@ -497,22 +572,63 @@ mod tests {
     /// the wrong protocol handler, so it is simply never answered.
     #[test]
     fn every_probe_kind_carries_its_own_ip_protocol() {
-        assert_eq!(ProbeKind::TcpSyn.ip_protocol(), IpNextHeaderProtocols::Tcp);
+        assert_eq!(
+            ProbeKind::TcpSyn.ip_protocols(),
+            IpProtocols::same(IpNextHeaderProtocols::Tcp)
+        );
         assert_eq!(
             ProbeKind::TcpProbe {
                 reply_port: 50_000,
                 icmp_errors: true,
             }
-            .ip_protocol(),
-            IpNextHeaderProtocols::Tcp
+            .ip_protocols(),
+            IpProtocols::same(IpNextHeaderProtocols::Tcp)
         );
         assert_eq!(
-            ProbeKind::UdpResolve.ip_protocol(),
-            IpNextHeaderProtocols::Udp
+            ProbeKind::UdpResolve.ip_protocols(),
+            IpProtocols::same(IpNextHeaderProtocols::Udp)
         );
         assert_eq!(
-            ProbeKind::UdpProbe { reply_port: 40_000 }.ip_protocol(),
-            IpNextHeaderProtocols::Udp
+            ProbeKind::UdpProbe { reply_port: 40_000 }.ip_protocols(),
+            IpProtocols::same(IpNextHeaderProtocols::Udp)
+        );
+    }
+
+    /// ICMP is the one kind whose families are different protocols, and the
+    /// number is chosen by the destination rather than by the kind.
+    ///
+    /// Pinned because getting it wrong is silent: an ICMPv6 message announced as
+    /// protocol 1 is delivered to a handler that will not recognise it, and the
+    /// probe simply goes unanswered. A scan reading that as "the host did not
+    /// reply" is wrong about the host.
+    #[test]
+    fn an_icmp_probe_names_a_different_protocol_per_family() {
+        let protocols = ProbeKind::IcmpEcho { identifier: 1 }.ip_protocols();
+        assert_eq!(protocols.v4, IpNextHeaderProtocols::Icmp);
+        assert_eq!(protocols.v6, IpNextHeaderProtocols::Icmpv6);
+        assert_eq!(
+            protocols.for_destination(IpAddr::from([192, 0, 2, 1])),
+            IpNextHeaderProtocols::Icmp
+        );
+        assert_eq!(
+            protocols.for_destination("2001:db8::1".parse().unwrap()),
+            IpNextHeaderProtocols::Icmpv6
+        );
+    }
+
+    /// The ICMP filter admits both families whole.
+    ///
+    /// The echo identifier is what separates this scan's replies from every
+    /// other ping on the host, and it cannot be expressed here: it sits past a
+    /// header whose length is not fixed over IPv6. Narrowing the IPv4 half alone
+    /// would leave the two families behaving differently for no reason a reader
+    /// could see, which is exactly how this crate lost its IPv6 receive path
+    /// once before.
+    #[test]
+    fn the_icmp_filter_admits_both_families() {
+        assert_eq!(
+            ProbeKind::IcmpEcho { identifier: 4242 }.filter(),
+            "icmp or icmp6"
         );
     }
 

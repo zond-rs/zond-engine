@@ -187,6 +187,10 @@ name = "discovery_bench"
 harness = false
 
 [[bench]]
+name = "icmp_reach"
+harness = false
+
+[[bench]]
 name = "import_bench"
 harness = false
 
@@ -204,6 +208,10 @@ harness = false
 
 [[bench]]
 name = "os_rules"
+harness = false
+
+[[bench]]
+name = "os_sample"
 harness = false
 
 [[bench]]

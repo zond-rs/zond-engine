@@ -23,7 +23,11 @@
 //! needs both, since targets can be either, so [`open_sender`] opens one
 //! socket per address family for [`TransportType::TcpLayer4`].
 //! [`TransportType::UdpLayer4`] stays IPv4-only, since nothing in this crate
-//! currently needs UDP over IPv6.
+//! currently needs UDP over IPv6. [`TransportType::IcmpLayer4`] opens both, and
+//! is the only way this crate can put an ICMP message on the wire for a host it
+//! cannot reach at the link layer — the echo builders in
+//! [`crate::protocols::icmp`] emit whole Ethernet frames and therefore need a
+//! neighbour.
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -43,6 +47,10 @@ const CHANNEL_TYPE_TCP_V4: TransportChannelType =
     TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
 const CHANNEL_TYPE_TCP_V6: TransportChannelType =
     TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Tcp));
+const CHANNEL_TYPE_ICMP_V4: TransportChannelType =
+    TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Icmp));
+const CHANNEL_TYPE_ICMP_V6: TransportChannelType =
+    TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Icmpv6));
 
 /// Which transport-layer protocol, and address family coverage, to open a capture for.
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +59,21 @@ pub enum TransportType {
     TcpLayer4,
     /// Raw UDP datagrams, over IPv4 only.
     UdpLayer4,
+    /// Raw ICMP messages, over both IPv4 and IPv6 where available.
+    ///
+    /// The two families are **different protocols**, not one protocol over two
+    /// address sizes: ICMP is next-header 1 and ICMPv6 is 58, they number their
+    /// message types differently, and ICMPv6 checksums cover a pseudo-header
+    /// while ICMPv4 checksums cover the message alone. A caller therefore builds
+    /// a different message per family, and this opens a socket for each.
+    ///
+    /// This is the only path by which this crate can send an ICMP message to a
+    /// host that is not on the local segment. The echo builders in
+    /// [`protocols::icmp`] produce whole Ethernet frames, which need a
+    /// destination hardware address and so only reach an on-link neighbour.
+    ///
+    /// [`protocols::icmp`]: crate::protocols::icmp
+    IcmpLayer4,
 }
 
 /// Routes an outgoing packet to whichever underlying raw socket matches its
@@ -107,6 +130,19 @@ pub fn open_sender(transport_type: TransportType) -> anyhow::Result<TransportSen
             Ok(TransportSenderHandle {
                 v4: Some(Arc::new(Mutex::new(v4_tx))),
                 v6: None,
+            })
+        }
+        TransportType::IcmpLayer4 => {
+            let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_ICMP_V4)?;
+            // Same reasoning as TCP: a host without IPv6 raw sockets can still
+            // be probed over IPv4, so a failure here is a narrower transport
+            // rather than no transport.
+            let v6 = open_channel(CHANNEL_TYPE_ICMP_V6)
+                .ok()
+                .map(|(v6_tx, _v6_rx)| Arc::new(Mutex::new(v6_tx)));
+            Ok(TransportSenderHandle {
+                v4: Some(Arc::new(Mutex::new(v4_tx))),
+                v6,
             })
         }
     }

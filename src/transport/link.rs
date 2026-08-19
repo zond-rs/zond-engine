@@ -39,14 +39,13 @@ use pnet::datalink::{self, Config, DataLinkReceiver, DataLinkSender, NetworkInte
 use pnet::packet::Packet;
 use pnet::packet::arp::{ArpOperations, ArpPacket};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use pnet::packet::ip::IpNextHeaderProtocol;
 use pnet::util::MacAddr;
 
 use crate::protocols::arp;
 use crate::transport::channel::open_eth_channel;
 use crate::transport::frame;
 use crate::transport::neighbor::{LinkRoute, NeighborResolver};
-use crate::transport::probe::{ProbeSender, SendError};
+use crate::transport::probe::{IpProtocols, ProbeSender, SendError};
 
 /// How long to wait for an ARP reply before giving up on an on-link target.
 const ARP_TIMEOUT: Duration = Duration::from_millis(500);
@@ -67,26 +66,30 @@ struct InterfaceChannel {
 pub struct EthernetSender {
     resolver: Mutex<NeighborResolver>,
     channels: Mutex<HashMap<String, InterfaceChannel>>,
-    /// The IP protocol number to stamp into the header of every frame this
-    /// sender builds. Fixed per sender because a transport carries one kind of
-    /// probe; see [`EthernetSender::from_system`].
-    protocol: IpNextHeaderProtocol,
+    /// The IP protocol numbers to stamp into the headers this sender builds,
+    /// one per address family. Fixed per sender because a transport carries one
+    /// kind of probe; see [`EthernetSender::from_system`].
+    protocols: IpProtocols,
 }
 
 impl EthernetSender {
     /// Builds a sender over the system's Ethernet-capable interfaces, emitting
-    /// segments as `protocol`.
+    /// segments as `protocols` says for the family being addressed.
     ///
     /// Unlike the raw-socket sender, this one writes the IP header itself, so
     /// nothing else can tell it what it is carrying: the segment is opaque
-    /// bytes by the time it arrives. The protocol is fixed at construction
+    /// bytes by the time it arrives. The protocols are fixed at construction
     /// rather than passed per send because a transport is opened for one
-    /// `ProbeKind` and carries only that kind's probes.
+    /// `ProbeKind` and carries only that kind's probes — but they are a *pair*,
+    /// because a kind carrying ICMP carries two different protocol numbers and
+    /// only the destination says which. A wrong number here is invisible
+    /// locally and fatal remotely: the datagram arrives and is handed to the
+    /// wrong protocol handler, so it is simply never answered.
     ///
     /// Returns `None` if the host has no Ethernet-capable interface (only
     /// tunnels or loopback), so the caller can fall back to the raw-IP path
     /// rather than stand up a backend that can never send.
-    pub fn from_system(protocol: IpNextHeaderProtocol) -> Option<Self> {
+    pub fn from_system(protocols: IpProtocols) -> Option<Self> {
         let resolver = NeighborResolver::from_system();
         if !resolver.has_ethernet() {
             return None;
@@ -94,7 +97,7 @@ impl EthernetSender {
         Some(Self {
             resolver: Mutex::new(resolver),
             channels: Mutex::new(HashMap::new()),
-            protocol,
+            protocols,
         })
     }
 
@@ -196,7 +199,7 @@ impl ProbeSender for EthernetSender {
                 dst_mac,
                 src,
                 dst,
-                self.protocol,
+                self.protocols.for_destination(dst),
                 segment,
             )?;
 
