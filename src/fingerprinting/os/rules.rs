@@ -66,6 +66,31 @@ fn accepts_optional<T: PartialOrd>(predicate: &Option<Predicate<T>>, value: Opti
     }
 }
 
+/// [`accepts_optional`] for a predicate over a *name*: the class enums render
+/// `&'static str` names, which have no sized value to take by reference, so
+/// the comparison is spelled here once instead of at each call site.
+fn accepts_named(predicate: &Option<Predicate<String>>, value: Option<&'static str>) -> bool {
+    match (predicate, value) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(predicate), Some(name)) => accepts_str(predicate, name),
+    }
+}
+
+/// Whether a string predicate accepts `name`.
+fn accepts_str(predicate: &Predicate<String>, name: &str) -> bool {
+    if let Some(expected) = &predicate.equals {
+        return expected == name;
+    }
+    if let Some(expected) = &predicate.any_of {
+        return expected.iter().any(|expected| expected == name);
+    }
+    if let Some([low, high]) = &predicate.range {
+        return name >= low.as_str() && name <= high.as_str();
+    }
+    false
+}
+
 /// An observation with its derived values worked out, so a set of rules can be
 /// asked about it without each one recomputing them.
 ///
@@ -83,6 +108,7 @@ fn accepts_optional<T: PartialOrd>(predicate: &Option<Predicate<T>>, value: Opti
 /// code should not have to change when they arrive.
 struct Prepared<'a> {
     reply: &'a StackReply,
+    series: Option<&'a crate::fingerprinting::os::series::SeriesClasses>,
     /// Everything below is `None` for a reply that has no such field, so a rule
     /// naming a TCP field fails against an echo reply by the ordinary
     /// "the peer did not say" rule rather than by a special case.
@@ -95,7 +121,10 @@ struct Prepared<'a> {
 }
 
 impl<'a> Prepared<'a> {
-    fn new(reply: &'a StackReply) -> Self {
+    fn new(
+        reply: &'a StackReply,
+        series: Option<&'a crate::fingerprinting::os::series::SeriesClasses>,
+    ) -> Self {
         let tcp = match reply {
             StackReply::Tcp(observed) => Some(observed),
             StackReply::Echo(_) => None,
@@ -106,6 +135,7 @@ impl<'a> Prepared<'a> {
         };
         Self {
             reply,
+            series,
             tcp,
             layout: tcp.map(StackObservation::layout_string),
             // The IP header is the one thing both kinds have, so these two are
@@ -158,6 +188,15 @@ impl<'a> Prepared<'a> {
             && accepts_optional(&rule.option_layout, self.layout.as_ref())
             && accepts_optional(&rule.echo_code, echo.map(|o| &o.code))
             && accepts_optional(&rule.echo_payload_intact, echo.map(|o| &o.payload_intact))
+            && accepts_named(
+                &rule.identifier_class,
+                self.series.map(|s| s.identifiers.name()),
+            )
+            && accepts_named(
+                &rule.sequence_class,
+                self.series.map(|s| s.sequences.name()),
+            )
+            && accepts_named(&rule.clock_class, self.series.map(|s| s.clock.name()))
     }
 }
 
@@ -170,7 +209,22 @@ impl<'a> Prepared<'a> {
 /// The reply kind is checked first and is not optional: a rule written for a
 /// handshake must never be applied to a reset, whatever else agrees.
 pub fn matches(rule: &MatchRule, reply: &StackReply) -> bool {
-    Prepared::new(reply).matches(rule)
+    Prepared::new(reply, None).matches(rule)
+}
+
+/// Whether `rule` describes `reply` with its series readings known.
+///
+/// The form the active path calls, where several replies were collected and
+/// classified. A rule predicating on a series field matches only through this
+/// entry point; against [`matches`](fn@matches) it fails by the ordinary
+/// "the peer did not say" rule, which is what keeps a series rule from ever
+/// being satisfied by a single reply.
+pub fn matches_with_series(
+    rule: &MatchRule,
+    reply: &StackReply,
+    series: &crate::fingerprinting::os::series::SeriesClasses,
+) -> bool {
+    Prepared::new(reply, Some(series)).matches(rule)
 }
 
 /// Every rule in `rules` that describes `observed`, with the derived values
@@ -178,12 +232,153 @@ pub fn matches(rule: &MatchRule, reply: &StackReply) -> bool {
 pub(super) fn matching<'a>(
     rules: &'a [super::signature::OsDefinition],
     reply: &'a StackReply,
+    series: Option<&'a crate::fingerprinting::os::series::SeriesClasses>,
 ) -> impl Iterator<Item = &'a super::signature::OsDefinition> {
     // Moved into the closure so it is built once and lives as long as the
     // iterator, rather than per rule. The iterator stays lazy: a caller wanting
     // only the first match pays for only the rules before it.
-    let prepared = Prepared::new(reply);
+    let prepared = Prepared::new(reply, series);
     rules
         .iter()
         .filter(move |rule| prepared.matches(&rule.r#match))
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗██████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████╗   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::capture::{IpObservation, Ipv4Observation};
+    use crate::protocols::tcp::flags;
+
+    /// A handshake reply whose shape the Linux rules already describe, for
+    /// asking whether a series predicate can tell two identical shapes apart.
+    fn syn_ack() -> StackReply {
+        let options: [u8; 20] = [
+            0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0xad, 0x58, 0xa5, 0xa7, 0x64, 0x48,
+            0x96, 0x12, 0x01, 0x03, 0x03, 0x07,
+        ];
+        let mut bytes = vec![0u8; 20 + options.len()];
+        bytes[12] = (((20 + options.len()) / 4) as u8) << 4;
+        bytes[13] = flags::SYN | flags::ACK;
+        bytes[14..16].copy_from_slice(&65_160u16.to_be_bytes());
+        bytes[20..].copy_from_slice(&options);
+        StackObservation::from_tcp(
+            IpObservation::V4(Ipv4Observation {
+                ttl: 64,
+                identification: 0,
+                dont_fragment: true,
+                more_fragments: false,
+                dscp: 0,
+                ecn: 0,
+            }),
+            &bytes,
+        )
+        .expect("the recorded reply parses")
+        .into()
+    }
+
+    fn series_rule(field: &str, name: &str) -> crate::fingerprinting::os::signature::OsDefinition {
+        use crate::fingerprinting::os::signature::{
+            MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,
+        };
+
+        let r#match = match field {
+            "identifier_class" => MatchRule {
+                reply: ReplyKind::SynAck,
+                identifier_class: Some(Predicate {
+                    equals: Some(name.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            "sequence_class" => MatchRule {
+                reply: ReplyKind::SynAck,
+                sequence_class: Some(Predicate {
+                    equals: Some(name.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            "clock_class" => MatchRule {
+                reply: ReplyKind::SynAck,
+                clock_class: Some(Predicate {
+                    equals: Some(name.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            other => panic!("no such series field: {other}"),
+        };
+
+        OsDefinition {
+            os: OsIdentity {
+                family: "Test family".to_string(),
+                vendor: None,
+                product: None,
+                version: None,
+                cpe: None,
+            },
+            provenance: Provenance::Published,
+            notes: Some("a series rule built for the test".to_string()),
+            weight: 1.0,
+            r#match,
+            example: Vec::new(),
+        }
+    }
+
+    /// The reason this vocabulary exists: two builds of one stack can answer a
+    /// single SYN with byte-identical shapes and still be separated, because a
+    /// policy is visible only across a series. A rule predicating on the
+    /// sequence class matches the hashed generator and not the stepping one,
+    /// against replies that no single-reply predicate can tell apart.
+    #[test]
+    fn a_series_predicate_separates_identical_single_reply_shapes() {
+        let reply = syn_ack();
+
+        let hashed = crate::fingerprinting::os::series::SeriesClasses {
+            identifiers: crate::fingerprinting::os::series::IdClass::Zero,
+            sequences: crate::fingerprinting::os::series::IsnClass::Hashed,
+            clock: crate::fingerprinting::os::series::ClockClass::Randomised,
+        };
+        let stepping = crate::fingerprinting::os::series::SeriesClasses {
+            identifiers: crate::fingerprinting::os::series::IdClass::Zero,
+            sequences: crate::fingerprinting::os::series::IsnClass::FixedStep(64_000),
+            clock: crate::fingerprinting::os::series::ClockClass::Randomised,
+        };
+
+        let rule = series_rule("sequence_class", "hashed");
+        assert!(
+            matches_with_series(&rule.r#match, &reply, &hashed),
+            "the hashed generator matches the hashed rule"
+        );
+        assert!(
+            !matches_with_series(&rule.r#match, &reply, &stepping),
+            "a stepping generator does not, on an identical reply shape"
+        );
+    }
+
+    /// A rule predicating on a series field must never be satisfied by a single
+    /// reply, however well the shape agrees. The passive path has no series,
+    /// and the ordinary "the peer did not say" rule is what keeps a series rule
+    /// from naming a host it never sampled.
+    #[test]
+    fn a_series_rule_is_never_satisfied_by_a_single_reply() {
+        let reply = syn_ack();
+        let rule = series_rule("identifier_class", "counting");
+        assert!(!matches(&rule.r#match, &reply));
+
+        let rule = series_rule("sequence_class", "hashed");
+        assert!(!matches(&rule.r#match, &reply));
+
+        let rule = series_rule("clock_class", "ticking");
+        assert!(!matches(&rule.r#match, &reply));
+    }
 }

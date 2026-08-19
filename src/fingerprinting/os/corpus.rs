@@ -261,6 +261,9 @@ fn every_rule_tests_something() {
             r#match.mss.is_some(),
             r#match.timestamps.is_some(),
             r#match.sack_permitted.is_some(),
+            r#match.identifier_class.is_some(),
+            r#match.sequence_class.is_some(),
+            r#match.clock_class.is_some(),
         ]
         .into_iter()
         .filter(|stated| *stated)

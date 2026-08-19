@@ -108,6 +108,20 @@ impl RuleDb {
     /// agreeing on a family and disagreeing on a version is a *result*, not a
     /// tie to be broken here.
     pub fn matching<'a>(&'a self, reply: &'a StackReply) -> impl Iterator<Item = &'a OsDefinition> {
-        rules::matching(&self.rules, reply)
+        rules::matching(&self.rules, reply, None)
+    }
+
+    /// Every rule that describes `reply` with its series readings known.
+    ///
+    /// The form the active path calls: several replies were collected, their
+    /// series classified, and the rules asked about both the reply and the
+    /// classes together. A rule predicating on a series field matches only
+    /// here, never through [`matching`](Self::matching).
+    pub fn matching_with_series<'a>(
+        &'a self,
+        reply: &'a StackReply,
+        series: &'a super::series::SeriesClasses,
+    ) -> impl Iterator<Item = &'a OsDefinition> {
+        rules::matching(&self.rules, reply, Some(series))
     }
 }

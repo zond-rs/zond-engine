@@ -231,6 +231,41 @@ pub struct MatchRule {
     /// Whether the reply said it accepts selective acknowledgement.
     pub sack_permitted: Option<Predicate<bool>>,
 
+    /// What a series of IP identifiers turned out to be, as the stable name
+    /// [`IdClass::name`](super::IdClass::name) renders — `"counting"`,
+    /// `"zero"`, `"scattered"`.
+    ///
+    /// **A series feature, not a one-reply feature.** A rule naming it is
+    /// matched against the classes read from several replies, which only the
+    /// active path collects; the passive matcher has no series and a rule
+    /// naming this predicate fails against it by the ordinary "the peer did
+    /// not say" rule.
+    ///
+    /// [`IdClass::name`]: super::IdClass::name
+    pub identifier_class: Option<Predicate<String>>,
+
+    /// What a series of initial sequence numbers turned out to be, as
+    /// [`IsnClass::name`](super::IsnClass::name) renders — `"fixed-step"`,
+    /// `"hashed"`.
+    ///
+    /// Version-level rules start here: whether a generator hashes (RFC 6528),
+    /// steps, or sleeps is a decision the stack's authors made and changed
+    /// between releases, which is exactly the axis a "Linux 5.x" rule needs.
+    ///
+    /// [`IsnClass::name`]: super::IsnClass::name
+    pub sequence_class: Option<Predicate<String>>,
+
+    /// Whether the timestamp clock is shared across connections or offset
+    /// randomly per one, as [`ClockClass::name`](super::ClockClass::name)
+    /// renders — `"ticking"` against `"randomised"`.
+    ///
+    /// The *rate* is deliberately not predicate-able: it is a stack constant,
+    /// but the sampling jitter of a scan is not, and a rule keyed on an exact
+    /// hertz would match one network and not the next.
+    ///
+    /// [`ClockClass::name`]: super::ClockClass::name
+    pub clock_class: Option<Predicate<String>>,
+
     /// The code byte an echo reply carried.
     ///
     /// **Only meaningful against a probe that sent a non-zero code.** RFC 792

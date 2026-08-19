@@ -80,6 +80,7 @@ mod hardware;
 mod hostname;
 mod observation;
 mod rules;
+mod series;
 mod signature;
 mod text;
 mod verdict;
@@ -98,7 +99,11 @@ pub use db::RuleDb;
 pub use evidence::{MAX_FUSED_ACCURACY, OsEvidence, resolve};
 pub use hardware::evidence_from as hardware_evidence;
 pub use hostname::evidence_from as hostname_evidence;
-pub use rules::{accepts, matches};
+pub use rules::{accepts, matches, matches_with_series};
+pub use series::{
+    ClockClass, IdClass, IsnClass, Reading as SeriesReading, SeriesClasses, SeriesSample,
+    read_clock, read_identifiers, read_sequences,
+};
 pub use signature::{
     Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,
 };

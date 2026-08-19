@@ -72,7 +72,6 @@ const DEFAULT_NAMES: &[(Pattern, &str)] = &[
     (generated("win-"), "Windows"),
     // Legacy Windows Phone defaults
     (model("windows-phone"), "Windows"),
-
     // --- Apple Ecosystem ---
     (model("macbook-pro"), "macOS"),
     (model("macbook-air"), "macOS"),
@@ -89,7 +88,6 @@ const DEFAULT_NAMES: &[(Pattern, &str)] = &[
     (model("homepod"), "audioOS"),
     (model("apple-watch"), "watchOS"),
     (model("applewatch"), "watchOS"),
-
     // --- Android & ChromeOS ---
     (generated("android-"), "Linux"),
     (generated("android_"), "Linux"),
@@ -108,7 +106,6 @@ const DEFAULT_NAMES: &[(Pattern, &str)] = &[
     // ChromeOS factory hostnames
     (generated("chromebook-"), "Linux"),
     (generated("chromeos-"), "Linux"),
-
     // --- SBCs, Embedded & IoT Linux ---
     // Raspberry Pi OS default
     (generated("raspberrypi"), "Linux"),
@@ -129,7 +126,6 @@ const DEFAULT_NAMES: &[(Pattern, &str)] = &[
     (generated("webostv"), "webOS"),
     // Tizen smart TVs
     (generated("samsung-tizen"), "Tizen"),
-
     // --- Network Appliances & Routers (OpenWrt / FreeBSD) ---
     (generated("openwrt"), "Linux"),
     (generated("dd-wrt"), "Linux"),
@@ -137,7 +133,6 @@ const DEFAULT_NAMES: &[(Pattern, &str)] = &[
     (generated("opnsense"), "FreeBSD"),
     (generated("truenas"), "FreeBSD"),
     (generated("freenas"), "FreeBSD"),
-
     // --- BSD Defaults ---
     (generated("freebsd"), "FreeBSD"),
     (generated("openbsd"), "OpenBSD"),
@@ -327,7 +322,11 @@ mod tests {
         ];
 
         for (name, family) in cases {
-            assert_eq!(family_of(Some(name)), Some(family.to_string()), "failed on {name}");
+            assert_eq!(
+                family_of(Some(name)),
+                Some(family.to_string()),
+                "failed on {name}"
+            );
         }
     }
 }

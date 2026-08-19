@@ -189,6 +189,9 @@ fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
         sack_permitted,
         echo_code,
         echo_payload_intact,
+        identifier_class,
+        sequence_class,
+        clock_class,
     );
 
     // A TCP example without a window has recorded nothing about the field its
