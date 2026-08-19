@@ -32,7 +32,7 @@ use crate::model::capture::{IpObservation, Ipv4Observation};
 use super::db::RuleDb;
 use super::observation::{StackObservation, TcpOptionKind};
 use super::rules;
-use super::signature::{Example, ReplyKind};
+use super::signature::{Example, Provenance, ReplyKind};
 
 /// Builds the observation an example describes.
 ///
@@ -145,15 +145,61 @@ fn no_example_matches_another_familys_rule() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The corpus is honestly incomplete and this pins how. Two families measured
-/// with an open port would be a different situation from one, and it should be a
-/// deliberate edit here rather than something that drifts in.
+/// A rule claiming to be **measured** must ship the observation it was measured
+/// from.
 ///
-/// It also guards the reverse: a rule appearing for a family nobody has measured
-/// with an open port means somebody authored from the literature, which is the
-/// mistake this whole corpus exists to avoid.
+/// This is where the honesty guarantee actually lives, now that the corpus mixes
+/// two kinds of rule. A published rule is allowed to have no example — there is
+/// no local observation to record, which is precisely what `published` means —
+/// but a rule asserting somebody saw this on real hardware has to say what they
+/// saw, or the claim is unfalsifiable and scores higher than a published rule for
+/// no reason anyone can check.
 #[test]
-fn the_corpus_covers_only_what_has_been_measured() {
+fn every_measured_rule_ships_what_it_measured() {
+    let mut offenders = Vec::new();
+    for rule in RuleDb::global().rules() {
+        if rule.provenance == Provenance::Measured && rule.example.is_empty() {
+            offenders.push(rule.os.family.as_str());
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these rules claim to be measured and record no observation: {offenders:?}. \
+         Either ship the values that were seen, or mark the rule `published`."
+    );
+}
+
+/// A published rule must say where its values came from.
+///
+/// Its whole cost is that nobody here has confirmed it, so the note is what lets
+/// the next person confirm or correct it — and what stops a guess from being
+/// indistinguishable from a documented default six months later.
+#[test]
+fn every_published_rule_says_what_it_rests_on() {
+    let mut offenders = Vec::new();
+    for rule in RuleDb::global().rules() {
+        if rule.provenance == Provenance::Published
+            && rule.notes.as_deref().unwrap_or("").trim().len() < 40
+        {
+            offenders.push(rule.os.family.as_str());
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these rules are unconfirmed and do not say what they rest on: {offenders:?}"
+    );
+}
+
+/// The families the corpus covers, pinned so growth is a deliberate edit.
+///
+/// Not a claim that each has been *verified* — most are published defaults, and
+/// [`every_measured_rule_ships_what_it_measured`] is what polices that
+/// distinction. This is here so that adding or losing a family is something
+/// somebody chose rather than something that drifted in.
+#[test]
+fn the_corpus_covers_the_families_it_says_it_does() {
     let db = RuleDb::global();
     let mut families: Vec<&str> = db.rules().iter().map(|r| r.os.family.as_str()).collect();
     families.sort_unstable();
@@ -161,11 +207,8 @@ fn the_corpus_covers_only_what_has_been_measured() {
 
     assert_eq!(
         families,
-        vec!["Linux"],
-        "Only Linux has been measured with an open port. Apple devices answered \
-         resets alone, which carry no options; both labelled Windows hosts emitted \
-         nothing at all; macOS is unmeasured. Adding a family here means measuring \
-         it — see assets/fingerprinting/os/README.md."
+        vec!["FreeBSD", "Linux", "Network device", "Windows", "macOS"],
+        "the set of families changed; see assets/fingerprinting/os/README.md"
     );
 }
 
@@ -254,6 +297,8 @@ fn the_cross_family_check_catches_a_rule_that_is_too_loose() {
             version: None,
             cpe: None,
         },
+        provenance: Provenance::Published,
+        notes: None,
         weight: 1.0,
         r#match: MatchRule {
             reply: ReplyKind::SynAck,
@@ -273,15 +318,30 @@ fn the_cross_family_check_catches_a_rule_that_is_too_loose() {
          is incapable of catching one"
     );
 
-    // And the corpus's own rules must not be that loose in the other direction:
-    // a rule for one family, applied to a shape it was not written for, has to
-    // decline. Built by moving the window one unit off what any rule accepts.
+    // And in the other direction: a shape no rule was written for has to be
+    // declined by all of them.
+    //
+    // The mutation has to be one no rule can accept, which is narrower than it
+    // sounds. Moving the *window* is not enough — the BSD and Darwin rules state
+    // no window predicate at all, because what identifies those families is the
+    // order they write their options in, and a rule is right not to test a field
+    // it is not about. Nor is moving the hop counter to 255, which is precisely
+    // what the network-device rule looks for. So this changes the option layout
+    // to one nothing emits, and leaves the counter where no rule keys on it.
     let mut elsewhere = observed.clone();
-    elsewhere.window = 12_345;
-    elsewhere.mss = Some(1460);
+    elsewhere.option_layout = vec![
+        TcpOptionKind::MaximumSegmentSize,
+        TcpOptionKind::Sack,
+        TcpOptionKind::Other(99),
+    ];
+    let matched: Vec<&str> = RuleDb::global()
+        .matching(&elsewhere)
+        .map(|rule| rule.os.family.as_str())
+        .collect();
     assert!(
-        RuleDb::global().matching(&elsewhere).next().is_none(),
-        "every shipped rule matched an observation no measured host produced"
+        matched.is_empty(),
+        "a shape nothing emits was matched by {matched:?}, so those rules are looser \
+         than the families they name"
     );
 }
 

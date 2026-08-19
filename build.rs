@@ -198,10 +198,23 @@ fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
         );
     }
 
-    if def.example.is_empty() {
+    // Only a rule claiming to have been measured is *missing* something by
+    // shipping no example. A published rule has no local observation to record —
+    // that is what publishing means — and warning about it would train whoever
+    // reads this build to ignore the warning that matters.
+    if def.example.is_empty() && def.provenance == os_schema::Provenance::Measured {
         println!(
-            "cargo:warning={file}: '{family}' ships no example, so nothing checks it still \
-             matches what it was written for"
+            "cargo:warning={file}: '{family}' claims to be measured and records no \
+             observation, so nothing checks it still matches what it was written for"
+        );
+    }
+
+    if def.provenance == os_schema::Provenance::Published
+        && def.notes.as_deref().unwrap_or("").trim().is_empty()
+    {
+        println!(
+            "cargo:warning={file}: '{family}' is unconfirmed and does not say what its \
+             values rest on"
         );
     }
 }

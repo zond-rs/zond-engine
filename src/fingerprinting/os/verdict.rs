@@ -52,7 +52,7 @@ use crate::model::host::OsFingerprint;
 
 use super::db::RuleDb;
 use super::observation::StackObservation;
-use super::signature::OsDefinition;
+use super::signature::{OsDefinition, Provenance};
 
 /// The most a single reply's stack shape may claim on its own.
 ///
@@ -66,13 +66,26 @@ pub const MAX_STACK_ACCURACY: u8 = 70;
 /// Under this, [`classify`] yields nothing rather than the least bad guess.
 pub const MIN_REPORTABLE_ACCURACY: u8 = 40;
 
-/// What one matched rule is worth before its own weight is applied.
+/// What a rule measured by this engine is worth before its own weight applies.
 ///
 /// A rule that matched said everything it tests is true of this host. What it
 /// does *not* establish is that no other rule would have said the same, which is
-/// why several matches lower the score rather than raise it — see
-/// [`classify`].
-const BASE_ACCURACY: f32 = 65.0;
+/// why several matches do not raise the score — see [`classify`].
+const MEASURED_ACCURACY: f32 = 65.0;
+
+/// What a rule taken from published stack characteristics is worth.
+///
+/// Lower, and not because published defaults are unreliable — an initial hop
+/// counter and an option order are ordinary engineering facts. Lower because the
+/// rule has not been seen *through this engine's own probe on a real network*,
+/// which is the gap that has already caught this project out once: option
+/// negotiation is reciprocal, so a documented layout is documented against some
+/// probe, and against a different one it is wrong while looking right.
+///
+/// Above [`MIN_REPORTABLE_ACCURACY`], so such a rule reports rather than hides —
+/// a plausible answer that says how sure it is beats no answer. Confirming one
+/// on real hardware is what promotes it.
+const PUBLISHED_ACCURACY: f32 = 50.0;
 
 /// Which evidence produced a verdict.
 ///
@@ -187,7 +200,19 @@ pub fn classify(db: &RuleDb, observed: &StackObservation) -> Option<OsVerdict> {
         .map(|rule| rule.weight)
         .fold(f32::INFINITY, f32::min);
 
-    let accuracy = (BASE_ACCURACY * weight).clamp(0.0, f32::from(MAX_STACK_ACCURACY)) as u8;
+    // The least confident provenance among the matches, for the same reason as
+    // the weight: a set of rules claiming one thing is only as good as its
+    // weakest member.
+    let base = if matched
+        .iter()
+        .all(|rule| rule.provenance == Provenance::Measured)
+    {
+        MEASURED_ACCURACY
+    } else {
+        PUBLISHED_ACCURACY
+    };
+
+    let accuracy = (base * weight).clamp(0.0, f32::from(MAX_STACK_ACCURACY)) as u8;
     if accuracy < MIN_REPORTABLE_ACCURACY {
         return None;
     }
@@ -331,7 +356,9 @@ mod tests {
     /// authoring decision as a measurement.
     #[test]
     fn rules_that_contradict_each_other_name_nothing() {
-        use super::super::signature::{MatchRule, OsDefinition, OsIdentity, Predicate, ReplyKind};
+        use super::super::signature::{
+            MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,
+        };
 
         let rule = |family: &str| OsDefinition {
             os: OsIdentity {
@@ -341,6 +368,8 @@ mod tests {
                 version: None,
                 cpe: None,
             },
+            provenance: Provenance::Measured,
+            notes: None,
             weight: 1.0,
             r#match: MatchRule {
                 reply: ReplyKind::SynAck,

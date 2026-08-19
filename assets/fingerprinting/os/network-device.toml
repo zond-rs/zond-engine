@@ -1,0 +1,47 @@
+# Network equipment, and anything else that starts its hop counter at 255.
+#
+# Not an operating system so much as a class of them: routers, switches, embedded
+# management planes and printers overwhelmingly start the counter at the maximum
+# rather than at 64 or 128. It is the coarsest signal in the corpus and it is
+# genuinely useful, because it is the one that says "this is infrastructure"
+# about a host nothing else describes.
+#
+# It states no option predicate at all, which is unusual here and is the point:
+# what these devices have in common is the hop counter, not a TCP stack. Many run
+# Linux underneath and answer with a Linux option layout, and this rule matches
+# them on the counter alone.
+#
+# That does **not** collide with the Linux rules, because those require a counter
+# of 64 and this one requires 255 — a reply cannot satisfy both, so no host is
+# ever named twice. The consequence is worth stating plainly rather than being
+# discovered later: a Linux-based router that starts its counter at 64 is named
+# Linux and not a network device, and one that starts at 255 is named a network
+# device and not Linux. Neither answer is wrong; the reply carries no third thing
+# that would let one rule say both.
+provenance = "published"
+weight = 0.8
+notes = "An initial TTL of 255 is the long-standing convention for routers, switches and embedded management stacks. Deliberately states no option predicate: the shared property is the hop counter, not a TCP stack. Unconfirmed against hardware by this engine."
+
+[os]
+family = "Network device"
+
+[match]
+reply = "syn_ack"
+initial_hops = { equals = 255 }
+
+# The shape this rule expects. The option layout is Linux's, deliberately: much
+# network equipment runs Linux underneath, and recording it that way is what
+# makes the cross-family test prove the hop counter alone keeps the two apart —
+# an observation identical to a Linux one in every field but the counter must be
+# named a network device and nothing else.
+[[example]]
+source = "expected shape: an embedded management stack starting its hop counter at the maximum; not an observation"
+reply = "syn_ack"
+remaining_hops = 255
+dont_fragment = true
+option_layout = "M,S,T,N,W"
+window = 65160
+mss = 1460
+window_scale = 7
+timestamps = true
+sack_permitted = true

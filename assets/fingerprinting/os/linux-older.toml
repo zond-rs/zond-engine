@@ -10,6 +10,8 @@
 # range — one host differing from three is a difference, not a boundary. Naming a
 # version here would be authoring from folklore, which is the failure this whole
 # corpus exists to avoid.
+provenance = "measured"
+
 [os]
 family = "Linux"
 

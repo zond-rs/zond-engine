@@ -195,6 +195,10 @@ name = "ndp_pace"
 harness = false
 
 [[bench]]
+name = "os_detect"
+harness = false
+
+[[bench]]
 name = "os_observe"
 harness = false
 

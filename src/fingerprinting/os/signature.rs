@@ -85,6 +85,40 @@ pub enum ReplyKind {
     Reset,
 }
 
+/// Where a rule's values came from.
+///
+/// Not bookkeeping. It changes what the rule is worth, and it changes what the
+/// corpus test demands of it.
+///
+/// The distinction is **not** that published values are unreliable. A stack's
+/// initial hop counter, the order it writes its TCP options in, and whether it
+/// offers timestamps by default are ordinary engineering facts, documented for
+/// decades and stable across releases; refusing to use them would mean
+/// re-deriving the whole of p0f from scratch to arrive at the same table.
+///
+/// The distinction is that a published value has not been seen **by this engine,
+/// through this probe, on a real network** — and that gap is exactly where this
+/// project has already been caught out. Option negotiation is reciprocal, so a
+/// layout the literature records is the layout a peer sends *to a probe that
+/// asked for those options*; against a probe that asked for less it is simply
+/// wrong, and it fails by matching nothing while looking perfectly correct.
+///
+/// So a published rule ships, and scores lower until somebody confirms it here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provenance {
+    /// Read off a real host by this engine, with the machine's operating system
+    /// known independently. Must ship an example; the build warns otherwise.
+    Measured,
+
+    /// Taken from published characteristics of the stack — the documented
+    /// defaults a family is known to have — and not yet confirmed here.
+    ///
+    /// Scores below a measured rule, and says where it came from in `notes`.
+    #[default]
+    Published,
+}
+
 /// Who a rule says the host is, as much of the path as the evidence supports.
 ///
 /// A path rather than a name: `family` is the only required part, and a rule
@@ -217,6 +251,13 @@ pub struct Example {
 pub struct OsDefinition {
     /// Who this rule says the host is.
     pub os: OsIdentity,
+    /// Where its values came from, and so how much it is worth.
+    #[serde(default)]
+    pub provenance: Provenance,
+    /// Free text: what the values rest on, and anything a later reader needs in
+    /// order to confirm or correct them.
+    #[serde(default)]
+    pub notes: Option<String>,
     /// How much this rule is worth against others that also match. Defaults to
     /// one; bounded by [`MAX_RULE_WEIGHT`].
     #[serde(default = "default_weight")]

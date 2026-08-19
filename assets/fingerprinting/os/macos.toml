@@ -1,0 +1,54 @@
+# macOS, iOS and iPadOS — the Darwin family.
+#
+# From published stack characteristics; `provenance = "published"` and the rule
+# scores accordingly until confirmed here.
+#
+# Darwin's TCP is BSD-derived and writes its SYN+ACK options in an order nothing
+# else uses: maximum segment size, no-op, window scale, two no-ops, timestamp,
+# SACK-permitted, end-of-list. The trailing end-of-list marker is the part worth
+# noticing — most stacks simply stop, and a layout ending in `E` is close to a
+# signature by itself.
+#
+# The initial hop counter is 64, shared with Linux, so it separates nothing on
+# its own here; the layout is what distinguishes the two, and it differs in every
+# position.
+#
+# One rule for the whole family on purpose. macOS and iOS run the same kernel and
+# the same TCP, so a reply cannot tell a Mac from an iPhone — and a rule claiming
+# otherwise would be inventing a distinction the evidence does not carry.
+# Separating them needs something else entirely: a service banner, a name over
+# multicast DNS, or the hardware address.
+#
+# Measured on a real segment: six labelled Apple devices answered resets only,
+# because a phone or tablet has nothing listening. This rule needs an open port,
+# which in practice means a Mac with Remote Login, screen sharing or file sharing
+# turned on.
+provenance = "published"
+notes = "Documented Darwin defaults: initial TTL 64, SYN+ACK option order M,N,W,N,N,T,S,E with a trailing end-of-list, window scale 6, timestamps on. Covers iOS and iPadOS, which share the kernel and are indistinguishable at this layer. Unconfirmed against hardware by this engine."
+
+[os]
+family = "macOS"
+vendor = "Apple"
+
+[match]
+reply = "syn_ack"
+initial_hops = { equals = 64 }
+option_layout = { equals = "M,N,W,N,N,T,S,E" }
+timestamps = { equals = true }
+sack_permitted = { equals = true }
+window_scale = { range = [4, 8] }
+
+# The shape this rule expects, from the same published defaults rather than from
+# an observation. See the note in `windows.toml` for why one is written down at
+# all when nothing was measured.
+[[example]]
+source = "expected shape from published Darwin defaults; not an observation"
+reply = "syn_ack"
+remaining_hops = 64
+dont_fragment = true
+option_layout = "M,N,W,N,N,T,S,E"
+window = 65535
+mss = 1460
+window_scale = 6
+timestamps = true
+sack_permitted = true

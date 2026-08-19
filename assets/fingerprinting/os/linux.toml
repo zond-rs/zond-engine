@@ -21,6 +21,8 @@
 # negotiating probe with 65160 (45 x 1448). The unit moves and the multiplier
 # very nearly does not, so the rule admits both rather than pinning a value that
 # depends on what was asked.
+provenance = "measured"
+
 [os]
 family = "Linux"
 

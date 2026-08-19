@@ -93,7 +93,7 @@ pub use observation::{Quirks, StackObservation, TcpOptionKind, Timestamps};
 pub use db::RuleDb;
 pub use rules::{accepts, matches};
 pub use signature::{
-    Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, ReplyKind,
+    Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,
 };
 pub use verdict::{
     MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict, classify, classify_reply,

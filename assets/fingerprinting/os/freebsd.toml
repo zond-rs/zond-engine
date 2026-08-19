@@ -1,0 +1,38 @@
+# FreeBSD, and the BSDs that share its TCP.
+#
+# From published characteristics. Kept apart from the Darwin rule even though the
+# two are cousins, because their option orders differ: FreeBSD puts SACK-permitted
+# and the timestamp in the other sequence and does not write the trailing
+# end-of-list marker Darwin does.
+#
+# This one is here as much for what it protects as for what it finds. Without it,
+# a BSD host answering a scan has no rule of its own and falls through to
+# whichever family's rule is loosest — and the cost of a missing rule is not a
+# missing answer but a *wrong* one. A family that exists in the corpus cannot be
+# mistaken for its neighbour.
+provenance = "published"
+notes = "Documented FreeBSD defaults: initial TTL 64, SYN+ACK option order M,N,W,S,T, window scale 6, timestamps on. Distinguished from Darwin by option order and the absence of a trailing end-of-list. Unconfirmed against hardware by this engine."
+
+[os]
+family = "FreeBSD"
+
+[match]
+reply = "syn_ack"
+initial_hops = { equals = 64 }
+option_layout = { equals = "M,N,W,S,T" }
+timestamps = { equals = true }
+sack_permitted = { equals = true }
+
+# The shape this rule expects, from published defaults rather than from an
+# observation.
+[[example]]
+source = "expected shape from published FreeBSD defaults; not an observation"
+reply = "syn_ack"
+remaining_hops = 64
+dont_fragment = true
+option_layout = "M,N,W,S,T"
+window = 65535
+mss = 1460
+window_scale = 6
+timestamps = true
+sack_permitted = true

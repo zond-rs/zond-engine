@@ -716,3 +716,68 @@ async fn a_host_already_in_the_store_is_still_credited_to_this_sweep() {
     );
     assert!(session.hosts().contains(&TARGET));
 }
+
+// ── Operating system identification ──────────────────────────────────────────
+
+/// The whole passive path, driven through the real scanner: a simulated host
+/// answers a SYN the way a labelled Linux machine was recorded answering one,
+/// and the scan names it.
+///
+/// This is the only test that covers the wiring — the point where a reply that
+/// resolved a port is read a second time for what it says about the machine, and
+/// the result is filed against the host. Everything below it has its own tests
+/// against recorded bytes; nothing else establishes that the scanner ever calls
+/// them.
+///
+/// It works at all because `fake_net`'s SYN+ACK carries the option list and
+/// window a real stack sent, under an IP header with a real hop count. A
+/// simulator emitting a bare header would resolve the port identically and
+/// identify nothing, and this test would have been impossible to write without
+/// noticing why.
+#[tokio::test]
+async fn a_scan_names_the_operating_system_behind_an_open_port() {
+    let (session, _net) = syn_scan(&[(80, Policy::open())]).await;
+
+    let host = session.hosts().get(&TARGET).expect("the host was recorded");
+    let os = host
+        .os()
+        .expect("an open port's reply carries a stack signature");
+
+    assert_eq!(os.family(), Some("Linux"));
+    assert_eq!(os.name(), "Linux");
+
+    // The evidence line is what makes a wrong answer diagnosable without
+    // re-running the scan, so its absence is a defect rather than a detail.
+    let evidence = os
+        .evidence()
+        .expect("the finding says what it was read off");
+    assert!(
+        evidence.contains("M,S,T,N,W") && evidence.contains("ws=7"),
+        "the evidence should name what was matched, got {evidence:?}"
+    );
+
+    // One correlated packet is one observation however many of its fields agree,
+    // and the threshold a caller reads to decide whether to probe harder has to
+    // stay out of reach of it.
+    assert!(
+        !os.is_highly_confident(),
+        "stack evidence alone must not reach the threshold that stops further probing"
+    );
+}
+
+/// A closed port's reset carries no TCP options at all, so there is nothing to
+/// identify a stack from and the scan must say nothing rather than guess.
+#[tokio::test]
+async fn a_scan_names_no_operating_system_from_a_closed_port_alone() {
+    let (session, _net) = syn_scan(&[(80, Policy::closed())]).await;
+
+    let host = session.hosts().get(&TARGET).expect("the host was recorded");
+    assert!(
+        host.ports().any(|port| port.state() == PortState::Closed),
+        "the port itself still resolves"
+    );
+    assert!(
+        host.os().is_none(),
+        "a reset carries no options, so it can name no operating system"
+    );
+}

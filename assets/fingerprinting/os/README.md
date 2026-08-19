@@ -4,27 +4,44 @@ Rules matched against a `StackObservation` — a typed feature vector read off o
 TCP reply — rather than against text. The schema is
 `src/fingerprinting/os/signature.rs`, shared verbatim with `build.rs`.
 
-## What is here, and what is deliberately not
+## Two kinds of rule, and why both belong
 
-Only what has been measured. Every value in every rule was read off a real host
-and labelled from outside the engine; nothing is transcribed from published
-defaults, because a rule authored from the literature and then tested against the
-literature only proves both were copied from the same place.
+Every rule declares its `provenance`:
 
-That leaves the corpus honestly incomplete:
+- **`measured`** — read off a real host by this engine, through this engine's own
+  probe, with the machine's operating system known independently. Must ship the
+  observation it was measured from.
+- **`published`** — taken from the documented defaults a stack family is known to
+  have. Must say in `notes` what it rests on. Scores lower until somebody
+  confirms it here.
 
-- **Linux** — two shapes across four labelled hosts, one with a known kernel.
-- **Apple** — six labelled devices, none with an open port. A reset carries no
-  TCP options at all, so there is nothing to write a rule against, and the one
-  reset feature that looked promising was retracted after the same devices
-  answered two scanners on one segment with opposite values.
-- **Windows** — two labelled hosts, both of which emitted **nothing** on any of
-  fourteen ports from two vantage points. A stock firewall drops rather than
-  refuses. There is no packet to read and therefore no rule to write; naming one
-  is phase 5's job, from a name, a banner or a hardware address.
-- **macOS** — not yet measured with an open port.
+The published rules are not a compromise. A stack's initial hop counter, the
+order it writes its TCP options in, and whether it offers timestamps by default
+are ordinary engineering facts, stable across releases and documented for
+decades; re-deriving them by measurement would be re-deriving p0f from scratch to
+reach the same table.
 
-Adding a family means measuring it, not describing it.
+What the distinction records is a specific, earned caution. **Option negotiation
+is reciprocal**: a layout the literature gives is the layout a peer sends *to a
+probe that asked for those options*. This engine's SYN offered only a maximum
+segment size until it was changed to offer the full set, and against that probe
+every host on a real segment answered `M` — so a rule transcribed as `M,S,T,N,W`
+would have matched nothing, from every stack at once, while looking perfectly
+correct. The measurement is what made the published values usable, not what
+replaced them.
+
+So: use the literature, mark it as such, score it below what has been seen here,
+and promote it when somebody confirms it.
+
+## Coverage
+
+| family | provenance | notes |
+|---|---|---|
+| Linux | measured | two shapes across four labelled hosts, one with a known kernel |
+| Windows | published | NT-family defaults; a stock firewall drops, so this needs a host with something listening |
+| macOS | published | Darwin defaults; covers iOS and iPadOS, which are indistinguishable at this layer |
+| FreeBSD | published | distinguished from Darwin by option order |
+| Network device | published | the hop counter alone; deliberately states no option predicate |
 
 ## This directory is published
 

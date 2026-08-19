@@ -61,7 +61,8 @@ use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
 use pnet::packet::udp::UdpPacket;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-use zond_engine::protocols::{ip, udp};
+use zond_engine::model::capture::{IpObservation, Ipv4Observation};
+use zond_engine::protocols::{ip, tcp, udp};
 use zond_engine::transport::capture::CapturedSegment;
 use zond_engine::transport::probe::{ProbeSender, ProbeTransport, SendError};
 
@@ -70,6 +71,22 @@ use zond_engine::transport::probe::{ProbeSender, ProbeTransport, SendError};
 /// the classification path reads them.
 const TCP_HDR_LEN: usize = 20;
 const TCP_HDR_WORDS: u8 = (TCP_HDR_LEN / 4) as u8;
+
+/// The TCP options a labelled Linux host answered a negotiating SYN with,
+/// recorded off the wire on 2026-08-18: maximum segment size 1460,
+/// SACK-permitted, a timestamp, a no-op, and a window scale of seven.
+///
+/// Copied verbatim rather than assembled from an option builder. A simulator
+/// that composes its answer out of the same understanding the parser reads it
+/// with tests only that the two agree; these are what a stack actually sent.
+const LINUX_SYN_ACK_OPTIONS: [u8; 20] = [
+    0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0xad, 0x58, 0xa5, 0xa7, 0x64, 0x48, 0x96, 0x12,
+    0x01, 0x03, 0x03, 0x07,
+];
+
+/// The window that host advertised alongside them: 65160, which is 45 times the
+/// 1448-byte segment left once a negotiated timestamp is accounted for.
+const LINUX_SYN_ACK_WINDOW: u16 = 65_160;
 
 const FIN: u8 = 1;
 const SYN: u8 = 1 << 1;
@@ -747,6 +764,20 @@ impl FakeLink {
 
     /// One TCP segment from the probed port back to the scanner's source port,
     /// carrying the sequence and acknowledgement numbers the caller worked out.
+    ///
+    /// A **SYN+ACK answers the way a real stack does**: with the option list and
+    /// the window a labelled Linux host was recorded sending, and under an IP
+    /// header with a plausible hop count and fragmentation policy. Everything
+    /// else answers as before.
+    ///
+    /// That matters beyond tidiness. A simulator emitting a bare header with a
+    /// round window is emitting what the *port scanner* needs and nothing more,
+    /// so every reading further up — which operating system answered, what its
+    /// window is a multiple of — is untestable against it, and a defect there
+    /// looks exactly like a feature nobody wrote. This engine has already shipped
+    /// one fake that emitted what the parser accepted rather than what the wire
+    /// carries, and the test built on it passed for a protocol the engine could
+    /// not speak.
     fn tcp_segment(
         &self,
         probe: &ParsedProbe,
@@ -756,16 +787,33 @@ impl FakeLink {
         sequence: u32,
         acknowledgement: u32,
     ) -> Option<CapturedSegment> {
-        let mut buffer = vec![0u8; TCP_HDR_LEN];
+        let is_syn_ack = flags & tcp::flags::SYN != 0 && flags & tcp::flags::ACK != 0;
+        let options: &[u8] = if is_syn_ack {
+            &LINUX_SYN_ACK_OPTIONS
+        } else {
+            &[]
+        };
+        let window = if is_syn_ack {
+            LINUX_SYN_ACK_WINDOW
+        } else {
+            65_535
+        };
+
+        let mut buffer = vec![0u8; TCP_HDR_LEN + options.len()];
         {
             let mut tcp = MutableTcpPacket::new(&mut buffer)?;
             tcp.set_source(probe.port);
             tcp.set_destination(probe.reply_port);
-            tcp.set_data_offset(TCP_HDR_WORDS);
+            tcp.set_data_offset(TCP_HDR_WORDS + (options.len() / 4) as u8);
             tcp.set_sequence(sequence);
             tcp.set_acknowledgement(acknowledgement);
             tcp.set_flags(flags);
-            tcp.set_window(65_535);
+            tcp.set_window(window);
+            tcp.set_checksum(0);
+            if !options.is_empty() {
+                buffer[TCP_HDR_LEN..].copy_from_slice(options);
+            }
+            let mut tcp = MutableTcpPacket::new(&mut buffer)?;
             tcp.set_checksum(0);
 
             let checksum = match (target, scanner) {
@@ -780,11 +828,25 @@ impl FakeLink {
             tcp.set_checksum(checksum);
         }
 
-        Some(CapturedSegment::synthetic(
-            target,
-            IpNextHeaderProtocols::Tcp,
-            buffer,
-        ))
+        Some(CapturedSegment {
+            source: target,
+            protocol: IpNextHeaderProtocols::Tcp,
+            bytes: buffer,
+            // A real reply arrives under an IP header, and this one says what a
+            // Linux host on a local segment says. `synthetic` — which reports no
+            // header at all — is the honest answer for a stream that composed
+            // Layer-4 bytes out of nothing, and the wrong one here, because this
+            // is standing in for a packet.
+            observation: Some(IpObservation::V4(Ipv4Observation {
+                ttl: 64,
+                identification: 0,
+                dont_fragment: true,
+                more_fragments: false,
+                dscp: 0,
+                ecn: 0,
+            })),
+            source_mac: None,
+        })
     }
 
     /// A UDP datagram from the probed port back to the scanner's source port,

@@ -1018,9 +1018,10 @@ fn print_provenance(observed: &Seen) {
     }
 
     if senders.values().any(|addresses| addresses.len() > 1) {
-        println!(
-            "\n  One hardware address answering for several IP addresses means those rows \n               describe that machine, not the hosts they are filed under. Read every feature \n               of the shared rows as belonging to whatever holds that address."
-        );
+        println!();
+        println!("  One hardware address answering for several IP addresses means those rows");
+        println!("  describe that machine, not the hosts they are filed under. Read every");
+        println!("  feature of the shared rows as belonging to whatever holds that address.");
     }
 }
 
@@ -1222,18 +1223,23 @@ fn print_state_agreement(
         .sum();
 
     if !absent.is_empty() {
+        println!();
         println!(
-            "\n  {absent_rows} of those are {} host(s) that disagreed on *every* port asked, \n               which is a host present for one pass and not the other rather than a stack \n               weighing options:",
+            "  {absent_rows} of those are {} host(s) that disagreed on *every* port asked,",
             absent.len()
         );
+        println!("  which is a host present for one pass and not the other rather than a");
+        println!("  stack weighing options:");
         for address in &absent {
             println!("      {address}");
         }
     }
+    println!();
     println!(
-        "\n  {} disagreement(s) on hosts that answered both passes. Those are the ones \n           that say anything about the option list.",
+        "  {} disagreement(s) on hosts that answered both passes. Those are the ones",
         disagreements.len() - absent_rows
     );
+    println!("  that say anything about the option list.");
 
     println!(
         "\n  {:<16} {:>5} {:<10} {:<10} direction",
@@ -1261,9 +1267,10 @@ fn print_state_agreement(
         );
     }
 
-    println!(
-        "\n  {lost} lost, {gained} gained. Re-run at a lower rate before reading either as \n           refusal: with one probe per port and no retransmission, loss and refusal are \n           the same observation here."
-    );
+    println!();
+    println!("  {lost} lost, {gained} gained. Re-run at a lower rate before reading either");
+    println!("  as refusal: with one probe per port and no retransmission, loss and");
+    println!("  refusal are the same observation here.");
 }
 
 /// Groups the rows by [`StackShape`], per arm and per reply kind, so hosts
@@ -1369,7 +1376,7 @@ fn print_zero_hop_note(observed: &Seen) {
     for address in &untraversed {
         println!("      {address}");
     }
-    println!(
-        "  Expected for anything on this segment. For a target that should be routed, it \n           means something local answered in its place, and the row describes that instead."
-    );
+    println!("  Expected for anything on this segment. For a target that should be routed,");
+    println!("  it means something local answered in its place, and the row describes that");
+    println!("  instead.");
 }

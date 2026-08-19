@@ -1,0 +1,59 @@
+# Windows NT, Vista onwards.
+#
+# From published stack characteristics rather than from a measurement taken here;
+# `provenance = "published"` says so and the rule scores below a measured one
+# until somebody confirms it against hardware.
+#
+# Three things about this family are long-standing, documented, and stable across
+# releases, and they are what the rule tests:
+#
+#   * The initial hop counter is 128, where the Unix-alikes use 64. On its own
+#     that separates this family from every other rule in the corpus.
+#   * The SYN+ACK option order is maximum segment size, no-op, window scale, two
+#     no-ops, SACK-permitted — the padding sits in places no other stack puts it.
+#   * Timestamps are **not** offered by default. Windows has supported RFC 1323
+#     timestamps since Vista and ships with them off, so a Windows SYN+ACK
+#     declines them even when the SYN asked.
+#
+# What is deliberately *not* pinned: the advertised window and the window scale.
+# Both move with the release and with receive-window autotuning, and pinning a
+# value this rule cannot vouch for would make it match nothing while looking
+# correct. The three above are enough to be unambiguous.
+#
+# Worth knowing before trusting this against a real network: a stock Windows
+# firewall **drops** rather than refuses, so a desktop with no service exposed
+# emits nothing at all and no stack rule can reach it. Two labelled Windows hosts
+# measured on a real segment answered none of fourteen ports. This rule applies
+# to a Windows machine with something listening, which in practice means a server,
+# or a desktop with sharing or remote desktop turned on.
+provenance = "published"
+notes = "Documented NT-family defaults: initial TTL 128, SYN+ACK option order M,N,W,N,N,S, timestamps off by default. Window and window scale left unconstrained because they vary by release and with autotuning. Unconfirmed against hardware by this engine."
+
+[os]
+family = "Windows"
+vendor = "Microsoft"
+
+[match]
+reply = "syn_ack"
+initial_hops = { equals = 128 }
+option_layout = { equals = "M,N,W,N,N,S" }
+timestamps = { equals = false }
+sack_permitted = { equals = true }
+
+# The shape this rule expects, written from the same published defaults rather
+# than from an observation — `provenance` says so. It is not evidence that a
+# Windows host answers this way; it is what the rule claims, written down so that
+# editing the rule out of agreement with its own claim fails a test, and so the
+# cross-family check has a Windows-shaped observation to try every other family's
+# rules against.
+[[example]]
+source = "expected shape from published NT-family defaults; not an observation"
+reply = "syn_ack"
+remaining_hops = 128
+dont_fragment = true
+option_layout = "M,N,W,N,N,S"
+window = 65535
+mss = 1460
+window_scale = 8
+timestamps = false
+sack_permitted = true
