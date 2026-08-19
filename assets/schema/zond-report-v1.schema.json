@@ -579,7 +579,7 @@
     "os": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "family", "generation", "vendor", "accuracy", "cpe"],
+      "required": ["name", "family", "generation", "vendor", "accuracy", "cpe", "evidence"],
       "properties": {
         "name": { "type": "string" },
         "family": { "type": ["string", "null"] },
@@ -592,6 +592,10 @@
         "cpe": {
           "type": "array",
           "items": { "type": "string" }
+        },
+        "evidence": {
+          "description": "What this identification was read off, in one line, or null where the technique recorded nothing. Written for a person rather than for a parser: different techniques render different things here, and the fields to act on are the named ones beside it. It is here so a disputed finding can be diagnosed, and turned into a corpus entry, without re-running the scan.",
+          "type": ["string", "null"]
         }
       }
     },

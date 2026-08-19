@@ -1076,6 +1076,14 @@ pub struct OsDto<'a> {
     pub accuracy: u8,
     /// CPE identifiers, sorted.
     pub cpe: Vec<&'a str>,
+    /// What this identification was read off, in one line, or `null` where the
+    /// technique that produced it recorded nothing.
+    ///
+    /// **For a person, not for a parser.** Different techniques render different
+    /// things here, and the fields a consumer should act on are the named ones
+    /// above. It exists so a disputed finding can be diagnosed — and turned into
+    /// a corpus entry — without re-running the scan.
+    pub evidence: Option<&'a str>,
 }
 
 impl<'a> OsDto<'a> {
@@ -1088,6 +1096,7 @@ impl<'a> OsDto<'a> {
             vendor: os.vendor(),
             accuracy: os.accuracy(),
             cpe: os.cpes().iter().map(|cpe| &**cpe).collect(),
+            evidence: os.evidence(),
         }
     }
 }

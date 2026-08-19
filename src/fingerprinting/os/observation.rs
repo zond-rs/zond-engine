@@ -328,6 +328,82 @@ impl StackObservation {
         Some((self.window / unit, self.window % unit))
     }
 
+    /// The smallest common initial hop counter the observed value could have been
+    /// decremented from.
+    ///
+    /// **A lower bound, not the value the sender wrote.** Every router on the
+    /// path decrements the counter, and the initial value is the part that
+    /// identifies a stack, so recovering it exactly needs a hop count this type
+    /// does not have. What it gives instead is true without one: a reply that
+    /// arrives at 57 cannot have started below 64.
+    ///
+    /// The bound stops being useful — not wrong, but uninformative — once a path
+    /// is longer than the gap to the next starting value. A host 40 hops away
+    /// that started at 64 arrives at 24 and is reported as "at least 32", which
+    /// is correct and says nothing. A rule needing better than that is a rule
+    /// that cannot be written from one reply.
+    pub fn initial_hops_at_least(&self) -> u8 {
+        const COMMON: [u8; 4] = [32, 64, 128, 255];
+        let arrived = self.ip.remaining_hops();
+        COMMON
+            .into_iter()
+            .find(|start| *start >= arrived)
+            .unwrap_or(u8::MAX)
+    }
+
+    /// One line saying what this observation held, for a report to carry beside a
+    /// verdict.
+    ///
+    /// Written for a person: it is what somebody disputing a finding needs to see
+    /// without re-running the scan, and what turns a false positive into a corpus
+    /// entry. Nothing should parse it — the typed fields are right here.
+    ///
+    /// The window is rendered as its multiple of the effective segment size,
+    /// because that is what a rule compared and what a reader needs in order to
+    /// follow why the rule matched. The raw value is beside it for the same
+    /// reason a report keeps both: a number nobody can reconstruct is a number
+    /// nobody can argue with.
+    pub fn summary(&self) -> String {
+        let mut out = String::with_capacity(96);
+        out.push_str(if self.is_syn_ack() {
+            "syn-ack"
+        } else if self.is_reset() {
+            "reset"
+        } else {
+            "other"
+        });
+
+        out.push_str(&format!(" hops>={}", self.initial_hops_at_least()));
+        if !self.option_layout.is_empty() {
+            out.push_str(&format!(" opts={}", self.layout_string()));
+        }
+        match self.window_in_units() {
+            Some((units, 0)) => out.push_str(&format!(
+                " win={}={}x{}",
+                self.window,
+                units,
+                self.effective_mss().unwrap_or_default()
+            )),
+            Some((units, remainder)) => out.push_str(&format!(
+                " win={}={}x{}+{remainder}",
+                self.window,
+                units,
+                self.effective_mss().unwrap_or_default()
+            )),
+            None => out.push_str(&format!(" win={}", self.window)),
+        }
+        if let Some(scale) = self.window_scale {
+            out.push_str(&format!(" ws={scale}"));
+        }
+        if let Some(mss) = self.mss {
+            out.push_str(&format!(" mss={mss}"));
+        }
+        if self.quirks.any() {
+            out.push_str(" quirks");
+        }
+        out
+    }
+
     /// The option layout as the letters the public corpora write it in, comma
     /// separated — `M,S,T,N,W` for a stack that sends a maximum segment size,
     /// SACK-permitted, a timestamp, a no-op and a window scale in that order.
@@ -492,17 +568,17 @@ mod tests {
     /// match what this parser currently accepts would pass forever whatever the
     /// parser did; these are what arrived.
     mod recorded {
-        /// `192.168.0.1`, a router running Linux. Window 65160, MSS 1460.
+        /// A consumer router running Linux. Window 65160, MSS 1460.
         pub const ROUTER: [u8; 20] = [
             0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0xf9, 0xc1, 0x3d, 0x9a, 0x7a, 0xfc,
             0xb9, 0x37, 0x01, 0x03, 0x03, 0x07,
         ];
-        /// `192.168.0.30`, an older Linux host. Window 28960, MSS 1460.
+        /// A network appliance on an older Linux. Window 28960, MSS 1460.
         pub const OLDER_LINUX: [u8; 20] = [
             0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0x09, 0x6f, 0xa4, 0xb5, 0x56, 0x09,
             0x46, 0x63, 0x01, 0x03, 0x03, 0x03,
         ];
-        /// `1.1.1.1`, across a wide-area path. Window 64296, MSS 1360.
+        /// A wide-area server, across a routed path. Window 64296, MSS 1360.
         pub const WIDE_AREA: [u8; 20] = [
             0x02, 0x04, 0x05, 0x50, 0x04, 0x02, 0x08, 0x0a, 0xdb, 0xe1, 0xf2, 0x7e, 0x7d, 0x69,
             0x6f, 0x3b, 0x01, 0x03, 0x03, 0x08,

@@ -76,6 +76,25 @@
 //! and explained on [`StackObservation`]. Two may be compared when the
 //! same question was asked of both.
 
+mod db;
 mod observation;
+mod rules;
+mod signature;
+mod verdict;
+
+#[cfg(test)]
+mod corpus;
 
 pub use observation::{Quirks, StackObservation, TcpOptionKind, Timestamps};
+// The schema an `assets/fingerprinting/os` rule is authored against. Exported so
+// a consumer writing rules of their own is held to the same shape rather than
+// discovering it when one is silently dropped, exactly as the service signature
+// schema is.
+pub use db::RuleDb;
+pub use rules::{accepts, matches};
+pub use signature::{
+    Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, ReplyKind,
+};
+pub use verdict::{
+    MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict, classify, classify_reply,
+};

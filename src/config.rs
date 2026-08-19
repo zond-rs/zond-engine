@@ -434,6 +434,14 @@ pub struct ProbeTuning {
     /// scanner: host discovery asks whether anything is there, which every one
     /// of these techniques answers equally badly, so it stays on SYN.
     pub tcp_technique: TcpScanTechnique,
+
+    /// How far a strategy may go to identify the operating system behind a host.
+    ///
+    /// Read by the raw TCP port scanner, which is where the replies that carry a
+    /// stack's shape arrive. At [`OsDetection::Passive`] it changes no packet and
+    /// no timing — it reads a reply the scan already drew — so it is here rather
+    /// than in a phase of its own.
+    pub os_detection: OsDetection,
 }
 
 /// What a scan does, and what it is allowed to put on the wire.
@@ -553,6 +561,7 @@ impl ZondConfig {
             retry: self.retry,
             max_probe_rate: self.max_probe_rate,
             tcp_technique: self.tcp_technique,
+            os_detection: self.os_detection,
         }
     }
 }

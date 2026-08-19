@@ -1,0 +1,36 @@
+# An older Linux kernel.
+#
+# One host, distinguished from the current shape by two things that move
+# together: a window scale of 3 rather than 7, and a window of twenty units
+# rather than forty-five. Both are compile-time defaults rather than anything an
+# administrator usually touches, which is what makes them worth a rule.
+#
+# The version is deliberately unstated. Two shapes across four hosts is enough to
+# say these are different builds and not enough to attribute either to a kernel
+# range — one host differing from three is a difference, not a boundary. Naming a
+# version here would be authoring from folklore, which is the failure this whole
+# corpus exists to avoid.
+[os]
+family = "Linux"
+
+[match]
+reply = "syn_ack"
+initial_hops = { equals = 64 }
+option_layout = { equals = "M,S,T,N,W" }
+window_scale = { equals = 3 }
+window_units = { equals = 20 }
+window_remainder = { equals = 0 }
+timestamps = { equals = true }
+sack_permitted = { equals = true }
+
+[[example]]
+source = "network appliance, Linux of unknown version; measured on a LAN 2026-08-18 from two vantage points"
+reply = "syn_ack"
+remaining_hops = 64
+dont_fragment = true
+option_layout = "M,S,T,N,W"
+window = 28960
+mss = 1460
+window_scale = 3
+timestamps = true
+sack_permitted = true

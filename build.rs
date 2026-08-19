@@ -26,11 +26,21 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The authoring schema, shared verbatim with the runtime. Kept in an inner
-/// module so its items don't leak into the build script's namespace.
-mod schema {
-    include!("src/fingerprinting/signature.rs");
-}
+/// The service-signature authoring schema, shared verbatim with the runtime.
+///
+/// Loaded via `#[path]` rather than `include!`, for the reason [`pattern`] gives
+/// below and for one more: `include!` splices a file into an anonymous position,
+/// and tooling that reads this crate without compiling it cannot always follow a
+/// derive macro through the splice — so `Serialize` and `Deserialize` appear
+/// unimplemented in an editor while `cargo` compiles it perfectly. A `#[path]`
+/// module is an ordinary module and analyses like one.
+#[path = "src/fingerprinting/signature.rs"]
+mod schema;
+
+/// The operating-system rule schema, likewise shared verbatim. A rule the build
+/// accepts is exactly a rule the runtime can match, because both read this file.
+#[path = "src/fingerprinting/os/signature.rs"]
+mod os_schema;
 
 /// The pattern-compilation logic, shared verbatim with the runtime so the build
 /// accepts *exactly* the patterns the engine can match — including the
@@ -47,12 +57,15 @@ use schema::{MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, ServiceDefinition, u
 fn main() {
     println!("cargo:rerun-if-changed=assets/fingerprinting");
     println!("cargo:rerun-if-changed=src/fingerprinting/signature.rs");
+    println!("cargo:rerun-if-changed=src/fingerprinting/os/signature.rs");
 
     let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest_path = Path::new(&out_dir).join("fingerprints.bin");
 
     let mut toml_files = Vec::new();
-    collect_toml_files(Path::new("assets/fingerprinting"), &mut toml_files);
+    // `os` holds the operating-system rules, which are a different schema
+    // entirely; see `collect_toml_files_except`.
+    collect_toml_files_except(Path::new("assets/fingerprinting"), &["os"], &mut toml_files);
     // Sort for a deterministic, reproducible artifact: the order here decides
     // which definition wins a shared port in the runtime name index.
     toml_files.sort();
@@ -69,6 +82,128 @@ fn main() {
 
     let encoded = bincode::serialize(&services).expect("failed to serialize fingerprint database");
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
+
+    compile_os_rules(Path::new(&out_dir));
+}
+
+/// Compiles the operating-system rules the same way, and validates them harder.
+///
+/// Harder because an OS rule fails differently from a service signature. A
+/// pattern that cannot compile is dropped and the coverage gap is at least
+/// *absent*; a rule with no predicates matches every host that ever answers and
+/// reports them all as one operating system. Silently wrong beats silently
+/// missing on nobody's scale, so the empty rule fails the build.
+fn compile_os_rules(out_dir: &Path) {
+    let mut toml_files = Vec::new();
+    collect_toml_files(Path::new("assets/fingerprinting/os"), &mut toml_files);
+    toml_files.sort();
+
+    let mut rules = Vec::with_capacity(toml_files.len());
+    for path in &toml_files {
+        let content = fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        let def: os_schema::OsDefinition = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
+        validate_os_rule(&def, path);
+        rules.push(def);
+    }
+
+    let encoded = bincode::serialize(&rules).expect("failed to serialize the OS rule database");
+    fs::write(out_dir.join("os_rules.bin"), encoded).expect("failed to write the OS rule database");
+}
+
+/// Validates one operating-system rule, aborting the build on anything that
+/// would make it match the wrong hosts or no hosts at all.
+fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
+    let file = path.display();
+    let family = &def.os.family;
+
+    if family.trim().is_empty() {
+        panic!("{file}: a rule must name a family");
+    }
+
+    // The identity is a path, so a segment cannot be given without the one above
+    // it. "Ubuntu 22.04" with no vendor is fine; a version with no product names
+    // a version of nothing.
+    if def.os.version.is_some() && def.os.product.is_none() {
+        panic!("{file}: '{family}' states a version without a product to version");
+    }
+
+    if !(0.0..=os_schema::MAX_RULE_WEIGHT).contains(&def.weight) || !def.weight.is_finite() {
+        panic!(
+            "{file}: '{family}' has weight {}, outside 0..={}",
+            def.weight,
+            os_schema::MAX_RULE_WEIGHT
+        );
+    }
+
+    let mut predicates = 0usize;
+    macro_rules! check {
+        ($($field:ident),* $(,)?) => {$(
+            if let Some(predicate) = &def.r#match.$field {
+                predicates += 1;
+                match predicate.forms_set() {
+                    1 => {}
+                    0 => panic!(
+                        "{file}: '{family}' predicate `{}` sets none of equals/any_of/range, \
+                         so it can never match",
+                        stringify!($field)
+                    ),
+                    n => panic!(
+                        "{file}: '{family}' predicate `{}` sets {n} of equals/any_of/range; \
+                         exactly one is allowed",
+                        stringify!($field)
+                    ),
+                }
+                if let Some(set) = &predicate.any_of
+                    && set.is_empty()
+                {
+                    panic!(
+                        "{file}: '{family}' predicate `{}` has an empty any_of, so it can \
+                         never match",
+                        stringify!($field)
+                    );
+                }
+                if let Some([low, high]) = &predicate.range
+                    && low > high
+                {
+                    panic!(
+                        "{file}: '{family}' predicate `{}` has a range whose low bound is \
+                         above its high bound, so it can never match",
+                        stringify!($field)
+                    );
+                }
+            }
+        )*};
+    }
+    check!(
+        initial_hops,
+        dont_fragment,
+        option_layout,
+        window_units,
+        window_remainder,
+        window_scale,
+        mss,
+        timestamps,
+        sack_permitted,
+    );
+
+    // The one defect that is worse than a build failure. A rule testing nothing
+    // matches every reply of its kind and names every host that ever answers as
+    // this operating system, and nothing downstream can tell that from a
+    // detection that worked.
+    if predicates == 0 {
+        panic!(
+            "{file}: '{family}' states no predicates, so it would match every reply of its kind"
+        );
+    }
+
+    if def.example.is_empty() {
+        println!(
+            "cargo:warning={file}: '{family}' ships no example, so nothing checks it still \
+             matches what it was written for"
+        );
+    }
 }
 
 /// Validates one service definition, aborting the build on any defect that would
@@ -328,13 +463,33 @@ fn validate_ssdp_search(payload: &[u8]) -> Result<(), String> {
 
 /// Recursively collects every `.toml` file under `dir`.
 fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    collect_toml_files_except(dir, &[], files);
+}
+
+/// The same walk, skipping any directory whose name is in `skip`.
+///
+/// Two corpora live under `assets/fingerprinting` and they are different
+/// schemas: service signatures match a regex against text, and the rules in
+/// `os/` match predicates against a typed feature vector. A walk that collected
+/// both would hand each file to the wrong parser, and the build would fail
+/// somewhere confusing — as it did, once, with a TOML error about a map where a
+/// sequence was expected. Naming the exclusion here keeps that a one-line fact
+/// rather than a rediscovery.
+fn collect_toml_files_except(dir: &Path, skip: &[&str], files: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_toml_files(&path, files);
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if skip.contains(&name) {
+                continue;
+            }
+            collect_toml_files_except(&path, skip, files);
         } else if path.extension().and_then(|s| s.to_str()) == Some("toml") {
             files.push(path);
         }

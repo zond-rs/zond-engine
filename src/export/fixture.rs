@@ -52,7 +52,10 @@ fn router() -> Host {
 
     let mut os = OsFingerprint::new("Linux", 95)
         .with_family("Unix-like")
-        .with_generation("5.15.0");
+        .with_generation("5.15.0")
+        // Shaped like what the stack fingerprinter renders, so the full-report
+        // document exercises a populated evidence line rather than a null.
+        .with_evidence("syn-ack hops>=64 opts=M,S,T,N,W win=65160=45x1448 ws=7 mss=1460");
     os.add_cpe("cpe:/o:linux:linux_kernel:5.15.0");
     host.set_os(os);
 
@@ -213,7 +216,11 @@ fn hostile_host() -> Host {
 
     let mut os = OsFingerprint::new(HOSTILE, 90)
         .with_family(HOSTILE)
-        .with_generation(HOSTILE);
+        .with_generation(HOSTILE)
+        // Every string a report carries has to survive being written into JSON,
+        // CSV, HTML and XML, and this one is no different for being meant for a
+        // reader rather than a parser.
+        .with_evidence(HOSTILE);
     os.add_cpe(HOSTILE);
     host.set_os(os);
     host.add_rtt(Duration::from_micros(1_000));

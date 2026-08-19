@@ -51,8 +51,10 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
+use crate::config::OsDetection;
 use crate::config::ProbeTuning;
 use crate::error;
+use crate::fingerprinting::os;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
@@ -120,6 +122,15 @@ pub struct TcpPortScanner {
     /// What stays in this file is what a *TCP* probe is and what its answers
     /// prove.
     core: RawProbeScan<TcpToken>,
+
+    /// How far this scan may go to identify the operating system behind a host.
+    ///
+    /// Read here because this is where the replies that carry a stack's shape
+    /// arrive, and a SYN+ACK is the only segment that carries one. At
+    /// [`OsDetection::Passive`] nothing extra is sent and nothing is timed
+    /// differently: the reply was drawn to classify a port, and reading what else
+    /// it says costs a parse.
+    os_detection: OsDetection,
 }
 
 impl TcpPortScanner {
@@ -153,6 +164,7 @@ impl TcpPortScanner {
             target_count,
             src_port,
             RETRY_POLICY.configured(tuning.retry),
+            tuning.os_detection,
         ))
     }
 
@@ -184,6 +196,7 @@ impl TcpPortScanner {
             target_count,
             rand::random_range(50_000..u16::MAX),
             RETRY_POLICY,
+            OsDetection::default(),
         )
     }
 
@@ -200,6 +213,7 @@ impl TcpPortScanner {
         target_count: usize,
         src_port: u16,
         retry: RetryPolicy,
+        os_detection: OsDetection,
     ) -> Self {
         // The scan has to outlive its own retry schedule, or probes are written
         // off as unanswered having never been fully asked.
@@ -207,6 +221,7 @@ impl TcpPortScanner {
 
         Self {
             technique,
+            os_detection,
             core: RawProbeScan {
                 resolver,
                 ctx,
@@ -224,7 +239,8 @@ impl TcpPortScanner {
 
     /// Matches a TCP segment against an outstanding probe and, if it answers
     /// one, classifies it and records the port's state.
-    fn handle_tcp_reply(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) {
+    fn handle_tcp_reply(&mut self, captured: &CapturedSegment, now: Instant) {
+        let (ip, bytes) = (captured.source, &captured.bytes);
         let Some(tcp_packet) = TcpPacket::new(bytes) else {
             self.core.audit.record_off_target();
             return;
@@ -261,6 +277,48 @@ impl TcpPortScanner {
         };
         let key = (ip, tcp_packet.get_source());
         self.resolve_probe(key, Some(token), state, None, now);
+
+        self.identify_stack(ip, state, captured);
+    }
+
+    /// Reads what the reply that just resolved a port says about the machine
+    /// behind it, and files it against the host.
+    ///
+    /// Deliberately after the port verdict and deliberately not able to change
+    /// it. Identifying an operating system is a secondary reading of a reply
+    /// drawn for another purpose, and a defect here must not be able to cost a
+    /// port its state.
+    ///
+    /// Only a SYN+ACK is read. A reset carries no TCP options at all whatever the
+    /// probe offered, and the corpus holds no rule that could be matched against
+    /// one — the single reset feature that looked promising was withdrawn after
+    /// the same labelled devices answered two scanners on one segment with
+    /// opposite values.
+    fn identify_stack(&self, ip: IpAddr, state: PortState, captured: &CapturedSegment) {
+        if !self.os_detection.is_enabled() || state != PortState::Open {
+            return;
+        }
+        // `None` means this segment never had an IP header to read - a synthetic
+        // receive stream - rather than that nothing notable was in one.
+        let Some(observation) = captured.observation else {
+            return;
+        };
+        let Some(verdict) = os::classify_reply(observation, &captured.bytes) else {
+            return;
+        };
+
+        // `merge` ranks by accuracy and fills gaps on a tie, so a host probed on
+        // several open ports accumulates rather than overwrites, and a later
+        // technique that knows more still wins.
+        let fingerprint = verdict.to_fingerprint();
+        self.core.ctx.update_host(ip, |host| match host.os() {
+            Some(existing) => {
+                let mut merged = existing.clone();
+                merged.merge(fingerprint.clone());
+                host.set_os(merged);
+            }
+            None => host.set_os(fingerprint.clone()),
+        });
     }
 
     /// Reads an ICMP error as a verdict on the probe it quotes.
@@ -423,7 +481,7 @@ impl RawPortScan for TcpPortScanner {
     /// [`TcpScanTechnique::reads_icmp_errors`].
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
         match reply.protocol {
-            IpNextHeaderProtocols::Tcp => self.handle_tcp_reply(reply.source, &reply.bytes, now),
+            IpNextHeaderProtocols::Tcp => self.handle_tcp_reply(reply, now),
             _ => self.handle_icmp_error(reply, now),
         }
     }
@@ -789,7 +847,10 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 80), Some(PortState::Open));
         assert!(!scanner.core.ledger.contains(&(TARGET, 80)));
@@ -801,7 +862,10 @@ mod tests {
         let token = probe(&mut scanner, &sent, 81);
 
         let reply = tcp_segment(&scanner, 81, token, RST | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 81), Some(PortState::Closed));
     }
@@ -817,7 +881,10 @@ mod tests {
             nonce: token.nonce.wrapping_add(999),
         };
         let reply = tcp_segment(&scanner, 82, stray, SYN | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 82), None);
         assert!(scanner.core.ledger.contains(&(TARGET, 82)));
@@ -834,7 +901,10 @@ mod tests {
 
         let elsewhere = scanner.core.src_port.wrapping_add(1);
         let reply = segment_to(83, elsewhere, scanner.technique, token, SYN | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 83), None);
         assert!(scanner.core.ledger.contains(&(TARGET, 83)));
@@ -847,7 +917,10 @@ mod tests {
 
         // Same host, but a port we never probed.
         let reply = tcp_segment(&scanner, 1234, token, SYN | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 1234), None);
         assert!(scanner.core.ledger.contains(&(TARGET, 80)));
@@ -882,7 +955,10 @@ mod tests {
             let token = probe(&mut scanner, &sent, 80);
 
             let reply = tcp_segment(&scanner, 80, token, RST | ACK);
-            scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+            scanner.handle_tcp_reply(
+                &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+                Instant::now(),
+            );
 
             assert_eq!(port_state(&session, 80), Some(expected), "{technique}");
         }
@@ -897,7 +973,10 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
 
         let reply = tcp_segment(&scanner, 80, token, RST | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         let host = session.hosts().get(&TARGET).expect("host recorded");
         assert!(host.status().is_up());
@@ -911,7 +990,10 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 80), None);
         assert!(scanner.core.ledger.contains(&(TARGET, 80)));
@@ -1207,7 +1289,10 @@ mod tests {
         let (mut scanner, _session, sent) = scanner_with_mock();
         let token = probe(&mut scanner, &sent, 80);
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         scanner.service_retries(Instant::now() + Duration::from_secs(10));
 
@@ -1230,7 +1315,10 @@ mod tests {
         );
 
         let reply = tcp_segment(&scanner, 80, first, SYN | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         assert_eq!(port_state(&session, 80), Some(PortState::Open));
     }
@@ -1268,8 +1356,14 @@ mod tests {
         let token = probe(&mut scanner, &sent, 80);
 
         let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
-        scanner.handle_tcp_reply(TARGET, &reply, Instant::now());
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply.clone()),
+            Instant::now(),
+        );
 
         let host = session.hosts().get(&TARGET).expect("host recorded");
         assert_eq!(host.ports().filter(|p| p.number() == 80).count(), 1);

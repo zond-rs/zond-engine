@@ -6,6 +6,16 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # The service-signature authoring schema
+//!
+//! What an `assets/fingerprinting` TOML file is allowed to say, as types.
+//!
+//! Compiled into the build script as well as the library — `build.rs` loads this
+//! very file with `#[path]` — so the schema the build validates against and the
+//! schema the runtime reads are the same code rather than two descriptions of
+//! one idea. A field added here is a field both halves see at once, and a field
+//! either half could disagree about does not exist.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

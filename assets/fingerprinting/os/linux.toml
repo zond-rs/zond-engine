@@ -1,0 +1,59 @@
+# Linux, from measurement.
+#
+# Every value here was read off a real host by `benches/os_observe.rs` on
+# 2026-08-18 and labelled by whoever owns the machine, not taken from published
+# defaults. The measurement record is `docs/os-fingerprinting.md`.
+#
+# All of these are written against the option set `tcp::create_probe` sends —
+# maximum segment size, SACK permitted, timestamp, window scale. Option
+# negotiation is reciprocal, so a rule authored against one probe does not apply
+# to a reply drawn by another.
+
+# ── A current Linux kernel ───────────────────────────────────────────────────
+#
+# Three hosts on one segment produced this shape: a consumer router, a network
+# appliance, and a single-board computer running Debian bookworm on kernel
+# 6.12.47 (aarch64) — the one whose kernel version is known, which is what makes
+# this rule attributable at all.
+#
+# `window_units` rather than the raw window is the whole point of the field: this
+# same shape answers a bare MSS-only probe with 64240 (44 x 1460) and a
+# negotiating probe with 65160 (45 x 1448). The unit moves and the multiplier
+# very nearly does not, so the rule admits both rather than pinning a value that
+# depends on what was asked.
+[os]
+family = "Linux"
+
+[match]
+reply = "syn_ack"
+initial_hops = { equals = 64 }
+option_layout = { equals = "M,S,T,N,W" }
+window_scale = { equals = 7 }
+window_units = { range = [44, 45] }
+window_remainder = { equals = 0 }
+timestamps = { equals = true }
+sack_permitted = { equals = true }
+
+[[example]]
+source = "single-board computer, Debian bookworm, kernel 6.12.47 aarch64; measured on a LAN 2026-08-18"
+reply = "syn_ack"
+remaining_hops = 64
+dont_fragment = true
+option_layout = "M,S,T,N,W"
+window = 65160
+mss = 1460
+window_scale = 7
+timestamps = true
+sack_permitted = true
+
+[[example]]
+source = "consumer router, Linux of unknown version; measured on a LAN 2026-08-18"
+reply = "syn_ack"
+remaining_hops = 64
+dont_fragment = true
+option_layout = "M,S,T,N,W"
+window = 65160
+mss = 1460
+window_scale = 7
+timestamps = true
+sack_permitted = true

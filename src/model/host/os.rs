@@ -64,6 +64,21 @@ pub struct OsFingerprint {
 
     /// A bounded set of Common Platform Enumeration (CPE) identifiers.
     cpe: BTreeSet<Arc<str>>,
+
+    /// What this identification was read off, in one line.
+    ///
+    /// A verdict nobody can check is a verdict nobody can dispute, and a *wrong*
+    /// confident one is exactly where checking matters. Carrying the evidence
+    /// beside the conclusion means a false positive can be diagnosed, and turned
+    /// into a corpus entry, without re-running the scan — where a scan that
+    /// prints only its conclusion has to be repeated before it can be argued
+    /// with.
+    ///
+    /// **Written for a person, not for a parser.** It is a rendering of whatever
+    /// technique produced the finding, and different techniques render different
+    /// things; nothing should try to read a value back out of it. The fields a
+    /// consumer is meant to act on are the named ones beside it.
+    evidence: Option<Arc<str>>,
 }
 
 impl OsFingerprint {
@@ -87,6 +102,7 @@ impl OsFingerprint {
             vendor: None,
             accuracy: accuracy.min(100),
             cpe: BTreeSet::new(),
+            evidence: None,
         }
     }
 
@@ -133,6 +149,17 @@ impl OsFingerprint {
         self
     }
 
+    /// Builder method to record what this identification was read off.
+    pub fn with_evidence(mut self, evidence: impl Into<Arc<str>>) -> Self {
+        self.evidence = Some(evidence.into());
+        self
+    }
+
+    /// What this identification was read off, if the technique recorded it.
+    pub fn evidence(&self) -> Option<&str> {
+        self.evidence.as_deref()
+    }
+
     /// Adds a CPE identifier to the fingerprint, provided the internal limit
     /// ([`MAX_CPES_PER_OS`]) has not been reached.
     pub fn add_cpe(&mut self, cpe: impl Into<Arc<str>>) {
@@ -175,6 +202,7 @@ impl OsFingerprint {
             vendor,
             accuracy,
             cpe,
+            evidence,
         } = other;
 
         if accuracy > self.accuracy {
@@ -183,7 +211,12 @@ impl OsFingerprint {
             self.family = family.or(self.family.take());
             self.generation = generation.or(self.generation.take());
             self.vendor = vendor.or(self.vendor.take());
+            // The evidence follows the identity it explains. Keeping the losing
+            // technique's line beside the winning technique's name would be a
+            // rationale for a conclusion nobody reached.
+            self.evidence = evidence.or(self.evidence.take());
         } else if accuracy == self.accuracy {
+            self.evidence = self.evidence.take().or(evidence);
             self.family = self.family.take().or(family);
             self.generation = self.generation.take().or(generation);
             self.vendor = self.vendor.take().or(vendor);
