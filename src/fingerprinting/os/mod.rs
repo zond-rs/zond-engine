@@ -77,6 +77,7 @@
 mod db;
 mod evidence;
 mod hardware;
+mod hostname;
 mod observation;
 mod rules;
 mod signature;
@@ -96,6 +97,7 @@ pub use observation::{
 pub use db::RuleDb;
 pub use evidence::{MAX_FUSED_ACCURACY, OsEvidence, resolve};
 pub use hardware::evidence_from as hardware_evidence;
+pub use hostname::evidence_from as hostname_evidence;
 pub use rules::{accepts, matches};
 pub use signature::{
     Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,

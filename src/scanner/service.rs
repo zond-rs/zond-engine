@@ -153,6 +153,9 @@ fn write_back(ctx: &ScanContext, ip: IpAddr, port: Port, about_the_host: Vec<os:
         if let Some(hardware) = host.hardware().and_then(os::hardware_evidence) {
             evidence.push(hardware);
         }
+        if let Some(name) = os::hostname_evidence(host.hostname()) {
+            evidence.push(name);
+        }
         let Some(resolved) = os::resolve(evidence) else {
             return;
         };

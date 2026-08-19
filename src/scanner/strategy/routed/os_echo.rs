@@ -332,6 +332,9 @@ impl OsEchoScanner {
             if let Some(hardware) = host.hardware().and_then(os::hardware_evidence) {
                 evidence.push(hardware);
             }
+            if let Some(name) = os::hostname_evidence(host.hostname()) {
+                evidence.push(name);
+            }
             let Some(resolved) = os::resolve(evidence) else {
                 return;
             };
@@ -373,9 +376,6 @@ impl HostScanner for OsEchoScanner {
             }
 
             let sending = !self.pending.is_empty() || !self.retries.is_empty();
-            // How long the loop may sleep when it has nothing to send: until
-            // the next probe comes due, checked often enough that a reply
-            // landing mid-sleep is still read promptly.
             let until_due = self
                 .ledger
                 .next_due()
@@ -555,7 +555,6 @@ mod tests {
             "an echo reply at 64 hops is not evidence for any family, and saying \
              nothing beats the least bad guess"
         );
-        // It still proved the host alive: the reply is a packet from the target.
         assert_eq!(host.status(), HostStatus::Up);
     }
 

@@ -236,14 +236,9 @@ pub async fn discover(
     let (session, ctx) = ScanSession::new();
     let caps = ScanCapabilities::resolve(cfg);
 
-    // Recorded before `targets` moves into a strategy: what the sweep was asked
-    // to cover is only knowable here.
     let scope = TargetScope::from_ip_set(&mut targets);
     let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privileged, scope, cfg);
 
-    // Unprivileged discovery has no raw enrichment strategies to spawn. It runs
-    // the connect-based sweep itself and then the same DNS tail. The early
-    // return is needed because `targets` moves into one path or the other.
     if !caps.privileged {
         let handle = tokio::spawn(async move {
             if let Err(e) = strategy::connect::discover(targets, ctx.clone()).await {
@@ -255,9 +250,6 @@ pub async fn discover(
         return Ok((session, ScanTask::new(handle)));
     }
 
-    // A sweep is what the caller asked for only when they asked about a
-    // network. Probing addresses nobody named is defensible for `lan` and
-    // surprising for `zond <address>` - see `ZondConfig::segment_sweep`.
     let scope = if cfg.segment_sweep {
         Scope::Sweep
     } else {
@@ -297,9 +289,6 @@ pub async fn scan(
     let ips = target_ips(&target_map);
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
 
-    // Recorded before `target_map` moves into the dispatcher. Reading it costs
-    // only a shared borrow: a `TargetMap` is canonical from the moment its units
-    // are built, so counting one is not a mutation.
     let scope = TargetScope::from_target_map(&target_map);
     let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, cfg);
 
@@ -310,16 +299,6 @@ pub async fn scan(
         cfg.probe_tuning(),
     );
 
-    // A privileged scan enriches hosts the same way `discover` does: ARP and
-    // ICMPv6 for MAC and RTT, TCP SYN for RTT, passive DNS and mDNS for
-    // hostnames and extra IPs. It runs alongside the port scan and writes into
-    // the same store, so a scanned host carries the same detail a discovered one
-    // does. The unprivileged fallback cannot ARP, so it settles for active
-    // reverse DNS.
-    //
-    // Keyed on what actually opened rather than on privilege: a privileged host
-    // whose raw socket was refused has no raw enrichment to offer either, and
-    // takes the unprivileged tail exactly as an unprivileged host does.
     let enrichment = if built.opened_raw() {
         let plan = plan::DiscoveryPlan::build(ips, Scope::Targeted);
         Some(Enrichment::spawn(plan, &ctx, caps, cfg.probe_tuning()).await)
@@ -328,8 +307,6 @@ pub async fn scan(
     };
     let scanner = built.scanner;
 
-    // The spawned task cannot borrow the config; these are the two values the
-    // active OS phase reads out of it, and both are cheap copies.
     let (os_detection, probe_tuning) = (cfg.os_detection, cfg.probe_tuning());
 
     let handle = tokio::spawn(async move {
@@ -338,9 +315,6 @@ pub async fn scan(
 
         run_port_scan(scanner, rx, &ctx).await;
         finish_enrichment(enrichment, caps, &ctx).await;
-        // After everything passive has settled: the hosts still unnamed are the
-        // ones worth an active probe, and the store is the only place that
-        // knows which those are.
         orchestrator::run_active_os_probe(&ctx, os_detection, probe_tuning).await;
         recorder.finish(&ctx)
     });

@@ -101,6 +101,13 @@ pub enum OsSource {
     HardwareVendor,
     /// Text a service volunteered about the system it runs on.
     ServiceBanner,
+    /// The host's own name, where it is one an operating system generates by
+    /// default.
+    ///
+    /// The only source that reaches a host whose firewall drops every probe —
+    /// a stock Windows desktop still announces `DESKTOP-` over mDNS — which is
+    /// why it exists despite being the weakest of the four.
+    Hostname,
 }
 
 /// What the rules concluded about one observation.
