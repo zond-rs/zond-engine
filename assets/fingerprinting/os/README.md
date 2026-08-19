@@ -15,23 +15,23 @@ Every rule declares its `provenance`:
   have. Must say in `notes` what it rests on. Scores lower until somebody
   confirms it here.
 
-The published rules are not a compromise. A stack's initial hop counter, the
-order it writes its TCP options in, and whether it offers timestamps by default
-are ordinary engineering facts, stable across releases and documented for
-decades; re-deriving them by measurement would be re-deriving p0f from scratch to
-reach the same table.
+The difference is not reliability. A stack's initial hop counter, the order it
+writes its TCP options in, and whether it offers timestamps by default are stable,
+well-known properties. The difference is that a `published` rule has not been seen
+**through this engine's own probe**, and that gap has a specific technical cause
+worth understanding before authoring anything.
 
-What the distinction records is a specific, earned caution. **Option negotiation
-is reciprocal**: a layout the literature gives is the layout a peer sends *to a
-probe that asked for those options*. This engine's SYN offered only a maximum
-segment size until it was changed to offer the full set, and against that probe
-every host on a real segment answered `M` — so a rule transcribed as `M,S,T,N,W`
-would have matched nothing, from every stack at once, while looking perfectly
-correct. The measurement is what made the published values usable, not what
-replaced them.
+**Option negotiation is reciprocal.** RFC 7323 §2.2 permits a window scale in a
+SYN+ACK only if the SYN carried one; §3.2 says the same of timestamps, and
+RFC 2018 §2 of SACK-permitted. So a peer names the options it was *asked* about,
+and any recorded layout is a joint fact about that peer and the probe that drew
+it. A layout recorded against one probe describes nothing when a different probe
+is sent — it matches no host at all, from every stack at once, while looking
+perfectly correct.
 
-So: use the literature, mark it as such, score it below what has been seen here,
-and promote it when somebody confirms it.
+Every rule here is written against the option set `tcp::create_probe` sends. A
+rule taken from elsewhere has to be checked against that, not assumed onto it,
+which is what `published` records and what confirming one promotes.
 
 ## Coverage
 

@@ -156,9 +156,8 @@ const fn nonce_field(flags: u8) -> NonceField {
 ///
 /// Measured rather than assumed: against a labelled segment, every host with an
 /// open port named four more options when asked about four more, and not one
-/// port on any host changed its verdict between the two option lists. The
-/// experiment is `benches/os_observe.rs` and the record is
-/// `docs/os-fingerprinting.md`.
+/// port on any host changed its verdict between the two option lists.
+/// `benches/os_observe.rs` is the experiment.
 ///
 /// It costs one packet, the same one, twenty bytes longer. If anything it is
 /// *less* remarkable on the wire than the bare version, since a real connection
@@ -432,8 +431,7 @@ mod tests {
     /// (RFC 7323 §2.2 and §3.2, RFC 2018 §2). So an option this probe stops
     /// offering is an answer the engine stops being able to read, from every
     /// stack at once, and nothing downstream would report the loss: replies
-    /// would simply become identical across operating systems. Measured on a
-    /// labelled segment before it was relied on — see `docs/os-fingerprinting.md`.
+    /// would simply become identical across operating systems.
     #[test]
     fn a_syn_offers_every_option_it_wants_answered() {
         let probe = probe(TcpScanTechnique::Syn);

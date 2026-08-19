@@ -58,9 +58,7 @@
 //!  banner / OUI / active probes ───┘
 //! ```
 //!
-//! [`StackObservation`] is the first of those and the only one built today. The
-//! design, the measurements behind it and the phases that follow are in
-//! `docs/os-fingerprinting.md`.
+//! [`StackObservation`] is the first of those and the only one built today.
 //!
 //! ## What one observation can and cannot settle
 //!

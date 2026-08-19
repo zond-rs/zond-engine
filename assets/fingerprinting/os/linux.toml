@@ -2,7 +2,7 @@
 #
 # Every value here was read off a real host by `benches/os_observe.rs` on
 # 2026-08-18 and labelled by whoever owns the machine, not taken from published
-# defaults. The measurement record is `docs/os-fingerprinting.md`.
+# defaults.
 #
 # All of these are written against the option set `tcp::create_probe` sends —
 # maximum segment size, SACK permitted, timestamp, window scale. Option
