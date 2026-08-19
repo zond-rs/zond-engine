@@ -328,12 +328,20 @@ pub async fn scan(
     };
     let scanner = built.scanner;
 
+    // The spawned task cannot borrow the config; these are the two values the
+    // active OS phase reads out of it, and both are cheap copies.
+    let (os_detection, probe_tuning) = (cfg.os_detection, cfg.probe_tuning());
+
     let handle = tokio::spawn(async move {
         let dispatcher = dispatcher::Dispatcher::new(target_map);
         let rx = dispatcher.run_shuffled(&ctx.handle);
 
         run_port_scan(scanner, rx, &ctx).await;
         finish_enrichment(enrichment, caps, &ctx).await;
+        // After everything passive has settled: the hosts still unnamed are the
+        // ones worth an active probe, and the store is the only place that
+        // knows which those are.
+        orchestrator::run_active_os_probe(&ctx, os_detection, probe_tuning).await;
         recorder.finish(&ctx)
     });
 

@@ -82,7 +82,7 @@ pub struct CapturedSegment {
     ///
     /// `None` is not "nothing notable was in it". It means this segment did not
     /// come off a wire at all: a synthetic receive stream built through
-    /// [`ProbeTransport::from_parts`] hands over Layer-4 bytes it composed
+    /// `ProbeTransport::from_parts` hands over Layer-4 bytes it composed
     /// itself, and there is no header behind them to have observed. Reporting a
     /// default TTL and a zero identifier for one would claim a measurement
     /// nobody took, which is the same reason
@@ -91,8 +91,6 @@ pub struct CapturedSegment {
     ///
     /// A test that wants to exercise something reading these can of course
     /// supply one — the point is only that it has to say so.
-    ///
-    /// [`ProbeTransport::from_parts`]: crate::transport::probe::ProbeTransport::from_parts
     pub observation: Option<IpObservation>,
 
     /// The hardware address the frame carrying this segment came from, where the

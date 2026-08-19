@@ -372,6 +372,70 @@ pub(super) async fn finish_enrichment(
     }
 }
 
+/// Runs the active operating-system echo probe, where the caller asked for it
+/// and the passive sources left hosts unnamed.
+///
+/// Target selection is from the store and not from the plan, deliberately: "the
+/// passive sources concluded nothing" is only true once those sources have
+/// finished, and the store is where that conclusion lives. Every host that
+/// answered nothing a TCP rule could read — a stock Windows firewall drops
+/// rather than refuses — is here, and an echo reply is the one packet such a
+/// host still gives.
+///
+/// Declines quietly rather than failing when there is nothing to do: a scan
+/// where every host was already named, or where none were, has not lost
+/// anything by not pinging.
+pub(super) async fn run_active_os_probe(
+    ctx: &ScanContext,
+    os_detection: crate::config::OsDetection,
+    tuning: ProbeTuning,
+) {
+    if !os_detection.is_active() {
+        return;
+    }
+
+    // A host worth pinging is one the scan found and could not name. Hosts the
+    // scan never recorded were never asked about, and pinging addresses nobody
+    // named is a discovery sweep rather than identification.
+    let mut unnamed: Vec<IpAddr> = ctx
+        .host_addresses()
+        .into_iter()
+        .filter(|ip| {
+            ctx.read_host(ip, |host| {
+                host.status().is_up() && host.os().is_none_or(|os| os.accuracy() < 85)
+            })
+            .unwrap_or(false)
+        })
+        .collect();
+    unnamed.sort_unstable();
+    unnamed.dedup();
+
+    if unnamed.is_empty() {
+        return;
+    }
+
+    info!(
+        "Probing {} host(s) the passive sources could not name, by echo",
+        unnamed.len()
+    );
+
+    match strategy::routed::OsEchoScanner::new(ctx.clone(), unnamed, tuning) {
+        Ok(mut scanner) => {
+            if let Err(e) = scanner.discover_hosts().await {
+                ctx.record_failure(ScannerKind::OsEcho, e.to_string());
+            }
+        }
+        // The raw ICMP socket would not open, most likely for want of
+        // privileges. One recorded line, not a per-host failure: every host
+        // keeps the answer the passive sources gave it, which is the state the
+        // caller was already looking at.
+        Err(e) => ctx.record_failure(
+            ScannerKind::OsEcho,
+            format!("the active echo probe could not open its transport: {e}"),
+        ),
+    }
+}
+
 /// Collects every target address from a [`TargetMap`] into an [`IpSet`], so the
 /// host-enrichment phase knows which addresses to identify.
 pub(super) fn target_ips(target_map: &TargetMap) -> IpSet {

@@ -18,6 +18,7 @@
 //! This scanner requires root privileges to open the raw sockets involved.
 
 mod icmp_error;
+mod os_echo;
 mod port_scan;
 mod probe_scan;
 mod udp_scan;
@@ -50,6 +51,7 @@ use crate::scanner::report::StopReason;
 use crate::scanner::session::ScannerKind;
 use crate::scanner::strategy::{HostScanner, StrategyError};
 
+pub use os_echo::OsEchoScanner;
 pub use port_scan::TcpPortScanner;
 pub use udp_scan::UdpPortScanner;
 
