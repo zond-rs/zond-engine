@@ -46,7 +46,7 @@
 //! the corpus, so the "which payload for this port" policy has one home and the
 //! scanners keep no protocol knowledge of their own.
 
-use crate::fingerprinting::SignatureDb;
+use crate::fingerprint::SignatureDb;
 
 /// The payload to send when probing `port`.
 ///

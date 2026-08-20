@@ -41,12 +41,18 @@
 //! only the report can.
 //!
 //! ```no_run
-//! use zond_engine::{ScanEvent, ZondConfig, discover};
-//! use zond_engine::model::parse::ip::to_set;
+//! use zond_engine::{Resolver, ScanEvent, ZondConfig, discover, resolve};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let targets = to_set(&["192.168.1.0/24"], None, None)?;
-//! let (mut session, task) = discover(targets, &ZondConfig::default()).await?;
+//! // One call: the address grammar, this host's interface table for `lan` and
+//! // `%en0`, any hostnames, and whether a segment sweep was asked for.
+//! let resolver = Resolver::from_system();
+//! let targets = resolve::for_discovery(&["192.168.1.0/24"], Some(&resolver)).await?;
+//!
+//! let mut cfg = ZondConfig::default();
+//! targets.apply_to(&mut cfg);
+//!
+//! let (mut session, task) = discover(targets.into_ips(), &cfg).await?;
 //!
 //! // Hosts arrive as they are found.
 //! while let Some(event) = session.events().recv().await {
@@ -130,7 +136,11 @@
 //!   probes, over unicast DNS and multicast DNS. It runs before a scan, deciding
 //!   what it covers; the reverse direction, naming hosts a scan has found, is the
 //!   scanner's own [`resolver`](scanner::resolver).
-//! - [`fingerprinting`] — identifying the service behind an open port.
+//!   [`resolve::for_discovery`] is the one call a front end makes: it is where
+//!   the grammar, this host's interface table, hostname lookup and the
+//!   segment-sweep question are answered together, rather than being four things
+//!   for every consumer to remember separately.
+//! - [`fingerprint`] — identifying the service behind an open port.
 //! - [`scanner`] — the two entry points, the [`plan`](scanner::plan) behind
 //!   them, and the [`strategy`](scanner::strategy) implementations behind that,
 //!   together with what running one produces: the live
@@ -150,7 +160,7 @@
 
 pub mod config;
 pub mod export;
-pub mod fingerprinting;
+pub mod fingerprint;
 pub mod format;
 pub mod import;
 pub mod model;

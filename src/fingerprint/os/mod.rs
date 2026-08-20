@@ -21,7 +21,7 @@
 //! [`scanner`](crate::scanner):
 //!
 //! ```
-//! use zond_engine::fingerprinting::os::StackObservation;
+//! use zond_engine::fingerprint::os::StackObservation;
 //!
 //! # fn main() {
 //! // An IPv4 packet carrying a TCP segment, from wherever you got it.

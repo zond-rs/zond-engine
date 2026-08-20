@@ -240,6 +240,7 @@ pub async fn discover(
     let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privileged, scope, cfg);
 
     if !caps.privileged {
+        let targets = orchestrator::walkable(targets, &ctx);
         let handle = tokio::spawn(async move {
             if let Err(e) = strategy::connect::discover(targets, ctx.clone()).await {
                 ctx.record_failure(ScannerKind::Connect, e.to_string());

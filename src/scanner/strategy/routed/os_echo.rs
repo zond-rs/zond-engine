@@ -37,7 +37,7 @@
 //! An echo reply carries no options, no window, no sequence number — an
 //! initial hop counter of 64 names *nothing*, because Linux, macOS and the BSDs
 //! all start there. The rule corpus is authored under that constraint, and
-//! [`classify`](crate::fingerprinting::os) reports nothing rather than the
+//! [`classify`](crate::fingerprint::os) reports nothing rather than the
 //! least bad guess. A host this scanner cannot name is a host it says nothing
 //! about, which is the same honesty the passive path holds itself to.
 
@@ -50,7 +50,7 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 
 use crate::config::ProbeTuning;
 use crate::error;
-use crate::fingerprinting::os;
+use crate::fingerprint::os;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::protocols::icmp;
 use crate::scanner::audit::ProbeAudit;

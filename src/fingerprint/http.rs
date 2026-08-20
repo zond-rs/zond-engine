@@ -167,10 +167,10 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
 /// miss compiles and tries every candidate the prefilter selected. Paid once per
 /// open HTTP port, against a path that has already spent a TCP connect and up to
 /// half a second waiting for the banner, so it does not show.
-fn os_from(header: &str) -> Option<crate::fingerprinting::os::OsEvidence> {
-    use crate::fingerprinting::prefilter::Prefilter;
+fn os_from(header: &str) -> Option<crate::fingerprint::os::OsEvidence> {
+    use crate::fingerprint::prefilter::Prefilter;
 
-    let db = crate::fingerprinting::SignatureDb::global();
+    let db = crate::fingerprint::SignatureDb::global();
     db.prefilter()
         .candidates(header)
         .into_iter()
@@ -273,7 +273,7 @@ impl HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fingerprinting::model::Tunnel;
+    use crate::fingerprint::model::Tunnel;
     use proptest::prelude::*;
 
     fn analyze(port: u16, banner: &str) -> Vec<Evidence> {
@@ -457,7 +457,7 @@ mod tests {
 #[cfg(test)]
 mod os_from_headers {
     use super::*;
-    use crate::fingerprinting::response::Collected;
+    use crate::fingerprint::response::Collected;
 
     /// The seam this exists to close, checked against the shipped corpus rather
     /// than a fixture.
@@ -501,10 +501,10 @@ mod os_from_headers {
     /// fails while the extracted form works.
     #[test]
     fn the_whole_response_is_not_what_those_rules_match() {
-        use crate::fingerprinting::prefilter::Prefilter;
+        use crate::fingerprint::prefilter::Prefilter;
 
         let response = "HTTP/1.1 200 OK\r\nServer: Microsoft-IIS/6.0\r\nContent-Length: 0\r\n\r\n";
-        let db = crate::fingerprinting::SignatureDb::global();
+        let db = crate::fingerprint::SignatureDb::global();
 
         let from_response = db
             .prefilter()

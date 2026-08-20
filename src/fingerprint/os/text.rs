@@ -31,7 +31,7 @@
 //! so a full response never matches one, and reaching them means handing over the
 //! extracted header rather than the banner.
 //!
-//! Extraction is [`HttpHeadersAnalyzer`](crate::fingerprinting::HttpHeadersAnalyzer)'s
+//! Extraction is [`HttpHeadersAnalyzer`](crate::fingerprint::HttpHeadersAnalyzer)'s
 //! job and it already does it for service identification; running the extracted
 //! value back through the signature set for *operating-system* metadata is not
 //! wired up. So this source reaches SSH and the other line-oriented protocols
@@ -469,8 +469,8 @@ mod tests {
 
 #[cfg(test)]
 mod against_the_shipped_corpus {
-    use crate::fingerprinting::SignatureDb;
-    use crate::fingerprinting::prefilter::Prefilter;
+    use crate::fingerprint::SignatureDb;
+    use crate::fingerprint::prefilter::Prefilter;
 
     /// The claim this module makes, checked against what actually ships rather
     /// than against a fixture: real banners, matched by the real signature

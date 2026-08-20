@@ -791,7 +791,7 @@ struct Options {
 /// three values worth naming.
 ///
 /// Written here rather than in the library on purpose. The typed parse belongs
-/// in `src/fingerprinting/os/observation.rs` and is phase 2's work; building it
+/// in `src/fingerprint/os/observation.rs` and is phase 2's work; building it
 /// now would mean designing the type this instrument exists to inform. This walk
 /// is deliberately forgiving — an option whose length is nonsense stops it
 /// rather than failing the row — because its job is to show what arrived, not to

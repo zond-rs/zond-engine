@@ -176,7 +176,7 @@ fn longest_required_literal(hir: &Hir) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fingerprinting::signature::MatchRule;
+    use crate::fingerprint::signature::MatchRule;
     use proptest::prelude::*;
 
     fn sig(pattern: &str) -> Signature {

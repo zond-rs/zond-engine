@@ -471,7 +471,7 @@ impl RawPortScan for UdpPortScanner {
     /// - **Nothing answered.** `OpenFiltered` from exhaustion records nothing.
     ///   Silence is not evidence about a host.
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState, sender: Option<IpAddr>) {
-        let port = crate::fingerprinting::baseline_port(port_num, Protocol::Udp, state);
+        let port = crate::fingerprint::baseline_port(port_num, Protocol::Udp, state);
         let evidence = match (state, sender) {
             (PortState::Open, _) => Some((
                 HostStatus::Up,

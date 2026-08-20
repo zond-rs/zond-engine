@@ -34,7 +34,7 @@ Add it as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-zond-engine = "0.10.0"
+zond-engine = "0.11.0"
 ```
 
 A scan runs in two phases. `discover` establishes which hosts exist; `scan`
@@ -47,11 +47,17 @@ Each returns a pair: a `ScanSession` you can watch while the scan runs, and a
 task that resolves to the `ScanReport` describing it afterwards.
 
 ```rust
-use zond_engine::{ScanEvent, ZondConfig, discover};
-use zond_engine::model::parse::ip::to_set;
+use zond_engine::{Resolver, ScanEvent, ZondConfig, discover, resolve};
 
-let targets = to_set(&["192.168.1.0/24"], None)?;
-let (mut session, task) = discover(targets, &ZondConfig::default()).await?;
+// One call: the address grammar, this host's interface table for `lan` and
+// `%en0`, any hostnames, and whether a segment sweep was asked for.
+let resolver = Resolver::from_system();
+let targets = resolve::for_discovery(&["192.168.1.0/24"], Some(&resolver)).await?;
+
+let mut cfg = ZondConfig::default();
+targets.apply_to(&mut cfg);
+
+let (mut session, task) = discover(targets.into_ips(), &cfg).await?;
 
 // Hosts arrive as they are found, rather than all at the end.
 while let Some(event) = session.events().recv().await {

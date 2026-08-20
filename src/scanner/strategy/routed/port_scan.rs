@@ -54,7 +54,7 @@ use tokio::sync::mpsc;
 use crate::config::OsDetection;
 use crate::config::ProbeTuning;
 use crate::error;
-use crate::fingerprinting::os;
+use crate::fingerprint::os;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
@@ -557,7 +557,7 @@ impl TcpPortScanner {
         sender: Option<IpAddr>,
         drawn_by: Option<TcpReply>,
     ) {
-        let port = crate::fingerprinting::baseline_port(port_num, Protocol::Tcp, state);
+        let port = crate::fingerprint::baseline_port(port_num, Protocol::Tcp, state);
         let evidence = match (state, sender) {
             // Both routes to an open port, told apart. A handshake is the peer
             // accepting the connection; a challenge ACK is the peer saying it is

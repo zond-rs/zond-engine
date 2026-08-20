@@ -194,7 +194,7 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext, port_confirmed: bool) -> Evi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fingerprinting::model::Confidence;
+    use crate::fingerprint::model::Confidence;
 
     /// An active analyzer: its `collect` produces raw frames that its `analyze`
     /// turns into evidence. Proves the two-phase wiring end to end — the frames

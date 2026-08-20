@@ -114,6 +114,54 @@ impl Refusal {
             ),
         }
     }
+
+    /// A routed IPv6 range with more addresses than any strategy can walk.
+    ///
+    /// See [`MAX_ENUMERABLE_ADDRESSES`](crate::system::interface::MAX_ENUMERABLE_ADDRESSES)
+    /// for why there is a ceiling at all.
+    pub fn routed_range_not_enumerable(range: &Ipv6Range) -> Self {
+        Self {
+            scanner: ScannerKind::Routed,
+            reason: format!(
+                "{}: too large to probe one address at a time, and routed IPv6 has \
+                 no other strategy yet. Give specific addresses or a smaller prefix.",
+                describe(range)
+            ),
+        }
+    }
+
+    /// The same range, refused by an unprivileged scan.
+    ///
+    /// Separate wording from [`routed_range_not_enumerable`](Self::routed_range_not_enumerable)
+    /// because the remedy is different and it is the more useful half of the
+    /// message: a range this size *is* reachable on the local segment with raw
+    /// sockets, through the all-nodes echo, which sweeps a `/64` in one packet
+    /// rather than walking it. A user told only "too large" would go and narrow
+    /// a prefix that root would have covered whole.
+    pub fn unprivileged_range_not_enumerable(range: &Ipv6Range) -> Self {
+        Self {
+            scanner: ScannerKind::Connect,
+            reason: format!(
+                "{}: too large to probe one address at a time, and an unprivileged \
+                 scan has no other strategy. Run with root to sweep a segment this \
+                 size, or give specific addresses or a smaller prefix.",
+                describe(range)
+            ),
+        }
+    }
+}
+
+/// The opening both refusals above share: which range, and how big it is.
+///
+/// The size is quoted because it is the argument. "Too large" invites the reader
+/// to disagree; "18446744073709551616 addresses" does not.
+fn describe(range: &Ipv6Range) -> String {
+    format!(
+        "{}-{} is {} addresses",
+        range.start_addr(),
+        range.end_addr(),
+        range.len()
+    )
 }
 
 /// One strategy a discovery sweep intends to run.
@@ -264,17 +312,7 @@ impl DiscoveryPlan {
         // that searches a scope instead of a list, saying so is the whole of
         // what the engine can honestly do with one.
         for range in &unenumerable {
-            refusals.push(Refusal {
-                scanner: ScannerKind::Routed,
-                reason: format!(
-                    "{}-{} is {} addresses: too large to probe one at a time, and \
-                     routed IPv6 has no other strategy yet. Give specific addresses \
-                     or a smaller prefix.",
-                    range.start_addr(),
-                    range.end_addr(),
-                    range.len()
-                ),
-            });
+            refusals.push(Refusal::routed_range_not_enumerable(range));
         }
 
         // A sweep may probe addresses nobody named, so it may also take leads

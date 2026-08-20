@@ -27,7 +27,7 @@ pub struct RoutedTarget {
     pub source: IpAddr,
 }
 
-/// The largest off-link IPv6 range this classifier will turn into addresses.
+/// The largest IPv6 range any strategy will turn into addresses one at a time.
 ///
 /// Sixty-five thousand addresses, the size of an IPv4 `/16` and of an IPv6
 /// `/112`. Enumeration is the only discovery strategy the engine has for an
@@ -47,7 +47,14 @@ pub struct RoutedTarget {
 /// IPv4 ranges are not bounded by this. Every IPv4 range is finite in a way a
 /// user can reason about — the whole space is 2^32 — and a `/8` is an
 /// unreasonable request rather than an impossible one.
-const MAX_ENUMERABLE_ADDRESSES: u128 = 1 << 16;
+///
+/// Public because two callers need the same answer and there is only one right
+/// one. The classifier applies it when a routed range would have to be walked;
+/// [`crate::scanner`] applies it again on the unprivileged path, which takes its
+/// addresses as given and has no classifier to consult. Two spellings of this
+/// number meant a `/64` that was refused with root and scanned forever without
+/// it.
+pub const MAX_ENUMERABLE_ADDRESSES: u128 = 1 << 16;
 
 /// The result of classifying a set of targets against this host's interfaces
 /// and routing table.
@@ -209,9 +216,14 @@ pub(crate) fn map_ips_to_interfaces_with(
     }
 }
 
-/// Whether an off-link IPv6 range is small enough to probe one address at a
-/// time. See [`MAX_ENUMERABLE_ADDRESSES`].
-fn is_enumerable(range: &Ipv6Range) -> bool {
+/// Whether an IPv6 range is small enough to probe one address at a time.
+///
+/// The question every strategy that walks addresses has to ask before it starts,
+/// and the reason it is asked of a range rather than of a set: a set holding a
+/// `/64` and three literals is partly walkable, and refusing all four of them
+/// would throw away three addresses somebody named. See
+/// [`MAX_ENUMERABLE_ADDRESSES`].
+pub fn is_enumerable(range: &Ipv6Range) -> bool {
     range.len() <= MAX_ENUMERABLE_ADDRESSES
 }
 

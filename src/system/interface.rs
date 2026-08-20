@@ -31,6 +31,8 @@ mod utils;
 pub use ext::NetworkInterfaceExtension;
 pub use lan::{LanLink, ViabilityError, get_lan_link, get_lan_network};
 pub use resolve::{resolve_keyword, resolve_zone};
-pub use routing::{RoutedTarget, RoutedTargets, map_ips_to_interfaces};
+pub use routing::{
+    MAX_ENUMERABLE_ADDRESSES, RoutedTarget, RoutedTargets, is_enumerable, map_ips_to_interfaces,
+};
 pub use source::SourceResolver;
 pub use utils::{get_prioritized_interfaces, is_layer_2_capable, is_on_link};

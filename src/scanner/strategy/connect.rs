@@ -288,8 +288,8 @@ async fn port_prober(target: Target) -> ProbedPort {
     match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
         Ok(Ok(stream)) => {
             let port =
-                crate::fingerprinting::baseline_port(target.port, Protocol::Tcp, PortState::Open);
-            let port = crate::fingerprinting::fingerprint_tcp(stream, port).await;
+                crate::fingerprint::baseline_port(target.port, Protocol::Tcp, PortState::Open);
+            let port = crate::fingerprint::fingerprint_tcp(stream, port).await;
             Some(Probed {
                 ip: target.ip,
                 port: Some(port),
@@ -313,7 +313,7 @@ async fn port_prober(target: Target) -> ProbedPort {
                 // diffing two scans would read as a change in the network.
                 ErrorKind::ConnectionRefused => Some(Probed {
                     ip: target.ip,
-                    port: Some(crate::fingerprinting::baseline_port(
+                    port: Some(crate::fingerprint::baseline_port(
                         target.port,
                         Protocol::Tcp,
                         PortState::Closed,
@@ -325,7 +325,7 @@ async fn port_prober(target: Target) -> ProbedPort {
                 // filtered and the host has proved nothing.
                 _ => Some(Probed {
                     ip: target.ip,
-                    port: Some(crate::fingerprinting::baseline_port(
+                    port: Some(crate::fingerprint::baseline_port(
                         target.port,
                         Protocol::Tcp,
                         PortState::Filtered,
@@ -337,7 +337,7 @@ async fn port_prober(target: Target) -> ProbedPort {
         // Timeout: the probe was silently dropped, the classic firewall signature.
         Err(_) => Some(Probed {
             ip: target.ip,
-            port: Some(crate::fingerprinting::baseline_port(
+            port: Some(crate::fingerprint::baseline_port(
                 target.port,
                 Protocol::Tcp,
                 PortState::Filtered,
@@ -390,7 +390,7 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
     let record = |state, answered| {
         Some(Probed {
             ip: target.ip,
-            port: Some(crate::fingerprinting::baseline_port(
+            port: Some(crate::fingerprint::baseline_port(
                 target.port,
                 Protocol::Udp,
                 state,

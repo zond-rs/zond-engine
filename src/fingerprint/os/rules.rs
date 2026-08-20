@@ -108,7 +108,7 @@ fn accepts_str(predicate: &Predicate<String>, name: &str) -> bool {
 /// code should not have to change when they arrive.
 struct Prepared<'a> {
     reply: &'a StackReply,
-    series: Option<&'a crate::fingerprinting::os::series::SeriesClasses>,
+    series: Option<&'a crate::fingerprint::os::series::SeriesClasses>,
     /// Everything below is `None` for a reply that has no such field, so a rule
     /// naming a TCP field fails against an echo reply by the ordinary
     /// "the peer did not say" rule rather than by a special case.
@@ -123,7 +123,7 @@ struct Prepared<'a> {
 impl<'a> Prepared<'a> {
     fn new(
         reply: &'a StackReply,
-        series: Option<&'a crate::fingerprinting::os::series::SeriesClasses>,
+        series: Option<&'a crate::fingerprint::os::series::SeriesClasses>,
     ) -> Self {
         let tcp = match reply {
             StackReply::Tcp(observed) => Some(observed),
@@ -222,7 +222,7 @@ pub fn matches(rule: &MatchRule, reply: &StackReply) -> bool {
 pub fn matches_with_series(
     rule: &MatchRule,
     reply: &StackReply,
-    series: &crate::fingerprinting::os::series::SeriesClasses,
+    series: &crate::fingerprint::os::series::SeriesClasses,
 ) -> bool {
     Prepared::new(reply, Some(series)).matches(rule)
 }
@@ -232,7 +232,7 @@ pub fn matches_with_series(
 pub(super) fn matching<'a>(
     rules: &'a [super::signature::OsDefinition],
     reply: &'a StackReply,
-    series: Option<&'a crate::fingerprinting::os::series::SeriesClasses>,
+    series: Option<&'a crate::fingerprint::os::series::SeriesClasses>,
 ) -> impl Iterator<Item = &'a super::signature::OsDefinition> {
     // Moved into the closure so it is built once and lives as long as the
     // iterator, rather than per rule. The iterator stays lazy: a caller wanting
@@ -285,8 +285,8 @@ mod tests {
         .into()
     }
 
-    fn series_rule(field: &str, name: &str) -> crate::fingerprinting::os::signature::OsDefinition {
-        use crate::fingerprinting::os::signature::{
+    fn series_rule(field: &str, name: &str) -> crate::fingerprint::os::signature::OsDefinition {
+        use crate::fingerprint::os::signature::{
             MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,
         };
 
@@ -343,15 +343,15 @@ mod tests {
     fn a_series_predicate_separates_identical_single_reply_shapes() {
         let reply = syn_ack();
 
-        let hashed = crate::fingerprinting::os::series::SeriesClasses {
-            identifiers: crate::fingerprinting::os::series::IdClass::Zero,
-            sequences: crate::fingerprinting::os::series::IsnClass::Hashed,
-            clock: crate::fingerprinting::os::series::ClockClass::Randomised,
+        let hashed = crate::fingerprint::os::series::SeriesClasses {
+            identifiers: crate::fingerprint::os::series::IdClass::Zero,
+            sequences: crate::fingerprint::os::series::IsnClass::Hashed,
+            clock: crate::fingerprint::os::series::ClockClass::Randomised,
         };
-        let stepping = crate::fingerprinting::os::series::SeriesClasses {
-            identifiers: crate::fingerprinting::os::series::IdClass::Zero,
-            sequences: crate::fingerprinting::os::series::IsnClass::FixedStep(64_000),
-            clock: crate::fingerprinting::os::series::ClockClass::Randomised,
+        let stepping = crate::fingerprint::os::series::SeriesClasses {
+            identifiers: crate::fingerprint::os::series::IdClass::Zero,
+            sequences: crate::fingerprint::os::series::IsnClass::FixedStep(64_000),
+            clock: crate::fingerprint::os::series::ClockClass::Randomised,
         };
 
         let rule = series_rule("sequence_class", "hashed");

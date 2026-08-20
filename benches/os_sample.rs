@@ -155,7 +155,7 @@ use std::time::{Duration, Instant};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use tokio::time::timeout;
 
-use zond_engine::fingerprinting::os::StackObservation;
+use zond_engine::fingerprint::os::StackObservation;
 use zond_engine::model::capture::IpObservation;
 use zond_engine::model::parse::ip::to_set;
 use zond_engine::model::technique::TcpScanTechnique;

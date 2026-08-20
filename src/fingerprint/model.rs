@@ -139,7 +139,7 @@ pub struct Evidence {
     /// from, not the kernel it runs on. `ServiceVerdict` retains its whole
     /// evidence set, so this reaches a caller without the resolver having to
     /// rank it.
-    pub os: Option<crate::fingerprinting::os::OsEvidence>,
+    pub os: Option<crate::fingerprint::os::OsEvidence>,
 }
 
 impl Evidence {

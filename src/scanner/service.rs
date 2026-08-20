@@ -36,7 +36,7 @@ use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
 use tokio::time::timeout;
 
-use crate::fingerprinting::os;
+use crate::fingerprint::os;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::scanner::pool::ProbePool;
@@ -125,9 +125,9 @@ async fn fingerprint_one(
 
     // Seed the same baseline the connect scanner uses, then let the engine
     // refine it over the live connection.
-    let port = crate::fingerprinting::baseline_port(port_number, Protocol::Tcp, PortState::Open);
+    let port = crate::fingerprint::baseline_port(port_number, Protocol::Tcp, PortState::Open);
     let (port, about_the_host) =
-        crate::fingerprinting::fingerprint_tcp_detailed(stream, port).await;
+        crate::fingerprint::fingerprint_tcp_detailed(stream, port).await;
     Some((ip, port, about_the_host))
 }
 

@@ -19,7 +19,7 @@
 //! build warnings.
 //!
 //! The authoring schema is not redefined here: it is `include!`d from the
-//! canonical definitions in `src/fingerprinting/signature.rs`, so the build-time
+//! canonical definitions in `src/fingerprint/signature.rs`, so the build-time
 //! and runtime views can never drift apart.
 
 use std::env;
@@ -34,12 +34,12 @@ use std::path::{Path, PathBuf};
 /// derive macro through the splice — so `Serialize` and `Deserialize` appear
 /// unimplemented in an editor while `cargo` compiles it perfectly. A `#[path]`
 /// module is an ordinary module and analyses like one.
-#[path = "src/fingerprinting/signature.rs"]
+#[path = "src/fingerprint/signature.rs"]
 mod schema;
 
 /// The operating-system rule schema, likewise shared verbatim. A rule the build
 /// accepts is exactly a rule the runtime can match, because both read this file.
-#[path = "src/fingerprinting/os/signature.rs"]
+#[path = "src/fingerprint/os/signature.rs"]
 mod os_schema;
 
 /// The pattern-compilation logic, shared verbatim with the runtime so the build
@@ -49,15 +49,15 @@ mod os_schema;
 ///
 /// Loaded via `#[path]` (rather than `include!`) so the file's own module docs
 /// are honoured — `include!` forbids the inner `//!` comments it carries.
-#[path = "src/fingerprinting/pattern.rs"]
+#[path = "src/fingerprint/pattern.rs"]
 mod pattern;
 
 use schema::{MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, ServiceDefinition, unescape};
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/fingerprinting");
-    println!("cargo:rerun-if-changed=src/fingerprinting/signature.rs");
-    println!("cargo:rerun-if-changed=src/fingerprinting/os/signature.rs");
+    println!("cargo:rerun-if-changed=src/fingerprint/signature.rs");
+    println!("cargo:rerun-if-changed=src/fingerprint/os/signature.rs");
 
     let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest_path = Path::new(&out_dir).join("fingerprints.bin");

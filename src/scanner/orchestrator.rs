@@ -51,8 +51,58 @@ use crate::scanner::resolver::HostnameResolver;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::scanner::{pacing, plan, resolver, strategy};
+use crate::system::interface;
 use crate::system::privilege::is_elevated;
 use crate::{error, info, success, warn};
+
+/// The targets an unprivileged sweep can actually walk, refusing the rest.
+///
+/// The privileged path gets this from [`plan::DiscoveryPlan::build`], which
+/// classifies every range against this host's interfaces and refuses the ones no
+/// strategy can take. The unprivileged path has no plan: it hands the whole set
+/// to `connect`, which probes addresses one at a time and would keep doing so
+/// until the process is killed. So the same rule is applied here, and applied to
+/// the same constant, because a `/64` that is refused with root and scanned
+/// forever without it is the engine giving two different answers about one
+/// range.
+///
+/// Filtered per range rather than all-or-nothing. A set holding a `/64` and
+/// three literal addresses is three quarters scannable, and refusing the whole
+/// of it would throw away addresses somebody named.
+///
+/// IPv4 is untouched. Every IPv4 range is finite in a way a person can reason
+/// about, and a `/8` is an unreasonable request rather than an impossible one —
+/// which is a judgement for whoever is driving the engine, not for the engine.
+pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
+    let refused: Vec<_> = targets
+        .v6()
+        .iter()
+        .filter(|range| !interface::is_enumerable(range))
+        .copied()
+        .collect();
+
+    if refused.is_empty() {
+        return targets;
+    }
+
+    let mut kept = IpSet::new();
+    for range in targets.v4() {
+        kept.push_v4_range(*range);
+    }
+    for range in targets.v6() {
+        if interface::is_enumerable(range) {
+            kept.push_v6_range(*range);
+        }
+    }
+    kept.canonicalize();
+
+    for range in &refused {
+        let refusal = plan::Refusal::unprivileged_range_not_enumerable(range);
+        ctx.record_failure(refusal.scanner, refusal.reason);
+    }
+
+    kept
+}
 
 /// The environment-derived facts that steer how a scan runs.
 ///
@@ -515,6 +565,74 @@ mod tests {
     /// A plan that meant to cover both protocols, which is every plan except
     /// the one that refused a technique its fallback cannot express.
     const BOTH: &[Protocol] = &[Protocol::Tcp, Protocol::Udp];
+
+    fn ip_set(exprs: &[&str]) -> IpSet {
+        crate::model::parse::ip::to_set(exprs, None, None).expect("hand-written targets parse")
+    }
+
+    /// The defect this function exists for. A `/64` handed to the unprivileged
+    /// path was probed one address at a time until the process was killed, while
+    /// the same range with root was refused in the plan before a packet was
+    /// sent — one engine giving two answers about one range.
+    #[test]
+    fn a_range_too_large_to_walk_is_refused_rather_than_started() {
+        let (_session, ctx) = ScanSession::new();
+
+        let kept = walkable(ip_set(&["2001:db8::/64"]), &ctx);
+
+        assert!(kept.is_empty(), "nothing here can be walked");
+
+        let failures = ctx.failures_snapshot();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].scanner(), ScannerKind::Connect);
+        assert!(
+            failures[0].reason().contains("18446744073709551616"),
+            "the refusal quotes the size it is refusing: {}",
+            failures[0].reason()
+        );
+    }
+
+    /// Refusing the whole set over one unwalkable range in it would discard
+    /// addresses somebody named and could have had.
+    #[test]
+    fn the_walkable_part_of_a_mixed_set_survives() {
+        let (_session, ctx) = ScanSession::new();
+
+        let kept = walkable(
+            ip_set(&["2001:db8::/64", "10.0.0.0/30", "2001:db8:1::/126"]),
+            &ctx,
+        );
+
+        // Four IPv4 addresses and the four in the /126; the /64 is gone.
+        assert_eq!(kept.len(), 8);
+        assert_eq!(ctx.failures_snapshot().len(), 1);
+    }
+
+    /// A set that is entirely walkable is handed back untouched, and — the part
+    /// that matters — files no failure. A report claiming a refusal that never
+    /// happened marks a complete scan as partial.
+    #[test]
+    fn a_set_that_can_be_walked_is_left_alone_and_files_nothing() {
+        let (_session, ctx) = ScanSession::new();
+
+        let kept = walkable(ip_set(&["10.0.0.0/24", "2001:db8::/120"]), &ctx);
+
+        assert_eq!(kept.len(), 512);
+        assert!(ctx.failures_snapshot().is_empty());
+    }
+
+    /// IPv4 is deliberately not bounded here. A `/8` is sixteen million probes,
+    /// which is unreasonable rather than impossible, and which of those it is is
+    /// a judgement for whoever is driving the engine.
+    #[test]
+    fn a_large_ipv4_range_is_not_this_functions_business() {
+        let (_session, ctx) = ScanSession::new();
+
+        let kept = walkable(ip_set(&["10.0.0.0/8"]), &ctx);
+
+        assert_eq!(kept.len(), 1 << 24);
+        assert!(ctx.failures_snapshot().is_empty());
+    }
 
     fn covered(scanners: Vec<Box<dyn PortScanner>>) -> Vec<Protocol> {
         let (_session, ctx) = ScanSession::new();

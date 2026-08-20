@@ -25,11 +25,15 @@ use std::net::IpAddr;
 
 use tokio::task::JoinSet;
 
+use crate::config::ZondConfig;
 use crate::model::ip::set::IpSet;
-use crate::model::parse::ip::{IpParseError, ResolverFn, ZoneResolverFn, insert_expression};
+use crate::model::parse::ip::{
+    IpParseError, Keyword, ResolverFn, ZoneResolverFn, insert_expression, names_keyword,
+};
 use crate::model::parse::target::{self, TargetContext, TargetExpr, TargetParseError};
 use crate::model::port::PortSet;
 use crate::model::target::TargetMap;
+use crate::system::interface;
 
 use super::Resolver;
 
@@ -117,6 +121,14 @@ pub async fn to_set<S: AsRef<str>>(
     // into.
     let map = to_target_map(exprs, PortSet::default(), &ctx, resolver).await?;
 
+    Ok(ips_of(&map))
+}
+
+/// Every address a target map covers, with the port groupings discarded.
+///
+/// The groups only ever decided which ports went with which addresses, so a
+/// caller that has no use for ports is left with their union.
+fn ips_of(map: &TargetMap) -> IpSet {
     let mut set = IpSet::new();
     for unit in &map.units {
         for range in unit.ips().v4() {
@@ -127,8 +139,129 @@ pub async fn to_set<S: AsRef<str>>(
         }
     }
     set.canonicalize();
+    set
+}
 
-    Ok(set)
+/// What a discovery sweep was asked to cover.
+///
+/// The addresses, and the one thing about the request that the addresses no
+/// longer say: whether a *network* was named.
+///
+/// Those two travel together because separating them is a mistake nobody
+/// notices. `lan` and the range it expands to produce the same [`IpSet`], and by
+/// the time [`discover`](crate::scanner::discover) has one it cannot tell which
+/// was written — so a caller that resolves the addresses and forgets the flag
+/// gets a targeted run where a sweep was asked for, no all-nodes echo, no
+/// neighbour-table leads, and an IPv6 half that reports a network as empty. It
+/// looks exactly like a working scan.
+#[derive(Debug, Clone)]
+pub struct DiscoveryTargets {
+    ips: IpSet,
+    segment_sweep: bool,
+}
+
+impl DiscoveryTargets {
+    /// The addresses to probe.
+    pub fn ips(&self) -> &IpSet {
+        &self.ips
+    }
+
+    /// Takes the addresses, for handing to [`discover`](crate::scanner::discover).
+    pub fn into_ips(self) -> IpSet {
+        self.ips
+    }
+
+    /// Whether a network was named, rather than a set of addresses.
+    ///
+    /// What [`ZondConfig::segment_sweep`] wants. Prefer
+    /// [`apply_to`](Self::apply_to), which puts it there without the caller
+    /// having to remember that it is what the field is for.
+    pub fn segment_sweep(&self) -> bool {
+        self.segment_sweep
+    }
+
+    /// Writes what these targets imply into `cfg`.
+    ///
+    /// Only [`segment_sweep`](ZondConfig::segment_sweep) today. It is a method
+    /// rather than a field the caller copies across because the copying is the
+    /// step that gets skipped, and the same shape already exists on
+    /// [`Settings::apply_to`](crate::import::settings::Settings::apply_to).
+    pub fn apply_to(&self, cfg: &mut ZondConfig) {
+        cfg.segment_sweep = self.segment_sweep;
+    }
+}
+
+/// Resolves target expressions into everything a discovery sweep needs.
+///
+/// The one call a front end makes. It wires this host's own interface table for
+/// `lan` and for the `%interface` suffix, resolves any hostnames, and works out
+/// whether a segment sweep was asked for — three steps that were previously
+/// three separate things for every consumer to remember, and that every
+/// consumer remembered differently.
+///
+/// `names` is the DNS policy, and it is the caller's because only they know it.
+/// `Some` resolves hostnames; `None` refuses them, which is what a scan running
+/// under [`ZondConfig::no_dns`] needs, since looking a target up emits a query
+/// to a resolver somebody else operates. A name given to a `None` is reported as
+/// an unusable expression rather than quietly dropped.
+///
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use zond_engine::{Resolver, ZondConfig, discover, resolve};
+///
+/// let resolver = Resolver::from_system();
+/// let targets = resolve::for_discovery(&["lan"], Some(&resolver)).await?;
+///
+/// let mut cfg = ZondConfig::default();
+/// targets.apply_to(&mut cfg);
+///
+/// let (_session, task) = discover(targets.into_ips(), &cfg).await?;
+/// let report = task.join().await?;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn for_discovery<S: AsRef<str>>(
+    exprs: &[S],
+    names: Option<&Resolver>,
+) -> Result<DiscoveryTargets, TargetParseError> {
+    for_discovery_with(
+        exprs,
+        names,
+        Some(&interface::resolve_keyword),
+        Some(&interface::resolve_zone),
+    )
+    .await
+}
+
+/// [`for_discovery`], with the host lookups supplied rather than assumed.
+///
+/// The same call with its two reads of the local machine handed in. That is what
+/// makes the behaviour around `lan` and `%en0` testable somewhere that has
+/// neither, and what lets a caller who means something else by `lan` — a
+/// management network, a lab segment — say so.
+pub async fn for_discovery_with<S: AsRef<str>>(
+    exprs: &[S],
+    names: Option<&Resolver>,
+    keywords: Option<ResolverFn<'_>>,
+    zones: Option<ZoneResolverFn<'_>>,
+) -> Result<DiscoveryTargets, TargetParseError> {
+    let ips = match names {
+        Some(resolver) => to_set(exprs, keywords, zones, resolver).await?,
+        None => {
+            let ctx = TargetContext {
+                keywords,
+                zones,
+                hosts: None,
+            };
+            ips_of(&target::to_target_map(exprs, PortSet::default(), &ctx)?)
+        }
+    };
+
+    // Asked of what was written, not of what it expanded to. This is the whole
+    // reason the flag has to be worked out here: the addresses cannot answer it.
+    let segment_sweep = names_keyword(exprs, Keyword::Lan);
+
+    Ok(DiscoveryTargets { ips, segment_sweep })
 }
 
 /// Every distinct hostname named across `exprs`, in first-seen order.
@@ -225,6 +358,70 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    /// The distinction the addresses cannot carry. Both of these resolve to the
+    /// same single address, and only one of them is a request to sweep a
+    /// segment — so a caller reading only the `IpSet` has already lost it.
+    #[tokio::test]
+    async fn only_the_keyword_asks_for_a_segment_sweep() {
+        let keyword = for_discovery_with(&["lan"], None, Some(&keywords), None)
+            .await
+            .expect("the keyword resolver answers");
+        assert!(keyword.segment_sweep());
+        assert_eq!(keyword.ips().len(), 1);
+
+        let spelled_out = for_discovery_with(&["192.168.1.1"], None, Some(&keywords), None)
+            .await
+            .expect("a literal address");
+        assert!(!spelled_out.segment_sweep());
+        assert_eq!(spelled_out.ips().len(), 1);
+    }
+
+    /// Found wherever it appears, including inside a comma-separated list, since
+    /// that is where a person writes it when mixing it with something else.
+    #[tokio::test]
+    async fn the_keyword_is_found_alongside_other_targets() {
+        let mixed = for_discovery_with(&["lan,10.1.0.0/30"], None, Some(&keywords), None)
+            .await
+            .expect("the keyword resolver answers");
+        assert!(mixed.segment_sweep());
+    }
+
+    /// The step this type exists to stop anyone skipping.
+    #[tokio::test]
+    async fn applying_targets_to_a_config_sets_the_sweep() {
+        let targets = for_discovery_with(&["lan"], None, Some(&keywords), None)
+            .await
+            .expect("the keyword resolver answers");
+
+        let mut cfg = ZondConfig::default();
+        assert!(!cfg.segment_sweep, "off until something asks for it");
+        targets.apply_to(&mut cfg);
+        assert!(cfg.segment_sweep);
+    }
+
+    /// A scan told to emit no DNS may not look a target name up either: the
+    /// query would go to a resolver somebody else operates and announce the
+    /// scan. Refused against the expression that caused it, rather than dropped.
+    #[tokio::test]
+    async fn a_name_is_refused_when_no_resolver_is_offered() {
+        let refused = for_discovery_with(&["one.one.one.one"], None, Some(&keywords), None).await;
+
+        let Err(TargetParseError::NoHostLookup(expression)) = refused else {
+            panic!("a name with nothing to resolve it is not a target");
+        };
+        assert_eq!(expression, "one.one.one.one");
+    }
+
+    /// Literal addresses need no resolver at all, so refusing names does not
+    /// cost a caller the rest of their target list.
+    #[tokio::test]
+    async fn addresses_still_resolve_with_no_name_resolver() {
+        let targets = for_discovery_with(&["10.0.0.0/30", "2001:db8::1"], None, None, None)
+            .await
+            .expect("literals need nothing looked up");
+        assert_eq!(targets.ips().len(), 5);
     }
 
     /// The whole point of the classification: names are picked out and nothing

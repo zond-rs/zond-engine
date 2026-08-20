@@ -42,8 +42,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use zond_engine::fingerprinting::ServiceDefinition;
-use zond_engine::fingerprinting::os::OsDefinition;
+use zond_engine::fingerprint::ServiceDefinition;
+use zond_engine::fingerprint::os::OsDefinition;
 
 /// Where the corpora live, relative to the crate root.
 const ASSETS: &str = "assets/fingerprinting";
