@@ -126,8 +126,7 @@ async fn fingerprint_one(
     // Seed the same baseline the connect scanner uses, then let the engine
     // refine it over the live connection.
     let port = crate::fingerprint::baseline_port(port_number, Protocol::Tcp, PortState::Open);
-    let (port, about_the_host) =
-        crate::fingerprint::fingerprint_tcp_detailed(stream, port).await;
+    let (port, about_the_host) = crate::fingerprint::fingerprint_tcp_detailed(stream, port).await;
     Some((ip, port, about_the_host))
 }
 
@@ -146,29 +145,10 @@ fn write_back(ctx: &ScanContext, ip: IpAddr, port: Port, about_the_host: Vec<os:
             return;
         }
 
-        // Folded together with what the host's hardware says, and with whatever
-        // a stack reading already concluded — the point of the evidence bus is
-        // that a banner agreeing with the wire is worth more than either.
-        let mut evidence = about_the_host;
-        if let Some(hardware) = host.hardware().and_then(os::hardware_evidence) {
-            evidence.push(hardware);
-        }
-        if let Some(name) = os::hostname_evidence(host.hostname()) {
-            evidence.push(name);
-        }
-        let Some(resolved) = os::resolve(evidence) else {
-            return;
-        };
-
-        let fingerprint = resolved.to_fingerprint();
-        match host.os() {
-            Some(existing) => {
-                let mut merged = existing.clone();
-                merged.merge(fingerprint);
-                host.set_os(merged);
-            }
-            None => host.set_os(fingerprint),
-        }
+        // Folded together with what the host's hardware and name say, and with
+        // whatever a stack reading already concluded — the point of the evidence
+        // bus is that a banner agreeing with the wire is worth more than either.
+        os::identify(host, about_the_host);
     });
 }
 

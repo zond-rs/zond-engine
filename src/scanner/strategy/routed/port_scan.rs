@@ -308,34 +308,11 @@ impl TcpPortScanner {
         };
 
         self.core.ctx.update_host(ip, |host| {
-            // Everything known about this host from a different source, folded in
-            // beside the stack reading. Only the hardware vendor today, and it is
-            // worth too little to name a host alone — its value is agreeing with
-            // the wire and carrying a verdict past what one packet supports.
-            let mut evidence = vec![stack.as_evidence()];
-            if let Some(hardware) = host.hardware().and_then(os::hardware_evidence) {
-                evidence.push(hardware);
-            }
-            if let Some(name) = os::hostname_evidence(host.hostname()) {
-                evidence.push(name);
-            }
-
-            let Some(resolved) = os::resolve(evidence) else {
-                return;
-            };
-
-            // `merge` ranks by accuracy and fills gaps on a tie, so a host probed
-            // on several open ports accumulates rather than overwrites, and a
-            // later technique that knows more still wins.
-            let fingerprint = resolved.to_fingerprint();
-            match host.os() {
-                Some(existing) => {
-                    let mut merged = existing.clone();
-                    merged.merge(fingerprint);
-                    host.set_os(merged);
-                }
-                None => host.set_os(fingerprint),
-            }
+            // The stack reading, handed to the one place that knows what else
+            // a host implies about itself. This scanner's contribution is the
+            // observation it just took; the rule that a host's own hardware and
+            // name are always weighed beside it belongs to `identify`.
+            os::identify(host, [stack.as_evidence()]);
         });
     }
 

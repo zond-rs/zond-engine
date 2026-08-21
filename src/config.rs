@@ -491,6 +491,25 @@ pub struct ZondConfig {
     /// target expression.
     pub segment_sweep: bool,
 
+    /// Whether a port scan should take its targets on trust rather than probing
+    /// them for liveness first.
+    ///
+    /// Off by default, so [`scan`](crate::scan) establishes that a target is
+    /// there before spending a probe on each of its ports. An address nothing
+    /// answers for otherwise comes back with every port filtered, which is a
+    /// thousand lines of the scan reporting its own silence — and on a wide port
+    /// range it is most of the run's cost.
+    ///
+    /// Set it when the liveness probe is the thing that is wrong: a host behind
+    /// a firewall that drops ICMP and answers nothing on the discovery ports is
+    /// reported down and never scanned, and it may well be up. That is the
+    /// trade — the check is what stops a dead address costing a full scan, and
+    /// turning it off is what reaches a host that will not answer a knock.
+    ///
+    /// The liveness phase probes the addresses it was given and nothing else. It
+    /// is not a segment sweep; see [`segment_sweep`](Self::segment_sweep).
+    pub assume_up: bool,
+
     /// Whether identifying detail should be masked wherever the scan's findings
     /// leave the process: hostnames, hardware addresses, and the host part of an
     /// IPv6 address.

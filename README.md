@@ -34,7 +34,7 @@ Add it as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-zond-engine = "0.11.0"
+zond-engine = "0.12.0"
 ```
 
 A scan runs in two phases. `discover` establishes which hosts exist; `scan`

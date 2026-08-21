@@ -328,25 +328,7 @@ impl OsEchoScanner {
         };
 
         self.ctx.update_host(target, |host| {
-            let mut evidence = vec![verdict.as_evidence()];
-            if let Some(hardware) = host.hardware().and_then(os::hardware_evidence) {
-                evidence.push(hardware);
-            }
-            if let Some(name) = os::hostname_evidence(host.hostname()) {
-                evidence.push(name);
-            }
-            let Some(resolved) = os::resolve(evidence) else {
-                return;
-            };
-            let fingerprint = resolved.to_fingerprint();
-            match host.os() {
-                Some(existing) => {
-                    let mut merged = existing.clone();
-                    merged.merge(fingerprint);
-                    host.set_os(merged);
-                }
-                None => host.set_os(fingerprint),
-            }
+            os::identify(host, [verdict.as_evidence()]);
         });
     }
 }

@@ -78,6 +78,7 @@ mod db;
 mod evidence;
 mod hardware;
 mod hostname;
+mod identify;
 mod observation;
 mod rules;
 mod series;
@@ -99,6 +100,7 @@ pub use db::RuleDb;
 pub use evidence::{MAX_FUSED_ACCURACY, OsEvidence, resolve};
 pub use hardware::evidence_from as hardware_evidence;
 pub use hostname::evidence_from as hostname_evidence;
+pub use identify::identify;
 pub use rules::{accepts, matches, matches_with_series};
 pub use series::{
     ClockClass, IdClass, IsnClass, Reading as SeriesReading, SeriesClasses, SeriesSample,

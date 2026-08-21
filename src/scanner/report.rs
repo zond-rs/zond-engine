@@ -904,8 +904,11 @@ impl ScanReport {
     /// let (_, sweep) = discover(to_set(&["192.168.1.0/24"], None, None)?, &cfg).await?;
     /// let mut report = sweep.join().await?;
     ///
+    /// // The sweep already established these hosts answer, so the scan is told
+    /// // to take them on trust rather than probe for liveness a second time.
+    /// let scanning = ZondConfig { assume_up: true, ..cfg.clone() };
     /// let targets = report.alive_targets(PortSet::try_from("22,80,443")?);
-    /// let (_, ports) = scan(targets, &cfg).await?;
+    /// let (_, ports) = scan(targets, &scanning).await?;
     /// report.merge(ports.join().await?);
     /// # Ok(())
     /// # }

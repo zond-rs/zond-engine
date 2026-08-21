@@ -107,7 +107,13 @@ async fn a_discovery_report_records_its_own_scope() {
 #[tokio::test]
 async fn a_port_scan_report_counts_probes() {
     let outcome = run_scan(target_map(LOOPBACK, "80,443,8080"), &test_config()).await;
-    let phase = &outcome.report.phases()[0];
+
+    // The port phase is the second: the first established the host is there.
+    let phase = outcome
+        .report
+        .phases()
+        .last()
+        .expect("a port scan records a phase");
 
     assert_eq!(phase.kind(), ScanKind::PortScan);
     assert_eq!(phase.targets().addresses(), 1);
@@ -249,10 +255,21 @@ async fn merging_two_phases_keeps_both_findings() {
     let server = spawn_banner_server(b"hi\r\n").await;
     let cfg = test_config();
 
+    // The scan is asked with `assume_up`: a caller holding a sweep's results
+    // already knows these hosts answer, and letting the scan establish it again
+    // would spend the probes twice.
+    let already_swept = zond_engine::ZondConfig {
+        assume_up: true,
+        ..test_config()
+    };
+
     let discovery = run_discover(ip_set(LOOPBACK), &cfg).await.report;
-    let ports = run_scan(target_map(LOOPBACK, &server.port.to_string()), &cfg)
-        .await
-        .report;
+    let ports = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &already_swept,
+    )
+    .await
+    .report;
 
     let discovered_status = discovery.host(&LOOPBACK).map(|h| h.status());
     let scanned_status = ports.host(&LOOPBACK).map(|h| h.status());

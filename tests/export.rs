@@ -98,9 +98,14 @@ async fn a_real_port_scan_exports_a_document_the_schema_accepts() {
     let document = export(&outcome.report, ExportOptions::new());
 
     assert_matches_schema(&document);
-    assert_eq!(document["phases"][0]["kind"], "port_scan");
+
+    // Two: the liveness pass that established the host is there, then the ports.
+    assert_eq!(document["phases"][0]["kind"], "discovery");
     assert_eq!(document["phases"][0]["targets"]["addresses"], "1");
-    assert_eq!(document["phases"][0]["targets"]["probes"], "2");
+
+    assert_eq!(document["phases"][1]["kind"], "port_scan");
+    assert_eq!(document["phases"][1]["targets"]["addresses"], "1");
+    assert_eq!(document["phases"][1]["targets"]["probes"], "2");
 }
 
 /// Discovery reports take a different shape - no port dimension, a different
@@ -124,18 +129,29 @@ async fn a_real_discovery_sweep_exports_a_document_the_schema_accepts() {
     );
 }
 
-/// A merged report is what the CLI exports when a user asks for discovery and a
-/// port scan in one command, and its two phases must both survive.
+/// A merged report is what a caller exports after sweeping and then scanning
+/// what the sweep found, and its two phases must both survive.
+///
+/// The scan is asked with `assume_up`, which is what that workflow now means: a
+/// caller holding a sweep's results already knows these hosts answer, and
+/// letting the scan establish it a second time would spend the probes twice.
 #[tokio::test]
 async fn a_merged_two_phase_report_exports_both_phases() {
     let cfg = test_config();
+    let already_swept = zond_engine::ZondConfig {
+        assume_up: true,
+        ..test_config()
+    };
     let server = spawn_banner_server(b"hi\r\n").await;
 
     let mut report = run_discover(ip_set(LOOPBACK), &cfg).await.report;
     report.merge(
-        run_scan(target_map(LOOPBACK, &server.port.to_string()), &cfg)
-            .await
-            .report,
+        run_scan(
+            target_map(LOOPBACK, &server.port.to_string()),
+            &already_swept,
+        )
+        .await
+        .report,
     );
 
     let document = export(&report, ExportOptions::new());

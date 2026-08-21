@@ -39,7 +39,8 @@ use std::net::IpAddr;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::config::{ProbeTuning, ZondConfig};
+use crate::config::{OsDetection, ProbeTuning, ZondConfig};
+use crate::fingerprint::os;
 use crate::model::ip::range::IpRange;
 use crate::model::{
     ip::set::IpSet,
@@ -419,6 +420,60 @@ pub(super) async fn finish_enrichment(
         Some(enrichment) => enrichment.finish(ctx).await,
         None if caps.dns => resolver::resolve_hosts_async(ctx).await,
         None => {}
+    }
+}
+
+/// Reads an operating system out of what the scan already knows, sending
+/// nothing.
+///
+/// This is [`OsDetection::Passive`] applied to a phase that had no way to apply
+/// it. The port scanner reads a stack off the segments it drew and the echo
+/// prober reads one off a ping it sent, but host discovery draws neither — so
+/// until now a discovery sweep concluded nothing about any host, however much it
+/// had learned about it. A machine whose hardware address names its maker and
+/// whose hostname is the one its system generated was sitting in the store,
+/// unread.
+///
+/// Runs after enrichment and not before it: [`os::hostname_evidence`] reads a
+/// name, and the name arrives on the resolver's tail. Ordering this earlier
+/// would consult a store that has not been told the hostnames yet.
+///
+/// ## What it will and will not conclude
+///
+/// The two sources it has are each, deliberately, below the floor
+/// [`os::resolve`] reports at — so neither names a host alone, and a sweep of a
+/// network of randomly-addressed phones concludes nothing at all. Two agreeing
+/// sources clear it: an Apple address under a default `MacBook-Pro` name is a
+/// verdict, where either alone is a guess. That is the intended yield and it is
+/// a small one. It is not a substitute for reading a stack off the wire; it is
+/// the part of passive identification that costs nothing and was simply not
+/// wired up.
+pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsDetection) {
+    // `Off` means identify nothing and record nothing about the stacks that
+    // answered. It costs no packets to disobey that, which is exactly why it
+    // has to be obeyed here: a caller who asked for a report containing only
+    // what they requested would otherwise find a fingerprint in it.
+    if matches!(os_detection, OsDetection::Off) {
+        return;
+    }
+
+    let mut named = 0usize;
+    for ip in ctx.host_addresses() {
+        let mut identified = false;
+        ctx.write_host(ip, |host| {
+            identified = os::identify(host, []);
+            identified
+        });
+        if identified {
+            named += 1;
+        }
+    }
+
+    if named > 0 {
+        info!(
+            verbosity = 1,
+            "Named {named} host(s) from what the sweep already knew"
+        );
     }
 }
 
@@ -808,5 +863,72 @@ mod tests {
             ctx.take_failures().is_empty(),
             "the plan already said why, in the same words"
         );
+    }
+
+    /// The gap this pass exists to close: a sweep that learned a host's hardware
+    /// and its name, and concluded nothing from either.
+    #[test]
+    fn a_discovery_sweep_now_names_what_its_own_findings_imply() {
+        let (_session, ctx) = ScanSession::new();
+        let ip: IpAddr = "192.0.2.1".parse().expect("a valid address");
+
+        ctx.update_host(ip, |host| {
+            host.record_mac("a4:83:e7:00:00:01".parse().expect("an Apple address"));
+            host.set_hostname(Some("MacBook-Pro".to_owned()));
+        });
+
+        run_passive_os_identification(&ctx, OsDetection::Passive);
+
+        let named = ctx
+            .read_host(&ip, |host| host.os().map(ToString::to_string))
+            .expect("the host is in the store");
+        assert!(
+            named.as_deref().is_some_and(|os| os.contains("macOS")),
+            "{named:?}"
+        );
+    }
+
+    /// `Off` means identify nothing. It costs no packets to disobey, which is
+    /// exactly why obeying it has to be tested: a caller who asked for a report
+    /// containing only what they requested must not find a fingerprint in it.
+    #[test]
+    fn detection_turned_off_identifies_nothing() {
+        let (_session, ctx) = ScanSession::new();
+        let ip: IpAddr = "192.0.2.1".parse().expect("a valid address");
+
+        ctx.update_host(ip, |host| {
+            host.record_mac("a4:83:e7:00:00:01".parse().expect("an Apple address"));
+            host.set_hostname(Some("MacBook-Pro".to_owned()));
+        });
+
+        run_passive_os_identification(&ctx, OsDetection::Off);
+
+        let named = ctx
+            .read_host(&ip, |host| host.os().is_some())
+            .expect("the host is in the store");
+        assert!(!named);
+    }
+
+    /// The pass runs over every host a sweep found, and most of them have
+    /// nothing to go on. That must leave them alone rather than guess.
+    #[test]
+    fn a_host_with_nothing_to_go_on_is_left_as_it_was() {
+        let (_session, ctx) = ScanSession::new();
+        let ip: IpAddr = "192.0.2.2".parse().expect("a valid address");
+
+        ctx.update_host(ip, |host| {
+            host.record_mac(
+                "02:00:5e:00:53:04"
+                    .parse()
+                    .expect("a locally administered address"),
+            );
+        });
+
+        run_passive_os_identification(&ctx, OsDetection::Passive);
+
+        let named = ctx
+            .read_host(&ip, |host| host.os().is_some())
+            .expect("the host is in the store");
+        assert!(!named);
     }
 }
