@@ -52,6 +52,7 @@ use crate::model::host::OsFingerprint;
 
 use super::db::RuleDb;
 use super::observation::{StackObservation, StackReply};
+use super::series::SeriesClasses;
 use super::signature::{OsDefinition, Provenance};
 
 /// The most a single reply's stack shape may claim on its own.
@@ -93,7 +94,7 @@ const PUBLISHED_ACCURACY: f32 = 50.0;
 /// rather than as a rewrite, and so a report can say *why* a host was named
 /// rather than only what it was named.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OsSource {
     /// The shape of a single TCP reply.
     TcpStack,
@@ -127,7 +128,17 @@ pub struct OsVerdict {
     pub cpe: Option<String>,
     /// How sure this is, on the `0..=100` scale
     /// [`OsFingerprint`] uses. Bounded by [`MAX_STACK_ACCURACY`].
+    ///
+    /// **About the family**, which is the part every source can speak to.
     pub accuracy: u8,
+    /// How sure the parts *past* the family are, where this names any.
+    ///
+    /// Separate because they are usually attested differently: a stack reading
+    /// and a banner may agree that a host is Linux while only the banner can say
+    /// which release, and one figure for both would report the weaker claim at
+    /// the stronger claim's strength. `None` where nothing finer than a family
+    /// was named.
+    pub detail_accuracy: Option<u8>,
     /// What produced it.
     pub source: OsSource,
     /// One line describing the observation this was read off, for a report to
@@ -170,7 +181,24 @@ impl OsVerdict {
     /// handed over here needs to be honest about how much it knows rather than
     /// as specific as possible.
     pub fn to_fingerprint(&self) -> OsFingerprint {
-        let name = self.product.clone().unwrap_or_else(|| self.family.clone());
+        // The most specific label that says something the family does not.
+        //
+        // A corpus that sets `product` to the family name is *declining* to name
+        // a product, and for a Linux distribution it puts the distribution in
+        // `vendor` — 993 shipped rules are written that way, which is why a host
+        // running Debian 12 was reported as `Linux 12.0`: a version number no
+        // Linux has ever had, attached to the wrong noun.
+        //
+        // A rule with **no** product at all is a different case and must not be
+        // read the same way. There, `vendor` is often the maker of a device
+        // rather than the publisher of an operating system — Ubiquiti, AXIS,
+        // Crestron — and seventeen rules pair `Microsoft` with `Windows`, which
+        // this would otherwise render as `Microsoft 10`. Those keep the family.
+        let name = match (&self.product, &self.vendor) {
+            (Some(product), Some(vendor)) if product == &self.family => vendor.clone(),
+            (Some(product), _) => product.clone(),
+            _ => self.family.clone(),
+        };
         let mut fingerprint = OsFingerprint::new(name, self.accuracy)
             .with_family(&*self.family)
             .with_evidence(&*self.evidence);
@@ -183,6 +211,9 @@ impl OsVerdict {
         }
         if let Some(cpe) = &self.cpe {
             fingerprint.add_cpe(&**cpe);
+        }
+        if let Some(accuracy) = self.detail_accuracy {
+            fingerprint = fingerprint.with_detail_accuracy(accuracy);
         }
         fingerprint
     }
@@ -211,6 +242,65 @@ impl OsVerdict {
 /// or when the result scores below [`MIN_REPORTABLE_ACCURACY`].
 pub fn classify(db: &RuleDb, reply: &StackReply) -> Option<OsVerdict> {
     let matched: Vec<&OsDefinition> = db.matching(reply).collect();
+    score(matched, reply.summary())
+}
+
+/// Names the operating system behind a host that was asked more than once.
+///
+/// The active counterpart of [`classify`]. Each reading is one reply paired with
+/// what the series it belongs to turned out to be, and a host contributes as
+/// many readings as it gave distinct kinds of answer — a SYN+ACK from an open
+/// port, a reset from a closed one. Rules are gathered across all of them and
+/// scored together.
+///
+/// # One host is one piece of evidence, however many packets it took
+///
+/// Every reading here came from one stack, so they are not independent and the
+/// result is a single [`OsVerdict`] rather than one per reply. Returning several
+/// would put them through [`resolve`](super::resolve)'s noisy-OR as though a
+/// machine agreeing with itself were two sources agreeing with each other, which
+/// is the same double-count [`classify`] avoids within a single reply.
+///
+/// # Why the readings are kept apart rather than pooled
+///
+/// A stack's resets and its handshake answers come from different code paths
+/// that disagree about the same fields — measured, on one host: identifier zero
+/// on the SYN+ACK path and a global counter on the reset path. So each reply
+/// carries the series read from replies of *its own kind*, and a rule sees the
+/// classes belonging to the segment it declares. Pooling them would compare a
+/// host against itself under two policies at once.
+///
+/// # Every reading is recorded, including the ones nothing matched
+///
+/// The evidence line carries what each series turned out to be whether or not a
+/// rule read it. That is deliberate and it is most of this function's value
+/// today: the corpus holds no rule written for a reset, so a host's reset series
+/// currently names nothing — and it is precisely the measurement somebody needs
+/// in front of them to write the first one. A reading dropped for matching
+/// nothing is a reading nobody can author from.
+pub fn classify_series(db: &RuleDb, readings: &[(StackReply, SeriesClasses)]) -> Option<OsVerdict> {
+    let matched: Vec<&OsDefinition> = readings
+        .iter()
+        .flat_map(|(reply, series)| db.matching_with_series(reply, series))
+        .collect();
+
+    let mut lines: Vec<String> = readings
+        .iter()
+        .map(|(reply, series)| format!("{} {}", reply.summary(), series.summary()))
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+
+    score(matched, lines.join(" | "))
+}
+
+/// Scores the rules that matched, whatever gathered them, into one verdict.
+///
+/// The half [`classify`] and [`classify_series`] share: they differ in which
+/// rules they ask about and what the resulting line says, and agree on
+/// everything after. `evidence` is that line, already rendered, because only the
+/// caller knows how many replies went into it.
+fn score(matched: Vec<&OsDefinition>, evidence: String) -> Option<OsVerdict> {
     let (first, rest) = matched.split_first()?;
 
     // A family the matches do not share is a contradiction, not a ranking.
@@ -218,14 +308,19 @@ pub fn classify(db: &RuleDb, reply: &StackReply) -> Option<OsVerdict> {
         return None;
     }
 
-    // Keep only the finer parts every match agrees on. `agreed` is `None` as
-    // soon as any rule differs, including when one names a part and another
-    // leaves it empty — "Ubuntu" and "unspecified" are not agreement.
+    // Keep the finer parts of the path, where the rules that spoke to them
+    // agree. A rule that leaves a part empty **abstains** rather than dissents:
+    // a family-level rule and a version-level one that both matched are a
+    // refinement, not a contradiction, and treating silence as disagreement
+    // would mean every version a rule can name is erased by the broader rule
+    // that necessarily matched beside it. Two rules naming *different* values is
+    // still a contradiction and still yields nothing.
     let agreed = |part: fn(&OsDefinition) -> &Option<String>| -> Option<String> {
-        let candidate = part(first).as_ref()?;
-        rest.iter()
-            .all(|rule| part(rule).as_deref() == Some(candidate.as_str()))
-            .then(|| candidate.clone())
+        let mut stated = matched.iter().filter_map(|rule| part(rule).as_deref());
+        let candidate = stated.next()?;
+        stated
+            .all(|other| other == candidate)
+            .then(|| candidate.to_owned())
     };
 
     // The weight of the least confident match, not the most: a set of rules is
@@ -253,15 +348,31 @@ pub fn classify(db: &RuleDb, reply: &StackReply) -> Option<OsVerdict> {
         return None;
     }
 
+    let (vendor, product, version, cpe) = (
+        agreed(|rule| &rule.os.vendor),
+        agreed(|rule| &rule.os.product),
+        agreed(|rule| &rule.os.version),
+        agreed(|rule| &rule.os.cpe),
+    );
+
     Some(OsVerdict {
         family: first.os.family.clone(),
-        vendor: agreed(|rule| &rule.os.vendor),
-        product: agreed(|rule| &rule.os.product),
-        version: agreed(|rule| &rule.os.version),
-        cpe: agreed(|rule| &rule.os.cpe),
+        // A rule is one source, and it asserts its whole identity at once: the
+        // release it names is worth exactly what the rule is worth. The two
+        // figures only come apart once *several* sources are folded together,
+        // which is `resolve`'s job rather than this one's.
+        detail_accuracy: (vendor.is_some()
+            || product.is_some()
+            || version.is_some()
+            || cpe.is_some())
+        .then_some(accuracy),
+        vendor,
+        product,
+        version,
+        cpe,
         accuracy,
         source: OsSource::TcpStack,
-        evidence: reply.summary(),
+        evidence,
     })
 }
 
@@ -384,13 +495,97 @@ mod tests {
     /// a Windows machine is believed.
     #[test]
     fn a_shape_no_rule_describes_is_reported_as_nothing() {
-        // A plausible handshake that no measured host produced: the right layout
-        // with a window belonging to neither shape in the corpus.
+        // An option layout nothing emits: a maximum segment size, an option kind
+        // no stack writes, and padding. Well-formed, and belonging to no family
+        // in the corpus.
+        //
+        // The *layout* rather than the window, deliberately — see the test
+        // below. A window nothing has been measured at is an ordinary Linux host
+        // whose owner tuned it, and naming that one nothing was the defect this
+        // pair now guards from both sides.
+        let nothing_emits = [2, 4, 0x05, 0xb4, 99, 2, 1, 1];
         let verdict = classify_reply(
             ip(),
-            &segment(flags::SYN | flags::ACK, 12_345, &DEBIAN_BOOKWORM),
+            &segment(flags::SYN | flags::ACK, 65_160, &nothing_emits),
         );
         assert!(verdict.is_none());
+    }
+
+    /// And the other side of it: a host is not disqualified for having been
+    /// tuned.
+    ///
+    /// Measured 2026-08-21 — one `sysctl -w net.ipv4.tcp_rmem=...` on an
+    /// untouched kernel moved a Debian guest's window and window scale together,
+    /// and the rule that pinned them stopped matching. A machine went from
+    /// `Linux [65%]` to no operating system at all because somebody had raised
+    /// their receive buffers, which is a rule describing a configuration while
+    /// claiming to describe a system.
+    ///
+    /// The hop counter, the option layout and the two capabilities the peer
+    /// named are what survive tuning, and they are what the rule now tests.
+    #[test]
+    fn a_linux_host_with_tuned_receive_buffers_is_still_linux() {
+        for window in [12_345u16, 29_200, 64_240, 65_160] {
+            let verdict = classify_reply(
+                ip(),
+                &segment(flags::SYN | flags::ACK, window, &DEBIAN_BOOKWORM),
+            )
+            .unwrap_or_else(|| panic!("a Linux handshake advertising {window} names nothing"));
+            assert_eq!(verdict.family, "Linux");
+        }
+    }
+
+    /// A distribution is named by its distribution, not by its kernel.
+    ///
+    /// The imported corpus writes a Linux distro as `vendor = "Debian"`,
+    /// `product = "Linux"`, `family = "Linux"` — 993 rules set `product` to the
+    /// family name like that — and reading `product` as the label reported a
+    /// real Debian 12 host as `Linux 12.0`, a version number no Linux has ever
+    /// carried.
+    #[test]
+    fn a_distribution_is_named_by_its_distribution() {
+        let verdict = OsVerdict {
+            family: "Linux".to_owned(),
+            vendor: Some("Debian".to_owned()),
+            product: Some("Linux".to_owned()),
+            version: Some("12".to_owned()),
+            cpe: None,
+            accuracy: 84,
+            detail_accuracy: Some(55),
+            source: OsSource::ServiceBanner,
+            evidence: "service banner names Linux".to_owned(),
+        };
+
+        let fingerprint = verdict.to_fingerprint();
+        assert_eq!(fingerprint.name(), "Debian");
+        assert_eq!(fingerprint.family(), Some("Linux"));
+        assert_eq!(
+            fingerprint.to_string(),
+            "Linux [84%] · Debian 12 [55%]",
+            "the family carries what several sources agreed; the release carries \
+             what the one source that named it was worth"
+        );
+    }
+
+    /// And the case that rule must not break. A rule naming no product leaves
+    /// `vendor` meaning whoever made the *machine* as often as whoever published
+    /// the system — so `Microsoft` + `Windows`, of which the corpus holds
+    /// seventeen, has to stay `Windows`.
+    #[test]
+    fn a_vendor_without_a_product_does_not_replace_the_family() {
+        let verdict = OsVerdict {
+            family: "Windows".to_owned(),
+            vendor: Some("Microsoft".to_owned()),
+            product: None,
+            version: Some("10".to_owned()),
+            cpe: None,
+            accuracy: 60,
+            detail_accuracy: Some(60),
+            source: OsSource::ServiceBanner,
+            evidence: "service banner names Windows".to_owned(),
+        };
+
+        assert_eq!(verdict.to_fingerprint().name(), "Windows");
     }
 
     /// A reset carries no options at all, and the corpus holds no rule written
@@ -537,6 +732,216 @@ mod second_family {
             observed.window_in_units(),
             Some((45, 375)),
             "the derived figures exist, and describe the path rather than the sender"
+        );
+    }
+}
+
+#[cfg(test)]
+mod series_backed {
+    use super::*;
+    use crate::fingerprint::os::series::{ClockClass, IdClass, IsnClass};
+    use crate::model::capture::{IpObservation, Ipv4Observation};
+    use crate::protocols::tcp::flags;
+
+    use super::super::signature::{MatchRule, OsIdentity, Predicate, ReplyKind};
+
+    fn ip() -> IpObservation {
+        IpObservation::V4(Ipv4Observation {
+            ttl: 64,
+            identification: 0,
+            dont_fragment: true,
+            more_fragments: false,
+            dscp: 0,
+            ecn: 0,
+        })
+    }
+
+    /// A handshake answer, assembled from RFC 793's offsets.
+    fn syn_ack() -> StackReply {
+        let mut bytes = vec![0u8; 20];
+        bytes[0..2].copy_from_slice(&22u16.to_be_bytes());
+        bytes[2..4].copy_from_slice(&50_000u16.to_be_bytes());
+        bytes[12] = 5 << 4;
+        bytes[13] = flags::SYN | flags::ACK;
+        bytes[14..16].copy_from_slice(&64_240u16.to_be_bytes());
+        StackObservation::from_tcp(ip(), &bytes)
+            .expect("a handshake answer")
+            .into()
+    }
+
+    /// What several replies from a stack with a hashed generator look like once
+    /// classified.
+    fn hashed() -> SeriesClasses {
+        SeriesClasses {
+            identifiers: IdClass::Zero,
+            sequences: IsnClass::Hashed,
+            clock: ClockClass::Hertz(1000),
+        }
+    }
+
+    fn named(family: &str, version: Option<&str>) -> OsIdentity {
+        OsIdentity {
+            family: family.to_owned(),
+            vendor: None,
+            product: None,
+            version: version.map(str::to_owned),
+            cpe: None,
+        }
+    }
+
+    fn rule(os: OsIdentity, r#match: MatchRule) -> OsDefinition {
+        OsDefinition {
+            os,
+            provenance: Provenance::Measured,
+            notes: None,
+            weight: 1.0,
+            r#match,
+            example: Vec::new(),
+        }
+    }
+
+    /// A predicate over the hop counter, which every rule here shares so that
+    /// the series predicate is the only thing separating them.
+    fn at_64() -> Option<Predicate<u8>> {
+        Some(Predicate {
+            equals: Some(64),
+            ..Default::default()
+        })
+    }
+
+    fn is(name: &str) -> Option<Predicate<String>> {
+        Some(Predicate {
+            equals: Some(name.to_owned()),
+            ..Default::default()
+        })
+    }
+
+    /// The guarantee that makes a series predicate safe to author: it cannot be
+    /// satisfied by a single reply, because a single reply has no series to
+    /// satisfy it with. A rule that says "this generator hashes" must never be
+    /// matched by one sequence number, whatever that number is.
+    #[test]
+    fn a_series_rule_cannot_be_satisfied_by_one_reply() {
+        let db = RuleDb::from_rules(vec![rule(
+            named("Linux", Some("6.x")),
+            MatchRule {
+                reply: ReplyKind::SynAck,
+                initial_hops: at_64(),
+                sequence_class: is("hashed"),
+                ..Default::default()
+            },
+        )]);
+        let reply = syn_ack();
+
+        assert!(
+            classify(&db, &reply).is_none(),
+            "the passive path has no series, so a series rule must fail against it"
+        );
+
+        let verdict = classify_series(&db, &[(reply, hashed())])
+            .expect("the same rule matches once the series is known");
+        assert_eq!(verdict.family, "Linux");
+        assert_eq!(verdict.version.as_deref(), Some("6.x"));
+    }
+
+    /// The reason a version-level rule can exist at all.
+    ///
+    /// A rule naming a release is necessarily *narrower* than the family rule
+    /// that describes the same stack, so both match, every time. Treating the
+    /// family rule's silence about the version as disagreement would erase the
+    /// version on exactly the hosts the finer rule was written for — more
+    /// evidence yielding a less specific answer.
+    #[test]
+    fn a_broader_rule_matching_beside_a_finer_one_does_not_erase_the_version() {
+        let db = RuleDb::from_rules(vec![
+            rule(
+                named("Linux", None),
+                MatchRule {
+                    reply: ReplyKind::SynAck,
+                    initial_hops: at_64(),
+                    ..Default::default()
+                },
+            ),
+            rule(
+                named("Linux", Some("6.x")),
+                MatchRule {
+                    reply: ReplyKind::SynAck,
+                    initial_hops: at_64(),
+                    sequence_class: is("hashed"),
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let reply = syn_ack();
+        assert_eq!(
+            db.matching_with_series(&reply, &hashed()).count(),
+            2,
+            "both rules describe this host"
+        );
+
+        let verdict =
+            classify_series(&db, &[(reply, hashed())]).expect("a host both rules describe");
+        assert_eq!(verdict.family, "Linux");
+        assert_eq!(
+            verdict.version.as_deref(),
+            Some("6.x"),
+            "the finer rule states a version and the broader one abstains"
+        );
+    }
+
+    /// Abstention is not agreement with anything: two rules naming *different*
+    /// releases still cannot both be right, and nothing here can say which is.
+    #[test]
+    fn two_rules_naming_different_versions_keep_neither() {
+        let with_version = |version: &str, class: &str| {
+            rule(
+                named("Linux", Some(version)),
+                MatchRule {
+                    reply: ReplyKind::SynAck,
+                    initial_hops: at_64(),
+                    sequence_class: is(class),
+                    ..Default::default()
+                },
+            )
+        };
+        let db = RuleDb::from_rules(vec![
+            with_version("6.x", "hashed"),
+            with_version("7.x", "hashed"),
+        ]);
+
+        let verdict = classify_series(&db, &[(syn_ack(), hashed())]).expect("the family is agreed");
+        assert_eq!(verdict.family, "Linux");
+        assert!(
+            verdict.version.is_none(),
+            "a contradiction about the release is not a release"
+        );
+    }
+
+    /// Several replies from one host are one piece of evidence about one stack.
+    /// The scanner that collects them hands them over together for exactly this
+    /// reason: separately they would pass through the resolver's noisy-OR as
+    /// though a machine agreeing with itself were two sources agreeing with each
+    /// other.
+    #[test]
+    fn a_host_read_several_ways_still_yields_one_verdict() {
+        let db = RuleDb::from_rules(vec![rule(
+            named("Linux", None),
+            MatchRule {
+                reply: ReplyKind::SynAck,
+                initial_hops: at_64(),
+                ..Default::default()
+            },
+        )]);
+
+        let one = classify_series(&db, &[(syn_ack(), hashed())]).expect("one reading names it");
+        let twice = classify_series(&db, &[(syn_ack(), hashed()), (syn_ack(), hashed())])
+            .expect("two readings still name it");
+
+        assert_eq!(one.family, twice.family);
+        assert_eq!(
+            one.accuracy, twice.accuracy,
+            "reading one stack twice is not two pieces of evidence"
         );
     }
 }

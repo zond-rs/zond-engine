@@ -62,6 +62,23 @@ pub struct OsFingerprint {
     /// outrank a completed match and could never be displaced.
     accuracy: u8,
 
+    /// How well supported everything *past* the family is, where the finding
+    /// says more than a family at all.
+    ///
+    /// The family is what every source can speak to, and [`accuracy`] describes
+    /// agreement about it. A release is usually named by exactly one source — a
+    /// service banner — so reporting it under the family's figure launders one
+    /// weaker claim through the agreement of several stronger ones. Measured, on
+    /// a real host: two sources agreeing on Linux scored 84, the release came
+    /// from a single banner worth 55, and `Debian 12.0 [84%]` claimed the second
+    /// number was as well attested as the first.
+    ///
+    /// `None` where the finding stops at the family, and there is nothing extra
+    /// to qualify.
+    ///
+    /// [`accuracy`]: Self::accuracy
+    detail_accuracy: Option<u8>,
+
     /// A bounded set of Common Platform Enumeration (CPE) identifiers.
     cpe: BTreeSet<Arc<str>>,
 
@@ -101,6 +118,7 @@ impl OsFingerprint {
             generation: None,
             vendor: None,
             accuracy: accuracy.min(100),
+            detail_accuracy: None,
             cpe: BTreeSet::new(),
             evidence: None,
         }
@@ -129,6 +147,18 @@ impl OsFingerprint {
     /// How sure this identification is, from 0 to 100.
     pub fn accuracy(&self) -> u8 {
         self.accuracy
+    }
+
+    /// How well supported everything past the family is, or `None` where the
+    /// finding stops at the family.
+    pub fn detail_accuracy(&self) -> Option<u8> {
+        self.detail_accuracy
+    }
+
+    /// Records how well supported the finer parts of this identity are.
+    pub fn with_detail_accuracy(mut self, accuracy: u8) -> Self {
+        self.detail_accuracy = Some(accuracy.min(100));
+        self
     }
 
     /// Builder method to set the broad family.
@@ -201,6 +231,7 @@ impl OsFingerprint {
             generation,
             vendor,
             accuracy,
+            detail_accuracy,
             cpe,
             evidence,
         } = other;
@@ -211,15 +242,36 @@ impl OsFingerprint {
             self.family = family.or(self.family.take());
             self.generation = generation.or(self.generation.take());
             self.vendor = vendor.or(self.vendor.take());
+            // Travels with the parts it qualifies, never on its own: a figure
+            // describing a release this finding no longer names would attach a
+            // confidence to nothing.
+            self.detail_accuracy = detail_accuracy.or(self.detail_accuracy.take());
             // The evidence follows the identity it explains. Keeping the losing
             // technique's line beside the winning technique's name would be a
             // rationale for a conclusion nobody reached.
             self.evidence = evidence.or(self.evidence.take());
         } else if accuracy == self.accuracy {
-            self.evidence = self.evidence.take().or(evidence);
+            // Two findings of equal strength about one host.
+            //
+            // Where they name the same system they are two *readings* of it and
+            // both belong in the record. This is how the active series probe's
+            // reading arrives: it corroborates the passive one exactly, so it
+            // ties, and keeping only the first meant the one measurement that
+            // says what the host's counters do — the whole reason the probe was
+            // sent — was discarded before anybody saw it.
+            //
+            // Where they name different systems the loser's line is a rationale
+            // for a conclusion nobody reached, and it goes, for the same reason
+            // it does above.
+            self.evidence = if self.name == name {
+                join_evidence(self.evidence.take(), evidence)
+            } else {
+                self.evidence.take().or(evidence)
+            };
             self.family = self.family.take().or(family);
             self.generation = self.generation.take().or(generation);
             self.vendor = self.vendor.take().or(vendor);
+            self.detail_accuracy = self.detail_accuracy.take().or(detail_accuracy);
         }
 
         for cpe in cpe {
@@ -231,13 +283,71 @@ impl OsFingerprint {
     }
 }
 
+/// What separates two readings in an evidence line.
+///
+/// The same separator [`resolve`](crate::fingerprint::os::resolve) folds its
+/// sources with, so a person reading a report meets one convention rather than
+/// two.
+const SEPARATOR: &str = " | ";
+
+/// The most evidence one fingerprint carries, in bytes.
+///
+/// Readings accumulate — a host read passively, then followed, then pinged
+/// contributes three — and each is worth keeping. A caller running strategies in
+/// a loop over one host is not, so this bounds the record at the point where it
+/// stops describing a host and starts logging a session.
+const MAX_EVIDENCE_LEN: usize = 512;
+
+/// Joins two evidence lines, keeping each reading once and in the order it
+/// arrived.
+///
+/// Truncates a whole reading rather than half of one: a line cut mid-value would
+/// read as a measurement that says something it does not.
+fn join_evidence(existing: Option<Arc<str>>, incoming: Option<Arc<str>>) -> Option<Arc<str>> {
+    let (existing, incoming) = match (existing, incoming) {
+        (Some(existing), Some(incoming)) => (existing, incoming),
+        (existing, incoming) => return existing.or(incoming),
+    };
+
+    let mut parts: Vec<&str> = Vec::new();
+    let mut length = 0usize;
+    for part in existing.split(SEPARATOR).chain(incoming.split(SEPARATOR)) {
+        if parts.contains(&part) {
+            continue;
+        }
+        let cost = part.len() + if parts.is_empty() { 0 } else { SEPARATOR.len() };
+        if length + cost > MAX_EVIDENCE_LEN {
+            break;
+        }
+        parts.push(part);
+        length += cost;
+    }
+
+    Some(parts.join(SEPARATOR).into())
+}
+
 impl std::fmt::Display for OsFingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)?;
-        if let Some(ref generation) = self.generation {
-            write!(f, " {}", generation)?;
+        // The family and its agreement first, because that is the part several
+        // sources can vouch for. Anything finer follows with its own figure —
+        // one source usually names a release, and printing it under the family's
+        // number would claim it was as well attested as the family.
+        let family = self.family.as_deref().unwrap_or(&self.name);
+        write!(f, "{family} [{}%]", self.accuracy)?;
+
+        let refines = &*self.name != family || self.generation.is_some();
+        if !refines {
+            return Ok(());
         }
-        write!(f, " [{}%]", self.accuracy)
+
+        write!(f, " · {}", self.name)?;
+        if let Some(generation) = &self.generation {
+            write!(f, " {generation}")?;
+        }
+        match self.detail_accuracy {
+            Some(accuracy) => write!(f, " [{accuracy}%]"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -252,6 +362,70 @@ impl std::fmt::Display for OsFingerprint {
 
 #[cfg(test)]
 mod tests {
+
+    /// The defect this exists to prevent, and it was a live one: the active
+    /// series probe corroborates the passive reading exactly, so the two tie —
+    /// and keeping only the first threw away the only line that says what the
+    /// host's counters do, which is the whole reason the probe was sent.
+    #[test]
+    fn two_readings_of_one_system_are_both_kept() {
+        let mut passive = OsFingerprint::new("Linux", 65)
+            .with_evidence("syn-ack hops>=64 opts=M,S,T,N,W win=65160=45x1448 ws=7");
+        passive.merge(OsFingerprint::new("Linux", 65).with_evidence(
+            "syn-ack hops>=64 opts=M,S,T,N,W win=65160=45x1448 ws=7 \
+                                id=zero isn=hashed ts=ticking",
+        ));
+
+        let evidence = passive.evidence().expect("evidence survives");
+        assert!(
+            evidence.contains("isn=hashed"),
+            "the series reading is the one that cannot be got back: {evidence}"
+        );
+    }
+
+    /// Joining is for readings of the *same* system. A tie between two different
+    /// names keeps the winner's line alone — the loser's is a rationale for a
+    /// conclusion nobody reached.
+    #[test]
+    fn a_tie_between_two_names_does_not_borrow_the_losers_reasoning() {
+        let mut linux = OsFingerprint::new("Linux", 65).with_evidence("a Linux-shaped reply");
+        linux.merge(OsFingerprint::new("Windows", 65).with_evidence("a Windows-shaped reply"));
+
+        assert_eq!(linux.name(), "Linux");
+        assert_eq!(linux.evidence(), Some("a Linux-shaped reply"));
+    }
+
+    /// One reading, however many times it is filed. A scan that identifies a
+    /// host twice by the same route has learned one thing.
+    #[test]
+    fn the_same_reading_twice_is_recorded_once() {
+        let mut host = OsFingerprint::new("Linux", 65).with_evidence("syn-ack hops>=64");
+        host.merge(OsFingerprint::new("Linux", 65).with_evidence("syn-ack hops>=64"));
+
+        assert_eq!(host.evidence(), Some("syn-ack hops>=64"));
+    }
+
+    /// Readings accumulate, so the record needs a ceiling — and it has to fall
+    /// between readings rather than inside one, because half a reading reads as
+    /// a measurement claiming something it never said.
+    #[test]
+    fn a_long_accumulation_is_cut_between_readings_not_inside_one() {
+        let reading = |n: usize| format!("reading {n} {}", "x".repeat(60));
+
+        let mut host = OsFingerprint::new("Linux", 65).with_evidence(reading(0));
+        for n in 1..40 {
+            host.merge(OsFingerprint::new("Linux", 65).with_evidence(reading(n)));
+        }
+
+        let evidence = host.evidence().expect("evidence survives");
+        assert!(evidence.len() <= MAX_EVIDENCE_LEN, "{}", evidence.len());
+        for part in evidence.split(SEPARATOR) {
+            assert!(
+                part.starts_with("reading ") && part.ends_with('x'),
+                "a reading was cut in half: {part:?}"
+            );
+        }
+    }
     use super::*;
 
     /// Accuracy is what ranks two findings, so a value above 100 would outrank

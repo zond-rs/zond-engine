@@ -1,26 +1,54 @@
 # Linux, from measurement.
 #
-# Every value here was read off a real host by `benches/os_observe.rs` on
-# 2026-08-18 and labelled by whoever owns the machine, not taken from published
-# defaults.
+# Every value here was read off a real host by this engine, through this
+# engine's own probe, with the machine's operating system known independently.
 #
-# All of these are written against the option set `tcp::create_probe` sends —
+# All of it is written against the option set `tcp::create_probe` sends —
 # maximum segment size, SACK permitted, timestamp, window scale. Option
 # negotiation is reciprocal, so a rule authored against one probe does not apply
 # to a reply drawn by another.
-
-# ── A current Linux kernel ───────────────────────────────────────────────────
 #
-# Three hosts on one segment produced this shape: a consumer router, a network
-# appliance, and a single-board computer running Debian bookworm on kernel
-# 6.12.47 (aarch64) — the one whose kernel version is known, which is what makes
-# this rule attributable at all.
+# ── Why this rule does not test the window ───────────────────────────────────
 #
-# `window_units` rather than the raw window is the whole point of the field: this
-# same shape answers a bare MSS-only probe with 64240 (44 x 1460) and a
-# negotiating probe with 65160 (45 x 1448). The unit moves and the multiplier
-# very nearly does not, so the rule admits both rather than pinning a value that
-# depends on what was asked.
+# It used to, and that was a defect. Two measurements withdrew it.
+#
+# **The window is `tcp_rmem`, not the kernel.** Measured 2026-08-21: a single
+# `sysctl -w net.ipv4.tcp_rmem=...` on an otherwise untouched kernel 6.12 host
+# moved the advertised window and the window scale together, far enough that the
+# previous form of this rule stopped matching — and the machine went from
+# `Linux [65%]` to no operating system at all. A Linux host became
+# unidentifiable because somebody had tuned their receive buffers. That is a
+# rule describing a *configuration* while claiming to describe a system, and the
+# cost of it falls on exactly the hosts most likely to be tuned: appliances,
+# which lower the buffers, and throughput-tuned servers, which raise them.
+#
+# **And it does not identify a release either.** Debian 12 (kernel 6.1.0-50) and
+# Debian 13 (kernel 6.12.95), both stock, both aarch64, both with identical
+# `tcp_rmem` and `tcp_adv_win_scale`, answered this engine's probe with
+# byte-identical shapes: `65160 = 45 x 1448`, window scale 7. Eleven releases
+# apart, and nothing a single reply carries separates them. Both are shipped as
+# examples below precisely to record that.
+#
+# What is left — the initial hop counter, the option layout, and the two
+# capabilities the peer named — held across every host measured, tuned or not.
+# That is what identifies the family, so that is what this tests.
+#
+# The windows are kept in the examples, which is where a measurement belongs. A
+# value nobody can reconstruct is a value nobody can dispute.
+#
+# ── What does separate 6.1 from 6.12, and why it is not here yet ─────────────
+#
+# One thing, and it is not in a single reply. Asked twelve times from twelve
+# source ports, the 6.1 host's timestamp clock reads as one clock ticking at
+# 1 kHz; the 6.12 host's reads as randomised per connection. Five runs each,
+# no variance either way.
+#
+# It is not predicated on here because the `example` schema cannot yet record a
+# series reading, so a rule stating `clock_class` could not ship the measurement
+# it was made from — see README.md. It is also a *boundary* rather than a
+# version: the change landed somewhere between those two releases and may be
+# backported, so the honest claim is "at or past whenever that happened", which
+# needs bisecting before it is worth stating.
 provenance = "measured"
 
 [os]
@@ -30,11 +58,10 @@ family = "Linux"
 reply = "syn_ack"
 initial_hops = { equals = 64 }
 option_layout = { equals = "M,S,T,N,W" }
-window_scale = { equals = 7 }
-window_units = { range = [44, 45] }
-window_remainder = { equals = 0 }
 timestamps = { equals = true }
 sack_permitted = { equals = true }
+
+# ── Stock receive buffers: the ordinary desktop and server shape ─────────────
 
 [[example]]
 source = "single-board computer, Debian bookworm, kernel 6.12.47 aarch64; measured on a LAN 2026-08-18"
@@ -57,5 +84,62 @@ option_layout = "M,S,T,N,W"
 window = 65160
 mss = 1460
 window_scale = 7
+timestamps = true
+sack_permitted = true
+
+# The pair that withdrew the version claim. Same distro family, same
+# architecture, same `tcp_rmem`, eleven kernel releases apart — and identical
+# here in every field a single reply carries.
+
+[[example]]
+source = "Debian 12 cloud image, kernel 6.1.0-50 aarch64, in a local virtual machine; measured 2026-08-21"
+reply = "syn_ack"
+remaining_hops = 64
+dont_fragment = true
+option_layout = "M,S,T,N,W"
+window = 65160
+mss = 1460
+window_scale = 7
+timestamps = true
+sack_permitted = true
+
+[[example]]
+source = "Debian 13 cloud image, kernel 6.12.95 aarch64, in a local virtual machine; measured 2026-08-21"
+reply = "syn_ack"
+remaining_hops = 64
+dont_fragment = true
+option_layout = "M,S,T,N,W"
+window = 65160
+mss = 1460
+window_scale = 7
+timestamps = true
+sack_permitted = true
+
+# ── Smaller receive buffers ──────────────────────────────────────────────────
+#
+# A window scale of 3 and a window of twenty units rather than forty-five. This
+# shipped until 2026-08-21 as a separate rule named `linux-older.toml`, claiming
+# an older kernel.
+#
+# **That claim is withdrawn.** Nothing measured ever supported it — one host
+# differing from three is a difference, not a boundary — and the sysctl result
+# recorded above shows a smaller `tcp_rmem` moves the window and the scale
+# together in exactly this direction. A network appliance running its receive
+# buffers small is the ordinary explanation for an appliance answering this way,
+# and it needs no kernel-version story at all.
+#
+# Kept as an example rather than deleted: the observation is real, it was taken
+# from two vantage points, and it is the record of what a low-memory Linux
+# answers.
+
+[[example]]
+source = "network appliance, Linux of unknown version; measured on a LAN 2026-08-18 from two vantage points"
+reply = "syn_ack"
+remaining_hops = 64
+dont_fragment = true
+option_layout = "M,S,T,N,W"
+window = 28960
+mss = 1460
+window_scale = 3
 timestamps = true
 sack_permitted = true

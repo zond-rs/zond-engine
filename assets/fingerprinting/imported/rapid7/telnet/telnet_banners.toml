@@ -127,42 +127,42 @@ name = "Debian 9.0 (stretch)"
 pattern = "^Debian GNU\\/Linux 9(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
 example = "RGViaWFuIEdOVS9MaW51eCA5DQpzZXJ2ZXItMDEuMiBsb2dpbjoK"
-metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "9.0", "os.cpe23" = "cpe:/o:debian:debian_linux:9.0", "host.name" = "{capture:1}" }
+metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "9", "os.cpe23" = "cpe:/o:debian:debian_linux:9.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 8.0 (jessie)"
 pattern = "^Debian GNU\\/Linux 8(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
 example = "RGViaWFuIEdOVS9MaW51eCA4DQpzZXJ2ZXItMDEuMiBsb2dpbjoK"
-metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8.0", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0", "host.name" = "{capture:1}" }
+metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 7.0 (wheezy)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux 7(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
 example = "RGViaWFuIEdOVS9MaW51eCA3DQpzZXJ2ZXItMDEuMiBsb2dpbjoK"
-metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7.0", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0", "host.name" = "{capture:1}" }
+metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 6.0 (sqeeze)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux 6(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
 example = "RGViaWFuIEdOVS9MaW51eCA2LjANCnNlcnZlci0wMS4yIGxvZ2luOgo="
-metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6.0", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0", "host.name" = "{capture:1}" }
+metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 5.0 (lenny)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux 5(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
 example = "RGViaWFuIEdOVS9MaW51eCA1LjANCnNlcnZlci0wMS4yIGxvZ2luOgo="
-metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5.0", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0", "host.name" = "{capture:1}" }
+metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 4.0 (etch)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux 4(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
 example = "RGViaWFuIEdOVS9MaW51eCA0LjANCnNlcnZlci0wMS4yIGxvZ2luOgo="
-metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "4.0", "os.cpe23" = "cpe:/o:debian:debian_linux:4.0", "host.name" = "{capture:1}" }
+metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "4", "os.cpe23" = "cpe:/o:debian:debian_linux:4.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 3.x (woody/sarge)"

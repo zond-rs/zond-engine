@@ -137,49 +137,175 @@ impl Analyzer for BannerRegexAnalyzer {
 
         let mut evidence = Vec::new();
         for response in &responses.banners {
-            if let Some(found) = best_match(db, port_signatures, response) {
-                // Matched a signature registered for this port: port-confirmed.
-                evidence.push(stamp(found, ctx, true));
-                continue;
-            }
-
-            // No port match: fall back to the whole set, narrowed by the
-            // prefilter to a small candidate list, compiled on demand. A match
-            // here is global-only — found by content, not corroborated by port.
-            let candidates = db.prefilter().candidates(response);
-            db.warm(&candidates);
-            if let Some(found) = best_match(db, &candidates, response) {
-                evidence.push(stamp(found, ctx, false));
+            if let Some((found, port_confirmed)) = banner_evidence(db, port_signatures, response) {
+                evidence.push(stamp(found, ctx, port_confirmed));
             }
         }
-
         evidence
     }
 }
 
-/// Evidence from the **most specific** signature in `indices` that identifies
-/// `response`, by [`MatchQuality`](super::matcher::MatchQuality).
+/// Evidence from the **most specific** signature in `indices` that identifies any
+/// of `texts`, by [`MatchQuality`](super::matcher::MatchQuality).
 ///
 /// Unlike a first-match scan, this evaluates every candidate so a generic
 /// signature listed earlier cannot shadow a more specific one (e.g. a bare
 /// `HTTP/1.1` match hiding a `Server:`-header match that names a product and
-/// version). Ties keep the lowest-indexed signature, so the result stays
-/// deterministic. Candidate sets are bounded — the linked port set, or the
-/// prefilter-narrowed global set — so evaluating all of them stays cheap.
-fn best_match(db: &SignatureDb, indices: &[usize], response: &str) -> Option<Evidence> {
-    indices
+/// version). Ties keep the earliest text and the lowest-indexed signature, so
+/// the result stays deterministic. Candidate sets are bounded — the linked port
+/// set, or the prefilter-narrowed global set — so evaluating all of them stays
+/// cheap.
+///
+/// **Several texts, for one banner, for the same reason.** A structured banner
+/// carries a field the corpus is actually written against, and that field is
+/// where the specific rules live — so both the whole banner and the field are
+/// offered, and the better match wins. Taking the *first* match instead would
+/// reinstate exactly the shadowing this function exists to prevent: the whole
+/// line matches a loose rule naming a family, and the field matches the rule
+/// naming the release.
+fn best_match(db: &SignatureDb, indices: &[usize], texts: &[&str]) -> Option<Evidence> {
+    let matched: Vec<super::matcher::Match> = texts
         .iter()
-        .filter_map(|&idx| db.signature(idx).identify(response))
-        // Replace only on a strictly better match, so the lowest index wins ties.
-        .reduce(|best, m| if m.quality > best.quality { m } else { best })
-        // The match's operating-system reading travels on the evidence it
-        // becomes. It is retained by `ServiceVerdict` rather than ranked by it —
-        // the resolver ranks services, and what a banner implies about the
-        // machine is a different question with different rules.
-        .map(|m| Evidence {
-            os: m.os,
-            ..m.evidence
+        .flat_map(|text| {
+            indices
+                .iter()
+                .filter_map(move |&idx| db.signature(idx).identify(text))
         })
+        .collect();
+
+    // Replace only on a strictly better match, so the earliest text and the
+    // lowest index win ties.
+    let service = matched
+        .iter()
+        .reduce(|best, m| if m.quality > best.quality { m } else { best })?;
+
+    // **Chosen separately, and that is the point.** `quality` ranks how well a
+    // signature identified the *service*, which is a different question from how
+    // much it managed to say about the machine — and the two disagree. A rule
+    // pinning `OpenSSH_9.2p1` exactly outranks one that also happens to name
+    // Debian 12, so ranking the operating system by service quality threw the
+    // release away and reported a bare family.
+    //
+    // The `Match` type already separates them for exactly this reason: a banner
+    // identifies a service, and what it implies about the host is a second
+    // inference with its own rules. So the service reading comes from the best
+    // service match and the operating-system reading from the most complete one,
+    // and neither decides the other.
+    let os = matched
+        .iter()
+        .filter_map(|m| m.os.as_ref())
+        .reduce(|best, os| {
+            if os_detail(os) > os_detail(best) {
+                os
+            } else {
+                best
+            }
+        })
+        .cloned();
+
+    Some(Evidence {
+        os,
+        ..service.evidence.clone()
+    })
+}
+
+/// How much of the identity path an operating-system reading fills in.
+///
+/// Ranks readings against each other and nothing else. A reading that names a
+/// release says strictly more than one that stops at the family, and where two
+/// say the same amount the first stands — so the answer does not depend on which
+/// signature happened to be indexed earlier.
+fn os_detail(os: &super::os::OsEvidence) -> u8 {
+    u8::from(os.version.is_some())
+        + u8::from(os.product.is_some())
+        + u8::from(os.vendor.is_some())
+        + u8::from(os.cpe.is_some())
+}
+
+/// Everything one banner yields: the evidence, and whether the signature that
+/// named the service was registered for this port.
+///
+/// The whole per-banner decision in one place — text extraction, both tiers, and
+/// the separate choice of service and operating-system readings. `analyze` is a
+/// loop around it and the tests call it directly, which is deliberate: a test
+/// that reproduced this logic instead of calling it is what let the release-
+/// naming SSH rules go unreachable while a test asserting "real banners name an
+/// operating system" went on passing.
+fn banner_evidence(
+    db: &SignatureDb,
+    port_signatures: &[usize],
+    banner: &str,
+) -> Option<(Evidence, bool)> {
+    let texts = match_texts(banner);
+
+    // Matched against the signatures registered for this port: port-confirmed.
+    let mut found = best_match(db, port_signatures, &texts);
+    let mut port_confirmed = found.is_some();
+
+    // The global set — narrowed by the prefilter to a small candidate list,
+    // compiled on demand — is consulted when the port set identified nothing,
+    // and **also when it named a service but said nothing about the machine**.
+    //
+    // That second case is not a special case: a banner identifies a service, and
+    // what it implies about the host is a separate inference, so the signature
+    // that answers one is very often not the signature that answers the other.
+    // Stopping at the port tier discarded every operating-system reading that
+    // lives only in the global set — measured, on a real host, whose release was
+    // sitting there unread.
+    //
+    // It costs an Aho-Corasick pass over the banner and a bounded candidate
+    // evaluation, on banners that previously skipped both. Regex compilation is
+    // cached, so a scan pays it once per signature rather than once per host.
+    if found.as_ref().is_none_or(|found| found.os.is_none()) {
+        // Narrowed against every text, unioned: a literal that only appears in
+        // the extracted field would otherwise select no candidates and the field
+        // would go unmatched here even though it matches on a known port.
+        let mut candidates: Vec<usize> = texts
+            .iter()
+            .flat_map(|text| db.prefilter().candidates(text))
+            .collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+
+        db.warm(&candidates);
+        if let Some(global) = best_match(db, &candidates, &texts) {
+            match found.as_mut() {
+                // The port-confirmed service stands; only the reading about the
+                // machine is taken from the wider set.
+                Some(found) => found.os = global.os,
+                None => {
+                    found = Some(global);
+                    port_confirmed = false;
+                }
+            }
+        }
+    }
+
+    found.map(|found| (found, port_confirmed))
+}
+
+/// What a banner says about the operating system underneath it, matched exactly
+/// as [`BannerRegexAnalyzer`] matches it.
+#[cfg(test)]
+pub(crate) fn os_from_banner(
+    db: &SignatureDb,
+    port: u16,
+    banner: &str,
+) -> Option<super::os::OsEvidence> {
+    let port_signatures = db.signatures_for_port(port);
+    db.warm(port_signatures);
+    banner_evidence(db, port_signatures, banner).and_then(|(found, _)| found.os)
+}
+
+/// The texts one banner should be matched against, most complete first.
+///
+/// Usually just the banner. A structured one also yields the field the corpus
+/// anchors its patterns on — see [`ssh::software_version`] for why that is not
+/// the whole line, and what it cost when only the whole line was offered.
+fn match_texts(banner: &str) -> Vec<&str> {
+    let mut texts = vec![banner];
+    texts.extend(super::ssh::software_version(banner));
+    texts
 }
 
 /// Marks `evidence` with the tunnel its response was read through (so a banner

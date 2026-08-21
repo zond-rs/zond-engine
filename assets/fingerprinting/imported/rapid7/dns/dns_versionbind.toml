@@ -140,7 +140,7 @@ vendor = "ISC"
 product = "BIND"
 context = "dns.versionbind"
 example = "9.11.5-P4-5.1+deb10u1-Debian"
-metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10.0", "os.cpe23" = "cpe:/o:debian:debian_linux:10.0" }
+metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10", "os.cpe23" = "cpe:/o:debian:debian_linux:10.0" }
 
 [[match]]
 name = "ISC BIND: Debian 8.0 (jessie)"
@@ -150,7 +150,7 @@ vendor = "ISC"
 product = "BIND"
 context = "dns.versionbind"
 example = "9.9.5-9+deb8u11-Debian"
-metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8.0", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0" }
+metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0" }
 
 [[match]]
 name = "ISC BIND: Debian 7.0 (wheezy)"
@@ -160,7 +160,7 @@ vendor = "ISC"
 product = "BIND"
 context = "dns.versionbind"
 example = "9.9.5-9wheezy1-Debian"
-metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7.0", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
+metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
 
 [[match]]
 name = "ISC BIND: Debian no version simple"
@@ -404,7 +404,7 @@ vendor = "ISC"
 product = "BIND"
 context = "dns.versionbind"
 example = "9.11.5-P4-5.1+deb10u1-Raspbian"
-metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Raspbian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10.0" }
+metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Raspbian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10" }
 
 [[match]]
 name = "ISC BIND: Raspbian based on Debian Jessie"
@@ -414,7 +414,7 @@ vendor = "ISC"
 product = "BIND"
 context = "dns.versionbind"
 example = "9.9.5-9+deb8u7-Raspbian"
-metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Raspbian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8.0" }
+metadata = { "service.family" = "BIND", "service.cpe23" = "cpe:/a:isc:bind:{service.version}", "os.vendor" = "Raspbian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8" }
 
 [[match]]
 name = "ISC BIND: Raspbian based on Debian Jessie no version simple"

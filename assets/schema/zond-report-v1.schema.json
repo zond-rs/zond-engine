@@ -579,15 +579,19 @@
     "os": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "family", "generation", "vendor", "accuracy", "cpe", "evidence"],
+      "required": ["name", "family", "generation", "vendor", "accuracy", "detail_accuracy", "cpe", "evidence"],
       "properties": {
         "name": { "type": "string" },
         "family": { "type": ["string", "null"] },
         "generation": { "type": ["string", "null"] },
         "vendor": { "type": ["string", "null"] },
         "accuracy": {
-          "description": "Confidence in this identification, as a percentage.",
+          "description": "Confidence in the *family*, as a percentage. The family is the part every source can speak to, so this is what their agreement describes.",
           "$ref": "#/$defs/percentage"
+        },
+        "detail_accuracy": {
+          "description": "Confidence in everything past the family - the vendor, product, generation and CPE - or null where the finding names none of them. Separate from `accuracy` because the two are usually attested differently: a stack reading and a service banner may agree that a host is Linux while only the banner can say which release, and one figure for both would report the weaker claim at the stronger claim's strength.",
+          "oneOf": [{ "$ref": "#/$defs/percentage" }, { "type": "null" }]
         },
         "cpe": {
           "type": "array",
@@ -830,6 +834,7 @@
         "connect_udp",
         "udp_port",
         "os_echo",
+        "os_series",
         "composite"
       ]
     }

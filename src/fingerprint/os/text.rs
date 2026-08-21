@@ -453,6 +453,7 @@ mod tests {
             version: None,
             cpe: None,
             accuracy: 65,
+            detail_accuracy: None,
             source: OsSource::TcpStack,
             evidence: "syn-ack opts=M,S,T,N,W".to_string(),
         }
@@ -470,7 +471,56 @@ mod tests {
 #[cfg(test)]
 mod against_the_shipped_corpus {
     use crate::fingerprint::SignatureDb;
-    use crate::fingerprint::prefilter::Prefilter;
+
+    /// A banner naming a release must yield that release.
+    ///
+    /// Both of these are strings read off a real host on 2026-08-21, exactly as
+    /// they arrive on the wire. The first is the case that was broken: the
+    /// corpus held a rule mapping it to Debian 12 with a CPE, and the engine
+    /// reported `Linux` — because the corpus anchors its patterns on the SSH
+    /// software identifier and the whole identification line was being matched
+    /// instead, so only a loose family rule could ever fire.
+    ///
+    /// The second names no release yet, and that is the corpus being short
+    /// rather than the matcher being broken: it holds no OpenSSH 10 rule. It is
+    /// here so that adding one is visible as this assertion getting stronger.
+    #[test]
+    fn a_banner_that_names_a_release_yields_the_release() {
+        let db = SignatureDb::global();
+
+        let debian_12 = crate::fingerprint::analyzer::os_from_banner(
+            db,
+            22,
+            "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10",
+        )
+        .expect("a Debian OpenSSH banner names an operating system");
+
+        assert_eq!(debian_12.family, "Linux");
+        assert_eq!(
+            debian_12.version.as_deref(),
+            Some("12"),
+            "the release is the whole reason to read a banner: {debian_12:?}"
+        );
+        assert_eq!(
+            debian_12.cpe.as_deref(),
+            Some("cpe:/o:debian:debian_linux:12.0"),
+            "the CPE keeps its registered form, which is a name in somebody \
+             else's namespace rather than this engine's claim"
+        );
+        assert_eq!(debian_12.vendor.as_deref(), Some("Debian"));
+
+        let debian_13 = crate::fingerprint::analyzer::os_from_banner(
+            db,
+            22,
+            "SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4",
+        )
+        .expect("and still names the family where no release rule exists yet");
+        assert_eq!(debian_13.family, "Linux");
+        assert_eq!(
+            debian_13.version, None,
+            "the corpus holds no OpenSSH 10 rule yet; adding one should break this"
+        );
+    }
 
     /// The claim this module makes, checked against what actually ships rather
     /// than against a fixture: real banners, matched by the real signature
@@ -493,17 +543,16 @@ mod against_the_shipped_corpus {
             (22u16, "SSH-2.0-OpenSSH_9.6p1 Debian-3"),
             (80, "Microsoft-IIS/4.0"),
         ];
+        // Matched the way the analyzer matches them, which for a structured
+        // banner is against the field the corpus anchors on as well as the whole
+        // line. Feeding only the line is what this test used to do, and it is
+        // why it passed while every release-naming SSH rule was unreachable.
 
         let mut named = 0usize;
         for (port, banner) in cases {
             // The port-linked set first, then the global one, exactly as the
             // matcher does.
-            let found = db
-                .signatures_for_port(port)
-                .iter()
-                .chain(db.prefilter().candidates(banner).iter())
-                .filter_map(|&index| db.signature(index).identify(banner))
-                .find_map(|matched| matched.os);
+            let found = crate::fingerprint::analyzer::os_from_banner(db, port, banner);
 
             if let Some(os) = found {
                 assert!(!os.family.is_empty(), "a named family is not an empty one");

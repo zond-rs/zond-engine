@@ -267,13 +267,21 @@ pub fn start(
     let mut handles = Vec::new();
     let mut stats = Vec::new();
 
+    // Named here and counted, rather than a line per interface as this once
+    // logged. A scan opens a capture on every interface that is up — twenty-six
+    // on an ordinary laptop with a VPN and a hypervisor — and does it once per
+    // transport, so the per-interface line put a hundred lines of scaffolding
+    // between the caller and their results at the *first* level of detail. The
+    // count is what a person is checking at `-v` ("did it capture at all, and on
+    // roughly the right number of things"); which interface got which filter is
+    // a question for `-vvv`, and it is still there when asked.
+    let mut opened: Vec<&str> = Vec::new();
+
     for name in interfaces {
         match open(name, filter) {
             Ok((capture, link)) => {
-                info!(
-                    verbosity = 1,
-                    "Capturing on {name} (link type {link:?}) with filter: {filter}"
-                );
+                info!(verbosity = 3, "Capturing on {name} (link type {link:?})");
+                opened.push(name.as_str());
                 let tx = tx.clone();
                 let stop = stop.clone();
                 let counters = Arc::new(CaptureStats::default());
@@ -293,6 +301,12 @@ pub fn start(
     if handles.is_empty() {
         return Err(CaptureError::NoInterface);
     }
+
+    info!(
+        verbosity = 1,
+        "Capturing on {} interface(s) with filter: {filter}",
+        opened.len()
+    );
 
     Ok((
         rx,

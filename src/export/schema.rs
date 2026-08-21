@@ -120,6 +120,7 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
         ScannerKind::ConnectUdp => "connect_udp",
         ScannerKind::UdpPort => "udp_port",
         ScannerKind::OsEcho => "os_echo",
+        ScannerKind::OsSeries => "os_series",
         ScannerKind::Composite => "composite",
     }
 }
@@ -1085,6 +1086,14 @@ pub struct OsDto<'a> {
     /// above. It exists so a disputed finding can be diagnosed — and turned into
     /// a corpus entry — without re-running the scan.
     pub evidence: Option<&'a str>,
+    /// How well supported everything *past* the family is, or `null` where the
+    /// finding stops at a family.
+    ///
+    /// `accuracy` beside it describes the family, which is what every source can
+    /// speak to. A release is usually named by exactly one of them, so a single
+    /// figure for both would report the weaker claim at the stronger claim's
+    /// strength.
+    pub detail_accuracy: Option<u8>,
 }
 
 impl<'a> OsDto<'a> {
@@ -1098,6 +1107,7 @@ impl<'a> OsDto<'a> {
             accuracy: os.accuracy(),
             cpe: os.cpes().iter().map(|cpe| &**cpe).collect(),
             evidence: os.evidence(),
+            detail_accuracy: os.detail_accuracy(),
         }
     }
 }

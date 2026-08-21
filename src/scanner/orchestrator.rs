@@ -477,6 +477,92 @@ pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsD
     }
 }
 
+/// Runs the active operating-system series probe, where the caller asked for it
+/// and a host has a TCP port worth asking again.
+///
+/// # Why this runs before the echo probe
+///
+/// The two active probes reach different hosts and read different things, and
+/// this one is the stronger of the pair wherever it applies. It revisits ports
+/// whose state the port scan already settled, so it needs a host that answered
+/// *something* over TCP — and for such a host it reads the identifier, sequence
+/// and clock policies that no single reply carries. The echo probe is the route
+/// to the host that answered nothing at all, where a hop counter and an echoed
+/// code are all there is. Running the series first means the echo pass sees a
+/// store in which everything reachable by TCP has already been read.
+///
+/// # What each level asks for
+///
+/// At [`OsDetection::Active`] this follows the hosts a scan could not settle:
+/// every host that is up, has a TCP answer, and is not already named with high
+/// confidence. At [`OsDetection::Aggressive`] it follows **every** host with a
+/// TCP answer and takes twice the samples — which is what somebody measuring
+/// hosts they already know the answer for wants, and is the reading a new rule
+/// is authored from.
+///
+/// Declines quietly rather than failing when there is nothing to do.
+pub(super) async fn run_active_os_series(
+    ctx: &ScanContext,
+    os_detection: OsDetection,
+    tuning: ProbeTuning,
+) {
+    if !os_detection.is_active() {
+        return;
+    }
+    let thorough = matches!(os_detection, OsDetection::Aggressive);
+
+    let targets: Vec<strategy::routed::SeriesTarget> = ctx
+        .host_addresses()
+        .into_iter()
+        .filter_map(|ip| {
+            ctx.read_host(&ip, |host| {
+                if !host.status().is_up() {
+                    return None;
+                }
+                // A host already named with high confidence is not worth more
+                // packets at `Active`: nothing this probe can read would change
+                // the answer, and the level's whole premise is that its traffic
+                // was asked for.
+                let settled = host.os().is_some_and(|os| os.accuracy() >= 85);
+                if settled && !thorough {
+                    return None;
+                }
+                strategy::routed::SeriesTarget::for_host(ip, host)
+            })
+            .flatten()
+        })
+        .collect();
+
+    if targets.is_empty() {
+        return;
+    }
+
+    let samples = if thorough {
+        strategy::routed::AGGRESSIVE_SAMPLES
+    } else {
+        strategy::routed::ACTIVE_SAMPLES
+    };
+    info!(
+        "Following {} host(s) over {samples} samples, to read what one reply cannot",
+        targets.len()
+    );
+
+    match strategy::routed::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning.send_mode) {
+        Ok(mut scanner) => {
+            if let Err(e) = scanner.discover_hosts().await {
+                ctx.record_failure(ScannerKind::OsSeries, e.to_string());
+            }
+        }
+        // The raw TCP socket would not open, most likely for want of
+        // privileges. One recorded line, not a per-host failure: every host
+        // keeps the answer the passive sources gave it.
+        Err(e) => ctx.record_failure(
+            ScannerKind::OsSeries,
+            format!("the active series probe could not open its transport: {e}"),
+        ),
+    }
+}
+
 /// Runs the active operating-system echo probe, where the caller asked for it
 /// and the passive sources left hosts unnamed.
 ///
@@ -486,6 +572,11 @@ pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsD
 /// answered nothing a TCP rule could read — a stock Windows firewall drops
 /// rather than refuses — is here, and an echo reply is the one packet such a
 /// host still gives.
+///
+/// Runs after [`run_active_os_series`], which has by then read everything a
+/// host with an open or closed TCP port can be made to say. What is left here is
+/// the machine that answered no TCP probe at all, and one ping is the cheapest
+/// thing that still reaches it.
 ///
 /// Declines quietly rather than failing when there is nothing to do: a scan
 /// where every host was already named, or where none were, has not lost
@@ -907,6 +998,64 @@ mod tests {
             .read_host(&ip, |host| host.os().is_some())
             .expect("the host is in the store");
         assert!(!named);
+    }
+
+    /// The series probe opens a raw socket, so it must not open one to probe
+    /// nothing. Every host here answered no TCP probe — which is the ordinary
+    /// state after a discovery sweep — and the phase has to notice that from the
+    /// store *before* reaching for a transport it would then have to report
+    /// failing to get.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_series_probe_declines_when_no_host_has_a_port_to_ask_again() {
+        let (_session, ctx) = ScanSession::new();
+        let ip: IpAddr = "192.0.2.3".parse().expect("a valid address");
+        ctx.update_host(ip, |host| {
+            host.record_evidence(
+                crate::model::host::HostStatus::Up,
+                crate::model::host::StatusReason::new(
+                    crate::model::host::StatusProtocol::Arp,
+                    "an address resolution reply",
+                ),
+            );
+        });
+
+        run_active_os_series(&ctx, OsDetection::Active, ProbeTuning::default()).await;
+
+        assert!(
+            ctx.take_failures().is_empty(),
+            "declining is not failing: there was nothing to follow, so nothing \
+             should have been opened"
+        );
+        assert!(
+            ctx.read_host(&ip, |host| host.os().is_none())
+                .expect("the host is in the store"),
+            "and nothing may be concluded from probes that were never sent"
+        );
+    }
+
+    /// Every level below `Active` sends nothing of its own, and this phase is
+    /// the whole reason `is_active` exists. A caller at the default must find
+    /// their scan byte-identical to one with detection off.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_series_probe_sends_nothing_below_the_active_level() {
+        use crate::model::port::{Port, PortState, Protocol};
+
+        for level in [OsDetection::Off, OsDetection::Passive] {
+            let (_session, ctx) = ScanSession::new();
+            let ip: IpAddr = "192.0.2.4".parse().expect("a valid address");
+            // A host that *would* be followed, so the only thing declining the
+            // phase is the level itself.
+            ctx.update_host(ip, |host| {
+                host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+            });
+
+            run_active_os_series(&ctx, level, ProbeTuning::default()).await;
+
+            assert!(
+                ctx.take_probe_stats().is_empty(),
+                "{level} put a scanner on the wire"
+            );
+        }
     }
 
     /// The pass runs over every host a sweep found, and most of them have

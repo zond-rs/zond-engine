@@ -252,6 +252,15 @@ pub async fn discover(
 
     let handle = tokio::spawn(async move {
         run_discovery(targets, reach, caps, &cfg, &ctx).await;
+        // A sweep asked for active detection is a sweep that may send packets of
+        // its own, and until now it sent none — `is_active` promised something
+        // only the port-scan path delivered.
+        //
+        // Only the echo probe, and that is not an omission: the series probe
+        // asks a port whose state something already established, and a discovery
+        // sweep establishes none. It would decline every host here anyway, so
+        // opening its transport would be a raw socket held to probe nothing.
+        orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
         recorder.finish(&ctx)
     });
 
@@ -347,6 +356,10 @@ pub async fn scan(
 
         run_port_phase(target_map, &ctx, caps, &cfg).await;
 
+        // The series probe first: it reaches every host with a TCP answer and
+        // reads what no single reply carries, so the echo pass that follows is
+        // left with the machines that answered nothing at all.
+        orchestrator::run_active_os_series(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
         let report = recorder.finish(&ctx);
 

@@ -138,15 +138,19 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         return None;
     }
 
-    // The finer parts of the path are kept only where every source that spoke to
-    // this family agrees. A source saying nothing about a version does not
-    // consent to another source's version.
+    // The finer parts of the path are kept where every source that *spoke to*
+    // them agrees. A source saying nothing about a version abstains rather than
+    // dissenting: a stack rule can name a family and never a release, so
+    // counting its silence as disagreement would mean a banner that read
+    // "Ubuntu 22.04" off the wire loses it the moment a stack rule corroborates
+    // the family — more evidence producing a less specific answer. Two sources
+    // naming *different* values still yield nothing.
     let agreed = |part: fn(&OsEvidence) -> &Option<String>| -> Option<String> {
-        let first = part(items.first()?).as_ref()?;
-        items
-            .iter()
-            .all(|item| part(item).as_deref() == Some(first.as_str()))
-            .then(|| first.clone())
+        let mut stated = items.iter().filter_map(|item| part(item).as_deref());
+        let candidate = stated.next()?;
+        stated
+            .all(|other| other == candidate)
+            .then(|| candidate.to_owned())
     };
 
     // Attributed to whichever source contributed most, since that is the one a
@@ -164,13 +168,50 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     lines.sort_unstable();
     lines.dedup();
 
+    let (vendor, product, version, cpe) = (
+        agreed(|item| &item.vendor),
+        agreed(|item| &item.product),
+        agreed(|item| &item.version),
+        agreed(|item| &item.cpe),
+    );
+
+    // What the finer parts are worth, as distinct from the family.
+    //
+    // Every source can speak to a family, and `accuracy` above is their
+    // agreement about it. A release is usually named by exactly one of them, so
+    // reporting it under that figure launders one weaker claim through the
+    // agreement of several stronger ones — measured, on a real host: two sources
+    // agreeing on Linux scored 84 while the release rested on a single banner
+    // worth 55.
+    //
+    // Combined over the sources that actually stated something finer, and
+    // reduced by the same dissent the family had to survive: a contested family
+    // does not leave its release uncontested.
+    let refined = vendor.is_some() || product.is_some() || version.is_some() || cpe.is_some();
+    let detail_accuracy = refined.then(|| {
+        let stated = items
+            .iter()
+            .filter(|item| {
+                item.vendor.is_some()
+                    || item.product.is_some()
+                    || item.version.is_some()
+                    || item.cpe.is_some()
+            })
+            .map(|item| item.confidence);
+
+        ((combine(stated) * (1.0 - against)) * 100.0)
+            .round()
+            .clamp(0.0, f32::from(MAX_FUSED_ACCURACY)) as u8
+    });
+
     Some(OsVerdict {
         family: (*family).to_string(),
-        vendor: agreed(|item| &item.vendor),
-        product: agreed(|item| &item.product),
-        version: agreed(|item| &item.version),
-        cpe: agreed(|item| &item.cpe),
+        vendor,
+        product,
+        version,
+        cpe,
         accuracy,
+        detail_accuracy,
         source: strongest.source,
         evidence: lines.join(" | "),
     })
@@ -287,11 +328,21 @@ mod tests {
         );
     }
 
-    /// A source that says nothing about a version does not consent to another
-    /// source's version. Only what every contributor to the winning family
-    /// asserts survives into the answer.
+    /// A source that says nothing about a product **abstains**; it does not
+    /// dissent.
+    ///
+    /// A hardware vendor is read out of an address registration and has no way
+    /// to hold an opinion about a distribution. Counting its silence as
+    /// disagreement would mean the only source capable of naming one loses the
+    /// name the moment anything else corroborates the family — more evidence
+    /// producing a less specific answer, which is the wrong direction for
+    /// evidence to move.
+    ///
+    /// This is the same rule the matcher already applies one layer down, where a
+    /// predicate a rule does not state is "do not care" rather than "must be
+    /// absent".
     #[test]
-    fn a_finer_detail_survives_only_where_every_source_agrees() {
+    fn a_source_with_nothing_to_say_about_a_product_does_not_veto_one() {
         let mut precise = evidence("Linux", 0.65, OsSource::TcpStack);
         precise.product = Some("Ubuntu".to_string());
         let vague = evidence("Linux", 0.30, OsSource::HardwareVendor);
@@ -299,9 +350,26 @@ mod tests {
         let resolved = resolve(vec![precise, vague]).expect("named");
         assert_eq!(resolved.family, "Linux");
         assert_eq!(
-            resolved.product, None,
-            "one source naming a product is not agreement about it"
+            resolved.product.as_deref(),
+            Some("Ubuntu"),
+            "the only source that could name a product named one, and nothing contradicted it"
         );
+    }
+
+    /// Abstention is not agreement with anything, though. Two sources naming
+    /// *different* products cannot both be right, and nothing here can say which
+    /// is — so the answer keeps the family they share and drops the part they
+    /// contest.
+    #[test]
+    fn two_sources_naming_different_products_keep_neither() {
+        let mut stack = evidence("Linux", 0.65, OsSource::TcpStack);
+        stack.product = Some("Ubuntu".to_string());
+        let mut banner = evidence("Linux", 0.65, OsSource::ServiceBanner);
+        banner.product = Some("Debian".to_string());
+
+        let resolved = resolve(vec![stack, banner]).expect("the family is agreed");
+        assert_eq!(resolved.family, "Linux");
+        assert_eq!(resolved.product, None);
     }
 
     /// Two runs over the same evidence must resolve the same way. With scores

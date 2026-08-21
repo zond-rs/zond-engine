@@ -53,12 +53,35 @@
 //! ## Shape
 //!
 //! ```text
-//! reply bytes ─▶ StackObservation ─┐
-//!                                  ├─▶ [evidence] ─▶ resolve ─▶ OsFingerprint
-//!  banner / OUI / active probes ───┘
+//!  one reply  ─▶ StackObservation ──────────────▶ classify ───┐
+//!                                                             │
+//!  several   ─┬▶ StackObservation ─┐                          │
+//!  replies    └▶ SeriesSample[]  ──┴▶ SeriesClasses ─▶ classify_series ─┐
+//!                                                             │        │
+//!  banner / hostname / hardware address ─────────────────────┐│        │
+//!                                                            ▼▼        ▼
+//!                                        [OsEvidence] ─▶ resolve ─▶ OsFingerprint
 //! ```
 //!
-//! [`StackObservation`] is the first of those and the only one built today.
+//! [`identify`] is the door: it takes whatever a caller read off the wire, adds
+//! the two sources a host carries about itself, resolves the combination and
+//! merges the result. Every scanner in this crate goes through it.
+//!
+//! ## One reply, or several
+//!
+//! The two entry points differ in what evidence they have, not in how they
+//! score it. [`classify`] reads a single reply, which is what a scan already
+//! drew for another reason and therefore costs nothing. [`classify_series`]
+//! reads several replies from one host together with what their series turned
+//! out to be, which costs probes and is what
+//! [`OsDetection::Active`](crate::config::OsDetection) buys.
+//!
+//! What the second one buys is **specificity, not confidence**. A series is
+//! still one stack, so it is still one piece of evidence and still bounded by
+//! [`MAX_STACK_ACCURACY`]; what it adds is the three features a single reply
+//! cannot carry — the identifier policy, the sequence generator and the clock —
+//! and those are what a rule naming a *release* rather than a family has to
+//! predicate on.
 //!
 //! ## What one observation can and cannot settle
 //!
@@ -112,5 +135,5 @@ pub use signature::{
 pub use text::{OsMetadata, evidence_from as banner_evidence};
 pub use verdict::{
     MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict, classify,
-    classify_echo_reply, classify_reply,
+    classify_echo_reply, classify_reply, classify_series,
 };

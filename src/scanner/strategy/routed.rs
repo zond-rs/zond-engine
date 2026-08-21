@@ -19,6 +19,7 @@
 
 mod icmp_error;
 mod os_echo;
+mod os_series;
 mod port_scan;
 mod probe_scan;
 mod udp_scan;
@@ -52,6 +53,7 @@ use crate::scanner::session::ScannerKind;
 use crate::scanner::strategy::{HostScanner, StrategyError};
 
 pub use os_echo::OsEchoScanner;
+pub use os_series::{ACTIVE_SAMPLES, AGGRESSIVE_SAMPLES, OsSeriesScanner, SeriesTarget};
 pub use port_scan::TcpPortScanner;
 pub use udp_scan::UdpPortScanner;
 

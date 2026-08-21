@@ -102,6 +102,18 @@ pub enum ScannerKind {
     /// which stack answered the ping. A report attributing an echo probe to any
     /// other strategy would describe traffic nobody sent.
     OsEcho,
+    /// The active operating-system series probe: one host asked the same
+    /// question several times, so the policies behind its counters become
+    /// visible.
+    ///
+    /// Named apart from [`SynPort`] though it sends the same segment, because
+    /// what it is doing with the answers is a different activity and a report
+    /// that filed it as a port scan would describe traffic nobody asked for:
+    /// these probes revisit ports whose state is already settled, and none of
+    /// their replies changes one.
+    ///
+    /// [`SynPort`]: ScannerKind::SynPort
+    OsSeries,
     /// Composite scanner that delegates to protocol-specific scanners.
     Composite,
 }

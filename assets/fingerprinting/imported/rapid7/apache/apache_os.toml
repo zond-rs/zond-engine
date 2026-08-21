@@ -27,7 +27,7 @@ name = "Mandriva (formerly Mandrake) Linux 10.0"
 pattern = "\\(Mandrake Linux/\\d+\\.\\d+\\.100mdk\\)"
 context = "apache_os"
 example = "Apache-AdvancedExtranetServer/2.0.48 (Mandrake Linux/6.11.100mdk)"
-metadata = { "os.certainty" = "0.9", "os.vendor" = "Mandriva", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10.0", "os.cpe23" = "cpe:/o:mandriva:linux:10.0" }
+metadata = { "os.certainty" = "0.9", "os.vendor" = "Mandriva", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10", "os.cpe23" = "cpe:/o:mandriva:linux:10.0" }
 
 [[match]]
 name = "Mandriva (formerly Mandrake) Linux unknown version"

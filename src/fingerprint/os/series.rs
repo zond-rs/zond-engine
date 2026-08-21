@@ -198,6 +198,20 @@ pub enum IsnClass {
 }
 
 impl IsnClass {
+    /// The class with the figure behind it, for a person reading a report.
+    ///
+    /// The other half of what [`name`](Self::name) deliberately drops. A rule
+    /// must not key on the step — that is the machine's activity, not the stack
+    /// — but somebody disputing the class, or authoring a rule from it, needs
+    /// the number in front of them.
+    pub fn detail(self) -> String {
+        match self {
+            IsnClass::FixedStep(step) => format!("fixed-step({step})"),
+            IsnClass::Multiples(step) => format!("multiples({step})"),
+            other => other.name().to_owned(),
+        }
+    }
+
     /// The stable name a rule or a comparison matches on. Carries no step: how
     /// *fast* a stepping generator advances is a fact about the machine's
     /// activity, not about the stack.
@@ -249,6 +263,20 @@ pub enum ClockClass {
 }
 
 impl ClockClass {
+    /// The class with the frequency behind it, for a person reading a report.
+    ///
+    /// The rate is the whole reason to look: it is a stack-build constant, and
+    /// the one that moved when Linux stopped deriving its timestamp clock from
+    /// the tick rate. A rule cannot key on it — the sampling's own jitter is in
+    /// the figure, so an exact hertz would match one network and not the next —
+    /// but a person deciding *what rule to write* has nothing else to go on.
+    pub fn detail(self) -> String {
+        match self {
+            ClockClass::Hertz(hz) => format!("ticking({hz}Hz)"),
+            other => other.name().to_owned(),
+        }
+    }
+
     /// The stable name a rule or a comparison matches on.
     pub const fn name(self) -> &'static str {
         match self {
@@ -297,12 +325,20 @@ impl SeriesClasses {
     /// One line saying what the series held, for a report to carry beside a
     /// verdict. Written for a person, to the same rule as
     /// [`StackObservation::summary`](super::StackObservation::summary).
+    ///
+    /// Figures included, where a class has one. This is the display half, not
+    /// the comparison key: a rule still matches on the bare names, and the
+    /// module documentation's promise that "the raw figures are kept beside it
+    /// for the report" is only kept if the report actually shows them. A reading
+    /// of `ticking` alone cannot tell somebody whether they are looking at the
+    /// 1 kHz clock of one build or the tick-derived one of an older kernel,
+    /// which is the single question this series is best placed to answer.
     pub fn summary(&self) -> String {
         format!(
             "id={} isn={} ts={}",
             self.identifiers.name(),
-            self.sequences.name(),
-            self.clock.name()
+            self.sequences.detail(),
+            self.clock.detail()
         )
     }
 }

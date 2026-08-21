@@ -48,13 +48,27 @@ use super::{OsEvidence, hardware_evidence, hostname_evidence, resolve};
 /// Returns whether a fingerprint was written, so a caller can announce or count
 /// what it managed to name.
 ///
-/// # What it will not do
+/// # The evidence is kept, not the answer
 ///
-/// **Overwrite a better answer.** The verdict is merged rather than assigned,
-/// and [`OsFingerprint::merge`](crate::model::host::os::OsFingerprint::merge)
-/// ranks by accuracy and fills gaps on a tie — so a host probed several ways
-/// accumulates, a weak source cannot displace a strong one, and the order
-/// sources happen to run in does not decide the answer.
+/// Every reading is filed against the host and the verdict is recomputed from
+/// **all** of them, rather than each source producing its own verdict and the
+/// verdicts being ranked against each other.
+///
+/// That distinction is the difference between two sources corroborating and two
+/// sources competing, and it was worth a real finding. A service banner naming
+/// `Debian 12` scores 0.55 alone, under the 0.65 a stack reading scores; ranked,
+/// it lost outright and the release it alone could name went with it. Resolved
+/// *together* the two agree on Linux, combine to well above either, and the
+/// release survives because nothing contradicted it — which is exactly what
+/// [`resolve`] was built to do and what it had never been given the chance to.
+///
+/// So a weak source cannot displace a strong one, a strong one cannot silence a
+/// weak one, and the order sources run in does not decide the answer. One item
+/// is kept per source and the strongest wins, so a stack read once and a stack
+/// read forty times are one piece of evidence — repeating an observation must
+/// never look like corroboration.
+///
+/// # What it will not do
 ///
 /// **Guess.** [`resolve`] returns nothing when there is nothing to go on, or
 /// when the sources disagree badly enough that what survives is not worth
@@ -62,33 +76,30 @@ use super::{OsEvidence, hardware_evidence, hostname_evidence, resolve};
 /// a randomised address and whose name its owner chose gets no fingerprint, and
 /// that is the correct answer rather than a shortfall.
 pub fn identify(host: &mut Host, observed: impl IntoIterator<Item = OsEvidence>) -> bool {
-    let mut evidence: Vec<OsEvidence> = observed.into_iter().collect();
+    for item in observed {
+        host.record_os_evidence(item);
+    }
 
     // The host's own two sources, consulted whatever else was seen. Worth little
     // alone — a lone hit stays below the reporting threshold — and worth a great
     // deal agreeing with the wire, which is what carries a verdict past what one
     // packet supports.
     if let Some(hardware) = host.hardware().and_then(hardware_evidence) {
-        evidence.push(hardware);
+        host.record_os_evidence(hardware);
     }
     if let Some(name) = hostname_evidence(host.hostname()) {
-        evidence.push(name);
+        host.record_os_evidence(name);
     }
 
+    // Everything any source has said, resolved together. Not merely what this
+    // caller happens to be holding: see the note below on why that distinction
+    // is the whole point.
+    let evidence: Vec<OsEvidence> = host.os_evidence().cloned().collect();
     let Some(resolved) = resolve(evidence) else {
         return false;
     };
 
-    let fingerprint = resolved.to_fingerprint();
-    match host.os() {
-        Some(existing) => {
-            let mut merged = existing.clone();
-            merged.merge(fingerprint);
-            host.set_os(merged);
-        }
-        None => host.set_os(fingerprint),
-    }
-
+    host.set_os(resolved.to_fingerprint());
     true
 }
 
@@ -201,6 +212,117 @@ mod tests {
         assert!(
             together > alone,
             "hardware agreeing with the wire should raise the verdict: {together} vs {alone}"
+        );
+    }
+
+    /// A banner naming a release, arriving after a stack reading, must
+    /// **corroborate** it rather than lose to it.
+    ///
+    /// The defect this replaced, measured end to end on a real host: the stack
+    /// said `Linux` at 0.65, the SSH banner said `Debian 12.0` at 0.55, the
+    /// banner's verdict was ranked against the stack's, lost on the number, and
+    /// was discarded whole — so a scan that had read the release off the wire
+    /// reported a bare family. The two agree; agreement is worth more than
+    /// either, and only the banner could speak to the release.
+    #[test]
+    fn a_banner_arriving_after_a_stack_reading_adds_its_release() {
+        let banner = OsEvidence {
+            source: OsSource::ServiceBanner,
+            family: "Linux".to_owned(),
+            vendor: Some("Debian".to_owned()),
+            product: None,
+            version: Some("12.0".to_owned()),
+            cpe: Some("cpe:/o:debian:debian_linux:12.0".to_owned()),
+            confidence: 0.55,
+            evidence: "service banner names Linux".to_owned(),
+        };
+
+        let mut host = host();
+        assert!(identify(&mut host, [observed("Linux", 0.65)]));
+        let from_the_wire = host.os().expect("a stack reading names it").accuracy();
+
+        assert!(identify(&mut host, [banner]));
+        let os = host.os().expect("still named");
+
+        assert_eq!(os.family(), Some("Linux"));
+        assert_eq!(
+            os.generation(),
+            Some("12.0"),
+            "only the banner could name the release, and nothing contradicted it"
+        );
+        assert!(
+            os.accuracy() > from_the_wire,
+            "two independent sources agreeing beat either alone: {} vs {from_the_wire}",
+            os.accuracy()
+        );
+    }
+
+    /// Who built the hardware and who publishes the operating system are
+    /// different questions, and two answers to two questions are not a
+    /// disagreement.
+    ///
+    /// Measured, on a Raspberry Pi running Debian: the address block said
+    /// `Raspberry Pi Trading Ltd`, the SSH banner said `Debian`, both were
+    /// filed as the operating system's vendor, and the resolver kept neither —
+    /// leaving a release with no name to attach to and reporting `Linux 12.0`,
+    /// a version no Linux has ever had.
+    ///
+    /// An address block supports a family and nothing more. The company is still
+    /// recorded, against the hardware, which is what it is about.
+    #[test]
+    fn a_board_maker_does_not_contradict_the_publisher_of_the_system() {
+        let banner = OsEvidence {
+            source: OsSource::ServiceBanner,
+            family: "Linux".to_owned(),
+            vendor: Some("Debian".to_owned()),
+            product: Some("Linux".to_owned()),
+            version: Some("12.0".to_owned()),
+            cpe: None,
+            confidence: 0.55,
+            evidence: "service banner names Linux".to_owned(),
+        };
+
+        let mut host = host();
+        // A registered Raspberry Pi address, which the corpus reads as Linux.
+        host.record_mac("2c:cf:67:00:00:01".parse().expect("a registered address"));
+        assert!(identify(&mut host, [observed("Linux", 0.65), banner]));
+
+        let os = host.os().expect("a fingerprint");
+        assert_eq!(os.family(), Some("Linux"));
+        assert_eq!(
+            os.name(),
+            "Debian",
+            "the publisher of the system names it, not the maker of the board: {os}"
+        );
+        assert_eq!(os.generation(), Some("12.0"));
+        assert_eq!(
+            host.vendor(),
+            Some("Raspberry Pi Trading Ltd"),
+            "and the board's maker is still on record, against the hardware"
+        );
+    }
+
+    /// And the guard that makes the above safe: reading one stack repeatedly is
+    /// one piece of evidence, however many ports it was read from.
+    ///
+    /// A host with forty open ports has its stack read forty times, and the
+    /// arithmetic that combines independent sources cannot tell that apart from
+    /// forty sources agreeing unless something upstream does. Left unchecked it
+    /// would turn a single observation into certainty.
+    #[test]
+    fn one_stack_read_many_times_is_still_one_piece_of_evidence() {
+        let mut once = host();
+        identify(&mut once, [observed("Linux", 0.65)]);
+
+        let mut forty = host();
+        for _ in 0..40 {
+            identify(&mut forty, [observed("Linux", 0.65)]);
+        }
+
+        assert_eq!(
+            once.os().expect("named").accuracy(),
+            forty.os().expect("named").accuracy(),
+            "repeating an observation is not corroboration"
         );
     }
 

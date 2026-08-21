@@ -29,6 +29,7 @@
 //! one host, so folding one phase into another gives what a single phase
 //! would.
 
+use crate::fingerprint::os::{OsEvidence, OsSource};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
 use crate::model::port::{Port, Protocol};
@@ -114,6 +115,27 @@ pub struct Host {
 
     /// Identified operating system metadata.
     os: Option<Box<OsFingerprint>>,
+
+    /// What each source concluded about this host's operating system, kept so a
+    /// later source can **corroborate** an earlier one instead of competing with
+    /// it.
+    ///
+    /// The reason this is retained rather than collapsed on arrival: combining
+    /// evidence is only meaningful over the evidence itself. A stack reading and
+    /// a service banner are independent, and two independent sources agreeing on
+    /// a family are worth more than either — that is the whole design of
+    /// [`resolve`](crate::fingerprint::os::resolve). Keeping only the resulting
+    /// [`OsFingerprint`] threw that away: the banner arrived after the stack
+    /// reading, scored lower on its own, and was discarded whole, taking the
+    /// release it alone could name with it.
+    ///
+    /// **One item per source, keeping the strongest.** Independence is claimed
+    /// between kinds of source and never within one, so a host with forty open
+    /// ports whose stack was read forty times contributes one stack reading, not
+    /// forty. Without that, repeating an observation would manufacture certainty
+    /// out of nothing — which is exactly what the arithmetic downstream cannot
+    /// defend itself against. Bounded by the number of source kinds there are.
+    os_evidence: BTreeMap<OsSource, OsEvidence>,
 
     /// Physical hardware (MAC) and vendor information.
     hardware: Option<HardwareInfo>,
@@ -203,6 +225,7 @@ impl Host {
             status: HostStatus::Unknown,
             reasons: HashSet::new(),
             os: None,
+            os_evidence: BTreeMap::new(),
             hardware: None,
             zone: None,
             telemetry: HostTelemetry::default(),
@@ -409,6 +432,37 @@ impl Host {
     }
 
     /// Sets the OS fingerprint and bumps `last_seen`.
+    /// What each source has concluded about this host's operating system.
+    ///
+    /// The input [`resolve`](crate::fingerprint::os::resolve) is run over, and
+    /// the reason a late-arriving source can raise a verdict rather than merely
+    /// fail to displace it.
+    pub fn os_evidence(&self) -> impl Iterator<Item = &OsEvidence> {
+        self.os_evidence.values()
+    }
+
+    /// Files what one source concluded, keeping the strongest reading per
+    /// source.
+    ///
+    /// Returns whether this changed what is on record, so a caller can tell a
+    /// genuine new finding from the same one arriving again.
+    ///
+    /// **Per source, not per observation**, and that is what makes the
+    /// arithmetic downstream safe: a stack read once and a stack read forty
+    /// times — which is what a host with forty open ports produces — are the
+    /// same single piece of evidence, and counting them separately would turn
+    /// one observation into certainty.
+    pub fn record_os_evidence(&mut self, evidence: OsEvidence) -> bool {
+        match self.os_evidence.get(&evidence.source) {
+            // Strictly better, so a repeat of the same reading is not a change.
+            Some(existing) if existing.confidence >= evidence.confidence => false,
+            _ => {
+                self.os_evidence.insert(evidence.source, evidence);
+                true
+            }
+        }
+    }
+
     pub fn set_os(&mut self, os: OsFingerprint) {
         self.os = Some(Box::new(os));
         self.last_seen = SystemTime::now();

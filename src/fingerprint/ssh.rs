@@ -55,6 +55,40 @@ use super::response::{Collected, ResponseSet};
 /// Ports where an SSH server is expected, and thus worth an active probe.
 const SSH_PORTS: &[u16] = &[22, 2222];
 
+/// The software identifier out of an SSH identification line, or `None` if the
+/// line is not one.
+///
+/// RFC 4253 §4.2 defines the line as `SSH-protoversion-softwareversion SP
+/// comments`, and **the fingerprint corpus is written against the part after the
+/// protocol version** — `OpenSSH_9.2p1 Debian-2+deb12u10` — because that is what
+/// a stack actually chose. Its patterns anchor on it: `^OpenSSH_...$`.
+///
+/// So a rule naming a release can never match the whole line, and that is not a
+/// hypothetical. Fed the complete banner, every version-bearing Debian rule
+/// failed and only a loose rule naming the family fired — a host announcing
+/// `SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10` was reported as `Linux` when the
+/// corpus held a rule mapping that exact string to Debian 12 with a CPE.
+///
+/// This is the SSH counterpart of what `HttpHeadersAnalyzer` does for a `Server`
+/// header: the corpus matches a *field*, so something has to extract the field.
+///
+/// The protocol version cannot itself contain a hyphen, so the first one after
+/// the prefix ends it; the comment part may, and is kept, because the corpus
+/// matches on it.
+///
+/// ```text
+/// SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10
+///         └───────────── this ───────────┘
+/// ```
+pub(crate) fn software_version(line: &str) -> Option<&str> {
+    let (_protocol_version, software) = line
+        .trim_end_matches(['\r', '\n'])
+        .strip_prefix("SSH-")?
+        .split_once('-')?;
+
+    (!software.is_empty()).then_some(software)
+}
+
 /// Our SSH identification string. The `SSH-2.0-` prefix is mandatory (RFC 4253
 /// §4.2); the software name is ours.
 const CLIENT_ID: &[u8] = b"SSH-2.0-Zond_1.0\r\n";

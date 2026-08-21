@@ -156,7 +156,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.6.31-1+jessie"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8.0", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0" }
 
 [[match]]
 name = "Oracle MySQL on Debian 7.2 (wheezy)"
@@ -186,7 +186,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.1.66-0+squeeze1"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6.0", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0" }
 
 [[match]]
 name = "Oracle MySQL on Debian 7.0 (wheezy)"
@@ -196,7 +196,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.5.41-0+wheezy1"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7.0", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
 
 [[match]]
 name = "Oracle MySQL on Debian 5.0 (lenny)"
@@ -206,7 +206,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.0.51a-24+lenny1-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5.0", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0" }
 
 [[match]]
 name = "Oracle MySQL Backport on Debian 5.0 (lenny)"
@@ -216,7 +216,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.1.49-3~bpo50+1-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5.0", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0" }
 
 [[match]]
 name = "Oracle MySQL Backport on Debian 4.0 (etch)"
@@ -226,7 +226,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.0.51a-24+lenny2~bpo40+1-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "4.0", "os.cpe23" = "cpe:/o:debian:debian_linux:4.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "4", "os.cpe23" = "cpe:/o:debian:debian_linux:4.0" }
 
 [[match]]
 name = "Oracle MySQL Backport on Debian 3.1 (sarge)"
@@ -256,7 +256,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "4.1.11-Debian_etch1-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "4.0", "os.cpe23" = "cpe:/o:debian:debian_linux:4.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "4", "os.cpe23" = "cpe:/o:debian:debian_linux:4.0" }
 
 [[match]]
 name = "Oracle MySQL on Debian 3.1 (sarge)"
@@ -276,7 +276,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "4.0.24_Debian-4woody1"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "3.0", "os.cpe23" = "cpe:/o:debian:debian_linux:3.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "3", "os.cpe23" = "cpe:/o:debian:debian_linux:3.0" }
 
 [[match]]
 name = "Oracle MySQL on Debian (Generic match)"
@@ -496,7 +496,7 @@ vendor = "Percona"
 product = "Percona Server"
 context = "mysql.banners"
 example = "5.5.36-34.2-648.wheezy-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:percona:percona_server:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7.0", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:percona:percona_server:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
 
 [[match]]
 name = "Percona Server (MySQL fork) on Debian 6.0 (squeeze)"
@@ -506,7 +506,7 @@ vendor = "Percona"
 product = "Percona Server"
 context = "mysql.banners"
 example = "5.5.36-34.2-648.squeeze"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:percona:percona_server:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6.0", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:percona:percona_server:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0" }
 
 [[match]]
 name = "Oracle MySQL (nmm variant)"
@@ -606,7 +606,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.5.37-MariaDB-1~jessie-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8.0", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0" }
 
 [[match]]
 name = "MariaDB MariaDB on Debian 7.0 (wheezy)"
@@ -616,7 +616,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.5.37-MariaDB-1~wheezy-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7.0", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
 
 [[match]]
 name = "MariaDB MariaDB on Debian 6.0 (squeeze)"
@@ -626,7 +626,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.5.31-MariaDB-1~squeeze-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6.0", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0" }
 
 [[match]]
 name = "MariaDB MariaDB on Debian 5.0 (lenny)"
@@ -636,7 +636,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.3.2-MariaDB-beta-mariadb102~lenny"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5.0", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0" }
 
 [[match]]
 name = "MariaDB MariaDB on Debian Unstable/No version (sid)"
@@ -696,7 +696,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.5.5-10.3.20-MariaDB-1:10.3.20+maria~buster-log"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10.0", "os.cpe23" = "cpe:/o:debian:debian_linux:10.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10", "os.cpe23" = "cpe:/o:debian:debian_linux:10.0" }
 
 [[match]]
 name = "MariaDB MariaDB on Ubuntu 16.10 (Yakkety Yak)"
@@ -836,7 +836,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.5.5-10.0.26-MariaDB-1~jessie-wsrep"
-metadata = { "service.family" = "MySQL", "service.edition" = "Galera Cluster", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8.0", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0" }
+metadata = { "service.family" = "MySQL", "service.edition" = "Galera Cluster", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0" }
 
 [[match]]
 name = "MariaDB MariaDB with Galera Cluster on Ubuntu 16.04 (Xenial Xerus)"
@@ -986,7 +986,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.5.5-10.1.1-MariaDB-1~wheezy-wsrep-log"
-metadata = { "service.family" = "MySQL", "service.edition" = "Galera Cluster", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7.0", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
+metadata = { "service.family" = "MySQL", "service.edition" = "Galera Cluster", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0" }
 
 [[match]]
 name = "MariaDB MariaDB with Galera Cluster on Debian 6.0 (squeeze)"
@@ -996,7 +996,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.5.5-10.1.1-MariaDB-1~squeeze-wsrep"
-metadata = { "service.family" = "MySQL", "service.edition" = "Galera Cluster", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6.0", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0" }
+metadata = { "service.family" = "MySQL", "service.edition" = "Galera Cluster", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0" }
 
 [[match]]
 name = "MariaDB MariaDB on Ubuntu 17.04 (Zesty Zapus)"
@@ -1146,7 +1146,7 @@ vendor = "MariaDB"
 product = "MariaDB"
 context = "mysql.banners"
 example = "5.5.5-10.2.17-MariaDB-1:10.2.17+maria~stretch"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "9.0", "os.cpe23" = "cpe:/o:debian:debian_linux:9.0" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "9", "os.cpe23" = "cpe:/o:debian:debian_linux:9.0" }
 
 [[match]]
 name = "MariaDB MariaDB on Debian 9.1 (stretch)"

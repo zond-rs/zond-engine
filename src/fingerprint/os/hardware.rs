@@ -117,8 +117,24 @@ pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
     Some(OsEvidence {
         source: OsSource::HardwareVendor,
         family: (*family).to_string(),
-        // The registered company, not a guess at a product line.
-        vendor: Some(vendor.to_string()),
+        // **Not the registered company**, though that is exactly what this field
+        // used to carry and it reads like the obvious value for it.
+        //
+        // `vendor` here means whoever publishes the *operating system*, and an
+        // address block establishes whoever built the *hardware*. Those coincide
+        // for Apple and come apart the moment they do not: a Raspberry Pi runs
+        // Debian, so the address said `Raspberry Pi Trading Ltd`, the SSH banner
+        // said `Debian`, and the resolver — correctly, given what it was told —
+        // treated two answers to two different questions as a contradiction and
+        // kept neither. The host was reported as `Linux 12.0`: a version number
+        // no Linux has, because the name that belonged with it had been thrown
+        // away.
+        //
+        // What an address block genuinely supports is the *family*, which is
+        // what this evidence claims and all it claims. The company is not lost —
+        // it is recorded on the host's hardware, where it describes the thing it
+        // is actually about, and this evidence line still names it.
+        vendor: None,
         product: None,
         version: None,
         cpe: None,

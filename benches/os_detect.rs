@@ -15,13 +15,43 @@
 //! the shipped rules made of it, which is what a user would actually see. A
 //! difference between the two is a defect in everything between them.
 //!
+//! ## The ordinary way is the CLI
+//!
+//! `zond scan <target> --os-detection active -v` runs the same phases through
+//! the same entry point and shows the finding with the working under it. Reach
+//! for that first. This exists for the case the CLI deliberately does not serve:
+//! seeing the **whole** [`Host`] record, every field the engine populated,
+//! which is what says whether a value is missing because nothing found it or
+//! because nothing carried it through.
+//!
 //! ```text
-//! ./benches/os_detect.sh <target> [ports] [off|passive|active|aggressive] [--all]
+//! cargo bench --no-run --bench os_detect
+//! sudo -E <binary> <target> [ports] [off|passive|active|aggressive] [--all]
 //! ```
 //!
-//! `./benches/os_detect.sh` builds the bench, finds the binary it just built,
-//! and runs it under sudo — `cargo bench` is not involved, because it wants root
-//! and `sudo cargo` would build as root and leave `target/` owned by it.
+//! `cargo bench` is deliberately not used to *run* it: this wants root, and
+//! `sudo cargo` would build as root and leave `target/` owned by it.
+//!
+//! ### Finding the binary you just built
+//!
+//! A `harness = false` bench builds to a hashed name, several accumulate across
+//! rebuilds, and nothing warns you that the one you ran is not the one you
+//! built. **Select by newest, and select executables:**
+//!
+//! ```text
+//! # fish
+//! set bin (command ls -t (path filter -fx target/release/deps/os_detect-*))[1]
+//! test -x "$bin"; and sudo -E $bin 192.168.64.0/24 22,80,443 active
+//!
+//! # bash / zsh
+//! bin=$(find target/release/deps -name 'os_detect-*' -type f -perm -u+x -print0 \
+//!       | xargs -0 ls -t 2>/dev/null | head -1)
+//! [ -x "$bin" ] && sudo -E "$bin" 192.168.64.0/24 22,80,443 active
+//! ```
+//!
+//! Guard the result before running it. Unguarded on a tree that has not been
+//! built, `xargs ls -t` receives no input and lists the current directory
+//! instead, so `sudo` is handed the first entry in the repository as a command.
 //!
 //! ## Reading it
 //!
@@ -37,9 +67,20 @@
 //!
 //! The last argument sets the detection level, so the same scan can be run with
 //! it off to confirm the difference is the reading and not the probing: at
-//! `passive` — the default — the traffic is byte-identical to `off`. At `active`
-//! the unnamed hosts are additionally pinged, which is the only route to a host
-//! that answered no TCP probe at all.
+//! `passive` — the default — the traffic is byte-identical to `off`.
+//!
+//! At `active` two more things happen. Every host with an open or closed TCP
+//! port is **followed**: asked the same question several times, from a fresh
+//! source port each time, so that the policies behind its counters become
+//! visible. Those show up on the `evidence` line as `id=`, `isn=` and `ts=`, and
+//! they are the only features a rule naming a *release* rather than a family can
+//! predicate on. Every host that answered no TCP probe at all is additionally
+//! pinged, which is the one route left to it.
+//!
+//! At `aggressive` the same probes are sent, twice as many samples per host, and
+//! at every host rather than only the unsettled ones — which is what to run when
+//! *measuring* a machine whose operating system is already known from outside,
+//! because that is how a rule gets authored.
 //!
 //! [`Host`]: zond_engine::model::host::Host
 
@@ -199,6 +240,14 @@ async fn main() {
              which is the packet such a host still answers."
         );
     }
+    if !detection.is_active() {
+        println!(
+            "  Nothing here is release-level: the identifier policy, the sequence\n  \
+             generator and the timestamp clock are only visible across several replies,\n  \
+             and this level sent one. Re-run at `active` to follow each host and read\n  \
+             them; the `evidence` line then carries `id=`, `isn=` and `ts=`."
+        );
+    }
 }
 
 /// Everything the scan knows about one host, one field per line.
@@ -209,11 +258,18 @@ async fn main() {
 fn print_host(address: &IpAddr, host: &Host) {
     let os = match host.os() {
         Some(os) => format!(
-            "{} [{}%]{}{}",
+            "{} [{}%]{}{}{}",
             os.name(),
             os.accuracy(),
             os.family()
                 .map(|family| format!(" family={family}"))
+                .unwrap_or_default(),
+            // The part a series rule exists to supply. Printed even though it
+            // is usually absent, because "no version" and "a version nothing
+            // showed me" are the two outcomes this instrument is run to tell
+            // apart.
+            os.generation()
+                .map(|version| format!(" version={version}"))
                 .unwrap_or_default(),
             os.vendor()
                 .map(|vendor| format!(" vendor={vendor}"))

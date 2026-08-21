@@ -202,10 +202,20 @@ impl std::str::FromStr for ScanEffort {
 ///
 /// # Why the higher levels are not
 ///
-/// From [`Active`](Self::Active) upward this costs packets, and unusual ones:
-/// probes exist to be identified by how a stack mishandles them, so they are by
-/// construction the traffic an intrusion-detection system was written to notice.
-/// Sending them has to be asked for.
+/// From [`Active`](Self::Active) upward this costs packets. Not, today, unusual
+/// ones — what it sends is a SYN and a ping, and the SYN is byte-for-byte the
+/// segment a port scan already sends. What it is, is **extra**: a host is asked
+/// several more times than classifying its ports required, and it is asked at
+/// addresses a caller may only have meant to enumerate. Traffic sent for a
+/// second purpose has to be asked for even when its shape gives nothing away,
+/// which is the whole reason this is a dial and not a default.
+///
+/// It also becomes true in the older sense as the tiers fill in.
+/// [`Aggressive`](Self::Aggressive) is where a deliberately malformed probe
+/// would live — traffic identified by how a stack *mishandles* it, and so by
+/// construction what an intrusion-detection system was written to notice. None
+/// is sent yet; the level is documented for what it does rather than for what it
+/// is named after.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OsDetection {
     /// Level 0. Identify nothing, and record nothing about the stacks that
@@ -224,22 +234,44 @@ pub enum OsDetection {
     /// Level 2. Everything [`Passive`](Self::Passive) reads, plus probes of this
     /// engine's own aimed at the hosts whose replies were not enough.
     ///
-    /// Ordinary, well-formed packets that stacks are simply known to answer
-    /// differently. The traffic is unremarkable in shape but it is extra, it is
-    /// addressed at hosts the caller may only have meant to enumerate, and it is
-    /// spent on the hosts where passive evidence was thin rather than on
-    /// everything.
+    /// Ordinary, well-formed packets — nothing here is malformed, and nothing
+    /// carries a flag combination a real connection does not. Two probes:
+    ///
+    /// - **A series of SYNs**, to a host with an open or closed TCP port. The
+    ///   same segment a SYN scan sends, repeated from a fresh source port each
+    ///   time, because whether a stack's IP identifier counts or is random,
+    ///   whether its sequence numbers are hashed or stepped, and how fast its
+    ///   timestamp clock ticks are *policies* — visible across several replies
+    ///   and in no single one. These are the features a release-level rule turns
+    ///   on.
+    /// - **One ICMP echo**, to a host that answered no TCP probe at all. A stock
+    ///   Windows firewall drops rather than refuses, so a desktop with nothing
+    ///   exposed emits no segment any TCP rule could read; a ping is the one
+    ///   packet it still answers.
+    ///
+    /// The traffic is unremarkable in shape but it is extra, and it is addressed
+    /// at hosts the caller may only have meant to enumerate. It is spent where
+    /// the passive evidence was thin rather than on everything.
     Active,
 
-    /// Level 3. Everything [`Active`](Self::Active) sends, plus probes that are
-    /// deliberately malformed.
+    /// Level 3. The same probes [`Active`](Self::Active) sends, more of them,
+    /// and at every host rather than only the unsettled ones.
     ///
-    /// Reserved fields set, flag combinations no connection produces, headers
-    /// that disagree with their own lengths. These separate stacks that agree on
-    /// everything legal, which is what version-level identification comes down
-    /// to — and they are the packets most likely to be logged, most likely to be
-    /// dropped by anything in the path, and the only ones here with any chance of
-    /// upsetting what receives them.
+    /// Twice the samples per host, and hosts already named with high confidence
+    /// are followed too. That is what somebody *measuring* wants — a reading
+    /// from a machine whose operating system they already know is how a rule
+    /// gets authored — and it is more traffic, sustained longer, at more
+    /// addresses, which is why it is a level of its own.
+    ///
+    /// # What this level does not yet do
+    ///
+    /// It sends no deliberately malformed probe. Reserved fields set, flag
+    /// combinations no connection produces, headers that disagree with their own
+    /// lengths — these separate stacks that agree on everything legal, and they
+    /// are the obvious next tier. They are not here because this engine authors
+    /// rules from what it has measured through its own probes, and nothing has
+    /// yet measured those. When they arrive they arrive at this level; until
+    /// then this is the honest description of it rather than a promise.
     Aggressive,
 }
 

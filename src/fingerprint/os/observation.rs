@@ -42,7 +42,7 @@
 //!
 //! ```text
 //! 64240 = 44 x 1460      65160 = 45 x 1448     (two Linux hosts)
-//! 29200 = 20 x 1460      28960 = 20 x 1448     (an older Linux host)
+//! 29200 = 20 x 1460      28960 = 20 x 1448     (a low-memory Linux host)
 //! 64860 = 47 x 1360+940  64296 = 47 x 1348+940 (a wide-area server)
 //! ```
 //!
@@ -158,8 +158,16 @@ pub struct Quirks {
     /// The acknowledgement field is non-zero on a segment without the ACK flag,
     /// where it likewise has none.
     pub acknowledgement_without_ack: bool,
-    /// The sequence number is zero. Legal, and vanishingly rare from a stack
-    /// that generates initial sequence numbers the way it should.
+    /// A segment announcing an *initial* sequence number announced zero. Legal,
+    /// and vanishingly rare from a stack that generates them the way it should.
+    ///
+    /// **Read only off a segment carrying SYN**, because only there is the
+    /// sequence field a generated value. RFC 793 §3.4 requires a reset answering
+    /// a segment without an ACK to carry sequence zero — and this engine's probe
+    /// is a bare SYN, so every conformant stack alive answers its closed ports
+    /// that way. Flagged there, this would fire on every reset ever drawn: noise
+    /// in a report, and a rule keyed on it would match every host on earth while
+    /// looking like it had found something.
     pub zero_sequence: bool,
     /// The option list ended with a length that ran past the header, so what
     /// this observation holds is what could be read before it did.
@@ -259,7 +267,8 @@ impl StackObservation {
                     && flags & crate::protocols::tcp::flags::URG == 0,
                 acknowledgement_without_ack: packet.get_acknowledgement() != 0
                     && flags & crate::protocols::tcp::flags::ACK == 0,
-                zero_sequence: packet.get_sequence() == 0,
+                zero_sequence: packet.get_sequence() == 0
+                    && flags & crate::protocols::tcp::flags::SYN != 0,
                 malformed_options: walked.malformed,
                 data_after_end_of_list: walked.data_after_end,
             },
@@ -732,7 +741,8 @@ mod tests {
             0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0xf9, 0xc1, 0x3d, 0x9a, 0x7a, 0xfc,
             0xb9, 0x37, 0x01, 0x03, 0x03, 0x07,
         ];
-        /// A network appliance on an older Linux. Window 28960, MSS 1460.
+        /// A network appliance running Linux with small receive buffers. Window
+        /// 28960, MSS 1460.
         pub const OLDER_LINUX: [u8; 20] = [
             0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0x09, 0x6f, 0xa4, 0xb5, 0x56, 0x09,
             0x46, 0x63, 0x01, 0x03, 0x03, 0x03,
@@ -910,14 +920,42 @@ mod tests {
         let mut bytes = segment(0, 1024, &[]); // no flags at all
         bytes[8..12].copy_from_slice(&99u32.to_be_bytes()); // ack without ACK
         bytes[18..20].copy_from_slice(&7u16.to_be_bytes()); // urgent without URG
-        bytes[4..8].copy_from_slice(&0u32.to_be_bytes()); // sequence zero
         bytes[12] |= 0b0000_1110; // reserved bits
 
         let observed = StackObservation::from_tcp(ip(), &bytes).unwrap();
         assert!(observed.quirks.acknowledgement_without_ack);
         assert!(observed.quirks.urgent_pointer_without_urg);
-        assert!(observed.quirks.zero_sequence);
         assert!(observed.quirks.reserved_bits_set);
         assert!(observed.quirks.any());
+    }
+
+    /// A handshake answer's sequence number *is* the stack's initial sequence
+    /// number, so zero there is a stack that generates none — a real oddity.
+    #[test]
+    fn a_handshake_announcing_sequence_zero_is_an_oddity() {
+        let mut bytes = segment(SYN_ACK, 1024, &[]);
+        bytes[4..8].copy_from_slice(&0u32.to_be_bytes());
+
+        let observed = StackObservation::from_tcp(ip(), &bytes).unwrap();
+        assert!(observed.quirks.zero_sequence);
+    }
+
+    /// A reset's is not, and this is the false positive that made the quirk
+    /// useless: RFC 793 §3.4 requires a reset answering a segment without an ACK
+    /// to carry sequence zero, and this engine's probe is a bare SYN. Flagged
+    /// here it fired on every closed port of every conformant host alive —
+    /// measured, on a stock Debian guest, where it put `quirks` on a reading
+    /// that held nothing unusual whatsoever.
+    #[test]
+    fn a_reset_carrying_the_sequence_the_rfc_demands_is_not_an_oddity() {
+        let bytes = segment(RST_ACK, 0, &[]); // sequence already zero
+        let observed = StackObservation::from_tcp(ip(), &bytes).unwrap();
+
+        assert!(!observed.quirks.zero_sequence);
+        assert!(
+            !observed.quirks.any(),
+            "a textbook reset has nothing odd about it: {:?}",
+            observed.quirks
+        );
     }
 }
