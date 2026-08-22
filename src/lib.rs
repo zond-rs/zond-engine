@@ -163,6 +163,7 @@ pub mod export;
 pub mod fingerprint;
 pub mod format;
 pub mod import;
+pub mod journal;
 pub mod model;
 pub mod protocols;
 pub mod resolve;

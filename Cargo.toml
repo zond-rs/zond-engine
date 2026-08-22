@@ -23,7 +23,17 @@ categories = ["network-programming", "asynchronous"]
 exclude = ["docs/", ".github/"]
 
 [features]
-default = ["export-json"]
+default = ["export-json", "journal-format"]
+
+# The scan journal's on-disk format: the framing every scan is written through,
+# and the reader `--resume` continues one from. On by default because journalling
+# is not opt-in — the whole argument for it is that a user should never have had
+# to decide, before a scan started, whether they would want to resume it.
+#
+# It pulls in `serde_json` and nothing else, and it gates only the format:
+# `journal::paths` needs nothing and stays present either way, so a front end can
+# locate and list journals without compiling the reader.
+journal-format = ["dep:serde_json"]
 
 # Report export as a single JSON document, the canonical output format. On by
 # default because a scanner nobody can get results out of is not much of a

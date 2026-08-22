@@ -1,0 +1,388 @@
+// Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors
+//
+// This file is part of Zond Engine, licensed under the GNU Affero General
+// Public License, version 3 or later. See the LICENSE file for details, or
+// <https://www.gnu.org/licenses/agpl-3.0.html>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! # Where a scan's journal lives
+//!
+//! The sibling of `import::settings::paths` — which is behind the
+//! `import-settings` feature, so this is not linked — and deliberately not the
+//! same directory.
+//!
+//! ## State is not configuration
+//!
+//! A settings file is hand-written: somebody opens it, edits it, and expects to
+//! find it where every other command-line tool keeps one. That is the whole
+//! argument the settings module makes for putting it under `~/.config` even on
+//! macOS, where the platform convention says otherwise.
+//!
+//! **That argument does not extend to here, and inverts.** Nobody hand-edits a
+//! checkpoint bitmap. A journal is machine-written, machine-read, disposable
+//! after a scan completes, and of no interest to a human except through
+//! `zond scans`. The specification has a directory for exactly that, and it is
+//! not the configuration one.
+//!
+//! | | Journal root |
+//! |---|---|
+//! | Unix (incl. macOS) | `$XDG_STATE_HOME/zond/scans`, else `$HOME/.local/state/zond/scans` |
+//! | Windows | `%LOCALAPPDATA%\zond\scans` |
+//!
+//! `%LOCALAPPDATA%` rather than the `%APPDATA%` the settings module uses, and
+//! the difference is the point: `%APPDATA%` roams between machines on a domain
+//! profile. A journal holds the addresses an engagement was pointed at, and a
+//! roaming profile carrying those to another workstation is a data-handling
+//! incident rather than a convenience.
+//!
+//! ## `sudo` is the case this module exists for
+//!
+//! Every raw strategy needs root, so most scans are run under `sudo`, and under
+//! `sudo` `$HOME` is root's. Left alone, journals would be written to
+//! `/root/.local/state/zond/scans` while `zond scans` — run without `sudo`,
+//! because listing needs no privilege — reads the invoking user's directory and
+//! shows an empty list. The feature would appear broken to most of its users on
+//! first contact, and the data would be sitting somewhere they did not look.
+//!
+//! So when this process is running elevated *and* the environment names the user
+//! who invoked it, [`root`] resolves that user's home rather than root's, and
+//! [`invoking_user`] reports the ownership a caller should then write with. The
+//! caller does the `chown`; this module only says who.
+//!
+//! ## What is pure and what is not
+//!
+//! Every function here is pure computation over the environment, with one
+//! documented exception: [`invoking_user`] consults the password database to
+//! turn a uid into a home directory. That is a lookup, not a filesystem
+//! traversal — it opens no path, tests no path for existence, and creates
+//! nothing, which are the properties the settings module's purity rule is
+//! actually protecting. Constructing `/home/<name>` by hand instead would be
+//! pure and wrong: it is not where macOS puts homes, and it is not where a
+//! directory-service or relocated home lives on either platform.
+//!
+//! Nothing here creates a directory. A caller that means to write asks
+//! [`root`] where, and creates it with the modes the journal requires.
+
+use std::path::PathBuf;
+
+/// The directory this crate's state lives under, within whatever state root
+/// applies. Shared with the settings module by name and not by location: one
+/// vendor directory, two roots, so `zond/` means the same thing in both.
+const DIRECTORY: &str = "zond";
+
+/// The journal's own subdirectory, holding one directory per scan.
+///
+/// Named rather than implied because the state root is going to acquire
+/// neighbours — a fingerprint submission queue is the obvious next one — and a
+/// scan journal that had claimed the root would have to move when it did.
+const SCANS: &str = "scans";
+
+/// Who invoked a process that is now running elevated.
+///
+/// Returned by [`invoking_user`], and carried as a whole rather than as three
+/// loose values because a caller that uses the home directory must also apply
+/// the ownership: a journal written into somebody's home and left owned by root
+/// is a directory they cannot prune, which is worse than not having written it
+/// there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvokingUser {
+    /// The uid to give the journal.
+    pub uid: u32,
+    /// The gid to give the journal.
+    pub gid: u32,
+    /// That user's home directory, as the password database records it.
+    pub home: PathBuf,
+}
+
+/// The root directory holding one subdirectory per scan.
+///
+/// `None` when the environment names no home at all, which happens in a
+/// container or a daemon with a cleared environment. A caller getting `None`
+/// should carry on without a journal rather than invent a location — a scan
+/// that cannot be resumed is a smaller failure than a scan that writes an
+/// engagement's targets somewhere nobody chose.
+///
+/// Under `sudo`, this is the *invoking* user's directory. See the module
+/// documentation.
+pub fn root() -> Option<PathBuf> {
+    state_root().map(|root| root.join(DIRECTORY).join(SCANS))
+}
+
+/// Where one scan's directory would be, given its id.
+///
+/// The id is joined as a single component and is expected to be one: a ULID, as
+/// the journal writes. This does not validate that, because a path is not the
+/// place to enforce it — the caller that mints or parses an id does.
+pub fn scan(id: &str) -> Option<PathBuf> {
+    root().map(|root| root.join(id))
+}
+
+/// The state root this crate's directory sits under, before `zond/` is joined.
+///
+/// Split out from [`root`] so the platform rules and the `sudo` rule are one
+/// expression each rather than one nested expression.
+fn state_root() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        // No `sudo` equivalent: an elevated process on Windows keeps the
+        // invoking user's profile, so `%LOCALAPPDATA%` already points where the
+        // Unix branch has to work to arrive.
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
+    }
+
+    #[cfg(not(windows))]
+    {
+        // The invoking user first: under `sudo` the variables below describe
+        // root, and root is not who asked.
+        if let Some(user) = invoking_user() {
+            return Some(user.home.join(".local").join("state"));
+        }
+
+        // Only an absolute value counts, as the specification requires. A
+        // relative one would put the journal wherever the process was started,
+        // which for a tool run with `sudo` from an arbitrary shell is not a
+        // location anybody chose.
+        if let Some(configured) = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+        {
+            return Some(configured);
+        }
+
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(|home| home.join(".local").join("state"))
+    }
+}
+
+/// The user who invoked this process, when it is running elevated on their
+/// behalf and they can be identified.
+///
+/// `None` — which is the ordinary case — when any of the following holds, and
+/// each is a reason to use this process's own environment instead:
+///
+/// - the process is not running as root, so nothing was elevated;
+/// - `SUDO_UID` is absent, unparseable, or names root itself, so either this is
+///   not a `sudo` invocation or root invoked it directly;
+/// - the password database has no entry for that uid, or the entry names no
+///   home directory, or names a relative one.
+///
+/// ## On trusting `SUDO_UID`
+///
+/// `sudo` sets it after clearing the environment, so under the invocation this
+/// is written for it is `sudo`'s own value rather than the caller's. It is
+/// still only consulted to *narrow* privilege — the worst a wrong value can do
+/// is put the journal in the wrong user's home, never widen what the scan may
+/// do — and the home directory itself comes from the password database rather
+/// than from the environment, so a `SUDO_HOME` pointing anywhere is not
+/// consulted at all.
+#[cfg(not(windows))]
+pub fn invoking_user() -> Option<InvokingUser> {
+    if !crate::system::privilege::is_elevated() {
+        return None;
+    }
+
+    let uid: u32 = std::env::var("SUDO_UID").ok()?.parse().ok()?;
+    if uid == 0 {
+        return None;
+    }
+
+    // The gid is read from the environment where `sudo` set it and falls back
+    // to the password database, because a user whose primary group `sudo` did
+    // not record is still a user whose home this is.
+    let entry = passwd_home_and_gid(uid)?;
+    let gid = std::env::var("SUDO_GID")
+        .ok()
+        .and_then(|gid| gid.parse().ok())
+        .unwrap_or(entry.1);
+
+    Some(InvokingUser {
+        uid,
+        gid,
+        home: entry.0,
+    })
+}
+
+/// Windows has no `sudo`: an elevated process keeps the invoking user's
+/// profile, so there is never a different user to resolve.
+#[cfg(windows)]
+pub fn invoking_user() -> Option<InvokingUser> {
+    None
+}
+
+/// The home directory and primary gid the password database records for `uid`.
+///
+/// The one impure function in this module; see the module documentation for why
+/// the alternative is worse.
+#[cfg(not(windows))]
+fn passwd_home_and_gid(uid: u32) -> Option<(PathBuf, u32)> {
+    use std::ffi::{CStr, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+
+    /// Where the buffer starts. `sysconf(_SC_GETPW_R_SIZE_MAX)` is the blessed
+    /// way to ask, and it returns -1 on platforms that decline to answer, so a
+    /// growing buffer is needed regardless and asking first buys nothing.
+    const INITIAL: usize = 1024;
+    /// Where growing stops. A password entry past this is not a long home
+    /// directory, it is a corrupt database, and doubling forever to read one is
+    /// how a lookup becomes an allocation failure.
+    const MAX: usize = 64 * 1024;
+
+    let mut buffer = vec![0 as libc::c_char; INITIAL];
+
+    loop {
+        // SAFETY: `passwd` is a plain C struct with no invalid bit patterns, so
+        // a zeroed one is a valid uninitialised value for `getpwuid_r` to fill.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+
+        // SAFETY: `entry` and `found` are live for the call, and `buffer` is a
+        // live allocation of exactly the length passed. `getpwuid_r` writes only
+        // within them and returns an error rather than writing past the buffer.
+        let code = unsafe {
+            libc::getpwuid_r(
+                uid as libc::uid_t,
+                &mut entry,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+
+        match code {
+            0 if found.is_null() => return None, // No such user.
+            0 => {
+                if entry.pw_dir.is_null() {
+                    return None;
+                }
+
+                // SAFETY: `pw_dir` points into `buffer`, which is still live
+                // here, and `getpwuid_r` leaves it NUL-terminated. The bytes are
+                // copied into an owned `PathBuf` before `buffer` is dropped.
+                let home = unsafe { CStr::from_ptr(entry.pw_dir) };
+                let home = PathBuf::from(OsStr::from_bytes(home.to_bytes()));
+
+                // A relative home is not one this can join a journal onto, for
+                // the same reason a relative `XDG_STATE_HOME` is refused above.
+                return home.is_absolute().then_some((home, entry.pw_gid as u32));
+            }
+            libc::ERANGE if buffer.len() < MAX => buffer.resize(buffer.len() * 2, 0),
+            _ => return None,
+        }
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whatever root applies, the journal lands under one vendor directory and
+    /// one subdirectory, so a front end and a user can both predict it.
+    #[test]
+    fn the_root_ends_in_the_expected_directories() {
+        if let Some(path) = root() {
+            assert!(path.is_absolute(), "{path:?}");
+            assert!(path.ends_with(format!("{DIRECTORY}/{SCANS}")), "{path:?}");
+        }
+    }
+
+    /// A scan directory is the root plus exactly one component, so an id never
+    /// silently becomes two.
+    #[test]
+    fn a_scan_directory_is_one_component_under_the_root() {
+        let (Some(root), Some(scan)) = (root(), scan("01J8Z5Q7VN")) else {
+            return;
+        };
+
+        assert_eq!(scan.parent(), Some(root.as_path()));
+        assert!(scan.ends_with("01J8Z5Q7VN"), "{scan:?}");
+    }
+
+    /// Asking where the journal is must not create it, or any part of the path
+    /// to it. A caller asking has not asked for a side effect, and this is the
+    /// module a `--dry-run` reaches through.
+    #[test]
+    fn computing_a_path_creates_nothing() {
+        let existed = root().map(|path| path.exists());
+
+        let _ = root();
+        let _ = scan("01J8Z5Q7VN");
+        let _ = invoking_user();
+
+        assert_eq!(
+            existed,
+            root().map(|path| path.exists()),
+            "asking where the journal is created it"
+        );
+    }
+
+    /// The journal must not land beside the settings file. They have different
+    /// lifetimes, different audiences and different sensitivity, and the whole
+    /// reason this module exists is that the settings module's location
+    /// argument does not apply to state.
+    #[cfg(feature = "import-settings")]
+    #[test]
+    fn the_journal_is_not_in_the_configuration_directory() {
+        let (Some(journal), Some(settings)) = (root(), crate::import::settings::paths::user())
+        else {
+            return;
+        };
+
+        let Some(settings) = settings.parent() else {
+            return;
+        };
+
+        assert_ne!(journal, settings);
+        assert!(
+            !journal.starts_with(settings),
+            "journal {journal:?} is inside the settings directory {settings:?}"
+        );
+    }
+
+    /// An unprivileged process has nobody to resolve: `sudo` handling must never
+    /// engage for a scan that was not elevated, whatever the environment says.
+    #[cfg(not(windows))]
+    #[test]
+    fn an_unprivileged_process_has_no_invoking_user() {
+        if crate::system::privilege::is_elevated() {
+            return;
+        }
+
+        assert_eq!(invoking_user(), None);
+    }
+
+    /// A lookup that succeeds yields an absolute home, and a lookup for any uid
+    /// at all answers rather than faulting.
+    ///
+    /// The absent case is asserted as "does not panic" rather than as `None`,
+    /// deliberately: **there is no uid a test may assume is unassigned.**
+    /// `u32::MAX - 1` looked like one and is `nobody` on macOS, with `/var/empty`
+    /// for a home. That is also the reason [`invoking_user`] guards on elevation
+    /// and on a non-root uid before it trusts `SUDO_UID` — a stray value that
+    /// happens to resolve resolves to somewhere real.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_password_entry_resolves_to_an_absolute_home() {
+        // SAFETY: `getuid` takes no arguments and dereferences nothing.
+        let own = unsafe { libc::getuid() } as u32;
+
+        for uid in [own, 0, u32::MAX - 1, u32::MAX] {
+            if let Some((home, _)) = passwd_home_and_gid(uid) {
+                assert!(home.is_absolute(), "uid {uid} resolved to {home:?}");
+            }
+        }
+    }
+}
