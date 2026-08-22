@@ -97,9 +97,14 @@
 //! [`cursor`] is how far a scan got: a position in the plan below which
 //! everything is settled, plus the few positions above it that settled out of
 //! order. It is what `--resume` subtracts from the plan.
+//!
+//! [`lock`] tells a scan that is running from one that crashed, so a live
+//! journal is never resumed underneath its writer and a dead one never stays
+//! locked behind a process id that has been reissued.
 
 pub mod cursor;
 #[cfg(feature = "journal-format")]
 pub mod format;
+pub mod lock;
 pub mod paths;
 pub mod settle;
