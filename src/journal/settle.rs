@@ -163,9 +163,10 @@ impl Fate {
 /// One target's fate, as a strategy reports it.
 ///
 /// Identified by address, port and transport rather than by a position in the
-/// plan. The cursor maps identity to position, because the dispatcher is the
-/// only thing that knows the enumeration and a `Target` does not currently carry
-/// its ordinal — see the note in [`SettlementLog`].
+/// plan, because a strategy knows what it probed and not where that sat in the
+/// enumeration. [`cursor`](super::cursor) supplies the other half: positions
+/// come from [`TargetMap::iter`](crate::model::target::TargetMap::iter), which
+/// is reproducible, so neither side has to store an ordinal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Settlement {
     /// The address probed.
@@ -205,12 +206,13 @@ impl Settlement {
 ///
 /// ## On identity rather than position
 ///
-/// The cursor wants a position in the dispatcher's enumeration; this carries an
-/// address, a port and a transport. Bridging the two wants the dispatcher's
-/// ordinal on [`Target`](crate::model::target::Target), which it does not have
-/// today — and adding a field to a struct with public fields touches every one
-/// of its twenty-seven construction sites, so it is deliberately not bundled
-/// here. Until then a cursor maps identity to position itself.
+/// The cursor counts positions in the dispatcher's enumeration; this carries an
+/// address, a port and a transport. Nothing has to carry an ordinal to bridge
+/// them, because
+/// [`TargetMap::iter`](crate::model::target::TargetMap::iter) is the *same*
+/// walk the dispatcher probes by and yields the same targets in the same order
+/// every time — so a position can be recovered by walking rather than stored by
+/// every `Target` in a scan of millions.
 ///
 /// ## On keeping the strongest fate
 ///
@@ -398,9 +400,7 @@ mod tests {
 
         assert_eq!(log.fate_of(ip(9), 22, Protocol::Tcp), None);
         assert!(
-            !log.settled()
-                .iter()
-                .any(|s| s.ip == ip(9) && s.port == 22),
+            !log.settled().iter().any(|s| s.ip == ip(9) && s.port == 22),
             "a target with no report must never appear as settled"
         );
     }

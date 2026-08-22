@@ -56,16 +56,21 @@ impl Dispatcher {
         tokio::spawn(async move {
             let mut batch = Vec::with_capacity(self.batch_size);
 
-            for unit in self.target_map.units {
-                for target in unit.iter() {
-                    batch.push(target);
+            // `TargetMap::iter` rather than the same two loops written out here.
+            // The journal numbers targets by that enumeration and skips the
+            // settled ones on a resume, so the walk that decides what is probed
+            // and the walk that decides what was probed have to be one walk. Two
+            // copies would not fail when they drifted — they would resume a scan
+            // against positions meaning something else, which looks exactly like
+            // a resume that worked. See `journal::cursor`.
+            for target in self.target_map.iter() {
+                batch.push(target);
 
-                    if batch.len() >= self.batch_size {
-                        batch.shuffle(&mut rand::rng());
-                        for t in batch.drain(..) {
-                            if tx.send(t).await.is_err() || scan_handle.should_stop() {
-                                return;
-                            }
+                if batch.len() >= self.batch_size {
+                    batch.shuffle(&mut rand::rng());
+                    for t in batch.drain(..) {
+                        if tx.send(t).await.is_err() || scan_handle.should_stop() {
+                            return;
                         }
                     }
                 }
@@ -126,6 +131,54 @@ mod tests {
             _ => false,
         });
         assert!(!is_ordered, "Targets were not shuffled");
+    }
+
+    /// The dispatcher emits exactly the plan's own enumeration, as a set.
+    ///
+    /// The journal numbers targets by [`TargetMap::iter`] and a resume skips
+    /// positions in that numbering, so a dispatcher that emitted a different
+    /// collection — an extra target, a missed unit, a different pairing — would
+    /// make every position mean something else. That does not fail loudly. It
+    /// resumes a scan that skips the wrong targets and reports success, so it is
+    /// asserted here rather than left to the two walks being the same by
+    /// inspection.
+    #[tokio::test]
+    async fn the_dispatcher_emits_exactly_the_plans_enumeration() {
+        let mut target_map = TargetMap::new();
+        target_map.units.push(TargetSet::new(
+            "192.168.1.1-192.168.1.10".parse().unwrap(),
+            "80,443".parse().unwrap(),
+        ));
+        target_map.units.push(TargetSet::new(
+            "10.0.0.1-10.0.0.3".parse().unwrap(),
+            "22".parse().unwrap(),
+        ));
+
+        let expected: Vec<Target> = target_map.iter().collect();
+
+        let handle = ScanHandle::new();
+        let mut rx = Dispatcher::new(target_map.clone())
+            .with_batch_size(4)
+            .run_shuffled(&handle);
+
+        let mut received = Vec::new();
+        while let Some(target) = rx.recv().await {
+            received.push(target);
+        }
+
+        // Sorted, because the dispatcher shuffles what it emits and not what it
+        // numbers: the order targets are *asked* in is deliberately scrambled,
+        // the order they are *numbered* in is not.
+        let mut received_sorted = received.clone();
+        let mut expected_sorted = expected.clone();
+        let key = |t: &Target| (t.ip.to_string(), t.port, t.protocol);
+        received_sorted.sort_by_key(key);
+        expected_sorted.sort_by_key(key);
+
+        assert_eq!(
+            received_sorted, expected_sorted,
+            "the dispatcher and the journal must walk one enumeration"
+        );
     }
 
     #[tokio::test]

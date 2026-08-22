@@ -94,6 +94,11 @@
 //! probe and one it never sent the same verdict on purpose. It needs no feature
 //! — the distinction has to hold whether or not anything is written down.
 
+//! [`cursor`] is how far a scan got: a position in the plan below which
+//! everything is settled, plus the few positions above it that settled out of
+//! order. It is what `--resume` subtracts from the plan.
+
+pub mod cursor;
 #[cfg(feature = "journal-format")]
 pub mod format;
 pub mod paths;
