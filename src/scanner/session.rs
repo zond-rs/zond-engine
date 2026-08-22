@@ -114,6 +114,14 @@ pub enum ScannerKind {
     ///
     /// [`SynPort`]: ScannerKind::SynPort
     OsSeries,
+    /// The active operating-system management probe: one SNMP `GetRequest` at a
+    /// host whose kernel is not otherwise known.
+    ///
+    /// Named apart from the port scanners because it establishes no port state.
+    /// It asks one question of one service and files the answer against the
+    /// *host*; whether anything is listening on 161 is the port scan's to
+    /// report, and this phase deliberately does not.
+    OsSnmp,
     /// Composite scanner that delegates to protocol-specific scanners.
     Composite,
 }

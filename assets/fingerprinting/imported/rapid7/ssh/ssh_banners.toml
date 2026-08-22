@@ -865,7 +865,7 @@ vendor = "OpenBSD"
 product = "OpenSSH"
 context = "ssh.banner"
 example = "OpenSSH_7.9p1 Debian-10+deb10u1"
-metadata = { "openssh.comment" = "{capture:2}", "service.family" = "OpenSSH", "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10.1", "os.cpe23" = "cpe:/o:debian:debian_linux:10.1" }
+metadata = { "openssh.comment" = "{capture:2}", "service.family" = "OpenSSH", "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10", "os.cpe23" = "cpe:/o:debian:debian_linux:10.1" }
 
 [[match]]
 name = "OpenSSH running on Debian 10.2 (buster)"
@@ -875,7 +875,7 @@ vendor = "OpenBSD"
 product = "OpenSSH"
 context = "ssh.banner"
 example = "OpenSSH_7.9p1 Debian-10+deb10u2"
-metadata = { "openssh.comment" = "{capture:2}", "service.family" = "OpenSSH", "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10.2", "os.cpe23" = "cpe:/o:debian:debian_linux:10.2" }
+metadata = { "openssh.comment" = "{capture:2}", "service.family" = "OpenSSH", "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "10", "os.cpe23" = "cpe:/o:debian:debian_linux:10.2" }
 
 [[match]]
 name = "OpenSSH running on Debian 10.x (buster catchall)"

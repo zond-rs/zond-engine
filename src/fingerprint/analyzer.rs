@@ -40,6 +40,7 @@ use super::db::SignatureDb;
 use super::model::{Evidence, SourceId, Tunnel};
 use super::prefilter::Prefilter;
 use super::response::{Collected, ResponseSet};
+use crate::model::port::Protocol;
 
 /// What an [`Analyzer`] is told about the port it is examining.
 ///
@@ -47,6 +48,13 @@ use super::response::{Collected, ResponseSet};
 /// transport hints) without changing the trait.
 pub struct PortContext {
     pub port: u16,
+    /// The transport the responses were read over.
+    ///
+    /// Load-bearing for an **active** analyzer: one gated on a port number alone
+    /// would dial TCP 22 because UDP 22 was scanned, probing a service nobody
+    /// asked about at an address that never offered one. Passive analyzers
+    /// mostly ignore it — what they read is already in the responses.
+    pub protocol: Protocol,
     /// The address of the peer being fingerprinted, when known. An *active*
     /// analyzer whose [`collect`](Analyzer::collect) opens its own connection
     /// (SSH, JARM, a binary/ICS handler) dials this; it is `None` in contexts
@@ -215,8 +223,15 @@ fn best_match(db: &SignatureDb, indices: &[usize], texts: &[&str]) -> Option<Evi
 /// release says strictly more than one that stops at the family, and where two
 /// say the same amount the first stands — so the answer does not depend on which
 /// signature happened to be indexed earlier.
+///
+/// **Every part counts, including the ones added later.** A field left out here
+/// is a field that cannot win a rule its ranking: when the kernel was first
+/// given a home of its own, the rule that read one lost to an imported rule that
+/// had crammed the same string into `version`, purely because this function had
+/// not been told the new field existed.
 fn os_detail(os: &super::os::OsEvidence) -> u8 {
     u8::from(os.version.is_some())
+        + u8::from(os.kernel.is_some())
         + u8::from(os.product.is_some())
         + u8::from(os.vendor.is_some())
         + u8::from(os.cpe.is_some())
@@ -236,7 +251,7 @@ fn banner_evidence(
     port_signatures: &[usize],
     banner: &str,
 ) -> Option<(Evidence, bool)> {
-    let texts = match_texts(banner);
+    let texts = super::extract::texts(banner);
 
     // Matched against the signatures registered for this port: port-confirmed.
     let mut found = best_match(db, port_signatures, &texts);
@@ -295,17 +310,6 @@ pub(crate) fn os_from_banner(
     let port_signatures = db.signatures_for_port(port);
     db.warm(port_signatures);
     banner_evidence(db, port_signatures, banner).and_then(|(found, _)| found.os)
-}
-
-/// The texts one banner should be matched against, most complete first.
-///
-/// Usually just the banner. A structured one also yields the field the corpus
-/// anchors its patterns on — see [`ssh::software_version`] for why that is not
-/// the whole line, and what it cost when only the whole line was offered.
-fn match_texts(banner: &str) -> Vec<&str> {
-    let mut texts = vec![banner];
-    texts.extend(super::ssh::software_version(banner));
-    texts
 }
 
 /// Marks `evidence` with the tunnel its response was read through (so a banner
@@ -375,6 +379,7 @@ mod tests {
     async fn collect_output_reaches_analyze_as_raw_bytes() {
         let ctx = PortContext {
             port: 7,
+            protocol: crate::model::port::Protocol::Tcp,
             addr: None,
             tunnel: None,
         };
@@ -392,6 +397,7 @@ mod tests {
         // A passive analyzer that never overrides `collect` gathers nothing.
         let ctx = PortContext {
             port: 80,
+            protocol: crate::model::port::Protocol::Tcp,
             addr: None,
             tunnel: None,
         };

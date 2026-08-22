@@ -35,6 +35,21 @@ Scope: `os.family = "Linux"` with an `os.version` of exactly `<major>.0`. Rules
 where `.0` is a real version — Windows NT 4.0, iOS 13.0 — are a different family
 and were not touched.
 
+### Package revisions read as point releases (2026-08-21, 6 rules)
+
+The same error one field over. `os.version` was `"10.2"` on a rule matching
+`OpenSSH_7.9p1 Debian-10+deb10u2`, reading the `u2` — the *package's* security
+update number — as Debian 10.2. It is not: Debian 10 had point releases 10.0
+through 10.13, and no package's revision number tracks them.
+
+Corrected to the release the stamp actually names: `"10"`.
+
+Scope: `os.vendor = "Debian"` with an `os.version` of `<major>.<n>` **whose rule
+pattern reads that same `debNuN`**. Six matched. Six others state a version some
+other way — Debian 3.1 and 7.8 were real releases, named as such — and were not
+touched. The pattern is what separates them, which is why this was not a
+search-and-replace.
+
 ## Integration
 These fingerprints are automatically converted from the original XML format into Zond-compatible TOML. They include extended metadata such as:
 - CPE (Common Platform Enumeration)

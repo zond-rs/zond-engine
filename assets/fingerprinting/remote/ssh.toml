@@ -24,3 +24,58 @@ pattern = '^SSH-([\d.]+)-dropbear_([\d.]+)'
 version_group = 2
 vendor = "dropbear"
 product = "dropbear"
+
+# ── Debian, by the release stamped into its own package version ──────────────
+#
+# Debian builds OpenSSH with its release baked into the package version, and
+# announces it in the banner:
+#
+#   SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4
+#                                  └┬┘
+#                                   └─ the release, stated by the distribution
+#
+# **This is not inference from the OpenSSH version.** Plenty of distributions
+# ship OpenSSH 10.0p2; only Debian writes `deb13` next to it, and it does so
+# because its own packaging puts it there. That is what makes this worth a rule
+# and what bounds how far it can be trusted:
+#
+#   - It identifies a **Debian base**, not a distribution. Raspberry Pi OS,
+#     Proxmox and Devuan build from Debian's packaging and inherit the stamp, so
+#     a host answering `deb12` is Debian 12 *or something built on it*. Beside a
+#     Raspberry Pi hardware address, that combination says more than either half.
+#   - It is **trivially removed**. `DebianBanner no` in `sshd_config` strips the
+#     suffix and leaves a bare `OpenSSH_10.0p2`, and nothing stops an
+#     administrator writing whatever they like there. So this is evidence rather
+#     than proof, which is why a banner is scored below a stack reading and why
+#     the resolver folds it with other sources instead of trusting it alone.
+#
+# ## One rule rather than one per release
+#
+# The imported corpus spells out a rule per *(OpenSSH version, Debian release)*
+# pair — ten of them, stopping at OpenSSH 9.2p1, which is why Debian 13 went
+# unnamed until this file. Capturing the release from the stamp instead covers
+# every Debian there has been and every one there will be, and stops the corpus
+# needing an edit each time either project makes a release.
+
+[[match]]
+name = "OpenSSH on Debian, by the release its package names"
+pattern = '^OpenSSH_(\S+) Debian-\d+(?:\.\d+)?\+deb(\d+)u\d+$'
+version_group = 1
+vendor = "OpenBSD"
+product = "OpenSSH"
+context = "ssh.banner"
+example = "OpenSSH_10.0p2 Debian-7+deb13u4"
+metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:debian:debian_linux:{capture:2}" }
+
+[[match]]
+name = "OpenSSH on Debian backports, by the release it was built for"
+# A backport is built *for* the older release it is installed on, and says so:
+# `1~bpo12+1` on a Debian 12 host. The release is read from the same place for
+# the same reason.
+pattern = '^OpenSSH_(\S+) Debian-\d+(?:\.\d+)?~bpo(\d+)\+\d+$'
+version_group = 1
+vendor = "OpenBSD"
+product = "OpenSSH"
+context = "ssh.banner"
+example = "OpenSSH_9.7p1 Debian-1~bpo12+1"
+metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:debian:debian_linux:{capture:2}" }

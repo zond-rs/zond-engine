@@ -96,6 +96,19 @@ pub struct OsMetadata {
     pub product: Option<String>,
     /// The version or service pack.
     pub version: Option<String>,
+    /// The kernel release, where a rule reads one.
+    ///
+    /// **Not a finer [`version`](Self::version), and not a competitor to it.** A
+    /// distribution release and the kernel it ships are two facts about one
+    /// machine: Debian 12 runs kernel 6.1, and neither number is a better answer
+    /// than the other. Filing the kernel as a version made an SSH banner naming
+    /// `12` and an SNMP agent naming `6.1.0` look like a contradiction, and a
+    /// host that had told this engine both was reported as neither.
+    ///
+    /// Read from the `os.kernel` key, which is this engine's own: the imported
+    /// corpus has no notion of it and puts a kernel in `os.version` where it
+    /// finds one.
+    pub kernel: Option<String>,
     /// A Common Platform Enumeration identifier.
     pub cpe23: Option<String>,
     /// How sure the corpus itself says this rule is, `0.0..=1.0`.
@@ -119,6 +132,7 @@ impl OsMetadata {
             family: get("os.family"),
             product: get("os.product"),
             version: get("os.version"),
+            kernel: get("os.kernel"),
             cpe23: get("os.cpe23"),
             certainty: get("os.certainty").and_then(|v| v.parse().ok()),
         };
@@ -141,12 +155,14 @@ impl OsMetadata {
         let family = fill(self.family.as_deref(), captures);
         let product = fill(self.product.as_deref(), captures);
         let version = fill(self.version.as_deref(), captures);
+        let kernel = fill(self.kernel.as_deref(), captures);
 
         let siblings = [
             ("os.vendor", vendor.as_deref()),
             ("os.family", family.as_deref()),
             ("os.product", product.as_deref()),
             ("os.version", version.as_deref()),
+            ("os.kernel", kernel.as_deref()),
         ];
         let cpe23 = fill(self.cpe23.as_deref(), captures)
             .and_then(|template| fill_siblings(&template, &siblings));
@@ -156,6 +172,7 @@ impl OsMetadata {
             family,
             product,
             version,
+            kernel,
             cpe23,
             certainty: self.certainty,
         }
@@ -246,6 +263,7 @@ pub fn evidence_from(metadata: &OsMetadata, captures: &[String]) -> Option<OsEvi
         vendor: resolved.vendor,
         product: resolved.product,
         version: resolved.version,
+        kernel: resolved.kernel,
         cpe: resolved.cpe23,
         confidence,
         evidence: format!("service banner names {described}"),
@@ -451,6 +469,7 @@ mod tests {
             vendor: None,
             product: None,
             version: None,
+            kernel: None,
             cpe: None,
             accuracy: 65,
             detail_accuracy: None,
@@ -514,11 +533,138 @@ mod against_the_shipped_corpus {
             22,
             "SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4",
         )
-        .expect("and still names the family where no release rule exists yet");
+        .expect("a Debian OpenSSH banner names an operating system");
         assert_eq!(debian_13.family, "Linux");
         assert_eq!(
-            debian_13.version, None,
-            "the corpus holds no OpenSSH 10 rule yet; adding one should break this"
+            debian_13.version.as_deref(),
+            Some("13"),
+            "read from the release Debian stamps into its own package version, so a \
+             release the corpus has never seen still names itself: {debian_13:?}"
+        );
+
+        // A backport says which release it was built *for*, in the same place.
+        let backported = crate::fingerprint::analyzer::os_from_banner(
+            db,
+            22,
+            "SSH-2.0-OpenSSH_9.7p1 Debian-1~bpo12+1",
+        )
+        .expect("a backport names one too");
+        assert_eq!(backported.version.as_deref(), Some("12"));
+
+        // And a banner with the suffix stripped — `DebianBanner no` — names no
+        // release, because there is none in it to name. Declining is right:
+        // guessing a release from an OpenSSH version would attribute Debian's
+        // packaging to every distribution that ships the same upstream.
+        let stripped =
+            crate::fingerprint::analyzer::os_from_banner(db, 22, "SSH-2.0-OpenSSH_10.0p2");
+        assert!(
+            stripped.is_none_or(|os| os.version.is_none()),
+            "a stripped banner carries no release and must not invent one"
+        );
+    }
+
+    /// A distribution with nothing in its banners to match.
+    ///
+    /// Arch ships OpenSSH unpatched and unmarked, so no banner rule can reach
+    /// it — Recog carries none. Its kernel release is the one place its own
+    /// packaging signs its work, and there is deliberately no version, because a
+    /// rolling release has none to give.
+    ///
+    /// Authored from the naming convention rather than from a host this engine
+    /// has read, which is safe here for one specific reason: the failure mode is
+    /// silence. `arch1` in a kernel release is a string only Arch produces, so a
+    /// wrong guess about the shape means the rule never fires — it cannot name
+    /// somebody else's machine Arch.
+    #[test]
+    fn arch_is_named_by_its_kernel_because_nothing_else_names_it() {
+        let db = SignatureDb::global();
+
+        let found = crate::fingerprint::analyzer::os_from_banner(
+            db,
+            161,
+            "Linux host 6.12.1-arch1-1 #1 SMP PREEMPT_DYNAMIC Fri, 22 Nov 2024 12:00:00 +0000 x86_64",
+        )
+        .expect("an Arch kernel names Arch");
+
+        assert_eq!(found.vendor.as_deref(), Some("Arch Linux"));
+        assert_eq!(found.kernel.as_deref(), Some("6.12.1"));
+        assert_eq!(
+            found.version, None,
+            "a rolling release has no version, and inventing one would be worse \
+             than the silence it replaced"
+        );
+
+        // And the banner it actually presents on port 22 names nothing, which is
+        // the honest answer rather than a gap to be papered over: a bare
+        // `OpenSSH_10.0p2` is Arch, Fedora, Gentoo or a source build alike.
+        let by_ssh = crate::fingerprint::analyzer::os_from_banner(db, 22, "SSH-2.0-OpenSSH_10.0p2");
+        assert!(
+            by_ssh.is_none_or(|os| os.vendor.is_none()),
+            "an unmarked upstream banner must not be attributed to any distribution"
+        );
+    }
+
+    /// Releases nobody has a machine for.
+    ///
+    /// The generic Debian rule reads the release out of the stamp its packaging
+    /// writes, so a release this engine has never been pointed at names itself
+    /// from a string alone. That is what makes these testable without booting
+    /// anything — which matters, because the arm64 cloud images for Debian 9 and
+    /// 11 do not boot under Apple's hypervisor at all.
+    #[test]
+    fn a_release_names_itself_without_a_machine_to_read_it_from() {
+        let db = SignatureDb::global();
+        for (banner, release) in [
+            ("SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7", "9"),
+            ("SSH-2.0-OpenSSH_7.9p1 Debian-10+deb10u2", "10"),
+            ("SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u3", "11"),
+        ] {
+            let found = crate::fingerprint::analyzer::os_from_banner(db, 22, banner)
+                .unwrap_or_else(|| panic!("{banner} names nothing"));
+
+            assert_eq!(found.family, "Linux");
+            assert_eq!(found.vendor.as_deref(), Some("Debian"));
+            assert_eq!(
+                found.version.as_deref(),
+                Some(release),
+                "read from the stamp rather than from a table of known releases: {banner}"
+            );
+        }
+    }
+
+    /// The channel that answers the question no packet can.
+    ///
+    /// A TCP stack's shape names a family and cannot separate two kernels eleven
+    /// releases apart — measured, on two labelled hosts. A service banner names
+    /// a distribution release at best. An SNMP agent's `sysDescr` is the output
+    /// of `uname -a`, so it states the kernel outright, and 27 shipped rules are
+    /// written against it.
+    ///
+    /// Matched through the same entry point the analyzer uses, so this cannot
+    /// pass while the engine feeds the matcher something else — which is exactly
+    /// how the SSH release rules stayed unreachable.
+    #[test]
+    fn an_snmp_agent_names_the_system_it_is_running() {
+        let db = SignatureDb::global();
+        let sys_descr = "Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) aarch64";
+
+        let found = crate::fingerprint::analyzer::os_from_banner(db, 161, sys_descr)
+            .expect("a uname string names an operating system");
+
+        assert_eq!(found.family, "Linux");
+        assert_eq!(
+            found.kernel.as_deref(),
+            Some("6.1.0"),
+            "the kernel release is the whole reason to read this field: {found:?}"
+        );
+        assert_eq!(
+            found.version, None,
+            "a kernel is not a distribution release, and must not occupy its field \
+             where it would contradict a banner that named one"
+        );
+        assert!(
+            !found.evidence.to_ascii_lowercase().contains("zond"),
+            "the nodename is somebody's hostname and must not travel with the finding"
         );
     }
 

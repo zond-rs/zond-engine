@@ -119,9 +119,17 @@ impl Analyzer for SshAnalyzer {
     }
 
     fn interested(&self, ctx: &PortContext) -> bool {
-        // Active probe: only where SSH is expected, only with a socket to dial,
-        // and never inside a tunnel (SSH is not carried over TLS here).
-        ctx.tunnel.is_none() && ctx.addr.is_some() && SSH_PORTS.contains(&ctx.port)
+        // Active probe: only where SSH is expected, only over the transport it
+        // speaks, only with a socket to dial, and never inside a tunnel (SSH is
+        // not carried over TLS here).
+        //
+        // The protocol test is not redundant with the port test. Without it a
+        // scan that found UDP 22 open would have this dial *TCP* 22 — a service
+        // nobody asked about, at an address that never offered one.
+        ctx.protocol == crate::model::port::Protocol::Tcp
+            && ctx.tunnel.is_none()
+            && ctx.addr.is_some()
+            && SSH_PORTS.contains(&ctx.port)
     }
 
     /// **I/O phase.** Runs the exchange and returns the raw `KEXINIT` packet as a
@@ -398,6 +406,7 @@ mod tests {
 
         let ctx = PortContext {
             port: 22,
+            protocol: crate::model::port::Protocol::Tcp,
             addr: Some(addr),
             tunnel: None,
         };
@@ -445,6 +454,7 @@ mod tests {
     async fn not_interested_off_ssh_ports_or_without_an_address() {
         let no_addr = PortContext {
             port: 22,
+            protocol: crate::model::port::Protocol::Tcp,
             addr: None,
             tunnel: None,
         };
@@ -452,6 +462,7 @@ mod tests {
 
         let wrong_port = PortContext {
             port: 80,
+            protocol: crate::model::port::Protocol::Tcp,
             addr: Some("127.0.0.1:80".parse().unwrap()),
             tunnel: None,
         };

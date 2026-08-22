@@ -62,6 +62,19 @@ pub struct OsFingerprint {
     /// outrank a completed match and could never be displaced.
     accuracy: u8,
 
+    /// The kernel release, where something read one.
+    ///
+    /// **Beside the generation, not a finer form of it.** A distribution release
+    /// and the kernel it ships are two facts about one machine — Debian 12 runs
+    /// kernel 6.1 — and neither is the better answer. Held as one field they
+    /// contradicted: an SSH banner naming `12` and an SNMP agent naming `6.1.0`
+    /// were read as two sources disagreeing, and a host that had told this engine
+    /// both was reported as neither.
+    ///
+    /// It is also the single most actionable thing a scan can learn about a Unix
+    /// host, because it is what a known-vulnerability lookup keys on.
+    kernel: Option<Arc<str>>,
+
     /// How well supported everything *past* the family is, where the finding
     /// says more than a family at all.
     ///
@@ -118,6 +131,7 @@ impl OsFingerprint {
             generation: None,
             vendor: None,
             accuracy: accuracy.min(100),
+            kernel: None,
             detail_accuracy: None,
             cpe: BTreeSet::new(),
             evidence: None,
@@ -147,6 +161,18 @@ impl OsFingerprint {
     /// How sure this identification is, from 0 to 100.
     pub fn accuracy(&self) -> u8 {
         self.accuracy
+    }
+
+    /// The kernel release, where something read one.
+    pub fn kernel(&self) -> Option<&str> {
+        self.kernel.as_deref()
+    }
+
+    /// Records the kernel release.
+    #[must_use]
+    pub fn with_kernel(mut self, kernel: impl Into<Arc<str>>) -> Self {
+        self.kernel = Some(kernel.into());
+        self
     }
 
     /// How well supported everything past the family is, or `None` where the
@@ -231,6 +257,7 @@ impl OsFingerprint {
             generation,
             vendor,
             accuracy,
+            kernel,
             detail_accuracy,
             cpe,
             evidence,
@@ -242,6 +269,7 @@ impl OsFingerprint {
             self.family = family.or(self.family.take());
             self.generation = generation.or(self.generation.take());
             self.vendor = vendor.or(self.vendor.take());
+            self.kernel = kernel.or(self.kernel.take());
             // Travels with the parts it qualifies, never on its own: a figure
             // describing a release this finding no longer names would attach a
             // confidence to nothing.
@@ -271,6 +299,7 @@ impl OsFingerprint {
             self.family = self.family.take().or(family);
             self.generation = self.generation.take().or(generation);
             self.vendor = self.vendor.take().or(vendor);
+            self.kernel = self.kernel.take().or(kernel);
             self.detail_accuracy = self.detail_accuracy.take().or(detail_accuracy);
         }
 
@@ -304,26 +333,50 @@ const MAX_EVIDENCE_LEN: usize = 512;
 /// Truncates a whole reading rather than half of one: a line cut mid-value would
 /// read as a measurement that says something it does not.
 fn join_evidence(existing: Option<Arc<str>>, incoming: Option<Arc<str>>) -> Option<Arc<str>> {
-    let (existing, incoming) = match (existing, incoming) {
-        (Some(existing), Some(incoming)) => (existing, incoming),
-        (existing, incoming) => return existing.or(incoming),
-    };
+    match (existing, incoming) {
+        (Some(existing), Some(incoming)) => Some(join_readings(&existing, &incoming).into()),
+        (existing, incoming) => existing.or(incoming),
+    }
+}
 
+/// Joins two evidence lines, keeping each reading once and in the order it
+/// arrived.
+///
+/// Shared with the evidence a host retains per source, so a reading that arrives
+/// twice by two routes reads the same either way.
+///
+/// **A reading that another one extends is dropped.** The passive path and the
+/// active one describe the same reply, and the active one appends what several
+/// replies added up to — so its line begins with the passive line and continues.
+/// Keeping both would print the same observation twice with the second copy
+/// merely longer.
+///
+/// Truncates a whole reading rather than half of one: a line cut mid-value would
+/// read as a measurement that says something it does not.
+pub(super) fn join_readings(existing: &str, incoming: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
-    let mut length = 0usize;
+
     for part in existing.split(SEPARATOR).chain(incoming.split(SEPARATOR)) {
-        if parts.contains(&part) {
+        // Already said, or already said at greater length.
+        if parts.iter().any(|kept| kept.starts_with(part)) {
             continue;
         }
-        let cost = part.len() + if parts.is_empty() { 0 } else { SEPARATOR.len() };
-        if length + cost > MAX_EVIDENCE_LEN {
-            break;
-        }
+        // Says everything one already on record says, and more.
+        parts.retain(|kept| !part.starts_with(kept));
         parts.push(part);
-        length += cost;
     }
 
-    Some(parts.join(SEPARATOR).into())
+    let mut length = 0usize;
+    parts.retain(|part| {
+        let cost = part.len() + if length == 0 { 0 } else { SEPARATOR.len() };
+        let room = length + cost <= MAX_EVIDENCE_LEN;
+        if room {
+            length += cost;
+        }
+        room
+    });
+
+    parts.join(SEPARATOR)
 }
 
 impl std::fmt::Display for OsFingerprint {
@@ -335,19 +388,29 @@ impl std::fmt::Display for OsFingerprint {
         let family = self.family.as_deref().unwrap_or(&self.name);
         write!(f, "{family} [{}%]", self.accuracy)?;
 
-        let refines = &*self.name != family || self.generation.is_some();
-        if !refines {
-            return Ok(());
+        // Then the distribution, where one was named. `·` separates facts of
+        // different strengths rather than parts of one name.
+        let names_a_release = &*self.name != family || self.generation.is_some();
+        if names_a_release {
+            write!(f, " · {}", self.name)?;
+            if let Some(generation) = &self.generation {
+                write!(f, " {generation}")?;
+            }
+            if let Some(accuracy) = self.detail_accuracy {
+                write!(f, " [{accuracy}%]")?;
+            }
         }
 
-        write!(f, " · {}", self.name)?;
-        if let Some(generation) = &self.generation {
-            write!(f, " {generation}")?;
+        // And the kernel last, labelled, because `Debian 12 · 6.1.0` reads as
+        // two guesses at one number where `kernel 6.1.0` reads as what it is.
+        if let Some(kernel) = &self.kernel {
+            write!(f, " · kernel {kernel}")?;
+            if let Some(accuracy) = self.detail_accuracy {
+                write!(f, " [{accuracy}%]")?;
+            }
         }
-        match self.detail_accuracy {
-            Some(accuracy) => write!(f, " [{accuracy}%]"),
-            None => Ok(()),
-        }
+
+        Ok(())
     }
 }
 
@@ -381,6 +444,46 @@ mod tests {
             evidence.contains("isn=hashed"),
             "the series reading is the one that cannot be got back: {evidence}"
         );
+    }
+
+    /// Three facts about one machine, each with what it is actually worth.
+    ///
+    /// The family is what several sources agreed on; the distribution release
+    /// came from one banner; the kernel from one agent. Rendering them as one
+    /// name — `Debian 12` — hid the kernel entirely, and rendering the kernel as
+    /// a version made the two look like rival answers to one question.
+    #[test]
+    fn a_finding_shows_the_family_the_release_and_the_kernel_apart() {
+        let os = OsFingerprint::new("Debian", 93)
+            .with_family("Linux")
+            .with_generation("12")
+            .with_kernel("6.1.0")
+            .with_detail_accuracy(69);
+
+        assert_eq!(
+            os.to_string(),
+            "Linux [93%] · Debian 12 [69%] · kernel 6.1.0 [69%]"
+        );
+    }
+
+    /// A finding that knows only a family says only that. The separators are for
+    /// facts that exist.
+    #[test]
+    fn a_family_alone_renders_as_a_family_alone() {
+        let os = OsFingerprint::new("Linux", 65).with_family("Linux");
+        assert_eq!(os.to_string(), "Linux [65%]");
+    }
+
+    /// A kernel with no distribution behind it — an SNMP agent on a host with
+    /// nothing else to say — still reports the kernel.
+    #[test]
+    fn a_kernel_without_a_release_is_still_reported() {
+        let os = OsFingerprint::new("Linux", 84)
+            .with_family("Linux")
+            .with_kernel("6.1.0")
+            .with_detail_accuracy(55);
+
+        assert_eq!(os.to_string(), "Linux [84%] · kernel 6.1.0 [55%]");
     }
 
     /// Joining is for readings of the *same* system. A tie between two different

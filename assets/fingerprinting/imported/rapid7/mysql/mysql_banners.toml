@@ -146,7 +146,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.5.62-0+deb8u1"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8.1", "os.cpe23" = "cpe:/o:debian:debian_linux:8.1" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8", "os.cpe23" = "cpe:/o:debian:debian_linux:8.1" }
 
 [[match]]
 name = "Oracle MySQL on Debian 8.0 (jessie)"
@@ -166,7 +166,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.5.60-0+deb7u2"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7.2", "os.cpe23" = "cpe:/o:debian:debian_linux:7.2" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.2" }
 
 [[match]]
 name = "Oracle MySQL on Debian 7.1 (wheezy)"
@@ -176,7 +176,7 @@ vendor = "Oracle"
 product = "MySQL"
 context = "mysql.banners"
 example = "5.5.60-0+deb7u1"
-metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7.1", "os.cpe23" = "cpe:/o:debian:debian_linux:7.1" }
+metadata = { "service.family" = "MySQL", "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.1" }
 
 [[match]]
 name = "Oracle MySQL on Debian 6.0 (squeeze)"

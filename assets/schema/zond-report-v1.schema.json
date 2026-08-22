@@ -579,12 +579,16 @@
     "os": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "family", "generation", "vendor", "accuracy", "detail_accuracy", "cpe", "evidence"],
+      "required": ["name", "family", "generation", "vendor", "kernel", "accuracy", "detail_accuracy", "cpe", "evidence"],
       "properties": {
         "name": { "type": "string" },
         "family": { "type": ["string", "null"] },
         "generation": { "type": ["string", "null"] },
         "vendor": { "type": ["string", "null"] },
+        "kernel": {
+          "description": "The kernel release, or null where nothing read one. Beside `generation` rather than a finer form of it: a distribution release and the kernel it ships are two facts about one machine, and a source that knows one may know nothing of the other. For a Unix host this is what a known-vulnerability lookup keys on.",
+          "type": ["string", "null"]
+        },
         "accuracy": {
           "description": "Confidence in the *family*, as a percentage. The family is the part every source can speak to, so this is what their agreement describes.",
           "$ref": "#/$defs/percentage"
@@ -835,6 +839,7 @@
         "udp_port",
         "os_echo",
         "os_series",
+        "os_snmp",
         "composite"
       ]
     }

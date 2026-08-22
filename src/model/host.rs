@@ -93,6 +93,35 @@ pub enum NetworkRole {
 /// type is shaped to avoid. See
 /// [`consider_primary_ip`](Self::consider_primary_ip) for which address leads.
 ///
+/// What one source concluded, reduced to the parts that make it a *distinct*
+/// claim.
+///
+/// The identity of a piece of operating-system evidence for the purpose of
+/// counting it: two readings that say the same thing are one thing learned
+/// twice, whatever produced them, and two that say different things are two
+/// pieces of evidence even where one kind of source produced both.
+///
+/// Deliberately not the confidence or the evidence line. The first varies with
+/// how a rule was weighted and the second is prose; neither changes what is
+/// being claimed, and keying on either would let one claim in under several
+/// spellings.
+type OsClaim = (
+    OsSource,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// The most distinct operating-system claims one host retains.
+///
+/// A host running many identifiable services can offer one claim each, and
+/// combining enough of them approaches a certainty none of them stated. Eight is
+/// past any host this has been seen on and short of where the arithmetic stops
+/// meaning anything.
+const MAX_OS_EVIDENCE: usize = 8;
+
 /// [`OsFingerprint`] is boxed. It is both the largest thing a host can carry and
 /// one of the rarest, since most hosts in a scan never get one, so holding it by
 /// reference keeps a `Host` cheap to move in collections of thousands.
@@ -129,13 +158,26 @@ pub struct Host {
     /// reading, scored lower on its own, and was discarded whole, taking the
     /// release it alone could name with it.
     ///
-    /// **One item per source, keeping the strongest.** Independence is claimed
-    /// between kinds of source and never within one, so a host with forty open
-    /// ports whose stack was read forty times contributes one stack reading, not
-    /// forty. Without that, repeating an observation would manufacture certainty
-    /// out of nothing — which is exactly what the arithmetic downstream cannot
-    /// defend itself against. Bounded by the number of source kinds there are.
-    os_evidence: BTreeMap<OsSource, OsEvidence>,
+    /// **One item per distinct claim**, which is not the same as one per source
+    /// and the difference was worth a finding.
+    ///
+    /// Keyed per source, an SSH banner naming `Debian 12` and an SNMP agent
+    /// naming `kernel 6.1.0` are both `ServiceBanner` — so the second evicted
+    /// the first, and a host that had told this engine two different things
+    /// about itself was reported from whichever arrived last. They are two
+    /// services, on two ports, read from two protocols: two pieces of evidence
+    /// by any reading.
+    ///
+    /// Keyed on the *claim*, a stack read forty times — which is what a host
+    /// with forty open ports produces — is still forty identical claims and
+    /// still collapses to one. That is the property that has to hold: repeating
+    /// an observation must never look like corroboration, because the
+    /// arithmetic downstream cannot tell the difference.
+    ///
+    /// Bounded by [`MAX_OS_EVIDENCE`], because a host running many distinct
+    /// services can otherwise accumulate one item per service, and enough
+    /// agreeing items approach a certainty no single source stated.
+    os_evidence: BTreeMap<OsClaim, OsEvidence>,
 
     /// Physical hardware (MAC) and vendor information.
     hardware: Option<HardwareInfo>,
@@ -453,11 +495,38 @@ impl Host {
     /// same single piece of evidence, and counting them separately would turn
     /// one observation into certainty.
     pub fn record_os_evidence(&mut self, evidence: OsEvidence) -> bool {
-        match self.os_evidence.get(&evidence.source) {
-            // Strictly better, so a repeat of the same reading is not a change.
-            Some(existing) if existing.confidence >= evidence.confidence => false,
-            _ => {
-                self.os_evidence.insert(evidence.source, evidence);
+        let claim: OsClaim = (
+            evidence.source,
+            evidence.family.clone().into(),
+            evidence.vendor.clone(),
+            evidence.product.clone(),
+            evidence.version.clone(),
+            evidence.kernel.clone(),
+        );
+
+        // The ceiling is read before the map is borrowed to edit, because a
+        // claim already on record occupies room it does not have to ask for.
+        let full = self.os_evidence.len() >= MAX_OS_EVIDENCE;
+
+        match self.os_evidence.get_mut(&claim) {
+            // The same claim, reached again — but not necessarily by the same
+            // route. A stack read once off a port scan's reply and again as a
+            // series of them concludes the identical thing and shows *different*
+            // working for it, and the series reading is the one that cannot be
+            // got back. So the claim is not new and the reading may be: keep the
+            // strongest confidence and every distinct line behind it.
+            Some(existing) => {
+                let joined = os::join_readings(&existing.evidence, &evidence.evidence);
+                let changed = joined != existing.evidence;
+
+                existing.evidence = joined;
+                existing.confidence = existing.confidence.max(evidence.confidence);
+                changed
+            }
+            // The ceiling only turns away something new.
+            None if full => false,
+            None => {
+                self.os_evidence.insert(claim, evidence);
                 true
             }
         }

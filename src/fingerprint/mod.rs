@@ -44,12 +44,14 @@ pub mod os;
 
 mod analyzer;
 mod db;
+mod extract;
 mod http;
 mod matcher;
 mod pattern;
 mod prefilter;
 mod response;
 mod signature;
+mod snmp;
 mod ssh;
 mod tls;
 mod tls_cert;
@@ -92,6 +94,18 @@ const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);
 const PROBE_READ_TIMEOUT: Duration = Duration::from_millis(1_000);
 /// Upper bound on how much of a single response we read/keep.
 const MAX_RESPONSE_BYTES: usize = 4096;
+
+/// Whether a reply from this port over this protocol is one the engine can read.
+///
+/// What decides whether a port is worth the exchange a service pass costs. A TCP
+/// port always is: any of them may volunteer a banner, and reading one costs a
+/// connection. A UDP port is worth a datagram only where something here can turn
+/// the answer into text — otherwise the reply proves the port open, which the
+/// scan that found it already knew.
+#[must_use]
+pub fn reads_replies(port: u16, protocol: Protocol) -> bool {
+    extract::reads(port, protocol)
+}
 
 /// The service name registered for a port number, if any.
 ///
@@ -174,7 +188,7 @@ pub async fn fingerprint_tcp_detailed(
     // response set is handed to the blocking pool.
     let fallback = first_printable(&responses.banners);
     let mut about_the_host = Vec::new();
-    match analyze(port.number(), addr, responses, tunnel).await {
+    match analyze(port.number(), Protocol::Tcp, addr, responses, tunnel).await {
         Some(verdict) if !verdict.is_empty() => {
             // Taken from the whole retained evidence set rather than from the
             // winning service alone: a host running two identifiable services
@@ -194,6 +208,93 @@ pub async fn fingerprint_tcp_detailed(
     }
 
     (port, about_the_host)
+}
+
+/// Fingerprints an open **UDP** port, returning the upgraded [`Port`] and
+/// whatever the reply said about the machine behind it.
+///
+/// The sibling of [`fingerprint_tcp_detailed`], and deliberately the same shape:
+/// draw a response, turn it into the text the corpus is written against, and
+/// hand it to the same analyzers. Only the drawing differs, because UDP has no
+/// connection to open and no banner to wait for.
+///
+/// # Why this is a second datagram rather than the scan's own
+///
+/// The UDP port scan already sends this exact payload and already sees this
+/// exact reply — it is how the port was known to be open at all — and then
+/// discards the body, because what it needed was the *fact* of an answer. Wiring
+/// that reply through would save a datagram and cost the thing that makes the
+/// scan fast: the scanner would have to hold every response body for every port
+/// it probed, through a paced run, against the chance that a later phase wants
+/// one. This is the same trade the TCP side already makes, where the service
+/// pass reconnects to a port the scan has already knocked on.
+///
+/// # What it will not do
+///
+/// **Speak to a port it cannot read.** A datagram is only worth sending where
+/// something here could turn the answer into text — see
+/// [`reads_replies`] — because unlike a TCP banner grab, an unread UDP reply
+/// teaches nothing the scan does not already know.
+///
+/// **Claim a port answered when it did not.** `None` means silence, and silence
+/// over UDP is the ordinary case: no connection is refused and no banner is
+/// withheld, so nothing distinguishes a filtered port from one with nothing
+/// behind it. A caller that dialled a port on its own account uses this to tell
+/// whether it found anything at all.
+pub async fn fingerprint_udp_detailed(
+    addr: std::net::SocketAddr,
+    mut port: Port,
+) -> Option<(Port, Vec<os::OsEvidence>)> {
+    let text = probe_udp(addr).await?;
+    let responses = ResponseSet::from_banners(vec![text]);
+
+    // No tunnel: nothing here carries UDP over TLS. No peer address handed to
+    // the analyzers either — an active analyzer dials TCP, and this port's
+    // address is not one it could speak to.
+    let verdict = analyze(addr.port(), Protocol::Udp, None, responses, None)
+        .await
+        .filter(|verdict| !verdict.is_empty())?;
+
+    let about_the_host = verdict
+        .evidence
+        .iter()
+        .filter_map(|e| e.os.clone())
+        .collect();
+    if let Some(service) = verdict.to_service() {
+        port.set_service(service);
+    }
+
+    Some((port, about_the_host))
+}
+
+/// Sends this port's registered probe and reads back whatever text the reply
+/// carries, or `None` if it carried none.
+///
+/// Bound to an ephemeral port of the same family as the target, and
+/// **connected**, so the kernel drops anything from another address before it
+/// reaches here: a scanner reading unsolicited datagrams off an unconnected
+/// socket would attribute one host's answer to another's port.
+async fn probe_udp(addr: std::net::SocketAddr) -> Option<String> {
+    let payload = SignatureDb::global()
+        .udp_probe_payloads(addr.port())
+        .first()?;
+
+    let bind = if addr.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let socket = tokio::net::UdpSocket::bind(bind).await.ok()?;
+    socket.connect(addr).await.ok()?;
+    socket.send(payload).await.ok()?;
+
+    let mut buffer = vec![0u8; MAX_RESPONSE_BYTES];
+    let read = timeout(PROBE_READ_TIMEOUT, socket.recv(&mut buffer))
+        .await
+        .ok()?
+        .ok()?;
+
+    extract::from_datagram(addr.port(), &buffer[..read])
 }
 
 /// Collects everything the transport can learn from the port over the network,
@@ -300,11 +401,17 @@ static ANALYZERS: &[&dyn Analyzer] = &[
 /// nothing (or the blocking task failed to join).
 async fn analyze(
     port: u16,
+    protocol: Protocol,
     addr: Option<std::net::SocketAddr>,
     responses: ResponseSet,
     tunnel: Option<Tunnel>,
 ) -> Option<ServiceVerdict> {
-    let ctx = PortContext { port, addr, tunnel };
+    let ctx = PortContext {
+        port,
+        protocol,
+        addr,
+        tunnel,
+    };
 
     // Phase 1 — I/O on the reactor: let each interested analyzer run its own
     // probes. Passive analyzers return an empty `Collected` (their inputs are in
@@ -381,7 +488,7 @@ mod tests {
         // passive analyzers) followed by the off-reactor analyze phase — over a
         // recorded SSH banner, and asserts it resolves through to a verdict.
         let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1 Debian".to_string()]);
-        let verdict = analyze(22, None, responses, None)
+        let verdict = analyze(22, Protocol::Tcp, None, responses, None)
             .await
             .expect("names a service");
 
@@ -399,7 +506,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\nServer: gunicorn/21.2.0\r\nContent-Type: text/html\r\n\r\n"
                 .to_string(),
         ]);
-        let verdict = analyze(8000, None, responses, None)
+        let verdict = analyze(8000, Protocol::Tcp, None, responses, None)
             .await
             .expect("names a service");
 
@@ -418,7 +525,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58\r\nX-Powered-By: PHP/8.2.1\r\n\r\n"
                 .to_string(),
         ]);
-        let service = analyze(80, None, responses, None)
+        let service = analyze(80, Protocol::Tcp, None, responses, None)
             .await
             .expect("names a service")
             .to_service()
@@ -440,7 +547,7 @@ mod tests {
         let responses = ResponseSet::from_banners(vec![
             "HTTP/1.1 403 Forbidden\r\nServer: cloudflare\r\n\r\n".to_string(),
         ]);
-        let verdict = analyze(8000, None, responses, None)
+        let verdict = analyze(8000, Protocol::Tcp, None, responses, None)
             .await
             .expect("names a service");
 
@@ -453,7 +560,7 @@ mod tests {
         // No banners and no TLS: both phases run, no analyzer produces evidence,
         // so the orchestration resolves to nothing rather than an empty verdict.
         assert!(
-            analyze(1, None, ResponseSet::default(), None)
+            analyze(1, Protocol::Tcp, None, ResponseSet::default(), None)
                 .await
                 .is_none()
         );

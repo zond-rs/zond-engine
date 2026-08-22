@@ -44,10 +44,12 @@ use crate::fingerprint::os;
 use crate::model::ip::range::IpRange;
 use crate::model::{
     ip::set::IpSet,
-    port::Protocol,
+    port::{Discovery as PortDiscovery, Port, PortState, Protocol, ScanResponse},
     target::{Target, TargetMap},
     technique::TcpScanTechnique,
 };
+use crate::scanner::pacing::limits::CONNECT_CONCURRENCY;
+use crate::scanner::pool::ProbePool;
 use crate::scanner::resolver::HostnameResolver;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
@@ -563,6 +565,136 @@ pub(super) async fn run_active_os_series(
     }
 }
 
+/// Asks each host that has not said what kernel it runs, by SNMP.
+///
+/// One `GetRequest` for `sysDescr.0` per host, and on anything that answers, the
+/// exact kernel — because on a Unix host `sysDescr` is the output of `uname -a`.
+///
+/// # Why this is worth a phase of its own
+///
+/// It is the only thing this engine can reach that states a kernel version. A
+/// TCP stack's shape identifies a *family* and cannot do more: Debian 12
+/// (kernel 6.1) and Debian 13 (kernel 6.12) answer this engine's probe with
+/// byte-identical shapes, measured on both. A service banner names a
+/// distribution release at best. An agent answering here answers outright, and a
+/// kernel version is the single most actionable thing a scan can learn about a
+/// Unix host, because it is what a known-vulnerability lookup keys on.
+///
+/// # Why it does not simply add a port to the scan
+///
+/// Because a detection *level* and a port *list* are different dials, and
+/// crossing them would mean `--ports 80 -O` sending probes to a port the caller
+/// excluded. It would also be slower for no gain: establishing UDP port state
+/// means waiting on ICMP unreachables, which targets rate-limit, and this phase
+/// needs no port state at all. It asks a question and reads the answer.
+///
+/// # It does record the port
+///
+/// A host that answers an SNMP request has proved something is listening, more
+/// directly than a SYN+ACK proves it, and a scanner that knew a port was open
+/// and did not say so would be withholding a finding. An open agent answering
+/// the default `public` community is also a finding in its own right — arguably
+/// a more actionable one than the kernel it just disclosed.
+///
+/// The port is filed with the evidence that found it —
+/// [`ScanResponse::UdpResponse`] — so a report can distinguish it from one the
+/// port scan established and never has to pretend it was asked for.
+///
+/// This is the *opposite* of widening `--ports`, not an exception to it. The
+/// objection there is to sending traffic nobody requested; the traffic here was
+/// requested, by `-O`, and what is at stake is only whether the answer is
+/// reported or discarded.
+///
+/// # Who is asked
+///
+/// Every host that is up and whose kernel is still unknown — which is a
+/// different and better test than "could not be named". A host already reported
+/// as `Linux · Debian 13` has been named perfectly well and still has nothing to
+/// say about its kernel, so it is exactly the host worth asking.
+pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetection) {
+    if !os_detection.is_active() {
+        return;
+    }
+
+    let targets: Vec<crate::model::ip::scoped::ScopedIp> = ctx
+        .host_addresses()
+        .into_iter()
+        .filter_map(|ip| {
+            ctx.read_host(&ip, |host| {
+                let known = host.os().is_some_and(|os| os.kernel().is_some());
+                (host.status().is_up() && !known).then(|| host.scoped_ip())
+            })
+            .flatten()
+        })
+        .collect();
+
+    if targets.is_empty() {
+        return;
+    }
+
+    info!(
+        "Asking {} host(s) what kernel they run, by SNMP",
+        targets.len()
+    );
+
+    let mut named = 0usize;
+    let mut pool = ProbePool::new(
+        CONNECT_CONCURRENCY,
+        ctx.clone(),
+        ScannerKind::OsSnmp,
+        |found: Option<(IpAddr, Port, Vec<os::OsEvidence>)>, _audit| {
+            if let Some((ip, port, evidence)) = found {
+                ctx.update_host(ip, |host| {
+                    host.add_port(port);
+                    if os::identify(host, evidence) {
+                        named += 1;
+                    }
+                });
+            }
+        },
+    );
+
+    for target in targets {
+        if ctx.handle.should_stop() {
+            break;
+        }
+        pool.admit(ask_for_kernel(target)).await;
+    }
+    pool.drain().await;
+
+    if named > 0 {
+        info!(
+            verbosity = 1,
+            "Named {named} host(s) from what they reported"
+        );
+    }
+}
+
+/// The port an SNMP agent listens on. Fixed: an agent elsewhere is one nothing
+/// could have found without being told, and guessing at others would be a port
+/// scan rather than a question.
+const SNMP_PORT: u16 = 161;
+
+/// Sends one SNMP request to `target` and returns what the answer said about the
+/// machine.
+///
+/// A link-local address with no interface recorded against it yields no socket
+/// address at all and is skipped: dialling it anyway would fail with an error
+/// describing this host's routing rather than anything about the target.
+async fn ask_for_kernel(
+    target: crate::model::ip::scoped::ScopedIp,
+) -> Option<(IpAddr, Port, Vec<os::OsEvidence>)> {
+    let addr = target.to_socket_addr(SNMP_PORT)?;
+
+    let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);
+    let (port, evidence) = crate::fingerprint::fingerprint_udp_detailed(addr, port).await?;
+
+    // Recorded with what found it, so a report can tell this port from one the
+    // port scan established — and never has to imply it was asked for.
+    let port = port.with_discovery(PortDiscovery::new(ScanResponse::UdpResponse));
+    Some((target.addr(), port, evidence))
+}
+
 /// Runs the active operating-system echo probe, where the caller asked for it
 /// and the passive sources left hosts unnamed.
 ///
@@ -998,6 +1130,111 @@ mod tests {
             .read_host(&ip, |host| host.os().is_some())
             .expect("the host is in the store");
         assert!(!named);
+    }
+
+    /// A host that has already said what kernel it runs is not asked again.
+    ///
+    /// The test is "is the kernel known", not "was the host named" — a host
+    /// reported as `Linux · Debian 13` has been named perfectly well and still
+    /// has nothing on record about its kernel, so it is exactly the host worth
+    /// asking. Getting this backwards would skip the population the phase exists
+    /// for.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_kernel_probe_skips_only_hosts_whose_kernel_is_known() {
+        use crate::model::host::{HostStatus, OsFingerprint, StatusProtocol, StatusReason};
+
+        let up = |host: &mut crate::model::host::Host| {
+            host.record_evidence(
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::Arp, "an address resolution reply"),
+            );
+        };
+
+        let (_session, ctx) = ScanSession::new();
+        // Named, with no kernel: still worth asking.
+        let named: IpAddr = "192.0.2.10".parse().expect("a valid address");
+        ctx.update_host(named, |host| {
+            up(host);
+            host.set_os(OsFingerprint::new("Debian", 84).with_family("Linux"));
+        });
+        // Kernel already known: nothing left to ask for.
+        let known: IpAddr = "192.0.2.11".parse().expect("a valid address");
+        ctx.update_host(known, |host| {
+            up(host);
+            host.set_os(
+                OsFingerprint::new("Debian", 84)
+                    .with_family("Linux")
+                    .with_kernel("6.1.0"),
+            );
+        });
+
+        // TEST-NET-1 routes nowhere, so nothing answers and nothing is recorded.
+        // What this pins is the selection: the phase must run at all, and must
+        // not fail, for a store in exactly this state.
+        run_active_os_snmp(&ctx, OsDetection::Active).await;
+
+        assert!(ctx.take_failures().is_empty(), "declining is not failing");
+        assert!(
+            ctx.read_host(&known, |host| host
+                .os()
+                .and_then(|os| os.kernel().map(ToOwned::to_owned)))
+                .flatten()
+                .as_deref()
+                == Some("6.1.0"),
+            "a kernel already on record is left as it was"
+        );
+    }
+
+    /// A host that answers has proved a port open, and a scanner that knew and
+    /// did not say would be withholding a finding.
+    ///
+    /// This was nearly built the other way, on the reasoning that 161 is not a
+    /// port the caller asked to scan. That confuses two things: the objection to
+    /// widening `--ports` is to sending traffic nobody requested, and this
+    /// traffic *was* requested — by the detection level. Once it is sent, all
+    /// that remains is whether the answer is reported or thrown away, and an
+    /// open agent answering the default community is a finding in its own right.
+    ///
+    /// Recorded with the evidence that found it, so a report never has to imply
+    /// it was asked for.
+    #[test]
+    fn a_port_the_kernel_probe_found_is_recorded_with_what_found_it() {
+        let port = crate::fingerprint::baseline_port(161, Protocol::Udp, PortState::Open)
+            .with_discovery(PortDiscovery::new(ScanResponse::UdpResponse));
+
+        assert_eq!(port.number(), 161);
+        assert_eq!(port.protocol(), Protocol::Udp);
+        assert_eq!(port.state(), PortState::Open);
+        assert_eq!(
+            port.discovery().map(|found| found.reason().clone()),
+            Some(ScanResponse::UdpResponse),
+            "a report has to be able to tell this from a port the scan established"
+        );
+    }
+
+    /// Below `Active` this sends nothing, like every other probe of its own.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_kernel_probe_sends_nothing_below_the_active_level() {
+        for level in [OsDetection::Off, OsDetection::Passive] {
+            let (_session, ctx) = ScanSession::new();
+            let ip: IpAddr = "192.0.2.12".parse().expect("a valid address");
+            ctx.update_host(ip, |host| {
+                host.record_evidence(
+                    crate::model::host::HostStatus::Up,
+                    crate::model::host::StatusReason::new(
+                        crate::model::host::StatusProtocol::Arp,
+                        "an address resolution reply",
+                    ),
+                );
+            });
+
+            run_active_os_snmp(&ctx, level).await;
+
+            assert!(
+                ctx.take_probe_stats().is_empty(),
+                "{level} put a probe on the wire"
+            );
+        }
     }
 
     /// The series probe opens a raw socket, so it must not open one to probe

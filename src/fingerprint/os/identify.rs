@@ -132,6 +132,7 @@ mod tests {
             vendor: None,
             product: None,
             version: None,
+            kernel: None,
             cpe: None,
             confidence,
             evidence: "a synthetic stack reading".to_owned(),
@@ -232,6 +233,7 @@ mod tests {
             vendor: Some("Debian".to_owned()),
             product: None,
             version: Some("12.0".to_owned()),
+            kernel: None,
             cpe: Some("cpe:/o:debian:debian_linux:12.0".to_owned()),
             confidence: 0.55,
             evidence: "service banner names Linux".to_owned(),
@@ -277,6 +279,7 @@ mod tests {
             vendor: Some("Debian".to_owned()),
             product: Some("Linux".to_owned()),
             version: Some("12.0".to_owned()),
+            kernel: None,
             cpe: None,
             confidence: 0.55,
             evidence: "service banner names Linux".to_owned(),
@@ -299,6 +302,46 @@ mod tests {
             host.vendor(),
             Some("Raspberry Pi Trading Ltd"),
             "and the board's maker is still on record, against the hardware"
+        );
+    }
+
+    /// A stack read twice by two routes keeps the richer reading.
+    ///
+    /// The regression this replaced: the port scan reads a stack off one reply
+    /// and the series probe reads the *same stack* off twelve, concluding the
+    /// identical thing — same source, same family, nothing finer from either. So
+    /// the second was rejected as a claim already on record, and the readings
+    /// only it could produce, the ones that cost twenty-four probes, went with
+    /// it. A scan reported `syn-ack hops>=64 …` where it had measured
+    /// `id=`, `isn=` and `ts=` as well.
+    ///
+    /// The claim is not new; the working behind it is.
+    #[test]
+    fn a_stack_read_twice_keeps_the_reading_that_says_more() {
+        let mut passive = observed("Linux", 0.65);
+        passive.evidence = "syn-ack hops>=64 opts=M,S,T,N,W win=65160".to_owned();
+
+        let mut series = observed("Linux", 0.65);
+        series.evidence =
+            "syn-ack hops>=64 opts=M,S,T,N,W win=65160 id=zero isn=hashed ts=ticking(1000Hz)"
+                .to_owned();
+
+        let mut host = host();
+        identify(&mut host, [passive]);
+        identify(&mut host, [series]);
+
+        let evidence = host
+            .os()
+            .and_then(|os| os.evidence().map(str::to_owned))
+            .expect("a finding with its evidence");
+
+        assert!(
+            evidence.contains("isn=hashed"),
+            "the series reading is the one that cannot be got back: {evidence}"
+        );
+        assert!(
+            !evidence.contains(" | "),
+            "and the passive line it extends is not printed beside it: {evidence}"
         );
     }
 

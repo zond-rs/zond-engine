@@ -918,7 +918,7 @@ vendor = "Sendmail"
 product = "Sendmail"
 context = "smtp.banner"
 example = "foo.bar ESMTP Sendmail 8.15.2/8.15.2/Debian-8+deb9u1; Thu, 29 Apr 2021 06:45:02 +0200; (No UCE/UBE) logging access from: xyz.foo.bar(OK)-xyz.foo.bar [10.0.0.1]"
-metadata = { "service.family" = "Sendmail", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "9.1", "os.cpe23" = "cpe:/o:debian:debian_linux:9.1", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "host.name" = "{capture:1}", "service.cpe23" = "cpe:/a:sendmail:sendmail:{service.version}", "sendmail.config.version" = "{capture:3}", "system.time" = "{capture:4}" }
+metadata = { "service.family" = "Sendmail", "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "9", "os.cpe23" = "cpe:/o:debian:debian_linux:9.1", "system.time.format" = "EEE, d MMM yyyy HH:mm:ss Z", "host.name" = "{capture:1}", "service.cpe23" = "cpe:/a:sendmail:sendmail:{service.version}", "sendmail.config.version" = "{capture:3}", "system.time" = "{capture:4}" }
 
 [[match]]
 name = "Sendmail - Debian 5.x (lenny)"

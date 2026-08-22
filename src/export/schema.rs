@@ -121,6 +121,7 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
         ScannerKind::UdpPort => "udp_port",
         ScannerKind::OsEcho => "os_echo",
         ScannerKind::OsSeries => "os_series",
+        ScannerKind::OsSnmp => "os_snmp",
         ScannerKind::Composite => "composite",
     }
 }
@@ -1086,6 +1087,12 @@ pub struct OsDto<'a> {
     /// above. It exists so a disputed finding can be diagnosed — and turned into
     /// a corpus entry — without re-running the scan.
     pub evidence: Option<&'a str>,
+    /// The kernel release, or `null` where nothing read one.
+    ///
+    /// Beside `generation` rather than a finer form of it: a distribution
+    /// release and the kernel it ships are two facts about one machine. It is
+    /// also what a known-vulnerability lookup keys on for a Unix host.
+    pub kernel: Option<&'a str>,
     /// How well supported everything *past* the family is, or `null` where the
     /// finding stops at a family.
     ///
@@ -1107,6 +1114,7 @@ impl<'a> OsDto<'a> {
             accuracy: os.accuracy(),
             cpe: os.cpes().iter().map(|cpe| &**cpe).collect(),
             evidence: os.evidence(),
+            kernel: os.kernel(),
             detail_accuracy: os.detail_accuracy(),
         }
     }

@@ -360,6 +360,12 @@ pub async fn scan(
         // reads what no single reply carries, so the echo pass that follows is
         // left with the machines that answered nothing at all.
         orchestrator::run_active_os_series(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
+        // Then the kernel, from whichever hosts will say. Ordered after the
+        // series probe because its own test is "does this host's kernel remain
+        // unknown", and a host the series pass just named still has no kernel —
+        // so the answer does not change, but the log reads in the order the
+        // evidence arrived.
+        orchestrator::run_active_os_snmp(&ctx, cfg.os_detection).await;
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
         let report = recorder.finish(&ctx);
 

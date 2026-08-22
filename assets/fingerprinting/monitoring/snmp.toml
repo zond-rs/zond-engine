@@ -30,3 +30,100 @@ description = "Simple Network Management Protocol"
 name = "snmp_v1_get_sysdescr"
 payload = '\x30\x29\x02\x01\x00\x04\x06public\xa0\x1c\x02\x04zond\x02\x01\x00\x02\x01\x00\x30\x0e\x30\x0c\x06\x08\x2b\x06\x01\x02\x01\x01\x01\x00\x05\x00'
 protocol = "udp"
+
+# ── What a Unix agent says when asked what it is ─────────────────────────────
+#
+# `sysDescr` on a Unix host is the output of `uname -a`, and RFC 1213 defines it
+# as exactly that: "a textual description of the entity ... the full name and
+# version identification of the system's hardware type, software operating
+# system, and networking software."
+#
+#   Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) aarch64
+#         │    └─ release ──┘                                     └─ machine
+#         └─ nodename
+#
+# **This is the only thing this engine can reach that states a kernel version.**
+# A TCP stack's shape identifies a family and no more — Debian 12 (kernel 6.1)
+# and Debian 13 (kernel 6.12) answer this engine's probe with byte-identical
+# shapes, measured on both — and a service banner names a distribution release
+# at best. An agent answering here answers outright.
+#
+# The imported corpus has twenty-seven Linux rules for this field and every one
+# of them is device-specific — Cisco RV routers, Gigamon appliances — or pins a
+# kernel from the 2.4 series. None reads an ordinary host, which is what these
+# two do.
+#
+# The release goes to `os.kernel` rather than `os.version`. A kernel and a
+# distribution release are two facts about one machine — Debian 12 runs kernel
+# 6.1 — and filing both under one field made an SSH banner naming `12` and this
+# rule naming `6.1.0` read as a contradiction, so a host that had stated both was
+# reported as neither. FreeBSD states both, because there the kernel release *is*
+# the operating system's version.
+#
+# The nodename is deliberately **not** captured. It is somebody's hostname, this
+# engine ships a redaction policy for exactly that class of detail, and a
+# fingerprint that smuggles one into a report through the version field would
+# defeat it.
+
+[[match]]
+name = "Linux, by the kernel it reports"
+# Anchored on the whole line so a description merely *containing* the word does
+# not match: `\S+` is the nodename, and the release that follows is what the
+# rule is for. The trailing `.*` absorbs the build string and machine type,
+# which vary by builder and say nothing a rule should key on.
+pattern = '^Linux \S+ (\d+\.\d+(?:\.\d+)?)\S* .*'
+version_group = 1
+context = "snmp.sys_description"
+example = "Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) aarch64"
+metadata = { "os.family" = "Linux", "os.product" = "Linux", "os.kernel" = "{capture:1}", "os.cpe23" = "cpe:/o:linux:linux_kernel:{capture:1}" }
+
+# ── Arch, by the way it names its own kernel ─────────────────────────────────
+#
+# Arch has no banner marker anywhere. Its OpenSSH is upstream's, announced as a
+# bare `OpenSSH_10.0p2` with no distribution suffix, and its web servers tag
+# themselves `(Unix)` rather than `(Arch)`. Recog — a mature corpus — carries no
+# SSH rule for Arch at all, and that is not an omission: there is nothing in the
+# banner to match.
+#
+# The kernel release is the exception. Arch's package versioning puts its own
+# name in it, and `uname -r` therefore carries it:
+#
+#   6.12.1-arch1-1        6.12.1-zen1-1        6.12.1-hardened1-1
+#         └─ this
+#
+# **There is no version to report, and that is correct rather than a shortfall.**
+# Arch is a rolling release: it has no 12, no 22.04, nothing a release field
+# could honestly hold. `Arch Linux` plus the exact kernel is the whole answer,
+# and it is a better one than most distributions give.
+#
+# ## Authored from the naming convention, not from a measurement
+#
+# No Arch host has been read by this engine. That is worth stating, and it is
+# also why this rule is safe to ship unconfirmed: `arch1`, `zen1` and
+# `hardened1` in a kernel release are strings only Arch's packaging produces, so
+# the failure this rule can have is a false *negative* — the shape is different
+# from what is written here and it never fires. It cannot name a Debian host
+# Arch. A rule whose only failure mode is silence is one worth having before
+# somebody has a machine to check it against.
+#
+# The `-lts` variant is deliberately left out: `6.6.63-1-lts` carries no
+# distinctive marker, and matching on `lts` alone would claim every distribution
+# that ships a long-term kernel under that name.
+
+[[match]]
+name = "Arch Linux, by the way it names its own kernel"
+pattern = '^Linux \S+ (\d+\.\d+(?:\.\d+)?)-(?:arch|zen|hardened)\d+\S* .*'
+context = "snmp.sys_description"
+example = "Linux host 6.12.1-arch1-1 #1 SMP PREEMPT_DYNAMIC Fri, 22 Nov 2024 12:00:00 +0000 x86_64"
+metadata = { "os.vendor" = "Arch Linux", "os.family" = "Linux", "os.product" = "Linux", "os.kernel" = "{capture:1}", "os.cpe23" = "cpe:/o:archlinux:arch_linux:-" }
+
+[[match]]
+name = "FreeBSD, by the kernel it reports"
+# The same shape one family over. FreeBSD writes its release as `14.0-RELEASE`,
+# so the capture stops at the first non-version character for the same reason
+# the Linux rule's does.
+pattern = '^FreeBSD \S+ (\d+\.\d+)\S* .*'
+version_group = 1
+context = "snmp.sys_description"
+example = "FreeBSD host 14.0-RELEASE FreeBSD 14.0-RELEASE #0: Fri Nov 10 05:57:23 UTC 2023 amd64"
+metadata = { "os.family" = "FreeBSD", "os.product" = "FreeBSD", "os.kernel" = "{capture:1}", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:freebsd:freebsd:{capture:1}" }

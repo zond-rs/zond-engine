@@ -126,6 +126,12 @@ pub struct OsVerdict {
     pub version: Option<String>,
     /// A Common Platform Enumeration identifier, where a rule named one.
     pub cpe: Option<String>,
+    /// The kernel release, where a source read one.
+    ///
+    /// Beside [`version`](Self::version) rather than instead of it: a
+    /// distribution release and the kernel it ships are two facts about one
+    /// machine, and a source that knows one may know nothing of the other.
+    pub kernel: Option<String>,
     /// How sure this is, on the `0..=100` scale
     /// [`OsFingerprint`] uses. Bounded by [`MAX_STACK_ACCURACY`].
     ///
@@ -167,6 +173,7 @@ impl OsVerdict {
             vendor: self.vendor.clone(),
             product: self.product.clone(),
             version: self.version.clone(),
+            kernel: self.kernel.clone(),
             cpe: self.cpe.clone(),
             confidence: f32::from(self.accuracy) / 100.0,
             evidence: self.evidence.clone(),
@@ -211,6 +218,9 @@ impl OsVerdict {
         }
         if let Some(cpe) = &self.cpe {
             fingerprint.add_cpe(&**cpe);
+        }
+        if let Some(kernel) = &self.kernel {
+            fingerprint = fingerprint.with_kernel(&**kernel);
         }
         if let Some(accuracy) = self.detail_accuracy {
             fingerprint = fingerprint.with_detail_accuracy(accuracy);
@@ -369,6 +379,9 @@ fn score(matched: Vec<&OsDefinition>, evidence: String) -> Option<OsVerdict> {
         vendor,
         product,
         version,
+        // A stack rule reads a reply's shape, which carries no kernel release.
+        // Only a service that states one can supply it.
+        kernel: None,
         cpe,
         accuracy,
         source: OsSource::TcpStack,
@@ -549,6 +562,7 @@ mod tests {
             vendor: Some("Debian".to_owned()),
             product: Some("Linux".to_owned()),
             version: Some("12".to_owned()),
+            kernel: None,
             cpe: None,
             accuracy: 84,
             detail_accuracy: Some(55),
@@ -578,6 +592,7 @@ mod tests {
             vendor: Some("Microsoft".to_owned()),
             product: None,
             version: Some("10".to_owned()),
+            kernel: None,
             cpe: None,
             accuracy: 60,
             detail_accuracy: Some(60),

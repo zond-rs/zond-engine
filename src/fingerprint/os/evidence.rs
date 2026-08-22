@@ -76,6 +76,11 @@ pub struct OsEvidence {
     pub product: Option<String>,
     /// The version, where the source knew one.
     pub version: Option<String>,
+    /// The kernel release, where the source read one.
+    ///
+    /// Beside the version rather than instead of it: a distribution release and
+    /// the kernel it ships are two facts, not two answers.
+    pub kernel: Option<String>,
     /// A Common Platform Enumeration identifier, where one applies exactly.
     pub cpe: Option<String>,
     /// How much this source is worth on its own, from 0 to 1.
@@ -168,10 +173,11 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     lines.sort_unstable();
     lines.dedup();
 
-    let (vendor, product, version, cpe) = (
+    let (vendor, product, version, kernel, cpe) = (
         agreed(|item| &item.vendor),
         agreed(|item| &item.product),
         agreed(|item| &item.version),
+        agreed(|item| &item.kernel),
         agreed(|item| &item.cpe),
     );
 
@@ -187,7 +193,11 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     // Combined over the sources that actually stated something finer, and
     // reduced by the same dissent the family had to survive: a contested family
     // does not leave its release uncontested.
-    let refined = vendor.is_some() || product.is_some() || version.is_some() || cpe.is_some();
+    let refined = vendor.is_some()
+        || product.is_some()
+        || version.is_some()
+        || kernel.is_some()
+        || cpe.is_some();
     let detail_accuracy = refined.then(|| {
         let stated = items
             .iter()
@@ -195,6 +205,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
                 item.vendor.is_some()
                     || item.product.is_some()
                     || item.version.is_some()
+                    || item.kernel.is_some()
                     || item.cpe.is_some()
             })
             .map(|item| item.confidence);
@@ -209,6 +220,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         vendor,
         product,
         version,
+        kernel,
         cpe,
         accuracy,
         detail_accuracy,
@@ -250,6 +262,7 @@ mod tests {
             vendor: None,
             product: None,
             version: None,
+            kernel: None,
             cpe: None,
             confidence,
             evidence: format!("{source:?} says {family}"),

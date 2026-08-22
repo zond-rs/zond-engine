@@ -288,6 +288,7 @@ mod tests {
     fn analyze(port: u16, banner: &str) -> Vec<Evidence> {
         HttpHeadersAnalyzer.analyze(
             &PortContext {
+                protocol: crate::model::port::Protocol::Tcp,
                 port,
                 addr: None,
                 tunnel: None,
@@ -451,6 +452,7 @@ mod tests {
         let evidence = HttpHeadersAnalyzer.analyze(
             &PortContext {
                 port: 443,
+                protocol: crate::model::port::Protocol::Tcp,
                 addr: None,
                 tunnel: Some(Tunnel::Tls),
             },
@@ -481,6 +483,7 @@ mod os_from_headers {
         let evidence = HttpHeadersAnalyzer.analyze(
             &PortContext {
                 port: 80,
+                protocol: crate::model::port::Protocol::Tcp,
                 addr: None,
                 tunnel: None,
             },

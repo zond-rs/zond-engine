@@ -213,6 +213,7 @@ pub fn evidence_from(hostname: Option<&str>) -> Option<OsEvidence> {
         vendor: None,
         product: None,
         version: None,
+        kernel: None,
         cpe: None,
         confidence: CONFIDENCE,
         evidence: format!("hostname {hostname}"),

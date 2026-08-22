@@ -42,8 +42,8 @@ use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT}
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, ScannerKind};
 
-/// Fingerprints every open TCP port currently in the store, upgrading each
-/// port's service in place.
+/// Fingerprints every open port currently in the store worth an exchange,
+/// upgrading each port's service in place.
 ///
 /// Intended to run once, after a discovery phase that established port *state* but
 /// not service identity, which is the SYN path. Ports that already carry a
@@ -51,7 +51,7 @@ use crate::scanner::session::{ScanContext, ScannerKind};
 /// caller only runs this where it is actually needed.
 pub async fn detect(ctx: &ScanContext) {
     // Snapshot the targets up front so no DashMap guard is held across an await.
-    let targets = open_tcp_ports(ctx);
+    let targets = fingerprintable_ports(ctx);
     if targets.is_empty() {
         return;
     }
@@ -67,30 +67,43 @@ pub async fn detect(ctx: &ScanContext) {
         },
     );
 
-    for (target, port) in targets {
+    for (target, port, protocol) in targets {
         if ctx.handle.should_stop() {
             break;
         }
-        pool.admit(fingerprint_one(target, port)).await;
+        pool.admit(fingerprint_one(target, port, protocol)).await;
     }
 
     pool.drain().await;
 }
 
-/// Every open TCP `(address, port)` in the store, snapshotted so the DashMap is
-/// not borrowed across the connections that follow.
+/// Every open `(address, port, protocol)` in the store worth fingerprinting,
+/// snapshotted so the DashMap is not borrowed across the exchanges that follow.
 ///
 /// The address is taken from the host rather than from the store key, because
 /// the key is only the address and a link-local one cannot be connected to
 /// without the interface it was seen on. The host carries that; see
 /// [`Host::scoped_ip`](crate::model::host::Host::scoped_ip).
-fn open_tcp_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16)> {
+///
+/// # Which UDP ports qualify
+///
+/// Only those whose reply this engine can read — [`extract::reads`]. A TCP port
+/// always qualifies, because any of them may volunteer a banner and reading one
+/// costs a connection that was going to be made anyway. A UDP port is different:
+/// there is no banner to wait for, so a datagram nothing here could decode
+/// teaches nothing the scan has not already recorded, and sending one would be
+/// traffic spent to learn a fact already in hand.
+///
+/// [`extract::reads`]: crate::fingerprint
+fn fingerprintable_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16, Protocol)> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
         let address = host.value().scoped_ip();
         for port in host.value().ports() {
-            if port.protocol() == Protocol::Tcp && port.state() == PortState::Open {
-                targets.push((address.clone(), port.number()));
+            if port.state() == PortState::Open
+                && crate::fingerprint::reads_replies(port.number(), port.protocol())
+            {
+                targets.push((address.clone(), port.number(), port.protocol()));
             }
         }
     }
@@ -109,6 +122,7 @@ fn open_tcp_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16)> {
 async fn fingerprint_one(
     target: ScopedIp,
     port_number: u16,
+    protocol: Protocol,
 ) -> Option<(IpAddr, Port, Vec<os::OsEvidence>)> {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
@@ -118,15 +132,25 @@ async fn fingerprint_one(
         return None;
     };
     let ip = target.addr();
-    let stream = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr))
-        .await
-        .ok()?
-        .ok()?;
 
     // Seed the same baseline the connect scanner uses, then let the engine
-    // refine it over the live connection.
-    let port = crate::fingerprint::baseline_port(port_number, Protocol::Tcp, PortState::Open);
-    let (port, about_the_host) = crate::fingerprint::fingerprint_tcp_detailed(stream, port).await;
+    // refine it over the live exchange.
+    let port = crate::fingerprint::baseline_port(port_number, protocol, PortState::Open);
+
+    let (port, about_the_host) = match protocol {
+        Protocol::Tcp => {
+            let stream = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr))
+                .await
+                .ok()?
+                .ok()?;
+            crate::fingerprint::fingerprint_tcp_detailed(stream, port).await
+        }
+        // No connection to establish and no banner to wait for: one datagram
+        // out, one back, and whatever text it carries. Silence leaves the port
+        // exactly as the scan recorded it.
+        Protocol::Udp => crate::fingerprint::fingerprint_udp_detailed(addr, port).await?,
+    };
+
     Some((ip, port, about_the_host))
 }
 

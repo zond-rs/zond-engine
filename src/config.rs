@@ -244,10 +244,19 @@ pub enum OsDetection {
     ///   timestamp clock ticks are *policies* — visible across several replies
     ///   and in no single one. These are the features a release-level rule turns
     ///   on.
+    /// - **One SNMP request**, to a host whose kernel is still unknown. On a Unix
+    ///   host `sysDescr` is the output of `uname -a`, so an agent that answers
+    ///   states the exact kernel — the one thing no amount of packet analysis
+    ///   can establish, and what a known-vulnerability lookup keys on. Sent with
+    ///   the default `public` community, read-only, for one object.
     /// - **One ICMP echo**, to a host that answered no TCP probe at all. A stock
     ///   Windows firewall drops rather than refuses, so a desktop with nothing
     ///   exposed emits no segment any TCP rule could read; a ping is the one
     ///   packet it still answers.
+    ///
+    /// None of them touches the port list. A detection level says how hard to
+    /// look at a host, not which ports to scan, and a level that quietly widened
+    /// `--ports` would send probes at a port the caller excluded.
     ///
     /// The traffic is unremarkable in shape but it is extra, and it is addressed
     /// at hosts the caller may only have meant to enumerate. It is spent where

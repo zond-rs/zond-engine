@@ -137,6 +137,7 @@ pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
         vendor: None,
         product: None,
         version: None,
+        kernel: None,
         cpe: None,
         confidence: CONFIDENCE,
         evidence: format!("hardware vendor {vendor}"),
