@@ -14,6 +14,10 @@
 //! long the whole run may take, and when silence has gone on long enough to be
 //! an answer.
 //!
+//! - [`congestion`] — how many probes a scan may have outstanding at once,
+//!   grown and cut from what the targets are managing to answer. This is what
+//!   paces a raw port scan; everything else here decides how long to wait, not
+//!   how hard to push.
 //! - [`retry`] — the schedule one probe is repeated on, and the ledger that
 //!   tracks every outstanding probe against it.
 //! - [`deadline`] — how long the whole scan runs, widened or narrowed by what
@@ -55,6 +59,7 @@
 //! starting point, so asking for a fast scan cannot hand the UDP scanner a
 //! schedule its protocol is incapable of satisfying.
 
+pub mod congestion;
 pub mod deadline;
 pub mod limits;
 pub mod retry;

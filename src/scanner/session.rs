@@ -204,6 +204,24 @@ impl HostStore {
         self.inner.get(ip).map(|entry| entry.value().clone())
     }
 
+    /// Reads the host at `ip` without cloning it, if there is one.
+    ///
+    /// The live counterpart of [`get`](Self::get), and the one to reach for
+    /// inside an event loop. A scan fires
+    /// [`HostUpdated`](ScanEvent::HostUpdated) on every change, and a port scan
+    /// changes a host once per port — so a consumer that answers each event with
+    /// a [`get`](Self::get) clones a growing port map on every port of every
+    /// host, which is quadratic in the size of the scan and invisible until the
+    /// port count is large. Take what the event needs through this, and clone
+    /// only once the answer is that the host is worth rendering.
+    ///
+    /// `read` runs under the store's own guard. It must not touch the store
+    /// again — that deadlocks — and it should not block, since a scanner writing
+    /// to the same host waits behind it.
+    pub fn read<R>(&self, ip: &IpAddr, read: impl FnOnce(&Host) -> R) -> Option<R> {
+        self.inner.get(ip).map(|entry| read(entry.value()))
+    }
+
     /// Whether anything has been recorded at `ip`.
     ///
     /// Cheaper than [`get`](Self::get) when the host itself is not wanted, since

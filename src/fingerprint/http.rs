@@ -140,8 +140,187 @@ impl Analyzer for HttpHeadersAnalyzer {
             ));
         }
 
+        // What is *running on* the server, as distinct from the server. See
+        // `application_hint`.
+        let named = http
+            .header("server")
+            .and_then(parse_server)
+            .map(|(product, _)| product);
+        if let Some(application) = application_hint(&http, named.as_deref()) {
+            evidence.push(stamp(
+                Evidence::new(SourceId::HttpHeaders, Confidence::Probable)
+                    .with_service("http")
+                    .with_extrainfo(application),
+                ctx,
+            ));
+        }
+
         evidence
     }
+}
+
+/// What application this response belongs to, where it can be read off the
+/// response without anybody having written a rule for that application.
+///
+/// This is the answer to a question the corpus scales badly against. A signature
+/// per product identifies the products somebody has written a signature for, and
+/// the long tail of self-hosted software is precisely the part nobody has —
+/// which is also the part a scan of somebody's own network is mostly made of. So
+/// the two signals here are chosen for being *structural*: they identify by
+/// where a name appears, not by matching a name that was known in advance.
+///
+/// **A vendor prefix on a header name.** `X-Emby-Token`, `X-Plex-Protocol`,
+/// `X-Jenkins`, `X-Drupal-Cache`, `X-Shopify-Stage` — the convention of
+/// prefixing one's own headers with one's own name is near-universal and it
+/// hands over the vendor for free. Read across the CORS allow-list too, which is
+/// where a server enumerates the vocabulary it accepts and so names itself even
+/// when its response body is a bare redirect.
+///
+/// **The document title.** For a self-hosted application serving its own web
+/// interface, the `<title>` is very often the product name and nothing else:
+/// `Sonarr`, `Netdata`, `Grafana`, `Squoosh`. It is user-controlled text and so
+/// is never allowed near the product slot; as supplementary detail it is the
+/// difference between a row that says `http` and one that says which one.
+///
+/// The prefix is preferred where both exist: a title is whatever somebody typed,
+/// and a header name is what the software calls itself in its own code.
+///
+/// `named` is the product the `Server` header already gave up, and a title that
+/// mentions it is discarded. Almost every default landing page on the internet
+/// is titled after the server serving it — `Welcome to nginx!`, `Apache2 Ubuntu
+/// Default Page` — and repeating a name the row already carries is at best noise
+/// and at worst the claim that an unconfigured web server is an application. A
+/// title naming something *else* is the case this exists for, and survives.
+fn application_hint(http: &HttpResponse<'_>, named: Option<&str>) -> Option<String> {
+    if let Some(vendor) = vendor_prefix(http) {
+        return Some(vendor);
+    }
+
+    let title = document_title(http.body)?;
+    let echoes_the_server = named.is_some_and(|product| {
+        let (title, product) = (title.to_ascii_lowercase(), product.to_ascii_lowercase());
+        title.contains(&product) || product.contains(&title)
+    });
+
+    (!echoes_the_server).then_some(title)
+}
+
+/// Header names that begin with `x-` and name no vendor.
+///
+/// The list is what makes the prefix rule usable: without it `X-Frame-Options`
+/// reports a product called "Frame". These are the de-facto standard extension
+/// headers — a closed, slow-moving set that has nothing to do with how many
+/// products exist, which is the whole reason this approach scales where a
+/// signature per product does not.
+const NOT_A_VENDOR: &[&str] = &[
+    "accel", "access", "api", "app", "auth", "cache", "content", "correlation", "csrf", "dns",
+    "download", "forwarded", "frame", "http", "instance", "permitted", "powered", "ratelimit",
+    "rate", "real", "request", "requested", "response", "robots", "runtime", "served", "server",
+    "sourcemap", "timer", "total", "trace", "transaction", "ua", "upstream", "varnish", "version",
+    "xss",
+];
+
+/// The vendor a response names by prefixing its own headers with it.
+///
+/// The **most repeated** prefix wins, not the first. A server that has its own
+/// header namespace uses it several times over, while a stray prefix from a
+/// proxy, a framework or a former product name appears once — so counting
+/// separates the software that is running here from everything else that
+/// touched the response. Emby is the case that settled it: its allow-list leads
+/// with the single `X-MediaBrowser-Token` it kept for compatibility and then
+/// names itself three times.
+///
+/// Ties go to whichever appeared first, so the result does not depend on hash
+/// ordering.
+fn vendor_prefix(http: &HttpResponse<'_>) -> Option<String> {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+
+    for name in http.header_vocabulary() {
+        let lowered = name.to_ascii_lowercase();
+        let Some(rest) = lowered.strip_prefix("x-") else {
+            continue;
+        };
+        // `x-emby-token` -> `emby`; a bare `x-jenkins` is the vendor itself.
+        let token = rest.split('-').next().unwrap_or(rest);
+        if token.len() < 3
+            || !token.chars().all(|c| c.is_ascii_alphanumeric())
+            || NOT_A_VENDOR.contains(&token)
+        {
+            continue;
+        }
+
+        match counts.iter_mut().find(|(seen, _)| seen == token) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((token.to_string(), 1)),
+        }
+    }
+
+    // `counts` is in first-seen order, and the index breaks the tie toward the
+    // front — `max_by_key` alone would take the last of equal maxima and make
+    // the answer depend on header order for no reason.
+    counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, (_, count))| (*count, std::cmp::Reverse(*index)))
+        .map(|(_, (token, _))| capitalize(token))
+}
+
+/// `emby` -> `Emby`. The header was lowercased on the way in and a product name
+/// rendered in lower case reads as a mistake rather than as a finding.
+fn capitalize(token: &str) -> String {
+    let mut chars = token.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Titles that name the page rather than the application.
+///
+/// An error page, a login prompt or a default landing page is served by
+/// thousands of unrelated things, so reporting one as though it identified
+/// something would be worse than reporting nothing.
+const NOT_AN_APPLICATION: &[&str] = &[
+    "400 bad request",
+    "401 unauthorized",
+    "403 forbidden",
+    "404 not found",
+    "500 internal server error",
+    "bad request",
+    "document",
+    "error",
+    "forbidden",
+    "home",
+    "index",
+    "index of /",
+    "log in",
+    "login",
+    "not found",
+    "sign in",
+    "unauthorized",
+    "welcome",
+];
+
+/// The document's `<title>`, where it is short enough and specific enough to be
+/// naming an application.
+fn document_title(body: &str) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    let open = lower.find("<title")?;
+    let start = open + lower[open..].find('>')? + 1;
+    let end = start + lower[start..].find("</title>")?;
+
+    let title = body.get(start..end)?.split_whitespace().collect::<Vec<_>>();
+    let title = title.join(" ");
+
+    // A sentence is a page description, not a product. Anything this long is
+    // being read for the wrong reason.
+    if title.is_empty() || title.len() > 40 {
+        return None;
+    }
+    if NOT_AN_APPLICATION.contains(&title.to_ascii_lowercase().as_str()) {
+        return None;
+    }
+    Some(title)
 }
 
 /// Marks `evidence` with the tunnel its response was read through, so an HTTP
@@ -227,36 +406,65 @@ fn is_placeholder(product: &str) -> bool {
 /// A minimally-parsed HTTP response: enough to read headers by name. The body is
 /// discarded — only the status line (as the marker that this *is* HTTP) and the
 /// header block are retained.
-struct HttpResponse {
+struct HttpResponse<'a> {
     /// `(lowercased name, trimmed value)` in wire order.
     headers: Vec<(String, String)>,
+    /// Whatever followed the blank line, as far as the response was read.
+    ///
+    /// Kept because on the ports that need identifying most, the body is the
+    /// only place the application names itself: a self-hosted service on an
+    /// unregistered number very often serves a single-page app whose `<title>`
+    /// is its own name and whose `Server` header names the framework
+    /// underneath it, if it sets one at all.
+    body: &'a str,
 }
 
-impl HttpResponse {
+impl<'a> HttpResponse<'a> {
     /// Parses `raw` if it begins with an HTTP status line. Returns `None` for
     /// anything that is not an HTTP response, so the analyzer can scan a mixed
     /// set of banners and pick the HTTP one.
-    fn parse(raw: &str) -> Option<Self> {
+    fn parse(raw: &'a str) -> Option<Self> {
         // The status line must lead. This is what distinguishes an HTTP reply
         // from any other captured banner.
         if !raw.starts_with("HTTP/") {
             return None;
         }
 
+        // Headers end at the first blank line and the body follows it. Tolerant
+        // of both CRLF and bare LF, and of a response cut off before either.
+        let (head, body) = raw
+            .find("\r\n\r\n")
+            .map(|at| (&raw[..at], &raw[at + 4..]))
+            .or_else(|| raw.find("\n\n").map(|at| (&raw[..at], &raw[at + 2..])))
+            .unwrap_or((raw, ""));
+
         let mut headers = Vec::new();
-        // Skip the status line; headers follow until the first blank line, which
-        // separates them from the body. Tolerant of both CRLF and bare LF.
-        for line in raw.split('\n').skip(1) {
+        // Skip the status line; every remaining line of the head is a header.
+        for line in head.split('\n').skip(1) {
             let line = line.strip_suffix('\r').unwrap_or(line);
-            if line.is_empty() {
-                break; // end of the header block
-            }
             if let Some((name, value)) = line.split_once(':') {
                 headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
             }
         }
 
-        Some(HttpResponse { headers })
+        Some(HttpResponse { headers, body })
+    }
+
+    /// Every header name this response carries, plus the names it *mentions* in
+    /// its CORS allow-list.
+    ///
+    /// The allow-list is included because it is a list of header names the
+    /// server expects a client to send, which is the server enumerating its own
+    /// vocabulary — and a server's vocabulary names it. One media server was
+    /// identified from nothing else: it sent no product anywhere in its
+    /// response, and then listed `X-Emby-Token` among the headers it would
+    /// accept.
+    fn header_vocabulary(&self) -> impl Iterator<Item = &str> {
+        self.headers.iter().map(|(name, _)| name.as_str()).chain(
+            self.header("access-control-allow-headers")
+                .into_iter()
+                .flat_map(|value| value.split(',').map(str::trim)),
+        )
     }
 
     /// The value of the first header named `name` (which must be lowercase),
@@ -296,6 +504,152 @@ mod tests {
             &ResponseSet::from_banners(vec![banner.to_string()]),
             &Collected::default(),
         )
+    }
+
+    /// What the analyzer read as supplementary detail, if anything.
+    fn extrainfo(port: u16, banner: &str) -> Option<String> {
+        analyze(port, banner)
+            .into_iter()
+            .find_map(|evidence| evidence.extrainfo)
+    }
+
+    /// A media server that names no product anywhere in its response, and then
+    /// lists the headers it will accept — among them its own.
+    ///
+    /// Captured from a real Emby server on port 8097, which nmap reported as
+    /// `upnp` from the `Server` header of its embedded DLNA stack. The DLNA
+    /// stack is real and so is the header; it is just not what is running there.
+    #[test]
+    fn a_server_that_names_itself_only_in_its_cors_list_is_still_named() {
+        let banner = "HTTP/1.1 200 OK\r\n\
+             Server: UPnP/1.0 DLNADOC/1.50\r\n\
+             Access-Control-Allow-Headers: Accept, Authorization, Content-Type, \
+             X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Authorization\r\n\
+             Content-Length: 0\r\n\r\n";
+
+        assert_eq!(extrainfo(8097, banner).as_deref(), Some("Emby"));
+    }
+
+    /// The prefix convention, read off a header the server actually sent.
+    #[test]
+    fn a_vendor_prefix_on_a_header_names_the_vendor() {
+        let banner =
+            "HTTP/1.1 200 OK\r\nServer: Kestrel\r\nX-Plex-Protocol: 1.0\r\n\r\n";
+        assert_eq!(extrainfo(32400, banner).as_deref(), Some("Plex"));
+    }
+
+    /// The standard extension headers name no vendor, and reporting one as a
+    /// product would make the whole rule unusable — every response on the
+    /// internet carries some of these.
+    #[test]
+    fn the_standard_extension_headers_name_nothing() {
+        let banner = "HTTP/1.1 200 OK\r\n\
+             Server: nginx/1.22.1\r\n\
+             X-Frame-Options: DENY\r\n\
+             X-Content-Type-Options: nosniff\r\n\
+             X-XSS-Protection: 1; mode=block\r\n\
+             X-Request-Id: abc123\r\n\
+             X-Cache: HIT\r\n\r\n";
+
+        assert_eq!(extrainfo(80, banner), None);
+    }
+
+    /// For a self-hosted application the document title is very often the
+    /// product name and nothing else, and on the ports that most need
+    /// identifying it is the only place the name appears.
+    ///
+    /// Captured from a real server on port 7778, which nmap reported as
+    /// `interwise?` — unrecognised — with `<title>Squoosh</title>` in the body
+    /// it had already read.
+    #[test]
+    fn the_document_title_names_an_application_nobody_wrote_a_rule_for() {
+        let banner = "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\r\n\
+             <!DOCTYPE html><html lang=\"en\"><head><title>Squoosh</title><meta \
+             name=\"description\" content=\"Squoosh is the ultimate image optimizer\" />";
+
+        assert_eq!(extrainfo(7778, banner).as_deref(), Some("Squoosh"));
+    }
+
+    /// The default landing page of a web server is titled after the web server,
+    /// and a row reading `nginx 1.22.1 (Welcome to nginx!)` has said one thing
+    /// twice and called the second one an application.
+    #[test]
+    fn a_title_that_only_echoes_the_server_is_not_an_application() {
+        let welcome = "HTTP/1.1 200 OK\r\n\
+             Server: nginx/1.22.1\r\n\r\n\
+             <html><head><title>Welcome to nginx!</title>";
+        assert_eq!(extrainfo(80, welcome), None);
+
+        let repeat = "HTTP/1.1 200 OK\r\n\
+             Server: Netdata Embedded HTTP Server v2.11.0\r\n\r\n\
+             <html><head><title>Netdata</title>";
+        assert_eq!(extrainfo(19999, repeat), None, "nor is a bare repeat of it");
+
+        // A title naming something the `Server` header did not is the whole
+        // point, and has to survive the filter.
+        let different = "HTTP/1.1 200 OK\r\n\
+             Server: Kestrel\r\n\r\n\
+             <html><head><title>Jellyfin</title>";
+        assert_eq!(extrainfo(8096, different).as_deref(), Some("Jellyfin"));
+    }
+
+    /// A title that names the page rather than the application identifies
+    /// thousands of unrelated things, so it identifies nothing.
+    #[test]
+    fn a_page_title_is_not_an_application_name() {
+        for title in ["404 Not Found", "Sign in", "Welcome", "Index of /"] {
+            let banner = format!("HTTP/1.1 200 OK\r\n\r\n<html><head><title>{title}</title>");
+            assert_eq!(extrainfo(8080, &banner), None, "{title} names no product");
+        }
+
+        let sentence = "HTTP/1.1 200 OK\r\n\r\n<html><head><title>The quick brown fox \
+             jumps over the lazy dog and keeps going</title>";
+        assert_eq!(
+            extrainfo(8080, sentence),
+            None,
+            "a sentence is a page description, not a product"
+        );
+    }
+
+    /// Two prefixes used equally often resolve to the one the server mentioned
+    /// first, so the answer does not depend on header order beyond that.
+    #[test]
+    fn a_tie_between_prefixes_goes_to_the_first_mentioned() {
+        let banner = "HTTP/1.1 200 OK\r\nX-Alpha-One: a\r\nX-Bravo-One: b\r\n\r\n";
+        let http = HttpResponse::parse(banner).expect("an HTTP response");
+        assert_eq!(vendor_prefix(&http).as_deref(), Some("Alpha"));
+    }
+
+    /// A vendor prefix is what the software calls itself in its own code; a
+    /// title is whatever somebody typed into a template. Where both exist the
+    /// first one wins.
+    #[test]
+    fn a_vendor_prefix_outranks_a_title() {
+        let banner = "HTTP/1.1 200 OK\r\n\
+             X-Jenkins: 2.426.3\r\n\r\n\
+             <html><head><title>Dashboard</title>";
+
+        assert_eq!(extrainfo(8080, banner).as_deref(), Some("Jenkins"));
+    }
+
+    /// The body is only reachable if the parser kept it, and it only exists if
+    /// the transport read past the header block. Both were true of neither
+    /// before this analyzer learned to read a title.
+    #[test]
+    fn the_parser_separates_the_body_from_the_headers() {
+        let response = HttpResponse::parse(
+            "HTTP/1.1 200 OK\r\nServer: nginx\r\n\r\n<html><body>hello</body></html>",
+        )
+        .expect("an HTTP response");
+
+        assert_eq!(response.header("server"), Some("nginx"));
+        assert_eq!(response.body, "<html><body>hello</body></html>");
+
+        let headers_only =
+            HttpResponse::parse("HTTP/1.1 204 No Content\r\nServer: nginx\r\n\r\n")
+                .expect("an HTTP response");
+        assert_eq!(headers_only.body, "");
     }
 
     #[test]

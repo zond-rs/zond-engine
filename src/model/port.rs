@@ -39,12 +39,22 @@
 //! that learned the same amount are equally good sources, and preferring the
 //! later one would make a report depend on which probe happened to finish
 //! last.
+//!
+//! ## Which ports to ask about in the first place
+//!
+//! [`PortSet`] is what a caller asked for, and [`catalog`] is what this crate
+//! answers when they asked for nothing: a ranked list of the ports most likely
+//! to be listening, from which [`PortSet::top_tcp`] takes a prefix. It is a
+//! deliberate opinion rather than a neutral default, and the module says where
+//! the opinion comes from.
 
+pub mod catalog;
 pub mod discovery;
 pub mod security;
 pub mod service;
 pub mod set;
 
+pub use catalog::{TCP_BY_PREVALENCE, UDP_BY_PREVALENCE};
 pub use discovery::{Discovery, ScanResponse};
 pub use security::{CertificateInfo, Security};
 pub use service::Service;

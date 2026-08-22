@@ -51,12 +51,18 @@
 #
 # dampen_silent_hosts = true
 
-# The fastest routed discovery may put probes on the wire, in probes per second.
+# The fastest a scan may put probes on the wire, in probes per second.
 #
 # This is a coverage control before it is a politeness one. A probe's chance of
 # being answered falls as the rate rises: on a policed path a burst loses most
 # of its first attempt. Lowering the rate buys coverage on the first attempt;
 # raising it trades coverage for the time a large range takes to emit.
+#
+# It is a ceiling on a TCP port scan rather than its pace. That scan works out
+# how fast each target will answer and settles there, which is almost always
+# well below any rate worth writing down. Set this for a target that must not be
+# pushed at all; the discovery sweep and the UDP port scan are paced by it
+# directly, because neither is given evidence it could adapt on.
 #
 # max_probe_rate = 20000
 
@@ -85,7 +91,13 @@
 # send_mode = "auto"
 
 # The ports a scan covers when the caller names none. Same grammar as the
-# command line: `u:` prefixes a UDP port, `-` makes a range.
+# command line: `u:` prefixes a UDP port, `-` makes a range, and a range may
+# leave off either end — `-1024`, `9000-`, or a bare `-` for every port there
+# is.
+#
+# Left unset, a scan probes the thousand TCP ports the engine ranks as most
+# likely to be listening — which is a better default than any range, so set this
+# only when you know which ports you care about.
 #
 # default_ports = "22, 80, 443, 445, 3389"
 

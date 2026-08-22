@@ -451,6 +451,7 @@ impl PortScanStep {
             Self::ConnectTcp => Ok(Box::new(ConnectPortScanner::new(
                 ctx,
                 limits::CONNECT_CONCURRENCY,
+                tuning.service_detection,
             ))),
             Self::ConnectUdp => Ok(Box::new(ConnectUdpPortScanner::new(
                 ctx,

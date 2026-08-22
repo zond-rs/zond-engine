@@ -54,6 +54,7 @@ use crate::error;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
+use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy, SilentHostPolicy};
 use crate::scanner::pacing::timer::ScanBudget;
@@ -144,19 +145,29 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     Some(SilentHostPolicy::new(32, 1)),
 );
 
-/// The most probes left outstanding at once.
+/// The most probes left outstanding at once, and equally the window this scan
+/// is paced by — which for UDP is a window that does not move.
 ///
 /// Two jobs: it bounds the memory a scan of a large address space can occupy,
 /// and it keeps the send loop from emptying the dispatcher into the network as
 /// fast as the socket accepts writes - a burst that outruns any rate-limited
 /// host's ability to answer manufactures open-filtered verdicts.
 ///
+/// **Fixed, where the TCP scanner's equivalent adapts.** A congestion window
+/// needs evidence, and a UDP scan is given none: silence is its ordinary
+/// outcome rather than a signal, and its replies carry nothing naming the
+/// attempt they answer, so neither the growth nor the reduction side of the
+/// controller has anything to read. See
+/// [`congestion`](crate::scanner::pacing::congestion) for the argument, and
+/// `UDP_PORT_RATE_PER_SEC` in the parent module for what paces this scan
+/// instead.
+///
 /// The ceiling is global rather than per host because
 /// [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) already hands out
 /// shuffled targets, so consecutive probes in a multi-host scan naturally land
 /// on different hosts. A per-host cap on top of that would constrain something
 /// the target stream has already spread out.
-const MAX_IN_FLIGHT: usize = 512;
+const MAX_IN_FLIGHT: u32 = 512;
 
 /// Probes specific `(address, port)` pairs with raw UDP packets.
 pub struct UdpPortScanner {
@@ -196,6 +207,10 @@ impl UdpPortScanner {
             target_count,
             src_port,
             RETRY_POLICY.configured(tuning.retry),
+            tuning
+                .max_probe_rate
+                .unwrap_or(super::UDP_PORT_RATE_PER_SEC)
+                .max(1),
         ))
     }
 
@@ -222,6 +237,7 @@ impl UdpPortScanner {
             target_count,
             src_port,
             RETRY_POLICY,
+            super::UDP_PORT_RATE_PER_SEC,
         )
     }
 
@@ -235,25 +251,43 @@ impl UdpPortScanner {
         target_count: usize,
         src_port: u16,
         retry: RetryPolicy,
+        rate_per_sec: u32,
     ) -> Self {
-        // The scan has to outlive its own retry schedule, or probes are written
-        // off as unanswered having never been fully asked.
-        let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
+        // Here the rate is the pacing rather than a backstop, because a UDP scan
+        // has no evidence to run a window on. See `UDP_PORT_RATE_PER_SEC`.
+        let (send_tick, batch) = super::pacing_for(rate_per_sec);
 
-        Self {
+        // The scan has to outlive its own retry schedule, or probes are written
+        // off as unanswered having never been fully asked — and it has to
+        // outlive its own send rate, which here is the pacing rather than a
+        // backstop and is the slowest thing about the scan.
+        let deadline_config = DEADLINE_CONFIG
+            .allowing_for(retry.worst_case_probe_lifetime())
+            .allowing_pace_of(Duration::from_secs(1) / rate_per_sec.max(1));
+
+        let mut scanner = Self {
             core: RawProbeScan {
                 resolver,
                 ctx,
                 transport,
                 deadline: AdaptiveDeadline::new(deadline_config, target_count),
-                ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT)),
+                ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT as usize)),
                 due: Vec::new(),
                 src_port,
                 send_failure: None,
                 audit: ProbeAudit::new(),
-                max_in_flight: MAX_IN_FLIGHT,
+                window: CongestionWindow::new(WindowLimits::fixed(MAX_IN_FLIGHT)),
+                send_tick,
+                batch,
+                max_unresolved: MAX_IN_FLIGHT as usize,
             },
-        }
+        };
+
+        // What the liveness phase already learned about these hosts, so the
+        // first wave of probes is timed against a measurement rather than
+        // against a guess. See `RawProbeScan::seed_timing`.
+        scanner.core.seed_timing();
+        scanner
     }
 
     /// A reply that matches no outstanding probe is dropped: it is a duplicate
@@ -278,13 +312,7 @@ impl UdpPortScanner {
             return;
         };
 
-        self.core.deadline.mark_activity();
-        if let Some(rtt) = resolution.rtt {
-            self.core.deadline.record_rtt(rtt);
-        }
-        self.core
-            .audit
-            .record_host_found(resolution.answered_attempt);
+        self.core.record_answer(&resolution);
         self.record_port(target.0, target.1, state, Some(sender));
     }
 }
@@ -401,6 +429,12 @@ impl RawPortScan for UdpPortScanner {
             return;
         };
 
+        // Whether this send takes a slot in the congestion window. A retry does
+        // not: the slot went back when the question it repeats ran out of
+        // round-trip budget. The ledger is what knows, since it is what holds
+        // the probe between attempts.
+        let first_attempt = !self.core.ledger.contains(&(ip, port));
+
         let sent = send_udp(
             self.core.transport.tx.as_ref(),
             self.core.src_port,
@@ -409,7 +443,7 @@ impl RawPortScan for UdpPortScanner {
             port,
             &mut self.core.send_failure,
         );
-        self.core.audit.record_send(sent.is_some());
+        self.core.record_send(sent.is_some(), first_attempt);
 
         if sent.is_some() {
             self.core.ledger.arm(ip, (ip, port), (), now);
@@ -527,10 +561,11 @@ impl PortScanner for UdpPortScanner {
     /// reported as OpenFiltered.
     ///
     /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes
-    /// are outstanding. That ceiling is what paces the scan: probes leave as
-    /// earlier ones are answered or expire, so the send rate settles at the
-    /// rate the network is actually resolving them instead of at the rate the
-    /// dispatcher can produce them.
+    /// are outstanding, and released no faster than
+    /// `UDP_PORT_RATE_PER_SEC`. Both are fixed,
+    /// unlike the TCP scanner's window, because a UDP scan is given no evidence
+    /// it could adapt on: silence is its ordinary outcome and its replies name
+    /// no attempt.
     async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         probe_scan::run(self, targets).await;
         Ok(())

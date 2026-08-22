@@ -22,7 +22,7 @@
 use boon::{Compiler, Schemas};
 use serde_json::Value;
 
-use crate::config::OsDetection;
+use crate::config::{OsDetection, ServiceDetection};
 use crate::export::schema::SCHEMA_VERSION;
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
 use crate::model::technique::TcpScanTechnique;
@@ -161,6 +161,22 @@ fn every_os_detection_level_the_engine_runs_is_a_value_the_schema_accepts() {
         .expect("the schema names the levels it accepts");
 
     for detection in OsDetection::ALL {
+        assert!(
+            accepted.contains(&Value::from(detection.name())),
+            "the schema does not accept `{detection}`, which a scan can be asked for"
+        );
+    }
+}
+
+/// Every service-detection level, on the same reasoning as the levels above.
+#[test]
+fn every_service_detection_level_the_engine_runs_is_a_value_the_schema_accepts() {
+    let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
+    let accepted = schema["$defs"]["settings"]["properties"]["service_detection"]["enum"]
+        .as_array()
+        .expect("the schema names the levels it accepts");
+
+    for detection in ServiceDetection::ALL {
         assert!(
             accepted.contains(&Value::from(detection.name())),
             "the schema does not accept `{detection}`, which a scan can be asked for"

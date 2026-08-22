@@ -64,6 +64,13 @@ pub struct SignatureDb {
     /// Payloads are decoded bytes (escapes resolved, see [`unescape`]), ready to
     /// go on the wire as-is — including non-UTF-8 binary probes.
     tcp_probes: HashMap<u16, Vec<Vec<u8>>>,
+    /// The TCP probes worth sending to a port that registered none of its own,
+    /// decoded to wire bytes.
+    ///
+    /// Authored with `generic = true`; see
+    /// [`Probe::generic`](crate::fingerprint::signature::Probe::generic) for
+    /// what earns a probe that mark and why the set is deliberately tiny.
+    generic_tcp_probes: Vec<Vec<u8>>,
     /// `port -> UDP probe payloads`, indexed exactly like [`Self::tcp_probes`]
     /// but kept apart, because the two are sent by different machinery for
     /// different reasons.
@@ -103,6 +110,10 @@ impl SignatureDb {
         // they are sent by different code for different purposes.
         let mut service_tcp_probes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
         let mut service_udp_probes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+        // The probes worth asking of a port nobody registered. Collected across
+        // every definition rather than per service, since what makes one generic
+        // is precisely that it belongs to no port in particular.
+        let mut generic_tcp_probes: Vec<Vec<u8>> = Vec::new();
         for def in &defs {
             for rule in &def.r#match {
                 let idx = signatures.len();
@@ -120,10 +131,14 @@ impl SignatureDb {
                     // here rather than guess which transport it belongs to.
                     _ => continue,
                 };
+                let payload = unescape(&probe.payload);
+                if probe.generic && probe.protocol == "tcp" {
+                    generic_tcp_probes.push(payload.clone());
+                }
                 by_protocol
                     .entry(def.service.name.clone())
                     .or_default()
-                    .push(unescape(&probe.payload));
+                    .push(payload);
             }
         }
 
@@ -179,6 +194,7 @@ impl SignatureDb {
             name_index,
             by_port,
             tcp_probes,
+            generic_tcp_probes,
             udp_probes,
             prefilter: OnceLock::new(),
         }
@@ -187,6 +203,26 @@ impl SignatureDb {
     /// The primary service name registered for `port`, if any. No compilation.
     pub fn service_name(&self, port: u16) -> Option<Arc<str>> {
         self.name_index.get(&port).cloned()
+    }
+
+    /// Every port some service registers, in no particular order.
+    ///
+    /// What this engine can put a name to, which is a different set from what a
+    /// scan asks about. Exposed so the two can be held against each other — a
+    /// signature authored for a service on a port nothing probes is a coverage
+    /// gap that ships silently, and the catalogue test in this module is what
+    /// stops it.
+    pub fn indexed_ports(&self) -> impl Iterator<Item = u16> + '_ {
+        self.name_index.keys().copied()
+    }
+
+    /// The TCP probes to send to a port that registers none of its own.
+    ///
+    /// What turns an unrecognised open port from a two-second silence into a
+    /// named service. See
+    /// [`Probe::generic`](crate::fingerprint::signature::Probe::generic).
+    pub fn generic_tcp_probe_payloads(&self) -> &[Vec<u8>] {
+        &self.generic_tcp_probes
     }
 
     /// The signature indices matchable on `port` (service-linked). Empty if no
@@ -323,6 +359,90 @@ mod tests {
         );
     }
 
+    /// Every port this engine can name a service on is a port it asks about by
+    /// default.
+    ///
+    /// The two lists are authored in different places for different reasons —
+    /// `assets/fingerprinting/` says what can be identified, and
+    /// [`catalog`](crate::model::port::catalog) says what gets probed — and
+    /// nothing but this connects them. Authoring a signature for a service on a
+    /// port outside the catalogue is not an error the build could catch: the
+    /// signature simply never matches, because no scan ever reaches the port.
+    ///
+    /// The catalogue's two halves are taken together, since a service definition
+    /// names ports without saying which transport they are reached over.
+    #[test]
+    fn every_port_with_a_signature_is_a_port_the_default_scan_reaches() {
+        use crate::model::port::catalog::{TCP_BY_PREVALENCE, UDP_BY_PREVALENCE};
+
+        let probed: std::collections::HashSet<u16> = TCP_BY_PREVALENCE
+            .iter()
+            .chain(UDP_BY_PREVALENCE.iter())
+            .copied()
+            .collect();
+
+        let unreachable: Vec<u16> = SignatureDb::global()
+            .indexed_ports()
+            .filter(|port| !probed.contains(port))
+            .collect();
+
+        assert!(
+            unreachable.is_empty(),
+            "these ports have signatures but no default scan reaches them, so the \
+             signatures can never match: {unreachable:?}. Add them to the catalogue, \
+             or drop the signature."
+        );
+    }
+
+    /// The generic probe is what an unrecognised open port is asked, and losing
+    /// it would not fail anything — it would quietly return the engine to
+    /// reporting those ports with no service at all, two seconds at a time.
+    ///
+    /// Held as a property of the shipped database rather than of any one asset
+    /// file, so moving the probe between services keeps the test passing and
+    /// dropping it does not.
+    #[test]
+    fn the_shipped_database_carries_a_generic_probe() {
+        let generic = SignatureDb::global().generic_tcp_probe_payloads();
+
+        assert!(
+            !generic.is_empty(),
+            "no probe is marked generic, so every unrecognised port is asked nothing"
+        );
+        assert!(
+            generic.len() <= 2,
+            "a generic probe is sent to every unrecognised port of every scan; \
+             {} of them is a cost that wants an argument",
+            generic.len()
+        );
+        assert!(
+            generic
+                .iter()
+                .any(|payload| payload.starts_with(b"GET / HTTP/")),
+            "the one question worth asking of an unknown port is an HTTP request"
+        );
+    }
+
+    /// A generic probe is only meaningful over TCP — see the schema — and the
+    /// index has to agree with the build-time rule that enforces it.
+    #[test]
+    fn a_generic_udp_probe_is_not_indexed_as_generic() {
+        let mut def = def("weird", vec![9999], &["^X"]);
+        def.probe = vec![Probe {
+            name: Some("nope".into()),
+            payload: "ping".into(),
+            protocol: "udp".into(),
+            rarity: 0,
+            generic: true,
+        }];
+
+        assert!(
+            SignatureDb::from_defs(vec![def])
+                .generic_tcp_probe_payloads()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn unescape_decodes_common_sequences() {
         assert_eq!(unescape(r"GET /\r\n"), b"GET /\r\n");
@@ -340,6 +460,7 @@ mod tests {
             payload: r"GET / HTTP/1.1\r\n\r\n".to_string(),
             protocol: "tcp".to_string(),
             rarity: 0,
+            generic: false,
         }];
         let db = SignatureDb::from_defs(vec![d]);
         // The authored `\r\n` must reach the wire as real CRLF, not backslashes.

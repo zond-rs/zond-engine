@@ -28,8 +28,19 @@ name = "dns_version_bind"
 payload = '\x00\x00\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03'
 protocol = "udp"
 
-# For TCP DNS, we can send a simple query or just check for the port.
-# DNS over TCP is often used for large responses.
+# The same question over TCP, which RFC 1035 §4.2.2 frames with a two-byte
+# big-endian length: `\x00\x1e` for the thirty bytes that follow.
+#
+# Authored because a nameserver on TCP/53 is otherwise one of the few ports that
+# answers nothing an engine can read — it waits for a length prefix, reads a
+# generic HTTP request as a claim of eighteen thousand bytes, and never speaks
+# again. That silence used to cost two seconds and produce no service name at
+# all, on a port every resolver in the world listens on.
+[[probe]]
+name = "dns_version_bind_tcp"
+payload = '\x00\x1e\x00\x00\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03'
+protocol = "tcp"
+
 [[match]]
 name = "dns_tcp_match"
 pattern = '^[\x00-\xff][\x00-\xff][\x01\x00]' # Basic DNS header response part

@@ -422,6 +422,171 @@ impl FromStr for OsDetection {
     }
 }
 
+/// How far a scan may go to identify what is listening behind an open port.
+///
+/// The port-scan phase establishes that a port is *open*; naming what is on it
+/// is a second pass, and unlike the first it needs a real connection. That is
+/// the cost this dial governs. It is worth governing separately because the two
+/// have different audiences: a scan mapping what exists wants the ports, and a
+/// scan auditing what is deployed wants the names, and the second costs a
+/// conversation with every open port.
+///
+/// Ordered by what each level puts on the wire, so a caller can compare two
+/// levels and a report can record which was asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ServiceDetection {
+    /// Level 0. Do not connect. A port keeps whatever its number implies and
+    /// nothing more.
+    ///
+    /// The fastest and the quietest: after a raw scan, no connection is ever
+    /// completed, so nothing appears in the target's logs and nothing is read
+    /// from any service. What it costs is every version and every product — a
+    /// port reported `open http` on the strength of being port 80, which may be
+    /// anything at all.
+    Off,
+    /// Level 1. Connect and listen. Send nothing.
+    ///
+    /// For services that greet on connect — SSH, SMTP, FTP, IRC — this is the
+    /// whole of what a probe would have learned anyway, and it is obtained
+    /// without putting a single byte on the wire. For everything else it
+    /// establishes only that the port accepts connections.
+    ///
+    /// The level to reach for against equipment that must not be sent anything
+    /// unexpected. Industrial controllers, medical devices and old embedded
+    /// stacks have all been knocked over by a well-formed request they did not
+    /// anticipate, and on those networks the right amount to send is nothing.
+    Banner,
+    /// Level 2, and the default. Connect, listen, and ask.
+    ///
+    /// Sends each port the probes its service registered, and — where nothing
+    /// registers the port — the one generic request worth asking of anything.
+    /// That last part is what identifies the long tail: an open port on a number
+    /// nobody registered is most often an HTTP server, and one request names it.
+    ///
+    /// The default, because it is both the most informative level and, against
+    /// an unrecognised port, the *fastest*. The alternative to asking is waiting
+    /// for a greeting that never comes and then guessing at TLS, which costs two
+    /// seconds per port to learn nothing. A scan that asks gets an answer in a
+    /// round trip.
+    #[default]
+    Probe,
+}
+
+impl ServiceDetection {
+    /// Every level, ordered from least effort to most. The index of a level in
+    /// this array is its [`level`](Self::level) number.
+    pub const ALL: [ServiceDetection; 3] = [
+        ServiceDetection::Off,
+        ServiceDetection::Banner,
+        ServiceDetection::Probe,
+    ];
+
+    /// The name this level is written under, wherever it arrives as text.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ServiceDetection::Off => "off",
+            ServiceDetection::Banner => "banner",
+            ServiceDetection::Probe => "probe",
+        }
+    }
+
+    /// The number this level is written as, for a front end that offers it as a
+    /// dial rather than a word.
+    pub const fn level(self) -> u8 {
+        match self {
+            ServiceDetection::Off => 0,
+            ServiceDetection::Banner => 1,
+            ServiceDetection::Probe => 2,
+        }
+    }
+
+    /// The level with this number, or `None` past the highest there is.
+    pub const fn from_level(level: u8) -> Option<Self> {
+        match level {
+            0 => Some(ServiceDetection::Off),
+            1 => Some(ServiceDetection::Banner),
+            2 => Some(ServiceDetection::Probe),
+            _ => None,
+        }
+    }
+
+    /// Whether this level opens a connection at all.
+    ///
+    /// The boundary that matters to a target: below it the scan is invisible to
+    /// every application log on the host, and at or above it every open port
+    /// records a connection.
+    ///
+    /// ```
+    /// use zond_engine::config::ServiceDetection;
+    ///
+    /// assert!(!ServiceDetection::Off.connects());
+    /// assert!(ServiceDetection::default().connects());
+    /// ```
+    pub const fn connects(self) -> bool {
+        !matches!(self, ServiceDetection::Off)
+    }
+
+    /// Whether this level sends anything once connected.
+    ///
+    /// ```
+    /// use zond_engine::config::ServiceDetection;
+    ///
+    /// assert!(!ServiceDetection::Banner.sends());
+    /// assert!(ServiceDetection::Probe.sends());
+    /// ```
+    pub const fn sends(self) -> bool {
+        matches!(self, ServiceDetection::Probe)
+    }
+}
+
+impl fmt::Display for ServiceDetection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The error parsing a [`ServiceDetection`] returns, carrying the values that
+/// would have worked so a front end can print it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "unknown service detection level '{input}', expected one of: off, banner, probe \
+     (or 0, 1, 2)"
+)]
+pub struct UnknownServiceDetection {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl FromStr for ServiceDetection {
+    type Err = UnknownServiceDetection;
+
+    /// Parses a level by name or by number, on the same terms
+    /// [`OsDetection`] does and for the same reason.
+    ///
+    /// ```
+    /// use zond_engine::config::ServiceDetection;
+    ///
+    /// assert_eq!("banner".parse(), Ok(ServiceDetection::Banner));
+    /// assert_eq!("0".parse(), Ok(ServiceDetection::Off));
+    /// assert!("thorough".parse::<ServiceDetection>().is_err());
+    /// ```
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let trimmed = input.trim();
+        if let Ok(level) = trimmed.parse::<u8>()
+            && let Some(detection) = Self::from_level(level)
+        {
+            return Ok(detection);
+        }
+
+        Self::ALL
+            .into_iter()
+            .find(|detection| detection.name().eq_ignore_ascii_case(trimmed))
+            .ok_or_else(|| UnknownServiceDetection {
+                input: input.to_string(),
+            })
+    }
+}
+
 /// User control over retransmission, applied on top of each scanner's own
 /// profile.
 ///
@@ -464,8 +629,11 @@ impl Default for RetryConfig {
 /// Not every strategy reads every field: local discovery builds its own
 /// Ethernet frames and so has no use for [`SendMode`], while every strategy that
 /// sends a probe at all has a use for [`RetryConfig`]. `max_probe_rate` is read
-/// by routed host discovery; the other paths pace themselves by other means or,
-/// where they burst, have not been measured to need it.
+/// by routed host discovery and by the raw port scanners, and it means something
+/// different to each — the sweep and the UDP scan are paced *by* it, while a TCP
+/// port scan paces itself by a congestion window and treats it only as a
+/// ceiling. The unprivileged paths pace themselves by their connection
+/// concurrency instead.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProbeTuning {
     pub send_mode: SendMode,
@@ -483,6 +651,15 @@ pub struct ProbeTuning {
     /// no timing — it reads a reply the scan already drew — so it is here rather
     /// than in a phase of its own.
     pub os_detection: OsDetection,
+
+    /// How far a strategy may go to name what is behind an open port.
+    ///
+    /// Read by every strategy that fingerprints: the raw scanners, which do it
+    /// as a second pass over the ports they found, and the connect scanner,
+    /// which does it inline over the connection it already holds. Both consult
+    /// the same level, so turning it off means no connection is completed for
+    /// identification by either route.
+    pub service_detection: ServiceDetection,
 }
 
 /// What a scan does, and what it is allowed to put on the wire.
@@ -572,8 +749,8 @@ pub struct ZondConfig {
     /// override it only to force Layer-2 sends for host-stack-bypass scanning.
     pub send_mode: SendMode,
 
-    /// The fastest routed discovery may put probes on the wire, in probes per
-    /// second. `None` leaves the scanner's own default in force.
+    /// The fastest a scan may put probes on the wire, in probes per second.
+    /// `None` leaves each scanner's own default in force.
     ///
     /// This is a coverage control before it is a politeness one. A probe's
     /// chance of being answered falls as the rate rises: on a policed path a
@@ -581,6 +758,15 @@ pub struct ZondConfig {
     /// all, by retransmitting into a quieter moment. Lowering the rate buys
     /// coverage on the first attempt instead, and raising it trades coverage
     /// for the time a large range takes to emit.
+    ///
+    /// **It is a ceiling on a TCP port scan rather than its pace.** That scan
+    /// discovers how fast each target will answer and settles there, which is
+    /// almost always well below any rate worth configuring; see
+    /// [`congestion`](crate::scanner::pacing::congestion). Setting this lowers
+    /// the ceiling the window may reach and is the right knob for a target that
+    /// must not be pushed at all, but on an ordinary scan it will not be what
+    /// decides the pace. The discovery sweep and the UDP port scan *are* paced
+    /// by it, because neither is given evidence it could adapt on.
     pub max_probe_rate: Option<u32>,
 
     /// Which segment a TCP port probe carries, and so what its answers mean.
@@ -611,6 +797,16 @@ pub struct ZondConfig {
     /// levels send probes and have to be asked for; see [`OsDetection`] for what
     /// each one puts on the wire.
     pub os_detection: OsDetection,
+
+    /// How far the scan goes to identify what is listening behind each open
+    /// port.
+    ///
+    /// Defaults to [`ServiceDetection::Probe`], which connects to every open
+    /// port and asks it what it is. That is the level worth having — a port
+    /// state without a service name answers half the question — but it is also
+    /// the one that completes connections, so a scan that must stay out of the
+    /// target's application logs turns it off. Affects the port-scan phase only.
+    pub service_detection: ServiceDetection,
 }
 
 impl ZondConfig {
@@ -622,6 +818,7 @@ impl ZondConfig {
             max_probe_rate: self.max_probe_rate,
             tcp_technique: self.tcp_technique,
             os_detection: self.os_detection,
+            service_detection: self.service_detection,
         }
     }
 }
@@ -658,6 +855,62 @@ mod tests {
             None,
             "a level this engine does not offer is refused, not rounded down to the highest"
         );
+    }
+
+    /// A level's number is written down in three places, exactly as
+    /// [`OsDetection`]'s is, and the same silent disagreement is possible.
+    #[test]
+    fn every_service_detection_level_agrees_with_its_number() {
+        for (index, detection) in ServiceDetection::ALL.into_iter().enumerate() {
+            assert_eq!(usize::from(detection.level()), index);
+            assert_eq!(
+                ServiceDetection::from_level(detection.level()),
+                Some(detection)
+            );
+        }
+
+        let past_the_end = ServiceDetection::ALL.len() as u8;
+        assert_eq!(ServiceDetection::from_level(past_the_end), None);
+    }
+
+    /// The two boundaries that matter to a target, and they are different ones.
+    ///
+    /// `connects` is what its application logs would record; `sends` is what its
+    /// services would be handed. A level that connected but sent nothing, and a
+    /// level that did neither, look identical in every count a scan reports and
+    /// could hardly be more different to whoever runs the machine.
+    #[test]
+    fn each_service_detection_level_says_what_it_puts_on_the_wire() {
+        assert!(!ServiceDetection::Off.connects());
+        assert!(!ServiceDetection::Off.sends());
+
+        assert!(ServiceDetection::Banner.connects());
+        assert!(
+            !ServiceDetection::Banner.sends(),
+            "listening is the whole of what this level does"
+        );
+
+        assert!(ServiceDetection::Probe.connects());
+        assert!(ServiceDetection::Probe.sends());
+
+        assert!(
+            ServiceDetection::default().sends(),
+            "the default asks, because asking is both the informative answer and \
+             the fast one"
+        );
+    }
+
+    /// Both spellings are one setting, on the same reasoning [`OsDetection`]
+    /// accepts both.
+    #[test]
+    fn a_service_detection_level_parses_the_same_by_name_and_by_number() {
+        for detection in ServiceDetection::ALL {
+            assert_eq!(detection.name().parse(), Ok(detection));
+            assert_eq!(detection.level().to_string().parse(), Ok(detection));
+        }
+
+        assert!("3".parse::<ServiceDetection>().is_err());
+        assert!("thorough".parse::<ServiceDetection>().is_err());
     }
 
     /// Where the wire cost begins. The default level promises to emit nothing at

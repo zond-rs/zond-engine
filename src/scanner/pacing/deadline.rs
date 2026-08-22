@@ -81,6 +81,30 @@ impl AdaptiveDeadlineConfig {
             ..self
         }
     }
+
+    /// The same configuration, guaranteed to outlast the slowest pace the scan's
+    /// own pacing may legitimately choose.
+    ///
+    /// The companion to [`allowing_for`](Self::allowing_for), and it exists for
+    /// the same reason one step out. That one keeps the budget from expiring
+    /// between a probe's attempts; this one keeps it from expiring because the
+    /// scan slowed itself down on purpose.
+    ///
+    /// A scan paced by a congestion window settles at whatever rate its targets
+    /// will bear, and the slowest it may settle at is its window floor over its
+    /// shortest round-trip budget — every question timing out, with only the
+    /// floor's worth of them outstanding. If the deadline assumed a faster pace
+    /// than that, the pacing working as designed is what ends the scan early,
+    /// and the ports it never reached are reported as though it had asked.
+    ///
+    /// Only the hard budget moves, on the same reasoning
+    /// [`allowing_for`](Self::allowing_for) gives.
+    pub fn allowing_pace_of(self, per_probe: Duration) -> Self {
+        Self {
+            max_budget: self.max_budget.with_per_target_at_least(per_probe),
+            ..self
+        }
+    }
 }
 
 /// Decides when a discovery sweep should stop, adapting to how quickly and

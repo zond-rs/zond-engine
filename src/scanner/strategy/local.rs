@@ -442,7 +442,7 @@ impl HostScanner for LocalScanner {
         // reader thread rather than a kernel capture, so what the kernel dropped
         // is unknowable here rather than zero.
         let targets = self.ip_set.len();
-        self.audit.report("local-discovery", targets, reason, None);
+        self.audit.report("local-discovery", targets, reason, None, None);
         self.ctx
             .record_probe_stats(self.audit.stats(ScannerKind::Local, targets, reason, None));
         Ok(())

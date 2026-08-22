@@ -596,6 +596,13 @@ mod tests {
     /// Builds a series with `offsets` between samples, carrying whichever of
     /// the three fields each reply held. Absent slices mean the field was not
     /// present in those replies, which is a different thing from a zero.
+    ///
+    /// The base instant is read **once**. Reading it per sample made the offsets
+    /// approximate rather than exact — each call advances by however long the
+    /// loop took — and every reading here divides a counter's movement by the
+    /// interval between samples, so a machine under load could push a rate
+    /// across a bucket boundary and fail a test about arithmetic for reasons
+    /// that had nothing to do with it.
     fn series(
         offsets: &[Duration],
         identifiers: &[u16],
@@ -603,11 +610,12 @@ mod tests {
         stamps: &[u32],
     ) -> Vec<SeriesSample> {
         use crate::protocols::tcp::flags;
+        let base = Instant::now();
         offsets
             .iter()
             .enumerate()
             .map(|(index, offset)| SeriesSample {
-                at: Instant::now() + *offset,
+                at: base + *offset,
                 flags: flags::SYN | flags::ACK,
                 sequence: sequences.get(index).copied().unwrap_or(0),
                 ip_id: identifiers.get(index).copied(),
@@ -792,17 +800,29 @@ mod tests {
             "two counters at different rates share one policy name"
         );
 
+        // Both intervals sit inside `MAX_INTERVAL_FOR_CLOCK`, which is the
+        // point: this test is about the *naming* being coarse, and a sample
+        // spaced beyond that ceiling is refused a rate before any naming
+        // happens. The pair used to straddle it — 500 ms and 502 ms — so both
+        // readings came back refused and the assertion compared one rejection
+        // against another, agreeing for a reason that had nothing to do with
+        // clocks.
         let jittered = series(
-            &[Duration::ZERO, Duration::from_millis(502)],
+            &[Duration::ZERO, Duration::from_millis(251)],
             &[],
             &[],
-            &[500_000, 500_500],
+            &[500_000, 500_250],
         );
         let exact = series(
-            &[Duration::ZERO, Duration::from_millis(500)],
+            &[Duration::ZERO, Duration::from_millis(250)],
             &[],
             &[],
-            &[700_000, 700_500],
+            &[700_000, 700_250],
+        );
+        assert_eq!(
+            read_clock(&jittered).class,
+            ClockClass::Hertz(1_000),
+            "996 Hz measured is a 1000 Hz clock, and the rounding is what says so"
         );
         assert_eq!(
             read_clock(&jittered).class.name(),

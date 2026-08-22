@@ -109,6 +109,28 @@ pub struct Probe {
     /// unchanged until an intensity cap is wired in.
     #[serde(default)]
     pub rarity: u8,
+
+    /// Whether this probe is worth sending to a port **nothing knows anything
+    /// about**, rather than only to the ports its service registered.
+    ///
+    /// An ordinary probe is addressed: it is sent to port 5432 because a service
+    /// claimed 5432, and it means nothing anywhere else. A generic probe is a
+    /// question worth asking of any open port at all, because the answer
+    /// identifies whatever gave it.
+    ///
+    /// In practice that is one probe — an HTTP request — and the reason is that
+    /// HTTP is what an unrecognised open port usually turns out to be speaking.
+    /// A scan that sends nothing to those ports learns nothing about them and
+    /// still pays a full timeout finding that out; measured against one ordinary
+    /// home server, seven of eleven open ports were unidentified and each cost
+    /// two seconds to leave unidentified.
+    ///
+    /// **Adding a second one is a real cost, paid on every unknown port of every
+    /// scan**, so it wants the same evidence the first had. TCP only: a generic
+    /// UDP probe would be a payload sent to every UDP port in the scan, which is
+    /// a different and much larger claim. `build.rs` refuses one.
+    #[serde(default)]
+    pub generic: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

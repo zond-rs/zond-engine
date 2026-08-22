@@ -160,6 +160,7 @@ pub fn protocol_name(protocol: Protocol) -> &'static str {
 pub fn network_role_name(role: NetworkRole) -> &'static str {
     match role {
         NetworkRole::Tarpit => "tarpit",
+        NetworkRole::Truncated => "truncated",
     }
 }
 
@@ -703,6 +704,14 @@ pub struct SettingsDto {
     /// means nothing looked. It also says how much of this phase's traffic the
     /// engine originated for this purpose — `off` and `passive` originate none.
     pub os_detection: &'static str,
+
+    /// How far the phase went to identify services: `off`, `banner` or `probe`.
+    ///
+    /// A port with no service reported reads differently at each: `off` means
+    /// nothing connected to it. It also says whether the phase completed a
+    /// connection to every open port, which is what the target would have
+    /// logged.
+    pub service_detection: &'static str,
 }
 
 impl SettingsDto {
@@ -716,6 +725,7 @@ impl SettingsDto {
             dns_enabled: settings.dns_enabled,
             redact: settings.redact,
             os_detection: settings.os_detection.name(),
+            service_detection: settings.service_detection.name(),
         }
     }
 }
@@ -1401,6 +1411,7 @@ mod tests {
         assert_eq!(port_state_name(PortState::OpenFiltered), "open_filtered");
         assert_eq!(protocol_name(Protocol::Udp), "udp");
         assert_eq!(network_role_name(NetworkRole::Tarpit), "tarpit");
+        assert_eq!(network_role_name(NetworkRole::Truncated), "truncated");
         assert_eq!(
             stop_reason_name(StopReason::AttemptsSpent),
             "attempts_spent"

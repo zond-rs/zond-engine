@@ -644,12 +644,12 @@ impl HostScanner for OsSeriesScanner {
         if self.named > 0 {
             info!(
                 verbosity = 1,
-                "Named {} host(s) from what repeated probes revealed", self.named
+                "Named {} host(s) from repeated probes", self.named
             );
         }
 
         let capture = self.transport.capture_counts();
-        self.audit.report("os-series", followed, reason, capture);
+        self.audit.report("os-series", followed, reason, capture, None);
         self.ctx.record_probe_stats(self.audit.stats(
             ScannerKind::OsSeries,
             followed,

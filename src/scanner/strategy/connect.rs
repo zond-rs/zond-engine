@@ -21,6 +21,7 @@
 //! [`ProbePool`] to avoid exhausting OS sockets, and both
 //! record findings through the shared [`ScanContext`] like every other strategy.
 
+use crate::config::ServiceDetection;
 use crate::error;
 use crate::model::host::{Host, HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
@@ -117,11 +118,24 @@ pub struct ConnectPortScanner {
     ctx: ScanContext,
     /// The ceiling on in-flight connect probes.
     concurrency: usize,
+    /// How far each probe may go to name what answered.
+    ///
+    /// [`ServiceDetection::Off`] means something slightly different here than it
+    /// does on the privileged path, and the difference is worth knowing: this
+    /// scanner's connection *is* how the port's state is established, so turning
+    /// identification off skips the conversation, never the connection. A caller
+    /// who needs the target's application logs to stay clean needs raw sockets;
+    /// without them, being seen is the price of the answer.
+    detection: ServiceDetection,
 }
 
 impl ConnectPortScanner {
-    pub fn new(ctx: ScanContext, concurrency: usize) -> Self {
-        Self { ctx, concurrency }
+    pub fn new(ctx: ScanContext, concurrency: usize, detection: ServiceDetection) -> Self {
+        Self {
+            ctx,
+            concurrency,
+            detection,
+        }
     }
 }
 
@@ -136,7 +150,7 @@ impl PortScanner for ConnectPortScanner {
     }
 
     async fn scan(&mut self, rx: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
-        scan(rx, self.concurrency, self.ctx.clone()).await
+        scan(rx, self.concurrency, self.ctx.clone(), self.detection).await
     }
 }
 
@@ -201,6 +215,7 @@ pub async fn scan(
     mut rx: mpsc::Receiver<Target>,
     concurrency_limit: usize,
     ctx: ScanContext,
+    detection: ServiceDetection,
 ) -> Result<(), StrategyError> {
     let folder = ctx.clone();
     let mut pool = ProbePool::new(
@@ -219,7 +234,7 @@ pub async fn scan(
         }
         probes += 1;
         pool.audit().record_send(true);
-        pool.admit(port_prober(target)).await;
+        pool.admit(port_prober(target, detection)).await;
     }
 
     // Every target dispatched; wait out the probes still in flight.
@@ -277,7 +292,7 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
 /// and a refusal is `Closed`. Anything else is `Filtered`, including a timeout,
 /// which is the usual signature of a firewall drop. Only TCP is supported, so UDP
 /// targets are skipped.
-async fn port_prober(target: Target) -> ProbedPort {
+async fn port_prober(target: Target, detection: ServiceDetection) -> ProbedPort {
     if target.protocol == Protocol::Udp {
         // UDP can't be probed through a TCP stream; skip rather than misreport.
         return None;
@@ -289,7 +304,7 @@ async fn port_prober(target: Target) -> ProbedPort {
         Ok(Ok(stream)) => {
             let port =
                 crate::fingerprint::baseline_port(target.port, Protocol::Tcp, PortState::Open);
-            let port = crate::fingerprint::fingerprint_tcp(stream, port).await;
+            let port = crate::fingerprint::fingerprint_tcp(stream, port, detection).await;
             Some(Probed {
                 ip: target.ip,
                 port: Some(port),
@@ -544,7 +559,7 @@ fn finish(
     probes: u128,
     reason: StopReason,
 ) {
-    audit.report("connect", probes, reason, None);
+    audit.report("connect", probes, reason, None, None);
     ctx.record_probe_stats(audit.stats(scanner, probes, reason, None));
 }
 

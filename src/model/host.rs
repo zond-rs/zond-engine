@@ -32,7 +32,7 @@
 use crate::fingerprint::os::{OsEvidence, OsSource};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
-use crate::model::port::{Port, Protocol};
+use crate::model::port::{Port, PortState, Protocol};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     net::IpAddr,
@@ -51,16 +51,39 @@ pub use telemetry::HostTelemetry;
 
 /// The most ports one host will have recorded against it.
 ///
-/// A bound on what a single target can make this process allocate. Some devices
-/// answer on every port asked, whether deliberately as a tarpit or by accident
-/// as a misconfigured middlebox. Against a full 65 535-port scan that is a host
-/// record two orders of magnitude larger than any real one, multiplied by
-/// however many such devices sit on the segment.
+/// A bound on what a single target can make this process allocate. A host
+/// answering on every endpoint of a full scan is a record two orders of
+/// magnitude larger than any real one, multiplied by however many such devices
+/// sit on the segment.
 ///
-/// A host that reaches the cap is marked [`NetworkRole::Tarpit`] and further
-/// ports are dropped. The ports already recorded are real observations, and the
-/// marking is what says the list is not complete.
-pub const MAX_PORTS_PER_HOST: usize = 1000;
+/// **It is one protocol's whole port space, because anything less truncates a
+/// scan somebody deliberately asked for.** It used to be a thousand, which is a
+/// number an ordinary scan reaches: probing `1-1024` on a host that answers —
+/// and a closed port is an answer — recorded a thousand ports, dropped the last
+/// twenty-four without a word, and marked a domestic router as a tarpit. The cap
+/// has to sit above every port set a person would write, and the largest of
+/// those is the whole of TCP.
+///
+/// A host that reaches it is marked [`NetworkRole::Truncated`] and further ports
+/// are dropped. The ports already recorded are real observations, and the
+/// marking is what says the list is not complete. That is a separate claim from
+/// [`NetworkRole::Tarpit`], which is about what the host did rather than about
+/// what this process would hold.
+pub const MAX_PORTS_PER_HOST: usize = u16::MAX as usize + 1;
+
+/// How many **open** ports make a host implausible as a host.
+///
+/// A machine running a thousand distinct listening services does not exist. What
+/// does exist is a tarpit answering every SYN to waste a scanner's time, and a
+/// middlebox doing the same by accident, and both are worth saying out loud
+/// because every port they report is a finding nobody should act on.
+///
+/// Counted on open ports and nothing else, which is the whole of the difference
+/// between this and [`MAX_PORTS_PER_HOST`]. A host with sixty thousand *closed*
+/// ports is the ordinary result of a wide scan against a live machine; a host
+/// with a thousand open ones is not answering questions, it is answering
+/// everything.
+pub const TARPIT_OPEN_PORTS: usize = 1_000;
 
 /// What a host turned out to be, beyond an address with ports on it.
 ///
@@ -73,14 +96,26 @@ pub const MAX_PORTS_PER_HOST: usize = 1000;
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum NetworkRole {
-    /// Answered on so many ports that the engine stopped recording them.
+    /// Reported more ports **open** than any machine plausibly runs services on.
     ///
-    /// This describes the *scan* rather than the host: it says the port list is
-    /// truncated at [`MAX_PORTS_PER_HOST`] and must not be read as complete. A
+    /// A claim about the host: past [`TARPIT_OPEN_PORTS`] it is answering
+    /// everything rather than answering questions, and every open port it
+    /// reported is a finding nobody should act on. A
     /// deliberate tarpit and a middlebox answering everything by accident are
     /// indistinguishable from here, and both make the ports recorded against
     /// this host meaningless.
     Tarpit,
+
+    /// Answered on more ports than this record will hold, so the port list is
+    /// incomplete.
+    ///
+    /// A claim about the *scan* rather than about the host: it says only that
+    /// [`MAX_PORTS_PER_HOST`] was reached and that findings past it were
+    /// dropped. Kept apart from [`Tarpit`](Self::Tarpit) because the two used to
+    /// be one thing and the conflation was wrong in both directions — an
+    /// ordinary host probed widely enough was reported as a tarpit, and a real
+    /// tarpit answering a narrow scan was reported as nothing at all.
+    Truncated,
 }
 
 /// A single machine, and what a scan established about it.
@@ -220,6 +255,16 @@ pub struct Host {
     /// reader expects to read them, with the two transports of one number
     /// adjacent.
     ports: BTreeMap<(u16, Protocol), Port>,
+
+    /// How many of [`ports`](Self::ports) are [`PortState::Open`], maintained as
+    /// they are recorded rather than counted on demand.
+    ///
+    /// [`add_port`](Self::add_port) is the only way a port enters or changes
+    /// here, and a port's state only ever promotes, so the count can be kept
+    /// incrementally and can never drift downward. Counting on demand would be
+    /// a walk of the map per recorded port, which on a wide scan is quadratic in
+    /// the thing the walk exists to bound.
+    open_ports: usize,
 }
 
 /// How well an address identifies the host holding it: lower leads.
@@ -275,6 +320,7 @@ impl Host {
             first_seen: now,
             last_seen: now,
             ports: BTreeMap::new(),
+            open_ports: 0,
         }
     }
 
@@ -669,23 +715,47 @@ impl Host {
     /// port.
     ///
     /// Returns whether the finding was recorded. `false` means the host is at
-    /// [`MAX_PORTS_PER_HOST`] and has been marked [`NetworkRole::Tarpit`]; the
-    /// caller is told rather than left to assume the port list is complete.
+    /// [`MAX_PORTS_PER_HOST`] and has been marked [`NetworkRole::Truncated`];
+    /// the caller is told rather than left to assume the port list is complete.
+    ///
+    /// A host that crosses [`TARPIT_OPEN_PORTS`] open ports is marked
+    /// [`NetworkRole::Tarpit`] and keeps recording. That is a different claim
+    /// from truncation and is deliberately not a reason to stop: the ports are
+    /// still what the host said, and a caller that wants to discard them can,
+    /// where a caller handed a silently shortened list cannot.
     pub fn add_port(&mut self, new_port: Port) -> bool {
         let key = (new_port.number(), new_port.protocol());
+        let existing = self.ports.get(&key);
 
-        if self.ports.len() >= MAX_PORTS_PER_HOST && !self.ports.contains_key(&key) {
-            self.network_roles.insert(NetworkRole::Tarpit);
+        if existing.is_none() && self.ports.len() >= MAX_PORTS_PER_HOST {
+            self.network_roles.insert(NetworkRole::Truncated);
             return false;
         }
 
-        self.ports
+        let was_open = existing.is_some_and(|port| port.state() == PortState::Open);
+
+        let recorded = self
+            .ports
             .entry(key)
             .and_modify(|p| p.merge(new_port.clone()))
             .or_insert(new_port);
 
+        // A state only ever promotes, so this counts up and never has to count
+        // back down; see `open_ports`.
+        if !was_open && recorded.state() == PortState::Open {
+            self.open_ports += 1;
+            if self.open_ports >= TARPIT_OPEN_PORTS {
+                self.network_roles.insert(NetworkRole::Tarpit);
+            }
+        }
+
         self.last_seen = SystemTime::now();
         true
+    }
+
+    /// How many of this host's ports are open.
+    pub fn open_port_count(&self) -> usize {
+        self.open_ports
     }
 
     /// Folds another record of this host into this one.
@@ -768,6 +838,8 @@ impl std::fmt::Display for Host {
         }
         if self.network_roles.contains(&NetworkRole::Tarpit) {
             write!(f, " [TARPIT]")?;
+        } else if self.network_roles.contains(&NetworkRole::Truncated) {
+            write!(f, " [TRUNCATED]")?;
         } else {
             write!(f, " [{}]", self.telemetry)?;
         }
@@ -848,27 +920,82 @@ mod tests {
     fn add_port_reports_whether_the_finding_was_recorded() {
         let mut host = Host::new(IP_ADDR);
         for i in 0..MAX_PORTS_PER_HOST {
-            assert!(host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Open)));
+            assert!(host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Closed)));
         }
 
-        assert!(!host.add_port(Port::new(9999, Protocol::Tcp, PortState::Open)));
-        assert!(host.network_roles().contains(&NetworkRole::Tarpit));
+        assert!(!host.add_port(Port::new(1, Protocol::Udp, PortState::Closed)));
+        assert!(host.network_roles().contains(&NetworkRole::Truncated));
     }
 
     /// The cap is exact: the host takes ports up to it and is marked only once
     /// one is actually refused. Marking a host at the boundary would label a
     /// complete port list as truncated.
     #[test]
-    fn the_tarpit_marking_appears_only_once_a_port_is_refused() {
+    fn the_truncation_marking_appears_only_once_a_port_is_refused() {
         let mut host = Host::new(IP_ADDR);
         for i in 0..MAX_PORTS_PER_HOST {
-            host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Open));
+            host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Closed));
         }
-        assert!(!host.network_roles.contains(&NetworkRole::Tarpit));
+        assert!(!host.network_roles.contains(&NetworkRole::Truncated));
 
-        host.add_port(Port::new(9999, Protocol::Tcp, PortState::Open));
-        assert!(host.network_roles.contains(&NetworkRole::Tarpit));
+        host.add_port(Port::new(1, Protocol::Udp, PortState::Closed));
+        assert!(host.network_roles.contains(&NetworkRole::Truncated));
         assert_eq!(host.port_count(), MAX_PORTS_PER_HOST);
+    }
+
+    /// The regression the two markings were split apart over.
+    ///
+    /// Probing the well-known range on a host that answers records a thousand
+    /// ports, because a closed port is an answer. Under the old rule that was
+    /// the cap: the last findings were dropped without a word and a domestic
+    /// router came back labelled a tarpit. Nothing about a wide scan of an
+    /// ordinary machine says either thing.
+    #[test]
+    fn a_wide_scan_of_an_ordinary_host_is_neither_truncated_nor_a_tarpit() {
+        let mut host = Host::new(IP_ADDR);
+        for port in 1..=1024u16 {
+            let state = match port {
+                53 | 80 => PortState::Open,
+                _ => PortState::Closed,
+            };
+            assert!(host.add_port(Port::new(port, Protocol::Tcp, state)));
+        }
+
+        assert_eq!(host.port_count(), 1024, "every finding was kept");
+        assert!(host.network_roles().is_empty(), "and nothing was inferred");
+    }
+
+    /// A thousand *open* ports is not a machine, and saying so is the whole
+    /// purpose of the role. It is a claim about the host, so recording does not
+    /// stop: a caller handed the ports can discard them, where a caller handed a
+    /// silently shortened list cannot.
+    #[test]
+    fn a_host_answering_open_on_everything_is_called_what_it_is() {
+        let mut host = Host::new(IP_ADDR);
+        for port in 0..TARPIT_OPEN_PORTS {
+            host.add_port(Port::new(port as u16, Protocol::Tcp, PortState::Open));
+        }
+
+        assert!(host.network_roles().contains(&NetworkRole::Tarpit));
+        assert!(!host.network_roles().contains(&NetworkRole::Truncated));
+        assert_eq!(host.open_port_count(), TARPIT_OPEN_PORTS);
+    }
+
+    /// The count follows promotions, not insertions. A port first seen filtered
+    /// and later answered is one more open port, and a second reply about a port
+    /// already open is not.
+    #[test]
+    fn the_open_count_follows_what_the_ports_became() {
+        let mut host = Host::new(IP_ADDR);
+
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Filtered));
+        assert_eq!(host.open_port_count(), 0);
+
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        assert_eq!(host.open_port_count(), 1, "promoted");
+
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        assert_eq!(host.open_port_count(), 1, "and counted once");
     }
 
     /// `last_seen` answers when the host was last heard from, so a merge — which
@@ -965,23 +1092,34 @@ mod tests {
         );
     }
 
+    /// A merge folds one record's ports into another's through the same
+    /// entry point, so the cap and both markings apply there too — an overlap is
+    /// not two ports, and the total that reaches the cap is the union.
     #[test]
-    fn merge_tarpit_collision_test() {
+    fn merging_two_records_applies_the_cap_to_their_union() {
+        // The whole of TCP, which is exactly the cap and so is kept whole.
         let mut h1 = Host::new(IP_ADDR);
-        for i in 0..600 {
-            h1.add_port(Port::new(i, Protocol::Tcp, PortState::Open));
+        for port in u16::MIN..=u16::MAX {
+            h1.add_port(Port::new(port, Protocol::Tcp, PortState::Closed));
         }
+        assert_eq!(h1.port_count(), MAX_PORTS_PER_HOST);
+        assert!(!h1.network_roles.contains(&NetworkRole::Truncated));
 
+        // An overlapping half, which adds nothing, and one endpoint that does.
         let mut h2 = Host::new(IP_ADDR);
-        // Ports 500-1100. 100 overlap (0-indexed 500-599), 500 new ones.
-        // Total should hit cap at 1000.
-        for i in 500..1100 {
-            h2.add_port(Port::new(i, Protocol::Tcp, PortState::Open));
+        for port in 0..1_000u16 {
+            h2.add_port(Port::new(port, Protocol::Tcp, PortState::Closed));
         }
+        h2.add_port(Port::new(53, Protocol::Udp, PortState::Open));
 
         h1.merge(h2);
-        assert_eq!(h1.port_count(), MAX_PORTS_PER_HOST);
-        assert!(h1.network_roles.contains(&NetworkRole::Tarpit));
+
+        assert_eq!(h1.port_count(), MAX_PORTS_PER_HOST, "the union, capped");
+        assert!(h1.network_roles.contains(&NetworkRole::Truncated));
+        assert!(
+            !h1.network_roles.contains(&NetworkRole::Tarpit),
+            "nothing that was kept is open, so nothing here is a tarpit"
+        );
     }
 
     /// The address a dual-stack host is reported under must not depend on which

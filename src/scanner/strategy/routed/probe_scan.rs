@@ -54,7 +54,7 @@
 //!
 //! Everything here is public because the argument above applies to a scanner
 //! this engine does not have yet. An SCTP INIT scan, or any protocol added
-//! later, needs the same stop conditions, the same in-flight ceiling and the
+//! later, needs the same stop conditions, the same congestion window and the
 //! same audit tail; implementing [`RawPortScan`] gets all of it, and the only
 //! code to write is the part that is actually about the protocol.
 
@@ -67,8 +67,9 @@ use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
 use crate::scanner::audit::ProbeAudit;
+use crate::scanner::pacing::congestion::CongestionWindow;
 use crate::scanner::pacing::deadline::AdaptiveDeadline;
-use crate::scanner::pacing::retry::{Due, ProbeLedger};
+use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution};
 use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::PortScanner;
@@ -122,16 +123,44 @@ pub struct RawProbeScan<T> {
     /// about can be attributed to loss, to its own deadline, or to correlation
     /// rather than guessed at. Reported once when the loop exits.
     pub audit: ProbeAudit,
-    /// The most probes this scan leaves outstanding at once.
+    /// How many questions this scan may have awaiting an answer, grown and cut
+    /// from what the targets are managing to answer.
     ///
-    /// Set per protocol rather than shared, and the two are an order of
-    /// magnitude apart for a reason that is not tidiness: a TCP scan is bounded
-    /// by what the target's stack will answer, while a UDP scan is bounded by
-    /// what its target's *ICMP rate limiter* will answer, which is far lower. A
-    /// burst that outruns that limiter manufactures open-filtered verdicts, so
-    /// the UDP ceiling has to be low enough that it never does. See each
-    /// scanner's constructor for the value it chose and why.
-    pub max_in_flight: usize,
+    /// **This is what paces a raw port scan**, and it is the answer to a
+    /// question a fixed rate cannot answer. Measured, against a consumer router:
+    /// asked as fast as the socket would take it, of a thousand ports it
+    /// answered roughly four hundred and the rest were reported *filtered* —
+    /// including one running a service. The host was not filtering anything. It
+    /// was answering as fast as it could and being asked ten times faster.
+    ///
+    /// A rate chosen in advance is wrong in both directions at once: too fast
+    /// for that router and far too slow for the Linux server on the same
+    /// switch. A window is not chosen in advance. Probes leave as earlier ones
+    /// are settled, so the send rate settles at the rate the target is actually
+    /// resolving them. See [`congestion`](crate::scanner::pacing::congestion)
+    /// for what occupies it, how it grows, what makes it cut, and why UDP is
+    /// given one that does not move.
+    pub window: CongestionWindow,
+    /// How long to wait between releases, and the most probes one release may
+    /// contain.
+    ///
+    /// The **backstop**, not the pacing. It exists so that a defect in
+    /// [`window`](Self::window) cannot turn a scan into a flood, and so that a
+    /// caller who asks for a specific rate gets one. On a healthy scan the
+    /// window binds far below it and this never engages; `pacing_for` in the
+    /// parent module has how the pair is derived from a rate.
+    pub send_tick: Duration,
+    /// The most probes one tick releases. See [`send_tick`](Self::send_tick).
+    pub batch: usize,
+    /// The most probes this scan leaves unresolved at once.
+    ///
+    /// A bound on memory and correlation state, not on pace — see
+    /// [`admitting`](Self::admitting) for why the two are separate. A probe
+    /// leaves the [`window`](Self::window) at its first timeout and stays on the
+    /// ledger until its last, so against a range that answers nothing the
+    /// backlog between those two points is what grows, and this is what bounds
+    /// it.
+    pub max_unresolved: usize,
 }
 
 impl<T: Copy + PartialEq> RawProbeScan<T> {
@@ -170,12 +199,95 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
 
     /// Whether another target may be admitted from the stream.
     ///
-    /// False once the stream is done, and false while the ledger is at
-    /// [`max_in_flight`](Self::max_in_flight). Admitting past that ceiling grows
-    /// correlation state without making any answer arrive sooner, and for a
-    /// rate-limited target it actively costs verdicts.
+    /// Three conditions, and they answer different questions. The stream may be
+    /// done. The [`window`](Self::window) may be full, which is the pacing: too
+    /// many questions are already awaiting an answer, and asking another would
+    /// cost verdicts against a target that is being outrun. Or the ledger may be
+    /// at [`max_unresolved`](Self::max_unresolved), which is not pacing at all
+    /// but a bound on memory — a probe stays on the ledger long after it has
+    /// stopped occupying the window, waiting out a retry schedule, and against a
+    /// wide scan of a silent range that backlog is what grows without limit.
     pub fn admitting(&self, sending_finished: bool) -> bool {
-        !sending_finished && self.ledger.len() < self.max_in_flight
+        !sending_finished && self.window.has_room() && self.ledger.len() < self.max_unresolved
+    }
+
+    /// Records one probe leaving the wire, or failing to.
+    ///
+    /// Both halves of the bookkeeping in one call because they are one event and
+    /// were drifting apart: the audit counts every attempt so a scan that could
+    /// not send can say so, and the window counts only the ones that reached the
+    /// wire, since a probe nobody sent occupied nothing and must not be part of
+    /// the evidence that the path is busy.
+    ///
+    /// `first_attempt` decides whether the send takes a window slot. A retry
+    /// does not: the slot went back when the question it repeats ran out of
+    /// round-trip budget, and handing it back a second time would let the window
+    /// admit more than it believes it has.
+    pub fn record_send(&mut self, sent: bool, first_attempt: bool) {
+        self.audit.record_send(sent);
+        match (sent, first_attempt) {
+            (false, _) => {}
+            (true, true) => self.window.record_send(),
+            (true, false) => self.window.record_resend(),
+        }
+    }
+
+    /// Reads one probe's first timeout: frees the window slot it was holding,
+    /// and decides what the silence meant.
+    ///
+    /// The whole of the decision is whether `host` has ever answered anything.
+    /// See [`service_retries`](RawPortScan::service_retries) for the argument
+    /// and [`congestion`](crate::scanner::pacing::congestion) for what it cost
+    /// to get wrong.
+    pub fn judge_timeout(&mut self, host: IpAddr) {
+        self.window.release();
+        if self.ledger.host_has_answered(&host) {
+            self.window.record_congestion();
+        } else {
+            self.window.record_progress();
+        }
+    }
+
+    /// Folds one answered probe into everything this scan tracks about itself:
+    /// the deadline, the window and the audit.
+    ///
+    /// One place rather than one per protocol, because the three used to be
+    /// three statements repeated in each scanner and the window is a fourth that
+    /// would have been added to one of them.
+    ///
+    /// The window reads the *attempt* that was answered, not merely that
+    /// something was. A reply to the first attempt says the target is keeping
+    /// up; a reply to a later one says the target was willing all along and the
+    /// first question did not survive, which is the only evidence a port scanner
+    /// has that distinguishes being too fast from meeting a firewall. See
+    /// [`congestion`](crate::scanner::pacing::congestion).
+    pub fn record_answer(&mut self, resolution: &Resolution) {
+        self.deadline.mark_activity();
+        if let Some(rtt) = resolution.rtt {
+            self.deadline.record_rtt(rtt);
+        }
+
+        // Three cases, and the middle one is the reason this reads the attempt
+        // rather than the fact of an answer.
+        match (resolution.attempts, resolution.answered_attempt) {
+            // Asked once and answered: the slot is still held, and the target is
+            // keeping up.
+            (1, _) => {
+                self.window.release();
+                self.window.record_progress();
+            }
+            // Answered only because it was asked again: the target was willing
+            // all along and the first ask did not survive. The slot went back at
+            // that timeout, so this cuts and frees nothing.
+            (_, Some(attempt)) if attempt > 1 => self.window.record_congestion(),
+            // Answered late — the first ask was answered after its budget had
+            // already expired, which the per-attempt token is what lets us see.
+            // The timeout already released the slot and already judged it, and
+            // doing either again would double-count.
+            _ => {}
+        }
+
+        self.audit.record_host_found(resolution.answered_attempt);
     }
 
     /// How long the loop may sleep: until the scan's own next checkpoint, or
@@ -185,6 +297,32 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         match self.ledger.next_due() {
             Some(due) => until_deadline_tick.min(due.saturating_duration_since(now)),
             None => until_deadline_tick,
+        }
+    }
+
+    /// Seeds each host's retry timing from what an earlier phase already
+    /// measured about it.
+    ///
+    /// A port scan almost never meets its targets cold — [`scan`](crate::scan)
+    /// establishes that an address is there before spending a probe on each of
+    /// its ports, and that liveness pass timed every host that answered. Without
+    /// this the port scanner starts from first principles anyway, and the cost
+    /// falls entirely on the ports that turn out to be filtered: each one waits
+    /// the unmeasured starting timeout three times before silence is allowed to
+    /// mean anything.
+    ///
+    /// Called once at construction rather than per probe. The store is finished
+    /// being written by the time a port scanner is built, and a lookup per
+    /// target would repeat the same answer for every port of a host.
+    ///
+    /// The median rather than the minimum, because a retry schedule sized from
+    /// the fastest sample a host ever produced repeats every probe that is
+    /// merely typical.
+    pub fn seed_timing(&mut self) {
+        for host in self.ctx.store.iter() {
+            if let Some(rtt) = host.value().median_rtt() {
+                self.ledger.seed_host_rtt(*host.key(), rtt);
+            }
         }
     }
 
@@ -234,7 +372,8 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         }
 
         let capture = self.transport.capture_counts();
-        self.audit.report(audit_tag, probes, reason, capture);
+        self.audit
+            .report(audit_tag, probes, reason, capture, Some(self.window.summary()));
         self.ctx
             .record_probe_stats(self.audit.stats(kind, probes, reason, capture));
     }
@@ -323,11 +462,24 @@ pub trait RawPortScan: PortScanner {
     /// arrived across every attempt, rather than nothing arrived once.
     /// Retiring probes here rather than at the end of the scan also streams
     /// results to the caller while it is still running, and frees room under
-    /// [`max_in_flight`](RawProbeScan::max_in_flight) for the targets queued
-    /// behind them.
+    /// the [`window`](RawProbeScan::window) for the targets queued behind
+    /// them.
     ///
     /// Running out of attempts is deliberately not treated as activity, so it
     /// never extends the scan's own deadline. Nothing answered.
+    ///
+    /// A probe's **first** timeout is also what releases its slot in the
+    /// congestion window and what tells the window how the target is coping —
+    /// whichever event carries that timeout, the retry that follows it or the
+    /// exhaustion that follows it when the budget was one attempt.
+    ///
+    /// Which of the two signals it carries depends on the host and not on the
+    /// probe. A host that has never answered anything is behind a firewall or is
+    /// not there, and its silence says nothing about capacity; a host that is
+    /// answering most of what it is asked and dropping the rest is being outrun,
+    /// and that is the only warning a scan gets before it starts reporting a
+    /// firewall that is not there. See
+    /// [`congestion`](crate::scanner::pacing::congestion).
     fn service_retries(&mut self, now: Instant) {
         let core = self.core_mut();
         core.ledger.drain_due(now, &mut core.due);
@@ -339,9 +491,23 @@ pub trait RawPortScan: PortScanner {
         for event in &due {
             match *event {
                 Due::Retry {
-                    key: (ip, port), ..
-                } => self.probe(ip, port, now),
-                Due::Exhausted((ip, port)) => self.record_port(ip, port, silence, None),
+                    key: (ip, port),
+                    attempt,
+                } => {
+                    if attempt == 2 {
+                        self.core_mut().judge_timeout(ip);
+                    }
+                    self.probe(ip, port, now);
+                }
+                Due::Exhausted {
+                    key: (ip, port),
+                    attempts,
+                } => {
+                    if attempts == 1 {
+                        self.core_mut().judge_timeout(ip);
+                    }
+                    self.record_port(ip, port, silence, None);
+                }
             }
         }
         let core = self.core_mut();
@@ -356,10 +522,46 @@ pub trait RawPortScan: PortScanner {
     /// budgets run out; what reaches here are the ones still mid-schedule when
     /// the scan itself ended.
     fn resolve_remaining(&mut self) {
+        self.core_mut().window.release_all();
         let silence = self.silence_means();
         for (ip, port) in self.core_mut().ledger.drain_unresolved() {
             self.record_port(ip, port, silence, None);
         }
+    }
+
+    /// Gives the verdict to every target that was never asked at all.
+    ///
+    /// A scan that hits its deadline with targets still queued used to leave
+    /// them with no record whatsoever — not a filtered port, not an unknown one,
+    /// simply absent from the host as though nobody had ever named it. That is
+    /// the worst of the three ways a scan can fall short, because it is the only
+    /// one a reader cannot see: a truncated port list and a complete one look
+    /// identical, and the count in the summary agrees with itself.
+    ///
+    /// So they take the same verdict silence takes, and are counted. The verdict
+    /// is arguably too kind — nothing was asked, so nothing was learned — but a
+    /// port reported as this scan's silence alongside a stop reason of
+    /// `DeadlineExpired` is a fact somebody can act on, and an absent port is
+    /// not.
+    ///
+    /// **What is already queued, and no more.** Waiting for the dispatcher to
+    /// finish emitting would let a scan of a very large range spend longer
+    /// filing verdicts than it spent scanning, and the deadline that stopped it
+    /// is a guarantee of termination that this must not quietly undo. For every
+    /// scan smaller than the dispatcher's buffer — which is every scan whose
+    /// port list a person wrote — the queue is the whole remainder.
+    fn resolve_unasked(&mut self, targets: &mut mpsc::Receiver<Target>) -> u128 {
+        let protocol = self.protocol();
+        let silence = self.silence_means();
+
+        let mut unasked = 0;
+        while let Ok(target) = targets.try_recv() {
+            unasked += 1;
+            if target.protocol == protocol {
+                self.record_port(target.ip, target.port, silence, None);
+            }
+        }
+        unasked
     }
 }
 
@@ -394,8 +596,21 @@ pub struct AuditLabels {
 ///    to probe, a reply to read, or the moment the next probe is due.
 ///
 /// Anything still outstanding when the loop ends takes the scan's silence
-/// verdict, so every port the scan was given leaves with an answer.
+/// verdict, and so does anything still queued and never asked — so a scan cut
+/// short by its own deadline reports the ports it never reached instead of
+/// leaving them off the host entirely, which is the one shortfall a reader
+/// cannot see. See [`RawPortScan::resolve_unasked`] for how far that reaches.
 pub async fn run<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<Target>) {
+    // The rate backstop. What paces the scan is `RawProbeScan::window`, which
+    // the batch loop below re-checks after every send; this bounds how fast a
+    // window's worth of probes may be released, so a defect in the controller
+    // cannot become a flood and a caller asking for a specific rate gets one.
+    let mut send_tick = tokio::time::interval(scanner.core().send_tick);
+    // Delay rather than Burst: a tick missed while the loop was busy is time the
+    // probes were not going out, and catching up by releasing several at once
+    // would put back exactly the burst this exists to prevent.
+    send_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let mut sending_finished = false;
     // Counts what the scan was handed rather than what it sent. A target of
     // another protocol is not this scanner's to probe, but it was still part of
@@ -421,13 +636,29 @@ pub async fn run<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<Ta
         let tick = scanner.core().tick_delay(now);
 
         tokio::select! {
-            target = targets.recv(), if admitting => {
-                match target {
-                    Some(target) => {
-                        probes += 1;
-                        scanner.send_probe(target);
+            // One tick releases a batch, which is how a rate faster than the
+            // timer's resolution is expressed. Taken from the stream only when
+            // the ledger has room: the ceiling still bounds how many answers are
+            // outstanding, and the rate now bounds how fast they are asked for.
+            _ = send_tick.tick(), if admitting => {
+                for _ in 0..scanner.core().batch {
+                    match targets.try_recv() {
+                        Ok(target) => {
+                            probes += 1;
+                            scanner.send_probe(target);
+                        }
+                        // Nothing waiting: the dispatcher has not caught up, and
+                        // blocking here would hold the receive half across the
+                        // whole batch.
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            sending_finished = true;
+                            break;
+                        }
                     }
-                    None => sending_finished = true,
+                    if !scanner.core().admitting(sending_finished) {
+                        break;
+                    }
                 }
             }
 
@@ -448,6 +679,10 @@ pub async fn run<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<Ta
     };
 
     scanner.resolve_remaining();
+    // Targets still in the channel when the loop ended. Counted into `probes`
+    // so the audit's denominator is what the scan was handed rather than what it
+    // got round to.
+    probes += scanner.resolve_unasked(&mut targets);
 
     let kind = scanner.kind();
     let labels = scanner.audit_labels();
@@ -470,6 +705,7 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    use crate::scanner::pacing::congestion::WindowLimits;
     use crate::scanner::session::ScanSession;
     use crate::transport::probe::{ProbeSender, ProbeTransport, SendError};
 
@@ -502,7 +738,10 @@ mod tests {
             src_port: 54_321,
             send_failure: None,
             audit: ProbeAudit::new(),
-            max_in_flight: 4,
+            window: CongestionWindow::new(WindowLimits::fixed(4)),
+            send_tick: Duration::from_millis(1),
+            batch: 1,
+            max_unresolved: 64,
         };
         (core, session)
     }
@@ -552,26 +791,101 @@ mod tests {
         assert_eq!(core.stop_reason(false), Some(StopReason::Aborted));
     }
 
-    /// The in-flight ceiling is what makes a scan self-pacing: probes leave as
-    /// earlier ones are resolved, rather than as fast as the socket accepts
-    /// writes.
+    /// The window is what makes a scan self-pacing: probes leave as earlier ones
+    /// are resolved, rather than as fast as the socket accepts writes.
     #[test]
-    fn the_ledger_stops_admitting_at_the_ceiling() {
+    fn the_ledger_stops_admitting_at_the_window() {
         let (mut core, _session) = core();
         assert!(core.admitting(false), "an empty ledger admits");
 
-        let now = Instant::now();
-        for port in 0..core.max_in_flight as u16 {
-            core.ledger.arm(TARGET, (TARGET, port), (), now);
+        for _ in 0..core.window.capacity() {
+            core.window.record_send();
         }
 
         assert!(
             !core.admitting(false),
-            "admitting past the ceiling grows correlation state for nothing"
+            "admitting past the window grows correlation state for nothing"
         );
         assert!(
             !core.admitting(true),
-            "a finished stream never admits, ceiling or not"
+            "a finished stream never admits, window or not"
         );
+    }
+
+    /// A reply to the first attempt says the target is keeping up. A reply to a
+    /// later one says it was willing all along and the first question did not
+    /// survive — which is the one thing a port scanner can observe that
+    /// separates being too fast from meeting a firewall.
+    #[test]
+    fn the_attempt_that_answered_is_what_moves_the_window() {
+        let (mut core, _session) = core();
+        core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
+
+        core.record_answer(&Resolution {
+            rtt: None,
+            attempts: 1,
+            answered_attempt: Some(1),
+        });
+        assert!(core.window.capacity() > 64, "a clean answer buys headroom");
+
+        let grown = core.window.capacity();
+        core.record_answer(&Resolution {
+            rtt: None,
+            attempts: 2,
+            answered_attempt: Some(2),
+        });
+        assert!(
+            core.window.capacity() < grown,
+            "an answer that needed a retry is loss, and loss cuts the window"
+        );
+    }
+
+    /// Silence from a host that has never said anything is not congestion. It is
+    /// what a firewall and a dead address both produce, and a controller that
+    /// read it as congestion would crawl against exactly the hosts that are
+    /// hardest to finish — while learning nothing, because nothing it did would
+    /// change the answer.
+    #[test]
+    fn silence_from_a_host_that_never_answered_opens_the_window() {
+        let (mut core, _session) = core();
+        core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
+
+        core.window.record_send();
+        core.judge_timeout(TARGET);
+
+        assert!(
+            core.window.capacity() >= 64,
+            "nothing this host did says the path is busy"
+        );
+        assert_eq!(core.window.in_flight(), 0, "and the slot went back");
+    }
+
+    /// Silence from a host that is answering most of what it is asked is the
+    /// opposite: it is not running a block list, it is failing to keep up.
+    ///
+    /// This is the signal the first version of the controller did not have, and
+    /// its absence is measurable. Against a Raspberry Pi answering three quarters
+    /// of a thousand probes, the window never cut once and the remaining quarter
+    /// was reported as a firewall that did not exist — a different set of ports
+    /// on every run.
+    #[test]
+    fn silence_from_a_host_that_is_answering_cuts_the_window() {
+        let (mut core, _session) = core();
+        core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
+
+        // One port answered, which is what makes this host's silence mean
+        // something.
+        let now = Instant::now();
+        core.ledger.arm(TARGET, (TARGET, 22), (), now);
+        core.ledger.resolve(&(TARGET, 22), None, now);
+
+        core.window.record_send();
+        core.judge_timeout(TARGET);
+
+        assert!(
+            core.window.capacity() < 64,
+            "a host that talks and then goes quiet is being outrun"
+        );
+        assert_eq!(core.window.in_flight(), 0, "and the slot still went back");
     }
 }

@@ -399,7 +399,7 @@ impl HostScanner for OsEchoScanner {
 
         let capture = self.transport.capture_counts();
         let targets = self.next_sequence as u128;
-        self.audit.report("os-echo", targets, reason, capture);
+        self.audit.report("os-echo", targets, reason, capture, None);
         self.ctx.record_probe_stats(self.audit.stats(
             ScannerKind::OsEcho,
             targets,

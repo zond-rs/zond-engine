@@ -86,12 +86,33 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
+use crate::config::ServiceDetection;
 use crate::model::port::{Port, PortState, Protocol, Service};
 
 /// How long to wait for a service to speak first (banner grab).
 const BANNER_READ_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long to wait for a reply to an active probe.
 const PROBE_READ_TIMEOUT: Duration = Duration::from_millis(1_000);
+/// How long to keep reading once a response has started arriving.
+///
+/// Not a second timeout on the response: the response has already begun, and
+/// this is only how long its remainder is worth waiting for. What it has to
+/// bridge is the gap between a server writing its headers and writing its body,
+/// which is a segment boundary rather than a delay — sub-millisecond on a
+/// segment and one round trip at worst anywhere else.
+///
+/// It is paid in full by every response that is *already* complete, since a
+/// finished server simply goes quiet and there is no way to tell that apart from
+/// a slow one without waiting. So it is set as low as the job allows: fifty
+/// milliseconds bridges any real gap, and the ports pay it in parallel, so it
+/// costs a scan the grace once rather than once per port.
+const CONTINUATION_GRACE: Duration = Duration::from_millis(50);
+/// How long to wait for the second connection a speculative TLS handshake needs.
+///
+/// The first one already completed to this same port, so this either succeeds
+/// immediately or the port has stopped accepting — there is nothing here worth
+/// a long wait.
+const CONNECT_RETRY_TIMEOUT: Duration = Duration::from_millis(500);
 /// Upper bound on how much of a single response we read/keep.
 const MAX_RESPONSE_BYTES: usize = 4096;
 
@@ -148,8 +169,8 @@ pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
 ///
 /// If nothing identifies, a trimmed printable banner is attached as a
 /// last-resort label rather than leaving the port unannotated.
-pub async fn fingerprint_tcp(stream: TcpStream, port: Port) -> Port {
-    fingerprint_tcp_detailed(stream, port).await.0
+pub async fn fingerprint_tcp(stream: TcpStream, port: Port, detection: ServiceDetection) -> Port {
+    fingerprint_tcp_detailed(stream, port, detection).await.0
 }
 
 /// [`fingerprint_tcp`], also returning what the service said about the *machine*.
@@ -166,11 +187,12 @@ pub async fn fingerprint_tcp(stream: TcpStream, port: Port) -> Port {
 pub async fn fingerprint_tcp_detailed(
     stream: TcpStream,
     mut port: Port,
+    detection: ServiceDetection,
 ) -> (Port, Vec<os::OsEvidence>) {
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target.
     let addr = stream.peer_addr().ok();
-    let (responses, tunnel) = gather(stream, port.number()).await;
+    let (responses, tunnel) = gather(stream, port.number(), detection).await;
     if responses.is_empty() {
         return (port, Vec::new());
     }
@@ -300,15 +322,41 @@ async fn probe_udp(addr: std::net::SocketAddr) -> Option<String> {
 /// Collects everything the transport can learn from the port over the network,
 /// and how it was carried.
 ///
-/// Three cases: an **implicit-TLS** port handshakes straight away and collects
-/// through the tunnel; a plaintext port grabs a banner and runs its probes; a
-/// plaintext port that stays **silent and un-probed** (so the socket is still
-/// pristine) gets one *speculative* handshake in case it is TLS on a
-/// non-standard port. Whenever a handshake succeeds, the banner/probe collection
-/// re-runs *inside* the tunnel, so the protocol carried by TLS is fingerprinted
-/// too — and the returned [`Tunnel`] records that it was.
-async fn gather(mut stream: TcpStream, port: u16) -> (ResponseSet, Option<Tunnel>) {
+/// Three shapes, and which one a port gets is decided by whether anything in the
+/// signature database claims it.
+///
+/// An **implicit-TLS** port handshakes straight away and collects through the
+/// tunnel. A **claimed** port — one some service registered a probe for — is
+/// listened to and then asked, in that order, because a service that greets on
+/// connect should be heard before it is interrupted. An **unclaimed** port is
+/// asked generically; see [`ask_generically`].
+///
+/// Whenever a handshake succeeds the collection re-runs *inside* the tunnel, so
+/// the protocol carried by TLS is fingerprinted too, and the returned [`Tunnel`]
+/// records that it was.
+async fn gather(
+    mut stream: TcpStream,
+    port: u16,
+    detection: ServiceDetection,
+) -> (ResponseSet, Option<Tunnel>) {
     let peer = stream.peer_addr().ok().map(|addr| addr.ip());
+    let socket = stream.peer_addr().ok();
+
+    // Identify nothing. Reached only from the unprivileged path, where the
+    // connection is how the port's state was established and so exists whether
+    // or not anything is to be learned from it; the privileged path stops a
+    // level earlier, in `service::detect`, and never opens one at all.
+    if !detection.connects() {
+        return (ResponseSet::default(), None);
+    }
+
+    // Listen only. Everything below this line puts bytes on the wire — the
+    // ClientHello of a handshake as much as the probes — so the level that
+    // promises to send nothing has to stop here rather than further in.
+    if !detection.sends() {
+        let banner = read_response(&mut stream, BANNER_READ_TIMEOUT).await;
+        return (ResponseSet::from_banners(banner.into_iter().collect()), None);
+    }
 
     if tls::is_tls_port(port) {
         // Implicit-TLS port: the peer waits for our ClientHello, so skip the
@@ -319,21 +367,87 @@ async fn gather(mut stream: TcpStream, port: u16) -> (ResponseSet, Option<Tunnel
         };
     }
 
-    // Plaintext: banner grab + active probes over the raw socket.
-    let had_probes = !SignatureDb::global().tcp_probe_payloads(port).is_empty();
-    let banners = collect_responses(&mut stream, port).await;
-
-    // A port that answered, or that we already probed (committing the socket to
-    // its plaintext protocol), is not a TLS re-probe candidate.
-    if !banners.is_empty() || had_probes {
+    let probes = SignatureDb::global().tcp_probe_payloads(port);
+    if !probes.is_empty() {
+        // A port something claims: listen, then ask what that service asks.
+        let banners = collect_responses(&mut stream, probes).await;
         return (ResponseSet::from_banners(banners), None);
     }
 
-    // Silent and pristine: it might be TLS on a non-standard port.
-    match peer {
-        Some(ip) => tunneled(tls::speculative_handshake(stream, ip).await, port).await,
-        None => (ResponseSet::default(), None),
+    // A port nothing claims. Ask it the one question worth asking of anything.
+    match ask_generically(&mut stream).await {
+        GenericReply::Spoke(banners) => (ResponseSet::from_banners(banners), None),
+        // Either it answered in TLS or it answered nothing, and both are reasons
+        // to try a handshake. The socket cannot be reused for one — it has our
+        // plaintext request on it — so this costs a second connection, paid only
+        // on the ports that have already declined to speak.
+        GenericReply::Tls | GenericReply::Silent => match (peer, socket) {
+            (Some(ip), Some(socket)) => {
+                let Ok(Ok(fresh)) = timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await
+                else {
+                    return (ResponseSet::default(), None);
+                };
+                tunneled(tls::speculative_handshake(fresh, ip).await, port).await
+            }
+            _ => (ResponseSet::default(), None),
+        },
     }
+}
+
+/// What a generic probe drew out of a port nothing in the database claims.
+enum GenericReply {
+    /// It answered in something we can read. Whatever it said is here.
+    Spoke(Vec<String>),
+    /// It answered in TLS — an alert, most likely, since what we sent was not a
+    /// ClientHello. The port speaks, just not to that question.
+    Tls,
+    /// Nothing came back at all.
+    Silent,
+}
+
+/// Asks an unclaimed port the one question worth asking of any open port, and
+/// reads whatever comes back.
+///
+/// **The request goes out before anything is read**, which inverts the order the
+/// claimed-port path uses, and the inversion is safe for a reason worth writing
+/// down: a service that greets on connect has *already sent* its greeting by the
+/// time we write, and TCP will deliver it whether or not we asked for something
+/// else first. So writing first cannot lose a banner — it can only save the
+/// timeout that waiting for a banner nobody is going to send would cost.
+///
+/// That saving is the whole point. The old path waited half a second for a
+/// greeting, sent nothing, concluded the port was silent, and then spent up to
+/// another second and a half guessing that the silence was TLS. Measured against
+/// one ordinary home server that was two seconds per unidentified port, on seven
+/// of its eleven open ports, to learn nothing about any of them. An HTTP request
+/// answers in a round trip and names most of them.
+async fn ask_generically(stream: &mut TcpStream) -> GenericReply {
+    for payload in SignatureDb::global().generic_tcp_probe_payloads() {
+        if stream.write_all(payload).await.is_err() {
+            break;
+        }
+    }
+
+    let Some(bytes) = read_bytes(stream, PROBE_READ_TIMEOUT, CONTINUATION_GRACE).await else {
+        return GenericReply::Silent;
+    };
+    if looks_like_tls(&bytes) {
+        return GenericReply::Tls;
+    }
+
+    GenericReply::Spoke(vec![String::from_utf8_lossy(&bytes).into_owned()])
+}
+
+/// Whether `bytes` open a TLS record.
+///
+/// A content type in the range TLS defines, then a major version of 3 and a
+/// minor version no higher than TLS 1.3 uses on the wire. What this catches in
+/// practice is the alert a TLS server sends when it is handed a plaintext
+/// request: our `G` of `GET` is not a record type it knows, so it says so and
+/// closes. Read as text that alert is a handful of unprintable bytes, and taking
+/// it for a banner would leave a TLS service reported as an unidentifiable one.
+fn looks_like_tls(bytes: &[u8]) -> bool {
+    matches!(bytes, [0x14..=0x17, 0x03, 0x00..=0x04, ..])
 }
 
 /// Given the outcome of a handshake, re-probes through the tunnel (if it
@@ -346,7 +460,16 @@ async fn tunneled(
     let Some((mut tunnel, info)) = handshake else {
         return (ResponseSet::default(), None);
     };
-    let banners = collect_responses(&mut tunnel, port).await;
+    // Inside the tunnel the port's own probes apply if it has any, and the
+    // generic question if it does not — the protocol under TLS is as
+    // unidentified as it would have been in the clear. A caller who asked to
+    // send nothing never reaches here: `gather` returns before the handshake.
+    let db = SignatureDb::global();
+    let probes = match db.tcp_probe_payloads(port) {
+        [] => db.generic_tcp_probe_payloads(),
+        own => own,
+    };
+    let banners = collect_responses(&mut tunnel, probes).await;
     let responses = ResponseSet {
         banners,
         tls: Some(info),
@@ -354,10 +477,14 @@ async fn tunneled(
     (responses, Some(Tunnel::Tls))
 }
 
-/// Grabs a first-speak banner and then runs the port's active probes over
-/// `stream`, returning every non-empty response. Generic over the transport, so
-/// it runs identically on a raw socket or inside a TLS tunnel.
-async fn collect_responses<S>(stream: &mut S, port: u16) -> Vec<String>
+/// Grabs a first-speak banner and then sends `probes` over `stream`, returning
+/// every non-empty response. Generic over the transport, so it runs identically
+/// on a raw socket or inside a TLS tunnel.
+///
+/// The probes are passed in rather than looked up, because the caller is what
+/// knows which set applies: a port's own where it has them, and the generic set
+/// where it does not.
+async fn collect_responses<S>(stream: &mut S, probes: &[Vec<u8>]) -> Vec<String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -368,11 +495,11 @@ where
         banners.push(banner);
     }
 
-    for payload in SignatureDb::global().tcp_probe_payloads(port) {
+    for payload in probes {
         if stream.write_all(payload).await.is_err() {
             break;
         }
-        if let Some(reply) = read_response(stream, PROBE_READ_TIMEOUT).await {
+        if let Some(reply) = read_document(stream, PROBE_READ_TIMEOUT).await {
             banners.push(reply);
         }
     }
@@ -449,11 +576,65 @@ async fn read_response<S>(stream: &mut S, wait: Duration) -> Option<String>
 where
     S: AsyncRead + Unpin,
 {
+    read_bytes(stream, wait, Duration::ZERO)
+        .await
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// [`read_response`], but reading on until the port goes quiet.
+///
+/// For a reply that may be a *document* rather than a line. One `read` returns
+/// one segment, and an HTTP server that writes its headers and its body
+/// separately hands over the headers alone — so the `Server` header arrives and
+/// the `<title>` that names the application does not, on exactly the ports where
+/// the title is the only thing that would have named it.
+///
+/// Deliberately not what a banner grab uses. A greeting is one short write and
+/// waiting on for a second one costs [`CONTINUATION_GRACE`] on every port that
+/// greets, which is the fastest path there is and the last one worth taxing.
+async fn read_document<S>(stream: &mut S, wait: Duration) -> Option<String>
+where
+    S: AsyncRead + Unpin,
+{
+    read_bytes(stream, wait, CONTINUATION_GRACE)
+        .await
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Reads up to [`MAX_RESPONSE_BYTES`] of whatever the port sends, waiting `wait`
+/// for the first byte and `grace` for each read after it.
+///
+/// A `grace` of zero reads exactly once, which is what a banner grab wants; a
+/// non-zero one reads on until the port goes quiet, which is what a document
+/// wants. See [`read_response`] and [`read_document`].
+///
+/// Bytes rather than text, because the caller sometimes has to tell a banner
+/// from a TLS alert and `from_utf8_lossy` destroys the difference.
+async fn read_bytes<S>(stream: &mut S, wait: Duration, grace: Duration) -> Option<Vec<u8>>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut collected: Vec<u8> = Vec::new();
     let mut buffer = [0u8; MAX_RESPONSE_BYTES];
-    match timeout(wait, stream.read(&mut buffer)).await {
-        Ok(Ok(n)) if n > 0 => Some(String::from_utf8_lossy(&buffer[..n]).into_owned()),
-        _ => None,
+    let mut budget = wait;
+
+    while collected.len() < MAX_RESPONSE_BYTES {
+        match timeout(budget, stream.read(&mut buffer)).await {
+            Ok(Ok(n)) if n > 0 => {
+                let room = MAX_RESPONSE_BYTES - collected.len();
+                collected.extend_from_slice(&buffer[..n.min(room)]);
+                if grace.is_zero() {
+                    break;
+                }
+                budget = grace;
+            }
+            // A clean close, an error, or the port going quiet: whatever has
+            // arrived is all there is.
+            _ => break,
+        }
     }
+
+    (!collected.is_empty()).then_some(collected)
 }
 
 /// The first 32 printable characters across `responses`, for a last-resort

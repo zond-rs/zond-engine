@@ -158,6 +158,20 @@ impl ScanBudget {
         }
     }
 
+    /// The same budget with its per-target term widened to at least `minimum`.
+    ///
+    /// The counterpart of [`with_base_at_least`](Self::with_base_at_least), for
+    /// the other way a budget can be too short. The base has to cover one
+    /// probe's whole life; this has to cover the *pace* the scan will settle at,
+    /// and a scan that paces itself has a pace only it knows. Expressing that as
+    /// a floor keeps the two from drifting apart when either is tuned.
+    pub fn with_per_target_at_least(self, minimum: Duration) -> Self {
+        Self {
+            per_target: self.per_target.max(minimum),
+            ..self
+        }
+    }
+
     /// Computes the effective duration for a scan covering `target_count` addresses.
     pub fn for_target_count(&self, target_count: usize) -> Duration {
         let target_count = u32::try_from(target_count).unwrap_or(u32::MAX);
@@ -267,6 +281,30 @@ mod tests {
 
         assert_eq!(budget.for_target_count(0), Duration::from_millis(100));
         assert_eq!(budget.for_target_count(10), Duration::from_millis(200));
+    }
+
+    /// A scan that paces itself may settle far below the rate a budget was
+    /// written for, and a budget that assumed more expires while the pacing is
+    /// doing its job — cutting the scan short and reporting the ports it never
+    /// reached as though it had asked.
+    #[test]
+    fn a_budget_can_be_widened_to_the_pace_a_scan_will_actually_keep() {
+        let budget = ScanBudget::new(
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+            Duration::from_secs(60),
+        );
+
+        let paced = budget.with_per_target_at_least(Duration::from_millis(4));
+        assert_eq!(paced.for_target_count(100), Duration::from_millis(500));
+
+        assert_eq!(
+            budget
+                .with_per_target_at_least(Duration::from_micros(500))
+                .for_target_count(100),
+            budget.for_target_count(100),
+            "a slower pace than the budget already allows for changes nothing"
+        );
     }
 
     #[test]

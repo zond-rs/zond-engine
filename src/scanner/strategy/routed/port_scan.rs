@@ -52,6 +52,7 @@ use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
 use crate::config::OsDetection;
+use crate::config::ServiceDetection;
 use crate::config::ProbeTuning;
 use crate::error;
 use crate::fingerprint::os;
@@ -60,6 +61,7 @@ use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols::tcp;
+use crate::scanner::pacing::congestion::CongestionWindow;
 use crate::scanner::pacing::deadline::AdaptiveDeadline;
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::service;
@@ -72,10 +74,12 @@ use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};
 
 // Port scanning and routed discovery send the same kind of raw TCP probe over
 // the same kind of network path, so they share one adaptive-deadline profile
-// rather than keeping two copies in step.
+// rather than keeping two copies in step. They do *not* share a retry schedule:
+// a sweep's probes are lost to what the path is doing, and a port scan's to the
+// burst it is itself making at one stack. See `PORT_RETRY_POLICY`.
 use super::icmp_error::{self, Unreachable};
 use super::probe_scan::{self, AuditLabels, ProbeTarget, RawPortScan, RawProbeScan};
-use super::{DEADLINE_CONFIG, RETRY_POLICY};
+use super::{DEADLINE_CONFIG, PORT_RETRY_POLICY};
 use crate::scanner::audit::ProbeAudit;
 
 /// What identifies one attempt of a probe on the wire.
@@ -95,16 +99,6 @@ pub struct TcpToken {
 /// Outstanding probes and the schedule they are retried on.
 type Ledger = ProbeLedger<ProbeTarget, TcpToken>;
 
-/// The most probes left outstanding at once.
-///
-/// Retransmission makes this necessary rather than merely tidy. Without a
-/// ceiling the send loop empties the dispatcher into the network as fast as the
-/// socket accepts writes, and every unanswered probe of that burst then comes
-/// due for a retry - turning one burst into several. Capping the outstanding set
-/// makes the scan self-pacing: probes leave as earlier ones are answered or
-/// retired, so the send rate settles at the rate the network is actually
-/// resolving them.
-const MAX_IN_FLIGHT: usize = 4_096;
 
 /// Probes specific `(address, port)` pairs with raw TCP segments, using
 /// whichever [`TcpScanTechnique`] it was built for.
@@ -131,6 +125,11 @@ pub struct TcpPortScanner {
     /// differently: the reply was drawn to classify a port, and reading what else
     /// it says costs a parse.
     os_detection: OsDetection,
+
+    /// How far the second identification pass may go over the ports this scan
+    /// found open. Read here because this scanner owns that pass; see
+    /// [`detect_services`](PortScanner::detect_services).
+    service_detection: ServiceDetection,
 }
 
 impl TcpPortScanner {
@@ -163,8 +162,13 @@ impl TcpPortScanner {
             transport,
             target_count,
             src_port,
-            RETRY_POLICY.configured(tuning.retry),
+            PORT_RETRY_POLICY.configured(tuning.retry),
             tuning.os_detection,
+            tuning.service_detection,
+            tuning
+                .max_probe_rate
+                .unwrap_or(super::TCP_PORT_RATE_CEILING)
+                .max(1),
         ))
     }
 
@@ -195,8 +199,10 @@ impl TcpPortScanner {
             transport,
             target_count,
             rand::random_range(50_000..u16::MAX),
-            RETRY_POLICY,
+            PORT_RETRY_POLICY,
             OsDetection::default(),
+            ServiceDetection::default(),
+            super::TCP_PORT_RATE_CEILING,
         )
     }
 
@@ -214,27 +220,47 @@ impl TcpPortScanner {
         src_port: u16,
         retry: RetryPolicy,
         os_detection: OsDetection,
+        service_detection: ServiceDetection,
+        rate_per_sec: u32,
     ) -> Self {
-        // The scan has to outlive its own retry schedule, or probes are written
-        // off as unanswered having never been fully asked.
-        let deadline_config = DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime());
+        // The rate is the backstop; `window` below is what actually paces the
+        // scan. See `RawProbeScan::window`.
+        let (send_tick, batch) = super::pacing_for(rate_per_sec);
 
-        Self {
+        // The scan has to outlive its own retry schedule, or probes are written
+        // off as unanswered having never been fully asked — and it has to
+        // outlive the slowest pace its own window may settle at, or the pacing
+        // working as designed is what ends the scan early.
+        let deadline_config = DEADLINE_CONFIG
+            .allowing_for(retry.worst_case_probe_lifetime())
+            .allowing_pace_of(retry.min_rto / super::TCP_PORT_WINDOW.floor);
+
+        let mut scanner = Self {
             technique,
             os_detection,
+            service_detection,
             core: RawProbeScan {
                 resolver,
                 ctx,
                 transport,
                 deadline: AdaptiveDeadline::new(deadline_config, target_count),
-                ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT)),
+                ledger: Ledger::new(retry, target_count.min(super::TCP_PORT_UNRESOLVED)),
                 due: Vec::new(),
                 src_port,
                 send_failure: None,
                 audit: ProbeAudit::new(),
-                max_in_flight: MAX_IN_FLIGHT,
+                window: CongestionWindow::new(super::TCP_PORT_WINDOW),
+                send_tick,
+                batch,
+                max_unresolved: super::TCP_PORT_UNRESOLVED,
             },
-        }
+        };
+
+        // What the liveness phase already learned about these hosts, so the
+        // first wave of probes is timed against a measurement rather than
+        // against a guess. See `RawProbeScan::seed_timing`.
+        scanner.core.seed_timing();
+        scanner
     }
 
     /// Matches a TCP segment against an outstanding probe and, if it answers
@@ -392,14 +418,7 @@ impl TcpPortScanner {
             return;
         };
 
-        self.core.deadline.mark_activity();
-        if let Some(rtt) = resolution.rtt {
-            self.core.deadline.record_rtt(rtt);
-        }
-        self.core
-            .audit
-            .record_host_found(resolution.answered_attempt);
-
+        self.core.record_answer(&resolution);
         self.record_port_drawn_by(key.0, key.1, state, sender, drawn_by);
     }
 
@@ -461,6 +480,12 @@ impl RawPortScan for TcpPortScanner {
             return;
         };
 
+        // Whether this send takes a slot in the congestion window. A retry does
+        // not: the slot went back when the question it repeats ran out of
+        // round-trip budget. The ledger is what knows, since it is what holds
+        // the probe between attempts.
+        let first_attempt = !self.core.ledger.contains(&(ip, port));
+
         let token = send_tcp_probe(
             self.core.transport.tx.as_ref(),
             self.technique,
@@ -470,7 +495,7 @@ impl RawPortScan for TcpPortScanner {
             port,
             &mut self.core.send_failure,
         );
-        self.core.audit.record_send(token.is_some());
+        self.core.record_send(token.is_some(), first_attempt);
 
         if let Some(token) = token {
             self.core.ledger.arm(ip, (ip, port), token, now);
@@ -691,9 +716,11 @@ impl PortScanner for TcpPortScanner {
     /// outstanding when the loop ends takes the verdict this technique reads
     /// silence as.
     ///
-    /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes
-    /// are outstanding, and retries are serviced before new targets are taken,
-    /// since a retry is an obligation the scan already owns.
+    /// New targets are admitted only while the congestion window has room, and
+    /// retries are serviced before new targets are taken, since a retry is an
+    /// obligation the scan already owns. The window is what paces the scan and
+    /// what it discovers about each target's capacity; see
+    /// `TCP_PORT_WINDOW`.
     async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
         probe_scan::run(self, targets).await;
         Ok(())
@@ -708,7 +735,7 @@ impl PortScanner for TcpPortScanner {
     /// any other one this finds nothing to identify and returns immediately -
     /// the data already guarantees what a condition here would have enforced.
     async fn detect_services(&mut self, ctx: &ScanContext) {
-        service::detect(ctx).await;
+        service::detect(ctx, self.service_detection).await;
     }
 }
 
@@ -1308,7 +1335,7 @@ mod tests {
         probe(&mut scanner, &sent, 80);
 
         let mut now = Instant::now();
-        for _ in 0..RETRY_POLICY.max_attempts + 2 {
+        for _ in 0..PORT_RETRY_POLICY.max_attempts + 2 {
             now += Duration::from_secs(4);
             scanner.service_retries(now);
         }
@@ -1316,7 +1343,7 @@ mod tests {
         assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
         assert_eq!(
             sent.lock().unwrap().len(),
-            usize::from(RETRY_POLICY.max_attempts),
+            usize::from(PORT_RETRY_POLICY.max_attempts),
         );
         assert!(scanner.core.ledger.is_empty());
     }
@@ -1412,7 +1439,7 @@ mod tests {
     /// are written off having never been fully asked.
     #[test]
     fn the_scan_budget_covers_the_whole_retry_schedule() {
-        let lifetime = RETRY_POLICY.worst_case_probe_lifetime();
+        let lifetime = PORT_RETRY_POLICY.worst_case_probe_lifetime();
         let budget = DEADLINE_CONFIG
             .allowing_for(lifetime)
             .max_budget

@@ -516,7 +516,15 @@ pub enum Due<K> {
     },
     /// The budget is spent and the probe is no longer outstanding. This is the
     /// moment a verdict of "filtered" is earned rather than assumed.
-    Exhausted(K),
+    Exhausted {
+        key: K,
+        /// How many times it was sent, so a caller can tell the probe that was
+        /// asked once from the one that was asked three times. A pacing
+        /// controller needs the difference: the first of a probe's timeouts is
+        /// the one that says something about the path, and with a budget of one
+        /// attempt this event *is* that first timeout.
+        attempts: u8,
+    },
 }
 
 /// What resolving a probe revealed.
@@ -694,9 +702,13 @@ where
 
             if record.sends >= record.budget {
                 let host = record.host;
+                let attempts = record.sends;
                 self.records.remove(&timer.key);
                 self.retire(host);
-                out.push(Due::Exhausted(timer.key));
+                out.push(Due::Exhausted {
+                    key: timer.key,
+                    attempts,
+                });
                 continue;
             }
 
@@ -762,9 +774,56 @@ where
         self.records.contains_key(key)
     }
 
+    /// Whether anything has ever come back from `host` — a SYN+ACK, a reset, an
+    /// ICMP error, any reply at all.
+    ///
+    /// The question a pacing controller asks about a probe that went unanswered,
+    /// and the one that decides what the silence means. A host that answers
+    /// nothing is behind a firewall or is not there, and neither is a reason to
+    /// ask more slowly; a host that answers most things and drops the rest is
+    /// failing to keep up, and that is exactly a reason to. See
+    /// [`congestion`](super::congestion).
+    ///
+    /// Deliberately not "has a round trip", which
+    /// [`host_rtt`](Self::host_rtt) answers: a reply that could not be
+    /// attributed to an attempt still proves the host is talking, and a host
+    /// whose every reply arrived ambiguously would otherwise look silent.
+    pub fn host_has_answered(&self, host: &IpAddr) -> bool {
+        self.hosts.get(host).is_some_and(|state| state.answered)
+    }
+
     /// The smoothed round trip observed for `host`, if it has answered.
     pub fn host_rtt(&self, host: &IpAddr) -> Option<Duration> {
         self.hosts.get(host)?.estimator.smoothed
+    }
+
+    /// Seeds `host`'s round-trip estimate from a measurement this ledger did not
+    /// take.
+    ///
+    /// A port scan reaches a host that a liveness phase has already timed, and
+    /// starting from [`initial_rto`](RetryPolicy::initial_rto) throws that away:
+    /// the first wave of probes to a host answering in five milliseconds waits
+    /// two hundred before repeating, and every genuinely filtered port pays that
+    /// wait three times over. Seeded, the same tail is settled in a fraction of
+    /// the time.
+    ///
+    /// Seeding *down* is safe in a way it would not be without per-attempt
+    /// tokens. An estimate too tight retransmits early, and the reply to the
+    /// first attempt still names the first attempt when it arrives — so the
+    /// round trip is measured correctly and, for a caller reading the answered
+    /// attempt as a loss signal, an early retry is not mistaken for one. What it
+    /// costs is the extra packet, bounded by [`min_rto`](RetryPolicy::min_rto).
+    ///
+    /// Does nothing for a host this ledger has already measured for itself: a
+    /// sample it took beats one it was handed.
+    pub fn seed_host_rtt(&mut self, host: IpAddr, rtt: Duration) {
+        let state = self.hosts.entry(host).or_default();
+        if state.estimator.is_empty() {
+            state.estimator.record(rtt);
+        }
+        if self.policy.cross_host_estimate && self.global.is_empty() {
+            self.global.record(rtt);
+        }
     }
 
     /// Accounts for a probe that spent its entire budget in silence.
@@ -892,6 +951,47 @@ mod tests {
 
     fn ledger(policy: RetryPolicy) -> ProbeLedger<(IpAddr, u16), u32> {
         ProbeLedger::seeded(policy, 8, 0x5EED)
+    }
+
+    /// A port scan meets hosts a liveness phase already timed, and starting
+    /// from the unmeasured guess throws that away — the cost lands entirely on
+    /// the ports that turn out to be filtered, each of which then waits the full
+    /// guess three times before silence is allowed to mean anything.
+    #[test]
+    fn a_seeded_host_is_timed_from_the_measurement_rather_than_the_guess() {
+        let mut ledger = ledger(policy());
+
+        let unseeded = ledger.timeout_for(OTHER, 1);
+        assert_eq!(
+            unseeded,
+            Duration::from_millis(100),
+            "with nothing measured, the policy's starting timeout stands"
+        );
+
+        ledger.seed_host_rtt(HOST, Duration::from_millis(5));
+
+        assert!(
+            ledger.timeout_for(HOST, 1) < unseeded,
+            "a host already known to answer in five milliseconds is not worth \
+             a hundred of patience"
+        );
+    }
+
+    /// A sample this ledger took itself beats one it was handed: the seed is a
+    /// starting point for a host nothing has asked yet, not a correction to what
+    /// the scan is currently observing.
+    #[test]
+    fn seeding_does_not_overwrite_what_the_scan_has_measured() {
+        let mut ledger = ledger(policy());
+        let start = Instant::now();
+
+        ledger.arm(HOST, (HOST, 80), 1, start);
+        ledger.resolve(&(HOST, 80), Some(1), start + Duration::from_millis(40));
+        let measured = ledger.host_rtt(&HOST);
+
+        ledger.seed_host_rtt(HOST, Duration::from_millis(1));
+
+        assert_eq!(ledger.host_rtt(&HOST), measured);
     }
 
     /// A fast answer from one host must not shorten an unmeasured host's first
@@ -1180,7 +1280,7 @@ mod tests {
                         assert_eq!(attempt, sends);
                         ledger.arm(HOST, key, attempt.into(), now);
                     }
-                    Due::Exhausted(key) => exhausted = Some(key),
+                    Due::Exhausted { key, .. } => exhausted = Some(key),
                 }
             }
         }
@@ -1198,7 +1298,15 @@ mod tests {
         ledger.arm(HOST, (HOST, 80), 1, t0);
 
         let due = due_at(&mut ledger, t0 + Duration::from_secs(5));
-        assert_eq!(due, vec![Due::Exhausted((HOST, 80))]);
+        assert_eq!(
+            due,
+            vec![Due::Exhausted {
+                key: (HOST, 80),
+                // One, and the number matters to whoever reads it: with no
+                // retry, this event *is* the probe's first timeout.
+                attempts: 1,
+            }]
+        );
     }
 
     #[test]
@@ -1554,7 +1662,7 @@ mod tests {
                         sends += 1;
                         ledger.arm(host, key, u32::from(sends), now);
                     }
-                    Due::Exhausted(_) => return sends,
+                    Due::Exhausted { .. } => return sends,
                 }
             }
         }
@@ -1910,7 +2018,7 @@ mod tests {
                             prop_assert_eq!(attempt, sends);
                             ledger.arm(HOST, key, u32::from(attempt), now);
                         }
-                        Due::Exhausted(_) => exhausted += 1,
+                        Due::Exhausted { .. } => exhausted += 1,
                     }
                 }
                 prop_assert!(sends <= max_attempts);

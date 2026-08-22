@@ -37,6 +37,7 @@ use crate::warn;
 use tokio::time::timeout;
 
 use crate::fingerprint::os;
+use crate::config::ServiceDetection;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::scanner::pool::ProbePool;
@@ -49,7 +50,14 @@ use crate::scanner::session::{ScanContext, ScannerKind};
 /// not service identity, which is the SYN path. Ports that already carry a
 /// fingerprint from the connect scanner would be re-identified harmlessly, but the
 /// caller only runs this where it is actually needed.
-pub async fn detect(ctx: &ScanContext) {
+pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
+    // A level that opens no connection has nothing for this phase to do. Checked
+    // before the store is walked, so the phase costs nothing at all rather than
+    // costing a snapshot it will not use.
+    if !detection.connects() {
+        return;
+    }
+
     // Snapshot the targets up front so no DashMap guard is held across an await.
     let targets = fingerprintable_ports(ctx);
     if targets.is_empty() {
@@ -71,7 +79,8 @@ pub async fn detect(ctx: &ScanContext) {
         if ctx.handle.should_stop() {
             break;
         }
-        pool.admit(fingerprint_one(target, port, protocol)).await;
+        pool.admit(fingerprint_one(target, port, protocol, detection))
+            .await;
     }
 
     pool.drain().await;
@@ -123,6 +132,7 @@ async fn fingerprint_one(
     target: ScopedIp,
     port_number: u16,
     protocol: Protocol,
+    detection: ServiceDetection,
 ) -> Option<(IpAddr, Port, Vec<os::OsEvidence>)> {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
@@ -143,7 +153,7 @@ async fn fingerprint_one(
                 .await
                 .ok()?
                 .ok()?;
-            crate::fingerprint::fingerprint_tcp_detailed(stream, port).await
+            crate::fingerprint::fingerprint_tcp_detailed(stream, port, detection).await
         }
         // No connection to establish and no banner to wait for: one datagram
         // out, one back, and whatever text it carries. Silence leaves the port
@@ -213,7 +223,7 @@ mod tests {
         host.add_port(Port::new(addr.port(), Protocol::Tcp, PortState::Open));
         session.hosts().insert(ip, host);
 
-        detect(&ctx).await;
+        detect(&ctx, ServiceDetection::default()).await;
 
         let host = session.hosts().get(&ip).unwrap();
         let port = host
@@ -227,6 +237,31 @@ mod tests {
         assert_eq!(service.version(), Some("9.6p1"));
     }
 
+    /// The level that promises to open no connection has to be checked before
+    /// anything else this phase does, or the promise is only as good as whatever
+    /// happens to come next.
+    #[tokio::test]
+    async fn detection_turned_off_connects_to_nothing() {
+        let (session, ctx) = ScanSession::new();
+
+        // An open port on an address nothing is listening at. Reaching the
+        // network here would take the connect timeout; returning promptly is the
+        // observable form of "no connection was attempted".
+        let unreachable: IpAddr = "192.0.2.1".parse().expect("a documentation address");
+        ctx.update_host(unreachable, |host| {
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        });
+
+        let started = std::time::Instant::now();
+        detect(&ctx, ServiceDetection::Off).await;
+
+        assert!(
+            started.elapsed() < CONNECT_PROBE_TIMEOUT,
+            "a level that connects to nothing cannot have waited on a connection"
+        );
+        drop(session);
+    }
+
     #[tokio::test]
     async fn detect_is_a_no_op_with_no_open_ports() {
         let (session, ctx) = ScanSession::new();
@@ -236,7 +271,7 @@ mod tests {
         host.add_port(Port::new(9, Protocol::Tcp, PortState::Closed));
         session.hosts().insert(ip, host);
 
-        detect(&ctx).await; // must return promptly without connecting anywhere
+        detect(&ctx, ServiceDetection::default()).await; // must return promptly without connecting anywhere
 
         let host = session.hosts().get(&ip).unwrap();
         let port = host.ports().find(|p| p.number() == 9).unwrap();

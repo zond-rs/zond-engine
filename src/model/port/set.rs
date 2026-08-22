@@ -40,6 +40,15 @@ use thiserror::Error;
 /// somewhere else is a second list to keep in step.
 pub const COMMON_DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 
+/// Where a range with its start left off begins: `-1024` means `1-1024`.
+///
+/// One rather than zero. Port 0 is reserved and nothing listens on it, so
+/// including it in an open-ended range would spend a probe per host to
+/// re-establish that — and "everything" written as `-` is a specification people
+/// reach for precisely when the port count is already enormous. A caller who
+/// genuinely wants it can still name `0` outright.
+const FIRST_PORT: u16 = 1;
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Error Types
 // ══════════════════════════════════════════════════════════════════════════════
@@ -116,6 +125,50 @@ impl PortSet {
         COMMON_DISCOVERY_PORTS
             .iter()
             .map(|&port| (port, Protocol::Tcp))
+            .collect()
+    }
+
+    /// The `count` TCP ports this engine would ask about first.
+    ///
+    /// The default a scan uses when the caller named no ports, and the answer to
+    /// `--top-ports`. See [`catalog`](crate::model::port::catalog) for where the
+    /// ranking comes from and how precisely to read it; the short version is
+    /// that the first hundred are ranked against each other and the rest are
+    /// grouped into tiers of comparable likelihood.
+    ///
+    /// Clamped to what the catalogue holds, so a caller passing a number a
+    /// person typed gets every port there is rather than a panic.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::model::port::set::PortSet;
+    ///
+    /// let top = PortSet::top_tcp(100);
+    /// assert!(top.has_tcp(443));
+    /// // Outside the well-known range, and running a service on a great many
+    /// // home servers. This is what `1-1024` was missing.
+    /// assert!(PortSet::top_tcp(1000).has_tcp(5432));
+    /// ```
+    pub fn top_tcp(count: usize) -> Self {
+        super::catalog::top_tcp(count)
+            .iter()
+            .map(|&port| (port, Protocol::Tcp))
+            .collect()
+    }
+
+    /// The `count` UDP ports this engine would ask about first.
+    ///
+    /// The counterpart of [`top_tcp`](Self::top_tcp), and deliberately drawn
+    /// from a much shorter list: a UDP port costs far more to classify and far
+    /// more of them come back
+    /// [`OpenFiltered`](crate::model::port::PortState::OpenFiltered) whatever is
+    /// done, so the catalogue stops where the extra probes stop buying
+    /// certainty.
+    pub fn top_udp(count: usize) -> Self {
+        super::catalog::top_udp(count)
+            .iter()
+            .map(|&port| (port, Protocol::Udp))
             .collect()
     }
 
@@ -252,6 +305,12 @@ impl TryFrom<&str> for PortSet {
     /// ### Format Support
     /// * **Individual**: `80`, `443`
     /// * **Ranges**: `1000-2000`
+    /// * **Open-ended ranges**: `-1024` is everything up to 1024, `1024-` is
+    ///   everything from it, and a bare `-` is every port there is. The
+    ///   convention every scanner's users already have in their fingers, and
+    ///   more use than a flag for the same thing would be — it applies to the
+    ///   UDP half (`u:-`) and to one side of a mixed specification just as
+    ///   readily.
     /// * **Protocols**: Defaults to TCP. Use `u:` prefix for UDP (e.g., `u:53`).
     /// * **Mixed**: `80, 443, u:53, 161-162`
     ///
@@ -264,6 +323,11 @@ impl TryFrom<&str> for PortSet {
     /// assert!(set.has_tcp(80));
     /// assert!(set.has_udp(53));
     /// assert_eq!(set.len(), 8); // 1 + 1 + 6
+    ///
+    /// // Every port there is, which is what `-p-` means on a command line.
+    /// let everything = PortSet::try_from("-").unwrap();
+    /// assert_eq!(everything.len(), 65_535);
+    /// assert!(everything.has_tcp(1) && everything.has_tcp(65_535));
     /// ```
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let mut tcp = Vec::new();
@@ -290,19 +354,29 @@ impl TryFrom<&str> for PortSet {
                     })?;
                     p..=p
                 }
+                // An end left off means "as far as there is", at whichever end
+                // it was left off. `-` on its own is both, and so is every port.
                 [start_str, end_str] => {
-                    let start = start_str.parse::<u16>().map_err(|source| {
-                        PortSetParseError::InvalidPort {
-                            input: start_str.to_string(),
-                            source,
-                        }
-                    })?;
-                    let end = end_str.parse::<u16>().map_err(|source| {
-                        PortSetParseError::InvalidPort {
-                            input: end_str.to_string(),
-                            source,
-                        }
-                    })?;
+                    let start = if start_str.is_empty() {
+                        FIRST_PORT
+                    } else {
+                        start_str.parse::<u16>().map_err(|source| {
+                            PortSetParseError::InvalidPort {
+                                input: start_str.to_string(),
+                                source,
+                            }
+                        })?
+                    };
+                    let end = if end_str.is_empty() {
+                        u16::MAX
+                    } else {
+                        end_str.parse::<u16>().map_err(|source| {
+                            PortSetParseError::InvalidPort {
+                                input: end_str.to_string(),
+                                source,
+                            }
+                        })?
+                    };
 
                     if start > end {
                         return Err(PortSetParseError::InvalidRange { start, end });
@@ -413,6 +487,62 @@ mod tests {
         assert!(port_set_udp.has_udp(80));
         assert!(port_set_udp.has_udp(100));
         assert!(port_set_udp.has_udp(1024));
+    }
+
+    /// The spelling every scanner's users already know, in all three of its
+    /// forms. `-p-` is the one people type; the open-ended halves fall out of
+    /// the same rule and are worth having for their own sake.
+    #[test]
+    fn a_range_may_leave_off_either_end_or_both() {
+        let everything = PortSet::try_from("-").unwrap();
+        assert!(everything.has_tcp(1));
+        assert!(everything.has_tcp(65_535));
+        assert_eq!(everything.len(), 65_535);
+
+        let up_to = PortSet::try_from("-1024").unwrap();
+        assert!(up_to.has_tcp(1) && up_to.has_tcp(1024));
+        assert!(!up_to.has_tcp(1025));
+
+        let onward = PortSet::try_from("1024-").unwrap();
+        assert!(onward.has_tcp(1024) && onward.has_tcp(65_535));
+        assert!(!onward.has_tcp(1023));
+    }
+
+    /// Port 0 is reserved and nothing listens on it, so an open-ended range
+    /// starts at 1 — a probe per host to re-establish that is a probe wasted,
+    /// and these are the specifications with the most hosts behind them. Naming
+    /// it outright still works.
+    #[test]
+    fn an_open_ended_range_starts_at_one_and_zero_must_be_asked_for() {
+        assert!(!PortSet::try_from("-").unwrap().has_tcp(0));
+        assert!(PortSet::try_from("0-").unwrap().has_tcp(0));
+        assert!(PortSet::try_from("0").unwrap().has_tcp(0));
+    }
+
+    /// The open ends compose with everything else the grammar has: the UDP
+    /// prefix, and the other members of a mixed specification.
+    #[test]
+    fn an_open_ended_range_composes_with_the_rest_of_the_grammar() {
+        let mixed = PortSet::try_from("22, u:-, 9000-").unwrap();
+
+        assert!(mixed.has_tcp(22));
+        assert!(mixed.has_tcp(9000) && mixed.has_tcp(65_535));
+        assert!(!mixed.has_tcp(8999));
+        assert!(mixed.has_udp(1) && mixed.has_udp(65_535));
+    }
+
+    /// A dash is an end left off, not a wildcard: two of them name no range and
+    /// are refused rather than read as one.
+    #[test]
+    fn more_than_one_dash_is_still_malformed() {
+        assert!(matches!(
+            PortSet::try_from("--"),
+            Err(PortSetParseError::MalformedSpec(_))
+        ));
+        assert!(matches!(
+            PortSet::try_from("1-2-3"),
+            Err(PortSetParseError::MalformedSpec(_))
+        ));
     }
 
     /// Whitespace names no ports, which is a valid thing to say — a caller

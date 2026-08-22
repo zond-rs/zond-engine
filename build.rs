@@ -77,6 +77,7 @@ fn main() {
         let def: ServiceDefinition = toml::from_str(&content)
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
         validate(&def, path);
+        validate_generic_probes(&def, path);
         services.push(def);
     }
 
@@ -114,6 +115,28 @@ fn compile_os_rules(out_dir: &Path) {
 
 /// Validates one operating-system rule, aborting the build on anything that
 /// would make it match the wrong hosts or no hosts at all.
+/// Refuses a generic probe that is not TCP.
+///
+/// `generic` means "send this to any open port with nothing else to send", and
+/// over UDP that is a payload aimed at every UDP port in the scan — a different
+/// and much larger claim than the one the flag is for, and one nobody would make
+/// by ticking a boolean. Caught here because the runtime simply skips such a
+/// probe, and a probe silently not sent is the kind of gap that ships.
+fn validate_generic_probes(def: &ServiceDefinition, path: &Path) {
+    for probe in &def.probe {
+        if probe.generic && probe.protocol != "tcp" {
+            panic!(
+                "{}: probe '{}' is marked generic over {}. A generic probe is sent to \
+                 every open port that registers none of its own, which only makes sense \
+                 over TCP.",
+                path.display(),
+                probe.name.as_deref().unwrap_or("<unnamed>"),
+                probe.protocol,
+            );
+        }
+    }
+}
+
 fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
     let file = path.display();
     let family = &def.os.family;

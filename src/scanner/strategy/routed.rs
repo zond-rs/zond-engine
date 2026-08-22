@@ -35,6 +35,7 @@ use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols as protocol;
+use crate::scanner::pacing::congestion::WindowLimits;
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
 use crate::scanner::pacing::timer::ScanBudget;
@@ -160,6 +161,121 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// policer are equally invisible, and only the first is under our control.
 const PROBE_RATE_PER_SEC: u32 = 4_000;
 
+/// How a **port scan's** probes are retransmitted.
+///
+/// [`RETRY_POLICY`] with a steeper backoff and a wider spread, and the reason is
+/// specific to what a port scan's retries are recovering from. A sweep's probes
+/// are lost to whatever the path is doing, which is not correlated with the
+/// sweep; a port scan's are lost to the burst the port scan itself is making at
+/// one stack, and a retry sent while that burst is still going is a second
+/// packet into the same congested moment.
+///
+/// Measured, against a Raspberry Pi: a quarter of a thousand probes went
+/// unanswered, and with three independent attempts at that loss rate an open
+/// port should be missed one time in seventy — eleven open ports should have
+/// come back as nearly eleven. Three runs found seven each. The attempts were
+/// not independent; all three of them fitted inside the congestion that lost the
+/// first.
+///
+/// So the schedule is stretched at the back and left alone at the front. The
+/// first timeout stays as early as measurement allows, because it is what tells
+/// [`TCP_PORT_WINDOW`] the target is struggling; the last lands far enough out
+/// to sample a network state the scan has had time to stop causing. The jitter
+/// is widened for the same reason one step down: probes admitted together time
+/// out together, and an unspread retry wave rebuilds the burst it is escaping.
+const PORT_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
+    3,
+    Duration::from_millis(200),
+    Duration::from_millis(25),
+    Duration::from_secs(2),
+    3.0,
+    0.3,
+    Some(SilentHostPolicy::new(32, 2)),
+);
+
+/// The window a **TCP** port scan paces itself by.
+///
+/// This is the answer to a question no fixed rate answers well. A port scan
+/// aims every probe at one stack, and it is that stack's willingness to answer
+/// that bounds the result — a number that differs by two orders of magnitude
+/// between the consumer router and the Linux server on the same switch, and
+/// that neither this crate nor its caller can know in advance. So the scan
+/// discovers it: see [`congestion`](crate::scanner::pacing::congestion) for how,
+/// and for why the signal it grows and cuts on is a probe answered *on a retry*
+/// rather than a probe not answered at all.
+///
+/// Each of the four numbers, and what would go wrong at another value:
+///
+/// - **Start at 32.** Every stack in service answers a few dozen simultaneous
+///   SYNs without noticing. Starting at one would spend a round trip per
+///   doubling, and on a local segment the ramp would be most of the scan.
+/// - **Never below 16.** The floor is what a target that is genuinely being
+///   outrun gets cut back to, and it has to leave the scan able to finish: at
+///   sixteen questions per round-trip budget a thousand silent ports still
+///   settle in a few seconds, where single digits would take a minute. Past
+///   that a scan is not being polite, it is failing, and an unfinished scan's
+///   verdicts are indeterminate rather than late.
+/// - **Never above 1024.** A thousand questions outstanding at one stack is
+///   already more than any of them will answer; growth past it buys nothing and
+///   the rate ceiling would bind first anyway.
+/// - **Stop doubling at 64.** This is the number the controller is blind for.
+///   Nothing can be known about a target until a probe to it has been answered
+///   or has timed out, and slow start doubles every round trip in the meantime —
+///   so the threshold is the worst overshoot a target can be subjected to before
+///   the scan has any evidence about it at all. It was 256, and against a
+///   Raspberry Pi that meant several hundred probes already in the air by the
+///   time the first timeout arrived. Sixty-four outstanding still empties a
+///   thousand ports in a fraction of a second on any local segment, and linear
+///   growth carries it further wherever the evidence supports it.
+const TCP_PORT_WINDOW: WindowLimits = WindowLimits::new(32, 16, 1_024, 64);
+
+/// The most probes a TCP port scan leaves unresolved at once.
+///
+/// Not the pacing — [`TCP_PORT_WINDOW`] is — but the bound on how far the
+/// bookkeeping may run ahead of it. A probe leaves the window at its first
+/// timeout and stays on the ledger until its last, so against a range that
+/// answers nothing the scan admits at window speed while the backlog of
+/// half-finished probes grows behind it. Several times the window's ceiling,
+/// because that backlog is the retry schedule's whole length divided by the
+/// first timeout and is expected to be a multiple of what is in flight; far
+/// below where the memory matters, because each entry is two durations and a
+/// handful of tokens.
+const TCP_PORT_UNRESOLVED: usize = 8_192;
+
+/// The fastest a TCP port scan will go regardless of what the window says.
+///
+/// A **backstop**, not the pacing — [`TCP_PORT_WINDOW`] is the pacing. It is
+/// here so that a defect in the controller cannot turn a scan into a flood, and
+/// it is set far above any rate a correct scan reaches: at this rate a
+/// thousand-port scan emits in fifty milliseconds, which is already faster than
+/// the round trips it is waiting on. A caller who wants a real rate limit sets
+/// `--max-probe-rate`, which replaces this.
+const TCP_PORT_RATE_CEILING: u32 = 20_000;
+
+/// The fastest a **UDP** port scan puts probes on the wire, in probes per
+/// second.
+///
+/// Two orders of magnitude below [`TCP_PORT_RATE_CEILING`], and it is a real
+/// limit rather than a backstop, because UDP has no window to pace it with. A
+/// UDP probe's ordinary outcome is silence and its replies name no attempt, so
+/// neither half of the congestion signal exists (see
+/// [`congestion`](crate::scanner::pacing::congestion)) and the scan is held to a
+/// fixed rate instead.
+///
+/// The rate is set against the thing that actually answers a UDP probe. Most
+/// UDP verdicts come from an ICMP port unreachable, and a Linux host emits those
+/// under a token bucket that refills at roughly one per second; a burst that
+/// outruns it does not merely go unanswered, it manufactures
+/// [`OpenFiltered`](crate::model::port::PortState::OpenFiltered) verdicts on
+/// ports that are closed. Spread across the hosts of a shuffled scan this is
+/// survivable; aimed at one host it is the whole result.
+///
+/// **This number is inherited reasoning, not a measurement.** The sweep's rate
+/// was measured; this is set an order of magnitude below it because the
+/// per-target load is an order of magnitude higher, and that is an argument
+/// rather than an experiment.
+const UDP_PORT_RATE_PER_SEC: u32 = 400;
+
 /// The shortest interval the send ticker is asked to keep.
 ///
 /// A tokio interval cannot be relied on much below a millisecond, so a rate
@@ -177,7 +293,7 @@ const MIN_SEND_TICK: Duration = Duration::from_millis(1);
 /// it is wrong in a way nothing reports: a batch cannot be less than one probe,
 /// so every rate below one probe per tick collapses to the same value and a
 /// sweep configured for 500 probes a second quietly runs at 1000.
-fn pacing_for(rate_per_sec: u32) -> (Duration, usize) {
+pub(super) fn pacing_for(rate_per_sec: u32) -> (Duration, usize) {
     let rate = f64::from(rate_per_sec.max(1));
     let batch = (rate * MIN_SEND_TICK.as_secs_f64()).round().max(1.0);
 
@@ -509,7 +625,7 @@ impl HostScanner for RoutedScanner {
         let capture = self.transport.capture_counts();
         let targets = self.ips.len();
         self.audit
-            .report("routed-discovery", targets, reason, capture);
+            .report("routed-discovery", targets, reason, capture, None);
         self.ctx.record_probe_stats(self.audit.stats(
             ScannerKind::Routed,
             targets,

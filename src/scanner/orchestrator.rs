@@ -39,7 +39,7 @@ use std::net::IpAddr;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::config::{OsDetection, ProbeTuning, ZondConfig};
+use crate::config::{OsDetection, ProbeTuning, ServiceDetection, ZondConfig};
 use crate::fingerprint::os;
 use crate::model::ip::range::IpRange;
 use crate::model::{
@@ -288,7 +288,7 @@ pub(super) fn build_port_scanner(
 
     BuiltPortScan {
         scanner: Box::new(strategy::composite::CompositePortScanner::new(
-            ensure_coverage(scanners, ctx, technique, &intended),
+            ensure_coverage(scanners, ctx, technique, &intended, tuning.service_detection),
             ctx.clone(),
         )),
         opened,
@@ -328,6 +328,7 @@ pub(super) fn ensure_coverage(
     ctx: &ScanContext,
     technique: TcpScanTechnique,
     intended: &[Protocol],
+    detection: ServiceDetection,
 ) -> Vec<Box<dyn PortScanner>> {
     let covered: Vec<Protocol> = scanners
         .iter()
@@ -341,6 +342,7 @@ pub(super) fn ensure_coverage(
             scanners.push(Box::new(strategy::connect::ConnectPortScanner::new(
                 ctx.clone(),
                 pacing::limits::CONNECT_CONCURRENCY,
+                detection,
             )));
         } else {
             let refusal = plan::Refusal::technique_needs_raw_sockets(technique);
@@ -544,10 +546,7 @@ pub(super) async fn run_active_os_series(
     } else {
         strategy::routed::ACTIVE_SAMPLES
     };
-    info!(
-        "Following {} host(s) over {samples} samples, to read what one reply cannot",
-        targets.len()
-    );
+    info!("Following {} host(s) over {samples} samples", targets.len());
 
     match strategy::routed::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning.send_mode) {
         Ok(mut scanner) => {
@@ -632,10 +631,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         return;
     }
 
-    info!(
-        "Asking {} host(s) what kernel they run, by SNMP",
-        targets.len()
-    );
+    info!("Asking {} host(s) for their kernel", targets.len());
 
     let mut named = 0usize;
     let mut pool = ProbePool::new(
@@ -663,10 +659,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
     pool.drain().await;
 
     if named > 0 {
-        info!(
-            verbosity = 1,
-            "Named {named} host(s) from what they reported"
-        );
+        info!(verbosity = 1, "Named {named} host(s) by SNMP");
     }
 }
 
@@ -914,7 +907,7 @@ mod tests {
 
     fn covered(scanners: Vec<Box<dyn PortScanner>>) -> Vec<Protocol> {
         let (_session, ctx) = ScanSession::new();
-        ensure_coverage(scanners, &ctx, TcpScanTechnique::Syn, BOTH)
+        ensure_coverage(scanners, &ctx, TcpScanTechnique::Syn, BOTH, ServiceDetection::default())
             .iter()
             .flat_map(|scanner| scanner.supported_protocols())
             .collect()
@@ -1018,7 +1011,7 @@ mod tests {
     #[test]
     fn a_technique_the_fallback_cannot_express_is_reported_rather_than_substituted() {
         let (_session, ctx) = ScanSession::new();
-        let scanners = ensure_coverage(Vec::new(), &ctx, TcpScanTechnique::Fin, BOTH);
+        let scanners = ensure_coverage(Vec::new(), &ctx, TcpScanTechnique::Fin, BOTH, ServiceDetection::default());
         let protocols: Vec<Protocol> = scanners
             .iter()
             .flat_map(|scanner| scanner.supported_protocols())
@@ -1063,6 +1056,7 @@ mod tests {
             &ctx,
             TcpScanTechnique::Syn,
             BOTH,
+            ServiceDetection::default(),
         );
         // Two scanners in, two scanners out: nothing was added beside them.
         assert_eq!(scanners.len(), 2);
@@ -1075,7 +1069,13 @@ mod tests {
     #[test]
     fn a_protocol_the_plan_left_out_gains_no_fallback_and_no_second_refusal() {
         let (_session, ctx) = ScanSession::new();
-        let scanners = ensure_coverage(Vec::new(), &ctx, TcpScanTechnique::Fin, &[Protocol::Udp]);
+        let scanners = ensure_coverage(
+            Vec::new(),
+            &ctx,
+            TcpScanTechnique::Fin,
+            &[Protocol::Udp],
+            ServiceDetection::default(),
+        );
 
         let protocols: Vec<Protocol> = scanners
             .iter()

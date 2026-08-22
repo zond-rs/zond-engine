@@ -3,11 +3,19 @@ name = "http"
 default_ports = [80, 8080, 8000, 443, 8443]
 description = "Hypertext Transfer Protocol"
 
-# The probe that will be sent to the target to elicit an HTTP response
+# The probe that will be sent to the target to elicit an HTTP response.
+#
+# `generic` marks it as worth asking of *any* open port that has no probe of its
+# own, not just of the ports listed above. An unrecognised open port is most
+# often an HTTP server on a number nobody registered — a media server, an
+# exporter, an admin panel, a development build — and one request names it. The
+# alternative is what this engine used to do: wait out a banner that never comes,
+# then guess at TLS, and report the port with no service at all.
 [[probe]]
 name = "get_root"
 payload = 'GET / HTTP/1.1\r\nHost: localhost\r\nUser-Agent: ZondScanner/1.0\r\nAccept: */*\r\n\r\n'
 protocol = "tcp"
+generic = true
 
 # Match rules applied against the HTTP response
 [[match]]

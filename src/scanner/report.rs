@@ -63,7 +63,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RetryConfig;
-use crate::config::{OsDetection, SendMode, ZondConfig};
+use crate::config::{OsDetection, SendMode, ServiceDetection, ZondConfig};
 use crate::model::capture::CaptureCounts;
 use crate::model::host::{Host, HostStatus};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
@@ -236,6 +236,15 @@ pub struct ScanSettings {
     /// this phase's traffic the engine originated — see
     /// [`OsDetection::is_active`].
     pub os_detection: OsDetection,
+    /// How far the phase went to identify what was listening behind each open
+    /// port.
+    ///
+    /// A port reported with no service is a different finding depending on
+    /// this: at [`ServiceDetection::Off`] nothing asked, and at any other level
+    /// something asked and could not tell. It also says whether the phase
+    /// completed a connection to each open port at all, which is what a target's
+    /// application logs would have recorded.
+    pub service_detection: ServiceDetection,
 }
 
 impl From<&ZondConfig> for ScanSettings {
@@ -248,6 +257,7 @@ impl From<&ZondConfig> for ScanSettings {
             dns_enabled: !cfg.no_dns,
             redact: cfg.redact,
             os_detection: cfg.os_detection,
+            service_detection: cfg.service_detection,
         }
     }
 }

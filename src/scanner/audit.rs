@@ -38,6 +38,7 @@
 use std::time::{Duration, Instant};
 
 use crate::model::capture::CaptureCounts;
+use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, StopReason};
 use crate::scanner::session::ScannerKind;
 
@@ -94,6 +95,34 @@ pub struct ProbeAudit {
     last_reply: Option<Duration>,
     buckets: [u64; BUCKET_BOUNDS_MS.len() + 1],
 }
+
+/// The share of answers arriving only on a retry that is taken as evidence the
+/// send rate is too high.
+///
+/// Retransmission earning its traffic is ordinary and expected — a fifth of
+/// answers arriving late on a lossy path is a working scan. Past a third, the
+/// first attempt is failing often enough that the verdicts resting on silence
+/// cannot be trusted, and a caller who is told nothing will read them as
+/// firewall behaviour.
+const RETRY_SHARE_SUGGESTING_LOSS: f64 = 0.35;
+
+/// The fewest answers a run needs before that share means anything.
+///
+/// One answer arriving on its second attempt is a hundred percent, and says
+/// nothing whatsoever.
+const MIN_ANSWERS_TO_JUDGE: u64 = 20;
+
+/// The share of a run's targets that may go unanswered before a scan which
+/// already paced itself to its floor is worth remarking on.
+///
+/// Silence is an ordinary result and most of it is genuine. What is not ordinary
+/// is silence on a scan whose own pacing ran out of room, and the two together
+/// are the signature of a target that was outrun from the first probe to the
+/// last. A tenth is low enough to catch it and high enough that a scan of a
+/// firewalled host, which reaches the floor honestly, is not reported as
+/// broken — that scan answers nothing at all, so its window never cut and never
+/// arrived here.
+const UNANSWERED_SHARE_SUGGESTING_LOSS: f64 = 0.10;
 
 impl ProbeAudit {
     /// Starts an audit, with the clock running from now.
@@ -221,13 +250,14 @@ impl ProbeAudit {
         targets: u128,
         reason: StopReason,
         capture: Option<CaptureCounts>,
+        window: Option<WindowSummary>,
     ) {
         crate::info!(
             verbosity = 1,
             "audit[{scanner}] {found}/{targets} hosts in {elapsed:.0?}, stopped: {reason:?} \
              | sent {sent} (failed {failed}) \
              | captured {seen} (off-target {off}, no-rtt {no_rtt}){kernel} \
-             | found on {attempts} \
+             | found on {attempts}{window} \
              | first {first}, last {last} \
              | found-at {histogram}",
             found = self.hosts_found,
@@ -239,10 +269,110 @@ impl ProbeAudit {
             no_rtt = self.replies_without_rtt,
             kernel = format_capture(capture),
             attempts = self.attempt_distribution(),
+            window = format_window(window),
             first = format_offset(self.first_reply),
             last = format_offset(self.last_reply),
             histogram = self.histogram(),
         );
+
+        self.warn_if_degraded(scanner, targets, capture, window);
+    }
+
+    /// The share of answers that only arrived because the probe was sent again.
+    ///
+    /// A first attempt that goes unanswered and a second that succeeds is a
+    /// reply that was *lost*, not a port that was silent — the host was always
+    /// willing to answer and the question did not survive the trip. Read across
+    /// a run, this is the clearest evidence available that probes are going out
+    /// faster than the path or the target will take.
+    fn recovered_by_retry(&self) -> f64 {
+        let recovered: u64 = self.answered_on.iter().skip(1).sum();
+        match self.hosts_found {
+            0 => 0.0,
+            found => recovered as f64 / found as f64,
+        }
+    }
+
+    /// Says so when a run's own counters show it was losing replies.
+    ///
+    /// **A scan that degrades quietly is the failure this engine exists not to
+    /// have.** Measured, against a consumer router: probed faster than it would
+    /// answer, a thousand-port scan reported six hundred ports `filtered` — with
+    /// no more hesitation than it reported the three that really were, and among
+    /// them two ports running services. Every one of those verdicts is a claim
+    /// about somebody's firewall, and they were claims about this scanner's own
+    /// send rate.
+    ///
+    /// The numbers were already collected; nothing read them back. Two signals,
+    /// because they fail in different ways:
+    ///
+    /// - **Answers that needed a retry.** The host was willing; the first ask
+    ///   did not survive. Silence from a firewall does not improve on the second
+    ///   attempt.
+    /// - **Frames the kernel dropped.** Replies that arrived and were discarded
+    ///   before this process saw them, which is loss on *this* side and is
+    ///   nobody's firewall at all.
+    ///
+    /// What the first one is *worth telling somebody* depends on whether the
+    /// scan could do anything about it. A scan pacing itself by a congestion
+    /// window has already cut its rate on this very signal, so the line says what
+    /// happened rather than what to change; a scan running at a fixed rate has
+    /// not, and there the rate is the thing to reach for. Advising a knob that
+    /// is not what set the pace sends the reader to the wrong place.
+    fn warn_if_degraded(
+        &self,
+        scanner: &str,
+        targets: u128,
+        capture: Option<CaptureCounts>,
+        window: Option<WindowSummary>,
+    ) {
+        let recovered = self.recovered_by_retry();
+        if recovered >= RETRY_SHARE_SUGGESTING_LOSS && self.hosts_found >= MIN_ANSWERS_TO_JUDGE {
+            // Short on purpose. The reasoning is above, where somebody changing
+            // this can read it; a scan's output is read while waiting for the
+            // next line and has to say the thing and stop.
+            let percent = recovered * 100.0;
+            match window {
+                Some(window) if window.adaptive => crate::warn!(
+                    "{scanner}: {percent:.0}% of answers needed a retry, paced down to \
+                     {} in flight",
+                    window.capacity,
+                ),
+                _ => crate::warn!(
+                    "{scanner}: {percent:.0}% of answers needed a retry, lower --max-probe-rate"
+                ),
+            }
+        }
+
+        // The controller having run out of room. Separate from the share above
+        // and more serious: that one says retransmission is carrying the scan,
+        // this one says the scan slowed itself as far as it is allowed to and
+        // was still not keeping up. Whatever it recorded as silence on this run
+        // is not safe to read as a firewall.
+        if let Some(window) = window
+            && window.at_floor
+            && targets > 0
+        {
+            let unanswered = targets.saturating_sub(u128::from(self.hosts_found));
+            let share = unanswered as f64 / targets as f64;
+            if share >= UNANSWERED_SHARE_SUGGESTING_LOSS {
+                crate::warn!(
+                    "{scanner}: paced down to {} in flight and {percent:.0}% still unanswered; \
+                     those may be dropped probes rather than filtered ports",
+                    window.capacity,
+                    percent = share * 100.0,
+                );
+            }
+        }
+
+        if let Some(counts) = capture
+            && counts.dropped > 0
+        {
+            crate::warn!(
+                "{scanner}: capture dropped {} frame(s), replies lost on this host",
+                counts.dropped,
+            );
+        }
     }
 
     /// Found hosts by the attempt that revealed them, empty attempts omitted.
@@ -339,6 +469,20 @@ fn format_capture(capture: Option<CaptureCounts>) -> String {
     }
 }
 
+/// The congestion window's own account of the run, or nothing for a scanner
+/// that does not pace itself by one.
+///
+/// Omitted rather than rendered as a stationary window, on the same reasoning
+/// [`format_capture`] omits an absent capture: a scan with no window and a scan
+/// whose window never moved are different facts, and a line that printed the
+/// same thing for both would be inviting the reader to conclude the wrong one.
+fn format_window(window: Option<WindowSummary>) -> String {
+    match window {
+        Some(window) => format!(" | window {window}"),
+        None => String::new(),
+    }
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -350,6 +494,50 @@ fn format_capture(capture: Option<CaptureCounts>) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The signal that separates a lost reply from a silent port.
+    ///
+    /// A first attempt that goes unanswered and a second that succeeds means the
+    /// host was always willing — silence from a firewall does not improve on the
+    /// retry. Read across a run it is the clearest evidence available that
+    /// probes are outrunning what the target will answer.
+    #[test]
+    fn answers_that_needed_a_retry_are_what_reveals_loss() {
+        let mut clean = ProbeAudit::new();
+        for _ in 0..50 {
+            clean.record_host_found(Some(1));
+        }
+        assert!(
+            clean.recovered_by_retry() < RETRY_SHARE_SUGGESTING_LOSS,
+            "every answer on the first ask is a scan that lost nothing"
+        );
+
+        let mut lossy = ProbeAudit::new();
+        for _ in 0..20 {
+            lossy.record_host_found(Some(1));
+        }
+        for _ in 0..30 {
+            lossy.record_host_found(Some(2));
+        }
+        assert!(
+            lossy.recovered_by_retry() >= RETRY_SHARE_SUGGESTING_LOSS,
+            "most answers arriving only on the second ask is the first ask failing"
+        );
+    }
+
+    /// One answer on its second attempt is a hundred percent and says nothing.
+    /// A threshold with no floor under it would warn on every small scan.
+    #[test]
+    fn a_run_too_small_to_judge_is_not_judged() {
+        let mut tiny = ProbeAudit::new();
+        tiny.record_host_found(Some(2));
+
+        assert!(tiny.recovered_by_retry() > RETRY_SHARE_SUGGESTING_LOSS);
+        assert!(
+            tiny.hosts_found < MIN_ANSWERS_TO_JUDGE,
+            "and the floor is what stops that being reported as a degraded scan"
+        );
+    }
     use super::*;
 
     #[test]
