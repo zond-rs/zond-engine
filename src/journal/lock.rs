@@ -74,7 +74,8 @@ pub struct LockRecord {
     pub pid: u32,
     /// Which boot that pid belongs to. A pid is only meaningful within one.
     pub boot: String,
-    /// When the scan started, for `zond scans` to report.
+    /// When the scan started, so a caller listing journals can say how old
+    /// each one is.
     pub started_at: SystemTime,
     /// Last touched by the writer, once per checkpoint.
     pub heartbeat: SystemTime,
@@ -173,7 +174,7 @@ impl LockState {
             LockState::Stale { pid, last_beat } => Some(format!(
                 "this journal is locked by process {pid}, which has not checkpointed for {}s — \
                  it is either hung or the number was reissued to something else. \
-                 Stop it, or resume with --force if you are sure it is not scanning",
+                 Stop it, or take the lock forcibly if you are sure it is not scanning",
                 last_beat.as_secs()
             )),
         }
@@ -635,7 +636,7 @@ mod tests {
 
         assert!(matches!(state, LockState::Stale { pid: 4_242, .. }));
         assert!(!state.is_resumable(), "hung and reused look the same here");
-        assert!(state.refusal().is_some_and(|r| r.contains("--force")));
+        assert!(state.refusal().is_some_and(|r| r.contains("forcibly")));
     }
 
     /// A beat exactly at the threshold is not yet stale. Asserted because the

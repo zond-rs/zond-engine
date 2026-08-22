@@ -22,8 +22,8 @@
 //! **That argument does not extend to here, and inverts.** Nobody hand-edits a
 //! checkpoint bitmap. A journal is machine-written, machine-read, disposable
 //! after a scan completes, and of no interest to a human except through
-//! `zond scans`. The specification has a directory for exactly that, and it is
-//! not the configuration one.
+//! whatever lists them. The specification has a directory for exactly that, and
+//! it is not the configuration one.
 //!
 //! | | Journal root |
 //! |---|---|
@@ -40,10 +40,11 @@
 //!
 //! Every raw strategy needs root, so most scans are run under `sudo`, and under
 //! `sudo` `$HOME` is root's. Left alone, journals would be written to
-//! `/root/.local/state/zond/scans` while `zond scans` — run without `sudo`,
-//! because listing needs no privilege — reads the invoking user's directory and
-//! shows an empty list. The feature would appear broken to most of its users on
-//! first contact, and the data would be sitting somewhere they did not look.
+//! `/root/.local/state/zond/scans`, while anything that lists them — which needs
+//! no privilege, and so is not normally run under `sudo` — reads the invoking
+//! user's directory and finds nothing. The feature would appear broken to most of
+//! its users on first contact, and the data would be sitting somewhere they did
+//! not look.
 //!
 //! So when this process is running elevated *and* the environment names the user
 //! who invoked it, [`root`] resolves that user's home rather than root's, and
@@ -313,7 +314,7 @@ mod tests {
 
     /// Asking where the journal is must not create it, or any part of the path
     /// to it. A caller asking has not asked for a side effect, and this is the
-    /// module a `--dry-run` reaches through.
+    /// module a caller reaches through to report where it *would* write.
     #[test]
     fn computing_a_path_creates_nothing() {
         let existed = root().map(|path| path.exists());

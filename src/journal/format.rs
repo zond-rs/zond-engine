@@ -65,12 +65,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::format::ENGINE_NAME;
 
-/// The version of the on-disk journal format this build writes.
-///
-/// Bump on any change that an older build could misread. Adding a field a
-/// reader may ignore is not such a change; changing what an existing field
-/// means, or what a position refers to, is.
-pub const JOURNAL_VERSION: u32 = 1;
+#[doc(inline)]
+pub use super::JOURNAL_VERSION;
 
 /// What went wrong reading a journal.
 #[non_exhaustive]

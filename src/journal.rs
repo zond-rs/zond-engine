@@ -20,7 +20,7 @@
 //! resumes an nmap scan — by the time the feature is wanted, it was needed an
 //! hour ago.
 //!
-//! So this journals every scan, without being asked, and `--resume` names one
+//! So this journals every scan, without being asked, and a caller resumes one
 //! that already exists. The design that makes that affordable is below.
 //!
 //! ## The journal records a position, not probes
@@ -96,15 +96,31 @@
 
 //! [`cursor`] is how far a scan got: a position in the plan below which
 //! everything is settled, plus the few positions above it that settled out of
-//! order. It is what `--resume` subtracts from the plan.
+//! order. It is what a resumed scan subtracts from the plan.
 //!
 //! [`lock`] tells a scan that is running from one that crashed, so a live
 //! journal is never resumed underneath its writer and a dead one never stays
 //! locked behind a process id that has been reissued.
 
+//! [`manifest`] is what a journal is a journal *of*: the plan its positions are
+//! counted in, fingerprinted, so a resume against an edited plan is refused
+//! rather than scanning the wrong targets and reporting success.
+
+/// The version of the on-disk journal format this build writes.
+///
+/// Lives here rather than beside the reader in [`format`], because it identifies
+/// the format whether or not this build compiled a reader for it: a
+/// [`manifest`] is written and checked either way.
+///
+/// Bump on any change an older build could misread. Adding a field a reader may
+/// ignore is not such a change; changing what an existing field means, or what a
+/// position refers to, is.
+pub const JOURNAL_VERSION: u32 = 1;
+
 pub mod cursor;
 #[cfg(feature = "journal-format")]
 pub mod format;
 pub mod lock;
+pub mod manifest;
 pub mod paths;
 pub mod settle;
