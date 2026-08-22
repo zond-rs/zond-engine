@@ -664,7 +664,8 @@ mod tests {
     /// found clean.
     #[test]
     fn exported_stats_keep_an_absent_capture_absent() {
-        let stats = ProbeAudit::new().stats(ScannerKind::Routed, 1, StopReason::AllResponded, None, None);
+        let stats =
+            ProbeAudit::new().stats(ScannerKind::Routed, 1, StopReason::AllResponded, None, None);
 
         assert_eq!(stats.capture(), None);
         assert!(stats.stop_reason().is_complete());

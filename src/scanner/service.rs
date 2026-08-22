@@ -36,8 +36,8 @@ use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
 use tokio::time::timeout;
 
-use crate::fingerprint::os;
 use crate::config::ServiceDetection;
+use crate::fingerprint::os;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::scanner::pool::ProbePool;

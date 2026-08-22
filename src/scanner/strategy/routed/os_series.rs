@@ -653,12 +653,14 @@ impl HostScanner for OsSeriesScanner {
         }
 
         let capture = self.transport.capture_counts();
-        self.audit.report("os-series", followed, reason, capture, None);
+        self.audit
+            .report("os-series", followed, reason, capture, None);
         self.ctx.record_probe_stats(self.audit.stats(
             ScannerKind::OsSeries,
             followed,
             reason,
-            capture, None,
+            capture,
+            None,
         ));
         Ok(())
     }

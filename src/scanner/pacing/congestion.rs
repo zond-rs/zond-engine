@@ -575,7 +575,10 @@ mod tests {
 
         window.release();
         window.record_progress();
-        assert!(window.has_room(), "and one of them has now been answered by silence");
+        assert!(
+            window.has_room(),
+            "and one of them has now been answered by silence"
+        );
         assert!(
             window.capacity() > 4,
             "which is not congestion, so the window opens rather than closing"

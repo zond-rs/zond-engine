@@ -225,10 +225,42 @@ fn application_hint(http: &HttpResponse<'_>, named: Option<&str>) -> Option<Stri
 /// products exist, which is the whole reason this approach scales where a
 /// signature per product does not.
 const NOT_A_VENDOR: &[&str] = &[
-    "accel", "access", "api", "app", "auth", "cache", "content", "correlation", "csrf", "dns",
-    "download", "forwarded", "frame", "http", "instance", "permitted", "powered", "ratelimit",
-    "rate", "real", "request", "requested", "response", "robots", "runtime", "served", "server",
-    "sourcemap", "timer", "total", "trace", "transaction", "ua", "upstream", "varnish", "version",
+    "accel",
+    "access",
+    "api",
+    "app",
+    "auth",
+    "cache",
+    "content",
+    "correlation",
+    "csrf",
+    "dns",
+    "download",
+    "forwarded",
+    "frame",
+    "http",
+    "instance",
+    "permitted",
+    "powered",
+    "ratelimit",
+    "rate",
+    "real",
+    "request",
+    "requested",
+    "response",
+    "robots",
+    "runtime",
+    "served",
+    "server",
+    "sourcemap",
+    "timer",
+    "total",
+    "trace",
+    "transaction",
+    "ua",
+    "upstream",
+    "varnish",
+    "version",
     "xss",
 ];
 
@@ -596,9 +628,7 @@ mod tests {
         );
 
         assert_eq!(
-            evidence
-                .iter()
-                .find_map(|e| e.extrainfo.as_deref()),
+            evidence.iter().find_map(|e| e.extrainfo.as_deref()),
             Some("Jellyfin"),
             "the page one hop away is where the application named itself"
         );
@@ -637,8 +667,7 @@ mod tests {
     /// The prefix convention, read off a header the server actually sent.
     #[test]
     fn a_vendor_prefix_on_a_header_names_the_vendor() {
-        let banner =
-            "HTTP/1.1 200 OK\r\nServer: Kestrel\r\nX-Plex-Protocol: 1.0\r\n\r\n";
+        let banner = "HTTP/1.1 200 OK\r\nServer: Kestrel\r\nX-Plex-Protocol: 1.0\r\n\r\n";
         assert_eq!(extrainfo(32400, banner).as_deref(), Some("Plex"));
     }
 
@@ -766,7 +795,11 @@ mod tests {
     /// to tell which convention is in use, so neither is guessed at.
     #[test]
     fn a_title_with_a_separator_is_declined_rather_than_guessed_at() {
-        for title in ["Dashboard - Grafana", "Sonarr - Series", "Log in | Nextcloud"] {
+        for title in [
+            "Dashboard - Grafana",
+            "Sonarr - Series",
+            "Log in | Nextcloud",
+        ] {
             let banner = format!("HTTP/1.1 200 OK\r\n\r\n<html><head><title>{title}</title>");
             assert_eq!(extrainfo(8080, &banner), None, "`{title}` is ambiguous");
         }
@@ -797,9 +830,8 @@ mod tests {
         assert_eq!(response.header("server"), Some("nginx"));
         assert_eq!(response.body, "<html><body>hello</body></html>");
 
-        let headers_only =
-            HttpResponse::parse("HTTP/1.1 204 No Content\r\nServer: nginx\r\n\r\n")
-                .expect("an HTTP response");
+        let headers_only = HttpResponse::parse("HTTP/1.1 204 No Content\r\nServer: nginx\r\n\r\n")
+            .expect("an HTTP response");
         assert_eq!(headers_only.body, "");
     }
 

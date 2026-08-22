@@ -363,7 +363,10 @@ async fn gather(
     // promises to send nothing has to stop here rather than further in.
     if !detection.sends() {
         let banner = read_response(&mut stream, BANNER_READ_TIMEOUT).await;
-        return (ResponseSet::from_banners(banner.into_iter().collect()), None);
+        return (
+            ResponseSet::from_banners(banner.into_iter().collect()),
+            None,
+        );
     }
 
     if tls::is_tls_port(port) {
@@ -391,7 +394,8 @@ async fn gather(
         // on the ports that have already declined to speak.
         GenericReply::Tls | GenericReply::Silent => match (peer, socket) {
             (Some(ip), Some(socket)) => {
-                let Ok(Ok(fresh)) = timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await
+                let Ok(Ok(fresh)) =
+                    timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await
                 else {
                     return (ResponseSet::default(), None);
                 };
@@ -754,10 +758,7 @@ mod tests {
         let jellyfin = "HTTP/1.1 302 Found\r\n\
              Location: /web/index.html\r\n\
              Server: Kestrel\r\n\r\n";
-        assert_eq!(
-            redirect_path(jellyfin).as_deref(),
-            Some("/web/index.html")
-        );
+        assert_eq!(redirect_path(jellyfin).as_deref(), Some("/web/index.html"));
     }
 
     /// A redirect somewhere else is an instruction to go and talk to a third

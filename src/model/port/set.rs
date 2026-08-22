@@ -370,12 +370,12 @@ impl TryFrom<&str> for PortSet {
                     let end = if end_str.is_empty() {
                         u16::MAX
                     } else {
-                        end_str.parse::<u16>().map_err(|source| {
-                            PortSetParseError::InvalidPort {
+                        end_str
+                            .parse::<u16>()
+                            .map_err(|source| PortSetParseError::InvalidPort {
                                 input: end_str.to_string(),
                                 source,
-                            }
-                        })?
+                            })?
                     };
 
                     if start > end {
