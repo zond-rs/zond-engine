@@ -80,8 +80,10 @@ pub use probe_scan::{AuditLabels, ProbeTarget, RawPortScan, RawProbeScan, run};
 ///   than its middle.
 /// - **Hard budget.** The base gives a distant target room for several round
 ///   trips; the per-target term covers the send burst and the spread of
-///   arrivals behind it. The ceiling is a backstop against a scan that will not
-///   terminate, not a duration any scan is expected to reach.
+///   arrivals behind it. The ceiling bounds a scan whose pace nobody derived —
+///   it is *not* what bounds the port scanners, which tell it their size and
+///   their pacing floor and so cannot be clamped by it. It used to be, and it
+///   truncated a 65 535-port scan at 60 seconds of the 104 it had earned.
 ///
 /// The minimum runtime exists so silence is never the reason a scan stops
 /// before an answer could plausibly have arrived at all.
@@ -370,11 +372,14 @@ fn send_syn(
             // explanation - "No route to host" and "Permission denied" call for
             // completely different responses, and the bare wrapper distinguishes
             // neither.
-            error!(
-                verbosity = 2,
-                "Failed to send SYN probe to {dst_addr}:{dst_port}: {e:#}"
-            );
-            *reason = Some(format!("{e:#}"));
+            // Once; see the same guard in `port_scan::send_tcp_probe`.
+            if reason.is_none() {
+                error!(
+                    verbosity = 2,
+                    "Failed to send SYN probe to {dst_addr}:{dst_port}: {e:#}"
+                );
+                *reason = Some(format!("{e:#}"));
+            }
             None
         }
     }
@@ -428,11 +433,14 @@ fn send_udp(
             // chained cause is the operating system's own explanation, and
             // "No route to host" and "Permission denied" call for completely
             // different responses.
-            error!(
-                verbosity = 2,
-                "Failed to send UDP probe to {dst_addr}:{dst_port}: {e:#}"
-            );
-            *reason = Some(format!("{e:#}"));
+            // Once; see the same guard in `port_scan::send_tcp_probe`.
+            if reason.is_none() {
+                error!(
+                    verbosity = 2,
+                    "Failed to send UDP probe to {dst_addr}:{dst_port}: {e:#}"
+                );
+                *reason = Some(format!("{e:#}"));
+            }
             None
         }
     }
@@ -630,7 +638,7 @@ impl HostScanner for RoutedScanner {
             ScannerKind::Routed,
             targets,
             reason,
-            capture,
+            capture, None,
         ));
         Ok(())
     }

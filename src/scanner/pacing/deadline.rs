@@ -97,11 +97,19 @@ impl AdaptiveDeadlineConfig {
     /// than that, the pacing working as designed is what ends the scan early,
     /// and the ports it never reached are reported as though it had asked.
     ///
+    /// `target_count` is what the ceiling is told, and it has to be told:
+    /// widening the per-target term alone leaves a fixed ceiling free to clamp
+    /// the result straight back down, which is exactly what it did — see
+    /// [`ScanBudget::covering`].
+    ///
     /// Only the hard budget moves, on the same reasoning
     /// [`allowing_for`](Self::allowing_for) gives.
-    pub fn allowing_pace_of(self, per_probe: Duration) -> Self {
+    pub fn allowing_pace_of(self, per_probe: Duration, target_count: usize) -> Self {
         Self {
-            max_budget: self.max_budget.with_per_target_at_least(per_probe),
+            max_budget: self
+                .max_budget
+                .with_per_target_at_least(per_probe)
+                .covering(target_count),
             ..self
         }
     }

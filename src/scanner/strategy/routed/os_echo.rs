@@ -404,7 +404,7 @@ impl HostScanner for OsEchoScanner {
             ScannerKind::OsEcho,
             targets,
             reason,
-            capture,
+            capture, None,
         ));
         Ok(())
     }

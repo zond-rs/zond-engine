@@ -65,6 +65,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::config::RetryConfig;
 use crate::config::{OsDetection, SendMode, ServiceDetection, ZondConfig};
 use crate::model::capture::CaptureCounts;
+use crate::scanner::pacing::congestion::WindowSummary;
 use crate::model::host::{Host, HostStatus};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
@@ -388,6 +389,7 @@ pub struct ProbeStats {
     pub(crate) last_reply: Option<Duration>,
     pub(crate) found_at: [u64; BUCKET_BOUNDS_MS.len() + 1],
     pub(crate) capture: Option<CaptureCounts>,
+    pub(crate) window: Option<WindowSummary>,
 }
 
 impl ProbeStats {
@@ -426,6 +428,21 @@ impl ProbeStats {
     /// Segments the capture handed up, before any of the scanner's own checks.
     pub fn segments_seen(&self) -> u64 {
         self.segments_seen
+    }
+
+    /// What this run's congestion window did, for a scanner paced by one.
+    ///
+    /// The difference between "these ports are filtered" and "this scan was
+    /// outrun and cannot tell". A run whose window bottomed out and still left
+    /// most of its probes unanswered did not establish that anything is
+    /// filtered; it established that it could not ask. Nothing else in these
+    /// counters distinguishes the two, and a consumer that renders one as the
+    /// other is publishing a claim about somebody's firewall that is really a
+    /// claim about a saturated link.
+    ///
+    /// `None` for a scanner that paces itself some other way.
+    pub fn window(&self) -> Option<WindowSummary> {
+        self.window
     }
 
     /// Segments from an address outside this scan's target set. Expected to be
@@ -1294,6 +1311,7 @@ mod tests {
         );
 
         ctx.record_probe_stats(ProbeStats {
+            window: None,
             scanner: ScannerKind::Routed,
             targets: 256,
             stop_reason: StopReason::AllResponded,

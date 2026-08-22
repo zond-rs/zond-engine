@@ -72,13 +72,22 @@ impl Analyzer for HttpHeadersAnalyzer {
         responses: &ResponseSet,
         _collected: &Collected,
     ) -> Vec<Evidence> {
-        // The first captured response that is actually an HTTP reply. Banners
-        // that aren't HTTP (a bare grab, another protocol) are skipped.
-        let Some(http) = responses
+        // Every captured response that is actually an HTTP reply. Banners that
+        // aren't HTTP (a bare grab, another protocol) are skipped.
+        //
+        // Several, because a port may have answered more than once: a redirect
+        // and the page it pointed at are both this port's answer, and the second
+        // is where the application names itself. Reading only the first left the
+        // engine looking at a `302` with no body and concluding the port ran
+        // whatever framework served the redirect.
+        let parsed: Vec<HttpResponse<'_>> = responses
             .banners
             .iter()
-            .find_map(|banner| HttpResponse::parse(banner))
-        else {
+            .filter_map(|banner| HttpResponse::parse(banner))
+            .collect();
+        // The headers below come from the *direct* answer: what this port said
+        // when it was asked, not what a page one hop away said.
+        let Some(http) = parsed.first() else {
             return Vec::new();
         };
 
@@ -146,7 +155,10 @@ impl Analyzer for HttpHeadersAnalyzer {
             .header("server")
             .and_then(parse_server)
             .map(|(product, _)| product);
-        if let Some(application) = application_hint(&http, named.as_deref()) {
+        if let Some(application) = parsed
+            .iter()
+            .find_map(|response| application_hint(response, named.as_deref()))
+        {
             evidence.push(stamp(
                 Evidence::new(SourceId::HttpHeaders, Confidence::Probable)
                     .with_service("http")
@@ -309,8 +321,11 @@ fn document_title(body: &str) -> Option<String> {
     let start = open + lower[open..].find('>')? + 1;
     let end = start + lower[start..].find("</title>")?;
 
-    let title = body.get(start..end)?.split_whitespace().collect::<Vec<_>>();
-    let title = title.join(" ");
+    let title = body
+        .get(start..end)?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // A sentence is a page description, not a product. Anything this long is
     // being read for the wrong reason.
@@ -320,7 +335,49 @@ fn document_title(body: &str) -> Option<String> {
     if NOT_AN_APPLICATION.contains(&title.to_ascii_lowercase().as_str()) {
         return None;
     }
-    Some(title)
+    reads_as_a_name(&title).then_some(title)
+}
+
+/// Words that may appear lowercase inside a name without making it a sentence.
+///
+/// Short and closed on purpose. It is the difference between `Bill of Materials`
+/// and `Yo whats up`, and every word added to it moves the line toward accepting
+/// the second.
+const NAME_CONNECTIVES: &[&str] = &["of", "the", "and", "for", "de", "la", "du"];
+
+/// Whether `title` reads as the name of something rather than as a remark about
+/// a page.
+///
+/// A product name is a proper noun and is written like one, so the test is
+/// whether every word is capitalised: `Home Assistant`, `Proxmox Virtual
+/// Environment`, `Uptime Kuma` are names, and `Yo whats up` is somebody talking.
+/// A single word is taken as a name whatever its case, because that is how a
+/// great many of them are actually written — `phpMyAdmin`, `openHAB`,
+/// `code-server`.
+///
+/// A title carrying a separator is declined outright. `Dashboard - Grafana` and
+/// `Sonarr - Series` both name their product, and they name it on *opposite
+/// sides*; with one page to look at there is no way to tell which convention is
+/// in use, and picking wrong reports the page as the product. Declining costs a
+/// name the row would have liked; guessing costs a name that is wrong, and this
+/// is the weakest signal the engine has — it has no business guessing.
+fn reads_as_a_name(title: &str) -> bool {
+    if title.contains(['-', '|', ':', '·', '—', '–', '/', '(']) {
+        return false;
+    }
+
+    let mut words = title.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    if !first.chars().next().is_some_and(char::is_alphanumeric) {
+        return false;
+    }
+
+    words.all(|word| {
+        NAME_CONNECTIVES.contains(&word.to_ascii_lowercase().as_str())
+            || word.chars().next().is_some_and(char::is_uppercase)
+    })
 }
 
 /// Marks `evidence` with the tunnel its response was read through, so an HTTP
@@ -506,6 +563,53 @@ mod tests {
         )
     }
 
+    /// [`analyze`] over several responses, as a port that redirected produces.
+    fn analyze_all(port: u16, banners: &[&str]) -> Vec<Evidence> {
+        HttpHeadersAnalyzer.analyze(
+            &PortContext {
+                protocol: crate::model::port::Protocol::Tcp,
+                port,
+                addr: None,
+                tunnel: None,
+            },
+            &ResponseSet::from_banners(banners.iter().map(|b| (*b).to_string()).collect()),
+            &Collected::default(),
+        )
+    }
+
+    /// A redirect and the page it pointed at are both this port's answer, and
+    /// the application names itself in the second one.
+    ///
+    /// The shape every ASP.NET media server has: the root is a bare 302 whose
+    /// only product is the framework, and one hop away is a page whose title is
+    /// the product. Reading the first response alone reported both Jellyfin and
+    /// Sonarr as `Kestrel`, which is true and useless.
+    #[test]
+    fn a_redirect_and_its_destination_are_read_together() {
+        let evidence = analyze_all(
+            8096,
+            &[
+                "HTTP/1.1 302 Found\r\nServer: Kestrel\r\nLocation: /web/index.html\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nServer: Kestrel\r\n\r\n\
+                 <!DOCTYPE html><html><head><title>Jellyfin</title></head>",
+            ],
+        );
+
+        assert_eq!(
+            evidence
+                .iter()
+                .find_map(|e| e.extrainfo.as_deref()),
+            Some("Jellyfin"),
+            "the page one hop away is where the application named itself"
+        );
+        assert!(
+            evidence
+                .iter()
+                .any(|e| e.product.as_deref() == Some("Kestrel")),
+            "and the framework it runs on is still recorded, from the direct answer"
+        );
+    }
+
     /// What the analyzer read as supplementary detail, if anything.
     fn extrainfo(port: u16, banner: &str) -> Option<String> {
         analyze(port, banner)
@@ -619,6 +723,53 @@ mod tests {
         let banner = "HTTP/1.1 200 OK\r\nX-Alpha-One: a\r\nX-Bravo-One: b\r\n\r\n";
         let http = HttpResponse::parse(banner).expect("an HTTP response");
         assert_eq!(vendor_prefix(&http).as_deref(), Some("Alpha"));
+    }
+
+    /// The case that motivated the shape test: a title is whatever somebody
+    /// typed, and most of the web is not a product name.
+    #[test]
+    fn a_title_that_is_somebody_talking_is_not_a_product() {
+        for title in [
+            "Yo whats up",
+            "this page is under construction",
+            "please log in to continue",
+        ] {
+            let banner = format!("HTTP/1.1 200 OK\r\n\r\n<html><head><title>{title}</title>");
+            assert_eq!(extrainfo(8080, &banner), None, "`{title}` names no product");
+        }
+    }
+
+    /// A product name is a proper noun and is written like one — including the
+    /// several-word ones, and including the single words that are not
+    /// capitalised at all.
+    #[test]
+    fn a_title_shaped_like_a_name_is_taken_as_one() {
+        for title in [
+            "Grafana",
+            "phpMyAdmin",
+            "openHAB",
+            "Home Assistant",
+            "Proxmox Virtual Environment",
+            "Bill of Materials",
+        ] {
+            let banner = format!("HTTP/1.1 200 OK\r\n\r\n<html><head><title>{title}</title>");
+            assert_eq!(
+                extrainfo(8080, &banner).as_deref(),
+                Some(title),
+                "`{title}` reads as a name"
+            );
+        }
+    }
+
+    /// `Dashboard - Grafana` and `Sonarr - Series` both name their product, on
+    /// opposite sides of the separator. With one page to look at there is no way
+    /// to tell which convention is in use, so neither is guessed at.
+    #[test]
+    fn a_title_with_a_separator_is_declined_rather_than_guessed_at() {
+        for title in ["Dashboard - Grafana", "Sonarr - Series", "Log in | Nextcloud"] {
+            let banner = format!("HTTP/1.1 200 OK\r\n\r\n<html><head><title>{title}</title>");
+            assert_eq!(extrainfo(8080, &banner), None, "`{title}` is ambiguous");
+        }
     }
 
     /// A vendor prefix is what the software calls itself in its own code; a

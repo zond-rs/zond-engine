@@ -263,7 +263,7 @@ impl UdpPortScanner {
         // backstop and is the slowest thing about the scan.
         let deadline_config = DEADLINE_CONFIG
             .allowing_for(retry.worst_case_probe_lifetime())
-            .allowing_pace_of(Duration::from_secs(1) / rate_per_sec.max(1));
+            .allowing_pace_of(Duration::from_secs(1) / rate_per_sec.max(1), target_count);
 
         let mut scanner = Self {
             core: RawProbeScan {

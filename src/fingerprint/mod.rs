@@ -80,6 +80,7 @@ pub use signature::{
 pub use ssh::SshAnalyzer;
 pub use tls_cert::TlsCertAnalyzer;
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -107,6 +108,13 @@ const PROBE_READ_TIMEOUT: Duration = Duration::from_millis(1_000);
 /// milliseconds bridges any real gap, and the ports pay it in parallel, so it
 /// costs a scan the grace once rather than once per port.
 const CONTINUATION_GRACE: Duration = Duration::from_millis(50);
+/// What this engine calls itself when it asks an HTTP server a question.
+///
+/// One place, so the authored probe in `assets/fingerprinting/web/http.toml` and
+/// the redirect this code follows on its own introduce the same scanner. A
+/// server's logs should show one visitor, not two.
+const USER_AGENT: &str = "ZondScanner/1.0";
+
 /// How long to wait for the second connection a speculative TLS handshake needs.
 ///
 /// The first one already completed to this same port, so this either succeeds
@@ -375,7 +383,7 @@ async fn gather(
     }
 
     // A port nothing claims. Ask it the one question worth asking of anything.
-    match ask_generically(&mut stream).await {
+    match ask_generically(&mut stream, socket).await {
         GenericReply::Spoke(banners) => (ResponseSet::from_banners(banners), None),
         // Either it answered in TLS or it answered nothing, and both are reasons
         // to try a handshake. The socket cannot be reused for one — it has our
@@ -421,7 +429,7 @@ enum GenericReply {
 /// one ordinary home server that was two seconds per unidentified port, on seven
 /// of its eleven open ports, to learn nothing about any of them. An HTTP request
 /// answers in a round trip and names most of them.
-async fn ask_generically(stream: &mut TcpStream) -> GenericReply {
+async fn ask_generically(stream: &mut TcpStream, socket: Option<SocketAddr>) -> GenericReply {
     for payload in SignatureDb::global().generic_tcp_probe_payloads() {
         if stream.write_all(payload).await.is_err() {
             break;
@@ -435,7 +443,85 @@ async fn ask_generically(stream: &mut TcpStream) -> GenericReply {
         return GenericReply::Tls;
     }
 
-    GenericReply::Spoke(vec![String::from_utf8_lossy(&bytes).into_owned()])
+    let first = String::from_utf8_lossy(&bytes).into_owned();
+
+    // A redirect is not an answer, it is a forwarding address — and for a great
+    // many self-hosted applications it is the *only* thing the root serves. See
+    // `redirect_path`.
+    let followed = match (socket, redirect_path(&first)) {
+        (Some(socket), Some(path)) => follow_redirect(socket, &path).await,
+        _ => None,
+    };
+
+    GenericReply::Spoke(std::iter::once(first).chain(followed).collect())
+}
+
+/// Where a response says to look instead, when that is somewhere on the same
+/// host and reachable by the same means.
+///
+/// **The root of a self-hosted application is very often a redirect and nothing
+/// else.** Jellyfin's is a 302 to `/web/index.html`, Sonarr's to its login page;
+/// the page that names either of them is one hop away, and a scanner that stops
+/// at the first response sees only the framework underneath — `Kestrel`, for
+/// both, and for a dozen others.
+///
+/// Refused unless the destination is on the host already being scanned. A
+/// redirect naming somewhere else is an instruction to go and talk to a third
+/// party, which is not something a scan of *this* address should do on its own
+/// account: it would put traffic on somebody uninvolved and attribute what came
+/// back to a host that never served it. A scheme change is refused for the same
+/// species of reason — `https://` would need a handshake this path has no
+/// socket for, and guessing is worse than declining.
+fn redirect_path(response: &str) -> Option<String> {
+    let (status, headers) = response.split_once("\r\n").or(response.split_once('\n'))?;
+    // `HTTP/1.1 302 Found` — the code is the second field.
+    let code: u16 = status.split_whitespace().nth(1)?.parse().ok()?;
+    if !(300..400).contains(&code) {
+        return None;
+    }
+
+    let location = headers
+        .lines()
+        .take_while(|line| !line.trim_end_matches('\r').is_empty())
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("location")
+                .then(|| value.trim())
+        })?;
+
+    match location {
+        // Same host by construction: a path is relative to where it was served.
+        path if path.starts_with('/') => Some(path.to_string()),
+        // An absolute URL is somebody's name for a place, and this path has no
+        // way to establish that the place is here. Declined rather than guessed.
+        _ => None,
+    }
+}
+
+/// Fetches `path` from `socket` over a fresh connection and returns whatever
+/// came back.
+///
+/// A new connection rather than the one in hand: the response carrying the
+/// redirect may well have closed it, and a follow-up written into a socket the
+/// peer has already gone away from is a write that succeeds and a read that
+/// never returns. One round trip, and only on a response that asked for it.
+async fn follow_redirect(socket: SocketAddr, path: &str) -> Option<String> {
+    let mut stream = timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket))
+        .await
+        .ok()?
+        .ok()?;
+
+    // `Host` names the address actually being scanned, which is what a virtual
+    // host would route on and is in any case more truthful than a placeholder.
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n\
+         Accept: */*\r\nConnection: close\r\n\r\n",
+        socket.ip()
+    );
+    stream.write_all(request.as_bytes()).await.ok()?;
+
+    read_document(&mut stream, PROBE_READ_TIMEOUT).await
 }
 
 /// Whether `bytes` open a TLS record.
@@ -661,6 +747,73 @@ fn first_printable(responses: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The root of a self-hosted application is very often a redirect and
+    /// nothing else, and the page one hop away is the only thing that names it.
+    #[test]
+    fn a_same_host_redirect_names_where_to_look_next() {
+        let jellyfin = "HTTP/1.1 302 Found\r\n\
+             Location: /web/index.html\r\n\
+             Server: Kestrel\r\n\r\n";
+        assert_eq!(
+            redirect_path(jellyfin).as_deref(),
+            Some("/web/index.html")
+        );
+    }
+
+    /// A redirect somewhere else is an instruction to go and talk to a third
+    /// party. A scan of one address has no business putting traffic on an
+    /// uninvolved host, and attributing what came back to the host being scanned
+    /// would be wrong even if it did.
+    #[test]
+    fn a_redirect_off_the_host_is_declined() {
+        for location in [
+            "https://example.com/login",
+            "http://somewhere.else/",
+            // A scheme change needs a handshake this path has no socket for.
+            "https://127.0.0.1/web/",
+        ] {
+            let response = format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\n\r\n");
+            assert_eq!(
+                redirect_path(&response),
+                None,
+                "`{location}` is not somewhere this scan may follow"
+            );
+        }
+    }
+
+    /// Only a redirect is followed. A page that answered is the answer.
+    #[test]
+    fn a_response_that_is_not_a_redirect_names_nowhere_to_go() {
+        assert_eq!(
+            redirect_path("HTTP/1.1 200 OK\r\nLocation: /ignored\r\n\r\n"),
+            None,
+            "a 200 is an answer, whatever else it carries"
+        );
+        assert_eq!(
+            redirect_path("HTTP/1.1 302 Found\r\nServer: nginx\r\n\r\n"),
+            None,
+            "and a redirect naming nowhere leads nowhere"
+        );
+        assert_eq!(redirect_path("SSH-2.0-OpenSSH_9.2p1\r\n"), None);
+        assert_eq!(redirect_path(""), None);
+    }
+
+    /// A TLS record is not a banner, and reading one as text loses exactly the
+    /// bytes that say so. What a TLS server sends a plaintext request is an
+    /// alert, and taking it for a greeting leaves the port unidentifiable.
+    #[test]
+    fn a_tls_alert_is_recognised_as_tls_rather_than_as_a_banner() {
+        // Alert, TLS 1.2, two bytes: fatal, unexpected_message.
+        assert!(looks_like_tls(&[0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x0A]));
+        // A ServerHello, for a peer that answered the handshake it expected.
+        assert!(looks_like_tls(&[0x16, 0x03, 0x01, 0x00, 0x2A]));
+
+        assert!(!looks_like_tls(b"HTTP/1.1 200 OK"));
+        assert!(!looks_like_tls(b"SSH-2.0-OpenSSH_9.2p1"));
+        assert!(!looks_like_tls(&[0x15]), "too short to be a record");
+        assert!(!looks_like_tls(&[]));
+    }
+
     use super::*;
 
     #[tokio::test]

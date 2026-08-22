@@ -113,6 +113,11 @@ pub struct RawProbeScan<T> {
     pub src_port: u16,
     /// Why the first probe that could not be sent failed, if any did.
     ///
+    /// The *first*, and the send path keeps it that way by only recording when
+    /// this is empty. It used to hold the last, which on a link that had stopped
+    /// accepting sends meant the report named whichever of seven thousand
+    /// identical failures happened to finish the run.
+    ///
     /// Without this a scan whose probes never reached the wire reports every
     /// port with whatever its protocol reads silence as - the same answer a
     /// firewall produces - and says nothing about the difference. That verdict
@@ -177,10 +182,19 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// - **Attempts spent.** Every probe asked as many times as its budget
     ///   allows and none is still outstanding. Waiting longer cannot change what
     ///   this found.
-    /// - **Deadline expired.** Silence is only evidence once nothing is
-    ///   outstanding. With probes still waiting on their timers, quiet is
-    ///   exactly what the retry schedule expects and is no reason to conclude
-    ///   anything.
+    ///
+    /// **Silence is deliberately not one of them.** It reads as a fourth
+    /// condition and it cannot be one: with targets still queued, an empty
+    /// ledger does not mean the scan has heard nothing, it means the scan has
+    /// not *asked* yet — and the way that happens is the send path failing. A
+    /// loop that gave up there would abandon everything still queued at the
+    /// moment its own machine started refusing sends, and report the remainder
+    /// as ports nobody could reach. Measured: a wireless host whose ARP entry
+    /// went unresolved mid-scan returned `No route to host` for seven thousand
+    /// probes, and the scan concluded after thirty seconds with thirty-one
+    /// thousand targets never asked about.
+    ///
+    /// What still bounds the run is the hard deadline, which nothing extends.
     pub fn stop_reason(&self, sending_finished: bool) -> Option<StopReason> {
         if self.ctx.handle.should_stop() {
             return Some(StopReason::Aborted);
@@ -190,9 +204,6 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         }
         if sending_finished && self.ledger.is_empty() {
             return Some(StopReason::AttemptsSpent);
-        }
-        if self.ledger.is_empty() && self.deadline.has_expired() {
-            return Some(StopReason::DeadlineExpired);
         }
         None
     }
@@ -226,7 +237,14 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     pub fn record_send(&mut self, sent: bool, first_attempt: bool) {
         self.audit.record_send(sent);
         match (sent, first_attempt) {
-            (false, _) => {}
+            // A send the kernel refused is the one signal this controller gets
+            // from *its own machine* rather than from the network, and it is the
+            // least ambiguous one there is. Whatever the reason — a full
+            // interface queue, an unresolved neighbour, a link that has stopped
+            // keeping up — offering it more of the same faster cannot help. So
+            // it is read as congestion, and the damping bounds how far a
+            // permanent failure can cut.
+            (false, _) => self.window.record_congestion(),
             (true, true) => self.window.record_send(),
             (true, false) => self.window.record_resend(),
         }
@@ -374,8 +392,13 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         let capture = self.transport.capture_counts();
         self.audit
             .report(audit_tag, probes, reason, capture, Some(self.window.summary()));
-        self.ctx
-            .record_probe_stats(self.audit.stats(kind, probes, reason, capture));
+        self.ctx.record_probe_stats(self.audit.stats(
+            kind,
+            probes,
+            reason,
+            capture,
+            Some(self.window.summary()),
+        ));
     }
 }
 
@@ -750,6 +773,11 @@ mod tests {
     /// "everything has been answered or written off" only once there is nothing
     /// left to ask. Reached before the stream runs dry it would end a scan that
     /// had not yet sent most of its probes.
+    ///
+    /// The way that actually happens is the send path failing. A link that has
+    /// stopped accepting sends leaves the ledger empty while the stream is still
+    /// full, and a loop that read the quiet as an answer abandoned thirty-one
+    /// thousand queued targets and reported them as ports nobody could reach.
     #[test]
     fn an_empty_ledger_does_not_end_a_scan_that_still_has_targets_coming() {
         let (core, _session) = core();
@@ -837,6 +865,31 @@ mod tests {
         assert!(
             core.window.capacity() < grown,
             "an answer that needed a retry is loss, and loss cuts the window"
+        );
+    }
+
+    /// A send the kernel refused is backpressure from this machine, and the one
+    /// signal in the controller that does not come from the network at all.
+    ///
+    /// Whatever refused it — a full interface queue, a neighbour that will not
+    /// resolve — offering more of the same faster cannot help. Measured: seven
+    /// thousand `No route to host` failures in one run, at an unchanged window,
+    /// because nothing was reading them.
+    #[test]
+    fn a_send_the_kernel_refused_cuts_the_window() {
+        let (mut core, _session) = core();
+        core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
+
+        core.record_send(false, true);
+
+        assert!(
+            core.window.capacity() < 64,
+            "the local stack refusing is the least ambiguous evidence there is"
+        );
+        assert_eq!(
+            core.window.in_flight(),
+            0,
+            "and a probe that never left takes no slot"
         );
     }
 

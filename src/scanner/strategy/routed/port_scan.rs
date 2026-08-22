@@ -233,7 +233,7 @@ impl TcpPortScanner {
         // working as designed is what ends the scan early.
         let deadline_config = DEADLINE_CONFIG
             .allowing_for(retry.worst_case_probe_lifetime())
-            .allowing_pace_of(retry.min_rto / super::TCP_PORT_WINDOW.floor);
+            .allowing_pace_of(retry.min_rto / super::TCP_PORT_WINDOW.floor, target_count);
 
         let mut scanner = Self {
             technique,
@@ -678,11 +678,18 @@ fn send_tcp_probe(
             // explanation - "No route to host" and "Permission denied" call for
             // completely different responses, and the bare wrapper distinguishes
             // neither.
-            error!(
-                verbosity = 2,
-                "Failed to send {technique} probe to {dst_addr}:{dst_port}: {e:#}"
-            );
-            *reason = Some(format!("{e:#}"));
+            // Once. A link that has stopped accepting sends refuses every
+            // probe behind the one that noticed, and the same line seven
+            // thousand times buries everything else the run had to say —
+            // including the count, which is the number that actually matters and
+            // which the audit reports on its own.
+            if reason.is_none() {
+                error!(
+                    verbosity = 2,
+                    "Failed to send {technique} probe to {dst_addr}:{dst_port}: {e:#}"
+                );
+                *reason = Some(format!("{e:#}"));
+            }
             None
         }
     }

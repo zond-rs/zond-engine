@@ -211,6 +211,7 @@ impl ProbeAudit {
         targets: u128,
         reason: StopReason,
         capture: Option<CaptureCounts>,
+        window: Option<WindowSummary>,
     ) -> ProbeStats {
         ProbeStats {
             scanner,
@@ -229,6 +230,7 @@ impl ProbeAudit {
             last_reply: self.last_reply,
             found_at: self.buckets,
             capture,
+            window,
         }
     }
 
@@ -634,6 +636,7 @@ mod tests {
             256,
             StopReason::DeadlineExpired,
             Some(capture),
+            None,
         );
 
         assert_eq!(stats.scanner(), ScannerKind::Routed);
@@ -661,7 +664,7 @@ mod tests {
     /// found clean.
     #[test]
     fn exported_stats_keep_an_absent_capture_absent() {
-        let stats = ProbeAudit::new().stats(ScannerKind::Routed, 1, StopReason::AllResponded, None);
+        let stats = ProbeAudit::new().stats(ScannerKind::Routed, 1, StopReason::AllResponded, None, None);
 
         assert_eq!(stats.capture(), None);
         assert!(stats.stop_reason().is_complete());

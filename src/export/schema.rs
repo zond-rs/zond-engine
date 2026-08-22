@@ -841,6 +841,27 @@ pub struct ProbeStatsDto {
     /// a scanner driven by a synthetic receive stream, which has no kernel
     /// buffer, rather than a clean-looking zero.
     pub capture: Option<CaptureDto>,
+    /// What this run's congestion window did, for a scanner paced by one.
+    ///
+    /// The field that says whether the silence in this phase is a finding. A run
+    /// whose window was cut back to its floor and still left most of its probes
+    /// unanswered did not establish that anything was filtered — it established
+    /// that it could not ask. `null` for a scanner paced some other way.
+    pub window: Option<WindowDto>,
+}
+
+/// What a scan's congestion window did over one run.
+#[derive(Debug, Clone, Serialize)]
+pub struct WindowDto {
+    /// Probes it was willing to have outstanding when the run ended.
+    pub capacity: u64,
+    /// The most it was ever willing to have outstanding.
+    pub peak: u64,
+    /// How many times it was cut back.
+    pub reductions: u32,
+    /// Whether it ended cut back as far as it is permitted to go — the state
+    /// that says the scan was still being outrun when it stopped.
+    pub at_floor: bool,
 }
 
 impl ProbeStatsDto {
@@ -885,6 +906,12 @@ impl ProbeStatsDto {
             last_reply_us: micros_opt(stats.last_reply()),
             found_at,
             capture: stats.capture().map(CaptureDto::new),
+            window: stats.window().map(|window| WindowDto {
+                capacity: window.capacity as u64,
+                peak: window.peak as u64,
+                reductions: window.reductions,
+                at_floor: window.at_floor,
+            }),
         }
     }
 }

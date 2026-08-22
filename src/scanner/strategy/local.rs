@@ -444,7 +444,10 @@ impl HostScanner for LocalScanner {
         let targets = self.ip_set.len();
         self.audit.report("local-discovery", targets, reason, None, None);
         self.ctx
-            .record_probe_stats(self.audit.stats(ScannerKind::Local, targets, reason, None));
+            .record_probe_stats(
+                self.audit
+                    .stats(ScannerKind::Local, targets, reason, None, None),
+            );
         Ok(())
     }
 }

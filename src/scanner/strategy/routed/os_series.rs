@@ -654,7 +654,7 @@ impl HostScanner for OsSeriesScanner {
             ScannerKind::OsSeries,
             followed,
             reason,
-            capture,
+            capture, None,
         ));
         Ok(())
     }

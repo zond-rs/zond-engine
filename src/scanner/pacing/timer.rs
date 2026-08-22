@@ -172,14 +172,43 @@ impl ScanBudget {
         }
     }
 
+    /// The same budget, with its ceiling raised to whatever `target_count`
+    /// targets need at this budget's own rate.
+    ///
+    /// **A ceiling is in different units from the rest of a budget, and that is
+    /// how it goes wrong.** The base and the per-target term both scale with the
+    /// work; a fixed ceiling does not, so past some target count it quietly
+    /// stops being a backstop and becomes the whole answer — and nothing says
+    /// so, because a truncated scan and a finished one report the same way.
+    ///
+    /// Measured, against one host: a 65 535-port scan whose pacing had settled
+    /// at its floor needed 104 seconds and was allowed 60. Thirteen thousand
+    /// ports were never reached and thirty-two thousand were reported filtered
+    /// without having been asked the whole question. The budget had computed the
+    /// right number and the ceiling threw it away.
+    ///
+    /// So a caller that knows both the pace and the size says so, and the
+    /// ceiling stops being able to contradict them. What it still does is bound
+    /// a scan whose *pace* nobody derived — which is every caller that does not
+    /// call this.
+    pub fn covering(self, target_count: usize) -> Self {
+        Self {
+            ceiling: self.ceiling.max(self.unclamped(target_count)),
+            ..self
+        }
+    }
+
     /// Computes the effective duration for a scan covering `target_count` addresses.
     pub fn for_target_count(&self, target_count: usize) -> Duration {
-        let target_count = u32::try_from(target_count).unwrap_or(u32::MAX);
-        let scaled = self
-            .base
-            .saturating_add(self.per_target.saturating_mul(target_count));
+        self.unclamped(target_count).min(self.ceiling)
+    }
 
-        scaled.min(self.ceiling)
+    /// The budget before the ceiling is applied: what the base and the
+    /// per-target term actually ask for.
+    fn unclamped(&self, target_count: usize) -> Duration {
+        let target_count = u32::try_from(target_count).unwrap_or(u32::MAX);
+        self.base
+            .saturating_add(self.per_target.saturating_mul(target_count))
     }
 }
 
@@ -304,6 +333,55 @@ mod tests {
                 .for_target_count(100),
             budget.for_target_count(100),
             "a slower pace than the budget already allows for changes nothing"
+        );
+    }
+
+    /// A ceiling is in different units from the rest of the budget, so past some
+    /// target count it stops bounding a runaway scan and starts truncating a
+    /// working one — silently, because a scan cut short reports like a scan that
+    /// finished.
+    #[test]
+    fn a_ceiling_cannot_truncate_a_size_and_a_pace_it_was_told_about() {
+        // The shape that failed: a pace of 1.5625 ms per target over 65 535 of
+        // them wants 104 seconds, against a ceiling of 60.
+        let budget = ScanBudget::new(
+            Duration::from_millis(2_000),
+            Duration::from_nanos(1_562_500),
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            budget.for_target_count(65_535),
+            Duration::from_secs(60),
+            "the ceiling is what decides, and it is wrong"
+        );
+
+        let covering = budget.covering(65_535);
+        assert!(
+            covering.for_target_count(65_535) > Duration::from_secs(100),
+            "told the size, it allows what the pace implies"
+        );
+    }
+
+    /// Raising the ceiling for one size does not lower it for another, and does
+    /// not disturb a budget that already had room.
+    #[test]
+    fn covering_only_ever_raises_the_ceiling() {
+        let budget = ScanBudget::new(
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+            Duration::from_secs(60),
+        );
+
+        let small = budget.covering(10);
+        assert_eq!(
+            small.for_target_count(10),
+            Duration::from_millis(110),
+            "a scan well inside the ceiling is unaffected"
+        );
+        assert_eq!(
+            small.for_target_count(1_000_000),
+            Duration::from_secs(60),
+            "and a size it was never told about is still bounded"
         );
     }
 

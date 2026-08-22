@@ -560,7 +560,7 @@ fn finish(
     reason: StopReason,
 ) {
     audit.report("connect", probes, reason, None, None);
-    ctx.record_probe_stats(audit.stats(scanner, probes, reason, None));
+    ctx.record_probe_stats(audit.stats(scanner, probes, reason, None, None));
 }
 
 /// Probes a single [`Target`] for host presence over a TCP connect.

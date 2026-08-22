@@ -32,6 +32,7 @@ use crate::model::mac::MacAddr;
 use crate::model::port::{
     CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
 };
+use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{
     BUCKET_BOUNDS_MS, PhaseRecorder, ProbeStats, ScanKind, ScanReport, StopReason, TargetScope,
 };
@@ -138,6 +139,16 @@ fn probe_stats() -> ProbeStats {
     found_at[BUCKET_BOUNDS_MS.len()] = 2;
 
     ProbeStats {
+        // A paced scanner, cut back twice and still short of its ceiling: what a
+        // consumer has to be able to read to know the silence in this fixture is
+        // a scan's limit rather than a firewall.
+        window: Some(WindowSummary {
+            capacity: 48,
+            peak: 256,
+            reductions: 2,
+            adaptive: true,
+            at_floor: false,
+        }),
         scanner: ScannerKind::Routed,
         targets: 256,
         stop_reason: StopReason::DeadlineExpired,

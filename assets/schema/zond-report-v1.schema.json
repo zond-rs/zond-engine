@@ -494,7 +494,8 @@
         "first_reply_us",
         "last_reply_us",
         "found_at",
-        "capture"
+        "capture",
+        "window"
       ],
       "properties": {
         "scanner": {
@@ -593,6 +594,41 @@
               "type": "null"
             }
           ]
+        },
+        "window": {
+          "description": "What this run's congestion window did, for a scanner paced by one. The field that says whether the silence in this phase is a finding: a run whose window was cut back to its floor and still left most of its probes unanswered did not establish that anything was filtered, it established that it could not ask. Null for a scanner paced some other way.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "capacity",
+            "peak",
+            "reductions",
+            "at_floor"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "capacity": {
+              "description": "Probes it was willing to have outstanding when the run ended.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "peak": {
+              "description": "The most it was ever willing to have outstanding.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "reductions": {
+              "description": "How many times it was cut back.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "at_floor": {
+              "description": "Whether it ended cut back as far as it is permitted to go.",
+              "type": "boolean"
+            }
+          }
         }
       }
     },
