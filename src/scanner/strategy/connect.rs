@@ -23,6 +23,7 @@
 
 use crate::config::ServiceDetection;
 use crate::error;
+use crate::journal::settle::Outcome;
 use crate::model::host::{Host, HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::port::{Port, PortSet, PortState, Protocol};
@@ -97,6 +98,12 @@ struct Probed {
     /// either one proves a live stack - a refusal is a RST the kernel
     /// translated. A timeout proves nothing and never sets this.
     answered: bool,
+    /// What became of this target, for a resume.
+    ///
+    /// Distinct from [`answered`](Self::answered), which is about the *host*: a
+    /// timeout proves nothing about the host and still settles the target,
+    /// because the connect made its one and only attempt.
+    outcome: Outcome,
 }
 
 /// The outcome of one finished [`port_prober`] task.
@@ -194,7 +201,7 @@ impl PortScanner for ConnectUdpPortScanner {
             }
             probes += 1;
             pool.audit().record_send(true);
-            pool.admit(udp_port_prober(target.target)).await;
+            pool.admit(udp_port_prober(target)).await;
         }
 
         pool.drain().await;
@@ -230,11 +237,19 @@ pub async fn scan(
     while let Some(target) = rx.recv().await {
         if ctx.handle.should_stop() {
             reason = StopReason::Aborted;
+            // This one was taken off the queue and never asked, so it counts
+            // with the rest still waiting behind it.
+            ctx.record_outcome(Outcome::Unasked);
             break;
         }
         probes += 1;
         pool.audit().record_send(true);
-        pool.admit(port_prober(target.target, detection)).await;
+        pool.admit(port_prober(target, detection)).await;
+    }
+
+    // Anything still queued was never sent, and carries no position to settle.
+    while rx.try_recv().is_ok() {
+        ctx.record_outcome(Outcome::Unasked);
     }
 
     // Every target dispatched; wait out the probes still in flight.
@@ -260,6 +275,7 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
     let Some(probed) = probed else {
         return;
     };
+    ctx.record_outcome(probed.outcome);
     if probed.answered {
         // A connect probe carries no attempt token: the retransmission that may
         // have produced this answer was the host stack's, on its own schedule
@@ -292,12 +308,16 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
 /// and a refusal is `Closed`. Anything else is `Filtered`, including a timeout,
 /// which is the usual signature of a firewall drop. Only TCP is supported, so UDP
 /// targets are skipped.
-async fn port_prober(target: Target, detection: ServiceDetection) -> ProbedPort {
+async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> ProbedPort {
+    let target = planned.target;
     if target.protocol == Protocol::Udp {
         // UDP can't be probed through a TCP stream; skip rather than misreport.
+        // No outcome: unreported is re-probed, which is what a routing mistake
+        // deserves.
         return None;
     }
 
+    let position = planned.position;
     let socket_addr = SocketAddr::new(target.ip, target.port);
 
     match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
@@ -309,6 +329,7 @@ async fn port_prober(target: Target, detection: ServiceDetection) -> ProbedPort 
                 ip: target.ip,
                 port: Some(port),
                 answered: true,
+                outcome: Outcome::Answered { position },
             })
         }
         Ok(Err(e)) => {
@@ -334,10 +355,13 @@ async fn port_prober(target: Target, detection: ServiceDetection) -> ProbedPort 
                         PortState::Closed,
                     )),
                     answered: true,
+                    outcome: Outcome::Answered { position },
                 }),
                 // Anything else failed without the target having answered - a
                 // local routing failure, an exhausted resource - so the port is
                 // filtered and the host has proved nothing.
+                // A local failure — no route, no socket left — says nothing
+                // about the target, and the next sitting may well get further.
                 _ => Some(Probed {
                     ip: target.ip,
                     port: Some(crate::fingerprint::baseline_port(
@@ -346,10 +370,13 @@ async fn port_prober(target: Target, detection: ServiceDetection) -> ProbedPort 
                         PortState::Filtered,
                     )),
                     answered: false,
+                    outcome: Outcome::Unroutable,
                 }),
             }
         }
-        // Timeout: the probe was silently dropped, the classic firewall signature.
+        // Timeout: the probe was silently dropped, the classic firewall
+        // signature. Settled, because a connect gets one attempt and this was
+        // it — the whole budget, spent.
         Err(_) => Some(Probed {
             ip: target.ip,
             port: Some(crate::fingerprint::baseline_port(
@@ -358,6 +385,7 @@ async fn port_prober(target: Target, detection: ServiceDetection) -> ProbedPort 
                 PortState::Filtered,
             )),
             answered: false,
+            outcome: Outcome::Exhausted { position },
         }),
     }
 }
@@ -388,11 +416,13 @@ fn wildcard_for(target: IpAddr) -> SocketAddr {
 /// the same three verdicts the raw scanner reaches, by a different route.
 /// Errors that say nothing about the target (no local socket, no route) are
 /// logged and yield no record rather than a guess.
-async fn udp_port_prober(target: Target) -> ProbedPort {
+async fn udp_port_prober(planned: PlannedTarget) -> ProbedPort {
+    let target = planned.target;
     if target.protocol != Protocol::Udp {
         return None;
     }
 
+    let position = planned.position;
     let socket_addr = SocketAddr::new(target.ip, target.port);
     // `answered` is set only where the kernel vouches for who sent the packet.
     // A datagram arriving on a connected socket came from the peer, so `Open`
@@ -402,7 +432,7 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
     // this API at all. The privileged scanner reads that address and can tell
     // the two apart; here the port verdict stands on its own and no claim is
     // made about the host.
-    let record = |state, answered| {
+    let record = |state, answered, outcome| {
         Some(Probed {
             ip: target.ip,
             port: Some(crate::fingerprint::baseline_port(
@@ -411,6 +441,7 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
                 state,
             )),
             answered,
+            outcome,
         })
     };
 
@@ -437,7 +468,9 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
         // A refusal can surface here rather than on the receive: the kernel
         // reports a queued ICMP error on whichever operation comes next.
         return match e.kind() {
-            ErrorKind::ConnectionRefused => record(PortState::Closed, false),
+            ErrorKind::ConnectionRefused => {
+                record(PortState::Closed, false, Outcome::Answered { position })
+            }
             _ => {
                 error!(
                     verbosity = 2,
@@ -451,19 +484,27 @@ async fn udp_port_prober(target: Target) -> ProbedPort {
     let mut buf = [0u8; 1024];
     match timeout(CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
         // Something answered, so something is listening.
-        Ok(Ok(_)) => record(PortState::Open, true),
+        Ok(Ok(_)) => record(PortState::Open, true, Outcome::Answered { position }),
         // An ICMP Port Unreachable, surfaced against the connected peer.
-        Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => record(PortState::Closed, false),
+        Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => {
+            record(PortState::Closed, false, Outcome::Answered { position })
+        }
         // Any other failure leaves the port as unknown as silence does.
         Ok(Err(e)) => {
             error!(
                 verbosity = 2,
                 "UDP probe to {socket_addr} failed after sending: {e}"
             );
-            record(PortState::OpenFiltered, false)
+            // A local read failure, not a fact about the target.
+            record(PortState::OpenFiltered, false, Outcome::Unroutable)
         }
         // No error and no reply: open but silent, or filtered. UDP cannot tell.
-        Err(_) => record(PortState::OpenFiltered, false),
+        // Settled either way — this probe had one attempt and spent it.
+        Err(_) => record(
+            PortState::OpenFiltered,
+            false,
+            Outcome::Exhausted { position },
+        ),
     }
 }
 
@@ -631,12 +672,15 @@ mod tests {
     use super::*;
     use tokio::net::UdpSocket;
 
-    fn udp_target(ip: IpAddr, port: u16) -> Target {
-        Target {
-            ip,
-            port,
-            protocol: Protocol::Udp,
-        }
+    fn udp_target(ip: IpAddr, port: u16) -> PlannedTarget {
+        PlannedTarget::new(
+            u64::from(port),
+            Target {
+                ip,
+                port,
+                protocol: Protocol::Udp,
+            },
+        )
     }
 
     /// Reserves a loopback UDP port and releases it, yielding a number nothing
@@ -720,11 +764,14 @@ mod tests {
     /// leave them alone rather than misreport them over the wrong protocol.
     #[tokio::test]
     async fn tcp_targets_are_skipped() {
-        let target = Target {
-            ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port: 80,
-            protocol: Protocol::Tcp,
-        };
+        let target = PlannedTarget::new(
+            0,
+            Target {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 80,
+                protocol: Protocol::Tcp,
+            },
+        );
         assert!(udp_port_prober(target).await.is_none());
     }
 }

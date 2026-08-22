@@ -156,3 +156,49 @@ async fn the_cursor_never_exceeds_what_the_scan_was_given() {
     assert_eq!(ctx.settlements().checkpoint().watermark, 4);
     assert!(!ctx.settlements().checkpoint().is_settled(4));
 }
+
+/// The unprivileged path settles too.
+///
+/// It has no retry ledger, so its positions travel with the probe rather than
+/// inside one — and without this the connect fallback would resume by re-probing
+/// everything, which is the path most users without root actually take.
+#[tokio::test]
+async fn the_connect_path_settles_what_it_probed() {
+    use zond_engine::config::ServiceDetection;
+    use zond_engine::model::target::{PlannedTarget, Target};
+
+    let listener = spawn_banner_server(b"hi\r\n").await;
+    let closed = closed_loopback_port().await;
+
+    let (session, ctx) = ScanSession::new();
+    let observer = ctx.clone();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    for (position, port) in [listener.port, closed].into_iter().enumerate() {
+        tx.send(PlannedTarget::new(
+            position as u64,
+            Target {
+                ip: LOOPBACK,
+                port,
+                protocol: zond_engine::model::port::Protocol::Tcp,
+            },
+        ))
+        .await
+        .expect("queue");
+    }
+    drop(tx);
+
+    zond_engine::scanner::strategy::connect::scan(rx, 4, ctx, ServiceDetection::Off)
+        .await
+        .expect("the connect scan runs");
+
+    let settlements = observer.settlements();
+    assert_eq!(
+        settlements.checkpoint().watermark,
+        2,
+        "an open port and a refused one are both answers"
+    );
+    assert_eq!(settlements.count(Outcome::Answered { position: 0 }), 2);
+
+    drop(session);
+}

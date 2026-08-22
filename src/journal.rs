@@ -100,6 +100,10 @@
 //! [`lock`] tells a scan that is running from one that crashed, so a live
 //! journal is never resumed underneath its writer and a dead one never stays
 //! locked behind a process id that has been reissued.
+//!
+//! [`Journal`] is the whole of it on disk: a directory holding the manifest, the
+//! cursor and the lock, created for a scan and reopened to continue one.
+//! [`store::list`] enumerates them.
 
 //! [`manifest`] is what a journal is a journal *of*: the plan its positions are
 //! counted in, fingerprinted, so a resume against an edited plan is refused
@@ -119,6 +123,11 @@ pub const JOURNAL_VERSION: u32 = 1;
 pub mod cursor;
 #[cfg(feature = "journal-format")]
 pub mod format;
+#[cfg(feature = "journal-format")]
+pub mod store;
+
+#[cfg(feature = "journal-format")]
+pub use store::Journal;
 pub mod lock;
 pub mod manifest;
 pub mod paths;
