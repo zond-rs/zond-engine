@@ -61,7 +61,7 @@ use crate::scanner::strategy::{HostScanner, StrategyError};
 use crate::success;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::{ProbeKind, ProbeTransport};
+use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 
 /// The payload every echo request carries, so a reply can be checked against
 /// what was sent rather than trusted to have come back whole.
@@ -233,7 +233,11 @@ impl OsEchoScanner {
             }
         };
 
-        let sent = match self.transport.tx.send(&message, source, target) {
+        let sent = match self
+            .transport
+            .tx
+            .send(&message, source, target, Emission::routed())
+        {
             Ok(()) => {
                 success!(verbosity = 2, "Sent OS echo probe to {target}");
                 true
@@ -474,7 +478,13 @@ mod tests {
     }
 
     impl ProbeSender for Echoing {
-        fn send(&self, segment: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            _dst: IpAddr,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
             let _ = self.replies.send(echo_reply(segment, self.hops));
             Ok(())
         }
@@ -552,7 +562,13 @@ mod tests {
         struct Silent;
 
         impl ProbeSender for Silent {
-            fn send(&self, _s: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
+            fn send(
+                &self,
+                _s: &[u8],
+                _src: IpAddr,
+                _dst: IpAddr,
+                _emission: Emission,
+            ) -> Result<(), SendError> {
                 Ok(())
             }
         }

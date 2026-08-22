@@ -730,7 +730,7 @@ mod tests {
 
     use crate::scanner::pacing::congestion::WindowLimits;
     use crate::scanner::session::ScanSession;
-    use crate::transport::probe::{ProbeSender, ProbeTransport, SendError};
+    use crate::transport::probe::{Emission, ProbeSender, ProbeTransport, SendError};
 
     /// A sender that swallows everything. These tests never look at the wire;
     /// they ask when the loop decides to stop, which is a question about the
@@ -739,7 +739,13 @@ mod tests {
     struct NullSender;
 
     impl ProbeSender for NullSender {
-        fn send(&self, _segment: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
+        fn send(
+            &self,
+            _segment: &[u8],
+            _src: IpAddr,
+            _dst: IpAddr,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
             Ok(())
         }
     }

@@ -326,6 +326,15 @@ fn write_host(
         writeln!(out, "</os>")?;
     }
 
+    // `<distance>` and `<trace>` in that order, and both after `<os>`: nmap's
+    // DTD fixes the sequence of a host's children, and this document claims to
+    // validate against it.
+    if let Some(distance) = host.path().length() {
+        writeln!(out, r#"<distance value="{distance}"/>"#)?;
+    }
+
+    write_trace(out, host)?;
+
     // Nmap reports these in microseconds, which is also what the engine keeps,
     // so nothing is converted and nothing is lost.
     if let Some(rtt) = host.median_rtt() {
@@ -338,6 +347,50 @@ fn write_host(
     }
 
     writeln!(out, "</host>")?;
+    Ok(())
+}
+
+/// Writes the `<trace>` element, when a path was measured.
+///
+/// **The one finding this engine produces that nmap's format already has a
+/// first-class place for**, which makes it the one worth the most here: a
+/// consumer that draws network topology from nmap XML draws this without being
+/// taught anything new.
+///
+/// A silent hop is written as a `<hop>` carrying only its `ttl`. That is what
+/// nmap does and the DTD allows it — `ipaddr` is implied — and it is the whole
+/// reason the element is emitted rather than the gap being closed: a consumer
+/// counting hops has to see that a router is there and would not name itself.
+///
+/// `rtt` is milliseconds with two decimals, which is nmap's own rendering.
+/// Converted rather than kept in the microseconds the engine holds, because a
+/// consumer reading this attribute is a consumer expecting nmap's units, and a
+/// number in the wrong ones would be read as a path a thousand times slower.
+///
+/// **`inferred` has nowhere to go.** Nmap has no attribute for it and inventing
+/// one would cost this document its DTD validity, so a hop copied from another
+/// host's trace is written here exactly like a measured one. That is a real loss
+/// of fidelity against this engine's own JSON, and it is the trade the format
+/// is: nmap's vocabulary, not this engine's. Anybody who needs the distinction
+/// has [`super::json`].
+fn write_trace(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
+    let hops = host.path().hops();
+    if hops.is_empty() {
+        return Ok(());
+    }
+
+    writeln!(out, "<trace>")?;
+    for hop in hops {
+        write!(out, r#"<hop ttl="{}""#, hop.distance())?;
+        if let Some(address) = hop.address() {
+            write!(out, r#" ipaddr="{}""#, Attr(&address.to_string()))?;
+        }
+        if let Some(rtt) = hop.rtt() {
+            write!(out, r#" rtt="{:.2}""#, rtt.as_secs_f64() * 1000.0)?;
+        }
+        writeln!(out, "/>")?;
+    }
+    writeln!(out, "</trace>")?;
     Ok(())
 }
 

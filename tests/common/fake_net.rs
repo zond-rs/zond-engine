@@ -64,7 +64,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use zond_engine::model::capture::{IpObservation, Ipv4Observation};
 use zond_engine::protocols::{ip, tcp, udp};
 use zond_engine::transport::capture::CapturedSegment;
-use zond_engine::transport::probe::{ProbeSender, ProbeTransport, SendError};
+use zond_engine::transport::probe::{Emission, ProbeSender, ProbeTransport, SendError};
 
 /// TCP header length used for synthesized replies: the 20-byte minimum, with
 /// no options. Real stacks usually attach options to a SYN+ACK, but nothing in
@@ -553,7 +553,13 @@ impl ProbeSender for FakeLink {
     /// point is that the scanner cannot tell the difference between a probe
     /// that was lost and one that was ignored, and reporting an error here
     /// would hand it exactly the signal a real network withholds.
-    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
+    fn send(
+        &self,
+        segment: &[u8],
+        src: IpAddr,
+        dst: IpAddr,
+        _emission: Emission,
+    ) -> Result<(), SendError> {
         let Some(probe) = self.parse(segment) else {
             return Err(SendError::Refused(format!(
                 "fake net received a segment it could not parse as {:?}",
@@ -1091,7 +1097,9 @@ fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8], layer4: Layer4) -> Optio
         Layer4::Udp => IpNextHeaderProtocols::Udp,
     };
     let header = match (scanner, target) {
-        (IpAddr::V4(s), IpAddr::V4(d)) => ip::create_ipv4_header(s, d, len, protocol).ok()?,
+        (IpAddr::V4(s), IpAddr::V4(d)) => {
+            ip::create_ipv4_header(s, d, len, protocol, ip::HOP_LIMIT_ROUTED).ok()?
+        }
         (IpAddr::V6(s), IpAddr::V6(d)) => ip::create_ipv6_header(s, d, len, protocol, HOP_LIMIT),
         _ => return None,
     };
@@ -1133,7 +1141,13 @@ pub fn unsendable_transport(reason: &'static str) -> ProbeTransport {
     struct Refuses(&'static str, UnboundedSender<CapturedSegment>);
 
     impl ProbeSender for Refuses {
-        fn send(&self, _segment: &[u8], _src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
+        fn send(
+            &self,
+            _segment: &[u8],
+            _src: IpAddr,
+            dst: IpAddr,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
             Err(SendError::Refused(format!(
                 "failed to send to {dst}: {}",
                 self.0

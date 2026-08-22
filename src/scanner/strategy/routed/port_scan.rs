@@ -70,7 +70,7 @@ use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::success;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};
+use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
 
 // Port scanning and routed discovery send the same kind of raw TCP probe over
 // the same kind of network path, so they share one adaptive-deadline profile
@@ -321,14 +321,25 @@ impl TcpPortScanner {
     /// the same labelled devices answered two scanners on one segment with
     /// opposite values.
     fn identify_stack(&self, ip: IpAddr, state: PortState, captured: &CapturedSegment) {
-        if !self.os_detection.is_enabled() || state != PortState::Open {
-            return;
-        }
         // `None` means this segment never had an IP header to read - a synthetic
         // receive stream - rather than that nothing notable was in one.
         let Some(observation) = captured.observation else {
             return;
         };
+
+        // Before the detection gate, and deliberately. The hop counter is not an
+        // identification and costs nothing to keep - it arrived in a header this
+        // function already had in hand - while what needs it later is a
+        // traceroute, which is a separate setting entirely. Gated with the OS
+        // reading, a scan asking for a path without asking for a fingerprint
+        // would have to re-obtain by probe a number it had already been told.
+        self.core.ctx.update_host(ip, |host| {
+            host.record_hop_counter(observation.remaining_hops())
+        });
+
+        if !self.os_detection.is_enabled() || state != PortState::Open {
+            return;
+        }
         let Some(stack) = os::classify_reply(observation, &captured.bytes) else {
             return;
         };
@@ -664,7 +675,7 @@ fn send_tcp_probe(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr) {
+    match sender.send(&packet, src_addr, dst_addr, Emission::routed()) {
         Ok(()) => {
             success!(
                 verbosity = 2,
@@ -1147,6 +1158,7 @@ mod tests {
             },
             probe.len() as u16,
             IpNextHeaderProtocols::Tcp,
+            ip::HOP_LIMIT_ROUTED,
         )
         .unwrap();
         header.into_iter().chain(probe.iter().copied()).collect()

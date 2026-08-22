@@ -197,7 +197,7 @@ use zond_engine::model::parse::ip::to_set;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::protocols::{craft, tcp};
 use zond_engine::system::interface::SourceResolver;
-use zond_engine::transport::probe::{ProbeKind, ProbeTransport};
+use zond_engine::transport::probe::{Emission, ProbeKind, ProbeTransport};
 
 /// Ports to try on each address, chosen for being the ones a host on an office
 /// or home segment is most likely to have open. Only one has to answer.
@@ -611,7 +611,10 @@ async fn run_pass(
                     continue;
                 }
             };
-            match transport.tx.send(&segment, source, address) {
+            match transport
+                .tx
+                .send(&segment, source, address, Emission::routed())
+            {
                 Ok(()) => {
                     // Recorded *after* a successful send, which is the whole
                     // point of recording it. A probe the kernel refused to put on

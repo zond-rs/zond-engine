@@ -22,6 +22,7 @@ mod os_echo;
 mod os_series;
 mod port_scan;
 mod probe_scan;
+pub mod traceroute;
 mod udp_scan;
 
 use std::{
@@ -41,8 +42,8 @@ use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy, S
 use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::session::ScanContext;
 use crate::system::interface::RoutedTarget;
-use crate::transport::probe::{ProbeKind, ProbeSender, ProbeTransport};
-use crate::{error, success};
+use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport, SendError};
+use crate::{error, info, success};
 use async_trait::async_trait;
 use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
@@ -335,7 +336,7 @@ fn send_syn(
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
-    reason: &mut Option<String>,
+    faults: &mut SendFaults,
 ) -> Option<SynToken> {
     let src_port: u16 = rand::random_range(50_000..u16::MAX);
     let seq_num: u32 = rand::random_range(0..=u32::MAX);
@@ -358,7 +359,7 @@ fn send_syn(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr) {
+    match sender.send(&packet, src_addr, dst_addr, Emission::routed()) {
         Ok(_) => {
             success!(verbosity = 2, "Sent SYN probe to {dst_addr}:{dst_port}");
             Some(SynToken {
@@ -367,19 +368,36 @@ fn send_syn(
             })
         }
         Err(e) => {
-            // `{e:#}` rather than `{e}`: the outer message says which probe
-            // failed, and the chained cause is the operating system's own
-            // explanation - "No route to host" and "Permission denied" call for
-            // completely different responses, and the bare wrapper distinguishes
-            // neither.
-            // Once; see the same guard in `port_scan::send_tcp_probe`.
-            if reason.is_none() {
+            // Which of the two this was decides how it is reported; see
+            // `SendFaults`. Either way it is said once per kind rather than once
+            // per probe: a dual-stack sweep of a range has one unroutable
+            // address per name in it, and sixteen identical lines bury
+            // everything else.
+            if e.is_unroutable() {
+                // **Not an error, and not logged as one here at all.** An
+                // address this host has no route to is ordinary, the caller
+                // reports it once against the address, and an `error!` would
+                // print regardless of verbosity — errors are exempt from it,
+                // which is exactly right for a scan that broke and exactly
+                // wrong for a machine that has no IPv6.
+                //
+                // The operating system's own words are kept for `-v`, where
+                // somebody is asking why rather than being told.
+                if faults.unroutable.is_none() {
+                    info!(verbosity = 1, "no route to {dst_addr}: {e:#}");
+                }
+            } else if faults.broken.is_none() {
+                // `{e:#}` rather than `{e}`: the outer message says which probe
+                // failed, and the chained cause is the operating system's own
+                // explanation. "Permission denied" and a full send buffer call
+                // for completely different responses, and the bare wrapper
+                // distinguishes neither.
                 error!(
                     verbosity = 2,
                     "Failed to send SYN probe to {dst_addr}:{dst_port}: {e:#}"
                 );
-                *reason = Some(format!("{e:#}"));
             }
+            faults.record(dst_addr, &e);
             None
         }
     }
@@ -423,7 +441,7 @@ fn send_udp(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr) {
+    match sender.send(&packet, src_addr, dst_addr, Emission::routed()) {
         Ok(_) => {
             success!(verbosity = 2, "Sent UDP probe to {dst_addr}:{dst_port}");
             Some(())
@@ -532,13 +550,54 @@ pub struct RoutedScanner {
     /// attributed to loss, to its own deadline, or to correlation rather than
     /// guessed at. Reported once when the loop exits.
     audit: ProbeAudit,
-    /// Why the first probe that could not be sent failed, if any did.
+    /// Why probes that could not be sent could not be sent, if any could not.
     ///
     /// Kept so the reason survives into the report. The count of failed sends is
     /// already in the audit, but a count cannot distinguish a host with no route
     /// to the target from one refusing raw sockets, and those call for opposite
     /// responses from whoever is reading.
-    send_failure: Option<String>,
+    faults: SendFaults,
+}
+
+/// Why probes did not reach the wire, split by what that says.
+///
+/// **Two kinds, because they are not the same finding.** A send path that will
+/// not work is a strategy that did not run, and a caller has to hear that the
+/// scan covered less than it was asked to. An address this host has no route to
+/// is ordinary — a dual-stack name on an IPv4-only network resolves to an AAAA
+/// nobody here can reach — and reporting it as a broken scan makes every such
+/// scan look partial, which trains a reader to ignore the one that is.
+///
+/// Each keeps the first of its kind rather than all of them: sixteen identical
+/// "no route to host" lines say nothing the first does not.
+#[derive(Debug, Default)]
+struct SendFaults {
+    /// The first failure that says this host's send path is the problem.
+    broken: Option<String>,
+    /// The first address this host has no route to, and what it said.
+    unroutable: Option<(IpAddr, String)>,
+    /// How many addresses had no route.
+    unroutable_count: u64,
+    /// Which addresses those were, so the report can name them.
+    ///
+    /// The count above is what a message says; this is what a consumer reads. A
+    /// number cannot tell somebody *which* of their targets went uncovered, and
+    /// that is the only part they can act on.
+    addresses: std::collections::BTreeSet<IpAddr>,
+}
+
+impl SendFaults {
+    /// Files one failed send against the address it was aimed at.
+    fn record(&mut self, target: IpAddr, error: &SendError) {
+        if error.is_unroutable() {
+            self.unroutable_count += 1;
+            self.addresses.insert(target);
+            self.unroutable
+                .get_or_insert_with(|| (target, error.to_string()));
+        } else {
+            self.broken.get_or_insert_with(|| error.to_string());
+        }
+    }
 }
 
 #[async_trait]
@@ -614,18 +673,46 @@ impl HostScanner for RoutedScanner {
         // which is the one channel a library consumer sees without opting in.
         //
         // Reported once with the first cause rather than once per probe. Sixteen
-        // identical "no route to host" lines say nothing the first does not, and
-        // a sweep of a large range would bury everything else in the report.
-        if self.audit.sends_failed > 0 {
+        // identical lines say nothing the first does not, and a sweep of a large
+        // range would bury everything else in the report.
+        //
+        // **Only the failures that are about this host.** An address with no
+        // route is not a strategy that did not run — the strategy ran, and that
+        // address is not reachable from here. Recorded as a failure it made
+        // every scan of a dual-stack name on an IPv4-only network report itself
+        // as partial, which is the surest way to teach a reader to ignore the
+        // warning that matters. It is recorded against the address instead, just
+        // below.
+        if let Some(reason) = &self.faults.broken {
+            let broken = self.audit.sends_failed - self.faults.unroutable_count;
             self.ctx.record_failure(
                 ScannerKind::Routed,
                 format!(
-                    "{} of {} probes could not be sent: {}",
-                    self.audit.sends_failed,
+                    "{broken} of {} probes could not be sent: {reason}",
                     self.audit.sends_attempted,
-                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
                 ),
             );
+        }
+
+        // Said once, at the level a person watching a scan sees: an address they
+        // named was not covered, and nothing else in the output would tell them
+        // so. Nothing is wrong with the scan, so it carries neither an error
+        // prefix nor the operating system's errno — that is a diagnostic detail
+        // and it is on the `-v` line beside the send that failed.
+        //
+        // The address and nothing else. That it went unscanned follows from
+        // there being no route to it, and saying so out loud is a line of
+        // output that tells a reader what they have just read.
+        for address in &self.faults.addresses {
+            self.ctx.record_unroutable(*address);
+        }
+
+        if let Some((address, _)) = &self.faults.unroutable {
+            match self.faults.unroutable_count.saturating_sub(1) {
+                0 => info!("no route to {address}"),
+                1 => info!("no route to {address} and 1 other address"),
+                more => info!("no route to {address} and {more} other addresses"),
+            }
         }
 
         // Read before the transport is dropped, since the counters live with
@@ -741,7 +828,7 @@ impl RoutedScanner {
             batch,
             responded: HashSet::new(),
             audit: ProbeAudit::new(),
-            send_failure: None,
+            faults: SendFaults::default(),
         }
     }
 
@@ -902,7 +989,7 @@ impl RoutedScanner {
             source,
             target,
             DST_PORT,
-            &mut self.send_failure,
+            &mut self.faults,
         );
         self.audit.record_send(token.is_some());
 
@@ -924,6 +1011,57 @@ impl RoutedScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two kinds of send failure are kept apart, and each keeps only its
+    /// first.
+    ///
+    /// They are reported through different channels — a broken send path is a
+    /// strategy that did not run and reaches the report as a failure; an
+    /// address with no route is said once and changes nothing about the scan's
+    /// standing. Collapsed into one counter, a dual-stack name on an IPv4-only
+    /// network made every scan of it report itself partial, which teaches a
+    /// reader to ignore the warning that matters.
+    #[test]
+    fn a_missing_route_is_counted_apart_from_a_broken_send_path() {
+        let unreachable = |address: &str| {
+            SendError::from_io(
+                anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::HostUnreachable,
+                    "No route to host",
+                ))
+                .context(format!("failed to send to {address}")),
+            )
+        };
+
+        let mut faults = SendFaults::default();
+        let first: IpAddr = "2001:db8::1".parse().expect("literal");
+        let second: IpAddr = "2001:db8::2".parse().expect("literal");
+
+        faults.record(first, &unreachable("2001:db8::1"));
+        faults.record(second, &unreachable("2001:db8::2"));
+
+        assert_eq!(faults.unroutable_count, 2);
+        assert_eq!(
+            faults.unroutable.as_ref().map(|(address, _)| *address),
+            Some(first),
+            "the first address is kept, not the last"
+        );
+        assert!(
+            faults.broken.is_none(),
+            "no route to somewhere is not a scan that could not run"
+        );
+
+        faults.record(
+            first,
+            &SendError::from_io(anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Operation not permitted",
+            ))),
+        );
+
+        assert!(faults.broken.is_some(), "and this one is");
+        assert_eq!(faults.unroutable_count, 2, "which is a separate tally");
+    }
 
     /// The rate a sweep actually paces itself at, which is what the pair has
     /// to reproduce however it is split between the two.

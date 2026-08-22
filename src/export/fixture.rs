@@ -26,7 +26,7 @@ use crate::config::ZondConfig;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
 use crate::model::host::{
-    Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
+    Hop, Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
 };
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
@@ -64,6 +64,20 @@ fn router() -> Host {
     host.add_rtt(Duration::from_micros(1_200));
     host.add_rtt(Duration::from_micros(1_800));
     host.add_rtt(Duration::from_micros(3_000));
+
+    // Every shape a path can hold, so the document exercises all three rather
+    // than the one a healthy trace produces: a measured hop, a router that
+    // would not identify itself, and a hop inherited from another host's trace.
+    // Recorded out of order for the same reason the ports below are.
+    host.record_hop(Hop::answered(
+        3,
+        IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+        Some(Duration::from_micros(4_100)),
+    ));
+    host.record_hop(Hop::silent(2));
+    host.record_hop(
+        Hop::answered(1, IpAddr::V4(Ipv4Addr::new(192, 168, 0, 254)), None).as_inferred(),
+    );
 
     // Added out of ascending order, so the document's ordering guarantee is
     // being tested rather than inherited from how the fixture was written.

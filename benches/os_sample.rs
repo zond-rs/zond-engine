@@ -162,7 +162,7 @@ use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::protocols::tcp;
 use zond_engine::system::interface::SourceResolver;
 use zond_engine::transport::capture::CapturedSegment;
-use zond_engine::transport::probe::{ProbeKind, ProbeTransport};
+use zond_engine::transport::probe::{Emission, ProbeKind, ProbeTransport};
 
 /// Ports tried on each address in the first sweep, chosen for being the ones a
 /// host on an office or home segment is most likely to have open. Only one has
@@ -580,7 +580,10 @@ async fn sweep(
                 continue;
             }
         };
-        match transport.tx.send(&segment, source, address) {
+        match transport
+            .tx
+            .send(&segment, source, address, Emission::routed())
+        {
             Ok(()) => {
                 // Recorded after a successful send, which is the point of
                 // recording it: a probe the kernel refused is not a port that

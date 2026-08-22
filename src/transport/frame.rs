@@ -352,6 +352,12 @@ pub fn parse_captured_segment(link: LinkType, frame: &[u8]) -> Option<IpSegment<
 ///
 /// The IP version is taken from `src`/`dst`, which must agree; a mismatch is
 /// an error rather than a silent wrong-family packet.
+///
+/// `hop_limit` is written into whichever field the family calls it — IPv4's TTL
+/// or IPv6's hop limit — so one caller decides it once for both. It is a
+/// parameter because this is the backend that *can* honour it exactly, the
+/// header being built here rather than by a kernel; see
+/// [`Emission`](crate::transport::probe::Emission).
 pub fn build_ethernet_frame(
     src_mac: MacAddr,
     dst_mac: MacAddr,
@@ -359,17 +365,18 @@ pub fn build_ethernet_frame(
     dst: IpAddr,
     protocol: IpNextHeaderProtocol,
     segment: &[u8],
+    hop_limit: u8,
 ) -> anyhow::Result<Vec<u8>> {
     let payload_len = u16::try_from(segment.len()).context("layer-4 segment too large for IP")?;
 
     let (ethertype, ip_header) = match (src, dst) {
         (IpAddr::V4(s), IpAddr::V4(d)) => (
             EtherTypes::Ipv4,
-            ip::create_ipv4_header(s, d, payload_len, protocol)?,
+            ip::create_ipv4_header(s, d, payload_len, protocol, hop_limit)?,
         ),
         (IpAddr::V6(s), IpAddr::V6(d)) => (
             EtherTypes::Ipv6,
-            ip::create_ipv6_header(s, d, payload_len, protocol, ip::HOP_LIMIT_ROUTED),
+            ip::create_ipv6_header(s, d, payload_len, protocol, hop_limit),
         ),
         _ => anyhow::bail!("IP version mismatch between {src} and {dst}"),
     };
@@ -410,11 +417,17 @@ mod tests {
 
     /// Builds a minimal IPv4 packet carrying `payload` as its (opaque) L4.
     fn ipv4_packet(src: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
-        ip::create_ipv4_header(src, Ipv4Addr::LOCALHOST, payload.len() as u16, TCP)
-            .unwrap()
-            .into_iter()
-            .chain(payload.iter().copied())
-            .collect()
+        ip::create_ipv4_header(
+            src,
+            Ipv4Addr::LOCALHOST,
+            payload.len() as u16,
+            TCP,
+            ip::HOP_LIMIT_ROUTED,
+        )
+        .unwrap()
+        .into_iter()
+        .chain(payload.iter().copied())
+        .collect()
     }
 
     #[test]
@@ -566,6 +579,7 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
             TCP,
             &payload,
+            ip::HOP_LIMIT_ROUTED,
         )
         .unwrap();
 
@@ -621,6 +635,7 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
             TCP,
             &[4, 2],
+            ip::HOP_LIMIT_ROUTED,
         )
         .unwrap();
         assert_eq!(source_mac(LinkType::Ethernet, &plain), Some(sender));

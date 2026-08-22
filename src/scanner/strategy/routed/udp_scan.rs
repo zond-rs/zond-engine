@@ -712,7 +712,8 @@ mod tests {
         let len = datagram.len() as u16;
         let header = match (from, to) {
             (IpAddr::V4(s), IpAddr::V4(d)) => {
-                ip::create_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp).unwrap()
+                ip::create_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
+                    .unwrap()
             }
             (IpAddr::V6(s), IpAddr::V6(d)) => {
                 ip::create_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)

@@ -729,6 +729,28 @@ pub struct ZondConfig {
     /// is not a segment sweep; see [`segment_sweep`](Self::segment_sweep).
     pub assume_up: bool,
 
+    /// Whether to measure the route to each host that answered.
+    ///
+    /// Off by default, and it is the one detection setting that is off for a
+    /// reason other than traffic volume. A trace costs roughly one probe per
+    /// router per host and tells you nothing about the host itself: it is a
+    /// finding about the network in between, which is a different question from
+    /// the one a port scan was asked. Somebody mapping a network wants it and
+    /// somebody auditing a server does not, and neither should pay for the
+    /// other's answer.
+    ///
+    /// **Only hosts that answered something are traced.** A path is measured
+    /// backwards from the target, which needs the target's distance, which is
+    /// read out of a reply it sent — so a host that answered nothing has no
+    /// path this engine can measure and is skipped rather than probed thirty
+    /// times for nothing. See
+    /// [`traceroute`](crate::scanner::strategy::routed::traceroute).
+    ///
+    /// Needs raw sockets, like every other probe this engine builds by hand. An
+    /// unprivileged run records the refusal rather than reporting an empty path,
+    /// which would read as a network with no routers in it.
+    pub traceroute: bool,
+
     /// Addresses this scan may not probe, whatever else it was asked to cover.
     ///
     /// Empty by default. Everything else in this struct decides *how* a scan is

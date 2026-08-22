@@ -51,7 +51,7 @@ use zond_engine::model::capture::IpObservation;
 use zond_engine::model::parse::ip::to_set;
 use zond_engine::protocols::icmp::{self, EchoReply};
 use zond_engine::system::interface::SourceResolver;
-use zond_engine::transport::probe::{ProbeKind, ProbeTransport};
+use zond_engine::transport::probe::{Emission, ProbeKind, ProbeTransport};
 
 /// How long to keep reading after the last request goes out.
 const LISTEN_FOR: Duration = Duration::from_secs(3);
@@ -125,7 +125,10 @@ async fn main() {
                 continue;
             }
         };
-        match transport.tx.send(&message, source, address) {
+        match transport
+            .tx
+            .send(&message, source, address, Emission::routed())
+        {
             Ok(()) => {
                 sent.insert(sequence, address);
             }

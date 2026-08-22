@@ -41,11 +41,13 @@ use std::{
 
 pub mod hardware;
 pub mod os;
+pub mod path;
 pub mod status;
 pub mod telemetry;
 
 pub use hardware::HardwareInfo;
 pub use os::OsFingerprint;
+pub use path::{Hop, NetworkPath};
 pub use status::{HostStatus, StatusProtocol, StatusReason};
 pub use telemetry::HostTelemetry;
 
@@ -233,6 +235,20 @@ pub struct Host {
     /// Network performance and path telemetry.
     telemetry: HostTelemetry,
 
+    /// The routers between this machine and this host, when a trace ran.
+    ///
+    /// Empty unless [`OsDetection`]-style effort was spent on it deliberately:
+    /// a path costs one probe per hop per host and nothing else in a scan needs
+    /// one, so it is never gathered as a side effect. See
+    /// [`ZondConfig::traceroute`](crate::config::ZondConfig::traceroute).
+    ///
+    /// Held here rather than on [`HostTelemetry`] beside the round-trip time,
+    /// which is the tempting place for it. A telemetry reading is one number
+    /// about this host, updated as replies arrive; a path is a sequence of
+    /// findings about *other* machines, each with its own provenance, and the
+    /// two have nothing in common but the word "path".
+    path: NetworkPath,
+
     /// Inferred roles based on network location or discovered services.
     network_roles: HashSet<NetworkRole>,
 
@@ -316,6 +332,7 @@ impl Host {
             hardware: None,
             zone: None,
             telemetry: HostTelemetry::default(),
+            path: NetworkPath::new(),
             network_roles: HashSet::new(),
             first_seen: now,
             last_seen: now,
@@ -390,6 +407,29 @@ impl Host {
     /// Returns network performance and path telemetry.
     pub fn telemetry(&self) -> &HostTelemetry {
         &self.telemetry
+    }
+
+    /// The routers between this machine and this host. Empty unless a trace ran.
+    pub fn path(&self) -> &NetworkPath {
+        &self.path
+    }
+
+    /// Records the hop counter a reply from this host arrived with.
+    ///
+    /// Cheap and unconditional: every captured reply carries one, and the
+    /// alternative to keeping it is a probe sent later purely to re-obtain it.
+    pub fn record_hop_counter(&mut self, arrived: u8) {
+        self.telemetry.record_hop_counter(arrived);
+    }
+
+    /// Records one router on the way here.
+    ///
+    /// Additive and idempotent in the way [`NetworkPath::record`] describes:
+    /// what is known about a distance only ever gets stronger, so a trace whose
+    /// replies arrive out of order, or twice, converges on the same path.
+    pub fn record_hop(&mut self, hop: Hop) {
+        self.path.record(hop);
+        self.last_seen = SystemTime::now();
     }
 
     /// Returns inferred roles based on network location or discovered services.
@@ -819,6 +859,21 @@ impl Host {
         }
 
         self.telemetry.merge(other.telemetry);
+
+        // Hop by hop rather than by taking whichever path looks fuller, so the
+        // "only ever gets stronger" rule in `NetworkPath::record` decides each
+        // distance: a measurement beats an inference, an answer beats silence,
+        // and neither side has to be the winner as a whole.
+        //
+        // **A merge is where a path is most easily lost.** A port scan snapshots
+        // its hosts once for the liveness phase and again at the end, then folds
+        // the two together — and the trace runs between those two moments, so
+        // the earlier record has no path at all. Left out here, the empty half
+        // wins and the scan reports a path it measured and then discarded.
+        for hop in other.path.hops() {
+            self.path.record(*hop);
+        }
+
         self.network_roles.extend(other.network_roles);
 
         for port in other.ports.into_values() {
@@ -863,6 +918,74 @@ mod tests {
     use std::net::Ipv4Addr;
 
     static IP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 100));
+
+    /// A merge folds in what only one side of it knows.
+    ///
+    /// **This is the shape of defect the test exists for.** A port scan
+    /// snapshots its hosts twice — once for the liveness phase and once at the
+    /// end — and folds the two together, so anything learned *between* those
+    /// moments exists on only the later record. A field left out of `merge` is
+    /// then silently discarded, and the scan reports having found nothing of
+    /// something it measured in full. The path and the hop counter both shipped
+    /// with exactly that bug: the trace ran, recorded every router, and the
+    /// empty earlier snapshot won.
+    ///
+    /// Asserted in the direction the port scan actually merges — the record
+    /// without the finding on the left — because that is the direction that
+    /// loses it.
+    #[test]
+    fn a_merge_keeps_what_only_the_other_record_learned() {
+        let mut earlier = Host::new(IP_ADDR);
+        earlier.set_status(HostStatus::Up);
+
+        let mut later = Host::new(IP_ADDR);
+        later.record_hop_counter(59);
+        later.record_hop(path::Hop::answered(
+            1,
+            IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
+            None,
+        ));
+        later.record_hop(path::Hop::silent(2));
+
+        earlier.merge(later);
+
+        assert_eq!(
+            earlier.path().hops().len(),
+            2,
+            "the trace ran between the two snapshots and only the later one has it"
+        );
+        assert_eq!(earlier.path().length(), Some(2));
+        assert_eq!(earlier.telemetry().hop_counter(), Some(59));
+    }
+
+    /// Merging two paths settles each distance on its own terms.
+    ///
+    /// Not "whichever path is longer wins": two records can each know a
+    /// different half, and a distance one of them only inferred may be one the
+    /// other actually measured. `NetworkPath::record` already holds that rule,
+    /// so the merge has to go through it hop by hop rather than choosing a side.
+    #[test]
+    fn merging_paths_keeps_the_stronger_claim_at_every_distance() {
+        let router = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
+
+        let mut inherited = Host::new(IP_ADDR);
+        inherited.record_hop(path::Hop::answered(1, router, None).as_inferred());
+        inherited.record_hop(path::Hop::silent(2));
+
+        let mut measured = Host::new(IP_ADDR);
+        measured.record_hop(path::Hop::answered(
+            1,
+            router,
+            Some(std::time::Duration::from_millis(3)),
+        ));
+
+        inherited.merge(measured);
+
+        let hops = inherited.path().hops();
+        assert_eq!(hops.len(), 2, "the distance only one side knew survives");
+        assert!(!hops[0].inferred(), "a measurement replaces an inference");
+        assert_eq!(hops[0].rtt(), Some(std::time::Duration::from_millis(3)));
+    }
 
     /// A status only ever improves. The rule lives on every entry point that
     /// can set one, not just on `record_evidence`, or a caller reaching for the

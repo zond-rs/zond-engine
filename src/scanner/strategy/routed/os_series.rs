@@ -124,7 +124,7 @@ use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{HostScanner, StrategyError};
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::{ProbeKind, ProbeTransport};
+use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{error, info, success};
 
 /// How many times each host is asked, at [`OsDetection::Active`].
@@ -418,7 +418,11 @@ impl OsSeriesScanner {
             }
         };
 
-        match self.transport.tx.send(&segment, source, address) {
+        match self
+            .transport
+            .tx
+            .send(&segment, source, address, Emission::routed())
+        {
             Ok(()) => {
                 // Recorded after a successful send, which is the point of
                 // recording it there: a probe the kernel refused is not a host
@@ -770,7 +774,13 @@ mod tests {
     }
 
     impl ProbeSender for Linux {
-        fn send(&self, segment: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            _dst: IpAddr,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
             let source_port = u16::from_be_bytes([segment[0], segment[1]]);
             let destination_port = u16::from_be_bytes([segment[2], segment[3]]);
             let nonce = u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]);
@@ -1015,7 +1025,13 @@ mod tests {
         struct Silent;
 
         impl ProbeSender for Silent {
-            fn send(&self, _s: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
+            fn send(
+                &self,
+                _s: &[u8],
+                _src: IpAddr,
+                _dst: IpAddr,
+                _emission: Emission,
+            ) -> Result<(), SendError> {
                 Ok(())
             }
         }

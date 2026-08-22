@@ -696,12 +696,18 @@ mod tests {
     use super::*;
     use crate::model::host::HostStatus;
     use crate::scanner::session::{ScanEvent, ScanSession};
-    use crate::transport::probe::{ProbeSender, SendError};
+    use crate::transport::probe::{Emission, ProbeSender, SendError};
     use std::net::Ipv4Addr;
 
     struct Silent;
     impl ProbeSender for Silent {
-        fn send(&self, _: &[u8], _: IpAddr, _: IpAddr) -> Result<(), SendError> {
+        fn send(
+            &self,
+            _: &[u8],
+            _: IpAddr,
+            _: IpAddr,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
             Ok(())
         }
     }

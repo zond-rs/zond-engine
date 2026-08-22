@@ -395,6 +395,34 @@ impl ProbeStatsLog {
 /// A plain [`Mutex`] rather than a lock-free structure: failures are rare
 /// enough that contention is not a consideration, and the lock is never held
 /// across an await.
+/// Addresses this host had no route to, gathered across a phase.
+///
+/// A set, so a target probed several times is named once, and ordered so two
+/// runs of the same scan report them the same way.
+///
+/// Kept apart from [`FailureLog`] because the two are different findings. A
+/// strategy that could not run means the scan covered less than it was asked
+/// to and its result is partial; an address with no route means that address is
+/// not reachable from this machine, which is an ordinary fact about a
+/// dual-stack name on a single-stack network and says nothing about the rest of
+/// the scan.
+#[derive(Debug, Default)]
+pub(crate) struct UnroutableLog {
+    entries: Mutex<std::collections::BTreeSet<IpAddr>>,
+}
+
+impl UnroutableLog {
+    fn insert(&self, address: IpAddr) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.insert(address);
+    }
+
+    fn drain(&self) -> Vec<IpAddr> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries).into_iter().collect()
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct FailureLog {
     entries: Mutex<Vec<ScannerFailure>>,
@@ -441,6 +469,8 @@ pub struct ScanContext {
     pub(crate) events_tx: mpsc::UnboundedSender<ScanEvent>,
     pub(crate) failures: Arc<FailureLog>,
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
+    /// Addresses this host has no route to, so nothing could be sent to them.
+    pub(crate) unroutable: Arc<UnroutableLog>,
     /// Addresses no finding may be recorded against.
     ///
     /// Behind an `Arc` because a context is cloned once per strategy and the
@@ -599,6 +629,22 @@ impl ScanContext {
         self.failures.drain()
     }
 
+    /// Records that this host has no route to `address`, so nothing was sent to
+    /// it.
+    ///
+    /// Not a failure and not an event: no strategy broke and nothing about the
+    /// scan's standing changes. It is recorded because the address was asked
+    /// about and not covered, and a report that omitted it would leave the
+    /// caller to work out from a host count why one of their targets is missing.
+    pub fn record_unroutable(&self, address: IpAddr) {
+        self.unroutable.insert(address);
+    }
+
+    /// The unroutable addresses filed so far, taken.
+    pub(crate) fn take_unroutable(&self) -> Vec<IpAddr> {
+        self.unroutable.drain()
+    }
+
     /// The strategy failures filed so far, left in place.
     ///
     /// The reading counterpart of [`record_failure`](Self::record_failure), and
@@ -667,6 +713,7 @@ impl ScanSession {
             events_tx,
             failures: Arc::new(FailureLog::default()),
             probe_stats: Arc::new(ProbeStatsLog::default()),
+            unroutable: Arc::new(UnroutableLog::default()),
             exclusions: Arc::new(exclusions),
         };
 

@@ -706,6 +706,44 @@ async fn ask_for_kernel(
 /// Declines quietly rather than failing when there is nothing to do: a scan
 /// where every host was already named, or where none were, has not lost
 /// anything by not pinging.
+/// Measures the route to every host the scan found alive, when asked to.
+///
+/// Runs last, after the ports are known, and that ordering is the whole reason
+/// it is a separate phase rather than part of discovery. What reaches a host
+/// decides what a trace to it should be made of, and the port scan is what
+/// establishes that — a host with 443 open is traced with SYNs to 443, which
+/// crosses filters no ping survives. Run before the ports were known, every
+/// trace would fall back to echo and most of them would stop at the first
+/// firewall.
+///
+/// Hosts that answered nothing are skipped rather than traced. A path is
+/// measured backwards from its far end and the far end's distance comes out of
+/// a reply, so there is nothing to measure from; see
+/// [`traceroute`](crate::scanner::strategy::routed::traceroute).
+pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
+    if !cfg.traceroute {
+        return;
+    }
+
+    let mut alive: Vec<IpAddr> = ctx
+        .host_addresses()
+        .into_iter()
+        .filter(|ip| {
+            ctx.read_host(ip, |host| host.status().is_up())
+                .unwrap_or(false)
+        })
+        .collect();
+    alive.sort_unstable();
+    alive.dedup();
+
+    if alive.is_empty() {
+        return;
+    }
+
+    info!("Measuring the route to {} host(s)", alive.len());
+    strategy::routed::traceroute::trace(ctx, alive).await;
+}
+
 pub(super) async fn run_active_os_probe(
     ctx: &ScanContext,
     os_detection: crate::config::OsDetection,
@@ -907,10 +945,16 @@ mod tests {
 
     fn covered(scanners: Vec<Box<dyn PortScanner>>) -> Vec<Protocol> {
         let (_session, ctx) = ScanSession::new();
-        ensure_coverage(scanners, &ctx, TcpScanTechnique::Syn, BOTH, ServiceDetection::default())
-            .iter()
-            .flat_map(|scanner| scanner.supported_protocols())
-            .collect()
+        ensure_coverage(
+            scanners,
+            &ctx,
+            TcpScanTechnique::Syn,
+            BOTH,
+            ServiceDetection::default(),
+        )
+        .iter()
+        .flat_map(|scanner| scanner.supported_protocols())
+        .collect()
     }
 
     /// The plan refuses what it can foresee and `ensure_coverage` catches what
@@ -1011,7 +1055,13 @@ mod tests {
     #[test]
     fn a_technique_the_fallback_cannot_express_is_reported_rather_than_substituted() {
         let (_session, ctx) = ScanSession::new();
-        let scanners = ensure_coverage(Vec::new(), &ctx, TcpScanTechnique::Fin, BOTH, ServiceDetection::default());
+        let scanners = ensure_coverage(
+            Vec::new(),
+            &ctx,
+            TcpScanTechnique::Fin,
+            BOTH,
+            ServiceDetection::default(),
+        );
         let protocols: Vec<Protocol> = scanners
             .iter()
             .flat_map(|scanner| scanner.supported_protocols())

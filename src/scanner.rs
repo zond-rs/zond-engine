@@ -264,6 +264,10 @@ pub async fn discover(
         // sweep establishes none. It would decline every host here anyway, so
         // opening its transport would be a raw socket held to probe nothing.
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
+        // A sweep knows no ports, so every trace it runs is made of echoes. That
+        // is the honest best available here and it is why `zond scan` traces
+        // better than `zond discover` does.
+        orchestrator::run_traceroute(&ctx, &cfg).await;
         recorder.finish(&ctx)
     });
 
@@ -377,6 +381,9 @@ pub async fn scan(
         // evidence arrived.
         orchestrator::run_active_os_snmp(&ctx, cfg.os_detection).await;
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
+        // Last, because what reaches a host decides what its trace is made of
+        // and the ports are what established that.
+        orchestrator::run_traceroute(&ctx, &cfg).await;
         let report = recorder.finish(&ctx);
 
         match liveness {

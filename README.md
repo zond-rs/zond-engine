@@ -17,6 +17,10 @@
   evidence actually supports.
 * **Service fingerprinting:** identify the service, product and version behind an
   open port using an embedded signature database.
+* **Path measurement:** the routers between this machine and each host that
+  answered, traced with whatever probe already reached it — a SYN to an open port
+  where the scan found one, an echo otherwise. Paths shared between hosts are
+  measured once, and a hop inherited that way is marked as inherited.
 * **Scope exclusion:** addresses a scan may not probe or record, honoured before
   the first packet and again at every finding — so a segment sweep cannot report
   a neighbour it was forbidden to look at. The report carries the excluded ranges
@@ -126,6 +130,44 @@ against them — a run that finds no open-or-filtered port at all has probably m
 one. And `maimon` only distinguishes anything on BSD-derived stacks: elsewhere an
 open port answers exactly as a closed one does and is reported closed, which is a
 wrong answer rather than a missing one.
+
+## Measuring the route to a host
+
+`ZondConfig::traceroute` turns on path measurement. It runs last, after the
+ports are known, and only against hosts that answered something:
+
+```rust
+let mut cfg = ZondConfig::default();
+cfg.traceroute = true;
+```
+
+**A router is made to identify itself by giving it something to discard.** A
+router forwarding a packet need not say so; a router whose hop limit reached zero
+is required to (RFC 792, RFC 4443 §3.3). So a probe built to expire a chosen
+number of hops away makes exactly that router announce itself.
+
+**The probe matches the scan.** A host with an open TCP port is traced with SYNs
+to that port, and any other host with ICMP echoes. That is not a detail: the
+probe that reached a host is the probe its network permits, and a trace made of
+something else measures the path to wherever that something else is dropped. A
+SYN to :443 crosses filters that discard every ping.
+
+**Traces are measured backwards and share their prefixes.** A trace starts at the
+target and walks inward, so the first router it recognises from an earlier trace
+is the point at which the rest can be taken from that trace instead of measured
+again — which on a scan of many hosts behind one gateway is nearly all of it.
+That splice assumes two paths meeting one router at one distance agreed before
+it; every hop adopted that way is marked `inferred`, so a reader can tell a
+measurement from an inheritance.
+
+A router that will not answer is recorded as a hop with no address rather than
+omitted, because dropping it would renumber every router beyond it. Only hosts
+that answered are traced: a path is measured from its far end, and the far end's
+distance is read out of a reply.
+
+Paths appear in the JSON report as `path` on each host, and in the nmap-XML
+export as `<trace>` and `<distance>` — the one finding this engine produces that
+nmap's format already has a first-class place for.
 
 ## Excluding addresses from a scan
 

@@ -45,7 +45,7 @@ use crate::protocols::arp;
 use crate::transport::channel::open_eth_channel;
 use crate::transport::frame;
 use crate::transport::neighbor::{LinkRoute, NeighborResolver};
-use crate::transport::probe::{IpProtocols, ProbeSender, SendError};
+use crate::transport::probe::{Emission, IpProtocols, ProbeSender, SendError};
 
 /// How long to wait for an ARP reply before giving up on an on-link target.
 const ARP_TIMEOUT: Duration = Duration::from_millis(500);
@@ -180,7 +180,13 @@ impl EthernetSender {
 }
 
 impl ProbeSender for EthernetSender {
-    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
+    fn send(
+        &self,
+        segment: &[u8],
+        src: IpAddr,
+        dst: IpAddr,
+        emission: Emission,
+    ) -> Result<(), SendError> {
         // Every step here can fail for a reason outside this process - no route,
         // a neighbour that never answered our ARP, an interface that went down
         // mid-scan - so they are all refusals carrying the cause, not claims
@@ -201,6 +207,7 @@ impl ProbeSender for EthernetSender {
                 dst,
                 self.protocols.for_destination(dst),
                 segment,
+                emission.hop_limit,
             )?;
 
             let mut channels = self.channels.lock().unwrap();
@@ -212,7 +219,7 @@ impl ProbeSender for EthernetSender {
                 .context("sending frame")?;
             Ok(())
         })()
-        .map_err(SendError::refused)
+        .map_err(SendError::from_io)
     }
 }
 

@@ -817,11 +817,17 @@ mod tests {
     fn a_step_reports_under_the_same_name_as_the_scanner_it_builds() {
         use crate::scanner::session::ScanSession;
         use crate::scanner::strategy::routed::TcpPortScanner;
-        use crate::transport::probe::{ProbeSender, ProbeTransport, SendError};
+        use crate::transport::probe::{Emission, ProbeSender, ProbeTransport, SendError};
 
         struct Unsendable;
         impl ProbeSender for Unsendable {
-            fn send(&self, _: &[u8], _: IpAddr, _: IpAddr) -> Result<(), SendError> {
+            fn send(
+                &self,
+                _: &[u8],
+                _: IpAddr,
+                _: IpAddr,
+                _emission: Emission,
+            ) -> Result<(), SendError> {
                 Ok(())
             }
         }

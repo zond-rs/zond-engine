@@ -92,6 +92,23 @@ pub struct HostTelemetry {
     /// field a caller can set directly would leave the two disagreeing. See
     /// [`set_max_samples`](Self::set_max_samples).
     max_samples: usize,
+
+    /// The hop counter the most recent reply from this host arrived with.
+    ///
+    /// Not the value the host wrote: every router on the way decrements it, so
+    /// what arrives is the starting value minus the distance. It is kept because
+    /// the scan reads it anyway — every captured reply carries one — and
+    /// re-obtaining it costs a probe and a round trip.
+    ///
+    /// What reads it is [`traceroute`](crate::scanner::strategy::routed::traceroute),
+    /// which needs to know how far away a host is before it can measure the path
+    /// backwards from it. Without this the trace has to send a probe of its own
+    /// purely to be answered, which is a round trip spent re-learning something
+    /// the port scan already saw — and one more thing that can fail.
+    ///
+    /// The most recent rather than the first: a route that changed mid-scan is
+    /// better described by the reply that came after it.
+    hop_counter: Option<u8>,
 }
 
 impl HostTelemetry {
@@ -100,6 +117,7 @@ impl HostTelemetry {
         Self {
             rtt_history: VecDeque::with_capacity(max_samples),
             max_samples,
+            hop_counter: None,
         }
     }
 
@@ -213,6 +231,18 @@ impl HostTelemetry {
     }
 
     /// Returns the minimum (fastest) RTT recorded in the current window.
+    /// Records the hop counter a reply from this host arrived with.
+    ///
+    /// See [`hop_counter`](Self::hop_counter) for what the value is and is not.
+    pub fn record_hop_counter(&mut self, arrived: u8) {
+        self.hop_counter = Some(arrived);
+    }
+
+    /// The hop counter the most recent reply arrived with, if any reply did.
+    pub fn hop_counter(&self) -> Option<u8> {
+        self.hop_counter
+    }
+
     pub fn min_rtt(&self) -> Option<Duration> {
         if self.has_direct() {
             self.direct().min()
@@ -310,6 +340,14 @@ impl HostTelemetry {
     /// pairs, so an out-of-order history would report a difference between
     /// samples that were never consecutive.
     pub fn merge(&mut self, mut other: HostTelemetry) {
+        // Before the sample-window guard below, which returns early. A hop
+        // counter is not a sample and is not bounded by the window, so folding
+        // it after that check would lose it on exactly the records that keep no
+        // round trips.
+        if let Some(arrived) = other.hop_counter {
+            self.hop_counter = Some(arrived);
+        }
+
         if other.max_samples > self.max_samples {
             self.max_samples = other.max_samples;
         }

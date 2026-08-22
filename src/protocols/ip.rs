@@ -50,6 +50,12 @@ const WORD_LEN: usize = 4;
 /// The header checksum is computed over the finished header, because nothing
 /// downstream will do it; see the module documentation.
 ///
+/// `ttl` is a parameter for the same reason its IPv6 counterpart's `hop_limit`
+/// is, and for one more: a probe sent to expire on purpose is how a path is
+/// measured. [`HOP_LIMIT_ROUTED`] is what an ordinary probe passes;
+/// [`traceroute`](crate::scanner::strategy::routed::traceroute) passes each
+/// value in turn and reads the errors that come back.
+///
 /// # Errors
 ///
 /// [`PacketError::TooLong`] when the payload and the header together exceed
@@ -61,10 +67,11 @@ pub fn create_ipv4_header(
     dst_addr: Ipv4Addr,
     payload_length: u16,
     next_protocol: IpNextHeaderProtocol,
+    ttl: u8,
 ) -> Result<Vec<u8>> {
     craft::Ipv4 {
         protocol: craft::Field::Exact(next_protocol),
-        ..craft::Ipv4::new(src_addr, dst_addr)
+        ..craft::Ipv4::new(src_addr, dst_addr).with_ttl(ttl)
     }
     .header_bytes(payload_length)
 }
@@ -270,15 +277,27 @@ mod tests {
     fn a_payload_too_large_for_the_length_field_is_refused_rather_than_wrapped() {
         let largest = u16::MAX as usize - IP_V4_HDR_LEN;
 
-        let header = create_ipv4_header(V4, V4, largest as u16, IpNextHeaderProtocols::Tcp)
-            .expect("the largest describable payload");
+        let header = create_ipv4_header(
+            V4,
+            V4,
+            largest as u16,
+            IpNextHeaderProtocols::Tcp,
+            HOP_LIMIT_ROUTED,
+        )
+        .expect("the largest describable payload");
         assert_eq!(
             Ipv4Packet::new(&header).expect("parses").get_total_length(),
             u16::MAX
         );
 
         for oversize in [largest + 1, u16::MAX as usize] {
-            let refused = create_ipv4_header(V4, V4, oversize as u16, IpNextHeaderProtocols::Tcp);
+            let refused = create_ipv4_header(
+                V4,
+                V4,
+                oversize as u16,
+                IpNextHeaderProtocols::Tcp,
+                HOP_LIMIT_ROUTED,
+            );
             assert!(
                 matches!(refused, Err(PacketError::TooLong { .. })),
                 "a payload of {oversize} produced {refused:?}"

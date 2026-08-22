@@ -72,7 +72,7 @@ use crate::export::ExportOptions;
 use crate::export::time::rfc3339;
 use crate::model::capture::CaptureCounts;
 use crate::model::host::{
-    HardwareInfo, Host, HostStatus, HostTelemetry, NetworkRole, OsFingerprint, StatusProtocol,
+    HardwareInfo, Hop, Host, HostStatus, HostTelemetry, NetworkRole, OsFingerprint, StatusProtocol,
     StatusReason,
 };
 use crate::model::ip::range::IpRange;
@@ -583,6 +583,18 @@ pub struct PhaseDto<'a> {
     /// Strategies that did not run to completion. A non-empty list means the
     /// findings are narrower than the caller asked for.
     pub failures: Vec<FailureDto<'a>>,
+    /// Addresses this host had no route to, so nothing was sent to them,
+    /// ascending.
+    ///
+    /// Not failures, and deliberately not listed among them: no strategy broke
+    /// and the scan's result is not partial because of these. They are here
+    /// because the caller named these addresses and did not get an answer about
+    /// them, and a host count alone cannot say which of their targets went
+    /// uncovered or why.
+    ///
+    /// An address here was never probed at all, which is a different finding
+    /// from one that was probed and stayed silent.
+    pub unroutable: Vec<String>,
     /// What each instrumented scanner observed about its own run. Empty where
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
@@ -600,6 +612,11 @@ impl<'a> PhaseDto<'a> {
             targets: ScopeDto::new(phase.targets()),
             settings: SettingsDto::new(phase.settings()),
             failures: phase.failures().iter().map(FailureDto::new).collect(),
+            unroutable: phase
+                .unroutable()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
         }
     }
@@ -732,6 +749,8 @@ pub struct SettingsDto {
     /// connection to every open port, which is what the target would have
     /// logged.
     pub service_detection: &'static str,
+    /// Whether the phase measured the route to each host that answered.
+    pub traceroute: bool,
 }
 
 impl SettingsDto {
@@ -746,6 +765,7 @@ impl SettingsDto {
             redact: settings.redact,
             os_detection: settings.os_detection.name(),
             service_detection: settings.service_detection.name(),
+            traceroute: settings.traceroute,
         }
     }
 }
@@ -1032,6 +1052,10 @@ pub struct HostDto<'a> {
     pub hardware: Option<HardwareDto<'a>>,
     /// Network path measurements.
     pub telemetry: TelemetryDto,
+    /// The routers between the scanning host and this one, ascending by
+    /// distance. Empty when no trace ran, which the phase's `traceroute`
+    /// setting distinguishes from a trace that found nothing.
+    pub path: Vec<HopDto>,
     /// Discovered ports, ascending by number.
     pub ports: Vec<PortDto<'a>>,
     /// When this host was first seen.
@@ -1084,12 +1108,61 @@ impl<'a> HostDto<'a> {
                 .hardware()
                 .map(|hardware| HardwareDto::new(hardware, options)),
             telemetry: TelemetryDto::new(host.telemetry()),
+            path: host.path().hops().iter().map(HopDto::new).collect(),
             ports: host
                 .ports()
                 .map(|port| PortDto::new(port, options))
                 .collect(),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
+        }
+    }
+}
+
+/// One router on the way to a host.
+#[derive(Debug, Clone, Serialize)]
+pub struct HopDto {
+    /// How many routers from the scanning host this one sits.
+    ///
+    /// The key, not the position: a router that declines to answer leaves a gap,
+    /// and the entries either side keep the distances they were measured at. A
+    /// consumer counting array indices to get a distance will be wrong on every
+    /// path with a silent router in it, which is most of them.
+    pub distance: u8,
+    /// The address the router answered from, or `null` where nothing answered
+    /// at this distance.
+    ///
+    /// Null is a finding rather than a hole in the data: a router is there — the
+    /// hops beyond it were reached — and it did not identify itself. Many will
+    /// not, and many rate-limit the answer to nothing.
+    pub address: Option<String>,
+    /// The round trip to this router in microseconds, or `null`.
+    ///
+    /// Measured from the scanning host, so it includes every hop in front of
+    /// this one, and it times a router's *error generation*, which is the
+    /// lowest-priority work most routers do. A hop slower than the one past it
+    /// is ordinary and says nothing about the path.
+    pub rtt_us: Option<u64>,
+    /// Whether this hop was measured on the way to this host, or taken from
+    /// another host's trace that passed through the same router.
+    ///
+    /// A scan of many hosts behind one gateway measures the shared part of the
+    /// path once. That is an inference — it assumes two paths meeting at one
+    /// router at one distance agreed before it — and it is marked so a consumer
+    /// acting on a single hop can tell which kind it has.
+    pub inferred: bool,
+}
+
+impl HopDto {
+    /// Renders one hop.
+    pub fn new(hop: &Hop) -> Self {
+        Self {
+            distance: hop.distance(),
+            address: hop.address().map(|address| address.to_string()),
+            rtt_us: hop
+                .rtt()
+                .and_then(|rtt| u64::try_from(rtt.as_micros()).ok()),
+            inferred: hop.inferred(),
         }
     }
 }

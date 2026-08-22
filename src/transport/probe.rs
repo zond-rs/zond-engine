@@ -31,7 +31,6 @@
 //! `Box<dyn ProbeSender>` and a capture-fed receive stream, and every scanner
 //! depends only on those two things.
 
-use std::fmt;
 use std::net::IpAddr;
 
 use pnet::datalink;
@@ -233,6 +232,21 @@ impl ProbeKind {
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
+    /// This host has no route to that address.
+    ///
+    /// Separated from [`Refused`](Self::Refused) because it is a fact about the
+    /// *destination* rather than about this scanner or its socket, and the two
+    /// call for opposite responses. A send path that will not work is a strategy
+    /// that did not run, and a caller has to be told the scan covered less than
+    /// it was asked to. An address with no route is ordinary: a dual-stack name
+    /// on an IPv4-only network resolves to an AAAA nobody here can reach, and
+    /// reporting that as a broken scan makes every such scan look partial.
+    ///
+    /// Still an error, and still reported — the address was asked about and not
+    /// covered — but as something known about that address.
+    #[error("{0}")]
+    Unroutable(String),
+
     /// The host would not send the packet, in its own words.
     #[error("{0}")]
     Refused(String),
@@ -244,13 +258,93 @@ pub enum SendError {
 }
 
 impl SendError {
-    /// Wraps a failure from a lower layer, keeping its whole cause chain.
+    /// Classifies a failure from a lower layer, keeping its whole cause chain.
     ///
     /// `{e:#}` rather than `{e}`: the outer message says which probe failed and
     /// the chain is the operating system's own explanation, which is the half
     /// that says what to do about it.
-    pub(crate) fn refused(error: impl fmt::Display) -> Self {
-        Self::Refused(format!("{error:#}"))
+    ///
+    /// Reads the operating system's own error kind rather than matching on the
+    /// text of its message, which differs per platform and per locale. Only the
+    /// two unreachable kinds are singled out; everything else stays a refusal,
+    /// including the ones that look similar — a full send buffer or a permission
+    /// failure says nothing about whether the destination exists.
+    pub(crate) fn from_io(error: anyhow::Error) -> Self {
+        let unroutable = error.chain().any(|cause| {
+            cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+                matches!(
+                    io.kind(),
+                    std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable
+                )
+            })
+        });
+
+        if unroutable {
+            Self::Unroutable(format!("{error:#}"))
+        } else {
+            Self::Refused(format!("{error:#}"))
+        }
+    }
+
+    /// Whether this failure is about the destination rather than about the
+    /// sending host.
+    ///
+    /// What separates "the scan could not run" from "that address is not
+    /// reachable from here", which are reported differently and should be.
+    pub fn is_unroutable(&self) -> bool {
+        matches!(self, Self::Unroutable(_))
+    }
+}
+
+/// What a caller decides about the IP header carrying a probe, as opposed to
+/// what the packet itself decides.
+///
+/// Addresses, protocol number, lengths and checksums all follow from the probe
+/// and its destination, so a sender derives them. What is left is the handful of
+/// header fields nothing downstream can infer, and today that is exactly one:
+/// how far the probe may travel.
+///
+/// It is a value rather than a bare `u8` because it is the seam every remaining
+/// per-probe header choice arrives through — fragmentation, IP options, a
+/// deliberately wrong checksum — and each of those should widen this struct
+/// rather than the signature of every sender in the crate a second time.
+///
+/// Both backends can honour it, by different means: the link-layer sender is
+/// already building the header and simply writes the field, while the raw-socket
+/// sender sets it on the socket before the send, under the lock that serialises
+/// sends anyway. See [`raw::TransportSenderHandle::send_to`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Emission {
+    /// How many hops the probe may cross before a router discards it and
+    /// reports having done so.
+    pub hop_limit: u8,
+}
+
+impl Emission {
+    /// What an ordinary probe wants: far enough for any path on the public
+    /// internet. See [`ip::HOP_LIMIT_ROUTED`](crate::protocols::ip::HOP_LIMIT_ROUTED).
+    pub const fn routed() -> Self {
+        Self {
+            hop_limit: crate::protocols::ip::HOP_LIMIT_ROUTED,
+        }
+    }
+
+    /// A probe built to die `hops` routers away, so that the router which
+    /// discards it names itself in the error it must send back.
+    ///
+    /// The whole of how a path is measured. A hop limit of zero would be
+    /// discarded by this host's own stack before it reached a wire, so it is
+    /// raised to one — the first router — rather than silently sending nothing.
+    pub const fn at_hop(hops: u8) -> Self {
+        Self {
+            hop_limit: if hops == 0 { 1 } else { hops },
+        }
+    }
+}
+
+impl Default for Emission {
+    fn default() -> Self {
+        Self::routed()
     }
 }
 
@@ -258,10 +352,17 @@ impl SendError {
 ///
 /// `src` is the source address the segment's checksum was computed against;
 /// a raw-socket sender lets the kernel stamp it into the IP header, while a
-/// link-layer sender uses it to build the header itself. Implementations must
-/// be safe to share across threads.
+/// link-layer sender uses it to build the header itself. `emission` is what the
+/// caller decides about that header; see [`Emission`]. Implementations must be
+/// safe to share across threads.
 pub trait ProbeSender: Send + Sync {
-    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError>;
+    fn send(
+        &self,
+        segment: &[u8],
+        src: IpAddr,
+        dst: IpAddr,
+        emission: Emission,
+    ) -> Result<(), SendError>;
 }
 
 /// The IP protocol number a kind's probes carry, per address family.
@@ -351,11 +452,17 @@ impl RawIpSender {
 }
 
 impl ProbeSender for RawIpSender {
-    fn send(&self, segment: &[u8], _src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
+    fn send(
+        &self,
+        segment: &[u8],
+        _src: IpAddr,
+        dst: IpAddr,
+        emission: Emission,
+    ) -> Result<(), SendError> {
         self.handle
-            .send_to(RawSegment(segment), dst)
+            .send_to(RawSegment(segment), dst, emission.hop_limit)
             .map(|_| ())
-            .map_err(SendError::refused)
+            .map_err(SendError::from_io)
     }
 }
 
@@ -366,7 +473,13 @@ impl ProbeSender for RawIpSender {
 struct NoopSender;
 
 impl ProbeSender for NoopSender {
-    fn send(&self, _segment: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
+    fn send(
+        &self,
+        _segment: &[u8],
+        _src: IpAddr,
+        _dst: IpAddr,
+        _emission: Emission,
+    ) -> Result<(), SendError> {
         Err(SendError::Unsupported("it is receive-only"))
     }
 }
@@ -520,7 +633,13 @@ pub struct MockSender {
 
 #[cfg(test)]
 impl ProbeSender for MockSender {
-    fn send(&self, segment: &[u8], src: IpAddr, dst: IpAddr) -> Result<(), SendError> {
+    fn send(
+        &self,
+        segment: &[u8],
+        src: IpAddr,
+        dst: IpAddr,
+        _emission: Emission,
+    ) -> Result<(), SendError> {
         self.sent.lock().unwrap().push((segment.to_vec(), src, dst));
         Ok(())
     }
@@ -551,7 +670,10 @@ mod tests {
 
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let dst = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
-        transport.tx.send(&[0xAA, 0xBB], src, dst).unwrap();
+        transport
+            .tx
+            .send(&[0xAA, 0xBB], src, dst, Emission::routed())
+            .unwrap();
 
         let sent = recorded.lock().unwrap().clone();
         assert_eq!(sent, vec![(vec![0xAA, 0xBB], src, dst)]);
@@ -756,8 +878,48 @@ mod filter_conformance {
             dst,
             protocol,
             segment,
+            crate::protocols::ip::HOP_LIMIT_ROUTED,
         )
         .expect("building an Ethernet frame")
+    }
+
+    /// The two send failures that call for opposite responses are told apart by
+    /// the operating system's error kind, not by its wording.
+    ///
+    /// A message's text differs per platform and per locale, and matching on it
+    /// is how a classification silently stops working on somebody else's
+    /// machine. Only the two unreachable kinds are singled out: a full buffer or
+    /// a permission failure says nothing about whether the destination exists,
+    /// and treating either as unroutable would hide a scan that genuinely could
+    /// not run.
+    #[test]
+    fn a_destination_with_no_route_is_not_a_broken_send_path() {
+        use super::SendError;
+        use std::io::{Error, ErrorKind};
+
+        for kind in [ErrorKind::HostUnreachable, ErrorKind::NetworkUnreachable] {
+            let error = SendError::from_io(
+                anyhow::Error::new(Error::new(kind, "No route to host"))
+                    .context("failed to send to 2001:db8::1"),
+            );
+            assert!(error.is_unroutable(), "{kind:?} is about the destination");
+            assert!(
+                error.to_string().contains("2001:db8::1"),
+                "the address survives the classification: {error}"
+            );
+        }
+
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::WouldBlock,
+            ErrorKind::BrokenPipe,
+        ] {
+            let error = SendError::from_io(anyhow::Error::new(Error::new(kind, "nope")));
+            assert!(
+                !error.is_unroutable(),
+                "{kind:?} is about this host, not the destination"
+            );
+        }
     }
 
     // ─── TCP SYN ─────────────────────────────────────────────────────────────

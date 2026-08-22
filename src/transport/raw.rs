@@ -83,21 +83,70 @@ pub enum TransportType {
 /// sending to an IPv6 destination through it fails with a clear error rather
 /// than silently doing nothing.
 pub struct TransportSenderHandle {
-    v4: Option<Arc<Mutex<TransportSender>>>,
-    v6: Option<Arc<Mutex<TransportSender>>>,
+    v4: Option<Arc<Mutex<Socket>>>,
+    v6: Option<Arc<Mutex<Socket>>>,
+}
+
+/// One raw socket, and the hop limit currently set on it.
+///
+/// The two travel under one lock because they have to be changed together: a
+/// hop limit is socket state, not packet state, so setting it and sending are
+/// one operation and a second thread must not send in between.
+struct Socket {
+    sender: TransportSender,
+    /// What `IP_TTL` (or `IPV6_UNICAST_HOPS`) was last set to on this socket,
+    /// or `None` before anything set it.
+    ///
+    /// Tracked so that a scan sending millions of probes at one hop limit pays
+    /// for one `setsockopt` rather than one per probe. It starts as `None`
+    /// rather than as this engine's default, so the first send states the value
+    /// explicitly instead of trusting a kernel default that is only usually 64 —
+    /// a host tuned otherwise would silently send probes that expire early, and
+    /// an expired probe is indistinguishable from a host that did not answer.
+    hop_limit: Option<u8>,
+}
+
+impl Socket {
+    fn new(sender: TransportSender) -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self {
+            sender,
+            hop_limit: None,
+        }))
+    }
 }
 
 impl TransportSenderHandle {
-    pub fn send_to<T: Packet>(&self, packet: T, destination: IpAddr) -> anyhow::Result<usize> {
-        let sender = match destination {
+    /// Sends `packet` to `destination`, expiring after `hop_limit` routers.
+    ///
+    /// The hop limit is applied to the socket rather than written into the
+    /// packet, because a Layer-4 socket has the kernel build the IP header and
+    /// there is no header here to write it into. That makes it *sticky*, which
+    /// is why the value in force is tracked alongside the socket: what a caller
+    /// asks for is what goes out, whatever the previous send asked for.
+    pub fn send_to<T: Packet>(
+        &self,
+        packet: T,
+        destination: IpAddr,
+        hop_limit: u8,
+    ) -> anyhow::Result<usize> {
+        let socket = match destination {
             IpAddr::V4(_) => self.v4.as_ref(),
             IpAddr::V6(_) => self.v6.as_ref(),
         }
         .with_context(|| format!("no open transport socket for {destination}'s address family"))?;
 
-        sender
-            .lock()
-            .unwrap()
+        let mut socket = socket.lock().unwrap();
+
+        if socket.hop_limit != Some(hop_limit) {
+            socket
+                .sender
+                .set_ttl(hop_limit)
+                .with_context(|| format!("failed to set a hop limit of {hop_limit}"))?;
+            socket.hop_limit = Some(hop_limit);
+        }
+
+        socket
+            .sender
             .send_to(packet, destination)
             .with_context(|| format!("failed to send to {destination}"))
     }
@@ -119,16 +168,16 @@ pub fn open_sender(transport_type: TransportType) -> anyhow::Result<TransportSen
             // still works over IPv4 alone, so a failure here isn't fatal.
             let v6 = open_channel(CHANNEL_TYPE_TCP_V6)
                 .ok()
-                .map(|(v6_tx, _v6_rx)| Arc::new(Mutex::new(v6_tx)));
+                .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
             Ok(TransportSenderHandle {
-                v4: Some(Arc::new(Mutex::new(v4_tx))),
+                v4: Some(Socket::new(v4_tx)),
                 v6,
             })
         }
         TransportType::UdpLayer4 => {
             let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_UDP_V4)?;
             Ok(TransportSenderHandle {
-                v4: Some(Arc::new(Mutex::new(v4_tx))),
+                v4: Some(Socket::new(v4_tx)),
                 v6: None,
             })
         }
@@ -139,9 +188,9 @@ pub fn open_sender(transport_type: TransportType) -> anyhow::Result<TransportSen
             // rather than no transport.
             let v6 = open_channel(CHANNEL_TYPE_ICMP_V6)
                 .ok()
-                .map(|(v6_tx, _v6_rx)| Arc::new(Mutex::new(v6_tx)));
+                .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
             Ok(TransportSenderHandle {
-                v4: Some(Arc::new(Mutex::new(v4_tx))),
+                v4: Some(Socket::new(v4_tx)),
                 v6,
             })
         }

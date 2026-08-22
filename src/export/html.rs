@@ -654,6 +654,32 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
         )?;
     }
 
+    if !dto.path.is_empty() {
+        // One line per router, distance first, so a reader can see a gap where a
+        // router declined to answer rather than reading a shorter path than the
+        // one measured. An inherited hop says so: it is a claim about a router
+        // this host's own probes never met.
+        let mut path = String::new();
+        for hop in &dto.path {
+            let address = hop.address.as_deref().unwrap_or("*");
+            let mut detail = Vec::new();
+            if let Some(rtt) = hop.rtt_us {
+                detail.push(duration(rtt));
+            }
+            if hop.inferred {
+                detail.push("from another trace".to_string());
+            }
+            let _ = write!(
+                path,
+                "<div>{:>2}. {}{}</div>",
+                hop.distance,
+                esc(address),
+                dim(&detail)
+            );
+        }
+        fact(out, "path", &path)?;
+    }
+
     let mut evidence = String::new();
     for reason in &dto.reasons {
         let detail: Vec<String> = reason.details.map(esc).into_iter().collect();

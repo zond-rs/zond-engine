@@ -26,7 +26,7 @@ use zond_engine::model::host::Host;
 use zond_engine::scanner::resolver::HostnameResolver;
 use zond_engine::scanner::session::{HostStore, ScanSession};
 use zond_engine::transport::capture::CapturedSegment;
-use zond_engine::transport::probe::{ProbeSender, ProbeTransport, SendError};
+use zond_engine::transport::probe::{Emission, ProbeSender, ProbeTransport, SendError};
 
 const ROUTER: &str = "192.168.0.1";
 const PRINTER: &str = "192.168.0.30";
@@ -203,7 +203,13 @@ fn ip(address: &str) -> IpAddr {
 struct SilentSender;
 
 impl ProbeSender for SilentSender {
-    fn send(&self, _segment: &[u8], _src: IpAddr, _dst: IpAddr) -> Result<(), SendError> {
+    fn send(
+        &self,
+        _segment: &[u8],
+        _src: IpAddr,
+        _dst: IpAddr,
+        _emission: Emission,
+    ) -> Result<(), SendError> {
         panic!("the hostname resolver must not emit raw probes");
     }
 }

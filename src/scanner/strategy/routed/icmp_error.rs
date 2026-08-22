@@ -8,8 +8,14 @@
 
 //! # ICMP Errors
 //!
-//! Reads a Destination Unreachable message: what it establishes, and which
-//! probe it is about.
+//! Reads the two ICMP errors this engine acts on — Destination Unreachable and
+//! Time Exceeded — for what each establishes and which probe it is about.
+//!
+//! They are in one module because the hard part is identical. Neither carries
+//! ports of its own, both are attributable only through the datagram they quote
+//! back, and that quotation is remote-chosen bytes that have to be parsed
+//! defensively. What differs is one type number and what the message means, and
+//! those are the only parts written twice.
 //!
 //! Both raw port scanners depend on this, and both would otherwise carry their
 //! own copy of two code tables that number the same meanings differently.
@@ -35,7 +41,7 @@
 //! ([`frame::parse_ip_segment`]), and eight bytes is all a caller may count on.
 
 use pnet::packet::icmp::destination_unreachable::{DestinationUnreachablePacket, IcmpCodes};
-use pnet::packet::icmp::{IcmpCode, IcmpTypes};
+use pnet::packet::icmp::{IcmpCode, IcmpPacket, IcmpTypes};
 use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
 
@@ -114,6 +120,71 @@ pub fn parse(reply: &CapturedSegment) -> Option<IcmpError<'_>> {
         _ => None,
     }
 }
+
+/// One router naming itself, having discarded a probe that ran out of hops.
+#[derive(Debug, Clone, Copy)]
+pub struct Expired<'a> {
+    /// The probe the router discarded, as it quoted it back. The only thing
+    /// tying this message to one of ours — see [`parse_expired`].
+    pub quoted: IpSegment<'a>,
+}
+
+/// Reads `reply` as a Time Exceeded: the message a router is required to send
+/// when it decrements a hop limit to zero and drops what it was carrying.
+///
+/// **This is the whole mechanism of path discovery, and it works by
+/// obligation rather than by cooperation.** A router that forwards a packet is
+/// under no duty to identify itself; a router that *discards* one is (RFC 792,
+/// RFC 4443 §3.3). So a probe built to expire a chosen number of hops away
+/// makes exactly that router announce itself, and the announcement arrives from
+/// its own address — [`CapturedSegment::source`](crate::transport::capture::CapturedSegment::source) —
+/// while the quotation inside names the probe that provoked it.
+///
+/// Both codes are accepted and not distinguished. Code 0 is a hop limit reaching
+/// zero in transit and code 1 is a fragment reassembly timeout at the
+/// destination; the second cannot answer a probe this engine sends, since
+/// nothing here fragments, and treating an unexpected one as a hop would at
+/// worst record the destination as its own last hop, which it is.
+///
+/// `None` for any other captured segment and for a message whose quotation
+/// cannot be parsed. A truncated quotation is refused rather than guessed at:
+/// eight bytes past the IP header is all RFC 792 guarantees, and a hop
+/// attributed to the wrong probe is a wrong path rather than a missing one.
+pub fn parse_expired(reply: &CapturedSegment) -> Option<Expired<'_>> {
+    let quoted_at = match reply.protocol {
+        IpNextHeaderProtocols::Icmp => {
+            let message = IcmpPacket::new(&reply.bytes)?;
+            if message.get_icmp_type() != IcmpTypes::TimeExceeded {
+                return None;
+            }
+            // Type, code, checksum, and four unused bytes: the same eight-byte
+            // preamble a Destination Unreachable carries, which is why the
+            // quotation sits at the same offset in both.
+            TIME_EXCEEDED_HEADER_LEN
+        }
+        IpNextHeaderProtocols::Icmpv6 => {
+            let message = Icmpv6Packet::new(&reply.bytes)?;
+            if message.get_icmpv6_type() != Icmpv6Types::TimeExceeded {
+                return None;
+            }
+            Icmpv6Packet::minimum_packet_size() + ICMPV6_UNUSED_LEN
+        }
+        _ => return None,
+    };
+
+    Some(Expired {
+        quoted: frame::parse_ip_segment(reply.bytes.get(quoted_at..)?)?,
+    })
+}
+
+/// How far into an ICMPv4 Time Exceeded its quotation begins: type, code,
+/// checksum, and the four unused bytes (RFC 792).
+///
+/// Spelled out rather than taken from `DestinationUnreachablePacket`, whose
+/// minimum size happens to be the same number. Borrowing a constant from a
+/// different message because the arithmetic currently agrees is how the two stop
+/// agreeing silently.
+const TIME_EXCEEDED_HEADER_LEN: usize = 8;
 
 /// [`parse`] for an ICMPv4 message.
 fn parse_v4(bytes: &[u8]) -> Option<IcmpError<'_>> {
@@ -213,7 +284,8 @@ mod tests {
         let len = datagram.len() as u16;
         let header = match (from, to) {
             (IpAddr::V4(s), IpAddr::V4(d)) => {
-                ip::create_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp).unwrap()
+                ip::create_ipv4_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
+                    .unwrap()
             }
             (IpAddr::V6(s), IpAddr::V6(d)) => {
                 ip::create_ipv6_header(s, d, len, IpNextHeaderProtocols::Udp, ip::HOP_LIMIT_ROUTED)
@@ -221,6 +293,77 @@ mod tests {
             _ => panic!("IP version mismatch in test fixture"),
         };
         header.into_iter().chain(datagram).collect()
+    }
+
+    /// A Time Exceeded from `router`, quoting a probe from us to `target`.
+    ///
+    /// Built with the same header writers a real probe uses, so the offsets the
+    /// parser walks are the ones a router would actually produce rather than
+    /// ones a fixture and a parser agreed on between themselves.
+    fn expired_v4(router: IpAddr, target: IpAddr) -> CapturedSegment {
+        let quoted = quoted_packet(LOCAL_V4, target);
+        let mut bytes = vec![0u8; TIME_EXCEEDED_HEADER_LEN + quoted.len()];
+        bytes[0] = IcmpTypes::TimeExceeded.0;
+        bytes[TIME_EXCEEDED_HEADER_LEN..].copy_from_slice(&quoted);
+
+        CapturedSegment::synthetic(router, IpNextHeaderProtocols::Icmp, bytes)
+    }
+
+    /// The IPv6 counterpart.
+    fn expired_v6(router: IpAddr, target: IpAddr) -> CapturedSegment {
+        let quoted = quoted_packet(LOCAL_V6, target);
+        let mut payload = vec![0u8; ICMPV6_UNUSED_LEN];
+        payload.extend_from_slice(&quoted);
+
+        let mut bytes = vec![0u8; Icmpv6Packet::minimum_packet_size() + payload.len()];
+        let mut packet = MutableIcmpv6Packet::new(&mut bytes).unwrap();
+        packet.set_icmpv6_type(Icmpv6Types::TimeExceeded);
+        packet.set_payload(&payload);
+
+        CapturedSegment::synthetic(router, IpNextHeaderProtocols::Icmpv6, bytes)
+    }
+
+    /// A Time Exceeded names the router in its own header and the probe in its
+    /// quotation, and the two are different addresses.
+    ///
+    /// The distinction the whole of path measurement rests on. Read from the
+    /// wrong one, every hop of every trace would come back as the target and a
+    /// path would be a list of the host repeated.
+    #[test]
+    fn an_expiry_names_the_router_that_discarded_it_and_the_probe_it_discarded() {
+        for (reply, target) in [
+            (expired_v4(TARGET_V4, TARGET_V4), TARGET_V4),
+            (expired_v6(TARGET_V6, TARGET_V6), TARGET_V6),
+        ] {
+            let expired = parse_expired(&reply).expect("a Time Exceeded parses");
+
+            assert_eq!(
+                expired.quoted.destination, target,
+                "the probe's destination"
+            );
+            assert_eq!(
+                expired.quoted.source,
+                if target.is_ipv4() { LOCAL_V4 } else { LOCAL_V6 },
+                "the probe left from this host"
+            );
+        }
+    }
+
+    /// The two errors are told apart, in both directions.
+    ///
+    /// They share a header layout and an eight-byte preamble, so a parser that
+    /// skipped the type check would read each as the other — and a Destination
+    /// Unreachable read as an expiry puts a firewall into a path as though it
+    /// were a router on the way.
+    #[test]
+    fn an_unreachable_is_not_an_expiry_and_an_expiry_is_not_an_unreachable() {
+        let unreachable = error_v4(IcmpCodes::DestinationPortUnreachable);
+        assert!(parse(&unreachable).is_some());
+        assert!(parse_expired(&unreachable).is_none());
+
+        let expired = expired_v4(TARGET_V4, TARGET_V4);
+        assert!(parse_expired(&expired).is_some());
+        assert!(parse(&expired).is_none());
     }
 
     fn error_v4(code: IcmpCode) -> CapturedSegment {

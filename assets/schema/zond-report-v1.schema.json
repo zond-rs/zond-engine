@@ -231,7 +231,8 @@
         "targets",
         "settings",
         "failures",
-        "probe_stats"
+        "probe_stats",
+        "unroutable"
       ],
       "properties": {
         "kind": {
@@ -269,6 +270,14 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/probe_stats"
+          }
+        },
+        "unroutable": {
+          "description": "Addresses this host had no route to, so nothing was sent to them, ascending. Not failures and not listed among them: no strategy broke and the result is not partial because of these. An address here was never probed at all, which is a different finding from one that was probed and stayed silent - and it is why advice to scan it on trust cannot apply.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
           }
         }
       }
@@ -365,7 +374,8 @@
         "dns_enabled",
         "redact",
         "os_detection",
-        "service_detection"
+        "service_detection",
+        "traceroute"
       ],
       "properties": {
         "send_mode": {
@@ -422,6 +432,10 @@
             "banner",
             "probe"
           ]
+        },
+        "traceroute": {
+          "description": "Whether the phase measured the route to each host that answered. A host with no path is two different findings - a scan that did not look, and a scan that looked and got nothing back - and only this separates them.",
+          "type": "boolean"
         }
       }
     },
@@ -729,7 +743,8 @@
         "first_seen",
         "last_seen",
         "zone",
-        "families"
+        "families",
+        "path"
       ],
       "properties": {
         "primary_ip": {
@@ -835,6 +850,13 @@
         },
         "last_seen": {
           "$ref": "#/$defs/timestamp"
+        },
+        "path": {
+          "description": "The routers between the scanning host and this one, ascending by distance. Empty when no trace ran - the phase's `traceroute` setting is what distinguishes that from a trace that found nothing.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hop"
+          }
         }
       }
     },
@@ -1338,6 +1360,52 @@
         "os_snmp",
         "composite"
       ]
+    },
+    "hop": {
+      "description": "One router between the scanning host and the host this path belongs to.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distance",
+        "address",
+        "rtt_us",
+        "inferred"
+      ],
+      "properties": {
+        "distance": {
+          "description": "How many routers from the scanning host this one sits. The key, not the position: a router that declines to answer leaves a gap, and the entries either side keep the distances they were measured at. Counting array indices to get a distance is wrong on any path containing a silent router.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "address": {
+          "description": "The address the router answered from, or null where nothing answered at this distance. Null is a finding rather than missing data: a router is there, since hops beyond it were reached, and it did not identify itself.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rtt_us": {
+          "description": "Round trip to this router in microseconds, or null. Measured from the scanning host, so it includes every hop in front of this one, and it times a router's error generation rather than its forwarding - a hop slower than the one past it is ordinary.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/duration_us"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inferred": {
+          "description": "Whether this hop was measured on the way to this host, or taken from another host's trace through the same router. The second is an inference: it assumes two paths meeting at one router at one distance agreed before it.",
+          "type": "boolean"
+        }
+      }
     }
   }
 }

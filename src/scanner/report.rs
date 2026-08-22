@@ -304,6 +304,12 @@ pub struct ScanSettings {
     /// completed a connection to each open port at all, which is what a target's
     /// application logs would have recorded.
     pub service_detection: ServiceDetection,
+    /// Whether the phase measured the route to each host that answered.
+    ///
+    /// Recorded because a host with no path is two different findings: a scan
+    /// that did not look, and a scan that looked and got nothing back. Only this
+    /// separates them.
+    pub traceroute: bool,
 }
 
 impl From<&ZondConfig> for ScanSettings {
@@ -317,6 +323,7 @@ impl From<&ZondConfig> for ScanSettings {
             redact: cfg.redact,
             os_detection: cfg.os_detection,
             service_detection: cfg.service_detection,
+            traceroute: cfg.traceroute,
         }
     }
 }
@@ -635,6 +642,14 @@ pub struct ScanPhase {
     targets: TargetScope,
     settings: ScanSettings,
     failures: Vec<ScannerFailure>,
+    /// Addresses this host had no route to, so nothing was sent to them.
+    ///
+    /// Distinct from a host that answered nothing, and the distinction is the
+    /// whole reason it is recorded: an address that went unprobed because there
+    /// is no path to it is not one that stayed silent, and the two call for
+    /// different things from a reader. Telling somebody to scan an unreachable
+    /// address on trust is advice that cannot work.
+    unroutable: Vec<IpAddr>,
     probes: Vec<ProbeStats>,
 }
 
@@ -672,6 +687,11 @@ impl ScanPhase {
     }
 
     /// Strategies that did not run to completion.
+    pub fn unroutable(&self) -> &[IpAddr] {
+        &self.unroutable
+    }
+
+    /// Ground this phase did not cover, and why.
     pub fn failures(&self) -> &[ScannerFailure] {
         &self.failures
     }
@@ -790,6 +810,7 @@ impl PhaseRecorder {
             targets: self.targets,
             settings: self.settings,
             failures: ctx.take_failures(),
+            unroutable: ctx.take_unroutable(),
             probes: ctx.take_probe_stats(),
         };
 
@@ -1112,6 +1133,7 @@ mod tests {
             targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
+            unroutable: Vec::new(),
             probes: Vec::new(),
         }
     }
@@ -1340,6 +1362,39 @@ mod tests {
     ///
     /// This walks that path with no strategies in it, since what is being
     /// pinned is that every piece is reachable and the halves meet, not what a
+    /// An address with no route reaches the record without making the scan
+    /// partial.
+    ///
+    /// The whole point of keeping it apart from a failure. A dual-stack name on
+    /// an IPv4-only network resolves to an address nobody here can reach, and
+    /// reporting that as a scan which covered less than it was asked to made
+    /// every such scan look broken — while the one detail a caller can act on,
+    /// *which* address went uncovered, was not in the report at all.
+    #[test]
+    fn an_unroutable_address_is_recorded_without_making_the_scan_partial() {
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+
+        let mut targets = IpSet::from_str("192.168.0.1-192.168.0.2").expect("a valid range");
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
+        let recorder = PhaseRecorder::start(ScanKind::Discovery, false, scope, &cfg);
+
+        let unreachable: IpAddr = "2001:db8::1".parse().expect("literal");
+        ctx.record_unroutable(unreachable);
+        // Twice, as two probes to one address would: it is one fact about one
+        // address however many times it was met.
+        ctx.record_unroutable(unreachable);
+
+        let report = recorder.finish(&ctx);
+
+        assert_eq!(report.phases()[0].unroutable(), [unreachable]);
+        assert!(
+            !report.is_partial(),
+            "no strategy failed; that address is simply not reachable from here"
+        );
+        assert_eq!(report.failures().count(), 0);
+    }
+
     /// scanner would have written.
     #[test]
     fn a_self_orchestrated_scan_can_close_its_own_phase() {
