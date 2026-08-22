@@ -48,6 +48,7 @@ use tokio::sync::mpsc;
 use tracing::error;
 
 use crate::info;
+use crate::journal::settle::{Settlement, SettlementLog};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::Host;
 use crate::model::technique::TcpScanTechnique;
@@ -476,6 +477,13 @@ pub struct ScanContext {
     /// Behind an `Arc` because a context is cloned once per strategy and the
     /// policy is read, never written, by all of them.
     pub(crate) exclusions: Arc<Exclusions>,
+    /// What became of each target, for a resume that must not skip one.
+    ///
+    /// Deliberately separate from the verdict a target receives: the engine
+    /// gives an exhausted probe, an interrupted one and one never sent the same
+    /// verdict on purpose, and a resume that treated them alike would skip
+    /// targets nobody ever probed. See [`journal::settle`](crate::journal::settle).
+    pub(crate) settlements: Arc<SettlementLog>,
 }
 
 impl ScanContext {
@@ -645,6 +653,22 @@ impl ScanContext {
         self.unroutable.drain()
     }
 
+    /// Records what became of one target, for a later resume.
+    ///
+    /// **Not the same question as the verdict.** A target reaches the store with
+    /// a port state; this says whether the scan *earned* that state or assigned
+    /// it because the run ended. Only the earned ones may be skipped next
+    /// sitting. See [`Fate`](crate::journal::settle::Fate), whose documentation
+    /// names the site each fate is decided at.
+    pub fn record_settlement(&self, settlement: Settlement) {
+        self.settlements.record(settlement);
+    }
+
+    /// What became of each target so far, left in place.
+    pub fn settlements(&self) -> &SettlementLog {
+        &self.settlements
+    }
+
     /// The strategy failures filed so far, left in place.
     ///
     /// The reading counterpart of [`record_failure`](Self::record_failure), and
@@ -715,6 +739,7 @@ impl ScanSession {
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             exclusions: Arc::new(exclusions),
+            settlements: Arc::new(SettlementLog::default()),
         };
 
         (session, ctx)

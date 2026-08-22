@@ -51,6 +51,7 @@ use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
 use crate::error;
+use crate::journal::settle::Fate;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
@@ -314,6 +315,8 @@ impl UdpPortScanner {
 
         self.core.record_answer(&resolution);
         self.record_port(target.0, target.1, state, Some(sender));
+        // The target spoke. The only fate that settles positively.
+        self.settle(target.0, target.1, Fate::Answered);
     }
 }
 

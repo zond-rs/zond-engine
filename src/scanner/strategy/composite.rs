@@ -24,6 +24,7 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use crate::journal::settle::{Fate, Settlement};
 use crate::model::port::Protocol;
 use crate::model::target::Target;
 use crate::scanner::session::{ScanContext, ScannerKind};
@@ -107,11 +108,35 @@ impl PortScanner for CompositePortScanner {
                 .find(|route| route.supported_protocols.contains(&target.protocol))
             {
                 Some(route) => {
+                    // Recorded before the send, because after it the target has
+                    // moved and this is the last point that still holds it. A
+                    // target that *is* delivered settles at its scanner and
+                    // this fate is superseded there — `SettlementLog` keeps the
+                    // stronger of the two, so the ordering of the two reports
+                    // does not matter.
+                    let undelivered = Settlement::new(
+                        target.ip,
+                        target.port,
+                        target.protocol,
+                        Fate::Unroutable,
+                    );
                     if route.tx.send(target).await.is_err() {
                         undeliverable += 1;
+                        self.ctx.record_settlement(undelivered);
                     }
                 }
-                None => unroutable += 1,
+                None => {
+                    unroutable += 1;
+                    // No scanner speaks this protocol — usually a missing
+                    // privilege rather than a fact about the target, and both
+                    // can differ between sittings. Never settled.
+                    self.ctx.record_settlement(Settlement::new(
+                        target.ip,
+                        target.port,
+                        target.protocol,
+                        Fate::Unroutable,
+                    ));
+                }
             }
         }
 

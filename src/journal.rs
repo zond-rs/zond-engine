@@ -89,6 +89,12 @@
 //! nothing and is always present, so a front end can list and locate journals
 //! without compiling the reader.
 
+//! [`settle`] is what a resume is allowed to skip: the fate of each target, kept
+//! apart from the verdict it received, because the engine gives an exhausted
+//! probe and one it never sent the same verdict on purpose. It needs no feature
+//! — the distinction has to hold whether or not anything is written down.
+
 #[cfg(feature = "journal-format")]
 pub mod format;
 pub mod paths;
+pub mod settle;

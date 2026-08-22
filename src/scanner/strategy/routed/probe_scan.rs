@@ -63,6 +63,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
+use crate::journal::settle::{Fate, Settlement};
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
@@ -465,6 +466,23 @@ pub trait RawPortScan: PortScanner {
     /// came from a spent attempt budget rather than from a packet.
     fn record_port(&mut self, ip: IpAddr, port: u16, state: PortState, sender: Option<IpAddr>);
 
+    /// Records what became of one target, as distinct from the verdict
+    /// [`record_port`](Self::record_port) gave it.
+    ///
+    /// **The two are deliberately not the same call.** Every fate reaches
+    /// `record_port` with the same silence verdict — that is the engine's
+    /// considered choice, because an absent port is the one shortfall a reader
+    /// cannot see. A resume cannot afford the same kindness: skipping a target
+    /// that was never probed produces a merged report claiming coverage it never
+    /// had. So the fate is reported where it is known, and only
+    /// [`Fate::is_settled`] decides what the next sitting may skip.
+    fn settle(&mut self, ip: IpAddr, port: u16, fate: Fate) {
+        let protocol = self.protocol();
+        self.core()
+            .ctx
+            .record_settlement(Settlement::new(ip, port, protocol, fate));
+    }
+
     /// Probes `target`, if it is one this scan speaks the protocol for.
     ///
     /// A target of another protocol is passed over rather than refused. The
@@ -530,6 +548,9 @@ pub trait RawPortScan: PortScanner {
                         self.core_mut().judge_timeout(ip);
                     }
                     self.record_port(ip, port, silence, None);
+                    // Earned: asked as many times as the policy allows. The one
+                    // silence a resume may skip.
+                    self.settle(ip, port, Fate::Exhausted);
                 }
             }
         }
@@ -549,6 +570,9 @@ pub trait RawPortScan: PortScanner {
         let silence = self.silence_means();
         for (ip, port) in self.core_mut().ledger.drain_unresolved() {
             self.record_port(ip, port, silence, None);
+            // Assigned, not earned: the retry schedule was cut off rather than
+            // spent, so the next sitting has to ask again.
+            self.settle(ip, port, Fate::Interrupted);
         }
     }
 
@@ -582,6 +606,10 @@ pub trait RawPortScan: PortScanner {
             unasked += 1;
             if target.protocol == protocol {
                 self.record_port(target.ip, target.port, silence, None);
+                // Nothing was sent, so nothing was learned. The verdict above is
+                // the engine's deliberate kindness to a reader; it must never
+                // read as coverage.
+                self.settle(target.ip, target.port, Fate::Unasked);
             }
         }
         unasked

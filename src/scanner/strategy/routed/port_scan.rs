@@ -56,6 +56,7 @@ use crate::config::ServiceDetection;
 use crate::config::ProbeTuning;
 use crate::error;
 use crate::fingerprint::os;
+use crate::journal::settle::Fate;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::Target;
@@ -431,6 +432,8 @@ impl TcpPortScanner {
 
         self.core.record_answer(&resolution);
         self.record_port_drawn_by(key.0, key.1, state, sender, drawn_by);
+        // The target spoke. The only fate that settles positively.
+        self.settle(key.0, key.1, Fate::Answered);
     }
 
     /// Which protocol a host verdict from this scan is credited to.
