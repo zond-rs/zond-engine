@@ -625,6 +625,24 @@ pub struct ScopeDto {
     /// The transport protocols in scope, ascending. Empty on a discovery phase,
     /// whose probes are chosen by the strategy rather than by the caller.
     pub protocols: Vec<&'static str>,
+    /// The merged ranges the phase was forbidden to probe, ascending.
+    ///
+    /// Empty when no exclusion policy was in force. A policy that was in force
+    /// and overlapped nothing appears here in full, with `withheld` at zero -
+    /// the two are different facts and a consumer acting on scope compliance
+    /// needs both.
+    ///
+    /// This is the part of the document a reader can check the engine against:
+    /// no host in this report may fall inside any of these ranges.
+    pub excluded: Vec<RangeDto>,
+    /// How many addresses the exclusion policy took out of this phase, as a
+    /// decimal string.
+    ///
+    /// The overlap between the policy and what this phase was handed, measured
+    /// when its scope was recorded - so `"0"` from a policy naming ground the
+    /// phase would never have walked, and `"0"` again from a phase whose input
+    /// an earlier one had already narrowed.
+    pub withheld: String,
 }
 
 impl ScopeDto {
@@ -640,6 +658,8 @@ impl ScopeDto {
                 .copied()
                 .map(protocol_name)
                 .collect(),
+            excluded: scope.excluded().iter().map(RangeDto::new).collect(),
+            withheld: scope.withheld().to_string(),
         }
     }
 }
@@ -1422,6 +1442,7 @@ impl<'a> DiscoveryDto<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::exclusion::Exclusions;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;
     use crate::model::target::{TargetMap, TargetSet};
@@ -1480,7 +1501,7 @@ mod tests {
         let mut ips = IpSet::new();
         ips.insert_range("2001:db8::/32".parse().expect("a valid range"));
 
-        let scope = ScopeDto::new(&TargetScope::from_ip_set(&mut ips));
+        let scope = ScopeDto::new(&TargetScope::from_ip_set(&mut ips, &Exclusions::none()));
 
         // 2^96, which a JSON number as JavaScript implements one would round to
         // something else entirely.
@@ -1495,7 +1516,7 @@ mod tests {
         let mut ips = IpSet::new();
         ips.insert_range("192.168.0.0/24".parse().expect("a valid range"));
 
-        let scope = ScopeDto::new(&TargetScope::from_ip_set(&mut ips));
+        let scope = ScopeDto::new(&TargetScope::from_ip_set(&mut ips, &Exclusions::none()));
 
         assert_eq!(scope.addresses, "256");
         assert_eq!(scope.probes, None);
@@ -1517,7 +1538,10 @@ mod tests {
             PortSet::from_iter([(80, Protocol::Tcp), (53, Protocol::Udp)]),
         ));
 
-        let scope = ScopeDto::new(&TargetScope::from_target_map(&targets));
+        let scope = ScopeDto::new(&TargetScope::from_target_map(
+            &mut targets,
+            &Exclusions::none(),
+        ));
 
         assert_eq!(scope.addresses, "4");
         assert_eq!(scope.probes.as_deref(), Some("8"));

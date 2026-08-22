@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use crate::config::ZondConfig;
 use crate::model::capture::CaptureCounts;
+use crate::model::exclusion::Exclusions;
 use crate::model::host::{
     Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
 };
@@ -180,10 +181,16 @@ pub(crate) fn report() -> ScanReport {
     let mut targets = IpSet::new();
     targets.insert_range("192.168.0.0/24".parse().expect("a valid range"));
 
+    // Half the range withheld by policy, so the exported scope carries an
+    // exclusion that overlapped rather than one that did nothing. Every host
+    // below sits in the half that was kept.
+    let mut excluded = IpSet::new();
+    excluded.insert_range("192.168.0.128/25".parse().expect("a valid range"));
+
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
         true,
-        TargetScope::from_ip_set(&mut targets),
+        TargetScope::from_ip_set(&mut targets, &Exclusions::new(excluded)),
         &ZondConfig::default(),
     );
 
@@ -284,7 +291,7 @@ pub(crate) fn hostile() -> ScanReport {
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
         true,
-        TargetScope::from_ip_set(&mut targets),
+        TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
         &ZondConfig::default(),
     );
 

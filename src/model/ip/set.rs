@@ -183,6 +183,71 @@ impl IpSet {
         self.v6 = merged;
     }
 
+    // ─── Set arithmetic ──────────────────────────────────────────────────────
+
+    /// Removes every address `other` holds from this set.
+    ///
+    /// This set is canonicalized first and left that way, so every read after it
+    /// takes its fast path. `other` is read in whatever state it is in — the
+    /// subtrahend is sorted and coalesced on the way through, which a set being
+    /// subtracted *from* cannot be, since the difference has to write back into
+    /// it. Afterwards [`contains`](Self::contains) answers `false` for every
+    /// address `other` contained, and that property is what makes this usable as
+    /// a policy rather than merely as an optimisation.
+    ///
+    /// **Blind to zones, exactly as [`contains`](Self::contains) is.** A range in
+    /// `other` removes those addresses from every interface, whether or not
+    /// either side named one. The two have to agree: a difference that kept
+    /// `fe80::5%en1` while `contains` reported `fe80::5` present would leave a
+    /// set that says one thing when asked and another when walked, and the caller
+    /// most likely to meet the discrepancy is the one filtering received replies
+    /// — which arrive as bare addresses with no interface attached, and so can
+    /// only ever be tested the blind way.
+    ///
+    /// Where the two readings differ this is the one that removes more, which is
+    /// the direction a subtraction used to withhold addresses from a scan has to
+    /// err in. Deciding it here rather than per caller is the point.
+    ///
+    /// Linear in the *ranges* of both sides and never in their addresses:
+    /// subtracting a `/24` from a `/8` is a handful of comparisons, not sixteen
+    /// million.
+    pub fn subtract(&mut self, other: &IpSet) {
+        if other.is_empty() || self.is_empty() {
+            return;
+        }
+        self.canonicalize();
+
+        if !self.v4.is_empty() {
+            let cuts = merged_intervals(other.v4.iter().map(v4_bounds));
+            if !cuts.is_empty() {
+                self.v4 = subtract_run(&self.v4, &cuts, v4_bounds, |_, start, end| {
+                    // Both ends came out of a `u32`-derived range and the
+                    // difference only ever narrows one, so the casts are exact.
+                    Ipv4Range::new(Ipv4Addr::from(start as u32), Ipv4Addr::from(end as u32))
+                        .unwrap_or_else(|_| unreachable!("a narrowed range keeps start <= end"))
+                });
+            }
+        }
+
+        if !self.v6.is_empty() {
+            let cuts = merged_intervals(other.v6.iter().map(v6_bounds));
+            if !cuts.is_empty() {
+                // One run per interface, because only within a run are the
+                // ranges disjoint — the precondition the difference needs. The
+                // zone travels with every piece a range is cut into, so the
+                // result stays grouped and sorted the way `merge_v6` left it.
+                let mut kept = Vec::with_capacity(self.v6.len());
+                for run in self.v6_runs() {
+                    kept.extend(subtract_run(run, &cuts, v6_bounds, |range, start, end| {
+                        Ipv6Range::scoped(Ipv6Addr::from(start), Ipv6Addr::from(end), range.zone())
+                            .unwrap_or_else(|_| unreachable!("a narrowed range keeps start <= end"))
+                    }));
+                }
+                self.v6 = kept;
+            }
+        }
+    }
+
     /// The merged IPv6 ranges, one slice per interface.
     ///
     /// Each slice is sorted by address and holds no two ranges that overlap,
@@ -394,6 +459,113 @@ impl PartialEq for IpSet {
         let (this, that) = (merged(self), merged(other));
         this.v4 == that.v4 && this.v6 == that.v6
     }
+}
+
+/// The inclusive bounds of an IPv4 range, widened so one difference serves both
+/// address families — the same widening [`holds`] does, for the same reason.
+fn v4_bounds(range: &Ipv4Range) -> (u128, u128) {
+    (
+        u128::from(u32::from(range.start_addr())),
+        u128::from(u32::from(range.end_addr())),
+    )
+}
+
+/// The IPv6 half of [`v4_bounds`]. Drops the zone, which is what makes
+/// [`IpSet::subtract`] blind to it.
+fn v6_bounds(range: &Ipv6Range) -> (u128, u128) {
+    (u128::from(range.start_addr()), u128::from(range.end_addr()))
+}
+
+/// Sorts and coalesces `intervals` into ascending, non-overlapping, non-adjacent
+/// inclusive pairs.
+///
+/// The subtrahend, flattened. It comes from the other set's range vector, which
+/// is merged *within* each IPv6 zone and so may still overlap across zones —
+/// and [`IpSet::subtract`] reads it blind to zones, so those overlaps have to be
+/// coalesced before the difference can walk both sides once.
+fn merged_intervals(intervals: impl Iterator<Item = (u128, u128)>) -> Vec<(u128, u128)> {
+    let mut cuts: Vec<(u128, u128)> = intervals.collect();
+    cuts.sort_unstable();
+
+    let mut merged: Vec<(u128, u128)> = Vec::with_capacity(cuts.len());
+    for (start, end) in cuts {
+        match merged.last_mut() {
+            // Adjacent as well as overlapping: two cuts that meet end to end
+            // remove the same addresses as one spanning both, and coalescing
+            // them here saves the difference below a step.
+            Some(last) if start <= last.1.saturating_add(1) => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+/// Every part of `run` that no interval in `cuts` covers, in ascending order.
+///
+/// **Both slices must be sorted by start and free of overlap**, which is what
+/// lets this advance through each exactly once rather than testing every pair.
+/// `run` is one address family's merged ranges — for IPv6, one zone's run of
+/// them, since only within a run are they disjoint — and `cuts` is what
+/// [`merged_intervals`] produced.
+///
+/// `bounds` reads a range's inclusive ends, widened to `u128` so one difference
+/// serves both families, exactly as [`holds`] does. `rebuild` turns a surviving
+/// `[start, end]` back into a range of the caller's type; it is handed the range
+/// being cut so a piece can carry across what its bounds do not say, which for
+/// IPv6 is the zone.
+fn subtract_run<R: Copy>(
+    run: &[R],
+    cuts: &[(u128, u128)],
+    bounds: impl Fn(&R) -> (u128, u128),
+    rebuild: impl Fn(&R, u128, u128) -> R,
+) -> Vec<R> {
+    let mut kept = Vec::with_capacity(run.len());
+    let mut first_live = 0usize;
+
+    for range in run {
+        let (start, end) = bounds(range);
+
+        // A cut entirely left of this range is left of every later one too,
+        // both slices ascending, so this index only ever moves forward — which
+        // is what makes the whole pass linear rather than quadratic.
+        while first_live < cuts.len() && cuts[first_live].1 < start {
+            first_live += 1;
+        }
+
+        let mut cursor = start;
+        let mut consumed = false;
+
+        // Not advancing `first_live` here: one cut may span several ranges, and
+        // it has to still be in front of the next one.
+        let mut cut = first_live;
+        while cut < cuts.len() && cuts[cut].0 <= end {
+            let (cut_start, cut_end) = cuts[cut];
+
+            // The gap in front of this cut survives. Nothing to emit when the
+            // cut starts at or before the cursor, which is what an overlap with
+            // the previous cut or with the range's own start looks like.
+            if cut_start > cursor {
+                kept.push(rebuild(range, cursor, cut_start - 1));
+            }
+
+            // A cut reaching the range's end takes the tail with it, and stays
+            // in front of the range after this one.
+            if cut_end >= end {
+                consumed = true;
+                break;
+            }
+
+            // `cut_end < end <= u128::MAX`, so this cannot overflow.
+            cursor = cut_end + 1;
+            cut += 1;
+        }
+
+        if !consumed {
+            kept.push(rebuild(range, cursor, end));
+        }
+    }
+
+    kept
 }
 
 /// Whether any range in `ranges` holds `target`, by binary search.
@@ -836,6 +1008,167 @@ mod property_tests {
         })
     }
 
+    // ─── Set difference ──────────────────────────────────────────────────────
+
+    /// Builds a v4 set from `[start, end]` pairs written as last octets of
+    /// `10.0.0.0/24`, which is enough address space to arrange every overlap a
+    /// difference has to handle and short enough to read.
+    fn v4_set(spans: &[(u8, u8)]) -> IpSet {
+        let mut set = IpSet::new();
+        for &(start, end) in spans {
+            set.push_v4_range(
+                Ipv4Range::new(Ipv4Addr::new(10, 0, 0, start), Ipv4Addr::new(10, 0, 0, end))
+                    .expect("start <= end"),
+            );
+        }
+        set.canonicalize();
+        set
+    }
+
+    /// The same shorthand, read back out.
+    fn v4_spans(set: &IpSet) -> Vec<(u8, u8)> {
+        set.v4()
+            .iter()
+            .map(|r| (r.start_addr().octets()[3], r.end_addr().octets()[3]))
+            .collect()
+    }
+
+    /// Every way one cut can meet one range: through the middle, off each end,
+    /// swallowing it whole, and missing entirely.
+    ///
+    /// Split out one arrangement per case because the middle cut is the only
+    /// one that produces *more* ranges than it started with, and a difference
+    /// that quietly drops either side of it still passes a count check.
+    #[test]
+    fn a_cut_takes_exactly_what_it_covers() {
+        /// A target, what is cut from it, and what should be left: last octets
+        /// of `10.0.0.0/24`, which is enough room for every arrangement and
+        /// short enough to read down the column.
+        type Case = (
+            &'static [(u8, u8)],
+            &'static [(u8, u8)],
+            &'static [(u8, u8)],
+        );
+
+        let cases: [Case; 6] = [
+            // Through the middle: one range becomes two.
+            (&[(10, 20)], &[(14, 16)], &[(10, 13), (17, 20)]),
+            // Off the front, off the back.
+            (&[(10, 20)], &[(5, 12)], &[(13, 20)]),
+            (&[(10, 20)], &[(18, 25)], &[(10, 17)]),
+            // Swallowed whole, and exactly.
+            (&[(10, 20)], &[(5, 25)], &[]),
+            (&[(10, 20)], &[(10, 20)], &[]),
+            // Adjacent but not overlapping, which must remove nothing.
+            (&[(10, 20)], &[(21, 30)], &[(10, 20)]),
+        ];
+
+        for (target, cut, expected) in cases {
+            let mut set = v4_set(target);
+            set.subtract(&v4_set(cut));
+            assert_eq!(v4_spans(&set), expected, "{target:?} minus {cut:?}");
+        }
+    }
+
+    /// One cut spanning several ranges, and several cuts inside one range.
+    ///
+    /// Both directions of the walk at once: the first needs a cut to stay in
+    /// front of the range after the one it just consumed, the second needs the
+    /// cursor to survive being moved repeatedly inside a single range. Each is
+    /// an index the pass could advance one step too far.
+    #[test]
+    fn the_difference_walks_both_sides_once() {
+        let mut set = v4_set(&[(10, 20), (30, 40), (50, 60)]);
+        set.subtract(&v4_set(&[(15, 55)]));
+        assert_eq!(v4_spans(&set), vec![(10, 14), (56, 60)]);
+
+        let mut set = v4_set(&[(10, 40)]);
+        set.subtract(&v4_set(&[(12, 14), (20, 22), (30, 32)]));
+        assert_eq!(v4_spans(&set), vec![(10, 11), (15, 19), (23, 29), (33, 40)]);
+    }
+
+    /// A range ending at the last address of its family, cut from below.
+    ///
+    /// The arithmetic walking a cut forward is `cut_end + 1`, and the tail
+    /// emission is the branch that must not compute `end + 1`. Both families,
+    /// because only the v6 one is a `u128` where the overflow is unrepresentable
+    /// rather than merely wrong.
+    #[test]
+    fn a_range_ending_at_the_last_address_survives_a_cut() {
+        let mut set = IpSet::new();
+        set.push_v4_range(
+            Ipv4Range::new(
+                Ipv4Addr::new(255, 255, 255, 250),
+                Ipv4Addr::new(255, 255, 255, 255),
+            )
+            .expect("start <= end"),
+        );
+        set.push_v6_range(
+            Ipv6Range::new(Ipv6Addr::from(u128::MAX - 5), Ipv6Addr::from(u128::MAX))
+                .expect("start <= end"),
+        );
+        set.canonicalize();
+
+        let mut cuts = IpSet::new();
+        cuts.insert(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 252)));
+        cuts.insert(IpAddr::V6(Ipv6Addr::from(u128::MAX - 2)));
+
+        set.subtract(&cuts);
+
+        assert!(!set.contains(&IpAddr::V4(Ipv4Addr::new(255, 255, 255, 252))));
+        assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))));
+        assert!(!set.contains(&IpAddr::V6(Ipv6Addr::from(u128::MAX - 2))));
+        assert!(set.contains(&IpAddr::V6(Ipv6Addr::from(u128::MAX))));
+    }
+
+    /// A subtraction cuts an address out of every interface it appears on, and
+    /// leaves the zones of what survives intact.
+    ///
+    /// The blindness is deliberate and documented on `subtract`: it is the
+    /// direction that removes more, and it is the only reading that agrees with
+    /// `contains`, which cannot see a zone either. The second half is the part
+    /// that would break silently — a difference that rebuilt the surviving
+    /// pieces without their zone would leave link-local ranges naming no
+    /// interface, and those cannot be probed at all.
+    #[test]
+    fn subtracting_a_link_local_address_clears_it_from_every_interface() {
+        let base = u128::from(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0));
+        let mut set = IpSet::new();
+        for zone in [1u32, 2u32] {
+            set.push_v6_range(
+                Ipv6Range::scoped(
+                    Ipv6Addr::from(base + 10),
+                    Ipv6Addr::from(base + 20),
+                    Some(zone),
+                )
+                .expect("start <= end"),
+            );
+        }
+        set.canonicalize();
+
+        // Named on one interface only, and still removed from both.
+        let mut cuts = IpSet::new();
+        cuts.push_v6_range(
+            Ipv6Range::scoped(
+                Ipv6Addr::from(base + 15),
+                Ipv6Addr::from(base + 15),
+                Some(1),
+            )
+            .expect("start <= end"),
+        );
+        cuts.canonicalize();
+
+        set.subtract(&cuts);
+
+        assert!(!set.contains(&IpAddr::V6(Ipv6Addr::from(base + 15))));
+        assert_eq!(set.len(), 20);
+        assert_eq!(
+            set.v6().iter().filter(|r| r.zone().is_none()).count(),
+            0,
+            "every surviving piece keeps the interface of the range it came from"
+        );
+    }
+
     proptest::proptest! {
         /// Membership has to agree with a linear scan of the same ranges.
         ///
@@ -867,6 +1200,48 @@ mod property_tests {
                     "{} in {:?}", probe, ranges
                 );
             }
+        }
+
+        /// Membership after a difference, against the definition of one.
+        ///
+        /// The pass is a single walk of two ascending slices with an index that
+        /// only moves forward, which is fast and has several places to be off by
+        /// one that no hand-written arrangement is likely to visit. So this
+        /// asserts the property itself — an address survives exactly when it was
+        /// there and was not cut — probed at the boundaries, which is where a
+        /// difference goes wrong if it goes wrong at all.
+        #[test]
+        fn a_difference_keeps_exactly_what_was_not_cut(
+            target in prop::collection::vec((0..64u8, 0..64u8), 1..8),
+            cuts in prop::collection::vec((0..64u8, 0..64u8), 0..8),
+        ) {
+            let spans = |raw: &[(u8, u8)]| -> Vec<(u8, u8)> {
+                raw.iter()
+                    .map(|&(a, b)| if a <= b { (a, b) } else { (b, a) })
+                    .collect()
+            };
+            let target = spans(&target);
+            let cuts = spans(&cuts);
+
+            let before = v4_set(&target);
+            let cut_set = v4_set(&cuts);
+            let mut after = before.clone();
+            after.subtract(&cut_set);
+
+            for probe in 0..=65u8 {
+                let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, probe));
+                prop_assert_eq!(
+                    after.contains(&ip),
+                    before.contains(&ip) && !cut_set.contains(&ip),
+                    "{} after {:?} minus {:?}", ip, target, cuts
+                );
+            }
+
+            // The result has to be canonical, or every read after it silently
+            // takes the slow path and `holds` may search a vector it cannot.
+            let mut recanonicalized = after.clone();
+            recanonicalized.canonicalize();
+            prop_assert_eq!(after.v4(), recanonicalized.v4());
         }
 
         #[test]

@@ -919,6 +919,27 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         .collect();
     fact(out, "ranges", &ranges.join("<br>"))?;
 
+    // Only when a policy was set. "excluded: nothing" on every report of every
+    // scan that never configured one is noise, and worse, it trains a reader to
+    // skip the row on the one report where it says something.
+    if !scope.excluded.is_empty() {
+        let excluded: Vec<String> = scope
+            .excluded
+            .iter()
+            .map(|range| format!("{}–{}", esc(&range.start), esc(&range.end)))
+            .collect();
+        fact(
+            out,
+            "excluded",
+            &format!(
+                "{}<br><span class=\"dim\">{} {} withheld</span>",
+                excluded.join("<br>"),
+                esc(&scope.withheld),
+                plural_str(&scope.withheld, "address", "addresses"),
+            ),
+        )?;
+    }
+
     let retry = &phase.settings.retry;
     let mut budget = vec![esc(retry.effort)];
     if let Some(attempts) = retry.max_attempts {

@@ -71,7 +71,8 @@ mod mdns;
 mod targets;
 
 pub use targets::{
-    DiscoveryTargets, for_discovery, for_discovery_with, resolve_names, to_set, to_target_map,
+    DiscoveryTargets, for_discovery, for_discovery_with, for_exclusion, for_exclusion_with,
+    resolve_names, to_set, to_target_map,
 };
 
 use std::net::IpAddr;

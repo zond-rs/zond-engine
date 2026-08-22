@@ -237,10 +237,13 @@ pub async fn discover(
     mut targets: IpSet,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
-    let (session, ctx) = ScanSession::new();
+    let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
     let caps = ScanCapabilities::resolve(cfg);
 
-    let scope = TargetScope::from_ip_set(&mut targets);
+    // Narrows `targets` as it records them, so nothing below this line can send
+    // a probe at an excluded address. The gate on the context is what covers the
+    // addresses a sweep learns for itself, which never passed through here.
+    let scope = TargetScope::from_ip_set(&mut targets, &cfg.exclusions);
     let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privileged, scope, cfg);
 
     let reach = if cfg.segment_sweep {
@@ -328,17 +331,17 @@ pub async fn scan(
     target_map: TargetMap,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
-    let (session, ctx) = ScanSession::new();
+    let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
     let caps = ScanCapabilities::resolve(cfg);
     let cfg = cfg.clone();
 
     let handle = tokio::spawn(async move {
         // Phase one: which of these addresses is anything actually at.
-        let (liveness, target_map) = if cfg.assume_up {
+        let (liveness, mut target_map) = if cfg.assume_up {
             (None, target_map)
         } else {
             let mut ips = target_ips(&target_map);
-            let scope = TargetScope::from_ip_set(&mut ips);
+            let scope = TargetScope::from_ip_set(&mut ips, &cfg.exclusions);
             let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privileged, scope, &cfg);
 
             // Targeted, never a sweep: `segment_sweep` says a caller asked about
@@ -351,7 +354,14 @@ pub async fn scan(
         };
 
         // Phase two: the ports, on whatever answered.
-        let scope = TargetScope::from_target_map(&target_map);
+        //
+        // Applied again rather than trusted from the phase above: with
+        // `assume_up` there was no phase above, and this is the only place the
+        // map itself — addresses paired with the ports to try on them — is
+        // narrowed. When the liveness phase did run it has already withheld
+        // these addresses, by which route does not matter, and this records
+        // nothing further.
+        let scope = TargetScope::from_target_map(&mut target_map, &cfg.exclusions);
         let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, &cfg);
 
         run_port_phase(target_map, &ctx, caps, &cfg).await;

@@ -281,7 +281,9 @@
         "ranges",
         "addresses",
         "probes",
-        "protocols"
+        "protocols",
+        "excluded",
+        "withheld"
       ],
       "properties": {
         "ranges": {
@@ -311,6 +313,17 @@
           "items": {
             "$ref": "#/$defs/protocol"
           }
+        },
+        "excluded": {
+          "description": "The merged ranges this phase was forbidden to probe, ascending. Empty when no exclusion policy was in force; a policy that was in force and overlapped nothing appears here in full with `withheld` at \"0\". No host in this report falls inside any of these ranges, which is the one claim here a consumer can check for itself.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/range"
+          }
+        },
+        "withheld": {
+          "description": "How many addresses the exclusion policy took out of this phase: the overlap between the policy and what the phase was handed, not the size of the policy. \"0\" from a policy naming ground this phase would never have walked, and \"0\" again from a phase whose targets an earlier phase had already narrowed.",
+          "$ref": "#/$defs/count_string"
         }
       }
     },

@@ -136,6 +136,7 @@ impl Exporter for NmapXmlExporter {
         let elapsed = report.elapsed().as_secs_f64();
 
         writeln!(out, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
+        write_exclusion_note(out, report)?;
         writeln!(
             out,
             concat!(
@@ -190,6 +191,53 @@ impl Exporter for NmapXmlExporter {
 
         Ok(())
     }
+}
+
+/// Records an exclusion policy as an XML comment, when there was one.
+///
+/// **A comment because this format has nowhere else to put it.** Nmap has no
+/// element for an exclusion — its own `--exclude` survives only inside the
+/// `args` attribute, which is the command line, and this engine is a library
+/// that was never handed one. Writing a plausible command line into `args` would
+/// be inventing a record of what somebody typed, which is the same objection
+/// this module makes to `scanner="nmap"` and is refused for the same reason.
+/// Inventing an element instead would cost the property the module documentation
+/// claims: that this document validates against `nmap.dtd` with nothing changed
+/// but the scanner name.
+///
+/// A comment costs neither. It is valid anywhere in XML content, invisible to
+/// every consumer that parses this file, and legible to the person who opens it.
+///
+/// Silence was the alternative and it is not acceptable. Somebody exporting only
+/// this format would otherwise hold a file that reports a scan of a range while
+/// omitting that part of the range was deliberately not covered, and a report
+/// that overstates its own coverage is the exact failure this policy exists to
+/// prevent.
+fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), ExportError> {
+    let mut excluded: Vec<String> = Vec::new();
+    for phase in report.phases() {
+        for range in phase.targets().excluded() {
+            let text = format!("{}-{}", range.start_addr(), range.end_addr());
+            if !excluded.contains(&text) {
+                excluded.push(text);
+            }
+        }
+    }
+
+    if excluded.is_empty() {
+        return Ok(());
+    }
+
+    // Rendered from addresses rather than from anything a caller wrote, so no
+    // attacker-controlled text reaches this line and `--` cannot appear in it to
+    // close the comment early.
+    writeln!(
+        out,
+        "<!-- zond: excluded by policy, not scanned: {} -->",
+        excluded.join(", ")
+    )?;
+
+    Ok(())
 }
 
 /// Writes one `<host>` element.

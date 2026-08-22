@@ -17,6 +17,10 @@
   evidence actually supports.
 * **Service fingerprinting:** identify the service, product and version behind an
   open port using an embedded signature database.
+* **Scope exclusion:** addresses a scan may not probe or record, honoured before
+  the first packet and again at every finding — so a segment sweep cannot report
+  a neighbour it was forbidden to look at. The report carries the excluded ranges
+  and what they cost, which is what makes it evidence that a scope was kept to.
 * **Reports in and out:** export a finished scan as JSON, JSONL, CSV, a
   self-contained HTML page, or nmap-compatible XML; read targets back from a list,
   CSV, this engine's own JSON, or an nmap XML file somebody else produced.
@@ -122,6 +126,43 @@ against them — a run that finds no open-or-filtered port at all has probably m
 one. And `maimon` only distinguishes anything on BSD-derived stacks: elsewhere an
 open port answers exactly as a closed one does and is reported closed, which is a
 wrong answer rather than a missing one.
+
+## Excluding addresses from a scan
+
+`ZondConfig::exclusions` names addresses the scan may not touch, in the same
+grammar targets are written in:
+
+```rust
+use zond_engine::{Resolver, ZondConfig, resolve};
+
+let resolver = Resolver::from_system();
+let mut cfg = ZondConfig::default();
+
+// Layered, never assigned: a settings file may already have contributed its own.
+cfg.exclusions
+    .extend(&resolve::for_exclusion(&["10.0.5.0/24"], Some(&resolver)).await?);
+```
+
+It is enforced twice. The target list is narrowed before anything is opened, so
+no probe is addressed at an excluded host; and every finding is checked again on
+its way into the store, so a segment sweep cannot record a neighbour it learned
+about from an ARP reply or the host's own neighbour table. The second is the one
+that makes this a guarantee rather than a filter — a sweep does not confine
+itself to the addresses it was given.
+
+**What it cannot promise is that an excluded machine never receives a packet.**
+An ARP request goes to the broadcast address and the IPv6 all-nodes echo to
+`ff02::1`; every machine on the link sees them. The reply is dropped, and a
+caller who needs the stronger property should not sweep the segment.
+
+The report records the excluded ranges and how many addresses they withheld, so
+a finished scan can be checked against the scope it was run under: no host in it
+falls inside a range it names.
+
+A settings file may set `exclude` too — the one key in that document that
+accumulates across layers rather than being overridden, since a range an
+administrator wrote into `/etc/zond/engine.toml` should not be droppable by a
+file below it.
 
 ## Compatibility
 

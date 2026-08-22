@@ -100,6 +100,18 @@ impl TargetSet {
         self.ips
     }
 
+    /// Takes the set apart into the two halves it was built from.
+    ///
+    /// For rebuilding one: a unit is immutable once constructed, so narrowing
+    /// the addresses of an existing set — which is what withholding an excluded
+    /// range from it amounts to — means taking it apart and building a new one
+    /// through [`new`](Self::new). That route is deliberate. Handing out a
+    /// `&mut IpSet` would let a caller leave the addresses unmerged, and every
+    /// count and every membership test downstream assumes they are not.
+    pub fn into_parts(self) -> (IpSet, PortSet) {
+        (self.ips, self.ports)
+    }
+
     /// Returns a read-only reference to the underlying Port set.
     pub fn ports(&self) -> &PortSet {
         &self.ports

@@ -9,6 +9,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::model::exclusion::Exclusions;
 use crate::model::technique::TcpScanTechnique;
 
 /// How the privileged (raw) scanners put probe packets on the wire.
@@ -727,6 +728,28 @@ pub struct ZondConfig {
     /// The liveness phase probes the addresses it was given and nothing else. It
     /// is not a segment sweep; see [`segment_sweep`](Self::segment_sweep).
     pub assume_up: bool,
+
+    /// Addresses this scan may not probe, whatever else it was asked to cover.
+    ///
+    /// Empty by default. Everything else in this struct decides *how* a scan is
+    /// run; this is the only field that decides where it may not go, and it is
+    /// the only one whose failure to be honoured is somebody's contract rather
+    /// than somebody's result. An engagement scoped as "10.0.0.0/8, except the
+    /// cardholder segment" has no other way to be expressed, and a scanner that
+    /// cannot express it cannot be pointed at that network at all.
+    ///
+    /// It is enforced twice, before the first packet and again at every finding,
+    /// and the reasons for both are in [`Exclusions`]. Read that before changing
+    /// anything here: the second enforcement exists because a segment sweep
+    /// learns addresses that were never in the target list, and losing it turns
+    /// a guarantee back into a filter.
+    ///
+    /// **Narrowing only.** No value here can make a scan send a packet it would
+    /// not otherwise have sent, which is what makes it safe to accept from a
+    /// settings file when [`segment_sweep`](Self::segment_sweep) is not — see
+    /// [`Settings`](crate::import::Settings), where that asymmetry is the whole
+    /// argument for which keys a document is allowed to carry.
+    pub exclusions: Exclusions,
 
     /// Whether identifying detail should be masked wherever the scan's findings
     /// leave the process: hostnames, hardware addresses, and the host part of an

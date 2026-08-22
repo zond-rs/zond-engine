@@ -183,6 +183,7 @@ pub(crate) mod logging;
 // costs is that each name is a commitment, which is why the crate's whole
 // vocabulary is not re-exported wholesale.
 pub use crate::config::{RetryConfig, ScanEffort, SendMode, ZondConfig};
+pub use crate::model::exclusion::Exclusions;
 pub use crate::model::host::{Host, HostStatus};
 pub use crate::model::ip::set::IpSet;
 pub use crate::model::port::{Port, PortSet, PortState, Protocol, Service};

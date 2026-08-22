@@ -42,6 +42,7 @@
 //! a private matter instead of breaking somebody's parser.
 
 pub mod capture;
+pub mod exclusion;
 pub mod host;
 pub mod ip;
 pub mod mac;

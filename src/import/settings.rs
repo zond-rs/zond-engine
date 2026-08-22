@@ -137,6 +137,8 @@ use serde::Deserialize;
 
 use crate::config::ScanEffort;
 use crate::config::{SendMode, ZondConfig};
+use crate::model::exclusion::Exclusions;
+use crate::model::ip::set::IpSet;
 use crate::model::port::PortSet;
 use crate::model::technique::TcpScanTechnique;
 
@@ -297,6 +299,13 @@ impl SettingsDocument {
 ///   expression the user typed and belongs to the front end that parsed it. A
 ///   file must not be able to turn a single-host scan into a segment sweep
 ///   behind the user's back.
+/// - **`exclude` is present, and it is the same argument read the other way.**
+///   A document may narrow a scan and may not widen one. Nothing it can say
+///   here puts a packet on the wire that would not otherwise have been sent, so
+///   a file the user has not read cannot surprise them the way `segment_sweep`
+///   would — and an administrator with a range that must never be scanned has
+///   nowhere else to put it. Layering it unions rather than overrides; see
+///   [`overlay`](Self::overlay).
 /// - **Nothing about presentation is here at all** — no banner, no verbosity, no
 ///   terminal handling. This document configures a scan. How a scan is displayed
 ///   belongs to whatever program is displaying it, in a file of its own; see
@@ -332,6 +341,31 @@ pub struct Settings {
     /// specification is a [`PortSet`] grammar and this struct is a document.
     /// [`ports`](Self::ports) parses it.
     pub default_ports: Option<String>,
+    /// Addresses no scan reading this document may probe.
+    ///
+    /// Written as a list of literal addresses, ranges and CIDR blocks:
+    ///
+    /// ```toml
+    /// exclude = ["10.0.5.0/24", "192.168.1.10-20", "2001:db8::/64"]
+    /// ```
+    ///
+    /// **Parsed on the way in, unlike [`default_ports`](Self::default_ports),
+    /// and the difference is deliberate.** A malformed port specification
+    /// degrades to the built-in list, which is visible in the result and costs
+    /// nothing but a wider scan. A malformed exclusion that degraded the same
+    /// way would scan the range somebody wrote down to keep out of, and nothing
+    /// in the output would say so. So it is a document error, raised where the
+    /// document is read, and there is no accessor to forget to call.
+    ///
+    /// **Names and keywords are refused.** `lan` names a different network on
+    /// every machine that reads the file and `db.internal` a different address
+    /// every time it is looked up, and neither belongs in a value written once
+    /// and applied to every scan afterwards. A front end resolving an exclusion
+    /// typed at the moment it is used has
+    /// [`resolve::for_exclusion`](crate::resolve::for_exclusion), which takes
+    /// the full grammar.
+    #[serde(deserialize_with = "de_exclusions")]
+    pub exclude: Exclusions,
 }
 
 impl Settings {
@@ -365,6 +399,15 @@ impl Settings {
             dampen_silent_hosts,
             default_ports,
         );
+
+        // The one key that accumulates. Every setting above answers "how should
+        // a scan be run", and the latest answer wins; `exclude` answers "where
+        // may it not go", and a later layer overriding that would let a user's
+        // file drop the range an administrator wrote into the system-wide one —
+        // producing a scan indistinguishable from a correct one. Unioning is
+        // safe in the direction overriding is not: it can only ever make a scan
+        // smaller. See [`Exclusions::extend`].
+        self.exclude.extend(&other.exclude);
     }
 
     /// The default port set this document names, if it names one.
@@ -413,6 +456,11 @@ impl Settings {
         if let Some(value) = self.dampen_silent_hosts {
             config.retry.dampen_silent_hosts = value;
         }
+        // Added to what the configuration already forbids rather than replacing
+        // it, for the reason `overlay` gives: a caller who resolved an
+        // exclusion from the command line before applying a document must not
+        // lose it to one, and the reverse order must not lose the document's.
+        config.exclusions.extend(&self.exclude);
     }
 }
 
@@ -421,7 +469,8 @@ impl Settings {
 // ---------------------------------------------------------------------------
 
 /// Every key [`Settings`] understands, for suggesting a correction.
-const KNOWN_KEYS: [&str; 10] = [
+const KNOWN_KEYS: [&str; 11] = [
+    "exclude",
     "no_dns",
     "redact",
     "send_mode",
@@ -730,6 +779,37 @@ fn de_effort<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ScanEffort
     de_named(d)
 }
 
+/// Reads `exclude` as a list of address expressions, refusing anything the
+/// document cannot settle by itself.
+///
+/// [`IpSet`]'s own grammar, which takes a literal address, an inclusive range
+/// and a CIDR block and nothing else — so a keyword or a hostname arrives here
+/// as a parse failure, which is the intended answer rather than a limitation
+/// worked around. See [`Settings::exclude`] for why a file is the wrong place
+/// for either.
+fn de_exclusions<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Exclusions, D::Error> {
+    let written = Vec::<String>::deserialize(d)?;
+
+    let mut ips = IpSet::new();
+    for expression in &written {
+        let parsed: IpSet = expression.parse().map_err(|error| {
+            serde::de::Error::custom(format!(
+                "exclude = '{expression}': {error}. A settings file takes addresses, \
+                 ranges and CIDR blocks; names and keywords such as 'lan' mean something \
+                 different on every machine that reads the file and are not accepted here."
+            ))
+        })?;
+        for range in parsed.v4() {
+            ips.push_v4_range(*range);
+        }
+        for range in parsed.v6() {
+            ips.push_v6_range(*range);
+        }
+    }
+
+    Ok(Exclusions::new(ips))
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -745,6 +825,119 @@ mod tests {
 
     fn document(text: &str) -> Loaded {
         parse(text).expect("the document parses")
+    }
+
+    /// Exclusions accumulate across every layer, where every other key is
+    /// replaced by the one above it.
+    ///
+    /// The scenario is the reason the rule exists. An administrator's
+    /// system-wide file forbids the cardholder segment; a user's file forbids a
+    /// fragile appliance of their own; a profile adds a third range. Under the
+    /// ordinary overlay rule the administrator's range would be gone the moment
+    /// the user named one, and the scan that followed would look exactly like a
+    /// correct one — which is why this is asserted rather than left to the
+    /// reader of `overlay`.
+    #[test]
+    fn every_layer_adds_its_exclusions_and_none_replaces_another() {
+        let mut administrator = document(
+            r#"
+            [defaults]
+            exclude = ["10.0.5.0/24"]
+
+            [profiles.audit]
+            exclude = ["10.0.9.0/24"]
+            "#,
+        )
+        .document;
+
+        let user = document(
+            r#"
+            [defaults]
+            exclude = ["192.168.1.50"]
+            "#,
+        )
+        .document;
+
+        administrator.defaults.overlay(&user.defaults);
+        let settings = administrator.resolve(Some("audit")).expect("the profile");
+
+        let mut config = ZondConfig::default();
+        settings.apply_to(&mut config);
+
+        for excluded in ["10.0.5.7", "192.168.1.50", "10.0.9.1"] {
+            assert!(
+                config
+                    .exclusions
+                    .excludes(&excluded.parse().expect("literal")),
+                "{excluded} was named by a layer and must still be excluded"
+            );
+        }
+        assert!(
+            !config
+                .exclusions
+                .excludes(&"10.0.6.7".parse().expect("literal"))
+        );
+    }
+
+    /// Applying a document adds to what the caller already forbade rather than
+    /// replacing it, so the order the two arrive in cannot lose either.
+    #[test]
+    fn applying_a_document_keeps_the_exclusions_the_caller_already_had() {
+        let mut from_the_command_line = IpSet::new();
+        from_the_command_line.insert_range("172.16.0.0/16".parse().expect("a valid range"));
+
+        let mut config = ZondConfig {
+            exclusions: Exclusions::new(from_the_command_line),
+            ..Default::default()
+        };
+
+        document(
+            r#"
+            [defaults]
+            exclude = ["10.0.5.0/24"]
+            "#,
+        )
+        .document
+        .defaults
+        .apply_to(&mut config);
+
+        assert!(
+            config
+                .exclusions
+                .excludes(&"172.16.4.4".parse().expect("literal"))
+        );
+        assert!(
+            config
+                .exclusions
+                .excludes(&"10.0.5.7".parse().expect("literal"))
+        );
+    }
+
+    /// A malformed exclusion stops the document, where a malformed port
+    /// specification does not.
+    ///
+    /// The asymmetry is the design. A bad `default_ports` degrades to the
+    /// built-in list and the result says what was scanned; a bad `exclude` that
+    /// degraded the same way would scan the range somebody wrote down to keep
+    /// out of, and nothing in the output would mention it. So the document
+    /// refuses to load — and the same refusal covers `lan` and hostnames, which
+    /// this file is the wrong place for at all.
+    #[test]
+    fn a_malformed_exclusion_refuses_the_document() {
+        for written in ["lan", "db.internal", "10.0.5.0/33"] {
+            let error = parse(&format!(
+                r#"
+                [defaults]
+                exclude = ["{written}"]
+                "#
+            ))
+            .expect_err("the document must not load");
+
+            assert!(
+                error.to_string().contains(written),
+                "the error names what was written: {error}"
+            );
+        }
     }
 
     /// The property the whole layering design rests on: a later file speaks only

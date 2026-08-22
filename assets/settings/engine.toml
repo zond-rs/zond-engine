@@ -110,6 +110,29 @@
 #
 # redact = false
 
+# Addresses no scan reading this file may probe, whatever it is pointed at.
+#
+# This is the one key that cannot widen a scan, which is why a file is allowed
+# to set it at all. Put the range here that must never be touched — the
+# cardholder segment, the fragile PLC, the provider's monitoring hosts — and no
+# scan run from this machine will address a packet at it or record a finding
+# about it. What it cannot promise is that a machine on your own segment never
+# sees a broadcast probe; a reply from an excluded address is dropped, but an
+# ARP request goes to the whole link. Do not sweep the segment if that matters.
+#
+# Layers add up rather than replacing each other. A range set in
+# /etc/zond/engine.toml stays excluded when this file names its own, and both
+# stay excluded when a profile or the command line adds a third. That is the
+# opposite of every other key here, and it is deliberate: an exclusion an
+# administrator wrote should not be droppable by a file below it.
+#
+# Addresses, inclusive ranges and CIDR blocks. Not names, and not `lan`: this
+# file is read on every scan and both of those mean something different each
+# time. Pass those on the command line instead, where they are resolved at the
+# moment they are used.
+#
+# exclude = ["10.0.5.0/24", "192.168.1.10-20", "2001:db8:dead::/48"]
+
 
 # ─── Profiles ─────────────────────────────────────────────────────────────────
 #

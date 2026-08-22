@@ -47,6 +47,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::error;
 
+use crate::info;
+use crate::model::exclusion::Exclusions;
 use crate::model::host::Host;
 use crate::model::technique::TcpScanTechnique;
 use crate::scanner::handle::ScanHandle;
@@ -439,6 +441,11 @@ pub struct ScanContext {
     pub(crate) events_tx: mpsc::UnboundedSender<ScanEvent>,
     pub(crate) failures: Arc<FailureLog>,
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
+    /// Addresses no finding may be recorded against.
+    ///
+    /// Behind an `Arc` because a context is cloned once per strategy and the
+    /// policy is read, never written, by all of them.
+    pub(crate) exclusions: Arc<Exclusions>,
 }
 
 impl ScanContext {
@@ -461,7 +468,39 @@ impl ScanContext {
     /// this call, so no scanner has to reason about guard lifetime itself.
     /// Callers that always want to announce their change use the
     /// [`update_host`](Self::update_host) shorthand.
+    ///
+    /// # Exclusions
+    ///
+    /// An address the scan's [`Exclusions`] forbid is dropped here: `edit` is not
+    /// run, no host is created, no event is emitted, and this returns `false`.
+    ///
+    /// **This is the enforcement that a subtraction from the target list cannot
+    /// perform**, and putting it here rather than at each scanner is deliberate.
+    /// Every finding in the engine reaches the store through this function, so
+    /// this one branch covers the ARP and neighbour-advertisement replies a
+    /// sweep learns addresses from, the host's own neighbour table, the mDNS
+    /// records, and — transitively, because they read the store to decide who to
+    /// probe — the service, OS-series and SNMP phases that run afterwards. A
+    /// scanner cannot forget to apply the policy, because a scanner is not where
+    /// it is applied.
+    ///
+    /// A drop is logged rather than counted. The property worth checking is that
+    /// no excluded address appears in the report, and a reader can confirm that
+    /// against the ranges the report already records — which is a better
+    /// guarantee than a number this engine reports about itself.
     pub fn write_host(&self, ip: IpAddr, edit: impl FnOnce(&mut Host) -> bool) -> bool {
+        if self.exclusions.excludes(&ip) {
+            // Ordinary on a sweep, which cannot address its all-nodes echo away
+            // from an excluded neighbour, and worth a line either way: it is the
+            // record that the gate did something, on the one path where a
+            // caller may be surprised that there was anything for it to do.
+            info!(
+                verbosity = 2,
+                "excluded address {ip} answered a probe it was not addressed; dropping the finding"
+            );
+            return false;
+        }
+
         let mut is_new = false;
         let mut host = self.store.entry(ip).or_insert_with(|| {
             is_new = true;
@@ -599,6 +638,19 @@ impl ScanSession {
     /// [`strategy`](crate::scanner::strategy) is constructed with a
     /// [`ScanContext`], and this is where one comes from.
     pub fn new() -> (Self, ScanContext) {
+        Self::with_exclusions(Exclusions::none())
+    }
+
+    /// [`new`](Self::new), with addresses the scan may not record.
+    ///
+    /// What [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan)
+    /// call, with [`ZondConfig::exclusions`](crate::config::ZondConfig::exclusions).
+    /// A caller orchestrating their own scan and honouring an exclusion policy
+    /// has to call this rather than `new`: subtracting the excluded addresses
+    /// from their own target list covers the addresses they named, and a segment
+    /// sweep does not confine itself to those. See [`Exclusions`] for what each
+    /// of the two enforcements is for.
+    pub fn with_exclusions(exclusions: Exclusions) -> (Self, ScanContext) {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::new();
         let (events_tx, rx) = mpsc::unbounded_channel();
@@ -615,6 +667,7 @@ impl ScanSession {
             events_tx,
             failures: Arc::new(FailureLog::default()),
             probe_stats: Arc::new(ProbeStatsLog::default()),
+            exclusions: Arc::new(exclusions),
         };
 
         (session, ctx)
@@ -633,6 +686,49 @@ impl ScanSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gate, at the one place every finding in the engine passes through.
+    ///
+    /// Written against `write_host` directly rather than through a scan because
+    /// the property is about this function and not about any scanner: a reply
+    /// from an excluded address leaves no host, emits no event, and reports
+    /// itself as having created nothing. What a scanner does with the `false` is
+    /// the scanner's business; that it gets one is this test's.
+    ///
+    /// The `edit` closure panics on purpose. A drop that ran the caller's
+    /// closure and then discarded the result would pass every assertion below
+    /// while still letting a scanner's own bookkeeping — a deadline update, a
+    /// counter, a hostname lookup keyed off the edit — run for a host nobody
+    /// may look at.
+    #[test]
+    fn an_excluded_address_reaches_neither_the_store_nor_the_stream() {
+        let excluded: IpAddr = "10.0.5.7".parse().expect("literal");
+        let allowed: IpAddr = "10.0.6.7".parse().expect("literal");
+
+        let mut ips = crate::model::ip::set::IpSet::new();
+        ips.insert_range("10.0.5.0/24".parse().expect("a valid range"));
+        let (mut session, ctx) = ScanSession::with_exclusions(Exclusions::new(ips));
+
+        assert!(
+            !ctx.write_host(excluded, |_| unreachable!(
+                "an excluded address must not reach the caller's edit"
+            )),
+            "an excluded address is never reported as a new host"
+        );
+        assert!(ctx.write_host(allowed, |_| true));
+
+        assert_eq!(ctx.store.len(), 1);
+        assert!(!ctx.store.contains_key(&excluded));
+
+        // Exactly one announcement, for the address that was allowed to answer.
+        let ScanEvent::HostUpdated(announced) =
+            session.events().try_recv().expect("the allowed host")
+        else {
+            panic!("expected a host update");
+        };
+        assert_eq!(announced, allowed);
+        assert!(session.events().try_recv().is_none());
+    }
 
     #[test]
     fn a_failure_survives_a_consumer_that_never_listens() {

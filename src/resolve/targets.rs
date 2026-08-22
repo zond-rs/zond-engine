@@ -26,6 +26,7 @@ use std::net::IpAddr;
 use tokio::task::JoinSet;
 
 use crate::config::ZondConfig;
+use crate::model::exclusion::Exclusions;
 use crate::model::ip::set::IpSet;
 use crate::model::parse::ip::{
     IpParseError, Keyword, ResolverFn, ZoneResolverFn, insert_expression, names_keyword,
@@ -262,6 +263,93 @@ pub async fn for_discovery_with<S: AsRef<str>>(
     let segment_sweep = names_keyword(exprs, Keyword::Lan);
 
     Ok(DiscoveryTargets { ips, segment_sweep })
+}
+
+/// Resolves exclusion expressions into a policy [`scan`](crate::scanner::scan)
+/// and [`discover`](crate::scanner::discover) will honour.
+///
+/// The counterpart of [`for_discovery`], and deliberately the same grammar. An
+/// exclusion is written the way a target is — `10.0.5.0/24`, `192.168.1.10-20`,
+/// `db.internal`, `lan`, `fe80::1%en0` — because a person reading a scope
+/// document transcribes both halves of it, and a scanner that accepted CIDR for
+/// what it must scan and something narrower for what it must not would be asking
+/// them to translate the half that matters more.
+///
+/// `names` is the DNS policy, exactly as on [`for_discovery`]. A name given to a
+/// `None` is reported rather than dropped, which for this input is the whole
+/// point: an exclusion that quietly failed to parse is an exclusion that quietly
+/// does not apply.
+///
+/// **A name is resolved once, here.** What comes back is the addresses it stood
+/// for at that moment, and the policy holds those rather than the name — so a
+/// host that moves during the scan is no longer excluded, and one whose record
+/// lists two addresses is excluded at both. Write the addresses where that
+/// matters, which is most of the time it matters at all.
+///
+/// # Combining with a settings document
+///
+/// Layer with [`Exclusions::extend`], never by assigning over
+/// [`ZondConfig::exclusions`](crate::config::ZondConfig::exclusions):
+///
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use zond_engine::{Resolver, ZondConfig, resolve};
+///
+/// let mut cfg = ZondConfig::default();
+/// // ... a settings document has already contributed its own ...
+///
+/// let resolver = Resolver::from_system();
+/// let from_arguments = resolve::for_exclusion(&["10.0.5.0/24"], Some(&resolver)).await?;
+/// cfg.exclusions.extend(&from_arguments);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Assigning would drop whatever an administrator put in a system-wide file, and
+/// the resulting scan would look exactly like a correct one. See
+/// [`Exclusions::extend`] for why this is the one setting that unions.
+pub async fn for_exclusion<S: AsRef<str>>(
+    exprs: &[S],
+    names: Option<&Resolver>,
+) -> Result<Exclusions, TargetParseError> {
+    for_exclusion_with(
+        exprs,
+        names,
+        Some(&interface::resolve_keyword),
+        Some(&interface::resolve_zone),
+    )
+    .await
+}
+
+/// [`for_exclusion`], with the host lookups supplied rather than assumed.
+///
+/// The same relationship [`for_discovery_with`] has to [`for_discovery`], and it
+/// exists for the same reason: what `lan` and `%en0` mean is a fact about this
+/// machine, and a test asserting that an exclusion covers a segment should not
+/// need the machine to have one.
+pub async fn for_exclusion_with<S: AsRef<str>>(
+    exprs: &[S],
+    names: Option<&Resolver>,
+    keywords: Option<ResolverFn<'_>>,
+    zones: Option<ZoneResolverFn<'_>>,
+) -> Result<Exclusions, TargetParseError> {
+    if exprs.is_empty() {
+        return Ok(Exclusions::none());
+    }
+
+    let ips = match names {
+        Some(resolver) => to_set(exprs, keywords, zones, resolver).await?,
+        None => {
+            let ctx = TargetContext {
+                keywords,
+                zones,
+                hosts: None,
+            };
+            ips_of(&target::to_target_map(exprs, PortSet::default(), &ctx)?)
+        }
+    };
+
+    Ok(Exclusions::new(ips))
 }
 
 /// Every distinct hostname named across `exprs`, in first-seen order.

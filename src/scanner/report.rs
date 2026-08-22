@@ -65,7 +65,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::config::RetryConfig;
 use crate::config::{OsDetection, SendMode, ServiceDetection, ZondConfig};
 use crate::model::capture::CaptureCounts;
-use crate::scanner::pacing::congestion::WindowSummary;
+use crate::model::exclusion::Exclusions;
 use crate::model::host::{Host, HostStatus};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
@@ -73,6 +73,7 @@ use crate::model::ip::set::IpSet;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::model::technique::TcpScanTechnique;
+use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::session::{ScanContext, ScannerKind};
 
 /// The version of the engine that produced a report.
@@ -102,19 +103,27 @@ impl fmt::Display for ScanKind {
     }
 }
 
-/// What a phase was asked to cover.
+/// What a phase was asked to cover, and what it was forbidden to.
 ///
 /// The ranges are the canonical, merged form the engine actually iterated, not
 /// the text a user typed. Overlapping arguments have already been coalesced, so
 /// `addresses` is a count of distinct addresses rather than a sum of what was
 /// requested, and a report can be trusted when it says a sweep covered 254
 /// hosts.
+///
+/// [`ranges`](Self::ranges) is what was walked *after* the exclusion policy was
+/// applied, and [`excluded`](Self::excluded) is that policy. The two together
+/// are what makes a report evidence of scope rather than a list of findings: one
+/// says where the scan went, the other says where it was told not to, and no
+/// host in the report may fall inside the second.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetScope {
     ranges: Vec<IpRange>,
     addresses: u128,
     probes: Option<u128>,
     protocols: Vec<Protocol>,
+    excluded: Vec<IpRange>,
+    withheld: u128,
 }
 
 impl TargetScope {
@@ -122,7 +131,18 @@ impl TargetScope {
     ///
     /// Canonicalizes the set, so the recorded ranges are the merged ones the
     /// sweep iterates rather than the raw arguments it was built from.
-    pub fn from_ip_set(ips: &mut IpSet) -> Self {
+    ///
+    /// **`ips` comes back narrowed**, with everything `exclusions` forbids taken
+    /// out of it, and the scope records what that cost. Applying the policy and
+    /// recording it are one call because doing either without the other is the
+    /// bug: a scope recorded before the subtraction overstates what was covered,
+    /// and a subtraction with no scope to record it leaves a report that cannot
+    /// show the exclusion was honoured. There is no way to write one and forget
+    /// the other, which is the whole reason this takes `&mut`.
+    ///
+    /// Pass [`Exclusions::none`] where no policy is in force.
+    pub fn from_ip_set(ips: &mut IpSet, exclusions: &Exclusions) -> Self {
+        let withheld = exclusions.withhold(ips);
         ips.canonicalize();
 
         let ranges = ip_set_ranges(ips);
@@ -133,6 +153,8 @@ impl TargetScope {
             addresses,
             probes: None,
             protocols: Vec::new(),
+            excluded: exclusions.ranges(),
+            withheld,
         }
     }
 
@@ -142,7 +164,13 @@ impl TargetScope {
     /// is actually billed in. It is `None` when the target map is large enough
     /// to overflow that count, which is a failure to measure and is reported as
     /// one rather than as a plausible-looking number.
-    pub fn from_target_map(targets: &TargetMap) -> Self {
+    ///
+    /// **`targets` comes back narrowed**, on the same terms and for the same
+    /// reasons as [`from_ip_set`](Self::from_ip_set). A unit left holding no
+    /// address at all is dropped.
+    pub fn from_target_map(targets: &mut TargetMap, exclusions: &Exclusions) -> Self {
+        let withheld = exclusions.withhold_targets(targets);
+
         let mut ranges = Vec::new();
         let mut protocols = Vec::new();
         for unit in &targets.units {
@@ -165,6 +193,8 @@ impl TargetScope {
             addresses,
             probes,
             protocols,
+            excluded: exclusions.ranges(),
+            withheld,
         }
     }
 
@@ -189,6 +219,34 @@ impl TargetScope {
     /// the caller.
     pub fn protocols(&self) -> &[Protocol] {
         &self.protocols
+    }
+
+    /// The address ranges the phase was forbidden to probe, in ascending order.
+    ///
+    /// The exclusion policy that was in force, merged, whether or not it
+    /// overlapped anything this phase would have covered. Empty means no policy
+    /// was set — not that one was set and did nothing, which is
+    /// [`withheld`](Self::withheld) returning zero and is a different fact.
+    ///
+    /// This is the half of the record a reader can check the engine against.
+    /// Every range here is ground the report promises it did not cover, and no
+    /// host in the report may fall inside one.
+    pub fn excluded(&self) -> &[IpRange] {
+        &self.excluded
+    }
+
+    /// How many addresses the exclusion policy took out of this phase.
+    ///
+    /// Measured against what the phase was handed, at the moment its scope was
+    /// recorded — so it is the overlap between the policy and this phase's
+    /// input, not the size of the policy. Zero from a policy that named ground
+    /// this phase was never going to walk, and zero again from a phase whose
+    /// input an earlier one had already narrowed.
+    ///
+    /// It is the difference between a scope document that was applied and one
+    /// that was merely configured, and those look identical without it.
+    pub fn withheld(&self) -> u128 {
+        self.withheld
     }
 }
 
@@ -656,12 +714,17 @@ impl ScanPhase {
 ///
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let cfg = ZondConfig::default();
-/// let (session, ctx) = ScanSession::new();
+///
+/// // The policy has to reach the context as well as the targets. The
+/// // subtraction below covers the addresses named in the target list, and a
+/// // segment sweep does not confine itself to those; see `Exclusions`.
+/// let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
 ///
 /// // Recorded before the targets move into a strategy, since what a scan was
-/// // asked to cover is only knowable here.
+/// // asked to cover is only knowable here. `targets` comes back narrowed by
+/// // whatever the policy forbids, and the scope records what that cost.
 /// let mut targets = to_set(&["192.168.1.0/24"], None, None)?;
-/// let scope = TargetScope::from_ip_set(&mut targets);
+/// let scope = TargetScope::from_ip_set(&mut targets, &cfg.exclusions);
 /// let recorder = PhaseRecorder::start(ScanKind::Discovery, false, scope, &cfg);
 ///
 /// // ... build strategies against `ctx` and run them ...
@@ -1046,7 +1109,7 @@ mod tests {
             started_at: SystemTime::UNIX_EPOCH,
             elapsed: Duration::from_millis(500),
             privileged: true,
-            targets: TargetScope::from_ip_set(&mut IpSet::new()),
+            targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
             probes: Vec::new(),
@@ -1064,7 +1127,7 @@ mod tests {
         let mut ips = ip_set("192.168.0.0/24");
         ips.insert_range(IpRange::from_str("192.168.0.128/25").expect("valid range"));
 
-        let scope = TargetScope::from_ip_set(&mut ips);
+        let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
 
         // The second range is wholly inside the first, so the scope covers one
         // /24 rather than the 384 addresses the two arguments add up to.
@@ -1085,7 +1148,7 @@ mod tests {
         let mut targets = TargetMap::new();
         targets.add_unit(TargetSet::new(ip_set("10.0.0.1-10.0.0.4"), ports));
 
-        let scope = TargetScope::from_target_map(&targets);
+        let scope = TargetScope::from_target_map(&mut targets, &Exclusions::none());
 
         assert_eq!(scope.addresses(), 4);
         assert_eq!(scope.probes(), Some(12));
@@ -1284,7 +1347,7 @@ mod tests {
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
 
         let mut targets = IpSet::from_str("192.168.0.1-192.168.0.4").expect("a valid range");
-        let scope = TargetScope::from_ip_set(&mut targets);
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
         let recorder = PhaseRecorder::start(ScanKind::Discovery, false, scope, &cfg);
 
         ctx.update_host(ip(1), |host| host.set_status(HostStatus::Up));
@@ -1306,7 +1369,7 @@ mod tests {
         let recorder = PhaseRecorder::start(
             ScanKind::Discovery,
             true,
-            TargetScope::from_ip_set(&mut IpSet::new()),
+            TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             &ZondConfig::default(),
         );
 
@@ -1376,7 +1439,7 @@ mod tests {
         let mut ips = ip_set("10.0.0.0/30");
         ips.insert_range(IpRange::from_str("fe80::/126").expect("valid range"));
 
-        let scope = TargetScope::from_ip_set(&mut ips);
+        let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
 
         assert_eq!(scope.addresses(), 8);
         assert!(matches!(scope.ranges()[0], IpRange::V4(_)));
@@ -1391,7 +1454,7 @@ mod tests {
                 .expect("valid range"),
         );
 
-        let scope = TargetScope::from_ip_set(&mut ips);
+        let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
 
         assert_eq!(scope.addresses(), 5);
         assert_eq!(
