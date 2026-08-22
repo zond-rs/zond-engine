@@ -89,10 +89,9 @@
 //! nothing and is always present, so a front end can list and locate journals
 //! without compiling the reader.
 
-//! [`settle`] is what a resume is allowed to skip: the fate of each target, kept
-//! apart from the verdict it received, because the engine gives an exhausted
-//! probe and one it never sent the same verdict on purpose. It needs no feature
-//! — the distinction has to hold whether or not anything is written down.
+//! [`settle`] is what a resume is allowed to skip: the outcome of each target,
+//! kept apart from the verdict it received, because the engine gives an
+//! exhausted probe and one it never sent the same verdict on purpose.
 
 //! [`cursor`] is how far a scan got: a position in the plan below which
 //! everything is settled, plus the few positions above it that settled out of

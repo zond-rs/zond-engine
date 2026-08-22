@@ -359,7 +359,14 @@ struct Attempt<T> {
 }
 
 /// An outstanding probe.
-struct Record<T> {
+struct Record<T, P> {
+    /// Caller data handed over at [`ProbeLedger::arm`] and given back when the
+    /// probe retires. The ledger never reads it.
+    ///
+    /// Held here rather than in a map beside the ledger so its lifetime is the
+    /// record's: it cannot outlive the probe, and it cannot go missing while the
+    /// probe is live.
+    payload: P,
     host: IpAddr,
     /// The live attempts, oldest first, capped at [`MAX_TRACKED_ATTEMPTS`].
     attempts: [Option<Attempt<T>>; MAX_TRACKED_ATTEMPTS],
@@ -384,10 +391,11 @@ struct Record<T> {
     generation: u32,
 }
 
-impl<T: Copy> Record<T> {
+impl<T: Copy, P> Record<T, P> {
     /// A record for a probe whose first attempt is going out now.
-    fn new(host: IpAddr, budget: u8, generation: u32) -> Self {
+    fn new(host: IpAddr, budget: u8, generation: u32, payload: P) -> Self {
         Self {
+            payload,
             host,
             attempts: [None; MAX_TRACKED_ATTEMPTS],
             sends: 1,
@@ -505,7 +513,7 @@ impl<K> PartialOrd for Timer<K> {
 
 /// What a probe needs once its timer has fired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Due<K> {
+pub enum Due<K, P = ()> {
     /// Send this again. The probe stays outstanding, and the ledger has already
     /// counted the attempt, so a caller that cannot send - no route, a refused
     /// socket - may simply do nothing and let it exhaust on its own.
@@ -518,6 +526,8 @@ pub enum Due<K> {
     /// moment a verdict of "filtered" is earned rather than assumed.
     Exhausted {
         key: K,
+        /// Whatever the caller armed this probe with.
+        payload: P,
         /// How many times it was sent, so a caller can tell the probe that was
         /// asked once from the one that was asked three times. A pacing
         /// controller needs the difference: the first of a probe's timeouts is
@@ -529,7 +539,9 @@ pub enum Due<K> {
 
 /// What resolving a probe revealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resolution {
+pub struct Resolution<P = ()> {
+    /// Whatever the caller armed this probe with.
+    pub payload: P,
     /// The measured round trip, or `None` when the reply could not be
     /// attributed to one attempt.
     pub rtt: Option<Duration>,
@@ -557,9 +569,9 @@ pub struct Resolution {
 /// Time is supplied by the caller at every entry point rather than read from the
 /// clock internally, so a scan loop reads it once per iteration and the whole
 /// structure is testable without sleeping.
-pub struct ProbeLedger<K, T> {
+pub struct ProbeLedger<K, T, P = ()> {
     policy: RetryPolicy,
-    records: HashMap<K, Record<T>>,
+    records: HashMap<K, Record<T, P>>,
     timers: BinaryHeap<Timer<K>>,
     hosts: HashMap<IpAddr, HostState>,
     /// Fallback timing for a host that has not answered yet, so a fresh target
@@ -569,10 +581,11 @@ pub struct ProbeLedger<K, T> {
     jitter: Jitter,
 }
 
-impl<K, T> ProbeLedger<K, T>
+impl<K, T, P> ProbeLedger<K, T, P>
 where
     K: Copy + Eq + Hash,
     T: Copy + PartialEq,
+    P: Copy,
 {
     /// An empty ledger with room for `capacity` outstanding probes.
     pub fn new(policy: RetryPolicy, capacity: usize) -> Self {
@@ -599,7 +612,23 @@ where
     /// counts the attempts itself. Arming supersedes any timer the probe
     /// already had, so the timeout runs from when the packet actually left
     /// rather than from when the retry was suggested.
-    pub fn arm(&mut self, host: IpAddr, key: K, token: T, now: Instant) {
+    pub fn arm(&mut self, host: IpAddr, key: K, token: T, payload: P, now: Instant) {
+        self.arm_inner(host, key, token, Some(payload), now);
+    }
+
+    /// Records a *retry* for a probe already outstanding, keeping the payload it
+    /// was armed with.
+    ///
+    /// Separate from [`arm`](Self::arm) because a retry is driven from
+    /// [`Due::Retry`], which names the probe and not what the caller knew about
+    /// it when it first went out. Re-supplying the payload there would mean
+    /// carrying it through the retry path for no reason, and inventing one would
+    /// silently replace it.
+    pub fn rearm(&mut self, host: IpAddr, key: K, token: T, now: Instant) {
+        self.arm_inner(host, key, token, None, now);
+    }
+
+    fn arm_inner(&mut self, host: IpAddr, key: K, token: T, payload: Option<P>, now: Instant) {
         let generation = self.take_generation();
 
         let host_state = self.hosts.entry(host).or_default();
@@ -611,13 +640,23 @@ where
                 // answered lifts any restriction on its outstanding probes.
                 record.budget = budget;
                 record.generation = generation;
+                if let Some(payload) = payload {
+                    record.payload = payload;
+                }
                 record
             }
             None => {
+                // A `rearm` for a probe that is no longer outstanding: it was
+                // resolved or retired between the retry being scheduled and the
+                // send. There is nothing to arm and no payload to invent, so it
+                // is dropped, as a stale timer already is.
+                let Some(payload) = payload else {
+                    return;
+                };
                 host_state.outstanding += 1;
                 self.records
                     .entry(key)
-                    .or_insert_with(|| Record::new(host, budget, generation))
+                    .or_insert_with(|| Record::new(host, budget, generation, payload))
             }
         };
 
@@ -643,8 +682,9 @@ where
     /// resolved or retired, and for a token matching no live attempt - all of
     /// which are to be dropped. That is what makes resolution exactly-once: a
     /// second reply finds nothing to resolve.
-    pub fn resolve(&mut self, key: &K, token: Option<T>, now: Instant) -> Option<Resolution> {
+    pub fn resolve(&mut self, key: &K, token: Option<T>, now: Instant) -> Option<Resolution<P>> {
         let record = self.records.get(key)?;
+        let payload = record.payload;
 
         let attributed = match token {
             // A token naming no attempt we made is someone else's packet, so
@@ -674,6 +714,7 @@ where
         }
 
         Some(Resolution {
+            payload,
             rtt,
             attempts,
             answered_attempt,
@@ -686,7 +727,7 @@ where
     /// counted; a [`Due::Exhausted`] has removed it. The buffer is supplied by
     /// the caller so a scanner can send while the ledger is mutably borrowed,
     /// and so a tick with nothing due allocates nothing.
-    pub fn drain_due(&mut self, now: Instant, out: &mut Vec<Due<K>>) {
+    pub fn drain_due(&mut self, now: Instant, out: &mut Vec<Due<K, P>>) {
         while let Some(timer) = self.timers.peek() {
             if timer.due > now {
                 break;
@@ -703,10 +744,12 @@ where
             if record.sends >= record.budget {
                 let host = record.host;
                 let attempts = record.sends;
+                let payload = record.payload;
                 self.records.remove(&timer.key);
                 self.retire(host);
                 out.push(Due::Exhausted {
                     key: timer.key,
+                    payload,
                     attempts,
                 });
                 continue;
@@ -985,7 +1028,7 @@ mod tests {
         let mut ledger = ledger(policy());
         let start = Instant::now();
 
-        ledger.arm(HOST, (HOST, 80), 1, start);
+        ledger.arm(HOST, (HOST, 80), 1, (), start);
         ledger.resolve(&(HOST, 80), Some(1), start + Duration::from_millis(40));
         let measured = ledger.host_rtt(&HOST);
 
@@ -1025,7 +1068,7 @@ mod tests {
         let start = Instant::now();
 
         let mut ledger = ledger(policy);
-        ledger.arm(fast, (fast, 0), 1, start);
+        ledger.arm(fast, (fast, 0), 1, (), start);
         // The fast neighbour answers in six milliseconds, seeding whatever
         // scan-wide estimate the ledger keeps.
         let resolved = ledger
@@ -1033,7 +1076,7 @@ mod tests {
             .expect("the fast host resolves");
         assert_eq!(resolved.rtt, Some(Duration::from_millis(6)));
 
-        ledger.arm(unmeasured, (unmeasured, 0), 1, start);
+        ledger.arm(unmeasured, (unmeasured, 0), 1, (), start);
         let due = ledger.next_due().expect("a timer for the unmeasured host");
 
         assert_eq!(
@@ -1064,10 +1107,10 @@ mod tests {
         let start = Instant::now();
 
         let mut ledger = ledger(policy);
-        ledger.arm(fast, (fast, 0), 1, start);
+        ledger.arm(fast, (fast, 0), 1, (), start);
         ledger.resolve(&(fast, 0), Some(1), start + Duration::from_millis(6));
 
-        ledger.arm(unmeasured, (unmeasured, 0), 1, start);
+        ledger.arm(unmeasured, (unmeasured, 0), 1, (), start);
         let due = ledger.next_due().expect("a timer for the unmeasured host");
 
         assert!(
@@ -1099,13 +1142,13 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
 
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
         let t1 = t0 + Duration::from_millis(100);
         due_at(&mut ledger, t1);
-        ledger.arm(HOST, (HOST, 80), 2, t1);
+        ledger.arm(HOST, (HOST, 80), 2, (), t1);
         let t2 = t1 + Duration::from_millis(100);
         due_at(&mut ledger, t2);
-        ledger.arm(HOST, (HOST, 80), 3, t2);
+        ledger.arm(HOST, (HOST, 80), 3, (), t2);
 
         // The first attempt's token, answered long after two more went out.
         let resolution = ledger
@@ -1130,10 +1173,10 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
 
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
         let t1 = t0 + Duration::from_millis(100);
         due_at(&mut ledger, t1);
-        ledger.arm(HOST, (HOST, 80), 2, t1);
+        ledger.arm(HOST, (HOST, 80), 2, (), t1);
 
         let resolution = ledger
             .resolve(&(HOST, 80), Some(2), t1 + Duration::from_millis(5))
@@ -1154,7 +1197,7 @@ mod tests {
     fn an_untokened_reply_is_attributed_only_when_one_send_has_happened() {
         let t0 = Instant::now();
         let mut once = ledger(policy());
-        once.arm(HOST, (HOST, 80), 1, t0);
+        once.arm(HOST, (HOST, 80), 1, (), t0);
 
         let single = once
             .resolve(&(HOST, 80), None, t0 + Duration::from_millis(10))
@@ -1162,10 +1205,10 @@ mod tests {
         assert_eq!(single.answered_attempt, Some(1));
 
         let mut twice = ledger(policy());
-        twice.arm(OTHER, (OTHER, 80), 1, t0);
+        twice.arm(OTHER, (OTHER, 80), 1, (), t0);
         let t1 = t0 + Duration::from_millis(100);
         due_at(&mut twice, t1);
-        twice.arm(OTHER, (OTHER, 80), 2, t1);
+        twice.arm(OTHER, (OTHER, 80), 2, (), t1);
 
         let retried = twice
             .resolve(&(OTHER, 80), None, t1 + Duration::from_millis(10))
@@ -1196,12 +1239,12 @@ mod tests {
 
         let sent_six = |t0: Instant| {
             let mut ledger = ledger(generous);
-            ledger.arm(HOST, (HOST, 80), 1, t0);
+            ledger.arm(HOST, (HOST, 80), 1, (), t0);
             let mut now = t0;
             for token in 2..=sends {
                 now += Duration::from_millis(100);
                 due_at(&mut ledger, now);
-                ledger.arm(HOST, (HOST, 80), token, now);
+                ledger.arm(HOST, (HOST, 80), token, (), now);
             }
             (ledger, now)
         };
@@ -1238,7 +1281,7 @@ mod tests {
     fn an_armed_probe_is_not_due_before_its_timeout() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
 
         assert!(due_at(&mut ledger, t0 + Duration::from_millis(99)).is_empty());
         assert_eq!(ledger.len(), 1);
@@ -1248,7 +1291,7 @@ mod tests {
     fn a_probe_is_retried_when_its_timeout_passes() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
 
         let due = due_at(&mut ledger, t0 + Duration::from_millis(100));
         assert_eq!(
@@ -1267,7 +1310,7 @@ mod tests {
     fn a_probe_exhausts_after_exactly_its_budget() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
 
         let mut sends = 1;
         let mut exhausted = None;
@@ -1278,7 +1321,7 @@ mod tests {
                     Due::Retry { key, attempt } => {
                         sends += 1;
                         assert_eq!(attempt, sends);
-                        ledger.arm(HOST, key, attempt.into(), now);
+                        ledger.rearm(HOST, key, attempt.into(), now);
                     }
                     Due::Exhausted { key, .. } => exhausted = Some(key),
                 }
@@ -1295,13 +1338,14 @@ mod tests {
     fn a_single_attempt_policy_exhausts_without_ever_retrying() {
         let t0 = Instant::now();
         let mut ledger = ledger(RetryPolicy::none());
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
 
         let due = due_at(&mut ledger, t0 + Duration::from_secs(5));
         assert_eq!(
             due,
             vec![Due::Exhausted {
                 key: (HOST, 80),
+                payload: (),
                 // One, and the number matters to whoever reads it: with no
                 // retry, this event *is* the probe's first timeout.
                 attempts: 1,
@@ -1323,7 +1367,7 @@ mod tests {
         );
         let mut ledger = ledger(policy);
 
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
         let first = ledger.next_due().unwrap();
 
         // Nothing is due yet at the first deadline minus a hair, and the retry
@@ -1356,7 +1400,7 @@ mod tests {
     fn a_matching_token_resolves_the_probe_and_measures_it() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
-        ledger.arm(HOST, (HOST, 80), 7, t0);
+        ledger.arm(HOST, (HOST, 80), 7, (), t0);
 
         let resolved = ledger
             .resolve(&(HOST, 80), Some(7), t0 + Duration::from_millis(12))
@@ -1373,7 +1417,7 @@ mod tests {
     fn a_second_reply_resolves_nothing() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
-        ledger.arm(HOST, (HOST, 80), 7, t0);
+        ledger.arm(HOST, (HOST, 80), 7, (), t0);
 
         assert!(ledger.resolve(&(HOST, 80), Some(7), t0).is_some());
         assert!(ledger.resolve(&(HOST, 80), Some(7), t0).is_none());
@@ -1383,7 +1427,7 @@ mod tests {
     fn a_token_matching_no_attempt_leaves_the_probe_outstanding() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
-        ledger.arm(HOST, (HOST, 80), 7, t0);
+        ledger.arm(HOST, (HOST, 80), 7, (), t0);
 
         assert!(ledger.resolve(&(HOST, 80), Some(999), t0).is_none());
         assert_eq!(ledger.len(), 1, "someone else's packet resolves nothing");
@@ -1398,10 +1442,10 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
 
-        ledger.arm(HOST, (HOST, 80), 7, t0);
+        ledger.arm(HOST, (HOST, 80), 7, (), t0);
         let retry = t0 + Duration::from_millis(100);
         assert!(!due_at(&mut ledger, retry).is_empty());
-        ledger.arm(HOST, (HOST, 80), 8, retry);
+        ledger.arm(HOST, (HOST, 80), 8, (), retry);
 
         let resolved = ledger
             .resolve(&(HOST, 80), Some(7), t0 + Duration::from_millis(140))
@@ -1422,11 +1466,11 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger: ProbeLedger<(IpAddr, u16), ()> = ProbeLedger::seeded(policy(), 8, 1);
 
-        ledger.arm(HOST, (HOST, 53), (), t0);
+        ledger.arm(HOST, (HOST, 53), (), (), t0);
         let retry = t0 + Duration::from_millis(100);
         let mut out = Vec::new();
         ledger.drain_due(retry, &mut out);
-        ledger.arm(HOST, (HOST, 53), (), retry);
+        ledger.arm(HOST, (HOST, 53), (), (), retry);
 
         let resolved = ledger
             .resolve(&(HOST, 53), None, retry + Duration::from_millis(5))
@@ -1441,7 +1485,7 @@ mod tests {
     fn an_unattributable_reply_to_a_single_attempt_is_still_measured() {
         let t0 = Instant::now();
         let mut ledger: ProbeLedger<(IpAddr, u16), ()> = ProbeLedger::seeded(policy(), 8, 1);
-        ledger.arm(HOST, (HOST, 53), (), t0);
+        ledger.arm(HOST, (HOST, 53), (), (), t0);
 
         let resolved = ledger
             .resolve(&(HOST, 53), None, t0 + Duration::from_millis(9))
@@ -1456,7 +1500,7 @@ mod tests {
     fn a_resolved_probe_is_never_due_again() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
-        ledger.arm(HOST, (HOST, 80), 7, t0);
+        ledger.arm(HOST, (HOST, 80), 7, (), t0);
         ledger.resolve(&(HOST, 80), Some(7), t0 + Duration::from_millis(5));
 
         assert!(due_at(&mut ledger, t0 + Duration::from_secs(10)).is_empty());
@@ -1469,10 +1513,10 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
 
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
         let retry = t0 + Duration::from_millis(100);
         assert_eq!(due_at(&mut ledger, retry).len(), 1);
-        ledger.arm(HOST, (HOST, 80), 2, retry);
+        ledger.arm(HOST, (HOST, 80), 2, (), retry);
 
         // The superseded entry is still in the queue and its deadline has
         // passed; it must produce nothing.
@@ -1486,7 +1530,7 @@ mod tests {
     fn the_first_timeout_uses_the_initial_value_not_the_floor() {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
 
         assert_eq!(
             ledger.next_due().unwrap().saturating_duration_since(t0),
@@ -1502,10 +1546,10 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
 
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
         ledger.resolve(&(HOST, 80), Some(1), t0 + Duration::from_millis(4));
 
-        ledger.arm(HOST, (HOST, 81), 2, t0);
+        ledger.arm(HOST, (HOST, 81), 2, (), t0);
         let measured = ledger.next_due().unwrap().saturating_duration_since(t0);
 
         // 4ms smoothed, 2ms variation, so 4 + 4*2 = 12ms, well under the
@@ -1521,10 +1565,10 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
 
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
         ledger.resolve(&(HOST, 80), Some(1), t0 + Duration::from_millis(1));
 
-        ledger.arm(OTHER, (OTHER, 80), 2, t0);
+        ledger.arm(OTHER, (OTHER, 80), 2, (), t0);
         let other = ledger.next_due().unwrap().saturating_duration_since(t0);
 
         assert!(
@@ -1541,10 +1585,10 @@ mod tests {
         policy.min_rto = Duration::from_millis(50);
         let mut ledger = ledger(policy);
 
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
         ledger.resolve(&(HOST, 80), Some(1), t0 + Duration::from_micros(100));
 
-        ledger.arm(HOST, (HOST, 81), 2, t0);
+        ledger.arm(HOST, (HOST, 81), 2, (), t0);
         assert_eq!(
             ledger.next_due().unwrap().saturating_duration_since(t0),
             Duration::from_millis(50)
@@ -1564,7 +1608,7 @@ mod tests {
             None,
         );
         let mut ledger = ledger(policy);
-        ledger.arm(HOST, (HOST, 80), 1, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
 
         let first = ledger.next_due().unwrap();
         due_at(&mut ledger, first);
@@ -1592,7 +1636,7 @@ mod tests {
         for seed in 0..64u64 {
             let t0 = Instant::now();
             let mut ledger: ProbeLedger<(IpAddr, u16), u32> = ProbeLedger::seeded(policy, 4, seed);
-            ledger.arm(HOST, (HOST, 80), 1, t0);
+            ledger.arm(HOST, (HOST, 80), 1, (), t0);
 
             let due = ledger.next_due().unwrap().saturating_duration_since(t0);
             assert!(
@@ -1619,7 +1663,7 @@ mod tests {
         let mut ledger = ledger(policy);
 
         for port in 0..64u16 {
-            ledger.arm(HOST, (HOST, port), u32::from(port), t0);
+            ledger.arm(HOST, (HOST, port), u32::from(port), (), t0);
         }
 
         // Far fewer than all 64 should be due at the unjittered deadline.
@@ -1651,7 +1695,7 @@ mod tests {
     /// Drives one probe to exhaustion and reports how many times it was sent.
     fn spend(ledger: &mut ProbeLedger<(IpAddr, u16), u32>, host: IpAddr, port: u16) -> u8 {
         let mut now = Instant::now();
-        ledger.arm(host, (host, port), 1, now);
+        ledger.arm(host, (host, port), 1, (), now);
 
         let mut sends = 1;
         for _ in 0..10 {
@@ -1660,7 +1704,7 @@ mod tests {
                 match event {
                     Due::Retry { key, .. } => {
                         sends += 1;
-                        ledger.arm(host, key, u32::from(sends), now);
+                        ledger.arm(host, key, u32::from(sends), (), now);
                     }
                     Due::Exhausted { .. } => return sends,
                 }
@@ -1692,7 +1736,7 @@ mod tests {
         assert_eq!(spend(&mut ledger, HOST, 80), 3);
         assert_eq!(spend(&mut ledger, HOST, 81), 3);
 
-        ledger.arm(HOST, (HOST, 22), 9, t0);
+        ledger.arm(HOST, (HOST, 22), 9, (), t0);
         ledger.resolve(&(HOST, 22), Some(9), t0 + Duration::from_millis(3));
 
         assert_eq!(
@@ -1727,7 +1771,7 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
         for port in 0..5u16 {
-            ledger.arm(HOST, (HOST, port), u32::from(port), t0);
+            ledger.arm(HOST, (HOST, port), u32::from(port), (), t0);
         }
 
         let mut remaining = ledger.drain_unresolved();
@@ -1744,8 +1788,8 @@ mod tests {
         let t0 = Instant::now();
         let mut ledger = ledger(policy());
 
-        ledger.arm(HOST, (HOST, 80), 1, t0 + Duration::from_millis(50));
-        ledger.arm(HOST, (HOST, 81), 2, t0);
+        ledger.arm(HOST, (HOST, 80), 1, (), t0 + Duration::from_millis(50));
+        ledger.arm(HOST, (HOST, 81), 2, (), t0);
 
         assert_eq!(
             ledger.next_due().unwrap().saturating_duration_since(t0),
@@ -1771,11 +1815,11 @@ mod tests {
         let mut ledger = ledger(policy);
 
         let mut now = t0;
-        ledger.arm(HOST, (HOST, 80), 1, now);
+        ledger.arm(HOST, (HOST, 80), 1, (), now);
         for token in 2..=7u32 {
             now += Duration::from_millis(100);
             assert!(!due_at(&mut ledger, now).is_empty());
-            ledger.arm(HOST, (HOST, 80), token, now);
+            ledger.arm(HOST, (HOST, 80), token, (), now);
         }
 
         assert!(
@@ -1926,7 +1970,7 @@ mod tests {
         assert!(configured.initial_rto < configured.min_rto, "test premise");
 
         let mut ledger: ProbeLedger<(IpAddr, u16), ()> = ProbeLedger::seeded(configured, 4, 3);
-        ledger.arm(HOST, (HOST, 53), (), t0);
+        ledger.arm(HOST, (HOST, 53), (), (), t0);
 
         assert_eq!(
             ledger.next_due().unwrap().saturating_duration_since(t0),
@@ -2005,7 +2049,7 @@ mod tests {
             let mut ledger = ledger(policy);
 
             let t0 = Instant::now();
-            ledger.arm(HOST, (HOST, 80), 0, t0);
+            ledger.arm(HOST, (HOST, 80), 0, (), t0);
 
             let mut sends = 1u8;
             let mut exhausted = 0;
@@ -2016,7 +2060,7 @@ mod tests {
                         Due::Retry { key, attempt } => {
                             sends += 1;
                             prop_assert_eq!(attempt, sends);
-                            ledger.arm(HOST, key, u32::from(attempt), now);
+                            ledger.arm(HOST, key, u32::from(attempt), (), now);
                         }
                         Due::Exhausted { .. } => exhausted += 1,
                     }
@@ -2047,7 +2091,7 @@ mod tests {
             let mut ledger = ledger(policy);
 
             let t0 = Instant::now();
-            ledger.arm(HOST, (HOST, 80), 1, t0);
+            ledger.arm(HOST, (HOST, 80), 1, (), t0);
 
             let resolve_at = t0 + Duration::from_millis(resolve_after);
             let mut resolved = false;
@@ -2064,7 +2108,7 @@ mod tests {
                     prop_assert!(!resolved, "a resolved probe produced {:?}", event);
                     if let Due::Retry { key, attempt } = event {
                         token = u32::from(attempt);
-                        ledger.arm(HOST, key, token, now);
+                        ledger.arm(HOST, key, token, (), now);
                     }
                 }
             }

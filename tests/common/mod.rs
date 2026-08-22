@@ -44,7 +44,7 @@ use zond_engine::config::ZondConfig;
 use zond_engine::model::host::{Host, HostStatus};
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::{PortSet, PortState, Protocol};
-use zond_engine::model::target::{Target, TargetMap, TargetSet};
+use zond_engine::model::target::{PlannedTarget, Target, TargetMap, TargetSet};
 use zond_engine::scanner::report::ScanReport;
 use zond_engine::scanner::session::{HostStore, ScanEvent, ScanSession};
 use zond_engine::scanner::strategy::PortScanner;
@@ -297,8 +297,12 @@ pub fn scanner_resolver() -> SourceResolver {
 /// would wait out its full deadline on every test.
 pub async fn run_port_scanner<S: PortScanner + ?Sized>(scanner: &mut S, targets: Vec<Target>) {
     let (tx, rx) = tokio::sync::mpsc::channel(targets.len().max(1));
-    for target in targets {
-        tx.send(target).await.expect("queue target");
+    // Numbered as the dispatcher would, so a strategy sees what it sees in a
+    // real scan.
+    for (position, target) in targets.into_iter().enumerate() {
+        tx.send(PlannedTarget::new(position as u64, target))
+            .await
+            .expect("queue target");
     }
     drop(tx);
 

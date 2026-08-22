@@ -23,8 +23,8 @@ mod common;
 
 use common::fake_net::{FakeNet, Layer4, Policy};
 use common::*;
-use zond_engine::journal::settle::Fate;
-use zond_engine::model::port::Protocol;
+use zond_engine::journal::cursor::Checkpoint;
+use zond_engine::journal::settle::Outcome;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner::session::ScanSession;
 
@@ -70,40 +70,32 @@ async fn syn_scan(
     (session, observer)
 }
 
-/// A port that answered is settled, and settled positively. The base case.
+/// A port that answered is settled, and the cursor advances over it. The base
+/// case.
 #[tokio::test]
 async fn an_answering_port_settles_as_answered() {
     let (_session, ctx) = syn_scan(8, Policy::open(), |_| {}).await;
+    let settlements = ctx.settlements();
 
-    for port in FIRST..FIRST + 8 {
-        assert_eq!(
-            ctx.settlements().fate_of(TARGET, port, Protocol::Tcp),
-            Some(Fate::Answered),
-            "port {port} answered and must never be probed again"
-        );
-    }
+    assert_eq!(settlements.count(Outcome::Answered { position: 0 }), 8);
+    assert_eq!(settlements.settled_count(), 8);
+    assert_eq!(
+        settlements.checkpoint().watermark,
+        8,
+        "eight consecutive positions, all earned"
+    );
 }
 
 /// Silence that spent the whole retry budget is *earned*, and is the one silence
-/// a resume may skip. This is the fate the ledger calls
-/// "the moment a verdict of 'filtered' is earned rather than assumed".
+/// a resume may skip — the moment the ledger calls "a verdict of 'filtered'
+/// earned rather than assumed".
 #[tokio::test]
 async fn a_port_that_spent_its_budget_settles_as_exhausted() {
     let (_session, ctx) = syn_scan(8, Policy::silent(), |_| {}).await;
+    let settlements = ctx.settlements();
 
-    for port in FIRST..FIRST + 8 {
-        let fate = ctx
-            .settlements()
-            .fate_of(TARGET, port, Protocol::Tcp)
-            .unwrap_or_else(|| panic!("port {port} was scanned and has no fate"));
-
-        assert_eq!(
-            fate,
-            Fate::Exhausted,
-            "port {port} was asked as often as the policy allows"
-        );
-        assert!(fate.is_settled());
-    }
+    assert_eq!(settlements.count(Outcome::Exhausted { position: 0 }), 8);
+    assert_eq!(settlements.checkpoint().watermark, 8);
 }
 
 /// **The test this module exists for.**
@@ -141,38 +133,26 @@ async fn a_cut_short_scan_gives_verdicts_it_has_not_earned() {
     // Reported as a count and a sample rather than the whole list: the failing
     // case is every target at once, and a panic message holding all of them
     // buries the number that says what happened.
-    let settled = ctx.settlements().settled();
-    assert!(
-        settled.is_empty(),
-        "a scan that asked nothing settled {} of {COUNT} targets, e.g. {:?}",
-        settled.len(),
-        &settled[..settled.len().min(3)]
+    let settlements = ctx.settlements();
+    assert_eq!(
+        settlements.settled_count(),
+        0,
+        "a scan that asked nothing settled {} of {COUNT} targets",
+        settlements.settled_count()
     );
+    assert_eq!(settlements.checkpoint(), Checkpoint::default());
 
-    // And say so specifically, so a failure names the confusion rather than a
-    // count: every fate present must be one that re-probes.
-    for settlement in ctx.settlements().snapshot() {
-        assert!(
-            matches!(settlement.fate, Fate::Unasked | Fate::Interrupted),
-            "{settlement:?} claims a verdict this scan never earned"
-        );
-    }
+    // Every target is accounted for, by an outcome that re-probes.
+    let unsettled = settlements.count(Outcome::Unasked) + settlements.count(Outcome::Interrupted);
+    assert_eq!(unsettled, u64::from(COUNT));
 }
 
-/// A target nobody reported is not settled. The failure mode of a strategy that
-/// forgets to call `settle` has to be redundant work, never a skipped target.
+/// The cursor never runs past what the scan was given. A strategy that forgets
+/// to report costs redundant work, never a skipped target.
 #[tokio::test]
-async fn a_port_outside_the_scan_is_never_settled() {
+async fn the_cursor_never_exceeds_what_the_scan_was_given() {
     let (_session, ctx) = syn_scan(4, Policy::open(), |_| {}).await;
 
-    assert_eq!(
-        ctx.settlements().fate_of(TARGET, FIRST + 999, Protocol::Tcp),
-        None,
-        "a port the scan was never given must have no fate at all"
-    );
-    assert_eq!(
-        ctx.settlements().fate_of(TARGET, FIRST, Protocol::Udp),
-        None,
-        "the UDP half of a scanned TCP port is a different target"
-    );
+    assert_eq!(ctx.settlements().checkpoint().watermark, 4);
+    assert!(!ctx.settlements().checkpoint().is_settled(4));
 }

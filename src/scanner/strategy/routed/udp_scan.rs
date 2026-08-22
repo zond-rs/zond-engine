@@ -51,10 +51,10 @@ use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
 use crate::error;
-use crate::journal::settle::Fate;
+use crate::journal::settle::Outcome;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
-use crate::model::target::Target;
+use crate::model::target::PlannedTarget;
 use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy, SilentHostPolicy};
@@ -77,7 +77,7 @@ use crate::scanner::audit::ProbeAudit;
 /// the datagram, so nothing on the wire distinguishes one attempt from another.
 /// The ledger applies Karn's rule on that basis, declining to measure a round
 /// trip it cannot attribute.
-type Ledger = ProbeLedger<ProbeTarget, ()>;
+type Ledger = ProbeLedger<ProbeTarget, (), u64>;
 
 /// How long this scan runs and how it adapts.
 ///
@@ -315,8 +315,10 @@ impl UdpPortScanner {
 
         self.core.record_answer(&resolution);
         self.record_port(target.0, target.1, state, Some(sender));
-        // The target spoke. The only fate that settles positively.
-        self.settle(target.0, target.1, Fate::Answered);
+        // The target spoke: the only outcome that settles positively.
+        self.settle(Outcome::Answered {
+            position: resolution.payload,
+        });
     }
 }
 
@@ -423,34 +425,12 @@ impl RawPortScan for UdpPortScanner {
     /// byte-for-byte the probe that preceded it: the payload is what makes an
     /// open port answer at all, and the source port is the scan's identity on
     /// the wire, so neither may vary between attempts.
-    fn probe(&mut self, ip: IpAddr, port: u16, now: Instant) {
-        let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(
-                verbosity = 2,
-                "No route to {ip}; skipping UDP probe to {ip}:{port}"
-            );
-            return;
-        };
+    fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant) {
+        self.send(ip, port, Some(position), now);
+    }
 
-        // Whether this send takes a slot in the congestion window. A retry does
-        // not: the slot went back when the question it repeats ran out of
-        // round-trip budget. The ledger is what knows, since it is what holds
-        // the probe between attempts.
-        let first_attempt = !self.core.ledger.contains(&(ip, port));
-
-        let sent = send_udp(
-            self.core.transport.tx.as_ref(),
-            self.core.src_port,
-            src_addr,
-            ip,
-            port,
-            &mut self.core.send_failure,
-        );
-        self.core.record_send(sent.is_some(), first_attempt);
-
-        if sent.is_some() {
-            self.core.ledger.arm(ip, (ip, port), (), now);
-        }
+    fn reprobe(&mut self, ip: IpAddr, port: u16, now: Instant) {
+        self.send(ip, port, None, now);
     }
 
     /// Classifies one captured reply and, if it answers an outstanding probe,
@@ -569,7 +549,7 @@ impl PortScanner for UdpPortScanner {
     /// unlike the TCP scanner's window, because a UDP scan is given no evidence
     /// it could adapt on: silence is its ordinary outcome and its replies name
     /// no attempt.
-    async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
+    async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         probe_scan::run(self, targets).await;
         Ok(())
     }
@@ -584,6 +564,43 @@ impl PortScanner for UdpPortScanner {
     // trait's no-op default is the honest implementation.
 }
 
+impl UdpPortScanner {
+    /// One send, first attempt or retry. `position` is `Some` only for a probe
+    /// that has never gone out, since the ledger keeps it thereafter.
+    fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
+        let Some(src_addr) = self.core.resolver.resolve(ip) else {
+            error!(
+                verbosity = 2,
+                "No route to {ip}; skipping UDP probe to {ip}:{port}"
+            );
+            return;
+        };
+
+        // Whether this send takes a slot in the congestion window. A retry does
+        // not: the slot went back when the question it repeats ran out of
+        // round-trip budget. The ledger is what knows, since it is what holds
+        // the probe between attempts.
+        let first_attempt = !self.core.ledger.contains(&(ip, port));
+
+        let sent = send_udp(
+            self.core.transport.tx.as_ref(),
+            self.core.src_port,
+            src_addr,
+            ip,
+            port,
+            &mut self.core.send_failure,
+        );
+        self.core.record_send(sent.is_some(), first_attempt);
+
+        if sent.is_some() {
+            match position {
+                Some(position) => self.core.ledger.arm(ip, (ip, port), (), position, now),
+                None => self.core.ledger.rearm(ip, (ip, port), (), now),
+            }
+        }
+    }
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -596,6 +613,7 @@ impl PortScanner for UdpPortScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::target::Target;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
@@ -669,11 +687,14 @@ mod tests {
     }
 
     fn probe(scanner: &mut UdpPortScanner, ip: IpAddr, port: u16) {
-        scanner.send_probe(Target {
-            ip,
-            port,
-            protocol: Protocol::Udp,
-        });
+        scanner.send_probe(PlannedTarget::new(
+            u64::from(port),
+            Target {
+                ip,
+                port,
+                protocol: Protocol::Udp,
+            },
+        ));
     }
 
     fn host_status(session: &ScanSession, ip: IpAddr) -> Option<HostStatus> {
@@ -1391,11 +1412,14 @@ mod tests {
     #[test]
     fn non_udp_targets_are_not_probed() {
         let (mut scanner, _session) = scanner_with_mock();
-        scanner.send_probe(Target {
-            ip: TARGET,
-            port: 80,
-            protocol: Protocol::Tcp,
-        });
+        scanner.send_probe(PlannedTarget::new(
+            0,
+            Target {
+                ip: TARGET,
+                port: 80,
+                protocol: Protocol::Tcp,
+            },
+        ));
         assert!(scanner.core.ledger.is_empty());
     }
 

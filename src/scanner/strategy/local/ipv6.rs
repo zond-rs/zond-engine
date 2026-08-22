@@ -393,7 +393,7 @@ impl Ipv6Discovery {
     pub(super) fn record_asked(&mut self, address: IpAddr, now: Instant) {
         self.solicited.insert(address);
         self.first_asked_at.entry(address).or_insert(now);
-        self.ledger.arm(address, address, (), now);
+        self.ledger.arm(address, address, (), (), now);
     }
 
     /// Retires the solicitation for `address`, if one was outstanding.
@@ -540,10 +540,10 @@ mod tests {
             let mut ledger: Ledger = ProbeLedger::seeded(NDP_RETRY_POLICY, 4, seed);
             let start = Instant::now();
 
-            ledger.arm(router, router, (), start);
+            ledger.arm(router, router, (), (), start);
             ledger.resolve(&router, None, start + Duration::from_millis(5));
 
-            ledger.arm(sleeper, sleeper, (), start);
+            ledger.arm(sleeper, sleeper, (), (), start);
             let due = ledger.next_due().expect("the sleeper has a timer");
 
             assert!(

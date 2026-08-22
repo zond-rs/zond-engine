@@ -52,14 +52,14 @@ use pnet::packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
 use crate::config::OsDetection;
-use crate::config::ServiceDetection;
 use crate::config::ProbeTuning;
+use crate::config::ServiceDetection;
 use crate::error;
 use crate::fingerprint::os;
-use crate::journal::settle::Fate;
+use crate::journal::settle::Outcome;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
-use crate::model::target::Target;
+use crate::model::target::PlannedTarget;
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols::tcp;
 use crate::scanner::pacing::congestion::CongestionWindow;
@@ -98,8 +98,7 @@ pub struct TcpToken {
 }
 
 /// Outstanding probes and the schedule they are retried on.
-type Ledger = ProbeLedger<ProbeTarget, TcpToken>;
-
+type Ledger = ProbeLedger<ProbeTarget, TcpToken, u64>;
 
 /// Probes specific `(address, port)` pairs with raw TCP segments, using
 /// whichever [`TcpScanTechnique`] it was built for.
@@ -432,8 +431,10 @@ impl TcpPortScanner {
 
         self.core.record_answer(&resolution);
         self.record_port_drawn_by(key.0, key.1, state, sender, drawn_by);
-        // The target spoke. The only fate that settles positively.
-        self.settle(key.0, key.1, Fate::Answered);
+        // The target spoke: the only outcome that settles positively.
+        self.settle(Outcome::Answered {
+            position: resolution.payload,
+        });
     }
 
     /// Which protocol a host verdict from this scan is credited to.
@@ -488,32 +489,12 @@ impl RawPortScan for TcpPortScanner {
     /// be: the packet is built afresh from the target, which is both cheaper
     /// than buffering it and required, since every attempt must carry its own
     /// nonce.
-    fn probe(&mut self, ip: IpAddr, port: u16, now: Instant) {
-        let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(verbosity = 2, "No route to {ip}; skipping {ip}:{port}");
-            return;
-        };
+    fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant) {
+        self.send(ip, port, Some(position), now);
+    }
 
-        // Whether this send takes a slot in the congestion window. A retry does
-        // not: the slot went back when the question it repeats ran out of
-        // round-trip budget. The ledger is what knows, since it is what holds
-        // the probe between attempts.
-        let first_attempt = !self.core.ledger.contains(&(ip, port));
-
-        let token = send_tcp_probe(
-            self.core.transport.tx.as_ref(),
-            self.technique,
-            self.core.src_port,
-            src_addr,
-            ip,
-            port,
-            &mut self.core.send_failure,
-        );
-        self.core.record_send(token.is_some(), first_attempt);
-
-        if let Some(token) = token {
-            self.core.ledger.arm(ip, (ip, port), token, now);
-        }
+    fn reprobe(&mut self, ip: IpAddr, port: u16, now: Instant) {
+        self.send(ip, port, None, now);
     }
 
     /// Routes one captured reply to whichever half of the classification can
@@ -742,7 +723,7 @@ impl PortScanner for TcpPortScanner {
     /// obligation the scan already owns. The window is what paces the scan and
     /// what it discovers about each target's capacity; see
     /// `TCP_PORT_WINDOW`.
-    async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
+    async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         probe_scan::run(self, targets).await;
         Ok(())
     }
@@ -760,6 +741,41 @@ impl PortScanner for TcpPortScanner {
     }
 }
 
+impl TcpPortScanner {
+    /// One send, first attempt or retry. `position` is `Some` only for a probe
+    /// that has never gone out, since the ledger keeps it thereafter.
+    fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
+        let Some(src_addr) = self.core.resolver.resolve(ip) else {
+            error!(verbosity = 2, "No route to {ip}; skipping {ip}:{port}");
+            return;
+        };
+
+        // Whether this send takes a slot in the congestion window. A retry does
+        // not: the slot went back when the question it repeats ran out of
+        // round-trip budget. The ledger is what knows, since it is what holds
+        // the probe between attempts.
+        let first_attempt = !self.core.ledger.contains(&(ip, port));
+
+        let token = send_tcp_probe(
+            self.core.transport.tx.as_ref(),
+            self.technique,
+            self.core.src_port,
+            src_addr,
+            ip,
+            port,
+            &mut self.core.send_failure,
+        );
+        self.core.record_send(token.is_some(), first_attempt);
+
+        if let Some(token) = token {
+            match position {
+                Some(position) => self.core.ledger.arm(ip, (ip, port), token, position, now),
+                None => self.core.ledger.rearm(ip, (ip, port), token, now),
+            }
+        }
+    }
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -772,6 +788,7 @@ impl PortScanner for TcpPortScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::target::Target;
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
@@ -891,11 +908,14 @@ mod tests {
     /// scanner, so what a test answers is what actually reached the wire.
     fn probe(scanner: &mut TcpPortScanner, sent: &SentProbes, port: u16) -> TcpToken {
         let before = sent.lock().unwrap().len();
-        scanner.send_probe(Target {
-            ip: TARGET,
-            port,
-            protocol: Protocol::Tcp,
-        });
+        scanner.send_probe(PlannedTarget::new(
+            u64::from(port),
+            Target {
+                ip: TARGET,
+                port,
+                protocol: Protocol::Tcp,
+            },
+        ));
 
         let sent = sent.lock().unwrap();
         let (segment, _, _) = sent.get(before).expect("probe reached the wire");
@@ -1325,11 +1345,14 @@ mod tests {
     #[test]
     fn non_tcp_targets_are_not_probed() {
         let (mut scanner, _session, _sent) = scanner_with_mock();
-        scanner.send_probe(Target {
-            ip: TARGET,
-            port: 53,
-            protocol: Protocol::Udp,
-        });
+        scanner.send_probe(PlannedTarget::new(
+            0,
+            Target {
+                ip: TARGET,
+                port: 53,
+                protocol: Protocol::Udp,
+            },
+        ));
         assert!(scanner.core.ledger.is_empty());
     }
 

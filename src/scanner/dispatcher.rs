@@ -15,12 +15,13 @@
 //! in time, which avoids hammering one subnet in a tight burst, and the memory cost
 //! stays bounded regardless of how large the target range is.
 
-use crate::model::target::{Target, TargetMap};
+use crate::model::target::{PlannedTarget, TargetMap};
 use crate::scanner::handle::ScanHandle;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 
-/// Streams the targets of a [`TargetMap`] out in shuffled batches.
+/// Streams the targets of a [`TargetMap`] out in shuffled batches, each
+/// numbered by its position in the plan.
 pub struct Dispatcher {
     target_map: TargetMap,
     batch_size: usize,
@@ -49,22 +50,18 @@ impl Dispatcher {
     /// the next batch while the current one is still being consumed without letting
     /// the buffer grow without bound. The task stops early if the receiver is
     /// dropped or `scan_handle` signals a stop.
-    pub fn run_shuffled(self, scan_handle: &ScanHandle) -> mpsc::Receiver<Target> {
+    pub fn run_shuffled(self, scan_handle: &ScanHandle) -> mpsc::Receiver<PlannedTarget> {
         let (tx, rx) = mpsc::channel(self.batch_size * 2);
         let scan_handle = scan_handle.clone();
 
         tokio::spawn(async move {
             let mut batch = Vec::with_capacity(self.batch_size);
 
-            // `TargetMap::iter` rather than the same two loops written out here.
-            // The journal numbers targets by that enumeration and skips the
-            // settled ones on a resume, so the walk that decides what is probed
-            // and the walk that decides what was probed have to be one walk. Two
-            // copies would not fail when they drifted — they would resume a scan
-            // against positions meaning something else, which looks exactly like
-            // a resume that worked. See `journal::cursor`.
-            for target in self.target_map.iter() {
-                batch.push(target);
+            // Numbered here, where the plan is walked in order, so nothing
+            // downstream has to re-derive a position. Shuffling below permutes
+            // the order targets are *asked* in and never the numbering.
+            for (position, target) in self.target_map.iter().enumerate() {
+                batch.push(PlannedTarget::new(position as u64, target));
 
                 if batch.len() >= self.batch_size {
                     batch.shuffle(&mut rand::rng());
@@ -105,6 +102,7 @@ mod tests {
     use super::*;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;
+    use crate::model::target::Target;
     use crate::model::target::TargetSet;
     use std::net::IpAddr;
 
@@ -126,7 +124,7 @@ mod tests {
         }
 
         assert_eq!(received.len(), 10);
-        let is_ordered = received.windows(2).all(|w| match (w[0].ip, w[1].ip) {
+        let is_ordered = received.windows(2).all(|w| match (w[0].ip(), w[1].ip()) {
             (IpAddr::V4(a), IpAddr::V4(b)) => a.octets()[3] < b.octets()[3],
             _ => false,
         });
@@ -169,9 +167,10 @@ mod tests {
         // Sorted, because the dispatcher shuffles what it emits and not what it
         // numbers: the order targets are *asked* in is deliberately scrambled,
         // the order they are *numbered* in is not.
-        let mut received_sorted = received.clone();
-        let mut expected_sorted = expected.clone();
         let key = |t: &Target| (t.ip.to_string(), t.port, t.protocol);
+        let mut received_sorted: Vec<Target> =
+            received.iter().map(|planned| planned.target).collect();
+        let mut expected_sorted = expected.clone();
         received_sorted.sort_by_key(key);
         expected_sorted.sort_by_key(key);
 

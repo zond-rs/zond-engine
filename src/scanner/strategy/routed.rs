@@ -725,7 +725,8 @@ impl HostScanner for RoutedScanner {
             ScannerKind::Routed,
             targets,
             reason,
-            capture, None,
+            capture,
+            None,
         ));
         Ok(())
     }
@@ -994,7 +995,7 @@ impl RoutedScanner {
         self.audit.record_send(token.is_some());
 
         if let Some(token) = token {
-            self.ledger.arm(target, target, token, now);
+            self.ledger.arm(target, target, token, (), now);
         }
     }
 }

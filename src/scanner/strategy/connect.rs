@@ -26,7 +26,7 @@ use crate::error;
 use crate::model::host::{Host, HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::port::{Port, PortSet, PortState, Protocol};
-use crate::model::target::{Target, TargetMap, TargetSet};
+use crate::model::target::{PlannedTarget, Target, TargetMap, TargetSet};
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::dispatcher::Dispatcher;
 use crate::scanner::pacing::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
@@ -149,7 +149,7 @@ impl PortScanner for ConnectPortScanner {
         vec![Protocol::Tcp]
     }
 
-    async fn scan(&mut self, rx: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
+    async fn scan(&mut self, rx: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         scan(rx, self.concurrency, self.ctx.clone(), self.detection).await
     }
 }
@@ -176,7 +176,7 @@ impl PortScanner for ConnectUdpPortScanner {
         vec![Protocol::Udp]
     }
 
-    async fn scan(&mut self, mut rx: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
+    async fn scan(&mut self, mut rx: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         let ctx = self.ctx.clone();
         let mut pool = ProbePool::new(
             self.concurrency,
@@ -194,7 +194,7 @@ impl PortScanner for ConnectUdpPortScanner {
             }
             probes += 1;
             pool.audit().record_send(true);
-            pool.admit(udp_port_prober(target)).await;
+            pool.admit(udp_port_prober(target.target)).await;
         }
 
         pool.drain().await;
@@ -212,7 +212,7 @@ impl PortScanner for ConnectUdpPortScanner {
 /// [`ScanContext`] store - open, closed and filtered alike, so the list does not
 /// depend on whether the caller had root.
 pub async fn scan(
-    mut rx: mpsc::Receiver<Target>,
+    mut rx: mpsc::Receiver<PlannedTarget>,
     concurrency_limit: usize,
     ctx: ScanContext,
     detection: ServiceDetection,
@@ -234,7 +234,7 @@ pub async fn scan(
         }
         probes += 1;
         pool.audit().record_send(true);
-        pool.admit(port_prober(target, detection)).await;
+        pool.admit(port_prober(target.target, detection)).await;
     }
 
     // Every target dispatched; wait out the probes still in flight.
@@ -508,7 +508,7 @@ pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError>
         probes += 1;
         pool.audit().record_send(true);
         let found = Arc::clone(&found_hosts);
-        pool.admit(prober(target, found)).await;
+        pool.admit(prober(target.target, found)).await;
     }
 
     // Every target dispatched; wait out the probes still in flight.

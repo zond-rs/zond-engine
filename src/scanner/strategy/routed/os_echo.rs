@@ -255,7 +255,7 @@ impl OsEchoScanner {
         if sent {
             self.next_sequence = self.next_sequence.wrapping_add(1);
             self.by_sequence.insert(sequence, target);
-            self.ledger.arm(target, target, sequence, now);
+            self.ledger.arm(target, target, sequence, (), now);
         }
     }
 
@@ -408,7 +408,8 @@ impl HostScanner for OsEchoScanner {
             ScannerKind::OsEcho,
             targets,
             reason,
-            capture, None,
+            capture,
+            None,
         ));
         Ok(())
     }

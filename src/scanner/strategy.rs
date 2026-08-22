@@ -47,7 +47,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::model::port::Protocol;
-use crate::model::target::Target;
+use crate::model::target::PlannedTarget;
 use crate::scanner::session::{ScanContext, ScannerKind};
 
 /// Why one scanning strategy could not start, or could not finish.
@@ -158,7 +158,7 @@ pub trait PortScanner: Send {
     /// Returns `Ok` when the run reached its end, including an end forced by
     /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort), and
     /// `Err` only when the strategy itself could not do its job.
-    async fn scan(&mut self, targets: mpsc::Receiver<Target>) -> Result<(), StrategyError>;
+    async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError>;
 
     /// Second-pass service identification, run once after a successful
     /// [`scan`](PortScanner::scan) that was not aborted.

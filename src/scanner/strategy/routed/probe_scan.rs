@@ -63,10 +63,10 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use crate::journal::settle::{Fate, Settlement};
+use crate::journal::settle::Outcome;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
-use crate::model::target::Target;
+use crate::model::target::PlannedTarget;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::pacing::congestion::CongestionWindow;
 use crate::scanner::pacing::deadline::AdaptiveDeadline;
@@ -103,10 +103,12 @@ pub struct RawProbeScan<T> {
     pub deadline: AdaptiveDeadline,
     /// Probes sent but not yet resolved, together with when each is next due to
     /// be resent or written off.
-    pub ledger: ProbeLedger<ProbeTarget, T>,
+    /// Outstanding probes. The payload is each target's position in the
+    /// plan, handed back when the probe retires so a resume can skip it.
+    pub ledger: ProbeLedger<ProbeTarget, T, u64>,
     /// Scratch space for the probes coming due on one iteration, reused so a
     /// quiet tick allocates nothing.
-    pub due: Vec<Due<ProbeTarget>>,
+    pub due: Vec<Due<ProbeTarget, u64>>,
     /// The source port every probe in this scan is sent from, and so the port
     /// its replies come back to. It is the scan's identity on the wire: the
     /// capture filter narrows to it, and anything addressed elsewhere answered
@@ -280,7 +282,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// first question did not survive, which is the only evidence a port scanner
     /// has that distinguishes being too fast from meeting a firewall. See
     /// [`congestion`](crate::scanner::pacing::congestion).
-    pub fn record_answer(&mut self, resolution: &Resolution) {
+    pub fn record_answer<P: Copy>(&mut self, resolution: &Resolution<P>) {
         self.deadline.mark_activity();
         if let Some(rtt) = resolution.rtt {
             self.deadline.record_rtt(rtt);
@@ -391,8 +393,13 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         }
 
         let capture = self.transport.capture_counts();
-        self.audit
-            .report(audit_tag, probes, reason, capture, Some(self.window.summary()));
+        self.audit.report(
+            audit_tag,
+            probes,
+            reason,
+            capture,
+            Some(self.window.summary()),
+        );
         self.ctx.record_probe_stats(self.audit.stats(
             kind,
             probes,
@@ -454,7 +461,12 @@ pub trait RawPortScan: PortScanner {
     /// be sent is simply not armed: the ledger has already charged the attempt
     /// by the time a retry reaches here, so an unroutable target still runs out
     /// of attempts on schedule rather than waiting outstanding forever.
-    fn probe(&mut self, ip: IpAddr, port: u16, now: Instant);
+    /// Sends one probe. `position` is the target's place in the plan, kept by
+    /// the ledger so it comes back when the probe retires.
+    fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant);
+
+    /// Resends a probe already outstanding. The ledger keeps its position.
+    fn reprobe(&mut self, ip: IpAddr, port: u16, now: Instant);
 
     /// Reads one captured reply and resolves whatever probe it answers.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant);
@@ -466,21 +478,16 @@ pub trait RawPortScan: PortScanner {
     /// came from a spent attempt budget rather than from a packet.
     fn record_port(&mut self, ip: IpAddr, port: u16, state: PortState, sender: Option<IpAddr>);
 
-    /// Records what became of one target, as distinct from the verdict
-    /// [`record_port`](Self::record_port) gave it.
+    /// Records what became of one target, which is a different question from
+    /// the verdict [`record_port`](Self::record_port) gave it.
     ///
-    /// **The two are deliberately not the same call.** Every fate reaches
-    /// `record_port` with the same silence verdict — that is the engine's
-    /// considered choice, because an absent port is the one shortfall a reader
-    /// cannot see. A resume cannot afford the same kindness: skipping a target
-    /// that was never probed produces a merged report claiming coverage it never
-    /// had. So the fate is reported where it is known, and only
-    /// [`Fate::is_settled`] decides what the next sitting may skip.
-    fn settle(&mut self, ip: IpAddr, port: u16, fate: Fate) {
-        let protocol = self.protocol();
-        self.core()
-            .ctx
-            .record_settlement(Settlement::new(ip, port, protocol, fate));
+    /// Every outcome reaches `record_port` with the same silence verdict — the
+    /// engine's considered choice, since an absent port is the shortfall a
+    /// reader cannot see. Only the earned ones carry a position, and only a
+    /// position lets a resume skip a target. See
+    /// [`Outcome`](crate::journal::settle::Outcome).
+    fn settle(&mut self, outcome: Outcome) {
+        self.core().ctx.record_outcome(outcome);
     }
 
     /// Probes `target`, if it is one this scan speaks the protocol for.
@@ -490,9 +497,14 @@ pub trait RawPortScan: PortScanner {
     /// routes by protocol and so should never send one, which is exactly why
     /// this holds: a router that started making mistakes would otherwise have
     /// this scanner probe a UDP port with a TCP segment.
-    fn send_probe(&mut self, target: Target) {
-        if target.protocol == self.protocol() {
-            self.probe(target.ip, target.port, Instant::now());
+    fn send_probe(&mut self, planned: PlannedTarget) {
+        if planned.protocol() == self.protocol() {
+            self.probe(
+                planned.ip(),
+                planned.port(),
+                planned.position,
+                Instant::now(),
+            );
         }
     }
 
@@ -538,19 +550,19 @@ pub trait RawPortScan: PortScanner {
                     if attempt == 2 {
                         self.core_mut().judge_timeout(ip);
                     }
-                    self.probe(ip, port, now);
+                    self.reprobe(ip, port, now);
                 }
                 Due::Exhausted {
                     key: (ip, port),
+                    payload: position,
                     attempts,
                 } => {
                     if attempts == 1 {
                         self.core_mut().judge_timeout(ip);
                     }
                     self.record_port(ip, port, silence, None);
-                    // Earned: asked as many times as the policy allows. The one
-                    // silence a resume may skip.
-                    self.settle(ip, port, Fate::Exhausted);
+                    // Earned: asked as many times as the policy allows.
+                    self.settle(Outcome::Exhausted { position });
                 }
             }
         }
@@ -570,9 +582,8 @@ pub trait RawPortScan: PortScanner {
         let silence = self.silence_means();
         for (ip, port) in self.core_mut().ledger.drain_unresolved() {
             self.record_port(ip, port, silence, None);
-            // Assigned, not earned: the retry schedule was cut off rather than
-            // spent, so the next sitting has to ask again.
-            self.settle(ip, port, Fate::Interrupted);
+            // Assigned, not earned: the schedule was cut off rather than spent.
+            self.settle(Outcome::Interrupted);
         }
     }
 
@@ -597,19 +608,17 @@ pub trait RawPortScan: PortScanner {
     /// is a guarantee of termination that this must not quietly undo. For every
     /// scan smaller than the dispatcher's buffer — which is every scan whose
     /// port list a person wrote — the queue is the whole remainder.
-    fn resolve_unasked(&mut self, targets: &mut mpsc::Receiver<Target>) -> u128 {
+    fn resolve_unasked(&mut self, targets: &mut mpsc::Receiver<PlannedTarget>) -> u128 {
         let protocol = self.protocol();
         let silence = self.silence_means();
 
         let mut unasked = 0;
         while let Ok(target) = targets.try_recv() {
             unasked += 1;
-            if target.protocol == protocol {
-                self.record_port(target.ip, target.port, silence, None);
-                // Nothing was sent, so nothing was learned. The verdict above is
-                // the engine's deliberate kindness to a reader; it must never
-                // read as coverage.
-                self.settle(target.ip, target.port, Fate::Unasked);
+            if target.protocol() == protocol {
+                self.record_port(target.ip(), target.port(), silence, None);
+                // Nothing was sent, so nothing was learned.
+                self.settle(Outcome::Unasked);
             }
         }
         unasked
@@ -651,7 +660,7 @@ pub struct AuditLabels {
 /// short by its own deadline reports the ports it never reached instead of
 /// leaving them off the host entirely, which is the one shortfall a reader
 /// cannot see. See [`RawPortScan::resolve_unasked`] for how far that reaches.
-pub async fn run<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<Target>) {
+pub async fn run<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<PlannedTarget>) {
     // The rate backstop. What paces the scan is `RawProbeScan::window`, which
     // the batch loop below re-checks after every send; this bounds how fast a
     // window's worth of probes may be released, so a defect in the controller
@@ -833,7 +842,7 @@ mod tests {
     #[test]
     fn an_outstanding_probe_holds_the_scan_open_past_a_dry_target_stream() {
         let (mut core, _session) = core();
-        core.ledger.arm(TARGET, (TARGET, 80), (), Instant::now());
+        core.ledger.arm(TARGET, (TARGET, 80), (), 0, Instant::now());
 
         assert_eq!(
             core.stop_reason(true),
@@ -847,7 +856,7 @@ mod tests {
     #[test]
     fn an_abort_outranks_every_other_reason() {
         let (mut core, _session) = core();
-        core.ledger.arm(TARGET, (TARGET, 80), (), Instant::now());
+        core.ledger.arm(TARGET, (TARGET, 80), (), 0, Instant::now());
         core.ctx.handle.abort();
 
         assert_eq!(core.stop_reason(false), Some(StopReason::Aborted));
@@ -884,6 +893,7 @@ mod tests {
         core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
 
         core.record_answer(&Resolution {
+            payload: 0u64,
             rtt: None,
             attempts: 1,
             answered_attempt: Some(1),
@@ -892,6 +902,7 @@ mod tests {
 
         let grown = core.window.capacity();
         core.record_answer(&Resolution {
+            payload: 0u64,
             rtt: None,
             attempts: 2,
             answered_attempt: Some(2),
@@ -963,7 +974,7 @@ mod tests {
         // One port answered, which is what makes this host's silence mean
         // something.
         let now = Instant::now();
-        core.ledger.arm(TARGET, (TARGET, 22), (), now);
+        core.ledger.arm(TARGET, (TARGET, 22), (), 0, now);
         core.ledger.resolve(&(TARGET, 22), None, now);
 
         core.window.record_send();

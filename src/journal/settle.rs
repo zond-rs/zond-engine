@@ -8,286 +8,158 @@
 
 //! # What became of a target, and whether a resume may skip it
 //!
-//! The one correctness-critical distinction in the whole resume design, and the
-//! one the rest of the engine deliberately does not make.
+//! A raw port scan gives the same verdict to a target whose retry budget ran
+//! out, one still mid-schedule when the scan stopped, and one never probed at
+//! all. `RawPortScan::resolve_unasked` explains why, and is right: for a report,
+//! a too-kind verdict beats a silently truncated port list.
 //!
-//! ## The engine conflates five fates on purpose
+//! For a resume it is the worst bug available — a cursor advanced over a target
+//! nobody probed produces a second sitting that skips it and a merged report
+//! claiming coverage it never had.
 //!
-//! A raw port scan gives the same verdict — whatever
-//! [`silence_means`](crate::model::technique::TcpScanTechnique::silence_means)
-//! returns for the technique — to a target whose retry budget ran out, a target
-//! still mid-schedule when the scan stopped, and a target sitting in the queue
-//! that was never probed at all. `RawPortScan::resolve_unasked` says why, and it
-//! is right:
+//! [`Outcome`] makes the distinction unforgeable: **only the settled variants
+//! carry a position**, and a position is the only thing a cursor can advance
+//! over.
 //!
-//! > *"a port reported as this scan's silence alongside a stop reason of
-//! > `DeadlineExpired` is a fact somebody can act on, and an absent port is
-//! > not."*
-//!
-//! For a **report**, that is the correct trade: a too-kind verdict beats a
-//! silently truncated port list, which is the one shortfall a reader cannot see.
-//!
-//! ## The journal must not
-//!
-//! For a **resume**, the same conflation is the worst bug this feature can have.
-//! A watermark that advances over a target nobody ever probed produces a second
-//! sitting that skips it permanently and a merged report that claims coverage it
-//! never had — a scan that silently omits targets and reports success. That is
-//! strictly worse than having no resume at all, because it is invisible.
-//!
-//! So the fate of a target has to be recorded where the fate is *known*, which
-//! is not where the verdict is written.
-//!
-//! ## The trap
-//!
-//! **Do not hook settlement onto `record_port`.** Every one of the five fates
-//! below reaches it, with the same verdict, and hooking there would look correct
-//! in every test that does not truncate a scan. Settlement is decided at the
-//! ledger — [`ProbeLedger`](crate::scanner::pacing::retry::ProbeLedger) already
-//! draws the line exactly right, and says so in its own documentation:
-//!
-//! | Fate | Decided at | Settled |
+//! | Outcome | Decided at | Position |
 //! |---|---|---|
-//! | [`Answered`](Fate::Answered) | `ledger.resolve(..) -> Some` | **yes** |
-//! | [`Exhausted`](Fate::Exhausted) | `Due::Exhausted` — *"the moment a verdict of 'filtered' is earned rather than assumed"* | **yes** |
-//! | [`Interrupted`](Fate::Interrupted) | `ledger.drain_unresolved()` — *"stopping before they could be resolved on their own"* | no |
-//! | [`Unasked`](Fate::Unasked) | `resolve_unasked` — still queued, never sent | no |
-//! | [`Unroutable`](Fate::Unroutable) | the composite router, or no route to the host | no |
+//! | [`Answered`](Outcome::Answered) | `ledger.resolve(..) -> Some` | yes |
+//! | [`Exhausted`](Outcome::Exhausted) | `Due::Exhausted` | yes |
+//! | [`Interrupted`](Outcome::Interrupted) | `ledger.drain_unresolved()` | no |
+//! | [`Unasked`](Outcome::Unasked) | still queued when the scan stopped | no |
+//! | [`Unroutable`](Outcome::Unroutable) | no scanner for the protocol, or no route | no |
 //!
-//! The ledger's own words are the specification. `Due::Exhausted` is *earned*;
-//! `drain_unresolved` is *assumed*. Only what is earned may advance a watermark.
-//!
-//! ## Why re-probing a not-settled target is cheap
-//!
-//! The pessimism costs almost nothing. [`Interrupted`](Fate::Interrupted) is
-//! bounded by what was in flight when the scan stopped, and
-//! [`Unasked`](Fate::Unasked) by what the dispatcher had buffered — together a
-//! few tens of thousands of targets against a plan of millions. Redoing seconds
-//! of a six-hour scan is the correct price for never skipping one.
+//! Unsettled outcomes are counted, not stored. Their total is worth reporting;
+//! which targets they were is not, since every one is re-probed anyway.
 
-use std::net::IpAddr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::model::port::Protocol;
+use super::cursor::{Checkpoint, Cursor};
 
 /// What became of one target in one sitting.
 ///
-/// Ordered by how much the scan actually learned, least to most, so a target
-/// that acquires two fates across a merge keeps the stronger. That ordering is
-/// load-bearing rather than cosmetic: a resumed scan re-probes what the first
-/// sitting left [`Interrupted`](Self::Interrupted), and the second sitting's
-/// [`Answered`](Self::Answered) must win.
+/// Settled variants carry the target's position in the plan's enumeration; see
+/// [`PlannedTarget`](crate::model::target::PlannedTarget).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Fate {
-    /// The router had no scanner for this target's protocol, or the host had no
-    /// route. Nothing was sent and nothing was learned.
-    ///
-    /// **Not settled**, though a resume may well reach the same conclusion: the
-    /// reason is usually a missing privilege or a missing route, and both can
-    /// differ between sittings. Deciding that for the target rather than
-    /// re-asking would bake one run's environment into every later one.
-    Unroutable,
+pub enum Outcome {
+    /// The target answered. **Settled.**
+    Answered {
+        /// Its position in the plan.
+        position: u64,
+    },
 
-    /// Still queued when the scan stopped. Never sent, so its verdict in the
-    /// report is the scan's silence and is, in the engine's own words,
-    /// "arguably too kind".
-    ///
-    /// **Not settled.** This is the fate that makes hooking settlement onto the
-    /// verdict dangerous: it carries a verdict indistinguishable from an earned
-    /// one.
-    Unasked,
+    /// The retry budget was spent without an answer: silence, asked for as many
+    /// times as the policy allows. **Settled** — waiting longer could not have
+    /// changed it.
+    Exhausted {
+        /// Its position in the plan.
+        position: u64,
+    },
 
-    /// Outstanding mid-retry-schedule when the scan stopped, and given the
-    /// silence verdict by `resolve_remaining` rather than by its budget running
-    /// out.
-    ///
-    /// **Not settled.** This is precisely the gap
-    /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) warns
-    /// about — and leaving it unsettled is how the watermark closes it.
+    /// Outstanding mid-retry-schedule when the scan stopped. The schedule was
+    /// cut off rather than spent.
     Interrupted,
 
-    /// The retry budget was spent without an answer. Silence, asked for as many
-    /// times as the policy allows.
-    ///
-    /// **Settled.** Waiting longer in this sitting could not have changed it,
-    /// which is the same standard
-    /// [`StopReason::AttemptsSpent`](crate::scanner::report::StopReason::AttemptsSpent)
-    /// applies to a whole run.
-    Exhausted,
+    /// Still queued when the scan stopped, so nothing was sent.
+    Unasked,
 
-    /// The target answered.
-    ///
-    /// **Settled**, and the only fate that settles positively.
-    Answered,
+    /// No scanner spoke its protocol, or the host had no route — usually a
+    /// missing privilege rather than a fact about the target, and privileges can
+    /// differ between sittings.
+    Unroutable,
 }
 
-impl Fate {
-    /// Whether a resume may skip this target.
-    ///
-    /// The single predicate the cursor consults. `true` only where the sitting
-    /// learned something asking again could not improve on.
-    pub fn is_settled(self) -> bool {
-        matches!(self, Fate::Answered | Fate::Exhausted)
+impl Outcome {
+    /// The position a resume may skip, or `None` where the scan did not earn
+    /// one.
+    pub fn settled_position(self) -> Option<u64> {
+        match self {
+            Outcome::Answered { position } | Outcome::Exhausted { position } => Some(position),
+            Outcome::Interrupted | Outcome::Unasked | Outcome::Unroutable => None,
+        }
     }
 
-    /// The wire name, for the journal and for diagnostics.
+    /// Whether a resume may skip this target.
+    pub fn is_settled(self) -> bool {
+        self.settled_position().is_some()
+    }
+
+    /// The wire name, for diagnostics and for reporting a sitting's shape.
     pub fn name(self) -> &'static str {
         match self {
-            Fate::Unroutable => "unroutable",
-            Fate::Unasked => "unasked",
-            Fate::Interrupted => "interrupted",
-            Fate::Exhausted => "exhausted",
-            Fate::Answered => "answered",
+            Outcome::Answered { .. } => "answered",
+            Outcome::Exhausted { .. } => "exhausted",
+            Outcome::Interrupted => "interrupted",
+            Outcome::Unasked => "unasked",
+            Outcome::Unroutable => "unroutable",
         }
     }
-
-    /// A wire name back into a fate, or `None` for one this build does not know.
-    ///
-    /// Refused rather than guessed, on the reasoning
-    /// [`format`](super::format) gives: reading an unknown fate as
-    /// [`Interrupted`](Self::Interrupted) would be safe and reading it as
-    /// [`Answered`](Self::Answered) would skip a target, and a reader cannot
-    /// tell which it is looking at.
-    pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "unroutable" => Fate::Unroutable,
-            "unasked" => Fate::Unasked,
-            "interrupted" => Fate::Interrupted,
-            "exhausted" => Fate::Exhausted,
-            "answered" => Fate::Answered,
-            _ => return None,
-        })
-    }
 }
 
-/// One target's fate, as a strategy reports it.
+/// How a sitting ended for each of its targets: a cursor over what settled, and
+/// counts of what did not.
 ///
-/// Identified by address, port and transport rather than by a position in the
-/// plan, because a strategy knows what it probed and not where that sat in the
-/// enumeration. [`cursor`](super::cursor) supplies the other half: positions
-/// come from [`TargetMap::iter`](crate::model::target::TargetMap::iter), which
-/// is reproducible, so neither side has to store an ordinal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Settlement {
-    /// The address probed.
-    pub ip: IpAddr,
-    /// The port probed.
-    pub port: u16,
-    /// The transport it was probed over.
-    pub protocol: Protocol,
-    /// What became of it.
-    pub fate: Fate,
-}
-
-impl Settlement {
-    /// Records `fate` for one target.
-    pub fn new(ip: IpAddr, port: u16, protocol: Protocol, fate: Fate) -> Self {
-        Self {
-            ip,
-            port,
-            protocol,
-            fate,
-        }
-    }
-
-    /// Whether a resume may skip this target. See [`Fate::is_settled`].
-    pub fn is_settled(&self) -> bool {
-        self.fate.is_settled()
-    }
-}
-
-/// Where strategies report what became of their targets.
-///
-/// Shaped like the other sinks on
-/// [`ScanContext`](crate::scanner::session::ScanContext) —
-/// `record_failure`, `record_unroutable` — because it is the same kind of thing:
-/// a fact about the run that the strategy is the only one who knows, written
-/// once and drained by whoever assembles the outcome.
-///
-/// ## On identity rather than position
-///
-/// The cursor counts positions in the dispatcher's enumeration; this carries an
-/// address, a port and a transport. Nothing has to carry an ordinal to bridge
-/// them, because
-/// [`TargetMap::iter`](crate::model::target::TargetMap::iter) is the *same*
-/// walk the dispatcher probes by and yields the same targets in the same order
-/// every time — so a position can be recovered by walking rather than stored by
-/// every `Target` in a scan of millions.
-///
-/// ## On keeping the strongest fate
-///
-/// A target may be reported twice — a probe exhausted by `service_retries` and
-/// then swept again by a stop path that does not know it already had a verdict.
-/// The log keeps the [greatest](Fate) fate seen, so a later `Interrupted` can
-/// never demote an earlier `Answered`. **Only strengthening is possible**, which
-/// is the same property `Host::add_port` maintains about port states and for the
-/// same reason: a merge must not be able to lose a finding.
+/// Memory follows how far out of order the scan settled, never how many targets
+/// it had. A plan of sixteen billion costs the same here as one of a thousand.
 #[derive(Debug, Default)]
-pub struct SettlementLog {
-    entries: Mutex<std::collections::BTreeMap<(IpAddr, u16, Protocol), Fate>>,
+pub struct Settlements {
+    cursor: Mutex<Cursor>,
+    answered: AtomicU64,
+    exhausted: AtomicU64,
+    interrupted: AtomicU64,
+    unasked: AtomicU64,
+    unroutable: AtomicU64,
 }
 
-impl SettlementLog {
-    /// Records one target's fate, keeping the stronger of it and anything
-    /// already recorded for that target.
-    pub fn record(&self, settlement: Settlement) {
-        let key = (settlement.ip, settlement.port, settlement.protocol);
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries
-            .entry(key)
-            .and_modify(|fate| *fate = (*fate).max(settlement.fate))
-            .or_insert(settlement.fate);
+impl Settlements {
+    /// Begins from a checkpoint, so a resumed sitting keeps what the first
+    /// settled.
+    pub fn resuming(checkpoint: &Checkpoint) -> Self {
+        Self {
+            cursor: Mutex::new(Cursor::from_checkpoint(checkpoint)),
+            ..Self::default()
+        }
     }
 
-    /// How many targets have a fate recorded.
-    pub fn len(&self) -> usize {
-        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.len()
+    /// Records what became of one target.
+    pub fn record(&self, outcome: Outcome) {
+        self.counter(outcome).fetch_add(1, Ordering::Relaxed);
+
+        if let Some(position) = outcome.settled_position() {
+            self.with_cursor(|cursor| cursor.settle(position));
+        }
     }
 
-    /// Whether nothing has been recorded.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    /// A snapshot to write down.
+    pub fn checkpoint(&self) -> Checkpoint {
+        self.with_cursor(|cursor| cursor.checkpoint())
     }
 
-    /// The fate recorded for one target, if any.
-    pub fn fate_of(&self, ip: IpAddr, port: u16, protocol: Protocol) -> Option<Fate> {
-        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.get(&(ip, port, protocol)).copied()
+    /// How many targets are settled in total, this sitting and any it resumed.
+    pub fn settled_count(&self) -> u64 {
+        self.with_cursor(|cursor| cursor.settled_count())
     }
 
-    /// Every target recorded, in address-then-port order, and what became of it.
-    pub fn snapshot(&self) -> Vec<Settlement> {
-        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries
-            .iter()
-            .map(|(&(ip, port, protocol), &fate)| Settlement::new(ip, port, protocol, fate))
-            .collect()
+    /// How many targets ended in `outcome`'s variant **this sitting**. The
+    /// position of a settled variant is ignored; any will do.
+    pub fn count(&self, outcome: Outcome) -> u64 {
+        self.counter(outcome).load(Ordering::Relaxed)
     }
 
-    /// Every target a resume may skip.
-    ///
-    /// The only reader the cursor needs. Everything absent from this list is
-    /// re-probed, whether it was reported as not settled or never reported at
-    /// all — which is what makes a strategy that forgets to report fail safe.
-    pub fn settled(&self) -> Vec<Settlement> {
-        self.snapshot()
-            .into_iter()
-            .filter(Settlement::is_settled)
-            .collect()
+    fn counter(&self, outcome: Outcome) -> &AtomicU64 {
+        match outcome {
+            Outcome::Answered { .. } => &self.answered,
+            Outcome::Exhausted { .. } => &self.exhausted,
+            Outcome::Interrupted => &self.interrupted,
+            Outcome::Unasked => &self.unasked,
+            Outcome::Unroutable => &self.unroutable,
+        }
     }
 
-    /// Empties the log, yielding what it held.
-    pub fn drain(&self) -> Vec<Settlement> {
-        let taken = {
-            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *entries)
-        };
-
-        taken
-            .into_iter()
-            .map(|((ip, port, protocol), fate)| Settlement::new(ip, port, protocol, fate))
-            .collect()
+    fn with_cursor<R>(&self, read: impl FnOnce(&mut Cursor) -> R) -> R {
+        let mut cursor = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
+        read(&mut cursor)
     }
 }
 
@@ -304,136 +176,88 @@ impl SettlementLog {
 mod tests {
     use super::*;
 
-    fn ip(last: u8) -> IpAddr {
-        IpAddr::from([192, 0, 2, last])
-    }
-
-    fn log() -> SettlementLog {
-        SettlementLog::default()
-    }
-
-    /// The whole rule, in one assertion. Everything else in this module exists
-    /// to make sure the right fate reaches it.
+    /// The rule the type exists to enforce.
     #[test]
-    fn only_an_earned_verdict_settles() {
-        assert!(Fate::Answered.is_settled());
-        assert!(Fate::Exhausted.is_settled());
-
-        assert!(!Fate::Interrupted.is_settled());
-        assert!(!Fate::Unasked.is_settled());
-        assert!(!Fate::Unroutable.is_settled());
-    }
-
-    /// A truncated run is the case this module exists for: a scan cut short
-    /// gives every outstanding and unasked target the same *verdict* as an
-    /// exhausted one, and must give none of them the same *fate*.
-    #[test]
-    fn a_truncated_run_settles_only_what_it_finished() {
-        let log = log();
-
-        // What the run actually completed before it was cut short.
-        log.record(Settlement::new(ip(1), 22, Protocol::Tcp, Fate::Answered));
-        log.record(Settlement::new(ip(1), 80, Protocol::Tcp, Fate::Exhausted));
-
-        // What `resolve_remaining` swept up when the loop ended.
-        log.record(Settlement::new(ip(2), 22, Protocol::Tcp, Fate::Interrupted));
-
-        // What `resolve_unasked` drained from the queue, never probed.
-        log.record(Settlement::new(ip(3), 22, Protocol::Tcp, Fate::Unasked));
-        log.record(Settlement::new(ip(3), 80, Protocol::Tcp, Fate::Unasked));
-
-        let settled = log.settled();
-        assert_eq!(settled.len(), 2, "{settled:?}");
-        assert!(settled.iter().all(Settlement::is_settled));
-
-        for (ip, port) in [(ip(2), 22), (ip(3), 22), (ip(3), 80)] {
-            assert!(
-                !log.fate_of(ip, port, Protocol::Tcp)
-                    .expect("reported")
-                    .is_settled(),
-                "{ip}:{port} was never asked to completion and must be re-probed"
-            );
-        }
-    }
-
-    /// A target reported twice keeps the stronger fate, whichever order the two
-    /// reports arrive in. A stop path sweeping a target that already earned a
-    /// verdict must not demote it.
-    #[test]
-    fn a_later_report_can_strengthen_a_fate_but_never_weaken_it() {
-        for (first, second) in [
-            (Fate::Answered, Fate::Interrupted),
-            (Fate::Interrupted, Fate::Answered),
-        ] {
-            let log = log();
-            log.record(Settlement::new(ip(1), 22, Protocol::Tcp, first));
-            log.record(Settlement::new(ip(1), 22, Protocol::Tcp, second));
-
-            assert_eq!(
-                log.fate_of(ip(1), 22, Protocol::Tcp),
-                Some(Fate::Answered),
-                "{first:?} then {second:?} lost the answer"
-            );
-        }
-    }
-
-    /// The two transports of one number are two targets, and settling one must
-    /// not settle the other. `Host::ports` keys on the pair for the same reason.
-    #[test]
-    fn the_two_transports_of_one_port_settle_independently() {
-        let log = log();
-        log.record(Settlement::new(ip(1), 53, Protocol::Tcp, Fate::Answered));
-        log.record(Settlement::new(ip(1), 53, Protocol::Udp, Fate::Unasked));
-
-        assert_eq!(log.fate_of(ip(1), 53, Protocol::Tcp), Some(Fate::Answered));
-        assert_eq!(log.fate_of(ip(1), 53, Protocol::Udp), Some(Fate::Unasked));
-        assert_eq!(log.settled().len(), 1);
-    }
-
-    /// A target nobody reported must be re-probed rather than assumed done, so
-    /// a strategy that forgets to report costs redundant work and never
-    /// coverage.
-    #[test]
-    fn an_unreported_target_is_not_settled() {
-        let log = log();
-        log.record(Settlement::new(ip(1), 22, Protocol::Tcp, Fate::Answered));
-
-        assert_eq!(log.fate_of(ip(9), 22, Protocol::Tcp), None);
-        assert!(
-            !log.settled().iter().any(|s| s.ip == ip(9) && s.port == 22),
-            "a target with no report must never appear as settled"
+    fn only_an_earned_outcome_carries_a_position() {
+        assert_eq!(
+            Outcome::Answered { position: 7 }.settled_position(),
+            Some(7)
         );
+        assert_eq!(
+            Outcome::Exhausted { position: 7 }.settled_position(),
+            Some(7)
+        );
+
+        for assigned in [Outcome::Interrupted, Outcome::Unasked, Outcome::Unroutable] {
+            assert_eq!(assigned.settled_position(), None, "{}", assigned.name());
+            assert!(!assigned.is_settled());
+        }
     }
 
-    /// Draining hands over what was held and leaves the log empty, so a second
-    /// sitting starts with nothing inherited from the first.
+    /// A sitting cut short gives every outstanding and unasked target the same
+    /// *verdict* as an exhausted one, and must advance the cursor over none.
     #[test]
-    fn draining_empties_the_log() {
-        let log = log();
-        log.record(Settlement::new(ip(1), 22, Protocol::Tcp, Fate::Answered));
-        log.record(Settlement::new(ip(2), 22, Protocol::Tcp, Fate::Unasked));
+    fn a_cut_short_sitting_settles_only_what_it_earned() {
+        let settlements = Settlements::default();
 
-        assert_eq!(log.drain().len(), 2);
-        assert!(log.is_empty());
-        assert_eq!(log.fate_of(ip(1), 22, Protocol::Tcp), None);
-    }
-
-    /// The wire names round-trip, and an unknown one is refused rather than
-    /// falling into a neighbouring fate — where the neighbours differ on whether
-    /// a target is skipped.
-    #[test]
-    fn fate_names_round_trip_and_refuse_the_unknown() {
-        for fate in [
-            Fate::Unroutable,
-            Fate::Unasked,
-            Fate::Interrupted,
-            Fate::Exhausted,
-            Fate::Answered,
-        ] {
-            assert_eq!(Fate::from_name(fate.name()), Some(fate), "{}", fate.name());
+        settlements.record(Outcome::Answered { position: 0 });
+        settlements.record(Outcome::Exhausted { position: 1 });
+        for _ in 0..500 {
+            settlements.record(Outcome::Interrupted);
+            settlements.record(Outcome::Unasked);
         }
 
-        assert_eq!(Fate::from_name("settled"), None);
-        assert_eq!(Fate::from_name(""), None);
+        let checkpoint = settlements.checkpoint();
+        assert_eq!(checkpoint.watermark, 2);
+        assert!(checkpoint.settled_above.is_empty());
+        assert_eq!(settlements.settled_count(), 2);
+        assert_eq!(settlements.count(Outcome::Interrupted), 500);
+    }
+
+    /// Unsettled outcomes cost a counter each, whatever their number, so a scan
+    /// that abandons millions of targets pays no memory for them.
+    #[test]
+    fn unsettled_outcomes_are_counted_rather_than_stored() {
+        let settlements = Settlements::default();
+        for _ in 0..100_000 {
+            settlements.record(Outcome::Unasked);
+        }
+
+        assert_eq!(settlements.count(Outcome::Unasked), 100_000);
+        assert_eq!(settlements.settled_count(), 0);
+        assert_eq!(settlements.checkpoint(), Checkpoint::default());
+    }
+
+    /// One unearned position holds the watermark however much settles above it.
+    #[test]
+    fn one_unearned_position_stalls_the_watermark() {
+        let settlements = Settlements::default();
+
+        settlements.record(Outcome::Answered { position: 0 });
+        // Position 1 was interrupted: it carries no position, so it is re-probed.
+        settlements.record(Outcome::Interrupted);
+        for position in 2..1_000 {
+            settlements.record(Outcome::Answered { position });
+        }
+
+        assert_eq!(settlements.checkpoint().watermark, 1);
+        assert_eq!(settlements.settled_count(), 999);
+    }
+
+    /// A resumed sitting starts from what the first settled, and counts only its
+    /// own work.
+    #[test]
+    fn resuming_keeps_the_earlier_sittings_progress() {
+        let first = Settlements::default();
+        for position in 0..10 {
+            first.record(Outcome::Answered { position });
+        }
+
+        let second = Settlements::resuming(&first.checkpoint());
+        assert_eq!(second.settled_count(), 10);
+        assert_eq!(second.count(Outcome::Answered { position: 0 }), 0);
+
+        second.record(Outcome::Exhausted { position: 10 });
+        assert_eq!(second.checkpoint().watermark, 11);
     }
 }

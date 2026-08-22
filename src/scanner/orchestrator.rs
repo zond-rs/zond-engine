@@ -45,7 +45,7 @@ use crate::model::ip::range::IpRange;
 use crate::model::{
     ip::set::IpSet,
     port::{Discovery as PortDiscovery, Port, PortState, Protocol, ScanResponse},
-    target::{Target, TargetMap},
+    target::{PlannedTarget, TargetMap},
     technique::TcpScanTechnique,
 };
 use crate::scanner::pacing::limits::CONNECT_CONCURRENCY;
@@ -288,7 +288,13 @@ pub(super) fn build_port_scanner(
 
     BuiltPortScan {
         scanner: Box::new(strategy::composite::CompositePortScanner::new(
-            ensure_coverage(scanners, ctx, technique, &intended, tuning.service_detection),
+            ensure_coverage(
+                scanners,
+                ctx,
+                technique,
+                &intended,
+                tuning.service_detection,
+            ),
             ctx.clone(),
         )),
         opened,
@@ -393,7 +399,7 @@ impl BuiltPortScan {
 /// scan (host enrichment and DNS) still finishes.
 pub(super) async fn run_port_scan(
     mut scanner: Box<dyn PortScanner>,
-    rx: mpsc::Receiver<Target>,
+    rx: mpsc::Receiver<PlannedTarget>,
     ctx: &ScanContext,
 ) {
     let kind = scanner.kind();
@@ -866,7 +872,10 @@ mod tests {
             self.0.clone()
         }
 
-        async fn scan(&mut self, _targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
+        async fn scan(
+            &mut self,
+            _targets: mpsc::Receiver<PlannedTarget>,
+        ) -> Result<(), StrategyError> {
             Ok(())
         }
     }

@@ -24,9 +24,9 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::journal::settle::{Fate, Settlement};
+use crate::journal::settle::Outcome;
 use crate::model::port::Protocol;
-use crate::model::target::Target;
+use crate::model::target::PlannedTarget;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{PortScanner, StrategyError};
 
@@ -66,10 +66,13 @@ impl PortScanner for CompositePortScanner {
         protocols
     }
 
-    async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
+    async fn scan(
+        &mut self,
+        mut targets: mpsc::Receiver<PlannedTarget>,
+    ) -> Result<(), StrategyError> {
         struct Route {
             supported_protocols: Vec<Protocol>,
-            tx: mpsc::Sender<Target>,
+            tx: mpsc::Sender<PlannedTarget>,
         }
 
         let mut routes = Vec::new();
@@ -105,37 +108,17 @@ impl PortScanner for CompositePortScanner {
         while let Some(target) = targets.recv().await {
             match routes
                 .iter()
-                .find(|route| route.supported_protocols.contains(&target.protocol))
+                .find(|route| route.supported_protocols.contains(&target.protocol()))
             {
                 Some(route) => {
-                    // Recorded before the send, because after it the target has
-                    // moved and this is the last point that still holds it. A
-                    // target that *is* delivered settles at its scanner and
-                    // this fate is superseded there — `SettlementLog` keeps the
-                    // stronger of the two, so the ordering of the two reports
-                    // does not matter.
-                    let undelivered = Settlement::new(
-                        target.ip,
-                        target.port,
-                        target.protocol,
-                        Fate::Unroutable,
-                    );
                     if route.tx.send(target).await.is_err() {
                         undeliverable += 1;
-                        self.ctx.record_settlement(undelivered);
+                        self.ctx.record_outcome(Outcome::Unroutable);
                     }
                 }
                 None => {
                     unroutable += 1;
-                    // No scanner speaks this protocol — usually a missing
-                    // privilege rather than a fact about the target, and both
-                    // can differ between sittings. Never settled.
-                    self.ctx.record_settlement(Settlement::new(
-                        target.ip,
-                        target.port,
-                        target.protocol,
-                        Fate::Unroutable,
-                    ));
+                    self.ctx.record_outcome(Outcome::Unroutable);
                 }
             }
         }
@@ -235,6 +218,7 @@ fn missed(unroutable: usize, undeliverable: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::target::Target;
     use crate::scanner::session::ScanSession;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::{Arc, Mutex};
@@ -286,7 +270,10 @@ mod tests {
             self.supported.clone()
         }
 
-        async fn scan(&mut self, mut targets: mpsc::Receiver<Target>) -> Result<(), StrategyError> {
+        async fn scan(
+            &mut self,
+            mut targets: mpsc::Receiver<PlannedTarget>,
+        ) -> Result<(), StrategyError> {
             match self.behaviour {
                 Behaviour::Fail(reason) => return Err(StrategyError::Probe(reason.into())),
                 Behaviour::Panic => panic!("scanner bug"),
@@ -294,7 +281,7 @@ mod tests {
             }
 
             while let Some(t) = targets.recv().await {
-                self.received.lock().unwrap().push(t);
+                self.received.lock().unwrap().push(t.target);
             }
             Ok(())
         }
@@ -317,8 +304,10 @@ mod tests {
         let (_session, ctx) = ScanSession::new();
         let mut composite = CompositePortScanner::new(scanners, ctx);
         let (tx, rx) = mpsc::channel(16);
-        for t in targets {
-            tx.send(t).await.unwrap();
+        for (position, t) in targets.into_iter().enumerate() {
+            tx.send(PlannedTarget::new(position as u64, t))
+                .await
+                .unwrap();
         }
         drop(tx);
         composite.scan(rx).await
@@ -348,8 +337,8 @@ mod tests {
         };
 
         // Send targets
-        tx.send(target_tcp).await.unwrap();
-        tx.send(target_udp).await.unwrap();
+        tx.send(PlannedTarget::new(0, target_tcp)).await.unwrap();
+        tx.send(PlannedTarget::new(1, target_udp)).await.unwrap();
         drop(tx); // Signal EOF
 
         // Run scanner
@@ -377,7 +366,9 @@ mod tests {
             CompositePortScanner::new(vec![Box::new(failing), Box::new(working)], ctx);
 
         let (tx, rx) = mpsc::channel(16);
-        tx.send(target(Protocol::Udp, 53)).await.unwrap();
+        tx.send(PlannedTarget::new(0, target(Protocol::Udp, 53)))
+            .await
+            .unwrap();
         drop(tx);
 
         let err = composite.scan(rx).await.expect_err("the failure surfaces");
@@ -435,8 +426,13 @@ mod tests {
 
         let mut composite = CompositePortScanner::new(vec![Box::new(tcp_scanner)], ctx.clone());
         let (tx, rx) = mpsc::channel(16);
-        for t in [target(Protocol::Udp, 53), target(Protocol::Udp, 161)] {
-            tx.send(t).await.unwrap();
+        for (position, t) in [target(Protocol::Udp, 53), target(Protocol::Udp, 161)]
+            .into_iter()
+            .enumerate()
+        {
+            tx.send(PlannedTarget::new(position as u64, t))
+                .await
+                .unwrap();
         }
         drop(tx);
         composite
@@ -463,7 +459,9 @@ mod tests {
 
         let mut composite = CompositePortScanner::new(vec![Box::new(tcp_scanner)], ctx.clone());
         let (tx, rx) = mpsc::channel(16);
-        tx.send(target(Protocol::Tcp, 80)).await.unwrap();
+        tx.send(PlannedTarget::new(0, target(Protocol::Tcp, 80)))
+            .await
+            .unwrap();
         drop(tx);
         composite.scan(rx).await.unwrap();
 

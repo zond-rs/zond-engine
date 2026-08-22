@@ -442,12 +442,15 @@ impl HostScanner for LocalScanner {
         // reader thread rather than a kernel capture, so what the kernel dropped
         // is unknowable here rather than zero.
         let targets = self.ip_set.len();
-        self.audit.report("local-discovery", targets, reason, None, None);
-        self.ctx
-            .record_probe_stats(
-                self.audit
-                    .stats(ScannerKind::Local, targets, reason, None, None),
-            );
+        self.audit
+            .report("local-discovery", targets, reason, None, None);
+        self.ctx.record_probe_stats(self.audit.stats(
+            ScannerKind::Local,
+            targets,
+            reason,
+            None,
+            None,
+        ));
         Ok(())
     }
 }
@@ -593,7 +596,7 @@ impl LocalScanner {
         if ip.is_ipv6() {
             self.ipv6.record_asked(ip, now);
         } else {
-            self.ledger.arm(ip, ip, (), now);
+            self.ledger.arm(ip, ip, (), (), now);
         }
     }
 
@@ -698,7 +701,7 @@ impl LocalScanner {
         if target.is_ipv6() {
             self.ipv6.record_asked(target, now);
         } else {
-            self.ledger.arm(target, target, (), now);
+            self.ledger.arm(target, target, (), (), now);
         }
     }
 

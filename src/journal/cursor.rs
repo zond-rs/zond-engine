@@ -47,12 +47,10 @@
 //!
 //! ## Only settled positions are recorded
 //!
-//! What may enter here is decided by [`Fate::is_settled`](super::settle::Fate),
-//! and nothing else. A position that was interrupted, never asked, or never
-//! routed does not appear, so the watermark stalls behind it and the next
-//! sitting asks again. Every way of being wrong about a target resolves to
-//! re-probing it, which costs a packet; the opposite mistake costs coverage
-//! nobody can see is missing.
+//! A position reaches here only from [`Outcome`](super::settle::Outcome)'s
+//! settled variants — the only ones that carry one. A target that was
+//! interrupted, never asked, or never routed has no position to offer, so the
+//! watermark stalls behind it and the next sitting asks again.
 
 use std::collections::BTreeSet;
 

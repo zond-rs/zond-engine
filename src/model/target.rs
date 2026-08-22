@@ -59,6 +59,46 @@ pub struct Target {
     pub protocol: Protocol,
 }
 
+/// A target together with its position in the plan it came from.
+///
+/// The position is the target's index in [`TargetMap::iter`], which is
+/// reproducible for a given plan — so it names the target without storing an
+/// address, and a journal can record how far a scan got in a few bytes.
+///
+/// Carried alongside [`Target`] rather than folded into it, because a target
+/// that came from a file or a hand-built set belongs to no plan and has no
+/// position. Only the dispatcher numbers targets, and only what it emits is
+/// wrapped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlannedTarget {
+    /// Where in the plan's enumeration this target sits.
+    pub position: u64,
+    /// What to probe.
+    pub target: Target,
+}
+
+impl PlannedTarget {
+    /// Pairs `target` with its position.
+    pub fn new(position: u64, target: Target) -> Self {
+        Self { position, target }
+    }
+
+    /// The address to probe.
+    pub fn ip(&self) -> IpAddr {
+        self.target.ip
+    }
+
+    /// The port to probe.
+    pub fn port(&self) -> u16 {
+        self.target.port
+    }
+
+    /// The transport to probe it over.
+    pub fn protocol(&self) -> Protocol {
+        self.target.protocol
+    }
+}
+
 /// A set of addresses paired with the ports to try on each of them.
 ///
 /// The addresses are merged for this type's whole life. [`new`](Self::new)
