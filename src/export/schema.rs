@@ -33,7 +33,7 @@
 //! These hold everywhere, so a consumer learns them once:
 //!
 //! - **Timestamps are RFC 3339 strings in UTC**, to microsecond precision. Never
-//!   epoch floats; see [`time`](super::time) for why.
+//!   epoch floats; see [`time`](crate::format::time) for why.
 //! - **Durations are integers of microseconds**, in a field whose name ends in
 //!   `_us`. The unit is in the name because a bare `timeout` field is a
 //!   support ticket waiting to happen.
@@ -69,15 +69,15 @@ use serde::ser::{SerializeSeq, Serializer};
 use crate::config::SendMode;
 use crate::config::{RetryConfig, ScanEffort};
 use crate::export::ExportOptions;
-use crate::export::time::rfc3339;
+use crate::format::time::rfc3339;
 use crate::model::capture::CaptureCounts;
 use crate::model::host::{
     HardwareInfo, Hop, Host, HostStatus, HostTelemetry, OsFingerprint, StatusReason,
 };
 use crate::model::ip::range::IpRange;
-use crate::model::port::{CertificateInfo, Discovery, Port, PortState, Security, Service};
+use crate::model::port::{CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service};
 use crate::scanner::report::{
-    ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, ScanPhase, ScanReport, ScanSettings,
+    ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, PortScope, ProbeStats, ScanPhase, ScanReport, ScanSettings,
     ScanSummary, ScannerFailure, TargetScope,
 };
 
@@ -103,8 +103,8 @@ pub use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
 // apart. Re-exported rather than called through, since these appear in the
 // export's hot paths and a caller should not have to know where they live.
 pub use crate::record::wire::{
-    host_status_name, network_role_name, port_state_name, protocol_name, scan_kind_name,
-    scan_response_name, scanner_kind_name, status_protocol_name, stop_reason_name,
+    host_status_name, network_role_name, port_scope_name, port_state_name, protocol_name,
+    scan_kind_name, scan_response_name, scanner_kind_name, status_protocol_name, stop_reason_name,
 };
 
 /// The wire name of a send mode.
@@ -538,6 +538,13 @@ pub struct ScopeDto {
     /// rather than as a plausible-looking number. The phase `kind` tells the
     /// two apart.
     pub probes: Option<String>,
+    /// Which ports the phase walked, and whether it walked the same ones for
+    /// every address.
+    ///
+    /// `null` where the record does not say, which is what a report rebuilt from
+    /// another tool's output or from a build older than this field carries.
+    /// `probes` counts these combinations; this names the ports they were.
+    pub ports: Option<PortScopeDto>,
     /// The transport protocols in scope, ascending. Empty on a discovery phase,
     /// whose probes are chosen by the strategy rather than by the caller.
     pub protocols: Vec<&'static str>,
@@ -561,6 +568,40 @@ pub struct ScopeDto {
     pub withheld: String,
 }
 
+/// Which ports a phase walked.
+///
+/// Two fields rather than one, because a set of ports on its own does not say
+/// what may be concluded from it. `kind` is what does.
+#[derive(Debug, Clone, Serialize)]
+pub struct PortScopeDto {
+    /// `none` for a phase that walked no ports, `every` where each address was
+    /// walked for the same set, and `mixed` where they differed and `spec` is
+    /// their union.
+    ///
+    /// Only `every` supports concluding that a particular endpoint of a covered
+    /// address was probed. Under `mixed`, a port in the set was walked for at
+    /// least one address and not necessarily for any given one — though a port
+    /// *absent* from it was walked for none.
+    pub kind: &'static str,
+    /// The ports, written as the specification a scanner takes: comma
+    /// separated, `start-end` for a run, `u:` prefixing the UDP half. Empty
+    /// under `none`.
+    pub spec: String,
+}
+
+impl PortScopeDto {
+    /// Renders a port scope, or `None` where the record does not state one.
+    pub fn new(scope: &PortScope) -> Option<Self> {
+        match scope {
+            PortScope::Unstated => None,
+            other => Some(Self {
+                kind: port_scope_name(other),
+                spec: other.ports().map(PortSet::to_string).unwrap_or_default(),
+            }),
+        }
+    }
+}
+
 impl ScopeDto {
     /// Renders a recorded scope.
     pub fn new(scope: &TargetScope) -> Self {
@@ -568,6 +609,7 @@ impl ScopeDto {
             ranges: scope.ranges().iter().map(RangeDto::new).collect(),
             addresses: scope.addresses().to_string(),
             probes: scope.probes().map(|count| count.to_string()),
+            ports: PortScopeDto::new(scope.ports()),
             protocols: scope
                 .protocols()
                 .iter()
@@ -798,6 +840,12 @@ pub struct WindowDto {
     pub peak: u64,
     /// How many times it was cut back.
     pub reductions: u32,
+    /// Whether the window was allowed to move at all.
+    ///
+    /// A fixed window and an adaptive one that never had to move record the same
+    /// `capacity`, `peak` and `reductions`, and mean quite different things: the
+    /// first was told not to adapt, the second was never pushed.
+    pub adaptive: bool,
     /// Whether it ended cut back as far as it is permitted to go — the state
     /// that says the scan was still being outrun when it stopped.
     pub at_floor: bool,
@@ -849,6 +897,7 @@ impl ProbeStatsDto {
                 capacity: window.capacity as u64,
                 peak: window.peak as u64,
                 reductions: window.reductions,
+                adaptive: window.adaptive,
                 at_floor: window.at_floor,
             }),
         }

@@ -21,6 +21,16 @@
 //! the other, and they are between them the whole of this crate's contact with
 //! the outside world's file formats.
 //!
+//! ## Targets in, and findings in
+//!
+//! Two directions, kept apart. The readers at this level answer "what should I
+//! scan next", and are narrow on purpose: a report read here becomes a target
+//! list and everything else in the document is skipped. [`report`] answers "what
+//! did this scan find", and builds the whole
+//! [`ScanReport`](crate::scanner::report::ScanReport) — which is what lets
+//! [`diff`](crate::diff) compare a scan another tool performed against one this
+//! engine ran.
+//!
 //! ## A source is not a format
 //!
 //! Reading from a pipe is not a format; it is a place bytes come from. So this
@@ -83,8 +93,19 @@ pub mod json;
 #[cfg(feature = "import-nmap")]
 pub mod nmap;
 
+// The hardened XML pull parser both nmap readers share. Not public: it is this
+// module's own machinery, and a consumer wanting to parse XML has a hundred
+// crates to choose from that are not confined to what an nmap document needs.
+#[cfg(feature = "import-nmap")]
+pub(crate) mod xml;
+
 #[cfg(feature = "import-settings")]
 pub mod settings;
+
+// Reading a document for what a scan *found*, rather than for what to scan
+// next. Gated on nothing of its own: each reader inside carries the feature of
+// the format it reads.
+pub mod report;
 
 use std::fmt;
 use std::io::BufRead;

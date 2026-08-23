@@ -96,7 +96,7 @@ pub const TARPIT_OPEN_PORTS: usize = 1_000;
 /// conclude them, and the enum is `#[non_exhaustive]` so that adding them costs
 /// a recompile rather than a major version.
 #[non_exhaustive]
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum NetworkRole {
     /// Reported more ports **open** than any machine plausibly runs services on.
     ///

@@ -85,11 +85,12 @@ use std::fmt::{self, Write as _};
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::export::schema::ENGINE_NAME;
+use crate::export::schema::{ENGINE_NAME, protocol_name};
 use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, PortState, Protocol};
-use crate::scanner::report::ScanReport;
+use crate::model::technique::TcpScanTechnique;
+use crate::scanner::report::{ScanPhase, ScanReport};
 
 /// The format's name in errors.
 const FORMAT: &str = "nmap XML";
@@ -149,9 +150,16 @@ impl Exporter for NmapXmlExporter {
             XML_OUTPUT_VERSION,
         )?;
 
+        // One per transport per phase, as nmap writes them. This is the
+        // element that tells a consumer which ports were looked at, and so the
+        // difference between a port absent because it was closed and one absent
+        // because nobody asked.
+        for phase in report.phases() {
+            write_scan_info(out, phase)?;
+        }
+
         // Written because every consumer reads it and a missing one is an
-        // awkward absence; deliberately not padded out with a services list
-        // this engine does not record per scan.
+        // awkward absence.
         writeln!(out, r#"<verbose level="0"/>"#)?;
         writeln!(out, r#"<debugging level="0"/>"#)?;
 
@@ -213,6 +221,70 @@ impl Exporter for NmapXmlExporter {
 /// omitting that part of the range was deliberately not covered, and a report
 /// that overstates its own coverage is the exact failure this policy exists to
 /// prevent.
+/// Writes one `<scaninfo>` per transport the phase walked ports on.
+///
+/// Nothing is written for a phase whose port scope is not recorded, and nothing
+/// for a discovery sweep: an element claiming zero services would read as a scan
+/// that looked at no ports, which is a different statement from not saying.
+fn write_scan_info(out: &mut dyn Write, phase: &ScanPhase) -> Result<(), ExportError> {
+    let Some(ports) = phase.targets().ports().ports() else {
+        return Ok(());
+    };
+
+    for protocol in [Protocol::Tcp, Protocol::Udp] {
+        let ranges = ports.ranges(protocol);
+        if ranges.is_empty() {
+            continue;
+        }
+
+        let services = ranges
+            .iter()
+            .map(|range| {
+                if range.start() == range.end() {
+                    range.start().to_string()
+                } else {
+                    format!("{}-{}", range.start(), range.end())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+
+        writeln!(
+            out,
+            r#"<scaninfo type="{}" protocol="{}" numservices="{}" services="{}"/>"#,
+            scan_type(phase, protocol),
+            protocol_name(protocol),
+            ports.len_on(protocol),
+            Attr(&services),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// The scan type in nmap's vocabulary.
+///
+/// A UDP scan is `udp` whatever the TCP technique was, and an unprivileged phase
+/// is `connect` for the same reason nmap's is: no raw segment went out, so
+/// naming the technique would describe a probe that was never sent.
+fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
+    if protocol == Protocol::Udp {
+        return "udp";
+    }
+    if !phase.privileged() {
+        return "connect";
+    }
+
+    match phase.settings().tcp_technique {
+        TcpScanTechnique::Syn => "syn",
+        TcpScanTechnique::Fin => "fin",
+        TcpScanTechnique::Null => "null",
+        TcpScanTechnique::Xmas => "xmas",
+        TcpScanTechnique::Maimon => "maimon",
+        TcpScanTechnique::Ack => "ack",
+    }
+}
+
 fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), ExportError> {
     let mut excluded: Vec<String> = Vec::new();
     for phase in report.phases() {
@@ -534,7 +606,7 @@ fn epoch_seconds(time: SystemTime) -> u64 {
 /// every other document this engine emits already says. Consumers parse the
 /// numeric field beside it; this one is for a person.
 fn time_string(time: SystemTime) -> String {
-    crate::export::time::rfc3339(time)
+    crate::format::time::rfc3339(time)
 }
 
 // ---------------------------------------------------------------------------

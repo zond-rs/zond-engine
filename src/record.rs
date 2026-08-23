@@ -72,8 +72,8 @@ use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{
-    PhaseParts, ProbeStats, ProbeStatsParts, ScanKind, ScanPhase, ScanSettings, ScannerFailure,
-    ScopeParts, StopReason, TargetScope,
+    PhaseParts, PortScope, ProbeStats, ProbeStatsParts, ScanKind, ScanPhase, ScanSettings,
+    ScannerFailure, ScopeParts, StopReason, TargetScope,
 };
 use crate::scanner::session::ScannerKind;
 
@@ -900,6 +900,11 @@ pub struct ScopeRecord {
     /// How many probes the scope implies, where ports were known.
     #[serde(default)]
     pub probes: Option<u128>,
+    /// Which ports were walked, and whether uniformly. Absent for a phase that
+    /// walked no ports, and for one recorded before this field existed — which
+    /// read back the same way, since neither can say which ports were probed.
+    #[serde(default)]
+    pub ports: Option<PortsRecord>,
     /// The transports covered, by wire name.
     #[serde(default)]
     pub protocols: Vec<String>,
@@ -916,6 +921,7 @@ impl From<&TargetScope> for ScopeRecord {
             ranges: scope.ranges().iter().map(RangeRecord::from).collect(),
             addresses: scope.addresses(),
             probes: scope.probes(),
+            ports: PortsRecord::of(scope.ports()),
             protocols: scope
                 .protocols()
                 .iter()
@@ -937,6 +943,10 @@ impl From<&ScopeRecord> for TargetScope {
                 .collect(),
             addresses: record.addresses,
             probes: record.probes,
+            ports: record
+                .ports
+                .as_ref()
+                .map_or(PortScope::Unstated, PortsRecord::rebuild),
             protocols: record
                 .protocols
                 .iter()
@@ -949,6 +959,55 @@ impl From<&ScopeRecord> for TargetScope {
                 .collect(),
             withheld: record.withheld,
         })
+    }
+}
+
+/// A phase's port scope, as a file holds it.
+///
+/// The set is written as the specification
+/// [`PortSet`](crate::model::port::PortSet) parses, so a full sweep is six bytes
+/// rather than a hundred and thirty thousand entries, and a person reading the
+/// file can see what was scanned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortsRecord {
+    /// Which of the four things the set below is, by wire name.
+    ///
+    /// The single most important field here, and the reason a bare
+    /// specification would not do. `every` is the only value from which a
+    /// reader may conclude that one endpoint of a covered address was probed.
+    pub kind: String,
+    /// The ports, as the specification
+    /// [`PortSet`](crate::model::port::PortSet) parses. Empty where the kind
+    /// carries no set.
+    #[serde(default)]
+    pub spec: String,
+}
+
+impl PortsRecord {
+    /// The record of a port scope, or `None` where the scope states nothing —
+    /// which is what a record written before this field existed reads back as.
+    pub fn of(scope: &PortScope) -> Option<Self> {
+        match scope {
+            PortScope::Unstated => None,
+            other => Some(Self {
+                kind: wire::port_scope_name(other).to_owned(),
+                spec: other.ports().map(PortSet::to_string).unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// The scope this records.
+    ///
+    /// A kind this build does not know, or a specification that will not parse,
+    /// rebuilds as [`Unstated`](PortScope::Unstated) — the reading that claims
+    /// nothing. An unreadable set is not evidence that any port was walked, and
+    /// it is not evidence that none was either.
+    pub fn rebuild(&self) -> PortScope {
+        let ports = PortSet::try_from(self.spec.as_str())
+            .ok()
+            .filter(|ports| !ports.is_empty());
+
+        wire::port_scope(&self.kind, ports).unwrap_or(PortScope::Unstated)
     }
 }
 

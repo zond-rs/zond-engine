@@ -104,6 +104,117 @@ impl fmt::Display for ScanKind {
     }
 }
 
+/// Which ports a phase walked, and whether it walked the same ones everywhere.
+///
+/// A scope records the addresses a phase covered, and for a port scan that is
+/// only half the answer: an address is covered *for some ports*, and a consumer
+/// asking whether one endpoint was probed needs to know which. This is that
+/// second half.
+///
+/// The four variants are the four honest answers, and the distinctions between
+/// them are the whole reason this is not a bare `Option<PortSet>`.
+///
+/// [`Every`](Self::Every) against [`Mixed`](Self::Mixed): a phase can be given
+/// different ports for different addresses — `10.0.0.0/24:80,443` alongside
+/// `10.0.1.0/24:8080` is one job with two units — and there is no single set
+/// that is true of every address in it. Publishing the union as though there
+/// were would have a consumer conclude that `10.0.0.5` was probed on 8080, which
+/// nothing did. So the union is published as a union and labelled one.
+///
+/// [`NoPorts`](Self::NoPorts) against [`Unstated`](Self::Unstated): a discovery
+/// sweep walked no ports, which is a fact, and a record that does not say which
+/// ports were walked is an absence of one. Only the first supports concluding
+/// that an endpoint was not probed. Nothing this engine builds is `Unstated`;
+/// it is what a report from another tool, or from a build older than this
+/// field, reads back as.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum PortScope {
+    /// The record does not say which ports were walked.
+    ///
+    /// Nothing may be concluded about any endpoint. The default, because a
+    /// scope rebuilt from a record that predates this field knows nothing about
+    /// ports and must not pretend otherwise.
+    #[default]
+    Unstated,
+    /// The phase paired no ports with its addresses, which is what a discovery
+    /// sweep does. Its probes are the strategy's choice rather than the
+    /// caller's, and no endpoint was probed.
+    NoPorts,
+    /// Every address the phase walked was walked for these ports.
+    ///
+    /// The ordinary case for a port scan, and the only variant from which a
+    /// consumer may conclude that a particular endpoint of a covered address was
+    /// probed.
+    Every(PortSet),
+    /// Addresses were walked for differing sets of ports, and this is their
+    /// union.
+    ///
+    /// A port here was walked for at least one address and not necessarily for
+    /// any given one. A port *not* here was walked for none, which is the one
+    /// conclusion this variant does support.
+    Mixed(PortSet),
+}
+
+impl PortScope {
+    /// The ports the phase walked, over all of its addresses.
+    ///
+    /// `None` where there are none to report or none recorded. Read this to
+    /// describe what a scan reached; read [`covers`](Self::covers) to ask about
+    /// one endpoint.
+    pub fn ports(&self) -> Option<&PortSet> {
+        match self {
+            PortScope::Unstated | PortScope::NoPorts => None,
+            PortScope::Every(ports) | PortScope::Mixed(ports) => Some(ports),
+        }
+    }
+
+    /// Whether the phase walked `port` on `protocol`, for every address it
+    /// covered.
+    ///
+    /// `None` is "the record cannot say", which is both a scope that recorded no
+    /// ports and one whose addresses were walked for differing sets with this
+    /// port among them. `Some(false)` is a real negative: no address in the
+    /// phase was walked for this endpoint.
+    pub fn covers(&self, port: u16, protocol: Protocol) -> Option<bool> {
+        match self {
+            PortScope::Unstated => None,
+            PortScope::NoPorts => Some(false),
+            PortScope::Every(ports) => Some(ports.contains(port, protocol)),
+            PortScope::Mixed(ports) => {
+                if ports.contains(port, protocol) {
+                    None
+                } else {
+                    Some(false)
+                }
+            }
+        }
+    }
+
+    /// The scope of a set of units, which is [`Every`](Self::Every) when they
+    /// agree and [`Mixed`](Self::Mixed) when they do not.
+    fn of<'a>(units: impl Iterator<Item = &'a PortSet>) -> Self {
+        let mut units = units;
+        let Some(first) = units.next().cloned() else {
+            return PortScope::NoPorts;
+        };
+
+        let mut united = first.clone();
+        let mut agreed = true;
+        for ports in units {
+            agreed &= *ports == first;
+            united = united.union(ports);
+        }
+
+        if united.is_empty() {
+            PortScope::NoPorts
+        } else if agreed {
+            PortScope::Every(united)
+        } else {
+            PortScope::Mixed(united)
+        }
+    }
+}
+
 /// What a phase was asked to cover, and what it was forbidden to.
 ///
 /// The ranges are the canonical, merged form the engine actually iterated, not
@@ -122,6 +233,7 @@ pub struct TargetScope {
     ranges: Vec<IpRange>,
     addresses: u128,
     probes: Option<u128>,
+    ports: PortScope,
     protocols: Vec<Protocol>,
     excluded: Vec<IpRange>,
     withheld: u128,
@@ -153,6 +265,7 @@ impl TargetScope {
             ranges,
             addresses,
             probes: None,
+            ports: PortScope::NoPorts,
             protocols: Vec::new(),
             excluded: exclusions.ranges(),
             withheld,
@@ -188,11 +301,13 @@ impl TargetScope {
 
         let addresses = targets.gross_ips().unwrap_or(0);
         let probes = targets.gross_targets().ok();
+        let ports = PortScope::of(targets.units.iter().map(TargetSet::ports));
 
         Self {
             ranges,
             addresses,
             probes,
+            ports,
             protocols,
             excluded: exclusions.ranges(),
             withheld,
@@ -218,6 +333,16 @@ impl TargetScope {
     /// The transport protocols in scope, in ascending order. Empty for a
     /// discovery sweep, whose probes are chosen by the strategy rather than by
     /// the caller.
+    /// Which ports the phase walked, and whether it walked the same ones for
+    /// every address.
+    ///
+    /// [`probes`](Self::probes) counts the address-and-port combinations in
+    /// scope; this says which ports they were. The two are separate because a
+    /// count survives a target set too large to enumerate and a set does not.
+    pub fn ports(&self) -> &PortScope {
+        &self.ports
+    }
+
     pub fn protocols(&self) -> &[Protocol] {
         &self.protocols
     }
@@ -656,6 +781,8 @@ pub struct ScopeParts {
     pub addresses: u128,
     /// How many probes the scope implies, where ports were known.
     pub probes: Option<u128>,
+    /// Which ports were walked, and whether uniformly.
+    pub ports: PortScope,
     /// The transports the scope covered.
     pub protocols: Vec<Protocol>,
     /// The ranges the policy withheld.
@@ -675,6 +802,7 @@ impl TargetScope {
             ranges: parts.ranges,
             addresses: parts.addresses,
             probes: parts.probes,
+            ports: parts.ports,
             protocols: parts.protocols,
             excluded: parts.excluded,
             withheld: parts.withheld,
@@ -1332,6 +1460,60 @@ impl ScanReport {
 
 #[cfg(test)]
 mod tests {
+
+    /// A phase given one port set for every address can say a particular
+    /// endpoint was probed. One given different sets cannot, and the union it
+    /// publishes says so.
+    #[test]
+    fn a_scope_says_whether_its_addresses_agree_about_ports() {
+        use crate::model::parse::ip::to_set;
+        use crate::model::port::PortSet;
+        use crate::model::target::TargetSet;
+
+        let unit = |cidr: &str, ports: &str| {
+            TargetSet::new(
+                to_set(&[cidr], None, None).expect("a range"),
+                PortSet::try_from(ports).expect("a port specification"),
+            )
+        };
+
+        let mut same = TargetMap::new();
+        same.add_unit(unit("10.0.0.0/30", "80,443"));
+        same.add_unit(unit("10.0.1.0/30", "80,443"));
+        let scope = TargetScope::from_target_map(&mut same, &Exclusions::none());
+        assert_eq!(
+            scope.ports().covers(443, Protocol::Tcp),
+            Some(true),
+            "every address was walked for it"
+        );
+        assert_eq!(scope.ports().covers(8080, Protocol::Tcp), Some(false));
+
+        let mut differing = TargetMap::new();
+        differing.add_unit(unit("10.0.0.0/30", "80,443"));
+        differing.add_unit(unit("10.0.1.0/30", "8080"));
+        let scope = TargetScope::from_target_map(&mut differing, &Exclusions::none());
+        assert_eq!(
+            scope.ports().covers(8080, Protocol::Tcp),
+            None,
+            "walked for one unit and not the other, so the scope cannot say"
+        );
+        assert_eq!(
+            scope.ports().covers(9999, Protocol::Tcp),
+            Some(false),
+            "absent from the union means walked for no address at all"
+        );
+    }
+
+    /// A sweep walks addresses, and that is a fact about its endpoints rather
+    /// than an absence of one.
+    #[test]
+    fn a_discovery_sweep_walked_no_ports_and_says_so() {
+        let mut ips = crate::model::parse::ip::to_set(&["10.0.0.0/30"], None, None).unwrap();
+        let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
+
+        assert_eq!(*scope.ports(), PortScope::NoPorts);
+        assert_eq!(scope.ports().covers(80, Protocol::Tcp), Some(false));
+    }
     use super::*;
     use crate::model::ip::range::Ipv4Range;
     use crate::model::port::{Port, PortSet, Service};

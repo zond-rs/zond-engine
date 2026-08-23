@@ -290,6 +290,7 @@
         "ranges",
         "addresses",
         "probes",
+        "ports",
         "protocols",
         "excluded",
         "withheld"
@@ -310,6 +311,17 @@
           "oneOf": [
             {
               "$ref": "#/$defs/count_string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ports": {
+          "description": "Which ports the phase walked, and whether it walked the same ones for every address. Null where the record does not say, which is what a report rebuilt from another tool's output carries. `probes` counts these combinations; this names the ports they were.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/port_scope"
             },
             {
               "type": "null"
@@ -632,6 +644,7 @@
             "capacity",
             "peak",
             "reductions",
+            "adaptive",
             "at_floor"
           ],
           "additionalProperties": false,
@@ -650,6 +663,10 @@
               "description": "How many times it was cut back.",
               "type": "integer",
               "minimum": 0
+            },
+            "adaptive": {
+              "description": "Whether the window was allowed to move at all. A fixed window and an adaptive one that never had to move record the same capacity, peak and reductions, and mean quite different things: the first was told not to adapt, the second was never pushed.",
+              "type": "boolean"
             },
             "at_floor": {
               "description": "Whether it ended cut back as far as it is permitted to go.",
@@ -1404,6 +1421,29 @@
         "inferred": {
           "description": "Whether this hop was measured on the way to this host, or taken from another host's trace through the same router. The second is an inference: it assumes two paths meeting at one router at one distance agreed before it.",
           "type": "boolean"
+        }
+      }
+    },
+    "port_scope": {
+      "description": "Which ports a phase walked. Only `every` supports concluding that a particular endpoint of a covered address was probed; under `mixed` a port in the set was walked for at least one address and not necessarily for any given one, though a port absent from it was walked for none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "spec"
+      ],
+      "properties": {
+        "kind": {
+          "description": "`none` for a phase that walked no ports, `every` where each address was walked for the same set, `mixed` where they differed and `spec` is their union.",
+          "enum": [
+            "none",
+            "every",
+            "mixed"
+          ]
+        },
+        "spec": {
+          "description": "The ports, written as the specification a scanner takes: comma separated, `start-end` for a run, `u:` prefixing the UDP half. Empty under `none`.",
+          "type": "string"
         }
       }
     }

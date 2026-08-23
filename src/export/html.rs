@@ -82,8 +82,8 @@ use crate::export::schema::{
     ENGINE_NAME, HostDto, PhaseDto, PortDto, ProbeStatsDto, SCHEMA_VERSION, SummaryDto,
     host_status_name, port_state_name, scan_kind_name, total_elapsed_us,
 };
-use crate::export::time::rfc3339;
 use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::format::time::rfc3339;
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, PortState};
 use crate::scanner::report::ScanReport;

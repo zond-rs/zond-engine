@@ -60,9 +60,9 @@ use std::io::Write;
 use crate::export::schema::{
     host_status_name, network_role_name, port_state_name, protocol_name, scan_response_name,
 };
-use crate::export::time::rfc3339;
 use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::format::csv::{COLUMNS, PORT_COLUMNS};
+use crate::format::time::rfc3339;
 use crate::model::host::Host;
 use crate::model::port::Port;
 use crate::scanner::report::ScanReport;

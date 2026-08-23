@@ -103,9 +103,28 @@
 //! produced — and reads layered settings from TOML. Each format sits behind a
 //! cargo feature; `export-json` is the only one on by default.
 //!
+//! [`import::report`] reads the other direction of the same documents: not the
+//! targets to scan next, but what the scan that produced them found, rebuilt as
+//! a [`ScanReport`]. That is what lets [`diff`] compare an archived file — this
+//! engine's or nmap's — against a scan that just finished.
+//!
 //! Neither module opens a file or touches standard input. Export writes to a
 //! `Write`, import reads from a `BufRead`, and choosing where the bytes come
 //! from or go is the caller's business.
+//!
+//! # What changed since last time
+//!
+//! [`diff`] compares two [`ScanReport`]s and says what moved: a host that was
+//! not there before, a port that opened, a service that changed version, a
+//! certificate that rotated or is about to lapse. It is the other half of
+//! scanning a network on a schedule, and it asks nothing about where either
+//! report came from — one side can be a scan this process just ran, one can be
+//! read back out of a [`journal`], and one can be another scanner's output that
+//! something built a report from.
+//!
+//! Every appearance and disappearance carries what the other scan says about
+//! whether it covered that target at all, so a narrowed scan does not read as a
+//! network that emptied out.
 //!
 //! # Layout
 //!
@@ -148,6 +167,10 @@
 //!   it, and the [`report`](scanner::report) it leaves behind. Those are the
 //!   scanner's output rather than a foundation under it, and they live with it
 //!   for that reason.
+//! - [`diff`] — what changed between two scans. It sits above [`scanner`]
+//!   because it reads the report the scanner leaves behind, and below the file
+//!   formats because it compares reports rather than documents: where either
+//!   report came from is not its business.
 //! - [`format`](mod@crate::format) — what a reader and a writer of the same document have to agree
 //!   on, and nothing else. It sits below both so that reading a format never
 //!   requires compiling the code that writes it.
@@ -159,6 +182,7 @@
 //! Linux and macOS. Windows is not currently supported.
 
 pub mod config;
+pub mod diff;
 pub mod export;
 pub mod fingerprint;
 pub mod format;

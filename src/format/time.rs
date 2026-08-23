@@ -8,8 +8,16 @@
 
 //! # Wire-format timestamps
 //!
-//! Renders a [`SystemTime`] as an RFC 3339 timestamp in UTC, which is the only
-//! form a timestamp takes in an exported report.
+//! A [`SystemTime`] as an RFC 3339 timestamp in UTC, which is the only form a
+//! timestamp takes in an exported report, and the same timestamp read back.
+//!
+//! Both directions live here, beside each other, because the format is a
+//! contract rather than the writer's private business — the rule this module's
+//! parent states, and the same one that puts `SCHEMA_VERSION` and the CSV header
+//! there. A reader that had to reach into the exporter for the shape of a
+//! timestamp would be depending on being able to write a format it only reads.
+//! [`rfc3339`] and [`parse_rfc3339`] are inverses, and
+//! `a_rendered_timestamp_reads_back_as_itself` is what keeps them so.
 //!
 //! The alternative - a float of seconds since the epoch - is the trap this
 //! module exists to avoid. A `f64` holds a microsecond-resolution epoch time to
@@ -55,7 +63,7 @@ const MAX_SECS: i64 = 253_402_300_799;
 ///
 /// ```
 /// use std::time::{Duration, UNIX_EPOCH};
-/// use zond_engine::export::time::rfc3339;
+/// use zond_engine::format::time::rfc3339;
 ///
 /// let t = UNIX_EPOCH + Duration::new(1_770_000_000, 123_456_789);
 /// assert_eq!(rfc3339(t), "2026-02-02T02:40:00.123456Z");
@@ -83,6 +91,113 @@ pub fn rfc3339(time: SystemTime) -> String {
         "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z",
         micros = nanos / 1_000
     )
+}
+
+/// Reads an RFC 3339 timestamp in UTC back as the moment it names.
+///
+/// The inverse of [`rfc3339`], and deliberately no more permissive than it needs
+/// to be: the exact shape this engine writes, `YYYY-MM-DDTHH:MM:SS[.fff…]Z`,
+/// with the fractional part optional so that a hand-written document and one
+/// from another tool that omits it are both readable. A lower-case `t` or `z` is
+/// accepted because RFC 3339 permits them.
+///
+/// Offsets other than `Z` are refused rather than converted. Accepting them
+/// would mean this engine's own documents and somebody else's read differently
+/// in the same field, and every timestamp this format defines is UTC.
+///
+/// ```
+/// use zond_engine::format::time::{parse_rfc3339, rfc3339};
+/// use std::time::{Duration, UNIX_EPOCH};
+///
+/// let moment = UNIX_EPOCH + Duration::new(1_770_000_000, 123_456_000);
+/// assert_eq!(parse_rfc3339(&rfc3339(moment)), Some(moment));
+/// assert_eq!(parse_rfc3339("not a timestamp"), None);
+/// ```
+pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
+    let text = text.trim();
+    let body = text.strip_suffix('Z').or_else(|| text.strip_suffix('z'))?;
+
+    let (date, rest) = body.split_once(['T', 't'])?;
+
+    let mut date = date.splitn(3, '-');
+    let year: i64 = date.next()?.parse().ok()?;
+    let month: u32 = date.next()?.parse().ok()?;
+    let day: u32 = date.next()?.parse().ok()?;
+    if date.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    let (clock, fraction) = match rest.split_once('.') {
+        Some((clock, fraction)) => (clock, Some(fraction)),
+        None => (rest, None),
+    };
+
+    let mut clock = clock.splitn(3, ':');
+    let hour: i64 = clock.next()?.parse().ok()?;
+    let minute: i64 = clock.next()?.parse().ok()?;
+    let second: i64 = clock.next()?.parse().ok()?;
+    if clock.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    // A leap second is folded onto the second before it. Unix time has no room
+    // for one, and refusing a timestamp somebody else legitimately wrote would
+    // be worse than placing it a second early.
+    let second = second.min(59);
+
+    let nanos = match fraction {
+        None => 0,
+        Some(digits) => {
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            // Pad or truncate to nanosecond resolution, which is all a
+            // `SystemTime` holds.
+            let mut scaled = 0u32;
+            for i in 0..9 {
+                let digit = digits.as_bytes().get(i).map_or(0, |b| u32::from(b - b'0'));
+                scaled = scaled * 10 + digit;
+            }
+            scaled
+        }
+    };
+
+    let days = days_from_civil(year, month, day)?;
+    let secs = days
+        .checked_mul(SECS_PER_DAY)?
+        .checked_add(hour * 3_600 + minute * 60 + second)?;
+
+    if !(MIN_SECS..=MAX_SECS).contains(&secs) {
+        return None;
+    }
+
+    Some(if secs >= 0 {
+        UNIX_EPOCH + Duration::new(secs as u64, nanos)
+    } else {
+        UNIX_EPOCH - Duration::new(secs.unsigned_abs(), 0) + Duration::new(0, nanos)
+    })
+}
+
+/// Days from the Unix epoch to a civil date, the inverse of
+/// [`civil_from_days`].
+///
+/// Howard Hinnant's algorithm, the same one that function inverts, so the two
+/// agree by construction rather than by testing every date.
+fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
+    let month = i64::from(month);
+    let day = i64::from(day);
+
+    // Re-base onto a March-started year, so the leap day lands at the end.
+    let year = year - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let year_of_era = year.rem_euclid(400);
+
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+
+    era.checked_mul(146_097)?
+        .checked_add(day_of_era)?
+        .checked_sub(719_468)
 }
 
 /// Splits a moment into whole seconds from the Unix epoch and a non-negative
@@ -160,6 +275,52 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The one property that matters about a pair of inverses.
+    #[test]
+    fn a_rendered_timestamp_reads_back_as_itself() {
+        let moments = [
+            UNIX_EPOCH,
+            UNIX_EPOCH + Duration::new(1_770_000_000, 123_456_000),
+            UNIX_EPOCH + Duration::new(951_782_400, 0),
+            UNIX_EPOCH + Duration::new(4_102_444_799, 999_999_000),
+            UNIX_EPOCH - Duration::new(86_400, 0),
+        ];
+
+        for moment in moments {
+            let rendered = rfc3339(moment);
+            assert_eq!(
+                parse_rfc3339(&rendered),
+                Some(moment),
+                "{rendered} did not read back as what rendered it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_timestamp_that_is_not_utc_is_refused() {
+        assert_eq!(parse_rfc3339("2026-08-24T12:00:00.000000+02:00"), None);
+        assert_eq!(parse_rfc3339("2026-08-24T12:00:00.000000"), None);
+    }
+
+    #[test]
+    fn a_timestamp_without_a_fraction_is_read() {
+        assert_eq!(
+            parse_rfc3339("1970-01-01T00:00:01Z"),
+            Some(UNIX_EPOCH + Duration::from_secs(1))
+        );
+    }
+
+    /// A leap second is folded onto the second before it: Unix time has no room
+    /// for one, and refusing a timestamp somebody legitimately wrote would be
+    /// worse than placing it a second early.
+    #[test]
+    fn a_leap_second_lands_on_the_second_before_it() {
+        assert_eq!(
+            parse_rfc3339("2016-12-31T23:59:60Z"),
+            parse_rfc3339("2016-12-31T23:59:59Z")
+        );
+    }
     use super::*;
 
     fn at(secs: u64, nanos: u32) -> SystemTime {
@@ -255,6 +416,21 @@ mod tests {
 
 #[cfg(test)]
 mod property_tests {
+
+    proptest! {
+        /// Every moment the format can express survives the round trip.
+        #[test]
+        fn every_rendered_time_reads_back_as_itself(secs in MIN_SECS..=MAX_SECS, micros in 0u32..1_000_000) {
+            let moment = if secs >= 0 {
+                UNIX_EPOCH + Duration::new(secs as u64, micros * 1_000)
+            } else {
+                UNIX_EPOCH - Duration::new(secs.unsigned_abs(), 0) + Duration::new(0, micros * 1_000)
+            };
+
+            let rendered = rfc3339(moment);
+            prop_assert_eq!(parse_rfc3339(&rendered), Some(moment), "{}", rendered);
+        }
+    }
     use super::*;
     use proptest::prelude::*;
 

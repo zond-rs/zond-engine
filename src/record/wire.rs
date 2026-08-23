@@ -37,8 +37,8 @@ use std::borrow::Cow;
 use crate::fingerprint::os::OsSource;
 use crate::model::host::{HostStatus, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
-use crate::model::port::{PortState, Protocol};
-use crate::scanner::report::{ScanKind, StopReason};
+use crate::model::port::{PortSet, PortState, Protocol};
+use crate::scanner::report::{PortScope, ScanKind, StopReason};
 use crate::scanner::session::ScannerKind;
 
 /// The prefix that marks a name a strategy supplied rather than one this engine
@@ -425,4 +425,36 @@ mod tests {
         assert_eq!(status_protocol(CUSTOM), None);
         assert_eq!(scan_response(CUSTOM), None);
     }
+}
+
+/// The wire name of a phase's port scope.
+///
+/// The set itself travels separately, as a port specification; this names which
+/// of the four things that set *is*. A scope with no set has a name here all the
+/// same, because "the phase walked no ports" and "the record does not say" are
+/// the two that must never be read as each other.
+pub fn port_scope_name(scope: &PortScope) -> &'static str {
+    match scope {
+        PortScope::Unstated => "unstated",
+        PortScope::NoPorts => "none",
+        PortScope::Every(_) => "every",
+        PortScope::Mixed(_) => "mixed",
+    }
+}
+
+/// [`port_scope_name`] read back, given the set that travelled with it.
+///
+/// A name this build does not know reads as `None`, which a caller turns into
+/// [`PortScope::Unstated`] — the reading that claims nothing.
+pub fn port_scope(name: &str, ports: Option<PortSet>) -> Option<PortScope> {
+    Some(match (name, ports) {
+        ("unstated", _) => PortScope::Unstated,
+        ("none", _) => PortScope::NoPorts,
+        ("every", Some(ports)) => PortScope::Every(ports),
+        ("mixed", Some(ports)) => PortScope::Mixed(ports),
+        // A set is what makes those two mean anything, so a name that needs one
+        // and did not travel with one says nothing.
+        ("every" | "mixed", None) => PortScope::Unstated,
+        _ => return None,
+    })
 }

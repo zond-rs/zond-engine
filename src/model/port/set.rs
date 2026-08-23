@@ -27,7 +27,7 @@
 //!   scanning the groups it has so far.
 
 use crate::model::port::Protocol;
-use std::{num::ParseIntError, ops::RangeInclusive, str::FromStr};
+use std::{fmt, num::ParseIntError, ops::RangeInclusive, str::FromStr};
 use thiserror::Error;
 
 /// The ports [`PortSet::common_discovery`] names: a handful that answer often
@@ -220,6 +220,49 @@ impl PortSet {
     ///
     /// A binary search over disjoint sorted ranges, which the type is
     /// canonical-by-construction in order to allow.
+    /// The ports on one transport, as the merged ranges they are stored as.
+    ///
+    /// Ascending and non-overlapping from construction. Exposed as ranges rather
+    /// than as ports because that is what they are: a full sweep is one entry
+    /// here and sixty-five thousand through [`iter`](Self::iter).
+    pub fn ranges(&self, protocol: Protocol) -> &[RangeInclusive<u16>] {
+        match protocol {
+            Protocol::Tcp => &self.tcp,
+            Protocol::Udp => &self.udp,
+        }
+    }
+
+    /// How many ports the set holds on one transport.
+    pub fn len_on(&self, protocol: Protocol) -> usize {
+        self.ranges(protocol)
+            .iter()
+            .map(|range| usize::from(*range.end() - *range.start()) + 1)
+            .sum()
+    }
+
+    /// The ports in either set.
+    ///
+    /// Merged as ranges rather than expanded, so uniting two full sweeps costs
+    /// two entries and not a hundred and thirty thousand.
+    pub fn union(&self, other: &PortSet) -> PortSet {
+        let mut tcp = self.tcp.clone();
+        tcp.extend(other.tcp.iter().cloned());
+        let mut udp = self.udp.clone();
+        udp.extend(other.udp.iter().cloned());
+
+        Self::merge_ranges(&mut tcp);
+        Self::merge_ranges(&mut udp);
+        Self { tcp, udp }
+    }
+
+    /// Whether the set holds `port` on `protocol`.
+    pub fn contains(&self, port: u16, protocol: Protocol) -> bool {
+        match protocol {
+            Protocol::Tcp => self.has_tcp(port),
+            Protocol::Udp => self.has_udp(port),
+        }
+    }
+
     pub fn has_tcp(&self, port: u16) -> bool {
         self.tcp
             .binary_search_by(|range| {
@@ -294,6 +337,52 @@ impl Default for PortSet {
     /// deriving `Default` acquired a scan specification nobody wrote.
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The set as a specification [`TryFrom<&str>`](PortSet::try_from) reads back.
+///
+/// The canonical form: TCP ranges first and UDP after them, each ascending, a
+/// single port written as itself and a run written `start-end`. Because the
+/// ranges are merged from construction, two sets holding the same ports render
+/// identically — which is what lets a written scope be compared with another
+/// one, and what lets a report record a port set as one field.
+///
+/// An empty set renders as the empty string, and reads back as an empty set.
+///
+/// ```
+/// use zond_engine::model::port::set::PortSet;
+///
+/// let set = PortSet::try_from("443, 80, 1000-1005, u:53").unwrap();
+/// assert_eq!(set.to_string(), "80,443,1000-1005,u:53");
+/// assert_eq!(PortSet::try_from(set.to_string().as_str()).unwrap(), set);
+/// ```
+impl fmt::Display for PortSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        let mut write_range =
+            |f: &mut fmt::Formatter<'_>, range: &RangeInclusive<u16>, udp: bool| -> fmt::Result {
+                if !first {
+                    f.write_str(",")?;
+                }
+                first = false;
+                if udp {
+                    f.write_str("u:")?;
+                }
+                if range.start() == range.end() {
+                    write!(f, "{}", range.start())
+                } else {
+                    write!(f, "{}-{}", range.start(), range.end())
+                }
+            };
+
+        for range in &self.tcp {
+            write_range(f, range, false)?;
+        }
+        for range in &self.udp {
+            write_range(f, range, true)?;
+        }
+        Ok(())
     }
 }
 

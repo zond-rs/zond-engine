@@ -75,7 +75,6 @@
 
 pub mod redact;
 pub mod schema;
-pub mod time;
 
 #[cfg(feature = "export-json")]
 pub mod json;
