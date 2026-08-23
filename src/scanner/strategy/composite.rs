@@ -24,6 +24,7 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use crate::info;
 use crate::journal::settle::Outcome;
 use crate::model::port::Protocol;
 use crate::model::target::PlannedTarget;
@@ -131,9 +132,29 @@ impl PortScanner for CompositePortScanner {
         //
         // One entry carrying both counts, because they have one remedy between
         // them and a report listing them separately would suggest otherwise.
-        if unroutable > 0 || undeliverable > 0 {
+        //
+        // **Except after a stop, where undeliverable targets are what stopping
+        // means.** A scanner that has been told to finish stops reading, and
+        // whatever the router still held could not be handed over. Reporting
+        // that as a strategy failure tells somebody who pressed `^C` that
+        // something went wrong, when what went wrong is what they asked for. The
+        // targets are still not covered and still reach the report as such —
+        // they simply did not fail.
+        let stopped = self.ctx.handle.should_stop();
+        let reportable = if stopped {
+            unroutable
+        } else {
+            unroutable + undeliverable
+        };
+
+        if reportable > 0 {
             self.ctx
                 .record_failure(ScannerKind::Composite, missed(unroutable, undeliverable));
+        } else if undeliverable > 0 {
+            info!(
+                verbosity = 1,
+                "{undeliverable} target(s) were still queued when the scan was stopped"
+            );
         }
 
         // Drop the sender ends to signal EOF to the underlying scanners.
@@ -466,5 +487,44 @@ mod tests {
         composite.scan(rx).await.unwrap();
 
         assert!(ctx.take_failures().is_empty());
+    }
+
+    /// Stopping a scan is not a strategy failing.
+    ///
+    /// A scanner told to finish stops reading, so whatever the router still held
+    /// cannot be handed over. Reporting that as a failure tells somebody who
+    /// pressed `^C` that something went wrong, when what went wrong is what they
+    /// asked for. The targets are still uncovered, and still unsettled, so a
+    /// resume asks about them again.
+    #[tokio::test]
+    async fn a_stopped_scan_does_not_report_a_failure() {
+        let (session, ctx) = ScanSession::new();
+        let (scanner, _received) = MockPortScanner::new(vec![Protocol::Tcp]);
+        let mut composite = CompositePortScanner::new(vec![Box::new(scanner)], ctx.clone());
+
+        // Stopped before anything is routed, so every target is undeliverable.
+        session.handle().abort();
+
+        let (tx, rx) = mpsc::channel(16);
+        for (position, port) in [80u16, 443].into_iter().enumerate() {
+            tx.send(PlannedTarget::new(
+                position as u64,
+                target(Protocol::Tcp, port),
+            ))
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        composite.scan(rx).await.expect("a stop is not an error");
+
+        assert!(
+            ctx.take_failures().is_empty(),
+            "a stop was reported as a strategy failure"
+        );
+        assert_eq!(
+            ctx.settlements().settled_count(),
+            0,
+            "and nothing it could not hand over may be settled"
+        );
     }
 }
