@@ -1,0 +1,318 @@
+// Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors
+//
+// This file is part of Zond Engine, licensed under the GNU Affero General
+// Public License, version 3 or later. See the LICENSE file for details, or
+// <https://www.gnu.org/licenses/agpl-3.0.html>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! # What the model's enums are called in a file
+//!
+//! One name and one parser for each, defined together so that they cannot drift
+//! apart. [`export::schema`](crate::export::schema) writes through the names
+//! here and [`journal`](crate::journal) reads through the parsers, which is why
+//! neither of them defines its own.
+//!
+//! A name is a promise: it appears in exported reports and in journals on disk,
+//! so changing one is a breaking change to both. Adding a variant means adding
+//! its name and its parse case here, and `every_name_parses_back` will fail
+//! until you do.
+//!
+//! ## An unknown name is refused, not guessed
+//!
+//! Every parser returns `None` for a name this build does not know, and callers
+//! report it rather than substituting a neighbour. A port state read as
+//! `Filtered` because the file said something newer is a scan reporting a
+//! firewall that is not there.
+//!
+//! ## Strategy-supplied names are prefixed
+//!
+//! [`StatusProtocol::Custom`] and [`ScanResponse::Custom`] carry a name their
+//! author chose, rendered with a `custom:` prefix so that it can never be
+//! mistaken for one this engine defines. Without it, something calling itself
+//! `arp` would be indistinguishable from a real ARP finding.
+
+use std::borrow::Cow;
+
+use crate::fingerprint::os::OsSource;
+use crate::model::host::{HostStatus, NetworkRole, StatusProtocol};
+use crate::model::port::discovery::ScanResponse;
+use crate::model::port::{PortState, Protocol};
+
+/// The prefix that marks a name a strategy supplied rather than one this engine
+/// defines.
+const CUSTOM: &str = "custom:";
+
+/// A host's reachability.
+pub fn host_status_name(status: HostStatus) -> &'static str {
+    match status {
+        HostStatus::Unknown => "unknown",
+        HostStatus::Down => "down",
+        HostStatus::Filtered => "filtered",
+        HostStatus::Up => "up",
+    }
+}
+
+/// [`host_status_name`] read back.
+pub fn host_status(name: &str) -> Option<HostStatus> {
+    Some(match name {
+        "unknown" => HostStatus::Unknown,
+        "down" => HostStatus::Down,
+        "filtered" => HostStatus::Filtered,
+        "up" => HostStatus::Up,
+        _ => return None,
+    })
+}
+
+/// What a probe established about a port.
+pub fn port_state_name(state: PortState) -> &'static str {
+    match state {
+        PortState::ClosedFiltered => "closed_filtered",
+        PortState::Filtered => "filtered",
+        PortState::Unfiltered => "unfiltered",
+        PortState::Closed => "closed",
+        PortState::OpenFiltered => "open_filtered",
+        PortState::Open => "open",
+    }
+}
+
+/// [`port_state_name`] read back.
+pub fn port_state(name: &str) -> Option<PortState> {
+    Some(match name {
+        "closed_filtered" => PortState::ClosedFiltered,
+        "filtered" => PortState::Filtered,
+        "unfiltered" => PortState::Unfiltered,
+        "closed" => PortState::Closed,
+        "open_filtered" => PortState::OpenFiltered,
+        "open" => PortState::Open,
+        _ => return None,
+    })
+}
+
+/// A transport.
+pub fn protocol_name(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::Tcp => "tcp",
+        Protocol::Udp => "udp",
+    }
+}
+
+/// [`protocol_name`] read back.
+pub fn protocol(name: &str) -> Option<Protocol> {
+    Some(match name {
+        "tcp" => Protocol::Tcp,
+        "udp" => Protocol::Udp,
+        _ => return None,
+    })
+}
+
+/// A role inferred from where a host sits or what it runs.
+pub fn network_role_name(role: NetworkRole) -> &'static str {
+    match role {
+        NetworkRole::Tarpit => "tarpit",
+        NetworkRole::Truncated => "truncated",
+    }
+}
+
+/// [`network_role_name`] read back.
+pub fn network_role(name: &str) -> Option<NetworkRole> {
+    Some(match name {
+        "tarpit" => NetworkRole::Tarpit,
+        "truncated" => NetworkRole::Truncated,
+        _ => return None,
+    })
+}
+
+/// The protocol behind a host's status.
+pub fn status_protocol_name(protocol: &StatusProtocol) -> Cow<'_, str> {
+    match protocol {
+        StatusProtocol::Arp => Cow::Borrowed("arp"),
+        StatusProtocol::Ndp => Cow::Borrowed("ndp"),
+        StatusProtocol::IcmpEcho => Cow::Borrowed("icmp_echo"),
+        StatusProtocol::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
+        StatusProtocol::TcpSyn => Cow::Borrowed("tcp_syn"),
+        StatusProtocol::Tcp => Cow::Borrowed("tcp"),
+        StatusProtocol::Udp => Cow::Borrowed("udp"),
+        StatusProtocol::Custom(name) => Cow::Owned(format!("{CUSTOM}{name}")),
+    }
+}
+
+/// [`status_protocol_name`] read back.
+///
+/// An empty custom name is refused: it renders as the bare prefix and would read
+/// back as a finding attributed to nothing.
+pub fn status_protocol(name: &str) -> Option<StatusProtocol> {
+    if let Some(custom) = name.strip_prefix(CUSTOM) {
+        return (!custom.is_empty()).then(|| StatusProtocol::Custom(custom.into()));
+    }
+
+    Some(match name {
+        "arp" => StatusProtocol::Arp,
+        "ndp" => StatusProtocol::Ndp,
+        "icmp_echo" => StatusProtocol::IcmpEcho,
+        "icmp_unreachable" => StatusProtocol::IcmpUnreachable,
+        "tcp_syn" => StatusProtocol::TcpSyn,
+        "tcp" => StatusProtocol::Tcp,
+        "udp" => StatusProtocol::Udp,
+        _ => return None,
+    })
+}
+
+/// The packet that settled a port's state.
+pub fn scan_response_name(response: &ScanResponse) -> Cow<'_, str> {
+    match response {
+        ScanResponse::TcpSynAck => Cow::Borrowed("tcp_syn_ack"),
+        ScanResponse::TcpRst => Cow::Borrowed("tcp_rst"),
+        ScanResponse::UdpResponse => Cow::Borrowed("udp_response"),
+        ScanResponse::NoResponse => Cow::Borrowed("no_response"),
+        ScanResponse::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
+        ScanResponse::IcmpProhibited => Cow::Borrowed("icmp_prohibited"),
+        ScanResponse::Custom(name) => Cow::Owned(format!("{CUSTOM}{name}")),
+    }
+}
+
+/// [`scan_response_name`] read back. Empty custom names are refused, as in
+/// [`status_protocol`].
+pub fn scan_response(name: &str) -> Option<ScanResponse> {
+    if let Some(custom) = name.strip_prefix(CUSTOM) {
+        return (!custom.is_empty()).then(|| ScanResponse::Custom(custom.to_string()));
+    }
+
+    Some(match name {
+        "tcp_syn_ack" => ScanResponse::TcpSynAck,
+        "tcp_rst" => ScanResponse::TcpRst,
+        "udp_response" => ScanResponse::UdpResponse,
+        "no_response" => ScanResponse::NoResponse,
+        "icmp_unreachable" => ScanResponse::IcmpUnreachable,
+        "icmp_prohibited" => ScanResponse::IcmpProhibited,
+        _ => return None,
+    })
+}
+
+/// Where a conclusion about an operating system came from.
+pub fn os_source_name(source: OsSource) -> &'static str {
+    match source {
+        OsSource::TcpStack => "tcp_stack",
+        OsSource::HardwareVendor => "hardware_vendor",
+        OsSource::ServiceBanner => "service_banner",
+        OsSource::Hostname => "hostname",
+    }
+}
+
+/// [`os_source_name`] read back.
+pub fn os_source(name: &str) -> Option<OsSource> {
+    Some(match name {
+        "tcp_stack" => OsSource::TcpStack,
+        "hardware_vendor" => OsSource::HardwareVendor,
+        "service_banner" => OsSource::ServiceBanner,
+        "hostname" => OsSource::Hostname,
+        _ => return None,
+    })
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚═╝     ╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every variant survives being written down and read back.
+    ///
+    /// Listing the variants by hand is the point: a variant added to the model
+    /// without a name here will not appear in this list either, and the match
+    /// arms above are what the compiler makes exhaustive. What this catches is
+    /// the other mistake — a name and a parser that disagree.
+    #[test]
+    fn every_name_parses_back() {
+        for value in [
+            HostStatus::Unknown,
+            HostStatus::Down,
+            HostStatus::Filtered,
+            HostStatus::Up,
+        ] {
+            assert_eq!(host_status(host_status_name(value)), Some(value));
+        }
+
+        for value in [
+            PortState::ClosedFiltered,
+            PortState::Filtered,
+            PortState::Unfiltered,
+            PortState::Closed,
+            PortState::OpenFiltered,
+            PortState::Open,
+        ] {
+            assert_eq!(port_state(port_state_name(value)), Some(value));
+        }
+
+        for value in [Protocol::Tcp, Protocol::Udp] {
+            assert_eq!(protocol(protocol_name(value)), Some(value));
+        }
+
+        for value in [NetworkRole::Tarpit, NetworkRole::Truncated] {
+            assert_eq!(network_role(network_role_name(value)), Some(value));
+        }
+
+        for value in [
+            OsSource::TcpStack,
+            OsSource::HardwareVendor,
+            OsSource::ServiceBanner,
+            OsSource::Hostname,
+        ] {
+            assert_eq!(os_source(os_source_name(value)), Some(value));
+        }
+
+        for value in [
+            StatusProtocol::Arp,
+            StatusProtocol::Ndp,
+            StatusProtocol::IcmpEcho,
+            StatusProtocol::IcmpUnreachable,
+            StatusProtocol::TcpSyn,
+            StatusProtocol::Tcp,
+            StatusProtocol::Udp,
+            StatusProtocol::Custom("a-strategy".into()),
+        ] {
+            let name = status_protocol_name(&value);
+            assert_eq!(status_protocol(&name), Some(value.clone()), "{name}");
+        }
+
+        for value in [
+            ScanResponse::TcpSynAck,
+            ScanResponse::TcpRst,
+            ScanResponse::UdpResponse,
+            ScanResponse::NoResponse,
+            ScanResponse::IcmpUnreachable,
+            ScanResponse::IcmpProhibited,
+            ScanResponse::Custom("a-strategy".to_string()),
+        ] {
+            let name = scan_response_name(&value);
+            assert_eq!(scan_response(&name), Some(value.clone()), "{name}");
+        }
+    }
+
+    /// A name this build does not know is refused rather than falling into a
+    /// neighbouring variant.
+    #[test]
+    fn an_unknown_name_is_refused() {
+        assert_eq!(host_status("perhaps"), None);
+        assert_eq!(port_state("ajar"), None);
+        assert_eq!(protocol("sctp"), None);
+        assert_eq!(network_role("gateway"), None);
+        assert_eq!(os_source("astrology"), None);
+        assert_eq!(status_protocol("igmp"), None);
+        assert_eq!(scan_response("tcp_fin_ack"), None);
+    }
+
+    /// A custom name that is empty renders as the bare prefix and names nothing.
+    #[test]
+    fn an_empty_custom_name_is_refused() {
+        assert_eq!(status_protocol(CUSTOM), None);
+        assert_eq!(scan_response(CUSTOM), None);
+    }
+}

@@ -166,6 +166,7 @@ pub mod import;
 pub mod journal;
 pub mod model;
 pub mod protocols;
+pub mod record;
 pub mod resolve;
 pub mod scanner;
 pub mod system;

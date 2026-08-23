@@ -72,13 +72,10 @@ use crate::export::ExportOptions;
 use crate::export::time::rfc3339;
 use crate::model::capture::CaptureCounts;
 use crate::model::host::{
-    HardwareInfo, Hop, Host, HostStatus, HostTelemetry, NetworkRole, OsFingerprint, StatusProtocol,
-    StatusReason,
+    HardwareInfo, Hop, Host, HostStatus, HostTelemetry, OsFingerprint, StatusReason,
 };
 use crate::model::ip::range::IpRange;
-use crate::model::port::{
-    CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
-};
+use crate::model::port::{CertificateInfo, Discovery, Port, PortState, Security, Service};
 use crate::scanner::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, ScanKind, ScanPhase, ScanReport, ScanSettings,
     ScanSummary, ScannerFailure, StopReason, TargetScope,
@@ -127,42 +124,14 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
 }
 
 /// The wire name of a host's reachability status.
-pub fn host_status_name(status: HostStatus) -> &'static str {
-    match status {
-        HostStatus::Unknown => "unknown",
-        HostStatus::Down => "down",
-        HostStatus::Filtered => "filtered",
-        HostStatus::Up => "up",
-    }
-}
-
-/// The wire name of a port's state.
-pub fn port_state_name(state: PortState) -> &'static str {
-    match state {
-        PortState::ClosedFiltered => "closed_filtered",
-        PortState::Filtered => "filtered",
-        PortState::Unfiltered => "unfiltered",
-        PortState::Closed => "closed",
-        PortState::OpenFiltered => "open_filtered",
-        PortState::Open => "open",
-    }
-}
-
-/// The wire name of a transport protocol.
-pub fn protocol_name(protocol: Protocol) -> &'static str {
-    match protocol {
-        Protocol::Tcp => "tcp",
-        Protocol::Udp => "udp",
-    }
-}
-
-/// The wire name of an inferred network role.
-pub fn network_role_name(role: NetworkRole) -> &'static str {
-    match role {
-        NetworkRole::Tarpit => "tarpit",
-        NetworkRole::Truncated => "truncated",
-    }
-}
+// The names below are defined in [`record::wire`](crate::record::wire), beside
+// the parsers that read them back, so that a name and its inverse cannot drift
+// apart. Re-exported rather than called through, since these appear in the
+// export's hot paths and a caller should not have to know where they live.
+pub use crate::record::wire::{
+    host_status_name, network_role_name, port_state_name, protocol_name, scan_response_name,
+    status_protocol_name,
+};
 
 /// The wire name of a receive loop's stop reason.
 pub fn stop_reason_name(reason: StopReason) -> &'static str {
@@ -191,41 +160,6 @@ pub fn scan_effort_name(effort: ScanEffort) -> &'static str {
         ScanEffort::Fast => "fast",
         ScanEffort::Balanced => "balanced",
         ScanEffort::Thorough => "thorough",
-    }
-}
-
-/// The wire name of the evidence behind a host's status.
-///
-/// A strategy-supplied name is prefixed with `custom:` so it can never be
-/// mistaken for one of the names above. Without the prefix a script calling
-/// itself `arp` would produce a report indistinguishable from a real ARP
-/// finding.
-pub fn status_protocol_name(protocol: &StatusProtocol) -> Cow<'_, str> {
-    match protocol {
-        StatusProtocol::Arp => Cow::Borrowed("arp"),
-        StatusProtocol::Ndp => Cow::Borrowed("ndp"),
-        StatusProtocol::IcmpEcho => Cow::Borrowed("icmp_echo"),
-        StatusProtocol::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
-        StatusProtocol::TcpSyn => Cow::Borrowed("tcp_syn"),
-        StatusProtocol::Tcp => Cow::Borrowed("tcp"),
-        StatusProtocol::Udp => Cow::Borrowed("udp"),
-        StatusProtocol::Custom(name) => Cow::Owned(format!("custom:{name}")),
-    }
-}
-
-/// The wire name of the packet response that decided a port's state.
-///
-/// Custom responses are prefixed as in [`status_protocol_name`], for the same
-/// reason.
-pub fn scan_response_name(response: &ScanResponse) -> Cow<'_, str> {
-    match response {
-        ScanResponse::TcpSynAck => Cow::Borrowed("tcp_syn_ack"),
-        ScanResponse::TcpRst => Cow::Borrowed("tcp_rst"),
-        ScanResponse::UdpResponse => Cow::Borrowed("udp_response"),
-        ScanResponse::NoResponse => Cow::Borrowed("no_response"),
-        ScanResponse::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
-        ScanResponse::IcmpProhibited => Cow::Borrowed("icmp_prohibited"),
-        ScanResponse::Custom(name) => Cow::Owned(format!("custom:{name}")),
     }
 }
 
@@ -1515,6 +1449,8 @@ impl<'a> DiscoveryDto<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::host::{NetworkRole, StatusProtocol};
+    use crate::model::port::{Protocol, ScanResponse};
     use crate::model::exclusion::Exclusions;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;

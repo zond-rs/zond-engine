@@ -113,6 +113,16 @@ impl Discovery {
         }
     }
 
+    /// Restores the time this packet arrived.
+    ///
+    /// [`new`](Self::new) stamps the current time, which is what a scan wants
+    /// and what a rebuild does not: the timestamp is when the reply that settled
+    /// this port arrived, not when the record of it was read.
+    pub fn seen_at(mut self, timestamp: SystemTime) -> Self {
+        self.timestamp = timestamp;
+        self
+    }
+
     /// The packet that settled the state.
     pub fn reason(&self) -> &ScanResponse {
         &self.reason

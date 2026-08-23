@@ -71,7 +71,18 @@ impl HardwareInfo {
     /// If no vendor has been identified yet, this attempts to resolve one
     /// from the newly observed MAC's OUI.
     pub fn add_mac(&mut self, mac: MacAddr) {
-        self.macs.insert(mac, SystemTime::now());
+        self.record_mac_seen_at(mac, SystemTime::now());
+    }
+
+    /// [`add_mac`](Self::add_mac) for an address seen at a known time.
+    ///
+    /// For rebuilding hardware from a record. The sighting times order
+    /// [`most_recent_mac`](Self::most_recent_mac) and decide what
+    /// [`prune_stale_macs`](Self::prune_stale_macs) removes, so stamping them
+    /// with the time of the rebuild would reorder a host's addresses and make
+    /// every one of them look fresh.
+    pub fn record_mac_seen_at(&mut self, mac: MacAddr, at: SystemTime) {
+        self.macs.insert(mac, at);
 
         if self.vendor.is_none() {
             self.vendor = mac::vendor(&mac).map(Arc::from);

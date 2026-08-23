@@ -289,106 +289,14 @@ impl<R: BufRead> Reader<R> {
     }
 }
 
-/// Turning the export path's wire names back into values.
+/// Reading the wire names back into values.
 ///
-/// Every function here is the inverse of one in
-/// [`export::schema`](crate::export::schema), and the test at the bottom of this
-/// module asserts that for every variant rather than trusting the two lists to
-/// stay in step by inspection. A name this build does not know is returned as
-/// `None` for the caller to report with its field and line; see
-/// [`JournalError::UnknownValue`].
+/// Re-exported from [`record::wire`](crate::record::wire), where each parser is
+/// defined beside the name it reads, so the two cannot drift apart.
 pub mod parse {
-    use crate::model::host::{HostStatus, NetworkRole, StatusProtocol};
-    use crate::model::port::discovery::ScanResponse;
-    use crate::model::port::{PortState, Protocol};
-
-    /// The prefix the export path gives a strategy-supplied name so it can never
-    /// be mistaken for one the engine defines.
-    const CUSTOM: &str = "custom:";
-
-    /// A host's reachability, from its wire name.
-    pub fn host_status(name: &str) -> Option<HostStatus> {
-        Some(match name {
-            "unknown" => HostStatus::Unknown,
-            "down" => HostStatus::Down,
-            "filtered" => HostStatus::Filtered,
-            "up" => HostStatus::Up,
-            _ => return None,
-        })
-    }
-
-    /// A port's state, from its wire name.
-    pub fn port_state(name: &str) -> Option<PortState> {
-        Some(match name {
-            "closed_filtered" => PortState::ClosedFiltered,
-            "filtered" => PortState::Filtered,
-            "unfiltered" => PortState::Unfiltered,
-            "closed" => PortState::Closed,
-            "open_filtered" => PortState::OpenFiltered,
-            "open" => PortState::Open,
-            _ => return None,
-        })
-    }
-
-    /// A transport, from its wire name.
-    pub fn protocol(name: &str) -> Option<Protocol> {
-        Some(match name {
-            "tcp" => Protocol::Tcp,
-            "udp" => Protocol::Udp,
-            _ => return None,
-        })
-    }
-
-    /// An inferred role, from its wire name.
-    pub fn network_role(name: &str) -> Option<NetworkRole> {
-        Some(match name {
-            "tarpit" => NetworkRole::Tarpit,
-            "truncated" => NetworkRole::Truncated,
-            _ => return None,
-        })
-    }
-
-    /// The protocol behind a status finding, from its wire name.
-    ///
-    /// A `custom:` prefix yields [`StatusProtocol::Custom`] with the prefix
-    /// removed, which is what makes the export path's prefixing round-trip. An
-    /// empty custom name is refused: it would render as the bare prefix and read
-    /// back as a finding attributed to nothing.
-    pub fn status_protocol(name: &str) -> Option<StatusProtocol> {
-        if let Some(custom) = name.strip_prefix(CUSTOM) {
-            return (!custom.is_empty()).then(|| StatusProtocol::Custom(custom.into()));
-        }
-
-        Some(match name {
-            "arp" => StatusProtocol::Arp,
-            "ndp" => StatusProtocol::Ndp,
-            "icmp_echo" => StatusProtocol::IcmpEcho,
-            "icmp_unreachable" => StatusProtocol::IcmpUnreachable,
-            "tcp_syn" => StatusProtocol::TcpSyn,
-            "tcp" => StatusProtocol::Tcp,
-            "udp" => StatusProtocol::Udp,
-            _ => return None,
-        })
-    }
-
-    /// The packet that settled a port's state, from its wire name.
-    ///
-    /// Prefixed custom names as in [`status_protocol`], for the same reason.
-    pub fn scan_response(name: &str) -> Option<ScanResponse> {
-        if let Some(custom) = name.strip_prefix(CUSTOM) {
-            return (!custom.is_empty()).then(|| ScanResponse::Custom(custom.to_string()));
-        }
-
-        Some(match name {
-            "tcp_syn_ack" => ScanResponse::TcpSynAck,
-            "tcp_rst" => ScanResponse::TcpRst,
-            "udp_response" => ScanResponse::UdpResponse,
-            "no_response" => ScanResponse::NoResponse,
-            "icmp_unreachable" => ScanResponse::IcmpUnreachable,
-            "icmp_prohibited" => ScanResponse::IcmpProhibited,
-            _ => return None,
-        })
-    }
+    pub use crate::record::wire::{
+        host_status, network_role, port_state, protocol, scan_response, status_protocol,
+    };
 }
 
 // ╔════════════════════════════════════════════╗

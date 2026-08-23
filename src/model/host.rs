@@ -447,6 +447,26 @@ impl Host {
         self.last_seen
     }
 
+    /// Restores the times this host was first and last seen.
+    ///
+    /// Both are stamped by [`new`](Self::new) and moved forward as findings
+    /// arrive, which is right for a host a scan is discovering and wrong for one
+    /// being rebuilt from a record: a scan resumed the next morning would report
+    /// having first seen every host that morning.
+    ///
+    /// Taken together rather than as two setters, since a `first_seen` after a
+    /// `last_seen` describes nothing that could have happened. They are swapped
+    /// if given that way.
+    pub fn restore_seen(&mut self, first_seen: SystemTime, last_seen: SystemTime) {
+        let (first_seen, last_seen) = if first_seen <= last_seen {
+            (first_seen, last_seen)
+        } else {
+            (last_seen, first_seen)
+        };
+        self.first_seen = first_seen;
+        self.last_seen = last_seen;
+    }
+
     /// Offers `candidate` as the address this host is reported under, taking it
     /// only if it identifies the host better than the current one.
     ///
