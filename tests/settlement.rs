@@ -25,6 +25,7 @@ use common::fake_net::{FakeNet, Layer4, Policy};
 use common::*;
 use zond_engine::journal::cursor::Checkpoint;
 use zond_engine::journal::settle::Outcome;
+use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner::session::ScanSession;
 
@@ -216,7 +217,9 @@ async fn the_connect_path_settles_what_it_probed() {
 /// checkpoint can be written by hand instead of raced for.
 #[tokio::test]
 async fn a_journalled_scan_resumes_where_it_stopped() {
+    use zond_engine::Exclusions;
     use zond_engine::journal::Journal;
+    use zond_engine::journal::manifest::Plan;
     use zond_engine::model::ip::set::IpSet;
     use zond_engine::model::port::PortSet;
     use zond_engine::model::target::{TargetMap, TargetSet};
@@ -253,8 +256,13 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     cfg.assume_up = true;
 
     // First sitting.
-    let journal =
-        Journal::create(&root, &plan, TcpScanTechnique::Syn, false, "loopback").expect("creates");
+    let journal = Journal::create(
+        &root,
+        &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
+        false,
+        "loopback",
+    )
+    .expect("creates");
     let directory = journal.directory().to_path_buf();
 
     let (_session, task) = zond_engine::scanner::scan_with_journal(plan.clone(), &cfg, journal)
@@ -266,20 +274,21 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     // The journal outlived it, and records what was settled.
     let listed = zond_engine::journal::store::list(&root).expect("lists");
     assert_eq!(listed.len(), 1);
-    assert!(
-        listed[0].settled() > 0,
-        "a finished sitting must have checkpointed its progress"
-    );
     assert_eq!(
         listed[0].settled(),
-        4,
-        "four closed ports are four earned verdicts"
+        Some(4),
+        "four closed ports are four earned verdicts, and a finished sitting \
+         must have checkpointed them"
     );
     assert!(listed[0].is_complete());
 
     // Second sitting over the same plan.
-    let (journal, checkpoint) =
-        Journal::resume(&directory, &plan, TcpScanTechnique::Syn, false).expect("resumes");
+    let (journal, checkpoint) = Journal::resume(
+        &directory,
+        &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
+        false,
+    )
+    .expect("resumes");
 
     assert_eq!(
         checkpoint.remaining(plan.iter()).count(),
@@ -296,7 +305,7 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     let listed = zond_engine::journal::store::list(&root).expect("lists");
     assert_eq!(
         listed[0].settled(),
-        4,
+        Some(4),
         "a sitting that asked nothing must still carry the first one's progress"
     );
 
@@ -360,7 +369,9 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
 /// they join the task directly and never wait on the stream.
 #[tokio::test]
 async fn a_journalled_scan_lets_a_watcher_finish() {
+    use zond_engine::Exclusions;
     use zond_engine::journal::Journal;
+    use zond_engine::journal::manifest::Plan;
     use zond_engine::model::ip::set::IpSet;
     use zond_engine::model::port::PortSet;
     use zond_engine::model::target::{TargetMap, TargetSet};
@@ -388,8 +399,13 @@ async fn a_journalled_scan_lets_a_watcher_finish() {
     let mut cfg = test_config();
     cfg.assume_up = true;
 
-    let journal =
-        Journal::create(&root, &plan, TcpScanTechnique::Syn, false, "loopback").expect("creates");
+    let journal = Journal::create(
+        &root,
+        &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
+        false,
+        "loopback",
+    )
+    .expect("creates");
     let (session, task) = zond_engine::scanner::scan_with_journal(plan, &cfg, journal)
         .await
         .expect("the scan starts");
@@ -479,4 +495,156 @@ async fn a_probe_outstanding_at_the_stop_is_asked_again() {
 
     // And so a resume asks about every one of them again.
     assert_eq!(settlements.checkpoint(), Checkpoint::default());
+}
+
+// ─── Sweeps settle addresses, and only where a sweep is what is running ──────
+
+/// The addresses a sweep is counted in, written the way a plan is.
+fn addresses(written: &str) -> IpSet {
+    written.parse().expect("a valid address specification")
+}
+
+/// A sweep settles the address it earned a verdict for, at that address's
+/// position in the plan. Without this the whole feature is inert: a journal
+/// records a cursor nothing ever advances, and every sitting starts over.
+///
+/// Loopback rather than a fake network, because the unprivileged path is real
+/// sockets by construction and refuses instantly on an unused port — which is a
+/// TCP-layer answer and so proof the host is there.
+#[tokio::test]
+async fn a_sweep_settles_the_address_that_answered() {
+    let plan = addresses("127.0.0.1");
+    let (_session, ctx) = ScanSession::sweeping(
+        zond_engine::Exclusions::none(),
+        &Checkpoint::default(),
+        plan.positions(),
+    );
+
+    let observer = ctx.clone();
+    zond_engine::scanner::strategy::connect::discover(plan, ctx)
+        .await
+        .expect("the connect sweep runs anywhere");
+
+    let settlements = observer.settlements();
+    assert_eq!(
+        settlements.count(Outcome::Answered { position: 0 }),
+        1,
+        "loopback answers, and answering is what settles an address"
+    );
+    assert_eq!(
+        settlements.checkpoint().watermark,
+        1,
+        "the one position in the plan, earned"
+    );
+}
+
+/// **The isolation property, and the reason a sweep's numbering lives on the
+/// context rather than being derived from the addresses.**
+///
+/// A port scan runs the discovery strategies too, as its liveness pass, against
+/// a context counted in address-and-port pairs. If those strategies settled
+/// addresses there, position 0 of the *port* plan would be marked covered by a
+/// liveness probe — and the resumed scan would skip a port nothing ever asked
+/// about, reporting success.
+///
+/// A context that does not number addresses is what prevents it. This asserts
+/// the sweep records nothing at all against one.
+#[tokio::test]
+async fn a_sweep_inside_a_port_scan_settles_nothing() {
+    // `new` is what `scan` builds: exclusions and a cursor, and no address
+    // numbering, because a port scan counts something else.
+    let (_session, ctx) = ScanSession::new();
+
+    let observer = ctx.clone();
+    zond_engine::scanner::strategy::connect::discover(addresses("127.0.0.1"), ctx)
+        .await
+        .expect("the connect sweep runs anywhere");
+
+    let settlements = observer.settlements();
+    assert_eq!(
+        settlements.settled_count(),
+        0,
+        "a liveness pass must not advance a port scan's cursor"
+    );
+    assert_eq!(settlements.checkpoint(), Checkpoint::default());
+}
+
+/// An address the plan does not name has no position. A sweep finds neighbours
+/// it was never asked about — they are findings, and settling one would advance
+/// the cursor over a position belonging to a different address.
+#[tokio::test]
+async fn an_address_outside_the_plan_settles_nothing() {
+    // Numbered over a plan loopback is not in, then swept for loopback anyway,
+    // which is the shape of a segment sweep finding a neighbour.
+    let (_session, ctx) = ScanSession::sweeping(
+        zond_engine::Exclusions::none(),
+        &Checkpoint::default(),
+        addresses("192.0.2.0/30").positions(),
+    );
+
+    let observer = ctx.clone();
+    zond_engine::scanner::strategy::connect::discover(addresses("127.0.0.1"), ctx)
+        .await
+        .expect("the connect sweep runs anywhere");
+
+    assert_eq!(observer.settlements().settled_count(), 0);
+}
+
+/// **The exclusion policy decides the enumeration, so a resume under a different
+/// one is refused.**
+///
+/// Withhold the first half of a range and every position after it names a
+/// different target. Two sittings under different policies would then agree on a
+/// plan fingerprint and disagree on what position 400 means — the resumed one
+/// skipping targets nobody probed, and the merged report claiming them.
+///
+/// The refusal belongs to the engine rather than to whichever front end
+/// remembered to check: a journal is handed over with the settings a scan is
+/// about to run under, and those are the two things that have to agree.
+#[tokio::test]
+async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
+    use zond_engine::journal::Journal;
+    use zond_engine::journal::manifest::Plan;
+    use zond_engine::{Exclusions, ZondConfig};
+
+    let root = std::env::temp_dir().join(format!("zond-policy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a scratch root");
+
+    let plan: IpSet = "192.0.2.1-192.0.2.8".parse().expect("a range");
+    let journal = Journal::create(
+        &root,
+        &Plan::discovery(&plan, &Exclusions::none(), false),
+        false,
+        "192.0.2.1 and 7 more",
+    )
+    .expect("creates");
+    let directory = journal.directory().to_path_buf();
+    journal.close().expect("closes");
+
+    // The same record, continued by a run that would withhold part of it.
+    let mut narrowed = ZondConfig::default();
+    let mut withheld = IpSet::new();
+    withheld.insert_range("192.0.2.1-192.0.2.4".parse().expect("a range"));
+    narrowed.exclusions = Exclusions::new(withheld);
+
+    let (journal, _, _) = Journal::reopen(&directory, false).expect("reopens");
+    let refused = zond_engine::discover_with_journal(plan.clone(), &narrowed, journal)
+        .await
+        .err()
+        .expect("a policy that narrows the recorded plan renumbers it");
+
+    assert!(
+        matches!(refused, zond_engine::scanner::ScanError::PlanChanged(_)),
+        "{refused:?}"
+    );
+
+    // And the policy the record was written under is accepted, so the refusal
+    // above is about the change rather than about there being a policy at all.
+    let (journal, _, _) = Journal::reopen(&directory, false).expect("reopens");
+    zond_engine::discover_with_journal(plan, &ZondConfig::default(), journal)
+        .await
+        .expect("the recorded policy still describes the recorded plan");
+
+    let _ = std::fs::remove_dir_all(&root);
 }

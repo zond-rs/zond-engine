@@ -31,6 +31,8 @@
 //! `TargetSet` reads merged ranges by construction.
 
 use super::range::{IpError, IpRange, Ipv4Range, Ipv6Range};
+use std::cmp::Ordering;
+use std::ops::Range;
 use std::{
     borrow::Cow,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -458,6 +460,332 @@ impl PartialEq for IpSet {
 
         let (this, that) = (merged(self), merged(other));
         this.v4 == that.v4 && this.v6 == that.v6
+    }
+}
+
+/// Where each of an [`IpSet`]'s addresses falls in its enumeration.
+///
+/// [`IpSet::iter`] walks the merged IPv4 ranges in ascending order and then the
+/// IPv6 ones, and the index an address holds in that walk is its **position**.
+/// A sweep is counted in positions the way a port scan is counted in
+/// [`PlannedTarget`](crate::model::target::PlannedTarget)s, so that a journal
+/// can record how far one got without writing down an address per target.
+///
+/// Built from the ranges rather than the addresses: a `/8` costs one entry
+/// here, and a lookup is a binary search over the ranges however many addresses
+/// they hold. Nothing is enumerated, so this is affordable to consult once per
+/// probe.
+///
+/// # A set larger than a position can count
+///
+/// A position is a `u64`, and an IPv6 range can hold more addresses than that.
+/// Ranges are numbered in order until one would not fit, and everything from
+/// there on is **unnumbered**: [`find`](Self::find) answers `None` for it.
+///
+/// An unnumbered address can never settle, so it is asked again on every
+/// sitting — the same fail-safe an unreported outcome takes. IPv4 is numbered
+/// first and so is never the half that is lost, which matters because it is the
+/// half that is walked address by address.
+#[derive(Debug, Clone, Default)]
+pub struct Positions {
+    /// The ranges in enumeration order, each with the position of its first
+    /// address. IPv4 before IPv6, ascending within each.
+    spans: Vec<Span>,
+    /// The stretches of `spans` that are sorted and disjoint *by address*, so
+    /// that a binary search inside one is valid.
+    ///
+    /// IPv4 is one. IPv6 is one per interface, because the set sorts by zone
+    /// before address — `fe80::1` on two interfaces is two different machines
+    /// and two separate ranges, which together are not one ascending sequence.
+    /// [`contains`](IpSet::contains) walks the same runs for the same reason.
+    runs: Vec<Run>,
+    /// How many addresses are numbered, which is every address of every span.
+    total: u64,
+}
+
+/// One stretch of [`Positions::spans`] that a binary search may be run over.
+#[derive(Debug, Clone, Copy)]
+struct Run {
+    /// Where the stretch starts in `spans`.
+    from: usize,
+    /// Where it ends, exclusive.
+    to: usize,
+    /// Whether these are IPv6 ranges. The families never share a run.
+    v6: bool,
+}
+
+/// One range, and where its addresses sit in the enumeration.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    range: IpRange,
+    /// The position of the range's first address.
+    start: u64,
+    /// How many addresses it holds. Never zero: a range holds at least one.
+    len: u64,
+}
+
+impl Positions {
+    /// Numbers `set`'s addresses.
+    ///
+    /// The set is merged first if it is not already, on a clone, since an
+    /// unmerged set enumerates differently from the canonical one every
+    /// position is counted in. That is the same trade [`IpSet::len`] makes.
+    pub fn of(set: &IpSet) -> Self {
+        if set.v4_dirty || set.v6_dirty {
+            let mut merged = set.clone();
+            merged.canonicalize();
+            return Self::of_canonical(&merged);
+        }
+        Self::of_canonical(set)
+    }
+
+    fn of_canonical(set: &IpSet) -> Self {
+        let ranges = set
+            .v4
+            .iter()
+            .copied()
+            .map(IpRange::V4)
+            .chain(set.v6.iter().copied().map(IpRange::V6));
+
+        let mut spans = Vec::new();
+        let mut runs: Vec<Run> = Vec::new();
+        let mut total: u64 = 0;
+        let mut group: Option<(bool, Option<u32>)> = None;
+
+        for range in ranges {
+            // The first range that will not fit ends the numbering, and so does
+            // every range after it: positions have to stay contiguous, or the
+            // ones already handed out would move.
+            let Ok(len) = u64::try_from(range.len()) else {
+                break;
+            };
+            let Some(next) = total.checked_add(len) else {
+                break;
+            };
+
+            let here = match range {
+                IpRange::V4(_) => (false, None),
+                IpRange::V6(v6) => (true, v6.zone()),
+            };
+            match runs.last_mut() {
+                Some(run) if group == Some(here) => run.to = spans.len() + 1,
+                _ => runs.push(Run {
+                    from: spans.len(),
+                    to: spans.len() + 1,
+                    v6: here.0,
+                }),
+            }
+            group = Some(here);
+
+            spans.push(Span {
+                range,
+                start: total,
+                len,
+            });
+            total = next;
+        }
+
+        Self { spans, runs, total }
+    }
+
+    /// How many addresses are numbered.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// Whether nothing is numbered at all.
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// Where `ip` falls in the enumeration, or `None` when the set does not hold
+    /// it or holds it beyond what a position can count.
+    ///
+    /// A sweep finds addresses it was never asked about, and those have no
+    /// position: they are findings rather than plan targets, and nothing about
+    /// them advances a cursor.
+    pub fn find(&self, ip: IpAddr) -> Option<u64> {
+        let span = self.span_holding(ip)?;
+        let offset = offset_within(&span.range, ip)?;
+        Some(span.start + offset)
+    }
+
+    /// The address at `position`, or `None` past the end of the numbering.
+    pub fn address_at(&self, position: u64) -> Option<IpAddr> {
+        let index = self.span_at(position)?;
+        let span = &self.spans[index];
+        address_within(&span.range, position - span.start)
+    }
+
+    /// The addresses at every position in `wanted`, as ranges.
+    ///
+    /// For narrowing a plan to what a resumed sweep still has to ask about:
+    /// the answer is a handful of ranges however many addresses they cover, so
+    /// continuing a sweep of a `/8` costs no more than continuing one of a
+    /// `/24`.
+    pub fn ranges_in(&self, wanted: Range<u64>) -> Vec<IpRange> {
+        let end = wanted.end.min(self.total);
+        if wanted.start >= end {
+            return Vec::new();
+        }
+
+        let mut found = Vec::new();
+        let mut index = match self.span_at(wanted.start) {
+            Some(index) => index,
+            None => return found,
+        };
+
+        while index < self.spans.len() {
+            let span = &self.spans[index];
+            if span.start >= end {
+                break;
+            }
+
+            let from = wanted.start.saturating_sub(span.start);
+            let to = (end - span.start).min(span.len) - 1;
+            if let Some(part) = slice_of(&span.range, from, to) {
+                found.push(part);
+            }
+            index += 1;
+        }
+
+        found
+    }
+
+    /// The span holding `ip`, or `None` where no run holds it or more than one
+    /// does.
+    ///
+    /// **Two runs holding it is refused rather than resolved.** An `IpAddr`
+    /// carries no interface, so an address two segments both hold cannot say
+    /// which of its two positions it means — and picking one would settle a
+    /// position belonging to the other, which is a resume skipping an address
+    /// nothing ever probed. Answering `None` costs that address being asked
+    /// again, which is the direction this has to fail in.
+    fn span_holding(&self, ip: IpAddr) -> Option<&Span> {
+        let v6 = ip.is_ipv6();
+        let key = widen(ip);
+        let mut found: Option<&Span> = None;
+
+        for run in self.runs.iter().filter(|run| run.v6 == v6) {
+            let spans = &self.spans[run.from..run.to];
+            let Ok(index) = spans.binary_search_by(|span| {
+                let (start, end) = bounds(&span.range);
+                if end < key {
+                    Ordering::Less
+                } else if start > key {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            }) else {
+                continue;
+            };
+
+            if found.is_some() {
+                return None;
+            }
+            found = Some(&spans[index]);
+        }
+
+        found
+    }
+
+    /// The index of the span holding `position`.
+    fn span_at(&self, position: u64) -> Option<usize> {
+        if position >= self.total {
+            return None;
+        }
+
+        self.spans
+            .binary_search_by(|span| {
+                if span.start + span.len <= position {
+                    Ordering::Less
+                } else if span.start > position {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            })
+            .ok()
+    }
+}
+
+impl IpSet {
+    /// Numbers this set's addresses, for counting how far a sweep of it got.
+    ///
+    /// See [`Positions`], which is where the numbering and its one limit are
+    /// described.
+    pub fn positions(&self) -> Positions {
+        Positions::of(self)
+    }
+}
+
+/// One address as a `u128`, so the two families compare the same way.
+fn widen(ip: IpAddr) -> u128 {
+    match ip {
+        IpAddr::V4(v4) => u128::from(u32::from(v4)),
+        IpAddr::V6(v6) => u128::from(v6),
+    }
+}
+
+/// A range's inclusive bounds, widened.
+fn bounds(range: &IpRange) -> (u128, u128) {
+    match range {
+        IpRange::V4(v4) => v4_bounds(v4),
+        IpRange::V6(v6) => (u128::from(v6.start_addr()), u128::from(v6.end_addr())),
+    }
+}
+
+/// How far into `range` the address `ip` sits, or `None` if it is not in it or
+/// belongs to the other family.
+fn offset_within(range: &IpRange, ip: IpAddr) -> Option<u64> {
+    let same_family = matches!(
+        (range, ip),
+        (IpRange::V4(_), IpAddr::V4(_)) | (IpRange::V6(_), IpAddr::V6(_))
+    );
+    if !same_family {
+        return None;
+    }
+
+    let (start, end) = bounds(range);
+    let key = widen(ip);
+    if key < start || key > end {
+        return None;
+    }
+    u64::try_from(key - start).ok()
+}
+
+/// The address `offset` addresses into `range`.
+fn address_within(range: &IpRange, offset: u64) -> Option<IpAddr> {
+    let (start, end) = bounds(range);
+    let at = start.checked_add(u128::from(offset))?;
+    if at > end {
+        return None;
+    }
+
+    Some(match range {
+        IpRange::V4(_) => IpAddr::V4(Ipv4Addr::from(u32::try_from(at).ok()?)),
+        IpRange::V6(_) => IpAddr::V6(Ipv6Addr::from(at)),
+    })
+}
+
+/// The part of `range` from its `from`th address to its `to`th, inclusive.
+fn slice_of(range: &IpRange, from: u64, to: u64) -> Option<IpRange> {
+    let start = address_within(range, from)?;
+    let end = address_within(range, to)?;
+
+    match (range, start, end) {
+        (IpRange::V4(_), IpAddr::V4(start), IpAddr::V4(end)) => {
+            Ipv4Range::new(start, end).ok().map(IpRange::V4)
+        }
+        // The zone travels with the slice: `fe80::1` names a different machine
+        // on every segment, so a piece of a zoned range is still zoned.
+        (IpRange::V6(v6), IpAddr::V6(start), IpAddr::V6(end)) => {
+            Ipv6Range::scoped(start, end, v6.zone())
+                .ok()
+                .map(IpRange::V6)
+        }
+        _ => None,
     }
 }
 
@@ -977,6 +1305,242 @@ mod tests {
         }
         assert!(!set.contains(&IpAddr::V6("fe80::b".parse().unwrap())));
     }
+    // ─── Positions ───────────────────────────────────────────────────────────
+
+    fn set(written: &str) -> IpSet {
+        written.parse().expect("a valid address specification")
+    }
+
+    /// The one property everything else rests on: a position is an index into
+    /// `iter`, and the two must agree address for address. If they drift, a
+    /// resumed sweep skips addresses it never asked about and reports success.
+    #[test]
+    fn a_position_is_the_index_the_set_enumerates_at() {
+        let set = set("192.0.2.1-192.0.2.10,198.51.100.0/30,2001:db8::1-2001:db8::5");
+        let positions = set.positions();
+
+        assert_eq!(positions.total(), set.len() as u64);
+
+        for (index, ip) in set.iter().enumerate() {
+            let index = index as u64;
+            assert_eq!(positions.find(ip), Some(index), "{ip} is not at {index}");
+            assert_eq!(positions.address_at(index), Some(ip), "{index} is not {ip}");
+        }
+    }
+
+    /// A sweep finds neighbours it was never asked about. They are findings,
+    /// not plan targets, and numbering one would advance a cursor over a
+    /// position belonging to something else.
+    #[test]
+    fn an_address_outside_the_plan_has_no_position() {
+        let positions = set("192.0.2.1-192.0.2.10").positions();
+
+        assert_eq!(
+            positions.find("192.0.2.11".parse().expect("an address")),
+            None
+        );
+        assert_eq!(
+            positions.find("198.51.100.1".parse().expect("an address")),
+            None
+        );
+        assert_eq!(
+            positions.find("2001:db8::1".parse().expect("an address")),
+            None,
+            "the other family is not in the set either"
+        );
+        assert_eq!(positions.address_at(10), None, "past the end of the plan");
+    }
+
+    /// IPv4 is numbered before IPv6, which is what the enumeration does.
+    #[test]
+    fn the_families_are_numbered_in_the_order_they_are_walked() {
+        let set = set("2001:db8::1,192.0.2.1");
+        let positions = set.positions();
+
+        assert_eq!(
+            positions.find("192.0.2.1".parse().expect("an address")),
+            Some(0)
+        );
+        assert_eq!(
+            positions.find("2001:db8::1".parse().expect("an address")),
+            Some(1)
+        );
+    }
+
+    /// Narrowing a plan to what is left has to give back exactly the addresses
+    /// at those positions — no more, since a re-probed address is waste, and no
+    /// fewer, since a dropped one is a target silently skipped.
+    #[test]
+    fn the_addresses_in_a_span_of_positions_are_exactly_those_positions() {
+        let set = set("192.0.2.1-192.0.2.10,2001:db8::1-2001:db8::4");
+        let positions = set.positions();
+
+        for (from, to) in [(0u64, 14u64), (0, 5), (3, 9), (9, 12), (13, 14), (7, 8)] {
+            let mut narrowed = IpSet::new();
+            for range in positions.ranges_in(from..to) {
+                narrowed.insert_range(range);
+            }
+            narrowed.canonicalize();
+
+            let expected: Vec<IpAddr> = set
+                .iter()
+                .skip(from as usize)
+                .take((to - from) as usize)
+                .collect();
+            let found: Vec<IpAddr> = narrowed.iter().collect();
+
+            assert_eq!(found, expected, "positions {from}..{to}");
+        }
+    }
+
+    /// A span that runs past the end is clamped rather than refused, and an
+    /// empty one gives back nothing.
+    #[test]
+    fn a_span_outside_the_plan_yields_nothing() {
+        let positions = set("192.0.2.1-192.0.2.4").positions();
+
+        assert!(positions.ranges_in(4..99).is_empty());
+        assert!(positions.ranges_in(2..2).is_empty());
+        assert_eq!(positions.ranges_in(0..99).len(), 1, "clamped to the plan");
+    }
+
+    /// An IPv6 range can hold more addresses than a position can count. The
+    /// numbering stops there rather than wrapping, and IPv4 — the half that is
+    /// actually walked address by address — keeps its positions.
+    #[test]
+    fn a_range_too_large_to_number_ends_the_numbering_without_losing_ipv4() {
+        let set = set("192.0.2.1-192.0.2.4,2001:db8::/64,2001:db9::1");
+        let positions = set.positions();
+
+        assert_eq!(positions.total(), 4, "only the IPv4 half is numbered");
+        assert_eq!(
+            positions.find("192.0.2.4".parse().expect("an address")),
+            Some(3)
+        );
+        assert_eq!(
+            positions.find("2001:db8::1".parse().expect("an address")),
+            None,
+            "an unnumbered address never settles, so it is asked again"
+        );
+        assert_eq!(
+            positions.find("2001:db9::1".parse().expect("an address")),
+            None,
+            "and so is everything after it: positions have to stay contiguous"
+        );
+    }
+
+    /// A zoned range names one segment. A slice of it has to keep saying so,
+    /// or a resumed sweep aims at `fe80::` on whichever interface comes first.
+    #[test]
+    fn a_slice_of_a_zoned_range_keeps_its_zone() {
+        let mut set = IpSet::new();
+        set.insert_range(IpRange::V6(
+            Ipv6Range::scoped(
+                "fe80::1".parse().expect("an address"),
+                "fe80::8".parse().expect("an address"),
+                Some(7),
+            )
+            .expect("a range"),
+        ));
+        set.canonicalize();
+
+        let sliced = set.positions().ranges_in(2..5);
+        assert_eq!(sliced.len(), 1);
+        match sliced[0] {
+            IpRange::V6(range) => assert_eq!(range.zone(), Some(7)),
+            IpRange::V4(_) => panic!("an IPv6 range came back as IPv4"),
+        }
+    }
+
+    /// `fe80::1` names a different machine on every segment, and the set keeps
+    /// the two apart — sorted by zone first, so the IPv6 ranges are *not* one
+    /// ascending sequence. A lookup that treated them as one would answer with
+    /// whichever run it landed on, and settling an address at another
+    /// interface's position lets a resume skip one nothing ever probed.
+    ///
+    /// A bare address cannot say which segment it came from, so the honest
+    /// answer where two runs hold it is no position at all.
+    #[test]
+    fn an_address_two_interfaces_both_hold_has_no_position() {
+        let mut both = IpSet::new();
+        for zone in [5u32, 7] {
+            both.insert_range(IpRange::V6(
+                Ipv6Range::scoped(
+                    "fe80::1".parse().expect("an address"),
+                    "fe80::4".parse().expect("an address"),
+                    Some(zone),
+                )
+                .expect("a range"),
+            ));
+        }
+        both.canonicalize();
+
+        let positions = both.positions();
+        assert_eq!(
+            positions.total(),
+            8,
+            "four addresses on each of two segments"
+        );
+        assert_eq!(
+            positions.find("fe80::1".parse().expect("an address")),
+            None,
+            "two segments hold it and the address cannot say which"
+        );
+    }
+
+    /// One interface holding it is not ambiguous, and must still resolve —
+    /// otherwise a link-local sweep settles nothing at all.
+    #[test]
+    fn an_address_one_interface_holds_keeps_its_position() {
+        let mut set = IpSet::new();
+        set.insert_range(IpRange::V6(
+            Ipv6Range::scoped(
+                "fe80::1".parse().expect("an address"),
+                "fe80::4".parse().expect("an address"),
+                Some(7),
+            )
+            .expect("a range"),
+        ));
+        set.insert_range(IpRange::V6(
+            Ipv6Range::scoped(
+                "fe80::9".parse().expect("an address"),
+                "fe80::a".parse().expect("an address"),
+                Some(5),
+            )
+            .expect("a range"),
+        ));
+        set.canonicalize();
+
+        let positions = set.positions();
+        for (index, ip) in set.iter().enumerate() {
+            assert_eq!(
+                positions.find(ip),
+                Some(index as u64),
+                "{ip} is at {index} and no run but its own holds it"
+            );
+        }
+    }
+
+    /// An unmerged set enumerates differently from the canonical one every
+    /// position is counted in, so numbering one has to merge it first.
+    #[test]
+    fn an_unmerged_set_is_numbered_as_the_canonical_one() {
+        let mut lazy = IpSet::new();
+        lazy.insert("192.0.2.2".parse().expect("an address"));
+        lazy.insert("192.0.2.1".parse().expect("an address"));
+        lazy.insert("192.0.2.2".parse().expect("an address"));
+
+        let positions = lazy.positions();
+        assert_eq!(positions.total(), 2, "the duplicate is one address");
+        assert_eq!(
+            positions.find("192.0.2.1".parse().expect("an address")),
+            Some(0)
+        );
+        assert_eq!(
+            positions.find("192.0.2.2".parse().expect("an address")),
+            Some(1)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1013,6 +1577,37 @@ mod property_tests {
     /// Builds a v4 set from `[start, end]` pairs written as last octets of
     /// `10.0.0.0/24`, which is enough address space to arrange every overlap a
     /// difference has to handle and short enough to read.
+    /// A canonical set of both families, small enough to walk in a test but
+    /// varied enough to put more than one range in each family — and to put the
+    /// same IPv6 address on more than one interface, which is the shape that
+    /// stops the ranges being one ascending sequence.
+    fn any_ipset() -> impl Strategy<Value = IpSet> {
+        (
+            prop::collection::vec((0u8..40, 0u8..6), 0..4),
+            prop::collection::vec((0u16..40, 0u16..6, prop::option::of(1u32..3)), 0..4),
+        )
+            .prop_map(|(v4, v6)| {
+                let mut set = IpSet::new();
+                for (start, span) in v4 {
+                    let first = Ipv4Addr::new(192, 0, 2, start);
+                    let last = Ipv4Addr::new(192, 0, 2, start.saturating_add(span));
+                    set.insert_range(IpRange::V4(
+                        Ipv4Range::new(first, last).expect("ordered by construction"),
+                    ));
+                }
+                for (start, span, zone) in v6 {
+                    let first = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, start);
+                    let last =
+                        Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, start.saturating_add(span));
+                    set.insert_range(IpRange::V6(
+                        Ipv6Range::scoped(first, last, zone).expect("ordered by construction"),
+                    ));
+                }
+                set.canonicalize();
+                set
+            })
+    }
+
     fn v4_set(spans: &[(u8, u8)]) -> IpSet {
         let mut set = IpSet::new();
         for &(start, end) in spans {
@@ -1170,6 +1765,60 @@ mod property_tests {
     }
 
     proptest::proptest! {
+        /// The numbering and the enumeration must agree over *any* set, not
+        /// only the hand-written ones. A position is an index into `iter`, and
+        /// a resumed sweep subtracts positions from a plan — so a set where the
+        /// two disagree is one where addresses are silently skipped.
+        ///
+        /// The exception is an address more than one interface holds. A bare
+        /// address cannot say which of its positions it means, so `find`
+        /// answers `None` and it is asked again. That is allowed; answering
+        /// with the *wrong* one of them is not, which is what the equality
+        /// below rules out.
+        #[test]
+        fn a_position_is_the_enumeration_index_for_any_set(
+            set in any_ipset(),
+        ) {
+            let positions = set.positions();
+            let walked: Vec<IpAddr> = set.iter().collect();
+
+            prop_assert_eq!(positions.total() as usize, walked.len());
+            for (index, ip) in walked.iter().enumerate() {
+                // `address_at` is unambiguous in this direction: a position
+                // names one address however many positions the address has.
+                prop_assert_eq!(positions.address_at(index as u64), Some(*ip));
+
+                let held_twice = walked.iter().filter(|other| *other == ip).count() > 1;
+                match positions.find(*ip) {
+                    Some(found) => prop_assert_eq!(found, index as u64),
+                    None => prop_assert!(held_twice, "{} has one position and no answer", ip),
+                }
+            }
+        }
+
+        /// Narrowing to a span of positions gives back exactly those addresses,
+        /// whatever the set's shape. Too few is a target skipped; too many is
+        /// work repeated.
+        #[test]
+        fn a_span_of_positions_narrows_to_exactly_those_addresses(
+            set in any_ipset(),
+            from in 0usize..40,
+            span in 0usize..40,
+        ) {
+            let positions = set.positions();
+            let walked: Vec<IpAddr> = set.iter().collect();
+
+            let mut narrowed = IpSet::new();
+            for range in positions.ranges_in(from as u64..(from + span) as u64) {
+                narrowed.insert_range(range);
+            }
+            narrowed.canonicalize();
+
+            let expected: Vec<IpAddr> = walked.into_iter().skip(from).take(span).collect();
+            let found: Vec<IpAddr> = narrowed.iter().collect();
+            prop_assert_eq!(found, expected);
+        }
+
         /// Membership has to agree with a linear scan of the same ranges.
         ///
         /// The fast path is a binary search, which is only valid over ranges

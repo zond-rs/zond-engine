@@ -32,6 +32,7 @@ use std::{
 };
 
 use crate::config::ProbeTuning;
+use crate::journal::settle::{Outcome, Settled};
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::technique::{TcpReply, TcpScanTechnique};
@@ -666,6 +667,20 @@ impl HostScanner for RoutedScanner {
             }
         };
 
+        // What the sweep did not earn a verdict for, so a resumed one asks again
+        // rather than skipping it. None of these carries a position: a probe
+        // still mid-schedule was cut off rather than spent, one still queued was
+        // never sent, and one with no route was never asked.
+        let outstanding = self.ledger.drain_unresolved().len() as u64;
+        self.ctx.record_many(Outcome::Interrupted, outstanding);
+        self.ctx
+            .record_many(Outcome::Unasked, self.pending.len() as u64);
+        // Distinct addresses rather than failed sends: a target with no route
+        // fails on every retry, and counting each of those would report more
+        // unreached addresses than the sweep had.
+        self.ctx
+            .record_many(Outcome::Unroutable, self.faults.addresses.len() as u64);
+
         // A sweep whose probes never left is not a sweep that found nothing, and
         // the difference is invisible in every number a caller reads: the host
         // count is zero either way, no strategy errored, and the audit line that
@@ -857,6 +872,9 @@ impl RoutedScanner {
             return;
         }
 
+        // The address answered, which is a verdict however the reply was timed.
+        self.ctx.settle_address(ip, Settled::Answered);
+
         let resolution = self.resolve_probe(ip, bytes, now);
         let rtt = resolution.and_then(|resolution| resolution.rtt);
         if rtt.is_none() {
@@ -936,8 +954,13 @@ impl RoutedScanner {
         self.ledger.drain_due(now, &mut self.due);
 
         for event in self.due.drain(..) {
-            if let Due::Retry { key, .. } = event {
-                self.retries.push_back(key);
+            match event {
+                Due::Retry { key, .. } => self.retries.push_back(key),
+                // The budget is spent, which is the moment silence stops being
+                // provisional and becomes a verdict this sweep earned. Only
+                // probes that actually left are armed, so nothing settled here
+                // went unasked.
+                Due::Exhausted { key, .. } => self.ctx.settle_address(key, Settled::Exhausted),
             }
         }
     }

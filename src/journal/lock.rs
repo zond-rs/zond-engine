@@ -343,6 +343,7 @@ mod persistence {
     use std::time::SystemTime;
 
     use super::{HEARTBEAT_STALE_AFTER, LockRecord, LockState, boot_identity, classify};
+    use crate::journal::file::{claim_for_invoking_user, create_exclusive, create_private};
     use crate::journal::format::JournalError;
 
     /// Reads a lock file and says what it means.
@@ -457,17 +458,11 @@ mod persistence {
         }
 
         fn create_exclusively(path: &Path, record: &LockRecord) -> std::io::Result<()> {
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                // The lock names a pid and a scan, in a directory holding an
-                // engagement's targets. It is nobody else's business.
-                options.mode(0o600);
-            }
-
-            let mut file = options.open(path)?;
+            // The lock names a pid and a scan, in a directory holding an
+            // engagement's targets. It is nobody else's business — and under
+            // `sudo` it belongs to whoever invoked it, or they cannot release a
+            // journal they own the rest of.
+            let mut file = create_exclusive(path)?;
             file.write_all(
                 serde_json::to_string(record)
                     .map_err(std::io::Error::other)?
@@ -488,25 +483,13 @@ mod persistence {
                         .as_bytes(),
                 )?;
             }
-            fs::rename(&temporary, path)
+            fs::rename(&temporary, path)?;
+
+            // The rename carries the temporary file's ownership over, so this
+            // covers only the case where it replaced an existing lock.
+            claim_for_invoking_user(path);
+            Ok(())
         }
-    }
-
-    /// Creates or truncates a file only this user can read.
-    ///
-    /// The mode is set as the file is created rather than after, so there is no
-    /// moment where what a scan is recording can be read by anyone else.
-    fn create_private(path: &Path) -> std::io::Result<fs::File> {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-
-        options.open(path)
     }
 
     impl Drop for Lock {

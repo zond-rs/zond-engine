@@ -48,9 +48,10 @@ use tokio::sync::mpsc;
 use tracing::error;
 
 use crate::info;
-use crate::journal::settle::{Outcome, Settlements};
+use crate::journal::settle::{Outcome, Settled, Settlements};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::Host;
+use crate::model::ip::set::Positions;
 use crate::model::technique::TcpScanTechnique;
 use crate::scanner::handle::ScanHandle;
 use crate::scanner::report::{ProbeStats, ScannerFailure};
@@ -555,6 +556,20 @@ pub struct ScanContext {
     /// exhausted probe, an interrupted one and one never sent the same verdict
     /// on purpose. See [`journal::settle`](crate::journal::settle).
     pub(crate) settlements: Arc<Settlements>,
+    /// How this scan numbers an address, when it is counted in addresses.
+    ///
+    /// Empty for a scan counted in something else, which is every port scan:
+    /// its positions pair an address with a port and arrive on the target
+    /// stream. A sweep has no such stream — a
+    /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets
+    /// — so the numbering travels here instead.
+    ///
+    /// **Empty is what keeps the two apart.** A port scan's liveness pass runs
+    /// the discovery strategies against a port scan's context, and those
+    /// strategies settle addresses. Numbering them against the port plan would
+    /// advance its watermark over probes nobody sent, so a context that does not
+    /// count addresses answers `None` to every address and nothing is recorded.
+    pub(crate) positions: Arc<Positions>,
 }
 
 impl ScanContext {
@@ -734,6 +749,30 @@ impl ScanContext {
         self.settlements.record(outcome);
     }
 
+    /// Records `count` targets ending the same way, for the outcomes that carry
+    /// no position. See [`Settlements::record_many`].
+    pub fn record_many(&self, outcome: Outcome, count: u64) {
+        self.settlements.record_many(outcome, count);
+    }
+
+    /// Records what became of one address, in a scan counted in addresses.
+    ///
+    /// The position comes from the plan this scan is numbered in, which the
+    /// caller does not need to know: a strategy knows it asked an address and
+    /// what came back, and this turns that into a position a resume can skip.
+    ///
+    /// **Nothing is recorded in two cases, and both are correct.** A scan not
+    /// counted in addresses has no numbering, so a port scan's liveness pass
+    /// settles nothing. And an address the plan does not name has no position —
+    /// a sweep finds neighbours it was never asked about, and those are findings
+    /// rather than plan targets. Either way the address is asked again on the
+    /// next sitting, which is the direction this has to fail in.
+    pub fn settle_address(&self, ip: IpAddr, settled: Settled) {
+        if let Some(position) = self.positions.find(ip) {
+            self.record_outcome(settled.at(position));
+        }
+    }
+
     /// How far the scan has got, and what became of what it did not settle.
     pub fn settlements(&self) -> &Settlements {
         &self.settlements
@@ -876,6 +915,25 @@ impl ScanSession {
         exclusions: Exclusions,
         settled: &crate::journal::cursor::Checkpoint,
     ) -> (Self, ScanContext) {
+        Self::sweeping(exclusions, settled, Positions::default())
+    }
+
+    /// [`resuming`](Self::resuming), for a scan counted in addresses.
+    ///
+    /// `positions` numbers the sweep's plan, so that a strategy which has
+    /// earned a verdict for an address can settle it without knowing where in
+    /// the plan it sits — see
+    /// [`ScanContext::settle_address`](ScanContext::settle_address).
+    ///
+    /// This is the only constructor that supplies one. A port scan is counted
+    /// in address-and-port pairs and numbers them on its target stream, so it
+    /// leaves this empty and the discovery strategies running inside its
+    /// liveness pass settle nothing.
+    pub fn sweeping(
+        exclusions: Exclusions,
+        settled: &crate::journal::cursor::Checkpoint,
+        positions: Positions,
+    ) -> (Self, ScanContext) {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::new();
         let (events_tx, rx) = mpsc::unbounded_channel();
@@ -896,6 +954,7 @@ impl ScanSession {
             exclusions: Arc::new(exclusions),
             changed: Arc::new(ChangedHosts::default()),
             settlements: Arc::new(Settlements::resuming(settled)),
+            positions: Arc::new(positions),
         };
 
         (session, ctx)

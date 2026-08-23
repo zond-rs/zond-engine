@@ -15,11 +15,70 @@
 //! in time, which avoids hammering one subnet in a tight burst, and the memory cost
 //! stays bounded regardless of how large the target range is.
 
+use std::net::IpAddr;
+
 use crate::journal::cursor::Checkpoint;
+use crate::model::ip::set::IpSet;
 use crate::model::target::{PlannedTarget, TargetMap};
 use crate::scanner::handle::ScanHandle;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
+
+/// Streams an address set out in shuffled batches.
+///
+/// The sweep counterpart of [`Dispatcher`], and it yields bare addresses rather
+/// than [`PlannedTarget`]s because a sweep is counted in addresses and numbers
+/// them elsewhere: a [`HostScanner`](crate::scanner::strategy::HostScanner) owns
+/// its targets, so its positions come from its context rather than off this
+/// stream. See
+/// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address).
+///
+/// The shuffling is the same bargain the dispatcher makes — a fixed batch is
+/// filled, shuffled and streamed before the next is drawn, so neighbouring
+/// addresses end up spread apart in time and the memory cost stays bounded
+/// however large the set.
+pub fn shuffled_addresses(
+    ips: IpSet,
+    batch_size: usize,
+    scan_handle: &ScanHandle,
+) -> mpsc::Receiver<IpAddr> {
+    let (tx, rx) = mpsc::channel(batch_size * 2);
+    let scan_handle = scan_handle.clone();
+
+    tokio::spawn(async move {
+        let mut batch = Vec::with_capacity(batch_size);
+
+        for ip in ips.iter() {
+            batch.push(ip);
+            if batch.len() < batch_size {
+                continue;
+            }
+            if !drain(&mut batch, &tx, &scan_handle).await {
+                return;
+            }
+        }
+
+        drain(&mut batch, &tx, &scan_handle).await;
+    });
+
+    rx
+}
+
+/// Shuffles `batch` and sends it, reporting whether the receiver is still there
+/// and the scan still wanted.
+async fn drain(
+    batch: &mut Vec<IpAddr>,
+    tx: &mpsc::Sender<IpAddr>,
+    scan_handle: &ScanHandle,
+) -> bool {
+    batch.shuffle(&mut rand::rng());
+    for ip in batch.drain(..) {
+        if tx.send(ip).await.is_err() || scan_handle.should_stop() {
+            return false;
+        }
+    }
+    true
+}
 
 /// Streams the targets of a [`TargetMap`] out in shuffled batches, each
 /// numbered by its position in the plan.

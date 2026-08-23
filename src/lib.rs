@@ -194,11 +194,11 @@ pub use crate::model::technique::TcpScanTechnique;
 pub use crate::resolve::{ResolveConfig, Resolver};
 pub use crate::scanner::handle::ScanHandle;
 pub use crate::scanner::report::{ScanReport, ScanSummary};
-#[cfg(feature = "journal-format")]
-pub use crate::scanner::scan_with_journal;
 pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
 pub use crate::scanner::strategy::StrategyError;
 pub use crate::scanner::{ScanError, ScanTask, discover, scan};
+#[cfg(feature = "journal-format")]
+pub use crate::scanner::{discover_with_journal, scan_with_journal};
 
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
 // from anywhere in the crate. They are deliberately not part of the public API;

@@ -28,7 +28,9 @@
 //! retries and hostname resolution are all decided for you. This is the right
 //! altitude for anything wrapping the engine, and where most callers should
 //! stay. [`scan_with_journal`] is the same scan writing down how far it got, so
-//! that a run cut short can be continued.
+//! that a run cut short can be continued, and [`discover_with_journal`] is the
+//! same for a sweep. Either can be read back afterwards as the report it
+//! produced, with [`store::report`](crate::journal::store::report).
 //!
 //! **Build a [`plan`], edit it, run it.** A
 //! [`DiscoveryPlan`](plan::DiscoveryPlan) is the set of strategies a scan
@@ -155,6 +157,61 @@ pub enum ScanError {
     /// The scan task panicked or was aborted before it finished.
     #[error("scan task terminated abnormally")]
     TaskFailed,
+
+    /// The journal handed to a scan records the engine's other phase.
+    ///
+    /// A sweep counts addresses and a port scan counts address-and-port pairs,
+    /// so one continued as the other would skip targets nothing ever probed.
+    #[error("this journal records the other phase of a scan")]
+    WrongPhase,
+
+    /// This run's settings would not produce the plan the journal is counted in.
+    #[cfg(feature = "journal-format")]
+    #[error("{0}")]
+    PlanChanged(#[from] crate::journal::manifest::PlanChanged),
+}
+
+/// Refuses a scan whose exclusion policy is not the one its journal was counted
+/// under.
+///
+/// The policy decides the enumeration: withhold the first half of a range and
+/// every position after it names a different target. A journal's plan already
+/// has the policy applied, so applying this run's policy to it and finding it
+/// unchanged is the whole test — one that withholds nothing further leaves the
+/// same plan, and so the same fingerprint.
+///
+/// A policy that withholds *less* passes, and is meant to: the recorded plan is
+/// what is being continued, and widening the scope is a new scan rather than a
+/// continuation of this one.
+///
+/// Privilege and technique come from the manifest rather than from this run, so
+/// what is being tested here is the policy alone.
+/// [`Journal::resume`](crate::journal::Journal::resume) has already refused a
+/// mismatch in either of those.
+#[cfg(feature = "journal-format")]
+fn under_the_recorded_policy(
+    journal: &crate::journal::Journal,
+    cfg: &ZondConfig,
+) -> Result<(), ScanError> {
+    use crate::journal::manifest::Plan;
+
+    let manifest = journal.manifest();
+    let recorded = manifest.recorded();
+
+    let this_run = if let Some(addresses) = recorded.addresses() {
+        Plan::discovery(addresses, &cfg.exclusions, recorded.sweeps_the_segment())
+    } else if let Some(targets) = recorded.targets() {
+        Plan::port_scan(
+            targets,
+            &cfg.exclusions,
+            recorded.technique().unwrap_or_default(),
+        )
+    } else {
+        return Ok(());
+    };
+
+    manifest.covers(&this_run, manifest.privileged)?;
+    Ok(())
 }
 
 /// A handle to a running scan.
@@ -277,10 +334,97 @@ impl IntoFuture for ScanTask {
 /// session's handle; every phase checks that signal regularly, not only between
 /// targets.
 pub async fn discover(
-    mut targets: IpSet,
+    targets: IpSet,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
+    let handle = spawn_discovery(targets, cfg, ctx);
+    Ok((session, ScanTask::new(handle)))
+}
+
+/// [`discover`], writing down how far it got, so that a sweep cut short can be
+/// continued rather than restarted.
+///
+/// **Journalling is the caller's choice, never this crate's**, on the same
+/// terms as [`scan_with_journal`]: hand this a journal and the sweep is
+/// recorded, call [`discover`] and nothing touches a disk.
+///
+/// # The numbering comes from the journal
+///
+/// A journal already holds the plan it is counted in, with the exclusion policy
+/// applied — [`Plan`](crate::journal::manifest::Plan) applies it, and
+/// [`Journal::resume`](crate::journal::Journal::resume) checks it has not moved.
+/// The addresses an address settles against are read back from there, so
+/// nothing this function is passed can disagree with what the first sitting
+/// counted.
+///
+/// `targets` is what the *first* sitting sweeps, and it is the set as the caller
+/// named it rather than as the plan narrowed it. The engine subtracts the
+/// exclusions itself and records what that cost, which is the one number a
+/// caller cannot recover afterwards; handing it a set already narrowed would
+/// leave every report claiming the policy withheld nothing. A later sitting
+/// ignores it and sweeps what the earlier ones did not settle, whose scope is
+/// genuinely smaller and says so.
+///
+/// # What a sweep settles
+///
+/// An address, rather than an address-and-port pair. It is settled when it
+/// answers, or when the probes aimed at it have been sent as many times as the
+/// policy allows and none of them answered. An address whose probes never left,
+/// one still mid-schedule when the sweep stopped, and one there was no route to
+/// carry no position and are asked again — see
+/// [`settle`](crate::journal::settle) for why that distinction is the whole of
+/// the feature.
+///
+/// The findings and the phase are recorded alongside the progress, so a resumed
+/// sweep starts from what earlier sittings found and its report describes the
+/// whole job: one phase per sitting, each keeping its own timings, settings and
+/// statistics.
+#[cfg(feature = "journal-format")]
+pub async fn discover_with_journal(
+    targets: IpSet,
+    cfg: &ZondConfig,
+    journal: crate::journal::Journal,
+) -> Result<(ScanSession, ScanTask), ScanError> {
+    let recorded = journal.manifest().recorded();
+    let Some(addresses) = recorded.addresses() else {
+        return Err(ScanError::WrongPhase);
+    };
+    under_the_recorded_policy(&journal, cfg)?;
+
+    // Numbered over the whole plan, whichever part of it this sitting sweeps.
+    // Numbering the remainder afresh would give position 0 to whatever happens
+    // to still be there, and the two sittings would count different things.
+    let positions = addresses.positions();
+    let resume_point = journal.resume_point().clone();
+
+    let sweep = if resume_point == Checkpoint::default() {
+        targets
+    } else {
+        resume_point.remaining_addresses(&positions)
+    };
+
+    let (session, ctx) = ScanSession::sweeping(cfg.exclusions.clone(), &resume_point, positions);
+
+    ctx.restore_hosts(journal.restored());
+    let earlier = journal.earlier_phases().to_vec();
+
+    let ticker = crate::journal::store::spawn_checkpoints(journal, ctx.progress());
+    let handle = spawn_discovery(sweep, cfg, ctx);
+
+    Ok((session, ScanTask::journalling(handle, ticker, earlier)))
+}
+
+/// Runs a discovery sweep against an existing context./// Runs a discovery sweep against an existing context./// Runs a discovery sweep against an existing context.
+///
+/// The body of [`discover`], taking a context rather than making one so that a
+/// caller journalling the sweep can seed it and keep a handle on it. Nothing
+/// here knows what a journal is.
+fn spawn_discovery(
+    mut targets: IpSet,
+    cfg: &ZondConfig,
+    ctx: ScanContext,
+) -> JoinHandle<ScanReport> {
     let caps = ScanCapabilities::resolve(cfg);
 
     // Narrows `targets` as it records them, so nothing below can probe an
@@ -296,7 +440,7 @@ pub async fn discover(
     };
     let cfg = cfg.clone();
 
-    let handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         run_discovery(targets, reach, caps, &cfg, &ctx).await;
         // Only the echo probe. The series probe reads a port whose state is
         // already known, and a sweep establishes none.
@@ -305,9 +449,7 @@ pub async fn discover(
         // scan traces better, having somewhere to aim.
         orchestrator::run_traceroute(&ctx, &cfg).await;
         recorder.finish(&ctx)
-    });
-
-    Ok((session, ScanTask::new(handle)))
+    })
 }
 
 /// Runs one discovery pass over `targets` to completion, against an existing
@@ -402,6 +544,8 @@ pub async fn scan_with_journal(
     cfg: &ZondConfig,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
+    under_the_recorded_policy(&journal, cfg)?;
+
     let (session, ctx) = ScanSession::resuming(cfg.exclusions.clone(), journal.resume_point());
 
     // Before the scan starts, so a caller watching the session sees the earlier

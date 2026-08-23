@@ -39,6 +39,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
 use crate::config::RetryConfig;
+use crate::journal::settle::{Outcome, Settled};
 use crate::model::host::telemetry::RttSource;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::scoped::Zone;
@@ -328,6 +329,10 @@ impl HostScanner for LocalScanner {
         }
 
         let mut sending_finished = false;
+        // What the packet iterator has handed out, so what it still holds can be
+        // counted as unasked without draining it — building those packets is the
+        // work the sweep was stopped to avoid.
+        let mut dispatched: u128 = 0;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL);
         // Without this, an interval that went unpolled while the loop waited on
         // replies hands back every tick it missed at once, and the pacing this
@@ -389,8 +394,14 @@ impl HostScanner for LocalScanner {
                     } else if !sending_finished {
                         match packet_iter.next() {
                             Some((packet, ip)) => {
-                                self.record_probe(ip, Instant::now());
-                                self.emit(&packet, "first attempt");
+                                // Armed only if the frame left. A probe nobody
+                                // sent must not run out of attempts and earn a
+                                // verdict, and the failure message below is
+                                // about exactly these addresses.
+                                if self.emit(&packet, "first attempt") {
+                                    self.record_probe(ip, Instant::now());
+                                }
+                                dispatched += 1;
                             },
                             None => {
                                 sending_finished = true;
@@ -402,6 +413,17 @@ impl HostScanner for LocalScanner {
                 _ = tokio::time::sleep(idle_delay), if !sending => {}
             }
         };
+
+        // What the sweep did not earn a verdict for, so a resumed one asks again
+        // rather than skipping it. None of these carries a position: a probe
+        // still mid-schedule was cut off rather than spent, and one the iterator
+        // still holds was never built, let alone sent.
+        let outstanding = self.ledger.drain_unresolved().len() as u64;
+        self.ctx.record_many(Outcome::Interrupted, outstanding);
+        self.ctx.record_many(
+            Outcome::Unasked,
+            u64::try_from(self.ip_set.len().saturating_sub(dispatched)).unwrap_or(u64::MAX),
+        );
 
         // What the confirmations bought, which is only visible from here. An
         // entry still in the map is a solicitation that went out and was never
@@ -770,8 +792,13 @@ impl LocalScanner {
         self.ledger.drain_due(now, &mut due);
         self.ipv6.drain_due(now, &mut due);
         for event in due.drain(..) {
-            if let Due::Retry { key, .. } = event {
-                self.retries.push_back(key);
+            match event {
+                Due::Retry { key, .. } => self.retries.push_back(key),
+                // The budget is spent, which is the moment silence stops being
+                // provisional and becomes a verdict this sweep earned. A probe
+                // whose frame never left is not armed, so nothing settled here
+                // went unasked.
+                Due::Exhausted { key, .. } => self.ctx.settle_address(key, Settled::Exhausted),
             }
         }
 
@@ -1054,6 +1081,12 @@ impl LocalScanner {
         // Keyed on the MAC rather than the address because a device answering
         // at three addresses is one device found once, which is the unit the
         // roster and the audit both count in.
+        // The address answered, which is a verdict this sweep earned however the
+        // reply was timed and whether it was solicited or overheard. It is the
+        // address that answered rather than the host's primary: a device
+        // reachable at three addresses answered at this one.
+        self.ctx.settle_address(source_addr, Settled::Answered);
+
         let first_sighting = !self.mac_to_ip.contains_key(&source_mac);
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
 

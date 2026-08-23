@@ -101,11 +101,41 @@
 //! journal is never resumed underneath its writer and a dead one never stays
 //! locked behind a process id that has been reissued.
 //!
+//! [`manifest`] is what the journal is a journal *of*: the plan, fingerprinted
+//! so a resume can prove it has not moved, and which of the engine's two phases
+//! counted it. [`Plan`](manifest::Plan) is how a caller says which.
+//!
 //! [`Journal`] is the whole of it on disk: a directory holding the manifest, the
 //! cursor, the findings and the lock, created for a scan and reopened to
-//! continue one. [`store::list`] enumerates them and
-//! [`store::prune`](store::prune) applies a [`Retention`](store::Retention)
-//! policy, so a state directory nobody looks at does not grow without bound.
+//! continue one. [`store::list`] enumerates them,
+//! [`store::report`] reads one back as the report its scan
+//! produced, and [`store::prune`] applies a
+//! [`Retention`](store::Retention) policy, so a state directory nobody looks at
+//! does not grow without bound.
+//!
+//! ## Both phases journal, and they count different things
+//!
+//! [`scan_with_journal`](crate::scanner::scan_with_journal) counts
+//! address-and-port pairs; [`discover_with_journal`](crate::scanner::discover_with_journal)
+//! counts addresses. Position 400 means the four-hundredth of one or the
+//! four-hundredth of the other, never both, so a journal records which phase it
+//! holds and continuing one as the other is refused by name.
+//!
+//! What settles differs with the unit. A port settles when it answers or its
+//! retry budget runs out. An address settles when it answers — a reply to a
+//! probe, or an advertisement overheard on the segment, since either is a
+//! verdict — or when every probe aimed at it has been sent as many times as the
+//! policy allows and none of them answered. An address whose frames never left
+//! is not armed and never settles, which is the fail-safe direction: it is asked
+//! again rather than written off unasked.
+//!
+//! **A sweep of an IPv6 range settles less than one of an IPv4 range.** The
+//! all-nodes solicitation is put to the segment rather than to an address, so it
+//! earns no address a verdict of its own; only the addresses probed individually
+//! settle. And a position is a `u64`, which an IPv6 range can exceed — see
+//! [`Positions`](crate::model::ip::set::Positions), which numbers what fits and
+//! leaves the rest to be asked again. Neither loses coverage; both mean a
+//! resumed IPv6 sweep repeats more than a resumed IPv4 one.
 //!
 //! ## What survives what
 //!
@@ -154,6 +184,9 @@
 pub const JOURNAL_VERSION: u32 = 1;
 
 pub mod cursor;
+/// How a journal's files are created: the mode and the ownership, together.
+#[cfg(feature = "journal-format")]
+mod file;
 #[cfg(feature = "journal-format")]
 pub mod format;
 #[cfg(feature = "journal-format")]

@@ -56,6 +56,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::ip::set::{IpSet, Positions};
 use crate::model::target::{PlannedTarget, Target};
 
 /// How far a scan has got, maintained as it runs.
@@ -178,6 +179,53 @@ impl Checkpoint {
         position < self.watermark || self.settled_above.binary_search(&position).is_ok()
     }
 
+    /// The addresses a resumed sweep still has to ask about.
+    ///
+    /// The sweep counterpart of [`remaining`](Self::remaining), and it gives
+    /// back a set rather than a positioned stream because a
+    /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets
+    /// and is aimed at them. Its positions come from the context instead — see
+    /// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address),
+    /// which numbers an address against this same plan.
+    ///
+    /// Computed from the ranges, so continuing a sweep of a `/8` costs what
+    /// continuing a sweep of a `/24` does. Everything below the watermark is one
+    /// span to drop; above it, only the few positions that settled out of order
+    /// are taken out individually.
+    ///
+    /// **`positions` must number the plan this checkpoint was written against.**
+    /// A position is an index into one enumeration, and the manifest's plan
+    /// fingerprint is what refuses a resume before it reaches here.
+    pub fn remaining_addresses(&self, positions: &Positions) -> IpSet {
+        let mut remaining = IpSet::new();
+        let total = positions.total();
+        let mut from = self.watermark;
+
+        // `settled_above` is written ascending, and a checkpoint that arrived
+        // from disk is only as ordered as the file said. Sorting a copy costs
+        // nothing on the window-sized list this holds and makes the walk below
+        // right either way.
+        let mut above = self.settled_above.clone();
+        above.sort_unstable();
+
+        for settled in above {
+            if settled < from {
+                continue;
+            }
+            for range in positions.ranges_in(from..settled) {
+                remaining.insert_range(range);
+            }
+            from = settled.saturating_add(1);
+        }
+
+        for range in positions.ranges_in(from..total) {
+            remaining.insert_range(range);
+        }
+
+        remaining.canonicalize();
+        remaining
+    }
+
     /// The targets a resumed scan still has to ask about, each carrying its
     /// position in the **original** plan.
     ///
@@ -215,24 +263,8 @@ mod persistence {
     use std::path::Path;
 
     use super::Checkpoint;
+    use crate::journal::file::{claim_for_invoking_user, create_private};
     use crate::journal::format::JournalError;
-
-    /// Creates or truncates a file only this user can read.
-    ///
-    /// The mode is set as the file is created rather than after, so there is no
-    /// moment where what a scan is recording can be read by anyone else.
-    fn create_private(path: &Path) -> std::io::Result<fs::File> {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-
-        options.open(path)
-    }
 
     impl Checkpoint {
         /// Writes the checkpoint so that a process killed mid-write leaves the
@@ -262,6 +294,12 @@ mod persistence {
             }
 
             fs::rename(&temporary, path)?;
+
+            // The rename carries the temporary file's ownership to the
+            // destination, so this is only for the case where the destination
+            // already existed and the rename replaced it — and it is cheap
+            // enough not to reason about which happened.
+            claim_for_invoking_user(path);
             Ok(())
         }
 
@@ -294,6 +332,110 @@ mod persistence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── Resuming a sweep ────────────────────────────────────────────────────
+
+    use std::net::IpAddr;
+
+    fn addresses(written: &str) -> IpSet {
+        written.parse().expect("a valid address specification")
+    }
+
+    /// What a resumed sweep asks about must be exactly what the first sitting
+    /// did not settle. One address too few is a target silently skipped, which
+    /// is the failure this whole module exists to prevent.
+    #[test]
+    fn a_resumed_sweep_asks_about_exactly_what_did_not_settle() {
+        let plan = addresses("192.0.2.1-192.0.2.10");
+        let positions = plan.positions();
+
+        let checkpoint = Checkpoint {
+            watermark: 3,
+            settled_above: vec![5, 8],
+        };
+
+        let remaining = checkpoint.remaining_addresses(&positions);
+        let found: Vec<IpAddr> = remaining.iter().collect();
+        let expected: Vec<IpAddr> = plan
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| !checkpoint.is_settled(*position as u64))
+            .map(|(_, ip)| ip)
+            .collect();
+
+        assert_eq!(found, expected);
+        assert_eq!(
+            found.len(),
+            5,
+            "ten addresses, three settled below, two above"
+        );
+    }
+
+    /// A sweep that settled nothing comes back whole. A resume that quietly
+    /// narrowed an untouched plan would lose the whole first sitting's ground.
+    #[test]
+    fn a_sweep_that_settled_nothing_resumes_over_the_whole_plan() {
+        let plan = addresses("192.0.2.1-192.0.2.10,2001:db8::1-2001:db8::4");
+        let remaining = Checkpoint::default().remaining_addresses(&plan.positions());
+
+        assert_eq!(remaining, plan);
+    }
+
+    /// And a sweep that settled everything has nothing left to ask.
+    #[test]
+    fn a_finished_sweep_resumes_over_nothing() {
+        let plan = addresses("192.0.2.1-192.0.2.4");
+        let checkpoint = Checkpoint {
+            watermark: 4,
+            settled_above: Vec::new(),
+        };
+
+        assert!(checkpoint.remaining_addresses(&plan.positions()).is_empty());
+    }
+
+    /// The two halves have to agree: whatever a resumed sweep is aimed at, the
+    /// positions it settles are still the original plan's. An address in the
+    /// narrowed set must number the same as it did in the first sitting.
+    #[test]
+    fn a_resumed_sweep_keeps_the_original_numbering() {
+        let plan = addresses("192.0.2.1-192.0.2.10");
+        let positions = plan.positions();
+        let checkpoint = Checkpoint {
+            watermark: 4,
+            settled_above: Vec::new(),
+        };
+
+        let remaining = checkpoint.remaining_addresses(&positions);
+        let first = remaining.iter().next().expect("something is left");
+
+        assert_eq!(
+            positions.find(first),
+            Some(4),
+            "the fifth address is still the fifth, not the first of what is left"
+        );
+    }
+
+    /// A checkpoint read back from a file is only as ordered as the file said.
+    #[test]
+    fn an_unsorted_checkpoint_narrows_the_same_way() {
+        let plan = addresses("192.0.2.1-192.0.2.10");
+        let positions = plan.positions();
+
+        let sorted = Checkpoint {
+            watermark: 2,
+            settled_above: vec![4, 6, 9],
+        };
+        let shuffled = Checkpoint {
+            watermark: 2,
+            settled_above: vec![9, 4, 6],
+        };
+
+        assert_eq!(
+            sorted.remaining_addresses(&positions),
+            shuffled.remaining_addresses(&positions)
+        );
+    }
+
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;
     use crate::model::target::{TargetMap, TargetSet};

@@ -16,20 +16,24 @@
 //! It answers both scan phases. [`discover`] establishes host presence by probing
 //! a small set of common infrastructure ports and treating any TCP-layer response,
 //! an accept or even a refusal, as proof the host is alive. [`scan`] takes known
-//! targets and classifies each port from a full connect handshake. Both consume a
-//! randomized [`Dispatcher`] stream and cap their in-flight connections with a
-//! [`ProbePool`] to avoid exhausting OS sockets, and both
-//! record findings through the shared [`ScanContext`] like every other strategy.
+//! targets and classifies each port from a full connect handshake.
+//!
+//! Both draw their work in shuffled batches and cap their in-flight connections
+//! with a [`ProbePool`] to avoid exhausting OS sockets, and both record findings
+//! through the shared [`ScanContext`] like every other strategy. What they draw
+//! differs with the phase: a sweep asks about an address and a port scan about
+//! an address paired with a port, which is the unit each of them settles.
 
 use crate::config::ServiceDetection;
 use crate::error;
-use crate::journal::settle::Outcome;
+use crate::journal::settle::{Outcome, Settled};
 use crate::model::host::{Host, HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::port::{Port, PortSet, PortState, Protocol};
-use crate::model::target::{PlannedTarget, Target, TargetMap, TargetSet};
+use crate::model::target::PlannedTarget;
 use crate::scanner::audit::ProbeAudit;
-use crate::scanner::dispatcher::Dispatcher;
+use crate::scanner::dispatcher::shuffled_addresses;
+use crate::scanner::handle::ScanHandle;
 use crate::scanner::pacing::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
 use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
@@ -37,7 +41,6 @@ use crate::scanner::report::StopReason;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use async_trait::async_trait;
-use dashmap::DashSet;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -213,7 +216,8 @@ impl PortScanner for ConnectUdpPortScanner {
 /// Performs a high-concurrency, unprivileged port scan.
 ///
 /// This is the primary scanning strategy for callers without root privileges. It
-/// consumes a randomized stream of [`Target`]s from a [`Dispatcher`], holding the
+/// consumes the randomized stream of targets a
+/// [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) produces, holding the
 /// number of in-flight connections at or below `concurrency_limit` to avoid
 /// exhausting OS sockets, and records every port it probed into the shared
 /// [`ScanContext`] store - open, closed and filtered alike, so the list does not
@@ -508,91 +512,10 @@ async fn udp_port_prober(planned: PlannedTarget) -> ProbedPort {
     }
 }
 
-/// Multi-port host discovery for unprivileged environments.
+/// Files what a finished sweep or scan measured.
 ///
-/// Sweeps the target networks by probing a small set of common infrastructure
-/// ports: SSH (22), HTTP (80), HTTPS (443), SMB (445), and RDP (3389). Spreading
-/// the probe across several ports catches hosts that only expose one of them,
-/// which improves the odds of finding Linux, Windows, and embedded targets alike.
-///
-/// Once any port confirms a host is alive, the remaining probes for that IP are
-/// skipped, so a host is recorded once rather than once per open port. Targets
-/// are drawn from a shuffling [`Dispatcher`] to spread load across the network
-/// instead of hammering one subnet at a time, and each probe waits out the
-/// [`CONNECT_PROBE_TIMEOUT`] so that hosts on slow
-/// or distant links still register.
-pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError> {
-    let mut target_map = TargetMap::new();
-    // The same list `PortSet::common_discovery` names, taken from there rather
-    // than spelled again here. Two copies of five port numbers is two copies to
-    // keep in step, and nothing would have reported them drifting apart.
-    target_map.add_unit(TargetSet::new(ips, PortSet::common_discovery()));
-
-    let dispatcher = Dispatcher::new(target_map).with_batch_size(1024);
-    let mut rx = dispatcher.run_shuffled(&ctx.handle);
-    let found_hosts = Arc::new(DashSet::new());
-    let folder = ctx.clone();
-    let mut pool = ProbePool::new(
-        DISCOVERY_CONCURRENCY,
-        ctx.clone(),
-        ScannerKind::Connect,
-        |probed, audit: &mut ProbeAudit| absorb_host(&folder, probed, audit),
-    );
-
-    let mut probes = 0u128;
-    let mut reason = StopReason::AttemptsSpent;
-    while let Some(target) = rx.recv().await {
-        if ctx.handle.should_stop() {
-            reason = StopReason::Aborted;
-            break;
-        }
-        probes += 1;
-        pool.audit().record_send(true);
-        let found = Arc::clone(&found_hosts);
-        pool.admit(prober(target.target, found)).await;
-    }
-
-    // Every target dispatched; wait out the probes still in flight.
-    pool.drain().await;
-    finish(
-        &ctx,
-        pool.into_audit(),
-        ScannerKind::Connect,
-        probes,
-        reason,
-    );
-    Ok(())
-}
-
-/// The outcome of one finished [`prober`] task: a live [`Host`], or `None` when
-/// the target stayed silent or was already claimed by a parallel probe. A probe
-/// never fails, so this is a plain [`Option`] rather than a `Result`.
-type ProbedHost = Option<Host>;
-
-/// Merges one finished discovery probe's host into the store. A freshly created
-/// entry starts from [`Host::new`] and absorbs the probe's findings (RTT, any
-/// extra IPs), so the recorded result is the same whether or not the host was
-/// seen before.
-fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
-    if let Some(host) = probed {
-        let ip = host.primary_ip();
-        // See `absorb_probe`: this path has no attempt to attribute the answer
-        // to, so every host it finds is counted as unattributed.
-        audit.record_host_found(None);
-        ctx.update_host(ip, |existing| existing.merge(host));
-    }
-}
-
-/// Files what one connect run observed about itself.
-///
-/// Shared by all three, because they differ only in what they probe for. There
-/// is no capture to report: a connect probe is a socket, so what the kernel
-/// discarded is not knowable here rather than being zero, and `None` says so.
-///
-/// The counters this path can honestly fill are the ones about *the run* -
-/// how many probes it started, how many answered, when, and why it stopped.
-/// `segments_seen` and `answered_on` stay empty because a connect probe sees no
-/// segments and names no attempt; see [`absorb_probe`].
+/// Both halves of this strategy report the same way, so the audit line and the
+/// recorded counters cannot drift between them.
 fn finish(
     ctx: &ScanContext,
     audit: ProbeAudit,
@@ -604,57 +527,221 @@ fn finish(
     ctx.record_probe_stats(audit.stats(scanner, probes, reason, None, None));
 }
 
-/// Probes a single [`Target`] for host presence over a TCP connect.
+/// Multi-port host discovery for unprivileged environments.
 ///
-/// To avoid needless traffic and wasted sockets, it exits early when the host has
-/// already been identified by a parallel probe, for example when SSH responded
-/// before HTTP finished.
+/// Sweeps the target networks by probing a small set of common infrastructure
+/// ports: SSH (22), HTTP (80), HTTPS (443), SMB (445), and RDP (3389). Spreading
+/// the probe across several ports catches hosts that only expose one of them,
+/// which improves the odds of finding Linux, Windows, and embedded targets alike.
 ///
-/// `found_set` is a sharded [`DashSet`] rather than a `Mutex<HashSet>`, so the
-/// many concurrent probes contend per shard instead of on one global lock.
-/// `insert` returning `false` is what makes exactly the first prober to reach a
-/// host emit it, while the rest fold to `None`.
-async fn prober(target: Target, found_set: Arc<DashSet<IpAddr>>) -> ProbedHost {
-    // Skip the connect entirely if another probe already found this host.
-    if found_set.contains(&target.ip) {
-        return None;
+/// **One task per address, not per port.** Its ports are tried in turn and the
+/// first TCP-layer answer ends the address, so a host that answers on SSH costs
+/// one connect rather than five. A silent address costs all five, which is what
+/// it took before as well: the same socket budget, spent on fewer addresses at a
+/// time rather than on more ports of each.
+///
+/// That shape is also what lets a sweep be continued. An address is the unit a
+/// journal counts, so its verdict has to be earned as a whole — answered, or
+/// every port asked once and none of them answering. Interleaving the ports of
+/// many addresses gave neither, because nothing knew when an address was
+/// finished with.
+///
+/// Addresses are drawn from
+/// [`shuffled_addresses`](crate::scanner::dispatcher::shuffled_addresses) to
+/// spread load across the network instead of hammering one subnet at a time, and
+/// each connect waits out the [`CONNECT_PROBE_TIMEOUT`] so that hosts on slow or
+/// distant links still register.
+pub async fn discover(ips: IpSet, ctx: ScanContext) -> Result<(), StrategyError> {
+    // The same list `PortSet::common_discovery` names, taken from there rather
+    // than spelled again here. Two copies of five port numbers is two copies to
+    // keep in step, and nothing would have reported them drifting apart.
+    let ports: Arc<[u16]> = PortSet::common_discovery()
+        .iter()
+        .map(|(port, _)| port)
+        .collect::<Vec<_>>()
+        .into();
+
+    let mut rx = shuffled_addresses(ips, 1024, &ctx.handle);
+    let folder = ctx.clone();
+    let mut pool = ProbePool::new(
+        DISCOVERY_CONCURRENCY,
+        ctx.clone(),
+        ScannerKind::Connect,
+        |probed, audit: &mut ProbeAudit| absorb_host(&folder, probed, audit),
+    );
+
+    let mut probes = 0u128;
+    let mut reason = StopReason::AttemptsSpent;
+    while let Some(ip) = rx.recv().await {
+        if ctx.handle.should_stop() {
+            reason = StopReason::Aborted;
+            // Taken off the queue and never asked, so it counts with the rest
+            // still waiting behind it.
+            ctx.record_outcome(Outcome::Unasked);
+            break;
+        }
+        probes += 1;
+        pool.audit().record_send(true);
+        pool.admit(prober(ip, Arc::clone(&ports), ctx.handle.clone()))
+            .await;
     }
 
-    let socket_addr: SocketAddr = SocketAddr::new(target.ip, target.port);
+    // Anything still queued was never asked, and carries no position to settle.
+    while rx.try_recv().is_ok() {
+        ctx.record_outcome(Outcome::Unasked);
+    }
 
-    let start: Instant = Instant::now();
-    let alive = match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
-        // A completed handshake means the host is alive.
-        Ok(Ok(_)) => true,
-        // Only these TCP errors imply the host answered at the IP/TCP layer. Any
-        // other error (no route, permission denied, timeout) says nothing.
-        Ok(Err(e)) => {
-            matches!(
-                e.kind(),
-                ErrorKind::ConnectionRefused
-                    | ErrorKind::ConnectionReset
-                    | ErrorKind::ConnectionAborted
-            )
+    // Every address dispatched; wait out the probes still in flight.
+    pool.drain().await;
+    finish(
+        &ctx,
+        pool.into_audit(),
+        ScannerKind::Connect,
+        probes,
+        reason,
+    );
+    Ok(())
+}
+
+/// What one address's liveness probe came to.
+struct ProbedHost {
+    /// The address asked about, which is the unit a sweep settles.
+    ip: IpAddr,
+    /// What became of it.
+    fate: Fate,
+}
+
+/// The four things a sweep can honestly say about an address, before anything
+/// knows where in the plan it sits.
+///
+/// Only the first two are verdicts the sweep earned. The others say the address
+/// was not asked, or not finished with, and a resume must ask again — see
+/// [`settle`](crate::journal::settle).
+enum Fate {
+    /// It answered, and this is what the answer proved.
+    Answered(Host),
+    /// Every port was asked once and not one of them answered. **Settled**: a
+    /// connect gets one attempt per port and those were all of them.
+    Exhausted,
+    /// Nothing this probe sent left the host — no route, no socket left — so
+    /// the address proved nothing and the next sitting may get further.
+    Unroutable,
+    /// The scan stopped while the address's ports were still being tried.
+    Interrupted,
+    /// The scan stopped before any of them were.
+    Unasked,
+}
+
+/// Merges one finished discovery probe into the store, and settles the address
+/// it asked about.
+///
+/// A freshly created entry starts from [`Host::new`] and absorbs the probe's
+/// findings, so the recorded result is the same whether or not the host was seen
+/// before.
+///
+/// The three cases are the three things a sweep can honestly say about an
+/// address: it answered, it was asked as many times as it is going to be and
+/// stayed silent, or it could not be asked from here at all. Only the first two
+/// are settled — see [`settle`](crate::journal::settle).
+fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
+    match probed.fate {
+        Fate::Answered(host) => {
+            let ip = host.primary_ip();
+            // See `absorb_probe`: this path has no attempt to attribute the
+            // answer to, so every host it finds is counted as unattributed.
+            audit.record_host_found(None);
+            ctx.settle_address(probed.ip, Settled::Answered);
+            ctx.update_host(ip, |existing| existing.merge(host));
         }
-        Err(_elapsed) => false,
-    };
+        Fate::Exhausted => ctx.settle_address(probed.ip, Settled::Exhausted),
+        Fate::Unroutable => ctx.record_outcome(Outcome::Unroutable),
+        Fate::Interrupted => ctx.record_outcome(Outcome::Interrupted),
+        Fate::Unasked => ctx.record_outcome(Outcome::Unasked),
+    }
+}
 
-    // `insert` returns false if a parallel probe already claimed this host, so
-    // exactly the first prober to reach it emits the record; the rest fold to None.
-    if alive && found_set.insert(target.ip) {
-        let mut host = Host::new(target.ip).with_rtt(start.elapsed());
-        // Every outcome that reaches here with `alive` set required a segment
-        // from the target: a completed handshake, or a reset the kernel surfaced
-        // as one of the connection errors above. `Host::merge` keeps the
-        // stronger status, so this survives being folded into an entry another
-        // strategy created first.
-        host.record_evidence(
-            HostStatus::Up,
-            StatusReason::new(StatusProtocol::TcpSyn, "tcp connect answered by the host"),
-        );
-        Some(host)
-    } else {
-        None
+/// Probes one address for presence, over each of `ports` in turn.
+///
+/// Returns as soon as one of them answers at the TCP layer: a completed
+/// handshake, or a reset the kernel surfaced as a connection error. Any other
+/// failure says nothing about the address — only that this connect did not
+/// finish — so the next port is tried.
+///
+/// **The stop signal is checked between ports, not only between addresses.**
+/// One task now covers up to five connects, and a sweep that only looked once
+/// per address would take five timeouts to wind down rather than one. What has
+/// been asked so far decides how the address is filed: cut off part way through
+/// is not the same as asked and silent, and only the second is a verdict.
+async fn prober(ip: IpAddr, ports: Arc<[u16]>, handle: ScanHandle) -> ProbedHost {
+    let start = Instant::now();
+    let mut asked = false;
+
+    for &port in ports.iter() {
+        if handle.should_stop() {
+            return ProbedHost {
+                ip,
+                fate: if asked {
+                    Fate::Interrupted
+                } else {
+                    Fate::Unasked
+                },
+            };
+        }
+
+        let attempt = timeout(
+            CONNECT_PROBE_TIMEOUT,
+            TcpStream::connect(SocketAddr::new(ip, port)),
+        )
+        .await;
+
+        match attempt {
+            // A completed handshake means the host is alive.
+            Ok(Ok(_)) => return answered(ip, start),
+            // Only these TCP errors imply the host answered at the IP/TCP layer.
+            // Any other is a local failure — no route, permission denied — and
+            // the probe never reached the wire.
+            Ok(Err(e))
+                if matches!(
+                    e.kind(),
+                    ErrorKind::ConnectionRefused
+                        | ErrorKind::ConnectionReset
+                        | ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return answered(ip, start);
+            }
+            Ok(Err(_)) => {}
+            // A timeout is the probe going out and nothing coming back, which is
+            // the address being asked and declining to answer.
+            Err(_elapsed) => asked = true,
+        }
+    }
+
+    ProbedHost {
+        ip,
+        fate: if asked {
+            Fate::Exhausted
+        } else {
+            Fate::Unroutable
+        },
+    }
+}
+
+/// The record an address earns by answering.
+fn answered(ip: IpAddr, start: Instant) -> ProbedHost {
+    let mut host = Host::new(ip).with_rtt(start.elapsed());
+    // Every outcome that reaches here required a segment from the target: a
+    // completed handshake, or a reset the kernel surfaced as a connection error.
+    // `Host::merge` keeps the stronger status, so this survives being folded
+    // into an entry another strategy created first.
+    host.record_evidence(
+        HostStatus::Up,
+        StatusReason::new(StatusProtocol::TcpSyn, "tcp connect answered by the host"),
+    );
+
+    ProbedHost {
+        ip,
+        fate: Fate::Answered(host),
     }
 }
 
@@ -670,6 +757,7 @@ async fn prober(target: Target, found_set: Arc<DashSet<IpAddr>>) -> ProbedHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::target::Target;
     use tokio::net::UdpSocket;
 
     fn udp_target(ip: IpAddr, port: u16) -> PlannedTarget {

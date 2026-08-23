@@ -37,6 +37,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::cursor::{Checkpoint, Cursor};
 
+/// The two outcomes that carry a position.
+///
+/// A caller that has *earned* a verdict says which of these it earned, and
+/// something that knows the plan attaches the position — see
+/// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address),
+/// which is how a sweep settles an address it does not know the number of.
+///
+/// The unsettled outcomes are deliberately absent. They carry no position, so
+/// there is nothing to attach and they are recorded straight through
+/// [`Settlements::record`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Settled {
+    /// The target answered.
+    Answered,
+    /// Its retry budget was spent without an answer.
+    Exhausted,
+}
+
+impl Settled {
+    /// The outcome this settlement is, at `position`.
+    pub fn at(self, position: u64) -> Outcome {
+        match self {
+            Settled::Answered => Outcome::Answered { position },
+            Settled::Exhausted => Outcome::Exhausted { position },
+        }
+    }
+}
+
 /// What became of one target in one sitting.
 ///
 /// Settled variants carry the target's position in the plan's enumeration; see
@@ -129,6 +157,21 @@ impl Settlements {
         if let Some(position) = outcome.settled_position() {
             self.with_cursor(|cursor| cursor.settle(position));
         }
+    }
+
+    /// Records `count` targets ending the same way.
+    ///
+    /// For the unsettled outcomes, which are counted rather than stored: a
+    /// sweep cut short can leave millions of addresses unasked, and they are one
+    /// fact rather than a million. A settled outcome names one position, so
+    /// repeating it here would count one target many times — those go through
+    /// [`record`](Self::record) one at a time.
+    pub fn record_many(&self, outcome: Outcome, count: u64) {
+        debug_assert!(
+            !outcome.is_settled(),
+            "a settled outcome names one position and cannot stand for many"
+        );
+        self.counter(outcome).fetch_add(count, Ordering::Relaxed);
     }
 
     /// A snapshot to write down.

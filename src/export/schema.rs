@@ -325,12 +325,14 @@ impl Serialize for HostsDto<'_> {
 
 /// Which build produced a report.
 #[derive(Debug, Clone, Serialize)]
-pub struct EngineDto {
+pub struct EngineDto<'a> {
     /// Always [`ENGINE_NAME`]. Present so a document carrying a report can be
     /// told apart from one carrying something else.
     pub name: &'static str,
-    /// The engine's crate version.
-    pub version: &'static str,
+    /// The version of the engine that produced the report. Borrowed from the
+    /// report rather than taken from this build, since a report read back out
+    /// of a journal carries the version that actually ran it.
+    pub version: &'a str,
 }
 
 // ---------------------------------------------------------------------------

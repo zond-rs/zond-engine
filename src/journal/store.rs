@@ -34,15 +34,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use super::cursor::Checkpoint;
+use super::file::{claim_for_invoking_user, create_private as create_private_file};
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
-use super::manifest::{Manifest, PlanChanged};
+use super::manifest::{Manifest, Plan, PlanChanged};
 use super::settle::Settlements;
 use crate::model::host::Host;
-use crate::model::target::TargetMap;
-use crate::model::technique::TcpScanTechnique;
 use crate::record::{HostRecord, PhaseRecord};
-use crate::scanner::report::ScanPhase;
+use crate::scanner::report::{ScanKind, ScanPhase, ScanReport};
 
 const MANIFEST: &str = "manifest.json";
 const CURSOR: &str = "cursor.json";
@@ -57,6 +56,19 @@ pub enum OpenError {
     /// The plan offered is not the plan this journal's positions are counted in.
     #[error("{0}")]
     PlanChanged(#[from] PlanChanged),
+
+    /// The journal records the other phase of a scan.
+    ///
+    /// A sweep's positions count addresses and a port scan's count
+    /// address-and-port pairs, so one continued as the other would skip targets
+    /// nothing ever probed.
+    #[error("this journal records a {held} and cannot be continued as a {asked}")]
+    WrongPhase {
+        /// The phase the journal holds.
+        held: &'static str,
+        /// The phase it was asked to continue as.
+        asked: &'static str,
+    },
 
     /// Somebody else holds it, or might.
     #[error("{0}")]
@@ -97,15 +109,17 @@ pub struct Journal {
 
 impl Journal {
     /// Begins a journal for `plan` under `root`, minting an id for it.
+    ///
+    /// The plan carries which phase it belongs to, so a sweep and a port scan
+    /// both come through here and neither can be read back as the other.
     pub fn create(
         root: &Path,
-        plan: &TargetMap,
-        technique: TcpScanTechnique,
+        plan: &Plan,
         privileged: bool,
         summary: impl Into<String>,
     ) -> Result<Self, OpenError> {
         let (id, directory) = claim_directory(root)?;
-        let manifest = Manifest::new(id, plan, technique, privileged, summary);
+        let manifest = Manifest::new(id, plan, privileged, summary);
         write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
 
         let lock = match Lock::acquire(&directory.join(LOCK)) {
@@ -140,15 +154,22 @@ impl Journal {
     /// [`Checkpoint::remaining`] and to [`Settlements::resuming`].
     pub fn resume(
         directory: &Path,
-        plan: &TargetMap,
-        technique: TcpScanTechnique,
+        plan: &Plan,
         privileged: bool,
     ) -> Result<(Self, Checkpoint), OpenError> {
         let manifest = read_manifest(directory)?;
-        // The plan first: a refusal here is about the caller's arguments, and
+        // The phase before the fingerprint, so continuing a sweep as a port scan
+        // is named for what it is rather than reported as a plan that moved.
+        if manifest.kind() != plan.kind() {
+            return Err(OpenError::WrongPhase {
+                held: phase_name(manifest.kind()),
+                asked: phase_name(plan.kind()),
+            });
+        }
+        // The plan next: a refusal here is about the caller's arguments, and
         // reporting it before taking a lock means a mistaken resume disturbs
         // nothing.
-        manifest.covers(plan, technique, privileged)?;
+        manifest.covers(plan, privileged)?;
 
         let lock = Lock::acquire(&directory.join(LOCK))?;
         let checkpoint = read_checkpoint(directory)?;
@@ -171,8 +192,10 @@ impl Journal {
     ///
     /// The counterpart of [`resume`](Self::resume) for a caller who has nothing
     /// to describe the scan with but its id. The plan comes back as it was
-    /// written down, so a hostname that has moved since does not quietly change
-    /// what is being continued.
+    /// written down — including which phase it belongs to — so a hostname that
+    /// has moved since does not quietly change what is being continued, and a
+    /// caller that can only continue one of the two phases can see which it has
+    /// before it starts.
     ///
     /// Refused if this process holds different privileges than the scan did: the
     /// connect fallback asks a different question than a raw technique does, and
@@ -180,12 +203,9 @@ impl Journal {
     pub fn reopen(
         directory: &Path,
         privileged: bool,
-    ) -> Result<(Self, Checkpoint, TargetMap), OpenError> {
-        let manifest = read_manifest(directory)?;
-        let plan = manifest.plan();
-        let technique = manifest.technique();
-
-        let (journal, checkpoint) = Self::resume(directory, &plan, technique, privileged)?;
+    ) -> Result<(Self, Checkpoint, Plan), OpenError> {
+        let plan = read_manifest(directory)?.recorded();
+        let (journal, checkpoint) = Self::resume(directory, &plan, privileged)?;
         Ok((journal, checkpoint, plan))
     }
 
@@ -364,7 +384,14 @@ pub struct Entry {
     pub directory: PathBuf,
     /// What it is a journal of.
     pub manifest: Manifest,
-    /// How far it got. Absent if it never checkpointed.
+    /// How far it got, or `None` where that could not be read.
+    ///
+    /// A journal that never checkpointed carries a fresh cursor rather than
+    /// nothing: it settled no targets, which is a fact about the scan. `None`
+    /// is the different case — the file is there and this process cannot read
+    /// it, usually because the scan ran under `sudo` and left it behind. That
+    /// must not read as no progress, or a listing reports every such scan as
+    /// untouched and offers to continue work that is already done.
     pub checkpoint: Option<Checkpoint>,
     /// Whether anything is writing it.
     pub lock: LockState,
@@ -374,19 +401,29 @@ impl Entry {
     /// Whether this journal has anything left to do.
     ///
     /// A journal whose cursor covers the whole plan is finished; one that never
-    /// checkpointed has everything left.
+    /// checkpointed has everything left. One whose cursor cannot be read is not
+    /// finished as far as anything here can tell, which is the answer that keeps
+    /// a retention sweep from deleting it.
     pub fn is_complete(&self) -> bool {
-        self.settled() >= self.manifest.total_targets
+        self.settled()
+            .is_some_and(|settled| settled >= self.manifest.total_targets)
     }
 
-    /// How many targets are settled.
-    pub fn settled(&self) -> u128 {
-        match &self.checkpoint {
-            Some(checkpoint) => {
-                u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128
-            }
-            None => 0,
-        }
+    /// Which phase this journal records.
+    ///
+    /// A sweep and a port scan are counted in different units, so a caller
+    /// reporting progress or offering to continue one has to know which it is
+    /// looking at.
+    pub fn kind(&self) -> ScanKind {
+        self.manifest.kind()
+    }
+
+    /// How many targets are settled, or `None` where the cursor could not be
+    /// read.
+    pub fn settled(&self) -> Option<u128> {
+        self.checkpoint.as_ref().map(|checkpoint| {
+            u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128
+        })
     }
 }
 
@@ -409,6 +446,10 @@ pub fn list(root: &Path) -> Result<Vec<Entry>, JournalError> {
         .filter_map(|directory| {
             let manifest = read_manifest(&directory).ok()?;
             Some(Entry {
+                // `Err` here is a cursor that exists and could not be read,
+                // which `Entry::checkpoint` records as `None` rather than as a
+                // scan that settled nothing. A journal that never checkpointed
+                // comes back as a fresh cursor from `read_checkpoint` itself.
                 checkpoint: read_checkpoint(&directory).ok(),
                 lock: super::lock::inspect(&directory.join(LOCK)),
                 manifest,
@@ -419,6 +460,41 @@ pub fn list(root: &Path) -> Result<Vec<Entry>, JournalError> {
 
     found.sort_by_key(|entry| std::cmp::Reverse(entry.manifest.created_at));
     Ok(found)
+}
+
+/// The scan at `directory`, as the report it would have produced.
+///
+/// A journal holds everything a report is made of — what each sitting covered
+/// and under which settings, and every host it found — so a scan that is over
+/// can be read back and rendered exactly as it was when it ended. That is what
+/// this returns: the hosts, the phases in the order they ran, and the engine
+/// version taken from the manifest rather than from this build, so a scan run
+/// by an older engine still says so.
+///
+/// Read without the lock, like [`list`], so it is safe to call on a scan that is
+/// still running. What comes back is then a report of everything written down so
+/// far, which is a checkpoint behind the live one.
+///
+/// A journal missing its findings or its phases reads as a scan that recorded
+/// none, rather than as a failure: a sitting can end before its first
+/// checkpoint, and a report of nothing is the truthful account of that.
+pub fn report(directory: &Path) -> Result<ScanReport, JournalError> {
+    let manifest = read_manifest(directory)?;
+
+    Ok(ScanReport::recorded(
+        manifest.engine_version,
+        read_phases(directory)?,
+        read_findings(directory)?,
+    ))
+}
+
+/// How a phase is named in a refusal. Prose rather than the wire name, since
+/// this reaches a person.
+fn phase_name(kind: ScanKind) -> &'static str {
+    match kind {
+        ScanKind::Discovery => "host-discovery sweep",
+        ScanKind::PortScan => "port scan",
+    }
 }
 
 /// Deletes the journal at `directory`.
@@ -657,27 +733,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
 
     let mut file = create_private_file(path)?;
     file.write_all(bytes)?;
-    claim_for_invoking_user(path);
     Ok(())
-}
-
-/// Creates or truncates a file only this user can read.
-///
-/// The mode is set as the file is created rather than after, so there is no
-/// moment where a journal's findings are readable by anyone else. The directory
-/// is `0700` as well, which would cover it either way — this is the belt to that
-/// pair of braces, and it costs one flag.
-fn create_private_file(path: &Path) -> Result<fs::File, JournalError> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-
-    Ok(options.open(path)?)
 }
 
 #[cfg(unix)]
@@ -691,32 +747,6 @@ fn restrict(path: &Path, mode: u32) -> Result<(), JournalError> {
 fn restrict(_path: &Path, _mode: u32) -> Result<(), JournalError> {
     Ok(())
 }
-
-/// Gives a journal written under `sudo` to the user who invoked it.
-///
-/// Best effort: a journal left owned by root is one they cannot prune, which is
-/// worth trying to avoid and not worth failing a scan over.
-#[cfg(unix)]
-fn claim_for_invoking_user(path: &Path) {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let Some(user) = super::paths::invoking_user() else {
-        return;
-    };
-    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
-        return;
-    };
-
-    // SAFETY: `c_path` is a live NUL-terminated string for the call's duration,
-    // and `chown` reads it and nothing else.
-    unsafe {
-        libc::chown(c_path.as_ptr(), user.uid, user.gid);
-    }
-}
-
-#[cfg(not(unix))]
-fn claim_for_invoking_user(_path: &Path) {}
 
 /// How long journals are kept.
 ///
@@ -967,9 +997,11 @@ pub fn spawn_checkpoints(
 mod tests {
     use super::*;
     use crate::journal::settle::Outcome;
+    use crate::model::exclusion::Exclusions;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;
-    use crate::model::target::TargetSet;
+    use crate::model::target::{TargetMap, TargetSet};
+    use crate::model::technique::TcpScanTechnique;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("zond-store-{}-{name}", std::process::id()));
@@ -987,8 +1019,12 @@ mod tests {
         map
     }
 
+    fn ports(map: &TargetMap) -> Plan {
+        Plan::port_scan(map, &Exclusions::none(), TcpScanTechnique::Syn)
+    }
+
     fn begin(root: &Path, map: &TargetMap) -> Journal {
-        Journal::create(root, map, TcpScanTechnique::Syn, true, "test").expect("creates")
+        Journal::create(root, &ports(map), true, "test").expect("creates")
     }
 
     /// The whole cycle: begin a scan, settle part of it, come back and continue
@@ -1012,7 +1048,7 @@ mod tests {
         };
 
         let (_journal, checkpoint) =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+            Journal::resume(&directory, &ports(&map), true).expect("resumes");
 
         assert_eq!(checkpoint.watermark, 3);
         let remaining: Vec<_> = checkpoint.remaining(map.iter()).collect();
@@ -1031,8 +1067,8 @@ mod tests {
         journal.close().expect("closes");
 
         let widened = plan("192.0.2.1-192.0.2.9", "80,443");
-        let refused = Journal::resume(&directory, &widened, TcpScanTechnique::Syn, true)
-            .expect_err("the plan moved");
+        let refused =
+            Journal::resume(&directory, &ports(&widened), true).expect_err("the plan moved");
 
         assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
     }
@@ -1046,13 +1082,12 @@ mod tests {
         let journal = begin(&root, &map);
         let directory = journal.directory().to_path_buf();
 
-        let refused =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect_err("it is held");
+        let refused = Journal::resume(&directory, &ports(&map), true).expect_err("it is held");
         assert!(matches!(refused, OpenError::Locked(_)), "{refused:?}");
 
         // And released, it opens.
         journal.close().expect("closes");
-        Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("now free");
+        Journal::resume(&directory, &ports(&map), true).expect("now free");
     }
 
     /// Listing reports progress and liveness without taking the lock, so it
@@ -1074,7 +1109,7 @@ mod tests {
 
         let entry = &listed[0];
         assert_eq!(entry.manifest.total_targets, 8);
-        assert_eq!(entry.settled(), 4);
+        assert_eq!(entry.settled(), Some(4));
         assert!(!entry.is_complete());
         assert!(
             matches!(entry.lock, LockState::Held { .. }),
@@ -1104,7 +1139,7 @@ mod tests {
 
         let listed = list(&root).expect("lists");
         assert!(listed[0].is_complete());
-        assert_eq!(listed[0].settled(), 8);
+        assert_eq!(listed[0].settled(), Some(8));
     }
 
     /// A journal that stopped before its first checkpoint has settled nothing,
@@ -1119,7 +1154,7 @@ mod tests {
         journal.close().expect("closes");
 
         let (_journal, checkpoint) =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+            Journal::resume(&directory, &ports(&map), true).expect("resumes");
 
         assert_eq!(checkpoint, Checkpoint::default());
         assert_eq!(checkpoint.remaining(map.iter()).count(), 8);
@@ -1235,7 +1270,7 @@ mod tests {
         };
 
         let (mut journal, checkpoint) =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+            Journal::resume(&directory, &ports(&map), true).expect("resumes");
 
         // Seeded from the resume point, exactly as a scan does.
         let settlements = Settlements::resuming(&checkpoint);
@@ -1275,8 +1310,7 @@ mod tests {
             directory
         };
 
-        let (journal, _) =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
 
         let restored = journal.restored();
         assert_eq!(restored.len(), 1);
@@ -1315,8 +1349,7 @@ mod tests {
             directory
         };
 
-        let (journal, _) =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
 
         let restored = journal.restored();
         assert_eq!(restored.len(), 1, "one address is one host");
@@ -1335,9 +1368,137 @@ mod tests {
         let directory = journal.directory().to_path_buf();
         journal.close().expect("closes");
 
-        let (journal, _) =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
         assert!(journal.restored().is_empty());
+    }
+
+    /// The whole of `zond journal report`: a finished scan comes back out of
+    /// its journal as the report it produced. Everything the end of a run
+    /// prints is drawn from the hosts and the phases, so if either fails to
+    /// survive the round trip the record is a summary rather than the scan.
+    #[test]
+    fn a_journal_reads_back_as_the_report_its_scan_produced() {
+        let root = scratch("replay");
+        let map = plan("192.0.2.1-192.0.2.4", "80,443");
+        let original = crate::export::fixture::report();
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            let hosts: Vec<Host> = original.hosts().cloned().collect();
+            journal.record_hosts(&hosts).expect("records hosts");
+            journal
+                .record_phases(original.phases())
+                .expect("records phases");
+
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let replayed = report(&directory).expect("reads");
+
+        assert_eq!(replayed.host_count(), original.host_count());
+        assert_eq!(replayed.phases().len(), original.phases().len());
+        assert_eq!(
+            replayed.summary().hosts_alive,
+            original.summary().hosts_alive
+        );
+        assert_eq!(replayed.summary().ports_open, original.summary().ports_open);
+
+        // A phase carries what the run covered and how it went, which is what
+        // the closing lines of a run are drawn from.
+        let (before, after) = (&original.phases()[0], &replayed.phases()[0]);
+        assert_eq!(after.kind(), before.kind());
+        assert_eq!(after.privileged(), before.privileged());
+        assert_eq!(after.failures().len(), before.failures().len());
+        assert_eq!(
+            replayed.is_partial(),
+            original.is_partial(),
+            "a scan that left ground uncovered has to still say so"
+        );
+    }
+
+    /// A report read back names the engine that ran the scan, not the one
+    /// reading it. The two differ the moment somebody upgrades, and a record
+    /// that quietly restamps itself is a record of the wrong thing.
+    #[test]
+    fn a_replayed_report_names_the_engine_that_ran_the_scan() {
+        let root = scratch("replay-version");
+        let map = plan("192.0.2.1", "80");
+
+        let directory = {
+            let journal = begin(&root, &map);
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        // The manifest as a build before this one would have left it.
+        let path = directory.join(MANIFEST);
+        let mut manifest: Manifest =
+            serde_json::from_str(&fs::read_to_string(&path).expect("reads")).expect("parses");
+        manifest.engine_version = "0.1.0".to_string();
+        fs::write(&path, serde_json::to_vec(&manifest).expect("encodes")).expect("writes");
+
+        let replayed = report(&directory).expect("reads");
+
+        assert_eq!(replayed.engine_version(), "0.1.0");
+        assert_ne!(
+            replayed.engine_version(),
+            crate::scanner::report::ENGINE_VERSION,
+            "this build's version must not have been stamped over the record's"
+        );
+    }
+
+    /// A cursor that exists and cannot be read is not a scan that settled
+    /// nothing.
+    ///
+    /// This is what a `sudo` scan used to leave behind: a journal in the
+    /// invoking user's home whose cursor stayed root's. Reported as zero, every
+    /// finished scan listed as untouched and offered itself to be continued.
+    /// Reported as unknown, a reader is told to go and look.
+    #[cfg(unix)]
+    #[test]
+    fn a_cursor_that_cannot_be_read_is_not_a_scan_that_settled_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = scratch("unreadable-cursor");
+        let map = plan("192.0.2.1-192.0.2.4", "80");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            let settlements = Settlements::default();
+            settlements.record(Outcome::Answered { position: 0 });
+            journal.checkpoint(&settlements).expect("checkpoints");
+
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        // Readable first, so the difference below is about the permission and
+        // not about the file's contents.
+        let listed = list(&root).expect("lists");
+        assert_eq!(listed[0].settled(), Some(1));
+
+        fs::set_permissions(directory.join(CURSOR), fs::Permissions::from_mode(0o000))
+            .expect("removes every permission");
+
+        let listed = list(&root).expect("a journal it cannot read must not hide the rest");
+        assert_eq!(listed.len(), 1, "the journal still lists");
+        assert_eq!(
+            listed[0].settled(),
+            None,
+            "unreadable is not zero: zero is a claim about the scan"
+        );
+        assert!(
+            !listed[0].is_complete(),
+            "and nothing that cannot be read may be called finished"
+        );
+
+        // Left readable, so a failure here does not leave a file the next run
+        // of this test cannot clean up.
+        let _ = fs::set_permissions(directory.join(CURSOR), fs::Permissions::from_mode(0o600));
     }
 
     fn aged(id: &str, created_at: SystemTime, settled: u64, total: u128) -> Entry {
@@ -1348,13 +1509,14 @@ mod tests {
                 id: id.to_string(),
                 engine_version: "0.0.0".to_string(),
                 created_at,
+                kind: crate::record::wire::scan_kind_name(ScanKind::PortScan).to_owned(),
                 plan: crate::journal::manifest::PlanFingerprint::of(
-                    &plan("192.0.2.1", "80"),
-                    TcpScanTechnique::Syn,
+                    &ports(&plan("192.0.2.1", "80")),
                     true,
                 ),
                 targets: crate::record::PlanRecord::from(&plan("192.0.2.1", "80")),
                 technique: TcpScanTechnique::Syn.name().to_owned(),
+                sweep: false,
                 privileged: true,
                 total_targets: total,
                 summary: String::new(),
@@ -1550,8 +1712,7 @@ mod tests {
             directory
         };
 
-        let (journal, _) =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
 
         let restored = journal.restored();
         assert_eq!(
@@ -1624,7 +1785,7 @@ mod tests {
         // Held by this process, so a second journal over the same directory is
         // refused — the same path a real contention takes.
         assert!(matches!(
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true),
+            Journal::resume(&directory, &ports(&map), true),
             Err(OpenError::Locked(_))
         ));
         assert!(directory.exists(), "the held journal is untouched");
@@ -1680,8 +1841,7 @@ mod tests {
         assert_eq!(lines, 1 + 4, "a header and one record each");
 
         // And nothing was lost.
-        let (journal, _) =
-            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
 
         let restored = journal.restored();
         assert_eq!(restored.len(), 4);
@@ -1705,8 +1865,13 @@ mod tests {
         let map = plan("192.0.2.1-192.0.2.4", "80,443,u:53");
 
         let directory = {
-            let journal =
-                Journal::create(&root, &map, TcpScanTechnique::Fin, true, "test").expect("creates");
+            let journal = Journal::create(
+                &root,
+                &Plan::port_scan(&map, &Exclusions::none(), TcpScanTechnique::Fin),
+                true,
+                "test",
+            )
+            .expect("creates");
             let directory = journal.directory().to_path_buf();
             journal.close().expect("closes");
             directory
@@ -1714,6 +1879,7 @@ mod tests {
 
         let (journal, _checkpoint, recovered) = Journal::reopen(&directory, true).expect("reopens");
 
+        let recovered = recovered.targets().expect("a port scan's plan");
         assert_eq!(
             recovered.iter().collect::<Vec<_>>(),
             map.iter().collect::<Vec<_>>(),
@@ -1730,8 +1896,7 @@ mod tests {
         let root = scratch("reopen-privilege");
         let map = plan("192.0.2.1", "80");
 
-        let journal =
-            Journal::create(&root, &map, TcpScanTechnique::Syn, true, "test").expect("creates");
+        let journal = Journal::create(&root, &ports(&map), true, "test").expect("creates");
         let directory = journal.directory().to_path_buf();
         journal.close().expect("closes");
 

@@ -57,6 +57,7 @@
 //! Hosts are held in a [`BTreeMap`] keyed by primary IP, so two scans of the
 //! same network serialize in the same order and their outputs can be diffed.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
@@ -1041,7 +1042,11 @@ pub struct FamilyCounts {
 #[derive(Debug, Clone)]
 #[must_use = "a report is the record of the scan that just ran; dropping it discards it"]
 pub struct ScanReport {
-    engine_version: &'static str,
+    /// Which build produced the findings, rather than which build is holding
+    /// them. A report read back from a journal carries the version recorded
+    /// with it, so it is borrowed for a scan this build ran and owned for one
+    /// it is only reading.
+    engine_version: Cow<'static, str>,
     phases: Vec<ScanPhase>,
     hosts: BTreeMap<IpAddr, Host>,
 }
@@ -1059,7 +1064,7 @@ impl ScanReport {
             .collect();
 
         Self {
-            engine_version: ENGINE_VERSION,
+            engine_version: Cow::Borrowed(ENGINE_VERSION),
             phases: vec![phase],
             hosts,
         }
@@ -1070,27 +1075,59 @@ impl ScanReport {
     /// The counterpart of [`new`](Self::new) for a resumed scan, whose earlier
     /// sittings are restored from a journal rather than measured. `phases` is
     /// kept in the order given, which is the order they ran.
+    ///
+    /// The report is attributed to this build, because this build is the one
+    /// continuing the job. Use [`recorded`](Self::recorded) to rebuild a report
+    /// nothing is continuing.
     pub fn from_phases(phases: Vec<ScanPhase>, hosts: impl IntoIterator<Item = Host>) -> Self {
+        Self::attributed(Cow::Borrowed(ENGINE_VERSION), phases, hosts)
+    }
+
+    /// A report rebuilt from what an earlier scan wrote down, attributed to the
+    /// engine that ran it.
+    ///
+    /// For reading a finished scan back — out of a journal, or out of a report
+    /// this engine exported — where no new probing is happening. The version
+    /// comes from the record rather than from this build, so a scan run by
+    /// 0.11 still says 0.11 when 0.12 reads it. Every other constructor here
+    /// describes a scan this build is part of, and names this build for that
+    /// reason.
+    pub fn recorded(
+        engine_version: impl Into<String>,
+        phases: Vec<ScanPhase>,
+        hosts: impl IntoIterator<Item = Host>,
+    ) -> Self {
+        Self::attributed(Cow::Owned(engine_version.into()), phases, hosts)
+    }
+
+    fn attributed(
+        engine_version: Cow<'static, str>,
+        phases: Vec<ScanPhase>,
+        hosts: impl IntoIterator<Item = Host>,
+    ) -> Self {
         let hosts = hosts
             .into_iter()
             .map(|host| (host.primary_ip(), host))
             .collect();
 
         Self {
-            engine_version: ENGINE_VERSION,
+            engine_version,
             phases,
             hosts,
         }
     }
 
     /// The engine version that produced this report.
-    pub fn engine_version(&self) -> &'static str {
-        self.engine_version
+    pub fn engine_version(&self) -> &str {
+        &self.engine_version
     }
 
     /// The phases that contributed to this report, in the order they ran.
     ///
-    /// Never empty: a report is only produced by a phase completing.
+    /// A report a scan produced always has at least one, since a phase
+    /// completing is what produces it. One rebuilt with
+    /// [`recorded`](Self::recorded) can have none, which is what a scan that
+    /// stopped before it wrote a phase down reads back as.
     pub fn phases(&self) -> &[ScanPhase] {
         &self.phases
     }

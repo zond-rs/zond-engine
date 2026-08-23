@@ -1282,12 +1282,61 @@ impl From<&CaptureRecord> for CaptureCounts {
 /// dozen bytes rather than four billion records. This is what lets a scan be
 /// continued without being described again: the plan a resume needs is the one
 /// that ran, not one reconstructed from what somebody typed.
+///
+/// A host-discovery plan is a set of addresses and no ports, and is written
+/// here as a single unit whose port list is empty. One shape covers both
+/// phases, so a reader does not have to know which it is holding to read the
+/// addresses out of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanRecord {
     /// The units, in the order they were walked. Order is part of the plan:
     /// positions are counted through it.
     #[serde(default)]
     pub units: Vec<UnitRecord>,
+}
+
+impl PlanRecord {
+    /// Every address the plan covers, whatever its ports.
+    ///
+    /// For a discovery plan, this is the whole of it. For a port-scan plan it
+    /// is the addresses with the port dimension dropped, which two units naming
+    /// the same address collapse into one of — a set has no room to say a thing
+    /// twice.
+    pub fn addresses(&self) -> IpSet {
+        let mut ips = IpSet::new();
+        for unit in &self.units {
+            for range in unit.ranges.iter().filter_map(RangeRecord::rebuild) {
+                ips.insert_range(range);
+            }
+        }
+        ips.canonicalize();
+        ips
+    }
+}
+
+impl From<&IpSet> for PlanRecord {
+    /// Records a host-discovery plan: the addresses, and no ports.
+    fn from(addresses: &IpSet) -> Self {
+        Self {
+            units: vec![UnitRecord {
+                ranges: ranges_of(addresses),
+                ports: Vec::new(),
+            }],
+        }
+    }
+}
+
+/// An address set's ranges, v4 before v6, in the order the set enumerates them.
+fn ranges_of(ips: &IpSet) -> Vec<RangeRecord> {
+    ips.v4()
+        .iter()
+        .map(|range| RangeRecord::from(&IpRange::V4(*range)))
+        .chain(
+            ips.v6()
+                .iter()
+                .map(|range| RangeRecord::from(&IpRange::V6(*range))),
+        )
+        .collect()
 }
 
 /// One set of addresses paired with the ports to try on each.
@@ -1308,18 +1357,7 @@ impl From<&TargetMap> for PlanRecord {
                 .units
                 .iter()
                 .map(|unit| UnitRecord {
-                    ranges: unit
-                        .ips()
-                        .v4()
-                        .iter()
-                        .map(|range| RangeRecord::from(&IpRange::V4(*range)))
-                        .chain(
-                            unit.ips()
-                                .v6()
-                                .iter()
-                                .map(|range| RangeRecord::from(&IpRange::V6(*range))),
-                        )
-                        .collect(),
+                    ranges: ranges_of(unit.ips()),
                     ports: unit
                         .ports()
                         .iter()
