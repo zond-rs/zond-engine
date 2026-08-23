@@ -55,16 +55,25 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::RetryConfig;
 use crate::fingerprint::os::{OsEvidence, OsSource};
+use crate::model::capture::CaptureCounts;
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
 use crate::model::host::telemetry::HostTelemetry;
 use crate::model::host::{HardwareInfo, Host, StatusProtocol, StatusReason};
+use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
 use crate::model::mac::MacAddr;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::security::{CertificateInfo, Security};
 use crate::model::port::{Port, PortState, Protocol, Service};
+use crate::scanner::pacing::congestion::WindowSummary;
+use crate::scanner::report::{
+    PhaseParts, ProbeStats, ProbeStatsParts, ScanKind, ScanPhase, ScanSettings, ScannerFailure,
+    ScopeParts, StopReason, TargetScope,
+};
+use crate::scanner::session::ScannerKind;
 
 /// One host, as a file holds it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -810,6 +819,461 @@ impl From<&DiscoveryRecord> for Discovery {
     }
 }
 
+/// One sitting of a scan, as a file holds it.
+///
+/// Mirrors [`PhaseParts`](crate::scanner::report::PhaseParts), which mirrors the
+/// phase. A field added to any of the three has to be added to all of them, and
+/// the compiler says so.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhaseRecord {
+    /// Which entry point this sitting recorded, by wire name.
+    pub kind: String,
+    /// When it began.
+    pub started_at: SystemTime,
+    /// How long it ran.
+    pub elapsed: Duration,
+    /// Whether it held the privileges its raw strategies need.
+    pub privileged: bool,
+    /// What it covered, and what it was forbidden.
+    pub targets: ScopeRecord,
+    /// The settings it ran under.
+    pub settings: SettingsRecord,
+    /// The strategies that could not do their job.
+    #[serde(default)]
+    pub failures: Vec<FailureRecord>,
+    /// Addresses the scanning host had no route to.
+    #[serde(default)]
+    pub unroutable: Vec<IpAddr>,
+    /// What each strategy recorded about its own run.
+    #[serde(default)]
+    pub probes: Vec<ProbeStatsRecord>,
+}
+
+impl From<&ScanPhase> for PhaseRecord {
+    fn from(phase: &ScanPhase) -> Self {
+        Self {
+            kind: crate::export::schema::scan_kind_name(phase.kind()).to_owned(),
+            started_at: phase.started_at(),
+            elapsed: phase.elapsed(),
+            privileged: phase.privileged(),
+            targets: ScopeRecord::from(phase.targets()),
+            settings: SettingsRecord::from(phase.settings()),
+            failures: phase.failures().iter().map(FailureRecord::from).collect(),
+            unroutable: phase.unroutable().to_vec(),
+            probes: phase
+                .probe_stats()
+                .iter()
+                .map(ProbeStatsRecord::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<&PhaseRecord> for ScanPhase {
+    fn from(record: &PhaseRecord) -> Self {
+        ScanPhase::from_parts(PhaseParts {
+            // A sitting whose kind this build cannot place is reported as the
+            // cheaper of the two, so a reader is not told ports were scanned.
+            kind: wire::scan_kind(&record.kind).unwrap_or(ScanKind::Discovery),
+            started_at: record.started_at,
+            elapsed: record.elapsed,
+            privileged: record.privileged,
+            targets: TargetScope::from(&record.targets),
+            settings: ScanSettings::from(&record.settings),
+            failures: record.failures.iter().map(ScannerFailure::from).collect(),
+            unroutable: record.unroutable.clone(),
+            probes: record.probes.iter().map(ProbeStats::from).collect(),
+        })
+    }
+}
+
+/// What a sitting was asked to cover, and what it was forbidden.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeRecord {
+    /// The ranges walked, after exclusions, as `start-end`.
+    #[serde(default)]
+    pub ranges: Vec<RangeRecord>,
+    /// How many distinct addresses those hold.
+    pub addresses: u128,
+    /// How many probes the scope implies, where ports were known.
+    #[serde(default)]
+    pub probes: Option<u128>,
+    /// The transports covered, by wire name.
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    /// The ranges the policy withheld.
+    #[serde(default)]
+    pub excluded: Vec<RangeRecord>,
+    /// How many addresses that withheld.
+    pub withheld: u128,
+}
+
+impl From<&TargetScope> for ScopeRecord {
+    fn from(scope: &TargetScope) -> Self {
+        Self {
+            ranges: scope.ranges().iter().map(RangeRecord::from).collect(),
+            addresses: scope.addresses(),
+            probes: scope.probes(),
+            protocols: scope
+                .protocols()
+                .iter()
+                .map(|p| wire::protocol_name(*p).to_owned())
+                .collect(),
+            excluded: scope.excluded().iter().map(RangeRecord::from).collect(),
+            withheld: scope.withheld(),
+        }
+    }
+}
+
+impl From<&ScopeRecord> for TargetScope {
+    fn from(record: &ScopeRecord) -> Self {
+        TargetScope::from_parts(ScopeParts {
+            ranges: record
+                .ranges
+                .iter()
+                .filter_map(RangeRecord::rebuild)
+                .collect(),
+            addresses: record.addresses,
+            probes: record.probes,
+            protocols: record
+                .protocols
+                .iter()
+                .filter_map(|p| wire::protocol(p))
+                .collect(),
+            excluded: record
+                .excluded
+                .iter()
+                .filter_map(RangeRecord::rebuild)
+                .collect(),
+            withheld: record.withheld,
+        })
+    }
+}
+
+/// One address range, by its ends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RangeRecord {
+    /// The first address in the range.
+    pub start: IpAddr,
+    /// The last address in the range.
+    pub end: IpAddr,
+    /// The interface a link-local range is valid on.
+    #[serde(default)]
+    pub zone: Option<u32>,
+}
+
+impl From<&IpRange> for RangeRecord {
+    fn from(range: &IpRange) -> Self {
+        Self {
+            start: range.start_addr(),
+            end: range.end_addr(),
+            zone: match range {
+                IpRange::V6(range) => range.zone(),
+                IpRange::V4(_) => None,
+            },
+        }
+    }
+}
+
+impl RangeRecord {
+    /// Rebuilds the range, or `None` where its ends do not describe one — a
+    /// mixed pair, or an end before its start.
+    pub fn rebuild(&self) -> Option<IpRange> {
+        match (self.start, self.end) {
+            (IpAddr::V4(start), IpAddr::V4(end)) => {
+                Ipv4Range::new(start, end).ok().map(IpRange::V4)
+            }
+            (IpAddr::V6(start), IpAddr::V6(end)) => Ipv6Range::scoped(start, end, self.zone)
+                .ok()
+                .map(IpRange::V6),
+            _ => None,
+        }
+    }
+}
+
+/// A strategy that could not do its job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureRecord {
+    /// Which strategy, by wire name.
+    pub scanner: String,
+    /// What went wrong.
+    pub reason: String,
+    /// When it was recorded.
+    pub at: SystemTime,
+}
+
+impl From<&ScannerFailure> for FailureRecord {
+    fn from(failure: &ScannerFailure) -> Self {
+        Self {
+            scanner: crate::export::schema::scanner_kind_name(failure.scanner()).to_owned(),
+            reason: failure.reason().to_owned(),
+            at: failure.at(),
+        }
+    }
+}
+
+impl From<&FailureRecord> for ScannerFailure {
+    fn from(record: &FailureRecord) -> Self {
+        ScannerFailure::new(
+            wire::scanner_kind(&record.scanner).unwrap_or(ScannerKind::Composite),
+            record.reason.clone(),
+        )
+        .recorded_at(record.at)
+    }
+}
+
+/// The settings one sitting ran under.
+///
+/// The enums here already read and write their own names, so this carries those
+/// rather than restating a vocabulary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsRecord {
+    /// How raw probes were placed on the wire.
+    pub send_mode: String,
+    /// Which segment each TCP port probe carried.
+    pub tcp_technique: String,
+    /// The retransmission effort in force.
+    pub retry_effort: String,
+    /// A caller's override of the attempt budget.
+    #[serde(default)]
+    pub retry_max_attempts: Option<u8>,
+    /// A caller's scaling of the timeout.
+    #[serde(default)]
+    pub retry_timeout_scale: Option<f64>,
+    /// Whether silent hosts were probed less.
+    pub retry_dampen_silent_hosts: bool,
+    /// The probe-rate ceiling, where one applied.
+    #[serde(default)]
+    pub max_probe_rate: Option<u32>,
+    /// Whether name resolution could generate traffic.
+    pub dns_enabled: bool,
+    /// Whether identifying detail was masked.
+    pub redact: bool,
+    /// How far the sitting went to identify operating systems.
+    pub os_detection: String,
+    /// How far it went to identify services.
+    pub service_detection: String,
+    /// Whether it traced the path to each host.
+    pub traceroute: bool,
+}
+
+impl From<&ScanSettings> for SettingsRecord {
+    fn from(settings: &ScanSettings) -> Self {
+        Self {
+            send_mode: settings.send_mode.name().to_owned(),
+            tcp_technique: settings.tcp_technique.name().to_owned(),
+            retry_effort: settings.retry.effort.name().to_owned(),
+            retry_max_attempts: settings.retry.max_attempts,
+            retry_timeout_scale: settings.retry.timeout_scale,
+            retry_dampen_silent_hosts: settings.retry.dampen_silent_hosts,
+            max_probe_rate: settings.max_probe_rate,
+            dns_enabled: settings.dns_enabled,
+            redact: settings.redact,
+            os_detection: settings.os_detection.name().to_owned(),
+            service_detection: settings.service_detection.name().to_owned(),
+            traceroute: settings.traceroute,
+        }
+    }
+}
+
+impl From<&SettingsRecord> for ScanSettings {
+    fn from(record: &SettingsRecord) -> Self {
+        Self {
+            send_mode: record.send_mode.parse().unwrap_or_default(),
+            tcp_technique: record.tcp_technique.parse().unwrap_or_default(),
+            retry: RetryConfig {
+                effort: record.retry_effort.parse().unwrap_or_default(),
+                max_attempts: record.retry_max_attempts,
+                timeout_scale: record.retry_timeout_scale,
+                dampen_silent_hosts: record.retry_dampen_silent_hosts,
+            },
+            max_probe_rate: record.max_probe_rate,
+            dns_enabled: record.dns_enabled,
+            redact: record.redact,
+            os_detection: record.os_detection.parse().unwrap_or_default(),
+            service_detection: record.service_detection.parse().unwrap_or_default(),
+            traceroute: record.traceroute,
+        }
+    }
+}
+
+/// What one strategy recorded about its own run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProbeStatsRecord {
+    /// Which strategy, by wire name.
+    pub scanner: String,
+    /// How many targets it was given.
+    pub targets: u128,
+    /// Why its receive loop stopped, by wire name.
+    pub stop_reason: String,
+    /// How long it ran.
+    pub elapsed: Duration,
+    /// How many sends it attempted.
+    pub sends_attempted: u64,
+    /// How many the host refused.
+    pub sends_failed: u64,
+    /// How many segments its capture handed it.
+    pub segments_seen: u64,
+    /// Where its congestion window ended up.
+    #[serde(default)]
+    pub window: Option<WindowRecord>,
+    /// How many captured segments belonged to something else.
+    pub segments_off_target: u64,
+    /// How many replies named no attempt.
+    pub replies_without_rtt: u64,
+    /// How many hosts it found.
+    pub hosts_found: u64,
+    /// How many answers arrived on each attempt.
+    #[serde(default)]
+    pub answered_on: Vec<u64>,
+    /// How many answers could not be attributed.
+    pub answered_unattributed: u64,
+    /// When the first reply arrived.
+    #[serde(default)]
+    pub first_reply: Option<Duration>,
+    /// When the last did.
+    #[serde(default)]
+    pub last_reply: Option<Duration>,
+    /// How many hosts were found in each time bucket.
+    #[serde(default)]
+    pub found_at: Vec<u64>,
+    /// What the capture reported about its own losses.
+    #[serde(default)]
+    pub capture: Option<CaptureRecord>,
+}
+
+impl From<&ProbeStats> for ProbeStatsRecord {
+    fn from(stats: &ProbeStats) -> Self {
+        Self {
+            scanner: crate::export::schema::scanner_kind_name(stats.scanner()).to_owned(),
+            targets: stats.targets(),
+            stop_reason: crate::export::schema::stop_reason_name(stats.stop_reason()).to_owned(),
+            elapsed: stats.elapsed(),
+            sends_attempted: stats.sends_attempted(),
+            sends_failed: stats.sends_failed(),
+            segments_seen: stats.segments_seen(),
+            window: stats.window().map(WindowRecord::from),
+            segments_off_target: stats.segments_off_target(),
+            replies_without_rtt: stats.replies_without_rtt(),
+            hosts_found: stats.hosts_found(),
+            answered_on: stats.answered_on().to_vec(),
+            answered_unattributed: stats.answered_unattributed(),
+            first_reply: stats.first_reply(),
+            last_reply: stats.last_reply(),
+            found_at: stats.found_at().to_vec(),
+            capture: stats.capture().map(CaptureRecord::from),
+        }
+    }
+}
+
+impl From<&ProbeStatsRecord> for ProbeStats {
+    fn from(record: &ProbeStatsRecord) -> Self {
+        /// Copies as much of `from` as `into` has room for. A file written by a
+        /// build that counted more attempts is read for the attempts this one
+        /// counts, rather than refused.
+        fn fill<const N: usize>(from: &[u64]) -> [u64; N] {
+            let mut into = [0u64; N];
+            for (slot, value) in into.iter_mut().zip(from) {
+                *slot = *value;
+            }
+            into
+        }
+
+        ProbeStats::from_parts(ProbeStatsParts {
+            scanner: wire::scanner_kind(&record.scanner).unwrap_or(ScannerKind::Composite),
+            targets: record.targets,
+            // An unreadable stop reason reads as the one that claims least: a
+            // run that was cut short rather than one that finished.
+            stop_reason: wire::stop_reason(&record.stop_reason)
+                .unwrap_or(StopReason::DeadlineExpired),
+            elapsed: record.elapsed,
+            sends_attempted: record.sends_attempted,
+            sends_failed: record.sends_failed,
+            segments_seen: record.segments_seen,
+            window: record.window.as_ref().map(WindowSummary::from),
+            segments_off_target: record.segments_off_target,
+            replies_without_rtt: record.replies_without_rtt,
+            hosts_found: record.hosts_found,
+            answered_on: fill(&record.answered_on),
+            answered_unattributed: record.answered_unattributed,
+            first_reply: record.first_reply,
+            last_reply: record.last_reply,
+            found_at: fill(&record.found_at),
+            capture: record.capture.as_ref().map(CaptureCounts::from),
+        })
+    }
+}
+
+/// Where a strategy's congestion window ended up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowRecord {
+    /// The capacity it finished at.
+    pub capacity: usize,
+    /// The largest it reached.
+    pub peak: usize,
+    /// How many times it was cut.
+    pub reductions: u32,
+    /// Whether it was allowed to adapt.
+    pub adaptive: bool,
+    /// Whether it ended at its floor.
+    pub at_floor: bool,
+}
+
+impl From<WindowSummary> for WindowRecord {
+    fn from(window: WindowSummary) -> Self {
+        Self {
+            capacity: window.capacity,
+            peak: window.peak,
+            reductions: window.reductions,
+            adaptive: window.adaptive,
+            at_floor: window.at_floor,
+        }
+    }
+}
+
+impl From<&WindowRecord> for WindowSummary {
+    fn from(record: &WindowRecord) -> Self {
+        Self {
+            capacity: record.capacity,
+            peak: record.peak,
+            reductions: record.reductions,
+            adaptive: record.adaptive,
+            at_floor: record.at_floor,
+        }
+    }
+}
+
+/// What a capture reported about its own losses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureRecord {
+    /// How many packets it handed over.
+    pub received: u64,
+    /// How many it dropped.
+    pub dropped: u64,
+    /// How many the interface dropped before it.
+    pub if_dropped: u64,
+}
+
+impl From<CaptureCounts> for CaptureRecord {
+    fn from(counts: CaptureCounts) -> Self {
+        Self {
+            received: counts.received,
+            dropped: counts.dropped,
+            if_dropped: counts.if_dropped,
+        }
+    }
+}
+
+impl From<&CaptureRecord> for CaptureCounts {
+    fn from(record: &CaptureRecord) -> Self {
+        Self {
+            received: record.received,
+            dropped: record.dropped,
+            if_dropped: record.if_dropped,
+        }
+    }
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -1026,5 +1490,39 @@ mod tests {
         let port = rebuilt.ports().next().expect("the port is still recorded");
         assert_eq!(port.state(), PortState::Filtered);
         assert_eq!(port.protocol(), Protocol::Tcp);
+    }
+
+    /// A phase survives the round trip, statistics included.
+    ///
+    /// Rendered through the export path before and after, for the reason the
+    /// host oracle gives: it is an independent view, so a field the record
+    /// forgets shows up as a difference rather than as silence.
+    #[test]
+    fn a_phase_survives_a_round_trip() {
+        let report = crate::export::fixture::report();
+
+        for phase in report.phases() {
+            let rebuilt = ScanPhase::from(&PhaseRecord::from(phase));
+
+            let render = |phase: &ScanPhase| {
+                serde_json::to_value(crate::export::schema::PhaseDto::new(phase))
+                    .expect("a phase renders")
+            };
+            assert_eq!(render(phase), render(&rebuilt), "a field was lost");
+        }
+    }
+
+    /// And through a file.
+    #[test]
+    fn a_phase_survives_json() {
+        let report = crate::export::fixture::report();
+
+        for phase in report.phases() {
+            let record = PhaseRecord::from(phase);
+            let text = serde_json::to_string(&record).expect("serializes");
+            let read: PhaseRecord = serde_json::from_str(&text).expect("deserializes");
+
+            assert_eq!(record, read);
+        }
     }
 }

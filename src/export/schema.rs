@@ -77,10 +77,9 @@ use crate::model::host::{
 use crate::model::ip::range::IpRange;
 use crate::model::port::{CertificateInfo, Discovery, Port, PortState, Security, Service};
 use crate::scanner::report::{
-    ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, ScanKind, ScanPhase, ScanReport, ScanSettings,
-    ScanSummary, ScannerFailure, StopReason, TargetScope,
+    ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, ScanPhase, ScanReport, ScanSettings,
+    ScanSummary, ScannerFailure, TargetScope,
 };
-use crate::scanner::session::ScannerKind;
 
 // The two values a reader of this document has to agree with are defined in
 // [`crate::format`] rather than here, because a reader that had to reach into
@@ -98,51 +97,15 @@ pub use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
 // exporter inventing its own strings.
 // ---------------------------------------------------------------------------
 
-/// The wire name of a scan phase.
-pub fn scan_kind_name(kind: ScanKind) -> &'static str {
-    match kind {
-        ScanKind::Discovery => "discovery",
-        ScanKind::PortScan => "port_scan",
-    }
-}
-
-/// The wire name of a scanning strategy.
-pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
-    match kind {
-        ScannerKind::Local => "local",
-        ScannerKind::Routed => "routed",
-        ScannerKind::SynPort => "syn_port",
-        ScannerKind::TcpPort => "tcp_port",
-        ScannerKind::Connect => "connect",
-        ScannerKind::ConnectUdp => "connect_udp",
-        ScannerKind::UdpPort => "udp_port",
-        ScannerKind::OsEcho => "os_echo",
-        ScannerKind::OsSeries => "os_series",
-        ScannerKind::OsSnmp => "os_snmp",
-        ScannerKind::Composite => "composite",
-    }
-}
-
 /// The wire name of a host's reachability status.
 // The names below are defined in [`record::wire`](crate::record::wire), beside
 // the parsers that read them back, so that a name and its inverse cannot drift
 // apart. Re-exported rather than called through, since these appear in the
 // export's hot paths and a caller should not have to know where they live.
 pub use crate::record::wire::{
-    host_status_name, network_role_name, port_state_name, protocol_name, scan_response_name,
-    status_protocol_name,
+    host_status_name, network_role_name, port_state_name, protocol_name, scan_kind_name,
+    scan_response_name, scanner_kind_name, status_protocol_name, stop_reason_name,
 };
-
-/// The wire name of a receive loop's stop reason.
-pub fn stop_reason_name(reason: StopReason) -> &'static str {
-    match reason {
-        StopReason::Aborted => "aborted",
-        StopReason::AllResponded => "all_responded",
-        StopReason::AttemptsSpent => "attempts_spent",
-        StopReason::DeadlineExpired => "deadline_expired",
-        StopReason::StreamClosed => "stream_closed",
-    }
-}
 
 /// The wire name of a send mode.
 pub fn send_mode_name(mode: SendMode) -> &'static str {
@@ -1449,11 +1412,13 @@ impl<'a> DiscoveryDto<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::host::{NetworkRole, StatusProtocol};
-    use crate::model::port::{Protocol, ScanResponse};
     use crate::model::exclusion::Exclusions;
+    use crate::model::host::{NetworkRole, StatusProtocol};
+    use crate::scanner::report::{ScanKind, StopReason};
+    use crate::scanner::session::ScannerKind;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;
+    use crate::model::port::{Protocol, ScanResponse};
     use crate::model::target::{TargetMap, TargetSet};
 
     /// Every enumerated value the document can carry has to be spelled the same

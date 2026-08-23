@@ -260,7 +260,8 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     let (_session, task) = zond_engine::scanner::scan_with_journal(plan.clone(), &cfg, journal)
         .await
         .expect("the scan starts");
-    let _ = task.join().await.expect("the scan finishes");
+    let first = task.join().await.expect("the scan finishes");
+    let first_phases = first.phases().len();
 
     // The journal outlived it, and records what was settled.
     let listed = zond_engine::journal::store::list(&root).expect("lists");
@@ -305,8 +306,8 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     // First: the second sitting asked about nothing. Observed as probes sent,
     // because a resumed scan that quietly re-probed everything would produce an
     // identical report and only this number would show it.
-    let sent: u64 = second
-        .phases()
+    // Sliced past the restored phases, which carry the first sitting's probes.
+    let sent: u64 = second.phases()[first_phases..]
         .iter()
         .flat_map(|phase| phase.probe_stats())
         .map(|probes| probes.sends_attempted())
@@ -321,6 +322,20 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
         second.host_count(),
         1,
         "a resumed scan must report what earlier sittings found, not only its own"
+    );
+
+    // Third: the report says it ran in two sittings rather than presenting the
+    // second as the whole job. Each phase keeps its own timings and settings, so
+    // a reader can see how much of the work each one did.
+    assert_eq!(
+        second.phases().len(),
+        first_phases * 2,
+        "the second sitting's report must carry the first's phases as well as its own"
+    );
+    let started: Vec<_> = second.phases().iter().map(|p| p.started_at()).collect();
+    assert!(
+        started[0] <= started[1],
+        "the earlier sitting must come first"
     );
     let host = second.hosts().next().expect("the host survived");
     assert_eq!(

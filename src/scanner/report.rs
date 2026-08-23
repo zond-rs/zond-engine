@@ -620,6 +620,16 @@ impl ScannerFailure {
         &self.reason
     }
 
+    /// Restores the time this failure was recorded.
+    ///
+    /// [`new`](Self::new) stamps the current time, which is what a running scan
+    /// wants. A failure restored from a journal happened when it happened, not
+    /// when the record of it was read.
+    pub fn recorded_at(mut self, at: SystemTime) -> Self {
+        self.at = at;
+        self
+    }
+
     /// When the failure was observed.
     pub fn at(&self) -> SystemTime {
         self.at
@@ -629,6 +639,160 @@ impl ScannerFailure {
 impl fmt::Display for ScannerFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} scanner failed: {}", self.scanner, self.reason)
+    }
+}
+
+/// Everything a [`TargetScope`] holds, for rebuilding one that was recorded.
+///
+/// A plain struct rather than positional arguments: two `u128` counts and two
+/// range lists sit next to each other, and nothing would diagnose them being
+/// swapped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeParts {
+    /// The ranges that were walked, after exclusions.
+    pub ranges: Vec<IpRange>,
+    /// How many distinct addresses those ranges hold.
+    pub addresses: u128,
+    /// How many probes the scope implies, where ports were known.
+    pub probes: Option<u128>,
+    /// The transports the scope covered.
+    pub protocols: Vec<Protocol>,
+    /// The ranges the policy withheld.
+    pub excluded: Vec<IpRange>,
+    /// How many addresses that withheld.
+    pub withheld: u128,
+}
+
+impl TargetScope {
+    /// Rebuilds a scope from what was recorded of it.
+    ///
+    /// Unlike [`from_ip_set`](Self::from_ip_set), this applies no policy and
+    /// narrows nothing: the exclusions were applied when the scope was first
+    /// computed, and this restores the result rather than repeating the work.
+    pub fn from_parts(parts: ScopeParts) -> Self {
+        Self {
+            ranges: parts.ranges,
+            addresses: parts.addresses,
+            probes: parts.probes,
+            protocols: parts.protocols,
+            excluded: parts.excluded,
+            withheld: parts.withheld,
+        }
+    }
+}
+
+/// Everything a [`ProbeStats`] holds, for rebuilding one that was recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeStatsParts {
+    /// Which strategy this describes.
+    pub scanner: ScannerKind,
+    /// How many targets it was given.
+    pub targets: u128,
+    /// Why its receive loop stopped.
+    pub stop_reason: StopReason,
+    /// How long it ran.
+    pub elapsed: Duration,
+    /// How many sends it attempted.
+    pub sends_attempted: u64,
+    /// How many of those the host refused.
+    pub sends_failed: u64,
+    /// How many segments its capture handed it.
+    pub segments_seen: u64,
+    /// Where its congestion window ended up.
+    pub window: Option<WindowSummary>,
+    /// How many captured segments belonged to something else.
+    pub segments_off_target: u64,
+    /// How many replies could not be attributed to one attempt.
+    pub replies_without_rtt: u64,
+    /// How many hosts it found.
+    pub hosts_found: u64,
+    /// How many answers arrived on each attempt, one slot per counted attempt.
+    pub answered_on: [u64; ATTEMPTS_COUNTED],
+    /// How many answers named no attempt.
+    pub answered_unattributed: u64,
+    /// When the first reply arrived, from the start of the run.
+    pub first_reply: Option<Duration>,
+    /// When the last one did.
+    pub last_reply: Option<Duration>,
+    /// How many hosts were found in each time bucket, one slot per bound plus
+    /// the tail.
+    pub found_at: [u64; BUCKET_BOUNDS_MS.len() + 1],
+    /// What the capture reported about its own losses.
+    pub capture: Option<CaptureCounts>,
+}
+
+impl ProbeStats {
+    /// Rebuilds probe statistics from what was recorded of them.
+    pub fn from_parts(parts: ProbeStatsParts) -> Self {
+        Self {
+            scanner: parts.scanner,
+            targets: parts.targets,
+            stop_reason: parts.stop_reason,
+            elapsed: parts.elapsed,
+            sends_attempted: parts.sends_attempted,
+            sends_failed: parts.sends_failed,
+            segments_seen: parts.segments_seen,
+            window: parts.window,
+            segments_off_target: parts.segments_off_target,
+            replies_without_rtt: parts.replies_without_rtt,
+            hosts_found: parts.hosts_found,
+            answered_on: parts.answered_on,
+            answered_unattributed: parts.answered_unattributed,
+            first_reply: parts.first_reply,
+            last_reply: parts.last_reply,
+            found_at: parts.found_at,
+            capture: parts.capture,
+        }
+    }
+}
+
+/// Everything a [`ScanPhase`] holds, for rebuilding one that was recorded.
+///
+/// Mirrors the phase field for field, deliberately and without a default: a
+/// field added to [`ScanPhase`] is added here too, and every place that builds
+/// one stops compiling until it says what the new field should be. That is what
+/// keeps a journal from quietly losing what a phase gained.
+#[derive(Debug, Clone)]
+pub struct PhaseParts {
+    /// Which entry point the phase recorded.
+    pub kind: ScanKind,
+    /// When it began.
+    pub started_at: SystemTime,
+    /// How long it ran.
+    pub elapsed: Duration,
+    /// Whether it held the privileges its raw strategies need.
+    pub privileged: bool,
+    /// What it was asked to cover, and what it was forbidden.
+    pub targets: TargetScope,
+    /// The settings it ran under.
+    pub settings: ScanSettings,
+    /// The strategies that could not do their job.
+    pub failures: Vec<ScannerFailure>,
+    /// Addresses this host had no route to.
+    pub unroutable: Vec<IpAddr>,
+    /// What each strategy recorded about its own run.
+    pub probes: Vec<ProbeStats>,
+}
+
+impl ScanPhase {
+    /// Rebuilds a phase from what was recorded of it.
+    ///
+    /// For restoring an earlier sitting of a resumed scan, so its report
+    /// describes both rather than presenting the second as the whole job. A
+    /// phase a scan is currently running comes from
+    /// [`PhaseRecorder`] instead, which measures it.
+    pub fn from_parts(parts: PhaseParts) -> Self {
+        Self {
+            kind: parts.kind,
+            started_at: parts.started_at,
+            elapsed: parts.elapsed,
+            privileged: parts.privileged,
+            targets: parts.targets,
+            settings: parts.settings,
+            failures: parts.failures,
+            unroutable: parts.unroutable,
+            probes: parts.probes,
+        }
     }
 }
 
@@ -897,6 +1061,24 @@ impl ScanReport {
         Self {
             engine_version: ENGINE_VERSION,
             phases: vec![phase],
+            hosts,
+        }
+    }
+
+    /// A report over the phases of a job that ran in more than one sitting.
+    ///
+    /// The counterpart of [`new`](Self::new) for a resumed scan, whose earlier
+    /// sittings are restored from a journal rather than measured. `phases` is
+    /// kept in the order given, which is the order they ran.
+    pub fn from_phases(phases: Vec<ScanPhase>, hosts: impl IntoIterator<Item = Host>) -> Self {
+        let hosts = hosts
+            .into_iter()
+            .map(|host| (host.primary_ip(), host))
+            .collect();
+
+        Self {
+            engine_version: ENGINE_VERSION,
+            phases,
             hosts,
         }
     }

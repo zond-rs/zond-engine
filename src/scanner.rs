@@ -115,7 +115,7 @@ use crate::model::{ip::set::IpSet, target::TargetMap};
 use crate::scanner::orchestrator::{
     Enrichment, ScanCapabilities, finish_enrichment, only_live, run_port_phase, target_ips,
 };
-use crate::scanner::report::{PhaseRecorder, ScanKind, ScanReport, TargetScope};
+use crate::scanner::report::{PhaseRecorder, ScanKind, ScanPhase, ScanReport, TargetScope};
 use crate::scanner::session::{ScanContext, ScanSession, ScannerKind};
 use strategy::local::Scope;
 
@@ -175,6 +175,12 @@ pub struct ScanTask {
     /// settlements may go unrecorded.
     #[cfg(feature = "journal-format")]
     journal: Option<crate::journal::store::Checkpointing>,
+    /// What earlier sittings of this job did, restored from the journal.
+    ///
+    /// Folded in front of this run's own phases when the task is joined, so the
+    /// report describes the job rather than the last sitting of it.
+    #[cfg(feature = "journal-format")]
+    earlier: Vec<ScanPhase>,
 }
 
 impl ScanTask {
@@ -183,6 +189,8 @@ impl ScanTask {
             handle,
             #[cfg(feature = "journal-format")]
             journal: None,
+            #[cfg(feature = "journal-format")]
+            earlier: Vec::new(),
         }
     }
 
@@ -191,10 +199,12 @@ impl ScanTask {
     fn journalling(
         handle: JoinHandle<ScanReport>,
         journal: crate::journal::store::Checkpointing,
+        earlier: Vec<ScanPhase>,
     ) -> Self {
         Self {
             handle,
             journal: Some(journal),
+            earlier,
         }
     }
 
@@ -208,11 +218,23 @@ impl ScanTask {
     pub async fn join(self) -> Result<ScanReport, ScanError> {
         let report = self.handle.await.map_err(|_| ScanError::TaskFailed);
 
-        // After the scan, so the last checkpoint sees everything it settled. A
-        // scan that failed gets one too: how far it got is what a resume needs.
+        // After the scan, so the last checkpoint sees everything it settled, and
+        // the phases recorded are this sitting's own. A scan that failed gets a
+        // checkpoint too: how far it got is what a resume needs.
         #[cfg(feature = "journal-format")]
         if let Some(journal) = self.journal {
-            journal.finish().await;
+            let phases = report.as_ref().map(ScanReport::phases).unwrap_or_default();
+            journal.finish(phases).await;
+        }
+
+        // Earlier sittings in front of this one, in the order they ran.
+        #[cfg(feature = "journal-format")]
+        if !self.earlier.is_empty() {
+            return report.map(|report| {
+                let mut whole = ScanReport::from_phases(self.earlier, []);
+                whole.merge(report);
+                whole
+            });
         }
 
         report
@@ -370,10 +392,10 @@ pub async fn scan(
 /// [`Checkpoint::write_atomically`](crate::journal::cursor::Checkpoint::write_atomically)
 /// documents what that survives.
 ///
-/// Findings are recorded alongside the progress, so a resumed scan's store
-/// starts from what earlier runs found and its report describes the whole job.
-/// What each run *did* is not carried: the report's phases describe the current
-/// run only.
+/// Findings and phases are recorded alongside the progress, so a resumed scan
+/// starts from what earlier runs found and its report describes the whole job:
+/// one phase per sitting, each keeping its own timings, settings and statistics,
+/// rather than the last sitting presented as the whole of it.
 #[cfg(feature = "journal-format")]
 pub async fn scan_with_journal(
     target_map: TargetMap,
@@ -387,9 +409,10 @@ pub async fn scan_with_journal(
     ctx.restore_hosts(journal.restored());
 
     let handle = spawn_scan(target_map, cfg, ctx.clone(), journal.resume_point().clone());
+    let earlier = journal.earlier_phases().to_vec();
     let ticker = crate::journal::store::spawn_checkpoints(journal, ctx);
 
-    Ok((session, ScanTask::journalling(handle, ticker)))
+    Ok((session, ScanTask::journalling(handle, ticker, earlier)))
 }
 
 /// Runs both phases of a port scan against an existing context.

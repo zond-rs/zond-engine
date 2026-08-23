@@ -13,6 +13,7 @@
 //!     manifest.json   the plan, written once
 //!     cursor.json     how far the scan got, rewritten on a timer
 //!     hosts.jsonl     what it found, appended as it finds it
+//!     phases.jsonl    what each sitting did, appended as each one ends
 //!     LOCK            who is writing, if anyone
 //! ```
 //!
@@ -40,11 +41,13 @@ use super::settle::Settlements;
 use crate::model::host::Host;
 use crate::model::target::TargetMap;
 use crate::model::technique::TcpScanTechnique;
-use crate::record::HostRecord;
+use crate::record::{HostRecord, PhaseRecord};
+use crate::scanner::report::ScanPhase;
 
 const MANIFEST: &str = "manifest.json";
 const CURSOR: &str = "cursor.json";
 const HOSTS: &str = "hosts.jsonl";
+const PHASES: &str = "phases.jsonl";
 const LOCK: &str = "LOCK";
 
 /// Why a journal could not be opened for writing.
@@ -86,6 +89,7 @@ pub struct Journal {
     lock: Lock,
     resume_point: Checkpoint,
     restored: Vec<Host>,
+    earlier: Vec<ScanPhase>,
 }
 
 impl Journal {
@@ -113,6 +117,7 @@ impl Journal {
             lock,
             resume_point: Checkpoint::default(),
             restored: Vec::new(),
+            earlier: Vec::new(),
         };
         journal.open_findings()?;
         Ok(journal)
@@ -145,6 +150,7 @@ impl Journal {
                 lock,
                 resume_point: checkpoint.clone(),
                 restored: read_findings(directory)?,
+                earlier: read_phases(directory)?,
             },
             checkpoint,
         ))
@@ -181,11 +187,40 @@ impl Journal {
         writer.flush()
     }
 
-    /// Writes the findings file's header, so it is self-describing before
-    /// anything is appended to it.
+    /// What earlier sittings of this scan did.
+    ///
+    /// A resumed report carries these alongside its own, so it describes a job
+    /// that ran in several sittings rather than presenting the last one as the
+    /// whole of it.
+    pub fn earlier_phases(&self) -> &[ScanPhase] {
+        &self.earlier
+    }
+
+    /// Appends what one sitting did, once it has finished doing it.
+    pub fn record_phases(&mut self, phases: &[ScanPhase]) -> Result<(), JournalError> {
+        if phases.is_empty() {
+            return Ok(());
+        }
+
+        let file = fs::OpenOptions::new()
+            .append(true)
+            .open(self.directory.join(PHASES))?;
+
+        let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
+        for phase in phases {
+            writer.write(&PhaseRecord::from(phase))?;
+        }
+        writer.flush()
+    }
+
+    /// Writes the appended files' headers, so each is self-describing before
+    /// anything is added to it.
     fn open_findings(&mut self) -> Result<(), JournalError> {
-        let file = fs::File::create(self.directory.join(HOSTS))?;
-        crate::journal::format::Writer::create(std::io::BufWriter::new(file))?.flush()
+        for name in [HOSTS, PHASES] {
+            let file = fs::File::create(self.directory.join(name))?;
+            crate::journal::format::Writer::create(std::io::BufWriter::new(file))?.flush()?;
+        }
+        Ok(())
     }
 
     /// What an earlier sitting settled, and this one may skip.
@@ -356,6 +391,27 @@ fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
     Ok(hosts.into_values().collect())
 }
 
+/// Reads back what a journal's earlier sittings did, oldest first.
+fn read_phases(directory: &Path) -> Result<Vec<ScanPhase>, JournalError> {
+    let file = match fs::File::open(directory.join(PHASES)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut reader = match crate::journal::format::Reader::open(std::io::BufReader::new(file)) {
+        Ok(reader) => reader,
+        Err(JournalError::NotAJournal) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+
+    let mut phases = Vec::new();
+    while let Some(record) = reader.read::<PhaseRecord>()? {
+        phases.push(ScanPhase::from(&record));
+    }
+    Ok(phases)
+}
+
 fn read_manifest(directory: &Path) -> Result<Manifest, JournalError> {
     let text = fs::read_to_string(directory.join(MANIFEST))?;
     let manifest: Manifest = serde_json::from_str(&text)?;
@@ -478,7 +534,7 @@ pub const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs
 /// synchronise and no lock for a scan to hold while it does I/O.
 #[derive(Debug)]
 pub struct Checkpointing {
-    done: tokio::sync::oneshot::Sender<()>,
+    done: tokio::sync::oneshot::Sender<Vec<ScanPhase>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -487,9 +543,11 @@ impl Checkpointing {
     ///
     /// Call once the scan has finished and every strategy has reported, so the
     /// final cursor covers the whole sitting.
-    pub async fn finish(self) {
-        // The receiver ends the loop; a send failure means it already has.
-        let _ = self.done.send(());
+    pub async fn finish(self, phases: &[ScanPhase]) {
+        // The stop signal carries what the sitting did, because those are one
+        // fact: the scan is over, and this is what it turned out to be. A send
+        // failure means the writer has already stopped.
+        let _ = self.done.send(phases.to_vec());
         let _ = self.task.await;
     }
 }
@@ -499,7 +557,7 @@ pub fn spawn_checkpoints(
     mut journal: Journal,
     ctx: crate::scanner::session::ScanContext,
 ) -> Checkpointing {
-    let (done, mut stop) = tokio::sync::oneshot::channel();
+    let (done, mut stop) = tokio::sync::oneshot::channel::<Vec<ScanPhase>>();
 
     let task = tokio::spawn(async move {
         loop {
@@ -516,7 +574,12 @@ pub fn spawn_checkpoints(
                         );
                     }
                 }
-                _ = &mut stop => break,
+                // A dropped signal is a task nobody joined: there are no phases
+                // to record, and what has been settled so far still is.
+                finished = &mut stop => {
+                    let _ = journal.record_phases(&finished.unwrap_or_default());
+                    break;
+                }
             }
         }
 
@@ -762,7 +825,7 @@ mod tests {
         }
 
         // Finishes immediately, well inside one tick.
-        spawn_checkpoints(journal, ctx).finish().await;
+        spawn_checkpoints(journal, ctx).finish(&[]).await;
 
         let checkpoint = Checkpoint::read(&directory.join(CURSOR)).expect("a cursor was written");
         assert_eq!(checkpoint.watermark, 5);

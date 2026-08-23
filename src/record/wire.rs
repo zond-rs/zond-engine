@@ -38,6 +38,8 @@ use crate::fingerprint::os::OsSource;
 use crate::model::host::{HostStatus, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortState, Protocol};
+use crate::scanner::report::{ScanKind, StopReason};
+use crate::scanner::session::ScannerKind;
 
 /// The prefix that marks a name a strategy supplied rather than one this engine
 /// defines.
@@ -210,6 +212,81 @@ pub fn os_source(name: &str) -> Option<OsSource> {
     })
 }
 
+/// Which entry point a phase recorded.
+pub fn scan_kind_name(kind: ScanKind) -> &'static str {
+    match kind {
+        ScanKind::Discovery => "discovery",
+        ScanKind::PortScan => "port_scan",
+    }
+}
+
+/// [`scan_kind_name`] read back.
+pub fn scan_kind(name: &str) -> Option<ScanKind> {
+    Some(match name {
+        "discovery" => ScanKind::Discovery,
+        "port_scan" => ScanKind::PortScan,
+        _ => return None,
+    })
+}
+
+/// Which strategy something is attributed to.
+pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
+    match kind {
+        ScannerKind::Local => "local",
+        ScannerKind::Routed => "routed",
+        ScannerKind::SynPort => "syn_port",
+        ScannerKind::TcpPort => "tcp_port",
+        ScannerKind::Connect => "connect",
+        ScannerKind::ConnectUdp => "connect_udp",
+        ScannerKind::UdpPort => "udp_port",
+        ScannerKind::OsEcho => "os_echo",
+        ScannerKind::OsSeries => "os_series",
+        ScannerKind::OsSnmp => "os_snmp",
+        ScannerKind::Composite => "composite",
+    }
+}
+
+/// [`scanner_kind_name`] read back.
+pub fn scanner_kind(name: &str) -> Option<ScannerKind> {
+    Some(match name {
+        "local" => ScannerKind::Local,
+        "routed" => ScannerKind::Routed,
+        "syn_port" => ScannerKind::SynPort,
+        "tcp_port" => ScannerKind::TcpPort,
+        "connect" => ScannerKind::Connect,
+        "connect_udp" => ScannerKind::ConnectUdp,
+        "udp_port" => ScannerKind::UdpPort,
+        "os_echo" => ScannerKind::OsEcho,
+        "os_series" => ScannerKind::OsSeries,
+        "os_snmp" => ScannerKind::OsSnmp,
+        "composite" => ScannerKind::Composite,
+        _ => return None,
+    })
+}
+
+/// Why a receive loop stopped.
+pub fn stop_reason_name(reason: StopReason) -> &'static str {
+    match reason {
+        StopReason::Aborted => "aborted",
+        StopReason::AllResponded => "all_responded",
+        StopReason::AttemptsSpent => "attempts_spent",
+        StopReason::DeadlineExpired => "deadline_expired",
+        StopReason::StreamClosed => "stream_closed",
+    }
+}
+
+/// [`stop_reason_name`] read back.
+pub fn stop_reason(name: &str) -> Option<StopReason> {
+    Some(match name {
+        "aborted" => StopReason::Aborted,
+        "all_responded" => StopReason::AllResponded,
+        "attempts_spent" => StopReason::AttemptsSpent,
+        "deadline_expired" => StopReason::DeadlineExpired,
+        "stream_closed" => StopReason::StreamClosed,
+        _ => return None,
+    })
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -249,6 +326,36 @@ mod tests {
             PortState::Open,
         ] {
             assert_eq!(port_state(port_state_name(value)), Some(value));
+        }
+
+        for value in [ScanKind::Discovery, ScanKind::PortScan] {
+            assert_eq!(scan_kind(scan_kind_name(value)), Some(value));
+        }
+
+        for value in [
+            ScannerKind::Local,
+            ScannerKind::Routed,
+            ScannerKind::SynPort,
+            ScannerKind::TcpPort,
+            ScannerKind::Connect,
+            ScannerKind::ConnectUdp,
+            ScannerKind::UdpPort,
+            ScannerKind::OsEcho,
+            ScannerKind::OsSeries,
+            ScannerKind::OsSnmp,
+            ScannerKind::Composite,
+        ] {
+            assert_eq!(scanner_kind(scanner_kind_name(value)), Some(value));
+        }
+
+        for value in [
+            StopReason::Aborted,
+            StopReason::AllResponded,
+            StopReason::AttemptsSpent,
+            StopReason::DeadlineExpired,
+            StopReason::StreamClosed,
+        ] {
+            assert_eq!(stop_reason(stop_reason_name(value)), Some(value));
         }
 
         for value in [Protocol::Tcp, Protocol::Udp] {
@@ -307,6 +414,9 @@ mod tests {
         assert_eq!(os_source("astrology"), None);
         assert_eq!(status_protocol("igmp"), None);
         assert_eq!(scan_response("tcp_fin_ack"), None);
+        assert_eq!(scan_kind("enrichment"), None);
+        assert_eq!(scanner_kind("telepathy"), None);
+        assert_eq!(stop_reason("bored"), None);
     }
 
     /// A custom name that is empty renders as the bare prefix and names nothing.
