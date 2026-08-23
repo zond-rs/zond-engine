@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::target::TargetMap;
 use crate::model::technique::TcpScanTechnique;
+use crate::record::PlanRecord;
 
 /// A fingerprint of the plan a cursor's positions are counted in.
 ///
@@ -143,6 +144,25 @@ pub struct Manifest {
     pub created_at: SystemTime,
     /// The plan every position in this journal is counted in.
     pub plan: PlanFingerprint,
+    /// That plan itself, so a scan can be continued without being described
+    /// again.
+    ///
+    /// A fingerprint can only check a plan somebody supplies; this is what gives
+    /// one back. Ranges and port lists, so it stays small for a plan of any
+    /// size.
+    #[serde(default)]
+    pub targets: PlanRecord,
+    /// Which segment each TCP probe carried, by wire name. Part of the plan: a
+    /// port's verdict means different things under different techniques.
+    #[serde(default)]
+    pub technique: String,
+    /// Whether the scan held the privileges its raw strategies need.
+    ///
+    /// Recorded because a resume must run under the same answer. The connect
+    /// fallback asks a different question than a raw technique does, and a
+    /// journal half of each would be counting two things.
+    #[serde(default)]
+    pub privileged: bool,
     /// How many targets that plan holds, so a caller can report progress without
     /// walking it.
     pub total_targets: u128,
@@ -167,9 +187,29 @@ impl Manifest {
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
             created_at: SystemTime::now(),
             plan: PlanFingerprint::of(plan, technique, privileged),
+            targets: PlanRecord::from(plan),
+            technique: technique.name().to_owned(),
+            privileged,
             total_targets: plan.gross_targets().unwrap_or_default(),
             summary: summary.into(),
         }
+    }
+
+    /// The plan this journal was counted in, as it was recorded.
+    ///
+    /// What a resume scans. Rebuilt from the ranges and ports written down
+    /// rather than from anything a caller typed, so a hostname that has since
+    /// moved does not quietly change what is being continued.
+    pub fn plan(&self) -> TargetMap {
+        TargetMap::from(&self.targets)
+    }
+
+    /// The technique the recorded plan ran under.
+    ///
+    /// Falls back to the default for a journal written before this was recorded,
+    /// which the fingerprint then refuses if it was anything else.
+    pub fn technique(&self) -> TcpScanTechnique {
+        self.technique.parse().unwrap_or_default()
     }
 
     /// Whether `plan` under these conditions is the plan this journal was

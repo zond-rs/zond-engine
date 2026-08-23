@@ -347,3 +347,136 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
 
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// A journalled scan's event stream closes when the scan ends.
+///
+/// A caller watching a scan reads events until the stream closes and only then
+/// asks for the report. If anything outside the scan holds the event sender —
+/// the checkpoint task did, by holding a whole `ScanContext` — the stream never
+/// closes, the caller never asks for the report, and the checkpoint task waits
+/// to be told to stop by a caller that is itself waiting. Neither moves.
+///
+/// This is the shape a front end uses, which is why the earlier tests missed it:
+/// they join the task directly and never wait on the stream.
+#[tokio::test]
+async fn a_journalled_scan_lets_a_watcher_finish() {
+    use zond_engine::journal::Journal;
+    use zond_engine::model::ip::set::IpSet;
+    use zond_engine::model::port::PortSet;
+    use zond_engine::model::target::{TargetMap, TargetSet};
+    use zond_engine::model::technique::TcpScanTechnique;
+
+    if is_privileged() {
+        eprintln!("SKIP: drives the unprivileged connect path");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("zond-watch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+
+    let mut plan = TargetMap::new();
+    plan.add_unit(TargetSet::new(
+        IpSet::from(LOOPBACK),
+        closed_loopback_port()
+            .await
+            .to_string()
+            .parse::<PortSet>()
+            .expect("ports"),
+    ));
+
+    let mut cfg = test_config();
+    cfg.assume_up = true;
+
+    let journal =
+        Journal::create(&root, &plan, TcpScanTechnique::Syn, false, "loopback").expect("creates");
+    let (session, task) = zond_engine::scanner::scan_with_journal(plan, &cfg, journal)
+        .await
+        .expect("the scan starts");
+
+    let (_hosts, mut events, _handle) = session.into_parts();
+
+    // Exactly what a front end does: drain until the stream closes, then join.
+    // Capped, because the failure this guards against is that it never does.
+    let drained = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while events.recv().await.is_some() {}
+    })
+    .await;
+
+    assert!(
+        drained.is_ok(),
+        "the event stream never closed: something outside the scan is holding it open"
+    );
+
+    let _ = task.join().await.expect("the scan finishes");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// A probe that was sent but never answered before the stop is asked again.
+///
+/// The case: a port is probed, the scan is interrupted, and the reply either
+/// arrives too late to be read or never arrives at all. The engine still files a
+/// verdict for that port — silence, so the report is not missing it — but the
+/// verdict was *assigned* rather than earned, and a resume must ask again rather
+/// than inherit it.
+///
+/// Asserted through the cursor, because that is what a resume reads. A port
+/// still in flight is `Interrupted`, which carries no position, so nothing about
+/// it can advance the watermark.
+#[tokio::test]
+async fn a_probe_outstanding_at_the_stop_is_asked_again() {
+    use zond_engine::journal::settle::Outcome;
+    use zond_engine::model::technique::TcpScanTechnique;
+    use zond_engine::scanner::session::ScanSession;
+
+    let ports: Vec<u16> = (20_000..20_400).collect();
+
+    // Silent, so every probe stays outstanding on its retry schedule rather than
+    // settling: whatever is in flight when the stop arrives is genuinely in
+    // flight.
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for &port in &ports {
+        net = net.host(TARGET, port, Policy::silent());
+    }
+
+    let (session, ctx) = ScanSession::new();
+    let observer = ctx.clone();
+    let handle = session.handle().clone();
+
+    let mut scanner = zond_engine::scanner::strategy::routed::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        ports.len(),
+    );
+
+    let targets: Vec<_> = ports.iter().map(|&port| tcp(TARGET, port)).collect();
+    let scanning = tokio::spawn(async move {
+        run_port_scanner(&mut scanner, targets).await;
+    });
+
+    // Long enough for probes to be on the wire, short enough that none of them
+    // has run out of retries.
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    handle.abort();
+    scanning.await.expect("the scan winds down");
+
+    let settlements = observer.settlements();
+
+    assert!(
+        settlements.count(Outcome::Interrupted) > 0,
+        "no probe was in flight, so this test proved nothing"
+    );
+    assert_eq!(
+        settlements.settled_count(),
+        0,
+        "a probe that was never answered must not be settled: {} interrupted, \
+         {} exhausted",
+        settlements.count(Outcome::Interrupted),
+        settlements.count(Outcome::Exhausted { position: 0 })
+    );
+
+    // And so a resume asks about every one of them again.
+    assert_eq!(settlements.checkpoint(), Checkpoint::default());
+}

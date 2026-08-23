@@ -408,9 +408,15 @@ pub async fn scan_with_journal(
     // sittings' hosts immediately and the report describes the whole job.
     ctx.restore_hosts(journal.restored());
 
-    let handle = spawn_scan(target_map, cfg, ctx.clone(), journal.resume_point().clone());
     let earlier = journal.earlier_phases().to_vec();
-    let ticker = crate::journal::store::spawn_checkpoints(journal, ctx);
+    let resume_point = journal.resume_point().clone();
+
+    // The ticker takes a narrow handle rather than the context: a checkpoint
+    // task holding the event sender would keep the stream open after the scan
+    // ended, and a caller watching it to know when to stop would wait for a scan
+    // that was already over. See `ScanContext::progress`.
+    let ticker = crate::journal::store::spawn_checkpoints(journal, ctx.progress());
+    let handle = spawn_scan(target_map, cfg, ctx, resume_point);
 
     Ok((session, ScanTask::journalling(handle, ticker, earlier)))
 }

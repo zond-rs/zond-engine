@@ -1414,12 +1414,12 @@ mod tests {
     use super::*;
     use crate::model::exclusion::Exclusions;
     use crate::model::host::{NetworkRole, StatusProtocol};
-    use crate::scanner::report::{ScanKind, StopReason};
-    use crate::scanner::session::ScannerKind;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;
     use crate::model::port::{Protocol, ScanResponse};
     use crate::model::target::{TargetMap, TargetSet};
+    use crate::scanner::report::{ScanKind, StopReason};
+    use crate::scanner::session::ScannerKind;
 
     /// Every enumerated value the document can carry has to be spelled the same
     /// way twice - once here, once in the schema file. Pinning the strings is

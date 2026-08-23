@@ -104,10 +104,7 @@ impl Journal {
         privileged: bool,
         summary: impl Into<String>,
     ) -> Result<Self, OpenError> {
-        let id = mint_id();
-        let directory = root.join(&id);
-        create_private_dir(&directory)?;
-
+        let (id, directory) = claim_directory(root)?;
         let manifest = Manifest::new(id, plan, technique, privileged, summary);
         write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
 
@@ -168,6 +165,28 @@ impl Journal {
             },
             checkpoint,
         ))
+    }
+
+    /// Continues the journal at `directory`, scanning the plan it recorded.
+    ///
+    /// The counterpart of [`resume`](Self::resume) for a caller who has nothing
+    /// to describe the scan with but its id. The plan comes back as it was
+    /// written down, so a hostname that has moved since does not quietly change
+    /// what is being continued.
+    ///
+    /// Refused if this process holds different privileges than the scan did: the
+    /// connect fallback asks a different question than a raw technique does, and
+    /// a journal half of each would be counting two things.
+    pub fn reopen(
+        directory: &Path,
+        privileged: bool,
+    ) -> Result<(Self, Checkpoint, TargetMap), OpenError> {
+        let manifest = read_manifest(directory)?;
+        let plan = manifest.plan();
+        let technique = manifest.technique();
+
+        let (journal, checkpoint) = Self::resume(directory, &plan, technique, privileged)?;
+        Ok((journal, checkpoint, plan))
     }
 
     /// What earlier sittings of this scan found.
@@ -547,26 +566,46 @@ fn read_checkpoint(directory: &Path) -> Result<Checkpoint, JournalError> {
     }
 }
 
-/// A sortable, collision-free id: 48 bits of millisecond timestamp then 80 bits
-/// of randomness, in Crockford base32. A ULID, which is 26 characters and sorts
-/// by creation time as text.
-///
-/// Written out rather than pulled in: it is twenty lines against a dependency,
-/// and the crate already declines a crate per format for the same reason.
-fn mint_id() -> String {
-    const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// The characters an id is written in: Crockford base32, which has no letters a
+/// reader can mistake for digits.
+const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+/// How many characters an id is.
+///
+/// Sixteen: the millisecond the scan started, then randomness. Shorter than a
+/// ULID's twenty-six because an id is printed in a listing and typed at a
+/// prompt, and a line of them should fit a terminal beside what it describes.
+///
+/// **All ten characters of width come off the random half**, none off the clock.
+/// Timing to the millisecond is what makes ids sort into the order the scans ran
+/// in, and two scans a fifth of a second apart are exactly the pair a reader
+/// most needs told apart. What is left is thirty-two bits — four billion — for
+/// scans that started in the same millisecond, and a collision is answered by
+/// minting another id rather than by overwriting anything, so the cost of one is
+/// a retry rather than a lost journal. See [`claim_directory`].
+const ID_CHARS: usize = 16;
+
+/// Milliseconds, as a ULID counts them, reaching the year 10 889.
+const ID_TIME_BITS: u32 = 48;
+
+/// A sortable id: the millisecond the scan started, then randomness, in
+/// Crockford base32.
+///
+/// Sorts by creation time as text, which is what lets a listing be ordered
+/// without reading every manifest. Written out rather than pulled in: it is
+/// twenty lines against a dependency, and the crate already declines a crate per
+/// format for the same reason.
+fn mint_id() -> String {
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|since| since.as_millis())
-        .unwrap_or_default() as u64
-        & 0x0000_FFFF_FFFF_FFFF;
+        .map_or(0, |since| since.as_millis())
+        & ((1u128 << ID_TIME_BITS) - 1);
 
-    const RANDOM_BITS: u32 = 80;
-    let entropy = rand::random::<u128>() & ((1u128 << RANDOM_BITS) - 1);
-    let mut value = (u128::from(millis) << RANDOM_BITS) | entropy;
+    let random_bits = ID_CHARS as u32 * 5 - ID_TIME_BITS;
+    let entropy = u128::from(rand::random::<u64>()) & ((1u128 << random_bits) - 1);
+    let mut value = (millis << random_bits) | entropy;
 
-    let mut out = [b'0'; 26];
+    let mut out = [b'0'; ID_CHARS];
     for slot in out.iter_mut().rev() {
         *slot = ALPHABET[(value & 0x1F) as usize];
         value >>= 5;
@@ -576,11 +615,41 @@ fn mint_id() -> String {
     String::from_utf8(out.to_vec()).expect("base32 alphabet is ASCII")
 }
 
-fn create_private_dir(path: &Path) -> Result<(), JournalError> {
-    fs::create_dir_all(path)?;
-    restrict(path, 0o700)?;
-    claim_for_invoking_user(path);
-    Ok(())
+/// Takes a directory under `root` that nothing else holds, and its id.
+///
+/// `create_dir` rather than `create_dir_all`, deliberately: the second succeeds
+/// on a directory that is already there, so two scans that minted the same id
+/// would share one — the later overwriting the earlier's manifest and, once the
+/// earlier had finished and released its lock, its findings too.
+///
+/// A collision is answered by minting another id rather than by failing. Ids
+/// carry enough randomness that this should never run twice, and a scan is not
+/// worth abandoning over a coincidence.
+fn claim_directory(root: &Path) -> Result<(String, PathBuf), JournalError> {
+    /// Enough that exhausting them means something other than chance is wrong —
+    /// a root that is not a directory, or one nothing may write to.
+    const ATTEMPTS: usize = 8;
+
+    for _ in 0..ATTEMPTS {
+        let id = mint_id();
+        let directory = root.join(&id);
+
+        match fs::create_dir(&directory) {
+            Ok(()) => {
+                restrict(&directory, 0o700)?;
+                claim_for_invoking_user(&directory);
+                return Ok((id, directory));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not find an unused id for this scan",
+    )
+    .into())
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
@@ -840,7 +909,7 @@ impl Checkpointing {
 /// Starts checkpointing `journal` from `ctx`'s progress until told to stop.
 pub fn spawn_checkpoints(
     mut journal: Journal,
-    ctx: crate::scanner::session::ScanContext,
+    ctx: crate::scanner::session::ScanProgress,
 ) -> Checkpointing {
     let (done, mut stop) = tokio::sync::oneshot::channel::<Vec<ScanPhase>>();
 
@@ -1058,11 +1127,16 @@ mod tests {
 
     /// Ids sort by creation time as text, which is what makes a listing orderable
     /// without reading every manifest.
+    ///
+    /// Timing to the millisecond is what buys that: minted a fifth of a second
+    /// apart — which is to say, one after another — they still sort into the
+    /// order they were made, and that is exactly the pair a reader most needs
+    /// told apart.
     #[test]
     fn ids_are_sortable_and_distinct() {
         let mut ids: Vec<String> = (0..64).map(|_| mint_id()).collect();
 
-        assert!(ids.iter().all(|id| id.len() == 26));
+        assert!(ids.iter().all(|id| id.len() == ID_CHARS));
         let distinct: std::collections::BTreeSet<&String> = ids.iter().collect();
         assert_eq!(distinct.len(), ids.len(), "ids collided");
 
@@ -1070,7 +1144,13 @@ mod tests {
             ids.sort();
             ids.clone()
         };
-        assert_eq!(ids, sorted);
+        assert_eq!(ids, sorted, "ids minted in one burst lost their order");
+
+        // And across milliseconds, where the clock rather than chance decides.
+        let first = mint_id();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        let second = mint_id();
+        assert!(first < second, "{first} should sort before {second}");
     }
 
     /// A listing skips what it cannot read rather than failing, so one damaged
@@ -1120,7 +1200,7 @@ mod tests {
         }
 
         // Finishes immediately, well inside one tick.
-        spawn_checkpoints(journal, ctx).finish(&[]).await;
+        spawn_checkpoints(journal, ctx.progress()).finish(&[]).await;
 
         let checkpoint = Checkpoint::read(&directory.join(CURSOR)).expect("a cursor was written");
         assert_eq!(checkpoint.watermark, 5);
@@ -1273,6 +1353,9 @@ mod tests {
                     TcpScanTechnique::Syn,
                     true,
                 ),
+                targets: crate::record::PlanRecord::from(&plan("192.0.2.1", "80")),
+                technique: TcpScanTechnique::Syn.name().to_owned(),
+                privileged: true,
                 total_targets: total,
                 summary: String::new(),
             },
@@ -1608,5 +1691,51 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A scan can be continued knowing nothing but its id.
+    ///
+    /// The plan comes back as it was written down. Without this a resume has to
+    /// be told the targets and ports again, which is both a chore and a trap:
+    /// what somebody types the second time is not necessarily what ran the
+    /// first.
+    #[test]
+    fn a_journal_gives_back_the_plan_it_recorded() {
+        let root = scratch("reopen");
+        let map = plan("192.0.2.1-192.0.2.4", "80,443,u:53");
+
+        let directory = {
+            let journal =
+                Journal::create(&root, &map, TcpScanTechnique::Fin, true, "test").expect("creates");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let (journal, _checkpoint, recovered) = Journal::reopen(&directory, true).expect("reopens");
+
+        assert_eq!(
+            recovered.iter().collect::<Vec<_>>(),
+            map.iter().collect::<Vec<_>>(),
+            "the same targets, in the same order, so positions still mean what they did"
+        );
+        assert_eq!(journal.manifest().technique(), TcpScanTechnique::Fin);
+    }
+
+    /// Continuing a scan under different privileges is refused: the raw and
+    /// connect paths answer different questions, and a journal half of each
+    /// would be counting two things.
+    #[test]
+    fn a_journal_will_not_be_continued_under_different_privileges() {
+        let root = scratch("reopen-privilege");
+        let map = plan("192.0.2.1", "80");
+
+        let journal =
+            Journal::create(&root, &map, TcpScanTechnique::Syn, true, "test").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let refused = Journal::reopen(&directory, false).expect_err("privileges differ");
+        assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
     }
 }

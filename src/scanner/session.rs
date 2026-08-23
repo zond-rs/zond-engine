@@ -424,6 +424,53 @@ impl UnroutableLog {
     }
 }
 
+/// What a journal needs from a running scan, and nothing more.
+///
+/// See [`ScanContext::progress`] for why this exists rather than a context.
+#[derive(Debug, Clone)]
+pub struct ScanProgress {
+    store: Arc<DashMap<IpAddr, Host>>,
+    changed: Arc<ChangedHosts>,
+    settlements: Arc<Settlements>,
+    failures: Arc<FailureLog>,
+}
+
+impl ScanProgress {
+    /// How far the scan has got, and what became of what it did not settle.
+    pub fn settlements(&self) -> &Settlements {
+        &self.settlements
+    }
+
+    /// Takes the hosts whose findings have changed since this was last called.
+    pub fn take_changed_hosts(&self) -> Vec<Host> {
+        self.changed
+            .drain()
+            .into_iter()
+            .filter_map(|ip| self.store.get(&ip).map(|host| host.clone()))
+            .collect()
+    }
+
+    /// Every host found so far, cloned.
+    pub fn hosts_snapshot(&self) -> Vec<Host> {
+        self.store
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    /// How many hosts have been found so far.
+    pub fn host_count(&self) -> usize {
+        self.store.len()
+    }
+
+    /// Files a failure to the report. Not to the event stream; see
+    /// [`ScanContext::progress`].
+    pub fn record_failure(&self, scanner: ScannerKind, reason: String) {
+        error!("Journal: {reason}");
+        self.failures.push(ScannerFailure::new(scanner, reason));
+    }
+}
+
 /// The hosts whose findings a journal has yet to record.
 #[derive(Debug, Default)]
 pub(crate) struct ChangedHosts {
@@ -711,6 +758,26 @@ impl ScanContext {
                 }
             }
             let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
+        }
+    }
+
+    /// What a journal needs from a running scan.
+    ///
+    /// **Deliberately not a [`ScanContext`].** A context carries the event
+    /// sender, and a checkpoint task holding one would keep the event stream
+    /// open after the scan had ended — so a caller watching that stream to know
+    /// when to stop would wait forever for a scan that was already over, and the
+    /// checkpoint task would wait for the caller to stop it. Neither moves.
+    ///
+    /// A failure recorded through this reaches the report but not the stream,
+    /// which is right: a checkpoint that could not be written is a fact about
+    /// the journal, not about a scanning strategy.
+    pub fn progress(&self) -> ScanProgress {
+        ScanProgress {
+            store: Arc::clone(&self.store),
+            changed: Arc::clone(&self.changed),
+            settlements: Arc::clone(&self.settlements),
+            failures: Arc::clone(&self.failures),
         }
     }
 

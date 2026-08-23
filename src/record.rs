@@ -64,10 +64,12 @@ use crate::model::host::telemetry::HostTelemetry;
 use crate::model::host::{HardwareInfo, Host, StatusProtocol, StatusReason};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
+use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::security::{CertificateInfo, Security};
-use crate::model::port::{Port, PortState, Protocol, Service};
+use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
+use crate::model::target::{TargetMap, TargetSet};
 use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{
     PhaseParts, ProbeStats, ProbeStatsParts, ScanKind, ScanPhase, ScanSettings, ScannerFailure,
@@ -1271,6 +1273,87 @@ impl From<&CaptureRecord> for CaptureCounts {
             dropped: record.dropped,
             if_dropped: record.if_dropped,
         }
+    }
+}
+
+/// The plan a scan ran against, as a file holds it.
+///
+/// Ranges and port lists rather than targets, so a `/16` on every port is a few
+/// dozen bytes rather than four billion records. This is what lets a scan be
+/// continued without being described again: the plan a resume needs is the one
+/// that ran, not one reconstructed from what somebody typed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanRecord {
+    /// The units, in the order they were walked. Order is part of the plan:
+    /// positions are counted through it.
+    #[serde(default)]
+    pub units: Vec<UnitRecord>,
+}
+
+/// One set of addresses paired with the ports to try on each.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitRecord {
+    /// The addresses, as ranges.
+    #[serde(default)]
+    pub ranges: Vec<RangeRecord>,
+    /// The ports, in order, each with its transport's wire name.
+    #[serde(default)]
+    pub ports: Vec<(u16, String)>,
+}
+
+impl From<&TargetMap> for PlanRecord {
+    fn from(plan: &TargetMap) -> Self {
+        Self {
+            units: plan
+                .units
+                .iter()
+                .map(|unit| UnitRecord {
+                    ranges: unit
+                        .ips()
+                        .v4()
+                        .iter()
+                        .map(|range| RangeRecord::from(&IpRange::V4(*range)))
+                        .chain(
+                            unit.ips()
+                                .v6()
+                                .iter()
+                                .map(|range| RangeRecord::from(&IpRange::V6(*range))),
+                        )
+                        .collect(),
+                    ports: unit
+                        .ports()
+                        .iter()
+                        .map(|(port, protocol)| (port, wire::protocol_name(protocol).to_owned()))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&PlanRecord> for TargetMap {
+    fn from(record: &PlanRecord) -> Self {
+        let mut plan = TargetMap::new();
+
+        for unit in &record.units {
+            let mut ips = IpSet::new();
+            for range in unit.ranges.iter().filter_map(RangeRecord::rebuild) {
+                ips.insert_range(range);
+            }
+
+            let ports: PortSet = unit
+                .ports
+                .iter()
+                .filter_map(|(port, protocol)| wire::protocol(protocol).map(|p| (*port, p)))
+                .collect();
+
+            // A unit with nothing left in it would renumber every position after
+            // it, so an unreadable one is kept as an empty unit rather than
+            // dropped. It contributes no targets and holds its place.
+            plan.add_unit(TargetSet::new(ips, ports));
+        }
+
+        plan
     }
 }
 

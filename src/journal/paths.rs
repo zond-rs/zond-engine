@@ -141,28 +141,49 @@ fn state_root() -> Option<PathBuf> {
 
     #[cfg(not(windows))]
     {
-        // The invoking user first: under `sudo` the variables below describe
-        // root, and root is not who asked.
-        if let Some(user) = invoking_user() {
-            return Some(user.home.join(".local").join("state"));
-        }
-
         // Only an absolute value counts, as the specification requires. A
         // relative one would put the journal wherever the process was started,
         // which for a tool run with `sudo` from an arbitrary shell is not a
         // location anybody chose.
-        if let Some(configured) = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-        {
-            return Some(configured);
-        }
+        let absolute = |name| {
+            std::env::var_os(name)
+                .map(PathBuf::from)
+                .filter(|path: &PathBuf| path.is_absolute())
+        };
 
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .map(|home| home.join(".local").join("state"))
+        choose(
+            absolute("XDG_STATE_HOME"),
+            invoking_user().map(|user| user.home),
+            absolute("HOME"),
+        )
     }
+}
+
+/// Picks the state root from the three places it can come from.
+///
+/// Pure, so the precedence can be tested without a process's environment — which
+/// is shared, and which a test cannot change without changing it for every other
+/// test running beside it.
+///
+/// **`XDG_STATE_HOME` leads, including under `sudo`.** It reaches an elevated
+/// process only if somebody preserved it deliberately, and honouring it is what
+/// makes an elevated scan and an unelevated listing agree. Reading the invoking
+/// user first meant a scan run with `sudo` wrote under `~/.local/state` while a
+/// listing read `$XDG_STATE_HOME`, and the listing reported no scans at all.
+///
+/// After that the invoking user comes before this process's own `HOME`, which
+/// under `sudo` is root's and is not who asked.
+#[cfg(not(windows))]
+fn choose(
+    configured: Option<PathBuf>,
+    invoking_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    configured.or_else(|| {
+        invoking_home
+            .or(home)
+            .map(|home| home.join(".local").join("state"))
+    })
 }
 
 /// The user who invoked this process, when it is running elevated on their
@@ -393,5 +414,45 @@ mod tests {
                 assert!(home.is_absolute(), "uid {uid} resolved to {home:?}");
             }
         }
+    }
+
+    /// An elevated scan and an unelevated listing must look in the same place.
+    ///
+    /// The bug this guards: with `XDG_STATE_HOME` set, `sudo zond scan` resolved
+    /// the invoking user's home while `zond journal` resolved the variable, so
+    /// the second reported no scans at all.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_configured_root_wins_however_the_scan_was_run() {
+        let configured = PathBuf::from("/state");
+        let erik = PathBuf::from("/home/erik");
+        let root = PathBuf::from("/root");
+
+        // Under `sudo -E`, where the variable survived: both agree.
+        assert_eq!(
+            choose(Some(configured.clone()), Some(erik.clone()), Some(root)),
+            choose(Some(configured.clone()), None, Some(erik.clone())),
+            "an elevated run and an unelevated one disagreed"
+        );
+
+        // Under plain `sudo`, where it did not: the invoking user, never root.
+        assert_eq!(
+            choose(None, Some(erik.clone()), Some(PathBuf::from("/root"))),
+            Some(erik.join(".local").join("state")),
+            "a journal was written to root's home"
+        );
+
+        // And with nothing elevated, this process's own home.
+        assert_eq!(
+            choose(None, None, Some(erik.clone())),
+            Some(erik.join(".local").join("state"))
+        );
+    }
+
+    /// An environment naming nowhere yields nowhere, rather than a guess.
+    #[cfg(not(windows))]
+    #[test]
+    fn an_empty_environment_names_no_root() {
+        assert_eq!(choose(None, None, None), None);
     }
 }
