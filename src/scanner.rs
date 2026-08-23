@@ -110,6 +110,7 @@ use std::pin::Pin;
 use tokio::task::JoinHandle;
 
 use crate::config::ZondConfig;
+use crate::journal::cursor::Checkpoint;
 use crate::model::{ip::set::IpSet, target::TargetMap};
 use crate::scanner::orchestrator::{
     Enrichment, ScanCapabilities, finish_enrichment, only_live, run_port_phase, target_ips,
@@ -347,7 +348,8 @@ pub async fn scan(
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
-    Ok((session, ScanTask::new(spawn_scan(target_map, cfg, ctx))))
+    let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default());
+    Ok((session, ScanTask::new(handle)))
 }
 
 /// [`scan`], recording its progress so that an interrupted run can be continued.
@@ -368,8 +370,10 @@ pub async fn scan(
 /// [`Checkpoint::write_atomically`](crate::journal::cursor::Checkpoint::write_atomically)
 /// documents what that survives.
 ///
-/// **Only progress is recorded, not findings.** A resumed scan reports what its
-/// own run found; the hosts an earlier run found are not restored.
+/// Findings are recorded alongside the progress, so a resumed scan's store
+/// starts from what earlier runs found and its report describes the whole job.
+/// What each run *did* is not carried: the report's phases describe the current
+/// run only.
 #[cfg(feature = "journal-format")]
 pub async fn scan_with_journal(
     target_map: TargetMap,
@@ -377,7 +381,12 @@ pub async fn scan_with_journal(
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::resuming(cfg.exclusions.clone(), journal.resume_point());
-    let handle = spawn_scan(target_map, cfg, ctx.clone());
+
+    // Before the scan starts, so a caller watching the session sees the earlier
+    // sittings' hosts immediately and the report describes the whole job.
+    ctx.restore_hosts(journal.restored());
+
+    let handle = spawn_scan(target_map, cfg, ctx.clone(), journal.resume_point().clone());
     let ticker = crate::journal::store::spawn_checkpoints(journal, ctx);
 
     Ok((session, ScanTask::journalling(handle, ticker)))
@@ -388,7 +397,14 @@ pub async fn scan_with_journal(
 /// The body of [`scan`], taking a context rather than making one so that a
 /// caller journalling the scan can seed it from an earlier run and keep a handle
 /// on it. Nothing here knows what a journal is.
-fn spawn_scan(target_map: TargetMap, cfg: &ZondConfig, ctx: ScanContext) -> JoinHandle<ScanReport> {
+/// `settled` is what an earlier sitting already covered, and is empty for a scan
+/// that is not continuing one.
+fn spawn_scan(
+    target_map: TargetMap,
+    cfg: &ZondConfig,
+    ctx: ScanContext,
+    settled: Checkpoint,
+) -> JoinHandle<ScanReport> {
     let caps = ScanCapabilities::resolve(cfg);
     let cfg = cfg.clone();
 
@@ -416,7 +432,7 @@ fn spawn_scan(target_map: TargetMap, cfg: &ZondConfig, ctx: ScanContext) -> Join
         let scope = TargetScope::from_target_map(&mut target_map, &cfg.exclusions);
         let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, &cfg);
 
-        run_port_phase(target_map, &ctx, caps, &cfg).await;
+        run_port_phase(target_map, &ctx, caps, &cfg, settled).await;
 
         // Ordered by what each pass leaves the next. The series probe takes
         // every host with a TCP answer, so the echo probe is left with the

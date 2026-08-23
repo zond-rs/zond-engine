@@ -36,7 +36,7 @@
 //! over the same set. A target's identity in a plan is therefore its position
 //! in that enumeration, and a position needs no address stored to name it.
 //!
-//! What is written is a watermark — the position below which everything has
+//! What is written is a cursor — a watermark — the position below which everything has
 //! settled — a bitmap over the window of positions above it that settled out of
 //! order, and a spill list for anything outstanding longer than the window is
 //! wide. That is a few kilobytes, fixed, whether the scan is a `/24` or a `/8`,

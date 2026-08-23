@@ -424,6 +424,24 @@ impl UnroutableLog {
     }
 }
 
+/// The hosts whose findings a journal has yet to record.
+#[derive(Debug, Default)]
+pub(crate) struct ChangedHosts {
+    entries: Mutex<std::collections::BTreeSet<IpAddr>>,
+}
+
+impl ChangedHosts {
+    fn insert(&self, ip: IpAddr) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.insert(ip);
+    }
+
+    fn drain(&self) -> Vec<IpAddr> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries).into_iter().collect()
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct FailureLog {
     entries: Mutex<Vec<ScannerFailure>>,
@@ -477,6 +495,13 @@ pub struct ScanContext {
     /// Behind an `Arc` because a context is cloned once per strategy and the
     /// policy is read, never written, by all of them.
     pub(crate) exclusions: Arc<Exclusions>,
+    /// Which hosts have findings a journal has not written down yet.
+    ///
+    /// Marked by the same condition that fires [`ScanEvent::HostUpdated`], so
+    /// what a caller is told changed and what a journal writes down are one
+    /// decision. Bounded by the number of distinct hosts, which the store holds
+    /// anyway.
+    pub(crate) changed: Arc<ChangedHosts>,
     /// What became of each target, for a resume that must not skip one.
     ///
     /// Separate from the verdict a target receives: the engine gives an
@@ -547,6 +572,7 @@ impl ScanContext {
         drop(host);
 
         if changed || is_new {
+            self.changed.insert(ip);
             let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
         }
         is_new
@@ -666,6 +692,38 @@ impl ScanContext {
         &self.settlements
     }
 
+    /// Seeds the store with hosts an earlier sitting found.
+    ///
+    /// Merged rather than inserted, so a host this sitting has already seen
+    /// keeps both readings. The restored hosts are not marked as changed: they
+    /// came from the journal, and writing them straight back would be work with
+    /// nothing new in it.
+    pub fn restore_hosts(&self, hosts: &[Host]) {
+        for host in hosts {
+            let ip = host.primary_ip();
+            match self.store.get_mut(&ip) {
+                Some(mut existing) => existing.merge(host.clone()),
+                None => {
+                    self.store.insert(ip, host.clone());
+                }
+            }
+        }
+    }
+
+    /// Takes the hosts whose findings have changed since this was last called,
+    /// with their current state.
+    ///
+    /// For a journal writing findings down as a scan produces them. Draining
+    /// rather than reading, so a host is written once per change rather than
+    /// once per checkpoint for the rest of the run.
+    pub fn take_changed_hosts(&self) -> Vec<Host> {
+        self.changed
+            .drain()
+            .into_iter()
+            .filter_map(|ip| self.store.get(&ip).map(|host| host.clone()))
+            .collect()
+    }
+
     /// The strategy failures filed so far, left in place.
     ///
     /// The reading counterpart of [`record_failure`](Self::record_failure), and
@@ -749,6 +807,7 @@ impl ScanSession {
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             exclusions: Arc::new(exclusions),
+            changed: Arc::new(ChangedHosts::default()),
             settlements: Arc::new(Settlements::resuming(settled)),
         };
 

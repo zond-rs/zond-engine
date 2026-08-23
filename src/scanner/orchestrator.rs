@@ -41,6 +41,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::{OsDetection, ProbeTuning, ServiceDetection, ZondConfig};
 use crate::fingerprint::os;
+use crate::journal::cursor::Checkpoint;
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
 use crate::model::{
@@ -854,6 +855,7 @@ pub(super) async fn run_port_phase(
     ctx: &ScanContext,
     caps: ScanCapabilities,
     cfg: &ZondConfig,
+    settled: Checkpoint,
 ) {
     if target_map.is_empty() {
         return;
@@ -877,7 +879,9 @@ pub(super) async fn run_port_phase(
         None
     };
 
-    let dispatcher = super::dispatcher::Dispatcher::new(target_map);
+    // Numbered against the whole plan and filtered to what is left, so a
+    // resumed scan asks only about the targets an earlier sitting did not settle.
+    let dispatcher = super::dispatcher::Dispatcher::new(target_map).resuming(settled);
     let rx = dispatcher.run_shuffled(&ctx.handle);
 
     run_port_scan(built.scanner, rx, ctx).await;

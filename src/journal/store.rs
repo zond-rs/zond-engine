@@ -12,8 +12,14 @@
 //! <root>/<id>/
 //!     manifest.json   the plan, written once
 //!     cursor.json     how far the scan got, rewritten on a timer
+//!     hosts.jsonl     what it found, appended as it finds it
 //!     LOCK            who is writing, if anyone
 //! ```
+//!
+//! The cursor is rewritten because it describes one state; the findings are
+//! appended because they accumulate. A host that changes appears more than once,
+//! and the later record supersedes the earlier — which is what makes a torn tail
+//! survivable, since the worst it costs is one host's most recent update.
 //!
 //! [`Journal::create`] begins one, [`Journal::resume`] continues one, and
 //! [`list`] enumerates them for a caller offering a choice.
@@ -31,11 +37,14 @@ use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
 use super::manifest::{Manifest, PlanChanged};
 use super::settle::Settlements;
+use crate::model::host::Host;
 use crate::model::target::TargetMap;
 use crate::model::technique::TcpScanTechnique;
+use crate::record::HostRecord;
 
 const MANIFEST: &str = "manifest.json";
 const CURSOR: &str = "cursor.json";
+const HOSTS: &str = "hosts.jsonl";
 const LOCK: &str = "LOCK";
 
 /// Why a journal could not be opened for writing.
@@ -76,6 +85,7 @@ pub struct Journal {
     manifest: Manifest,
     lock: Lock,
     resume_point: Checkpoint,
+    restored: Vec<Host>,
 }
 
 impl Journal {
@@ -95,12 +105,17 @@ impl Journal {
         write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
 
         let lock = Lock::acquire(&directory.join(LOCK))?;
-        Ok(Self {
+        write_private(&directory.join(HOSTS), &[])?;
+
+        let mut journal = Self {
             directory,
             manifest,
             lock,
             resume_point: Checkpoint::default(),
-        })
+            restored: Vec::new(),
+        };
+        journal.open_findings()?;
+        Ok(journal)
     }
 
     /// Continues the journal at `directory`, refusing a plan that has moved or a
@@ -129,9 +144,48 @@ impl Journal {
                 manifest,
                 lock,
                 resume_point: checkpoint.clone(),
+                restored: read_findings(directory)?,
             },
             checkpoint,
         ))
+    }
+
+    /// What earlier sittings of this scan found.
+    ///
+    /// Empty for a journal just created. A scan seeds its store with these, so
+    /// the report it produces describes the whole job rather than the last
+    /// sitting of it.
+    pub fn restored(&self) -> &[Host] {
+        &self.restored
+    }
+
+    /// Appends what `hosts` currently hold.
+    ///
+    /// Called with whatever
+    /// [`take_changed_hosts`](crate::scanner::session::ScanContext::take_changed_hosts)
+    /// yields, so a host is written once per change rather than once per
+    /// checkpoint for the rest of the run.
+    pub fn record_hosts(&mut self, hosts: &[Host]) -> Result<(), JournalError> {
+        if hosts.is_empty() {
+            return Ok(());
+        }
+
+        let file = fs::OpenOptions::new()
+            .append(true)
+            .open(self.directory.join(HOSTS))?;
+
+        let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
+        for host in hosts {
+            writer.write(&HostRecord::from(host))?;
+        }
+        writer.flush()
+    }
+
+    /// Writes the findings file's header, so it is self-describing before
+    /// anything is appended to it.
+    fn open_findings(&mut self) -> Result<(), JournalError> {
+        let file = fs::File::create(self.directory.join(HOSTS))?;
+        crate::journal::format::Writer::create(std::io::BufWriter::new(file))?.flush()
     }
 
     /// What an earlier sitting settled, and this one may skip.
@@ -153,6 +207,20 @@ impl Journal {
             .checkpoint()
             .write_atomically(&self.directory.join(CURSOR))?;
         self.lock.beat()
+    }
+
+    /// Writes down what the scan has found and how far it has got.
+    ///
+    /// Findings first: a cursor claiming a target is settled, beside a file
+    /// missing what settling it produced, is the one ordering that loses a
+    /// finding. The other way round costs a target being probed twice.
+    pub fn record(
+        &mut self,
+        hosts: &[Host],
+        settlements: &Settlements,
+    ) -> Result<(), JournalError> {
+        self.record_hosts(hosts)?;
+        self.checkpoint(settlements)
     }
 
     /// What this journal is a journal of.
@@ -249,6 +317,43 @@ pub fn remove(directory: &Path) -> Result<(), OpenError> {
 
     fs::remove_dir_all(directory).map_err(JournalError::from)?;
     Ok(())
+}
+
+/// Reads back what a journal's earlier sittings found.
+///
+/// Records for one address are folded together with [`Host::merge`], so a host
+/// written once when it answered and again when its ports were classified comes
+/// back whole. A missing file is no findings rather than a failure: a journal
+/// can be read before its first host is written.
+fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
+    let file = match fs::File::open(directory.join(HOSTS)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut reader = match crate::journal::format::Reader::open(std::io::BufReader::new(file)) {
+        Ok(reader) => reader,
+        // A findings file with no header was never opened for writing, which
+        // is a journal that stopped before it found anything.
+        Err(JournalError::NotAJournal) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+
+    let mut hosts: std::collections::BTreeMap<std::net::IpAddr, Host> =
+        std::collections::BTreeMap::new();
+
+    while let Some(record) = reader.read::<HostRecord>()? {
+        let host = Host::from(&record);
+        match hosts.get_mut(&host.primary_ip()) {
+            Some(existing) => existing.merge(host),
+            None => {
+                hosts.insert(host.primary_ip(), host);
+            }
+        }
+    }
+
+    Ok(hosts.into_values().collect())
 }
 
 fn read_manifest(directory: &Path) -> Result<Manifest, JournalError> {
@@ -404,7 +509,7 @@ pub fn spawn_checkpoints(
                     // scan over: the previous one still stands, and the scan is
                     // still producing results. Reported through the same channel
                     // every other narrowing uses.
-                    if let Err(e) = journal.checkpoint(ctx.settlements()) {
+                    if let Err(e) = journal.record(&ctx.take_changed_hosts(), ctx.settlements()) {
                         ctx.record_failure(
                             crate::scanner::session::ScannerKind::Composite,
                             format!("journal checkpoint failed, so a resume would replay further back than it should: {e}"),
@@ -415,7 +520,7 @@ pub fn spawn_checkpoints(
             }
         }
 
-        let _ = journal.checkpoint(ctx.settlements());
+        let _ = journal.record(&ctx.take_changed_hosts(), ctx.settlements());
         let _ = journal.close();
     });
 
@@ -706,5 +811,94 @@ mod tests {
             carried.watermark, 3,
             "the second sitting must not roll the cursor back"
         );
+    }
+
+    /// Findings survive the journal, which is the point of writing them down.
+    #[test]
+    fn what_a_sitting_found_comes_back() {
+        use crate::model::host::HostStatus;
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let root = scratch("findings");
+        let map = plan("192.0.2.1-192.0.2.4", "80,443");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+
+            let mut host = Host::new("192.0.2.1".parse().expect("an address"));
+            host.set_status(HostStatus::Up);
+            host.set_hostname(Some("router.example".to_string()));
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+
+            journal.record_hosts(&[host]).expect("records");
+
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let (journal, _) =
+            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+
+        let restored = journal.restored();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].hostname(), Some("router.example"));
+        assert_eq!(restored[0].port_count(), 1);
+        assert!(restored[0].is_alive());
+    }
+
+    /// A host written more than once comes back whole rather than as its last
+    /// record alone: the scan that found it and the scan that classified its
+    /// ports both wrote, and both readings matter.
+    #[test]
+    fn repeated_records_for_one_host_are_folded_together() {
+        use crate::model::host::HostStatus;
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let root = scratch("folded");
+        let map = plan("192.0.2.1", "80");
+        let ip = "192.0.2.1".parse().expect("an address");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+
+            let mut found = Host::new(ip);
+            found.set_status(HostStatus::Up);
+            journal.record_hosts(&[found]).expect("the host answered");
+
+            let mut classified = Host::new(ip);
+            classified.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+            journal
+                .record_hosts(&[classified])
+                .expect("and then its ports");
+
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let (journal, _) =
+            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+
+        let restored = journal.restored();
+        assert_eq!(restored.len(), 1, "one address is one host");
+        assert!(restored[0].is_alive(), "the first record's status survived");
+        assert_eq!(restored[0].port_count(), 1, "the second record's port too");
+    }
+
+    /// A journal that stopped before it found anything reads as no findings, not
+    /// as a failure.
+    #[test]
+    fn a_journal_with_no_findings_restores_nothing() {
+        let root = scratch("no-findings");
+        let map = plan("192.0.2.1", "80");
+
+        let journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let (journal, _) =
+            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+        assert!(journal.restored().is_empty());
     }
 }

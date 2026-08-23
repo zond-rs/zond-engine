@@ -285,17 +285,49 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
         0,
         "the first sitting settled everything, so there is nothing to ask again"
     );
+    let _ = &checkpoint;
 
     let (_session, task) = zond_engine::scanner::scan_with_journal(plan.clone(), &cfg, journal)
         .await
         .expect("the second sitting starts");
-    let _ = task.join().await.expect("it finishes");
+    let second = task.join().await.expect("it finishes");
 
     let listed = zond_engine::journal::store::list(&root).expect("lists");
     assert_eq!(
         listed[0].settled(),
         4,
         "a sitting that asked nothing must still carry the first one's progress"
+    );
+
+    // **The two properties this feature exists for**, and neither is visible
+    // from the report's host list alone.
+    //
+    // First: the second sitting asked about nothing. Observed as probes sent,
+    // because a resumed scan that quietly re-probed everything would produce an
+    // identical report and only this number would show it.
+    let sent: u64 = second
+        .phases()
+        .iter()
+        .flat_map(|phase| phase.probe_stats())
+        .map(|probes| probes.sends_attempted())
+        .sum();
+    assert_eq!(
+        sent, 0,
+        "the first sitting settled every target, so the second must send nothing"
+    );
+
+    // Second: it still reports what the first sitting found.
+    assert_eq!(
+        second.host_count(),
+        1,
+        "a resumed scan must report what earlier sittings found, not only its own"
+    );
+    let host = second.hosts().next().expect("the host survived");
+    assert_eq!(
+        host.port_count(),
+        4,
+        "and their ports: {:?}",
+        host.ports().map(|p| p.number()).collect::<Vec<_>>()
     );
 
     std::fs::remove_dir_all(&root).ok();
