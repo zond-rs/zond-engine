@@ -68,6 +68,7 @@ pub mod icmp;
 pub mod ip;
 pub mod mdns;
 pub mod ndp;
+pub mod sctp;
 pub mod sizes;
 pub mod tcp;
 pub mod udp;

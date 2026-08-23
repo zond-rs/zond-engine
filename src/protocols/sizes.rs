@@ -54,6 +54,14 @@ pub const TCP_HDR_LEN: usize = 20;
 /// A UDP header: source port, destination port, length, checksum.
 pub const UDP_HDR_LEN: usize = 8;
 
+/// An SCTP common header: source port, destination port, verification tag, and
+/// the CRC32c checksum. The chunks follow it.
+pub const SCTP_COMMON_HDR_LEN: usize = 12;
+
+/// An SCTP chunk header: type, flags, and a length that counts these four bytes
+/// and the value after them, but not the padding to a four-byte boundary.
+pub const SCTP_CHUNK_HDR_LEN: usize = 4;
+
 /// The shortest Ethernet frame that may legally go out, excluding the frame
 /// check sequence the hardware appends.
 ///

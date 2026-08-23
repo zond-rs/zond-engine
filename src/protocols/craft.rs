@@ -102,7 +102,8 @@ use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
 
 use crate::protocols::error::{PacketError, Result};
 use crate::protocols::sizes::{
-    ARP_LEN, ETH_HDR_LEN, ICMP_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN, TCP_HDR_LEN, UDP_HDR_LEN,
+    ARP_LEN, ETH_HDR_LEN, ICMP_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN, SCTP_COMMON_HDR_LEN,
+    TCP_HDR_LEN, UDP_HDR_LEN,
 };
 
 /// TCP header flag bits, re-exported so a caller building a [`Tcp`] header does
@@ -557,6 +558,75 @@ impl Udp {
     }
 }
 
+/// An SCTP packet: the twelve-byte common header and the chunks after it.
+///
+/// The one transport here whose checksum is not the internet checksum. SCTP
+/// carries a CRC32c (RFC 3309, RFC 4960 §6.8) over the whole packet with no
+/// pseudo-header, so unlike [`Tcp`] and [`Udp`] it depends on nothing outside
+/// itself and [`to_bytes`](Self::to_bytes) takes no addresses.
+///
+/// Chunks are carried already encoded, in [`chunks`](Self::chunks): building an
+/// INIT or any other chunk is [`sctp`](super::sctp)'s job, and this type owns
+/// only the common header and the one derived field worth getting wrong on
+/// purpose, the [`checksum`](Self::checksum).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sctp {
+    /// The port the packet claims to come from.
+    pub source_port: u16,
+    /// The port it is aimed at.
+    pub destination_port: u16,
+    /// The association's verification tag, zero in a packet carrying an INIT
+    /// (RFC 4960 §8.5.1).
+    pub verification_tag: u32,
+    /// The CRC32c over the whole packet. Computed, and written little-endian per
+    /// RFC 4960 §6.8.
+    pub checksum: Field<u32>,
+    /// The chunks after the common header, already encoded.
+    pub chunks: Vec<u8>,
+}
+
+impl Sctp {
+    /// A bare packet from `source_port` to `destination_port`: verification tag
+    /// zero, no chunks, checksum left for the builder.
+    pub fn new(source_port: u16, destination_port: u16) -> Self {
+        Self {
+            source_port,
+            destination_port,
+            verification_tag: 0,
+            checksum: Field::Computed,
+            chunks: Vec::new(),
+        }
+    }
+
+    /// Sets the verification tag.
+    #[must_use]
+    pub fn with_verification_tag(mut self, verification_tag: u32) -> Self {
+        self.verification_tag = verification_tag;
+        self
+    }
+
+    /// Attaches the already-encoded chunks after the common header.
+    #[must_use]
+    pub fn with_chunks(mut self, chunks: impl Into<Vec<u8>>) -> Self {
+        self.chunks = chunks.into();
+        self
+    }
+
+    /// Writes `checksum` instead of computing one.
+    #[must_use]
+    pub fn with_checksum(mut self, checksum: u32) -> Self {
+        self.checksum = Field::Exact(checksum);
+        self
+    }
+
+    /// This packet's bytes. The SCTP counterpart of [`Tcp::to_bytes`], and
+    /// simpler: the CRC32c covers no pseudo-header, so there are no addresses to
+    /// pass and nothing that can mismatch.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        write_sctp(self, Vec::new())
+    }
+}
+
 /// An ICMPv4 message.
 ///
 /// The four bytes after the checksum mean different things to different message
@@ -872,6 +942,8 @@ pub enum Layer {
     Tcp(Tcp),
     /// A UDP header and its payload.
     Udp(Udp),
+    /// An SCTP packet and its chunks.
+    Sctp(Sctp),
     /// An ICMPv4 message.
     Icmpv4(Icmpv4),
     /// An ICMPv6 message.
@@ -898,6 +970,7 @@ layer_from!(
     Ipv6(Ipv6),
     Tcp(Tcp),
     Udp(Udp),
+    Sctp(Sctp),
     Icmpv4(Icmpv4),
     Icmpv6(Icmpv6),
     Arp(Arp),
@@ -911,6 +984,7 @@ impl Layer {
         match self {
             Self::Tcp(_) => Some(IpNextHeaderProtocols::Tcp),
             Self::Udp(_) => Some(IpNextHeaderProtocols::Udp),
+            Self::Sctp(_) => Some(IpNextHeaderProtocols::Sctp),
             Self::Icmpv4(_) => Some(IpNextHeaderProtocols::Icmp),
             Self::Icmpv6(_) => Some(IpNextHeaderProtocols::Icmpv6),
             _ => None,
@@ -1014,6 +1088,7 @@ fn write_layer(
         Layer::Ipv6(header) => write_ipv6(header, payload, inner),
         Layer::Tcp(header) => write_tcp(header, payload, addresses),
         Layer::Udp(header) => write_udp(header, payload, addresses),
+        Layer::Sctp(header) => Ok(write_sctp(header, payload)),
         Layer::Icmpv4(message) => Ok([message.to_bytes(), payload].concat()),
         Layer::Icmpv6(message) => Ok([message.to_bytes(addresses)?, payload].concat()),
         Layer::Arp(packet) => Ok([packet.to_bytes(), payload].concat()),
@@ -1220,6 +1295,63 @@ fn transport_checksum(
         Some((IpAddr::V6(src), IpAddr::V6(dst))) => Ok(v6(&src, &dst)),
         Some((src, dst)) => Err(PacketError::FamilyMismatch { src, dst }),
     }
+}
+
+fn write_sctp(header: &Sctp, payload: Vec<u8>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(SCTP_COMMON_HDR_LEN + header.chunks.len() + payload.len());
+    bytes.extend_from_slice(&header.source_port.to_be_bytes());
+    bytes.extend_from_slice(&header.destination_port.to_be_bytes());
+    bytes.extend_from_slice(&header.verification_tag.to_be_bytes());
+    bytes.extend_from_slice(&[0; 4]); // checksum, filled once the packet is whole
+    bytes.extend_from_slice(&header.chunks);
+    bytes.extend_from_slice(&payload);
+
+    // Computed over the packet with the field zeroed — which it is — and written
+    // little-endian: the byte order RFC 4960 §6.8 puts the CRC on the wire in,
+    // and the single most common way an SCTP checksum comes out wrong.
+    let sum = header.checksum.resolve(|| crc32c(&bytes));
+    bytes[8..12].copy_from_slice(&sum.to_le_bytes());
+    bytes
+}
+
+/// The CRC32c reduction table, one entry per input byte.
+///
+/// Built at compile time from the reflected polynomial `0x82F6_3B78`, the
+/// bit-reversal of the `0x1EDC_6F41` in RFC 3309 — the reflected form is what
+/// goes with the reflected input and output the reduction below uses.
+static CRC32C_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let mut crc = byte as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x82F6_3B78
+            } else {
+                crc >> 1
+            };
+            bit += 1;
+        }
+        table[byte] = crc;
+        byte += 1;
+    }
+    table
+};
+
+/// The CRC32c (Castagnoli) of `data`, the checksum SCTP carries (RFC 3309).
+///
+/// The standard CRC-32C/iSCSI parameters — reflected in and out, initialised to
+/// all-ones and finished by complementing — so this is the value that goes in
+/// the SCTP checksum field, little-endian; see [`write_sctp`]. Shared with
+/// [`sctp`](super::sctp) rather than reimplemented there, so a probe and a
+/// hand-built packet cannot come to disagree about what the checksum is.
+pub(crate) fn crc32c(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in data {
+        crc = (crc >> 8) ^ CRC32C_TABLE[((crc ^ u32::from(byte)) & 0xFF) as usize];
+    }
+    !crc
 }
 
 // ╔════════════════════════════════════════════╗
@@ -1522,5 +1654,64 @@ mod tests {
             Ipv4Packet::new(&bytes).expect("header").get_total_length(),
             24
         );
+    }
+
+    // ── SCTP ─────────────────────────────────────────────────────────────────
+
+    /// The one non-circular anchor for the whole CRC32c path: the check value
+    /// RFC 3309 and the CRC-32C/iSCSI definition both publish for the ASCII
+    /// digits "123456789". A wrong polynomial or a missing reflection fails
+    /// here rather than by silently disagreeing with every real stack.
+    #[test]
+    fn crc32c_matches_the_published_check_value() {
+        assert_eq!(crc32c(b"123456789"), 0xE306_9283);
+    }
+
+    /// SCTP writes its checksum little-endian (RFC 4960 §6.8), which is the
+    /// classic way to get it wrong. The stored field is the CRC's little-endian
+    /// bytes, computed over the packet with the field zeroed — and, since the
+    /// value is byte-order-sensitive, demonstrably not its big-endian bytes.
+    #[test]
+    fn an_sctp_checksum_is_written_little_endian_over_a_zeroed_field() {
+        let bytes = Sctp::new(50_000, 9)
+            .with_chunks(vec![1, 0, 0, 4]) // a minimal well-formed chunk header
+            .to_bytes();
+
+        let mut zeroed = bytes.clone();
+        zeroed[8..12].copy_from_slice(&[0; 4]);
+        let crc = crc32c(&zeroed);
+
+        assert_eq!(&bytes[8..12], &crc.to_le_bytes());
+        assert_ne!(
+            &bytes[8..12],
+            &crc.to_be_bytes(),
+            "little-endian, not big — the check value makes the two differ"
+        );
+    }
+
+    /// The enclosing IP header names SCTP for itself, so a caller stacking one
+    /// does not have to remember protocol 132.
+    #[test]
+    fn an_ip_header_names_the_sctp_inside_it() {
+        let bytes = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Sctp::new(50_000, 9).with_chunks(vec![1, 0, 0, 4]))
+            .build()
+            .expect("builds");
+
+        assert_eq!(
+            Ipv4Packet::new(&bytes)
+                .expect("header")
+                .get_next_level_protocol(),
+            IpNextHeaderProtocols::Sctp
+        );
+    }
+
+    /// The malformed-packet story reaches SCTP too: an exact checksum is written
+    /// as given, which is what probing a stack's CRC validation needs.
+    #[test]
+    fn a_deliberately_wrong_sctp_checksum_survives_to_the_wire() {
+        let bytes = Sctp::new(50_000, 9).with_checksum(0).to_bytes();
+        assert_eq!(&bytes[8..12], &[0; 4]);
     }
 }
