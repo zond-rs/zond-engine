@@ -1646,4 +1646,43 @@ mod tests {
             assert_eq!(record, read);
         }
     }
+
+    /// What a scan measured has to come back as what a scan measured.
+    ///
+    /// A replayed report is rendered by the same code the live run used, so
+    /// anything the record drops shows up as a *quieter* report rather than as
+    /// an error — fewer protocols behind a host, a round trip with no spread.
+    /// That is the failure mode this guards.
+    #[test]
+    fn a_hosts_measurements_survive_the_round_trip() {
+        use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+        use std::time::Duration;
+
+        let mut host = Host::new("192.0.2.1".parse().expect("an address"));
+        host.set_status(HostStatus::Up);
+
+        for protocol in [
+            StatusProtocol::Arp,
+            StatusProtocol::IcmpEcho,
+            StatusProtocol::TcpSyn,
+        ] {
+            host.record_evidence(HostStatus::Up, StatusReason::new(protocol, "answered"));
+        }
+        host.add_rtts([
+            Duration::from_micros(5_100),
+            Duration::from_micros(6_060),
+            Duration::from_micros(6_540),
+        ]);
+
+        let restored = Host::from(&HostRecord::from(&host));
+
+        assert_eq!(
+            restored.reasons().len(),
+            host.reasons().len(),
+            "a protocol that answered was lost"
+        );
+        assert_eq!(restored.min_rtt(), host.min_rtt(), "the fastest round trip");
+        assert_eq!(restored.max_rtt(), host.max_rtt(), "the slowest");
+        assert_eq!(restored.average_rtt(), host.average_rtt(), "the mean");
+    }
 }

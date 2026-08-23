@@ -18,9 +18,11 @@
 use std::net::IpAddr;
 
 use crate::journal::cursor::Checkpoint;
+use crate::journal::settle::Outcome;
 use crate::model::ip::set::IpSet;
 use crate::model::target::{PlannedTarget, TargetMap};
 use crate::scanner::handle::ScanHandle;
+use crate::scanner::session::ScanContext;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 
@@ -91,6 +93,13 @@ pub struct Dispatcher {
     /// subset, and renumbering it would give position 0 to whatever happens to
     /// be left. The two sittings would then be counting different things.
     settled: Checkpoint,
+    /// The addresses the liveness pass found something at, when one ran.
+    ///
+    /// Filtered here rather than by narrowing the plan, for the same reason
+    /// `settled` is. Which hosts answer is a property of the network on the day,
+    /// so a plan narrowed to them is a different plan every sitting — and a
+    /// position counted in one of those means a different target in the next.
+    live: Option<IpSet>,
 }
 
 impl Dispatcher {
@@ -100,6 +109,7 @@ impl Dispatcher {
             target_map,
             batch_size: 8192,
             settled: Checkpoint::default(),
+            live: None,
         }
     }
 
@@ -110,6 +120,24 @@ impl Dispatcher {
     /// is what refuses one that was not.
     pub fn resuming(mut self, settled: Checkpoint) -> Self {
         self.settled = settled;
+        self
+    }
+
+    /// Emits only the targets whose address is in `live`, settling the rest as
+    /// [`Skipped`](crate::journal::settle::Outcome::Skipped).
+    ///
+    /// For the port phase of a scan that established which hosts are there
+    /// first. A target whose host answered nothing is not one the scan failed
+    /// to ask about — the scan asked whether the host was there, heard nothing,
+    /// and declined to spend a probe on each of its ports. That decision is
+    /// evidence, and a resume that had to re-derive it would ask the network a
+    /// question it already answered.
+    ///
+    /// Without this the plan would have to be narrowed to the live hosts before
+    /// numbering, which is what made a position mean something different in
+    /// every sitting.
+    pub fn only_live(mut self, live: IpSet) -> Self {
+        self.live = Some(live);
         self
     }
 
@@ -127,9 +155,10 @@ impl Dispatcher {
     /// the next batch while the current one is still being consumed without letting
     /// the buffer grow without bound. The task stops early if the receiver is
     /// dropped or `scan_handle` signals a stop.
-    pub fn run_shuffled(self, scan_handle: &ScanHandle) -> mpsc::Receiver<PlannedTarget> {
+    pub fn run_shuffled(self, ctx: &ScanContext) -> mpsc::Receiver<PlannedTarget> {
         let (tx, rx) = mpsc::channel(self.batch_size * 2);
-        let scan_handle = scan_handle.clone();
+        let scan_handle = ctx.handle.clone();
+        let ctx = ctx.clone();
 
         tokio::spawn(async move {
             let mut batch = Vec::with_capacity(self.batch_size);
@@ -138,6 +167,19 @@ impl Dispatcher {
             // downstream has to re-derive a position. Shuffling below permutes
             // the order targets are *asked* in and never the numbering.
             for planned in self.settled.remaining(self.target_map.iter()) {
+                // Settled where it stands rather than emitted: the position is
+                // known here and nowhere downstream, and a target dropped
+                // without one would stall the watermark on it for the rest of
+                // the job.
+                if let Some(live) = &self.live
+                    && !live.contains(&planned.target.ip)
+                {
+                    ctx.record_outcome(Outcome::Skipped {
+                        position: planned.position,
+                    });
+                    continue;
+                }
+
                 batch.push(planned);
 
                 if batch.len() >= self.batch_size {
@@ -181,7 +223,13 @@ mod tests {
     use crate::model::port::PortSet;
     use crate::model::target::Target;
     use crate::model::target::TargetSet;
+    use crate::scanner::session::ScanSession;
     use std::net::IpAddr;
+
+    /// A context to dispatch against, and the session that keeps it alive.
+    fn context() -> (ScanSession, ScanContext) {
+        ScanSession::new()
+    }
 
     #[tokio::test]
     async fn dispatcher_emits_all_targets_shuffled() {
@@ -191,9 +239,9 @@ mod tests {
         let unit = TargetSet::new(ip_set, port_set);
         target_map.units.push(unit);
 
-        let handle = ScanHandle::new();
+        let (_session, ctx) = context();
         let dispatcher = Dispatcher::new(target_map).with_batch_size(4);
-        let mut rx = dispatcher.run_shuffled(&handle);
+        let mut rx = dispatcher.run_shuffled(&ctx);
 
         let mut received = Vec::new();
         while let Some(target) = rx.recv().await {
@@ -231,10 +279,10 @@ mod tests {
 
         let expected: Vec<Target> = target_map.iter().collect();
 
-        let handle = ScanHandle::new();
+        let (_session, ctx) = context();
         let mut rx = Dispatcher::new(target_map.clone())
             .with_batch_size(4)
-            .run_shuffled(&handle);
+            .run_shuffled(&ctx);
 
         let mut received = Vec::new();
         while let Some(target) = rx.recv().await {
@@ -265,18 +313,115 @@ mod tests {
         let unit = TargetSet::new(ip_set, port_set);
         target_map.units.push(unit);
 
-        let handle = ScanHandle::new();
+        let (_session, ctx) = context();
         let dispatcher = Dispatcher::new(target_map).with_batch_size(10);
-        let mut rx = dispatcher.run_shuffled(&handle);
+        let mut rx = dispatcher.run_shuffled(&ctx);
 
         let mut count = 0;
         while let Some(_target) = rx.recv().await {
             count += 1;
             if count == 15 {
-                handle.abort();
+                ctx.handle.abort();
             }
         }
 
         assert!((15..100).contains(&count));
+    }
+
+    /// **The property the liveness filter exists to keep.**
+    ///
+    /// Which hosts answer is a fact about the network on the day, so a plan
+    /// narrowed to them is a different plan every sitting. Numbering has to
+    /// survive that: an address must hold the same position whether its
+    /// neighbour answered or not, or a checkpoint written in one sitting names
+    /// different targets in the next and the resume skips something nothing
+    /// probed.
+    #[tokio::test]
+    async fn liveness_never_moves_a_position() {
+        let plan = || {
+            let mut map = TargetMap::new();
+            map.add_unit(TargetSet::new(
+                "192.0.2.1-192.0.2.4".parse::<IpSet>().expect("a range"),
+                "80".parse::<PortSet>().expect("ports"),
+            ));
+            map
+        };
+
+        // Two sittings of one job, disagreeing about which hosts are there.
+        let one = numbered(plan(), Some("192.0.2.4".parse().expect("a range"))).await;
+        let two = numbered(
+            plan(),
+            Some("192.0.2.2-192.0.2.4".parse().expect("a range")),
+        )
+        .await;
+        let all = numbered(plan(), None).await;
+
+        for emitted in [&one, &two] {
+            for (ip, position) in emitted {
+                assert_eq!(
+                    all.get(ip),
+                    Some(position),
+                    "{ip} moved when the liveness answer changed"
+                );
+            }
+        }
+
+        assert_eq!(one.len(), 1, "one host answered");
+        assert_eq!(two.len(), 3);
+    }
+
+    /// A target whose host answered nothing is settled where it stands. Dropped
+    /// without a position it would stall the watermark on itself for the rest of
+    /// the job, and a scan of a range where most addresses are empty would stop
+    /// being resumable past the out-of-order window.
+    #[tokio::test]
+    async fn a_target_whose_host_is_down_settles_rather_than_vanishing() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1-192.0.2.4".parse::<IpSet>().expect("a range"),
+            "80".parse::<PortSet>().expect("ports"),
+        ));
+
+        let (_session, ctx) = context();
+        let mut rx = Dispatcher::new(map)
+            .only_live("192.0.2.4".parse::<IpSet>().expect("a range"))
+            .run_shuffled(&ctx);
+
+        let mut emitted = 0;
+        while rx.recv().await.is_some() {
+            emitted += 1;
+        }
+
+        assert_eq!(emitted, 1, "only the live host is probed");
+        assert_eq!(
+            ctx.settlements().count(Outcome::Skipped { position: 0 }),
+            3,
+            "the three that were not probed have to be accounted for"
+        );
+        assert_eq!(
+            ctx.settlements().checkpoint().watermark,
+            3,
+            "and their positions are the ones below the live host"
+        );
+    }
+
+    /// Every target the dispatcher emitted, by address, with the position it
+    /// carried. `live` narrows what is emitted and must never renumber it.
+    async fn numbered(
+        map: TargetMap,
+        live: Option<IpSet>,
+    ) -> std::collections::HashMap<IpAddr, u64> {
+        let (_session, ctx) = context();
+        let mut dispatcher = Dispatcher::new(map);
+        if let Some(live) = live {
+            dispatcher = dispatcher.only_live(live);
+        }
+
+        let mut rx = dispatcher.run_shuffled(&ctx);
+        let mut found = std::collections::HashMap::new();
+        while let Some(planned) = rx.recv().await {
+            found.insert(planned.target.ip, planned.position);
+        }
+        found
     }
 }

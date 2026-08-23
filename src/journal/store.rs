@@ -1501,6 +1501,65 @@ mod tests {
         let _ = fs::set_permissions(directory.join(CURSOR), fs::Permissions::from_mode(0o600));
     }
 
+    /// **What a scan learns after its last checkpoint has to reach the file.**
+    ///
+    /// The enrichment passes — OS identification, the echo probe, traceroute —
+    /// run at the very end of a scan, often after the last timer checkpoint has
+    /// already drained what changed. If the closing write misses them, a
+    /// replayed report is quieter than the run that made it: a protocol missing
+    /// from the evidence, a round trip with no spread. Nothing errors, so only a
+    /// test comparing the two would notice.
+    #[tokio::test]
+    async fn what_a_scan_learns_after_a_checkpoint_still_reaches_the_file() {
+        use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+
+        let root = scratch("late-findings");
+        let map = plan("192.0.2.1", "80");
+        let journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let ticker = spawn_checkpoints(journal, ctx.progress());
+
+        // What the liveness pass found.
+        let ip = "192.0.2.1".parse().expect("an address");
+        ctx.update_host(ip, |host| {
+            host.set_status(HostStatus::Up);
+            host.record_evidence(
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::Arp, "answered"),
+            );
+        });
+
+        // A checkpoint lands, taking that and leaving nothing behind. Real
+        // time rather than a paused clock, which would need `tokio/test-util`
+        // for one test — and the interval is three seconds, not three minutes.
+        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
+
+        // And then the enrichment finds something else, as it does.
+        ctx.update_host(ip, |host| {
+            host.record_evidence(
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::IcmpEcho, "echo answered"),
+            );
+        });
+
+        ticker.finish(&[]).await;
+
+        let restored = read_findings(&directory).expect("reads");
+        assert_eq!(restored.len(), 1, "one host was scanned");
+
+        let protocols: Vec<_> = restored[0]
+            .reasons()
+            .iter()
+            .map(|reason| reason.protocol.clone())
+            .collect();
+        assert!(
+            protocols.contains(&StatusProtocol::IcmpEcho),
+            "what the scan learned last was lost: {protocols:?}"
+        );
+    }
+
     fn aged(id: &str, created_at: SystemTime, settled: u64, total: u128) -> Entry {
         Entry {
             directory: PathBuf::from(id),

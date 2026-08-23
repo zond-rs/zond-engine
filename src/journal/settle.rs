@@ -25,6 +25,7 @@
 //! |---|---|---|
 //! | [`Answered`](Outcome::Answered) | `ledger.resolve(..) -> Some` | yes |
 //! | [`Exhausted`](Outcome::Exhausted) | `Due::Exhausted` | yes |
+//! | [`Skipped`](Outcome::Skipped) | the liveness pass found no host | yes |
 //! | [`Interrupted`](Outcome::Interrupted) | `ledger.drain_unresolved()` | no |
 //! | [`Unasked`](Outcome::Unasked) | still queued when the scan stopped | no |
 //! | [`Unroutable`](Outcome::Unroutable) | no scanner for the protocol, or no route | no |
@@ -85,6 +86,26 @@ pub enum Outcome {
         position: u64,
     },
 
+    /// Its host answered nothing in the liveness pass, so no probe was owed.
+    ///
+    /// **Settled**, and the one settled outcome no probe was sent for. The
+    /// evidence is still earned: the scan asked whether the host was there and
+    /// heard nothing, and declining to spend a probe per port on a host that is
+    /// not there is work it *decided against* rather than work it missed. That
+    /// is the difference between this and [`Unasked`](Outcome::Unasked).
+    ///
+    /// It follows that a resumed scan does not revisit those ports even if the
+    /// host answers next time. A resume continues one job, and that job's
+    /// finding about the host was that it was down; asking again is a new scan,
+    /// which is the same argument
+    /// [`Manifest`](crate::journal::manifest::Manifest) makes about a plan that
+    /// has moved. [`ZondConfig::assume_up`](crate::config::ZondConfig::assume_up)
+    /// is how a caller declines the whole bargain.
+    Skipped {
+        /// Its position in the plan.
+        position: u64,
+    },
+
     /// Outstanding mid-retry-schedule when the scan stopped. The schedule was
     /// cut off rather than spent.
     Interrupted,
@@ -103,7 +124,9 @@ impl Outcome {
     /// one.
     pub fn settled_position(self) -> Option<u64> {
         match self {
-            Outcome::Answered { position } | Outcome::Exhausted { position } => Some(position),
+            Outcome::Answered { position }
+            | Outcome::Exhausted { position }
+            | Outcome::Skipped { position } => Some(position),
             Outcome::Interrupted | Outcome::Unasked | Outcome::Unroutable => None,
         }
     }
@@ -118,6 +141,7 @@ impl Outcome {
         match self {
             Outcome::Answered { .. } => "answered",
             Outcome::Exhausted { .. } => "exhausted",
+            Outcome::Skipped { .. } => "skipped",
             Outcome::Interrupted => "interrupted",
             Outcome::Unasked => "unasked",
             Outcome::Unroutable => "unroutable",
@@ -135,6 +159,7 @@ pub struct Settlements {
     cursor: Mutex<Cursor>,
     answered: AtomicU64,
     exhausted: AtomicU64,
+    skipped: AtomicU64,
     interrupted: AtomicU64,
     unasked: AtomicU64,
     unroutable: AtomicU64,
@@ -194,6 +219,7 @@ impl Settlements {
         match outcome {
             Outcome::Answered { .. } => &self.answered,
             Outcome::Exhausted { .. } => &self.exhausted,
+            Outcome::Skipped { .. } => &self.skipped,
             Outcome::Interrupted => &self.interrupted,
             Outcome::Unasked => &self.unasked,
             Outcome::Unroutable => &self.unroutable,
@@ -230,6 +256,8 @@ mod tests {
             Outcome::Exhausted { position: 7 }.settled_position(),
             Some(7)
         );
+
+        assert_eq!(Outcome::Skipped { position: 7 }.settled_position(), Some(7));
 
         for assigned in [Outcome::Interrupted, Outcome::Unasked, Outcome::Unroutable] {
             assert_eq!(assigned.settled_position(), None, "{}", assigned.name());

@@ -115,7 +115,8 @@ use crate::config::ZondConfig;
 use crate::journal::cursor::Checkpoint;
 use crate::model::{ip::set::IpSet, target::TargetMap};
 use crate::scanner::orchestrator::{
-    Enrichment, ScanCapabilities, finish_enrichment, only_live, run_port_phase, target_ips,
+    Enrichment, ScanCapabilities, finish_enrichment, live_addresses, probed_subset, run_port_phase,
+    target_ips,
 };
 use crate::scanner::report::{PhaseRecorder, ScanKind, ScanPhase, ScanReport, TargetScope};
 use crate::scanner::session::{ScanContext, ScanSession, ScannerKind};
@@ -573,7 +574,7 @@ pub async fn scan_with_journal(
 /// `settled` is what an earlier sitting already covered, and is empty for a scan
 /// that is not continuing one.
 fn spawn_scan(
-    target_map: TargetMap,
+    mut target_map: TargetMap,
     cfg: &ZondConfig,
     ctx: ScanContext,
     settled: Checkpoint,
@@ -583,8 +584,13 @@ fn spawn_scan(
 
     tokio::spawn(async move {
         // Phase one: which of these addresses has anything at it.
-        let (liveness, mut target_map) = if cfg.assume_up {
-            (None, target_map)
+        //
+        // The answer narrows what is *probed*, never what is counted: the plan
+        // stays whole, and the targets of a host that answered nothing are
+        // settled at their own positions by the dispatcher. See
+        // `Outcome::Skipped`.
+        let (liveness, live) = if cfg.assume_up {
+            (None, None)
         } else {
             let mut ips = target_ips(&target_map);
             let scope = TargetScope::from_ip_set(&mut ips, &cfg.exclusions);
@@ -595,17 +601,28 @@ fn spawn_scan(
             run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx).await;
 
             let report = recorder.finish(&ctx);
-            let live = only_live(&target_map, &ctx);
-            (Some(report), live)
+            (Some(report), Some(live_addresses(&ctx)))
         };
 
-        // Phase two: the ports, on whatever answered. The exclusion policy is
-        // applied again rather than trusted from above, because `assume_up`
-        // skips the phase above entirely.
-        let scope = TargetScope::from_target_map(&mut target_map, &cfg.exclusions);
+        // Phase two: the ports. The exclusion policy is applied again rather
+        // than trusted from above, because `assume_up` skips the phase above
+        // entirely.
+        //
+        // The scope is what this phase *covered*, so it is taken over the live
+        // subset — a reader compares it against phase one's to see how much of
+        // what they asked about went unprobed. The dispatcher below is handed
+        // the whole plan, because that is what its positions are counted in.
+        // Two questions, and they were one number until a resume needed them
+        // apart.
+        let mut covered = match &live {
+            Some(live) => probed_subset(&target_map, live),
+            None => target_map.clone(),
+        };
+        let scope = TargetScope::from_target_map(&mut covered, &cfg.exclusions);
+        crate::model::exclusion::Exclusions::withhold_targets(&cfg.exclusions, &mut target_map);
         let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, &cfg);
 
-        run_port_phase(target_map, &ctx, caps, &cfg, settled).await;
+        run_port_phase(target_map, live, &ctx, caps, &cfg, settled).await;
 
         // Ordered by what each pass leaves the next. The series probe takes
         // every host with a TCP answer, so the echo probe is left with the

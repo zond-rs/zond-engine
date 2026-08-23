@@ -545,10 +545,13 @@ pub struct ScanContext {
     pub(crate) exclusions: Arc<Exclusions>,
     /// Which hosts have findings a journal has not written down yet.
     ///
-    /// Marked by the same condition that fires [`ScanEvent::HostUpdated`], so
-    /// what a caller is told changed and what a journal writes down are one
-    /// decision. Bounded by the number of distinct hosts, which the store holds
-    /// anyway.
+    /// Marked on every write, which is deliberately *not* the condition that
+    /// fires [`ScanEvent::HostUpdated`]. A watcher is told about novelty and a
+    /// journal records state, and the two part company exactly where it matters:
+    /// an enrichment pass adding evidence to a host already announced has
+    /// nothing new to say and a great deal to write down.
+    ///
+    /// Bounded by the number of distinct hosts, which the store holds anyway.
     pub(crate) changed: Arc<ChangedHosts>,
     /// What became of each target, for a resume that must not skip one.
     ///
@@ -630,11 +633,24 @@ impl ScanContext {
             is_new = true;
             Host::new(ip)
         });
-        let changed = edit(&mut host);
+        let announce = edit(&mut host);
         drop(host);
 
-        if changed || is_new {
-            self.changed.insert(ip);
+        // Marked whether or not the edit asked to be announced. `edit` was
+        // handed a `&mut Host` and may have moved the record however it
+        // answered, and a journal that missed that would give back a quieter
+        // host than the scan found.
+        //
+        // **These are two questions, and they were one for a while.** What a
+        // watcher is told is about novelty — a host already announced does not
+        // need announcing again, which is why the echo probe answers `false`
+        // for a host that was already up. What a journal writes is about state,
+        // and that probe had just added an `icmp_echo` reason and a round trip
+        // to it. Sharing the boolean silently dropped both from every recorded
+        // scan.
+        self.changed.insert(ip);
+
+        if announce || is_new {
             let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
         }
         is_new
@@ -973,6 +989,7 @@ impl ScanSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 
     /// The gate, at the one place every finding in the engine passes through.
     ///
@@ -1106,5 +1123,53 @@ mod tests {
         // A fresh session has nothing inherited.
         let (_session, fresh) = ScanSession::new();
         assert_eq!(fresh.settlements().settled_count(), 0);
+    }
+
+    /// **What a watcher is told and what a journal writes are two questions.**
+    ///
+    /// An enrichment pass adding evidence to a host already announced answers
+    /// `false`: there is nothing new to tell somebody watching a scan, and the
+    /// echo probe says exactly that for a host the liveness pass already found.
+    /// The record still moved, and a journal that took the same answer would
+    /// give back a host missing whatever the pass learned.
+    #[test]
+    fn a_write_nobody_needs_announcing_is_still_a_write() {
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+        let (mut session, ctx) = ScanSession::new();
+
+        // Found, announced, and written down.
+        ctx.update_host(ip, |host| host.set_status(HostStatus::Up));
+        assert_eq!(ctx.take_changed_hosts().len(), 1);
+        assert!(
+            session.events().try_recv().is_some(),
+            "a new host is announced"
+        );
+
+        // And then enriched, which is worth writing and not worth announcing.
+        ctx.write_host(ip, |host| {
+            host.record_evidence(
+                HostStatus::Up,
+                StatusReason::new(StatusProtocol::IcmpEcho, "echo reply to an OS probe"),
+            );
+            false
+        });
+
+        let changed = ctx.take_changed_hosts();
+        assert_eq!(
+            changed.len(),
+            1,
+            "the record moved, so a journal has something to write"
+        );
+        assert!(
+            changed[0]
+                .reasons()
+                .iter()
+                .any(|reason| reason.protocol == StatusProtocol::IcmpEcho),
+            "and what it writes is what the pass learned"
+        );
+        assert!(
+            session.events().try_recv().is_none(),
+            "a host already announced is not announced again"
+        );
     }
 }

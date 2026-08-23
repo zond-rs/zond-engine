@@ -852,6 +852,7 @@ pub(super) async fn spawn_resolver(
 /// would report for no reason.
 pub(super) async fn run_port_phase(
     target_map: TargetMap,
+    live: Option<IpSet>,
     ctx: &ScanContext,
     caps: ScanCapabilities,
     cfg: &ZondConfig,
@@ -879,10 +880,15 @@ pub(super) async fn run_port_phase(
         None
     };
 
-    // Numbered against the whole plan and filtered to what is left, so a
-    // resumed scan asks only about the targets an earlier sitting did not settle.
-    let dispatcher = super::dispatcher::Dispatcher::new(target_map).resuming(settled);
-    let rx = dispatcher.run_shuffled(&ctx.handle);
+    // Numbered against the whole plan and filtered afterwards — to what an
+    // earlier sitting did not settle, and to the hosts that answered. Both
+    // filters run after the numbering, because both of them are properties of
+    // this sitting and the numbering is a property of the job.
+    let mut dispatcher = super::dispatcher::Dispatcher::new(target_map).resuming(settled);
+    if let Some(live) = live {
+        dispatcher = dispatcher.only_live(live);
+    }
+    let rx = dispatcher.run_shuffled(ctx);
 
     run_port_scan(built.scanner, rx, ctx).await;
     finish_enrichment(enrichment, caps, ctx).await;
@@ -892,28 +898,20 @@ pub(super) async fn run_port_phase(
     run_passive_os_identification(ctx, cfg.os_detection);
 }
 
-/// The targets phase one found something at, each unit keeping its own ports.
+/// The plan as the port phase actually probed it.
+///
+/// **Not what the dispatcher walks.** That is the whole plan, so that a position
+/// means the same target in every sitting — see
+/// [`live_addresses`]. This is what the phase *covered*, which is a different
+/// number and the one a [`TargetScope`](crate::scanner::report::TargetScope)
+/// records: a reader compares it against the liveness phase's to see how much of
+/// what they asked about went unprobed, and a scope that claimed the whole plan
+/// would report a scan that covered ground it deliberately skipped.
 ///
 /// Narrows every unit rather than rebuilding one set against one port list,
 /// because a unit may carry ports no other one does — `10.0.0.1:8080` names its
-/// own, and a gate that dropped that would answer a different question.
-///
-/// A host is kept if *any* address it answers at was targeted, not only the one
-/// it ended up filed under. A dual-stack machine found over IPv6 is still the
-/// machine whose IPv4 address was asked about.
-pub(super) fn only_live(target_map: &TargetMap, ctx: &ScanContext) -> TargetMap {
-    let mut live = IpSet::new();
-    for entry in ctx.store.iter() {
-        let host = entry.value();
-        if !host.is_alive() {
-            continue;
-        }
-        for ip in host.ips() {
-            push_single(&mut live, *ip, host.zone().and_then(Zone::index));
-        }
-    }
-    live.canonicalize();
-
+/// own, and a subset that dropped that would answer a different question.
+pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
     let mut kept = TargetMap::new();
     for unit in &target_map.units {
         let mut ips = IpSet::new();
@@ -930,6 +928,34 @@ pub(super) fn only_live(target_map: &TargetMap, ctx: &ScanContext) -> TargetMap 
     }
 
     kept
+}
+
+/// Every address the liveness pass found a host at.
+///
+/// **A set rather than a narrowed plan.** The port phase used to be handed a
+/// `TargetMap` rebuilt from these, and the dispatcher numbered *that* — so a
+/// position was counted in a plan that depended on which hosts happened to
+/// answer, and two sittings of one job could disagree about what position 400
+/// meant. The addresses travel to
+/// [`Dispatcher::only_live`](crate::scanner::dispatcher::Dispatcher::only_live)
+/// instead, which filters after numbering.
+///
+/// Every address of a host is included, not only the one it is filed under. A
+/// dual-stack machine found over IPv6 is still the machine whose IPv4 address
+/// was asked about, and a unit naming either of them meant this host.
+pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
+    let mut live = IpSet::new();
+    for entry in ctx.store.iter() {
+        let host = entry.value();
+        if !host.is_alive() {
+            continue;
+        }
+        for ip in host.ips() {
+            push_single(&mut live, *ip, host.zone().and_then(Zone::index));
+        }
+    }
+    live.canonicalize();
+    live
 }
 
 /// Pushes one address into `set` as a range of itself.
@@ -1489,7 +1515,6 @@ mod tests {
 
     use super::*;
     use crate::model::host::{Host, HostStatus};
-    use crate::model::port::PortSet;
 
     /// A context whose store already holds `hosts`, as a finished liveness phase
     /// would have left it.
@@ -1507,112 +1532,58 @@ mod tests {
         host
     }
 
-    fn unit(ip: &str, ports: &str) -> TargetSet {
-        let mut ips = IpSet::new();
-        ips.insert(ip.parse().expect("an address"));
-        TargetSet::new(ips, PortSet::try_from(ports).expect("a port spec"))
-    }
-
-    fn map_of(units: Vec<TargetSet>) -> TargetMap {
-        let mut map = TargetMap::new();
-        for unit in units {
-            map.add_unit(unit);
-        }
-        map
-    }
-
-    /// The gate's whole job. A host the store holds but that never answered is
-    /// not a host to spend a probe per port on.
+    /// A host the store holds but that never answered is not a host to spend a
+    /// probe per port on.
     ///
-    /// Worth testing here rather than against a real address: a target nothing
-    /// answers for usually leaves *no* store entry at all, so the filter is only
-    /// reached by a host that was recorded and still is not alive.
+    /// Worth testing rather than assuming: a target nothing answers for usually
+    /// leaves *no* store entry at all, so this filter is only reached by a host
+    /// that was recorded and still is not alive.
     #[test]
-    fn a_host_that_did_not_answer_is_dropped() {
+    fn a_host_that_did_not_answer_is_not_live() {
         for status in [HostStatus::Down, HostStatus::Unknown] {
             let (_session, ctx) = store_holding(vec![host_at("10.0.0.1", status)]);
-            let kept = only_live(&map_of(vec![unit("10.0.0.1", "22")]), &ctx);
 
-            assert!(kept.is_empty(), "{status:?} was treated as alive");
+            assert!(
+                live_addresses(&ctx).is_empty(),
+                "{status:?} was treated as alive"
+            );
         }
     }
 
     #[test]
-    fn a_host_that_answered_is_kept() {
+    fn a_host_that_answered_is_live() {
         let (_session, ctx) = store_holding(vec![host_at("10.0.0.1", HostStatus::Up)]);
-        let kept = only_live(&map_of(vec![unit("10.0.0.1", "22")]), &ctx);
+        let live = live_addresses(&ctx);
 
-        assert_eq!(kept.gross_ips().expect("countable"), 1);
-        assert_eq!(kept.gross_targets().expect("countable"), 1);
+        assert!(live.contains(&"10.0.0.1".parse::<IpAddr>().expect("an address")));
+        assert_eq!(live.len(), 1);
     }
 
     /// A dual-stack machine is one host filed under one address. If it answered
-    /// over IPv6, the IPv4 address somebody actually typed still has to survive
-    /// the gate — it is the same machine, and it is the one that was asked about.
+    /// over IPv6, the IPv4 address somebody actually typed is still live — it is
+    /// the same machine, and it is the one that was asked about.
     #[test]
-    fn a_host_filed_under_another_address_keeps_the_one_that_was_targeted() {
+    fn every_address_of_a_live_host_is_live() {
         let mut host = host_at("2001:db8::1", HostStatus::Up);
         host.add_ip("10.0.0.1".parse().expect("an address"));
 
         let (_session, ctx) = store_holding(vec![host]);
-        let kept = only_live(&map_of(vec![unit("10.0.0.1", "22")]), &ctx);
+        let live = live_addresses(&ctx);
 
         assert!(
-            !kept.is_empty(),
-            "the targeted address was dropped because the host was filed elsewhere"
+            live.contains(&"10.0.0.1".parse::<IpAddr>().expect("an address")),
+            "the targeted address was lost because the host was filed elsewhere"
         );
+        assert!(live.contains(&"2001:db8::1".parse::<IpAddr>().expect("an address")));
     }
 
-    /// A target may name its own ports, so the gate narrows each unit rather
-    /// than rebuilding one set against one port list.
+    /// Nothing answered, so nothing is live. The plan is unchanged either way —
+    /// what an empty answer costs is every one of its targets being settled as
+    /// [`Skipped`](crate::journal::settle::Outcome::Skipped) rather than probed.
     #[test]
-    fn each_unit_keeps_the_ports_it_was_given() {
-        let (_session, ctx) = store_holding(vec![host_at("10.0.0.1", HostStatus::Up)]);
-        let kept = only_live(
-            &map_of(vec![unit("10.0.0.1", "8080"), unit("10.0.0.1", "22,443")]),
-            &ctx,
-        );
-
-        let ports: Vec<usize> = kept.units.iter().map(|unit| unit.ports().len()).collect();
-        assert_eq!(ports, vec![1, 2], "a unit lost or gained ports at the gate");
-    }
-
-    /// A host the liveness phase turned up but nobody asked about is not a host
-    /// to scan. The store can gain entries the target list never named — a
-    /// neighbour that answered, a name heard over mDNS — and port-scanning one
-    /// of those would put probes on a machine the user did not name.
-    #[test]
-    fn a_live_host_nobody_asked_about_is_not_scanned() {
-        let (_session, ctx) = store_holding(vec![
-            host_at("10.0.0.1", HostStatus::Up),
-            host_at("10.0.0.2", HostStatus::Up),
-        ]);
-
-        let kept = only_live(&map_of(vec![unit("10.0.0.1", "22")]), &ctx);
-
-        assert_eq!(
-            kept.gross_ips().expect("countable"),
-            1,
-            "an address nobody named was added to the scan"
-        );
-        let named = |ip: &str| {
-            let wanted: IpAddr = ip.parse().expect("an address");
-            kept.units.iter().any(|unit| unit.ips().contains(&wanted))
-        };
-        assert!(named("10.0.0.1"));
-        assert!(
-            !named("10.0.0.2"),
-            "an address nobody named survived the gate"
-        );
-    }
-
-    /// Nothing answered, so there is nothing to scan — and an empty map is what
-    /// stops the port phase opening sockets it has no targets for.
-    #[test]
-    fn an_empty_store_keeps_nothing() {
+    fn an_empty_store_has_nothing_live() {
         let (_session, ctx) = store_holding(Vec::new());
-        let kept = only_live(&map_of(vec![unit("10.0.0.1", "22")]), &ctx);
 
-        assert!(kept.is_empty());
+        assert!(live_addresses(&ctx).is_empty());
     }
 }
