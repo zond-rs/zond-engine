@@ -202,3 +202,101 @@ async fn the_connect_path_settles_what_it_probed() {
 
     drop(session);
 }
+
+/// End to end: a scan journals as it runs, and a second sitting asks only about
+/// what the first did not settle.
+///
+/// Every port here is closed, so the first sitting earns a verdict for all of
+/// them and the second has nothing left — which is the case worth asserting at
+/// this level, because it is the one where a mistake is invisible. A resume that
+/// re-probed everything would still produce a correct report, just a wasteful
+/// one, and only the cursor shows the difference.
+///
+/// Partial progress is exercised deterministically in `journal::store`, where a
+/// checkpoint can be written by hand instead of raced for.
+#[tokio::test]
+async fn a_journalled_scan_resumes_where_it_stopped() {
+    use zond_engine::journal::Journal;
+    use zond_engine::model::ip::set::IpSet;
+    use zond_engine::model::port::PortSet;
+    use zond_engine::model::target::{TargetMap, TargetSet};
+    use zond_engine::model::technique::TcpScanTechnique;
+
+    if is_privileged() {
+        eprintln!("SKIP: drives the unprivileged connect path");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("zond-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+
+    // Four closed loopback ports: every probe earns a verdict, so a complete
+    // sitting settles the whole plan.
+    let mut ports = Vec::new();
+    for _ in 0..4 {
+        ports.push(closed_loopback_port().await);
+    }
+    let spec = ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let mut plan = TargetMap::new();
+    plan.add_unit(TargetSet::new(
+        IpSet::from(LOOPBACK),
+        spec.parse::<PortSet>().expect("ports"),
+    ));
+
+    let mut cfg = test_config();
+    cfg.assume_up = true;
+
+    // First sitting.
+    let journal =
+        Journal::create(&root, &plan, TcpScanTechnique::Syn, false, "loopback").expect("creates");
+    let directory = journal.directory().to_path_buf();
+
+    let (_session, task) = zond_engine::scanner::scan_with_journal(plan.clone(), &cfg, journal)
+        .await
+        .expect("the scan starts");
+    let _ = task.join().await.expect("the scan finishes");
+
+    // The journal outlived it, and records what was settled.
+    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    assert_eq!(listed.len(), 1);
+    assert!(
+        listed[0].settled() > 0,
+        "a finished sitting must have checkpointed its progress"
+    );
+    assert_eq!(
+        listed[0].settled(),
+        4,
+        "four closed ports are four earned verdicts"
+    );
+    assert!(listed[0].is_complete());
+
+    // Second sitting over the same plan.
+    let (journal, checkpoint) =
+        Journal::resume(&directory, &plan, TcpScanTechnique::Syn, false).expect("resumes");
+
+    assert_eq!(
+        checkpoint.remaining(plan.iter()).count(),
+        0,
+        "the first sitting settled everything, so there is nothing to ask again"
+    );
+
+    let (_session, task) = zond_engine::scanner::scan_with_journal(plan.clone(), &cfg, journal)
+        .await
+        .expect("the second sitting starts");
+    let _ = task.join().await.expect("it finishes");
+
+    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    assert_eq!(
+        listed[0].settled(),
+        4,
+        "a sitting that asked nothing must still carry the first one's progress"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}

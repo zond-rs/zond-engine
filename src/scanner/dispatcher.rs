@@ -8,13 +8,14 @@
 
 //! # Target Dispatch
 //!
-//! Turns a [`TargetMap`] into a shuffled stream of individual [`Target`]s for the
-//! scanning strategies to consume. Rather than expand the whole address space into
+//! Turns a [`TargetMap`] into a shuffled stream of individual
+//! [`PlannedTarget`]s for the scanning strategies to consume. Rather than expand the whole address space into
 //! memory and shuffle it in one pass, it fills a fixed-size batch, shuffles that,
 //! and streams it out before moving on. Neighbouring addresses end up spread apart
 //! in time, which avoids hammering one subnet in a tight burst, and the memory cost
 //! stays bounded regardless of how large the target range is.
 
+use crate::journal::cursor::Checkpoint;
 use crate::model::target::{PlannedTarget, TargetMap};
 use crate::scanner::handle::ScanHandle;
 use rand::seq::SliceRandom;
@@ -25,6 +26,12 @@ use tokio::sync::mpsc;
 pub struct Dispatcher {
     target_map: TargetMap,
     batch_size: usize,
+    /// What an earlier sitting already settled, for a resumed scan.
+    ///
+    /// Skipped *after* numbering, never before: a resumed sitting scans a
+    /// subset, and renumbering it would give position 0 to whatever happens to
+    /// be left. The two sittings would then be counting different things.
+    settled: Checkpoint,
 }
 
 impl Dispatcher {
@@ -33,7 +40,18 @@ impl Dispatcher {
         Self {
             target_map,
             batch_size: 8192,
+            settled: Checkpoint::default(),
         }
+    }
+
+    /// Skips what `settled` accounts for, for a scan continuing an earlier one.
+    ///
+    /// The checkpoint must have been written against this exact plan; see
+    /// [`Manifest::covers`](crate::journal::manifest::Manifest::covers), which
+    /// is what refuses one that was not.
+    pub fn resuming(mut self, settled: Checkpoint) -> Self {
+        self.settled = settled;
+        self
     }
 
     /// Overrides the batch size. A larger batch shuffles addresses over a wider
@@ -60,8 +78,8 @@ impl Dispatcher {
             // Numbered here, where the plan is walked in order, so nothing
             // downstream has to re-derive a position. Shuffling below permutes
             // the order targets are *asked* in and never the numbering.
-            for (position, target) in self.target_map.iter().enumerate() {
-                batch.push(PlannedTarget::new(position as u64, target));
+            for planned in self.settled.remaining(self.target_map.iter()) {
+                batch.push(planned);
 
                 if batch.len() >= self.batch_size {
                     batch.shuffle(&mut rand::rng());

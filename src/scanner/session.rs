@@ -718,6 +718,19 @@ impl ScanSession {
     /// sweep does not confine itself to those. See [`Exclusions`] for what each
     /// of the two enforcements is for.
     pub fn with_exclusions(exclusions: Exclusions) -> (Self, ScanContext) {
+        Self::resuming(exclusions, &crate::journal::cursor::Checkpoint::default())
+    }
+
+    /// [`with_exclusions`](Self::with_exclusions), continuing an earlier
+    /// sitting's progress.
+    ///
+    /// `settled` seeds the cursor this scan checkpoints from. Without it a
+    /// resumed scan would write a cursor covering only its own sitting, and the
+    /// journal would forget everything the first one settled.
+    pub fn resuming(
+        exclusions: Exclusions,
+        settled: &crate::journal::cursor::Checkpoint,
+    ) -> (Self, ScanContext) {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::new();
         let (events_tx, rx) = mpsc::unbounded_channel();
@@ -736,7 +749,7 @@ impl ScanSession {
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             exclusions: Arc::new(exclusions),
-            settlements: Arc::new(Settlements::default()),
+            settlements: Arc::new(Settlements::resuming(settled)),
         };
 
         (session, ctx)
@@ -865,5 +878,28 @@ mod tests {
         // Each strategy gets its own clone of the context; the report is
         // assembled from one of them and must see all of it.
         assert_eq!(ctx.take_failures().len(), 2);
+    }
+
+    /// A session built to continue an earlier sitting starts from its progress.
+    ///
+    /// Without this the resumed scan's first checkpoint rolls the cursor back to
+    /// what its own sitting settled, and everything the first one did is
+    /// forgotten — silently, since both scans report success.
+    #[test]
+    fn a_resuming_session_starts_from_the_earlier_cursor() {
+        use crate::journal::cursor::Checkpoint;
+
+        let settled = Checkpoint {
+            watermark: 12,
+            settled_above: vec![14],
+        };
+        let (_session, ctx) = ScanSession::resuming(Exclusions::none(), &settled);
+
+        assert_eq!(ctx.settlements().settled_count(), 13);
+        assert_eq!(ctx.settlements().checkpoint(), settled);
+
+        // A fresh session has nothing inherited.
+        let (_session, fresh) = ScanSession::new();
+        assert_eq!(fresh.settlements().settled_count(), 0);
     }
 }

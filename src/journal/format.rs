@@ -17,7 +17,7 @@
 //! `&'a str` for every borrowed field, `&'static str` for every enum name,
 //! nothing for `serde` to deserialize *into*. That is a deliberate choice and a
 //! good one — it costs the export path no allocation per enum name per port —
-//! and it is why [`import::json`](crate::import::json) reads back only the four
+//! and it is why `import::json` reads back only the four
 //! fields a rescan needs and skips the rest without building it.
 //!
 //! A journal cannot make that trade. Resuming means reconstructing what the
@@ -30,7 +30,7 @@
 //! - **Unknown fields are ignored.** A journal from a newer build stays
 //!   readable for whatever it has in common with this one.
 //! - **An unknown enum string is an error naming it.** The opposite choice, and
-//!   for the reason [`import::json`](crate::import::json) already gives: a value
+//!   for the reason `import::json` already gives: a value
 //!   this build does not recognise is not a field a reader can skip, it is the
 //!   thing that decides what the record *says*. Quietly reading an unknown port
 //!   state as `Filtered` would resume the wrong scan and report success.

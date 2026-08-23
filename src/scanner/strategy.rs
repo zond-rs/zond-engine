@@ -133,7 +133,7 @@ pub trait HostScanner: Send {
 /// A strategy that classifies the ports of targets handed to it one at a time.
 ///
 /// The port-scan half of the pair. Where a [`HostScanner`] is aimed at a segment
-/// it owns, this consumes the shuffled [`Target`] stream a
+/// it owns, this consumes the shuffled [`PlannedTarget`] stream a
 /// [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) produces, so that
 /// several strategies can share one stream of work and none of them has to know
 /// how the targets were ordered.

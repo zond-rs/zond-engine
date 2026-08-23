@@ -56,7 +56,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::target::Target;
+use crate::model::target::{PlannedTarget, Target};
 
 /// How far a scan has got, maintained as it runs.
 ///
@@ -178,26 +178,33 @@ impl Checkpoint {
         position < self.watermark || self.settled_above.binary_search(&position).is_ok()
     }
 
-    /// The targets a resumed scan still has to ask about.
+    /// The targets a resumed scan still has to ask about, each carrying its
+    /// position in the **original** plan.
     ///
     /// Takes the plan's enumeration — [`TargetMap::iter`](crate::model::target::TargetMap::iter),
     /// the same walk the first sitting was numbered by — and yields only what
     /// this checkpoint does not account for.
     ///
+    /// The positions are why this yields [`PlannedTarget`] rather than
+    /// [`Target`](crate::model::target::Target). A resumed sitting is scanning a
+    /// *subset*, so numbering it afresh would give position 0 to whatever
+    /// happens to be left — and the two sittings' cursors would then count
+    /// different things. The original numbering has to survive the filtering.
+    ///
     /// **The plan must be the one this checkpoint was written against.** A
     /// position is an index into a specific enumeration, so a changed port list,
     /// a changed exclusion policy or a changed privilege level all move what
-    /// position 4,001,927 refers to. Nothing here can detect that; the manifest's
-    /// plan hash is what refuses the resume before it gets this far.
-    pub fn remaining<'a, I>(&'a self, targets: I) -> impl Iterator<Item = Target> + 'a
+    /// position 4,001,927 refers to. Nothing here detects that; the manifest's
+    /// plan fingerprint refuses the resume before it gets this far.
+    pub fn remaining<'a, I>(&'a self, targets: I) -> impl Iterator<Item = PlannedTarget> + 'a
     where
         I: IntoIterator<Item = Target> + 'a,
     {
         targets
             .into_iter()
             .enumerate()
-            .filter(move |(position, _)| !self.is_settled(*position as u64))
-            .map(|(_, target)| target)
+            .map(|(position, target)| PlannedTarget::new(position as u64, target))
+            .filter(move |planned| !self.is_settled(planned.position))
     }
 }
 
@@ -407,9 +414,19 @@ mod tests {
             cursor.settle(position);
         }
 
-        let remaining: Vec<Target> = cursor.checkpoint().remaining(map.iter()).collect();
+        let remaining: Vec<PlannedTarget> = cursor.checkpoint().remaining(map.iter()).collect();
 
-        assert_eq!(remaining, vec![all[3], all[4], all[6], all[7]]);
+        // The targets that were left, still carrying their positions in the
+        // whole plan rather than in the remainder.
+        assert_eq!(
+            remaining,
+            vec![
+                PlannedTarget::new(3, all[3]),
+                PlannedTarget::new(4, all[4]),
+                PlannedTarget::new(6, all[6]),
+                PlannedTarget::new(7, all[7]),
+            ]
+        );
     }
 
     /// A checkpoint that settled nothing must re-ask the whole plan, and one

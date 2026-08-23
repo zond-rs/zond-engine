@@ -75,6 +75,7 @@ pub struct Journal {
     directory: PathBuf,
     manifest: Manifest,
     lock: Lock,
+    resume_point: Checkpoint,
 }
 
 impl Journal {
@@ -98,6 +99,7 @@ impl Journal {
             directory,
             manifest,
             lock,
+            resume_point: Checkpoint::default(),
         })
     }
 
@@ -126,9 +128,19 @@ impl Journal {
                 directory: directory.to_path_buf(),
                 manifest,
                 lock,
+                resume_point: checkpoint.clone(),
             },
             checkpoint,
         ))
+    }
+
+    /// What an earlier sitting settled, and this one may skip.
+    ///
+    /// Empty for a journal that was just created. A scan reads this to seed both
+    /// its dispatcher and its settlements, so the second sitting's cursor
+    /// continues the first's rather than starting over.
+    pub fn resume_point(&self) -> &Checkpoint {
+        &self.resume_point
     }
 
     /// Writes how far the scan has got, and reports the writer is alive.
@@ -345,6 +357,70 @@ fn claim_for_invoking_user(path: &Path) {
 
 #[cfg(not(unix))]
 fn claim_for_invoking_user(_path: &Path) {}
+
+/// How often a running scan writes down how far it got.
+///
+/// The cost of a crash is one interval of replayed work, and the cost of the
+/// interval is one rename of a small file — so this is chosen for the first,
+/// not the second. Three seconds of a six-hour scan is not a tradeoff worth
+/// exposing.
+pub const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A running scan's journal, checkpointed on a timer by a task of its own.
+///
+/// The journal is owned by that task rather than shared with the scan: a
+/// checkpoint is the only thing that writes it, so there is nothing to
+/// synchronise and no lock for a scan to hold while it does I/O.
+#[derive(Debug)]
+pub struct Checkpointing {
+    done: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Checkpointing {
+    /// Writes the last checkpoint and releases the lock.
+    ///
+    /// Call once the scan has finished and every strategy has reported, so the
+    /// final cursor covers the whole sitting.
+    pub async fn finish(self) {
+        // The receiver ends the loop; a send failure means it already has.
+        let _ = self.done.send(());
+        let _ = self.task.await;
+    }
+}
+
+/// Starts checkpointing `journal` from `ctx`'s progress until told to stop.
+pub fn spawn_checkpoints(
+    mut journal: Journal,
+    ctx: crate::scanner::session::ScanContext,
+) -> Checkpointing {
+    let (done, mut stop) = tokio::sync::oneshot::channel();
+
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(CHECKPOINT_EVERY) => {
+                    // A checkpoint that cannot be written is not worth ending a
+                    // scan over: the previous one still stands, and the scan is
+                    // still producing results. Reported through the same channel
+                    // every other narrowing uses.
+                    if let Err(e) = journal.checkpoint(ctx.settlements()) {
+                        ctx.record_failure(
+                            crate::scanner::session::ScannerKind::Composite,
+                            format!("journal checkpoint failed, so a resume would replay further back than it should: {e}"),
+                        );
+                    }
+                }
+                _ = &mut stop => break,
+            }
+        }
+
+        let _ = journal.checkpoint(ctx.settlements());
+        let _ = journal.close();
+    });
+
+    Checkpointing { done, task }
+}
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -564,5 +640,71 @@ mod tests {
         journal.close().expect("closes");
         remove(&directory).expect("removes a free journal");
         assert!(list(&root).expect("lists").is_empty());
+    }
+
+    /// The ticker writes a final checkpoint and releases the lock, so a scan
+    /// that finishes between two ticks still records what it did.
+    #[tokio::test]
+    async fn the_checkpoint_task_writes_a_final_cursor_and_releases() {
+        let root = scratch("ticker");
+        let map = plan("192.0.2.1-192.0.2.4", "80,443");
+        let journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        for position in 0..5 {
+            ctx.record_outcome(Outcome::Answered { position });
+        }
+
+        // Finishes immediately, well inside one tick.
+        spawn_checkpoints(journal, ctx).finish().await;
+
+        let checkpoint = Checkpoint::read(&directory.join(CURSOR)).expect("a cursor was written");
+        assert_eq!(checkpoint.watermark, 5);
+        assert_eq!(
+            super::super::lock::inspect(&directory.join(LOCK)),
+            LockState::Free,
+            "the lock outlived the scan and was then released"
+        );
+    }
+
+    /// A resumed sitting that settles nothing must still write a cursor covering
+    /// the first sitting's work.
+    ///
+    /// The failure this guards is silent: forget to seed the live cursor from
+    /// the resume point and the second sitting's checkpoint erases the first's
+    /// progress, so a third would re-scan everything while reporting success.
+    #[test]
+    fn a_resumed_cursor_carries_the_earlier_sittings_progress() {
+        let root = scratch("carry-forward");
+        let map = plan("192.0.2.1-192.0.2.4", "80,443");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            let settlements = Settlements::default();
+            for position in 0..3 {
+                settlements.record(Outcome::Answered { position });
+            }
+            journal.checkpoint(&settlements).expect("checkpoints");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let (mut journal, checkpoint) =
+            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+
+        // Seeded from the resume point, exactly as a scan does.
+        let settlements = Settlements::resuming(&checkpoint);
+        journal
+            .checkpoint(&settlements)
+            .expect("checkpoints having settled nothing new");
+        journal.close().expect("closes");
+
+        let carried = Checkpoint::read(&directory.join(CURSOR)).expect("reads");
+        assert_eq!(
+            carried.watermark, 3,
+            "the second sitting must not roll the cursor back"
+        );
     }
 }
