@@ -31,7 +31,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use super::cursor::Checkpoint;
 use super::format::JournalError;
@@ -90,6 +90,9 @@ pub struct Journal {
     resume_point: Checkpoint,
     restored: Vec<Host>,
     earlier: Vec<ScanPhase>,
+    /// How many host records have been appended since the file was last written
+    /// whole. See [`should_compact`](Journal::should_compact).
+    appended: usize,
 }
 
 impl Journal {
@@ -108,8 +111,17 @@ impl Journal {
         let manifest = Manifest::new(id, plan, technique, privileged, summary);
         write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
 
-        let lock = Lock::acquire(&directory.join(LOCK))?;
-        write_private(&directory.join(HOSTS), &[])?;
+        let lock = match Lock::acquire(&directory.join(LOCK)) {
+            Ok(lock) => lock,
+            Err(refused) => {
+                // Nothing has been written but the manifest, and a directory
+                // holding one of those and no lock reads as a journal that
+                // found nothing. Cleaner to leave no trace of a scan that never
+                // started.
+                let _ = fs::remove_dir_all(&directory);
+                return Err(refused.into());
+            }
+        };
 
         let mut journal = Self {
             directory,
@@ -118,6 +130,7 @@ impl Journal {
             resume_point: Checkpoint::default(),
             restored: Vec::new(),
             earlier: Vec::new(),
+            appended: 0,
         };
         journal.open_findings()?;
         Ok(journal)
@@ -151,6 +164,7 @@ impl Journal {
                 resume_point: checkpoint.clone(),
                 restored: read_findings(directory)?,
                 earlier: read_phases(directory)?,
+                appended: 0,
             },
             checkpoint,
         ))
@@ -184,7 +198,54 @@ impl Journal {
         for host in hosts {
             writer.write(&HostRecord::from(host))?;
         }
-        writer.flush()
+        writer.flush()?;
+
+        self.appended += hosts.len();
+        Ok(())
+    }
+
+    /// Whether the findings file holds enough superseded records to be worth
+    /// writing whole again.
+    ///
+    /// A host is appended each interval in which anything about it changed, and
+    /// the dispatcher shuffles targets across the whole plan — so on a long scan
+    /// most hosts change in most intervals, and the file grows with the scan's
+    /// *duration* rather than with what it found. Compaction bounds it to a
+    /// small multiple of the live state.
+    ///
+    /// `live` is how many hosts the scan has found. The threshold is generous
+    /// because rewriting is O(hosts) and appending is not: compaction should be
+    /// rare enough that its cost disappears against the scan.
+    pub fn should_compact(&self, live: usize) -> bool {
+        const FLOOR: usize = 256;
+        const MULTIPLE: usize = 8;
+
+        self.appended > FLOOR.max(live.saturating_mul(MULTIPLE))
+    }
+
+    /// Writes the findings file whole, replacing everything superseded.
+    ///
+    /// `all` must be every host the scan has found, not just the recent ones:
+    /// this replaces the file rather than adding to it. Written to a sibling and
+    /// renamed over, so a compaction interrupted part way leaves the previous
+    /// file untouched.
+    pub fn compact(&mut self, all: &[Host]) -> Result<(), JournalError> {
+        let destination = self.directory.join(HOSTS);
+        let temporary = destination.with_extension("jsonl-tmp");
+
+        {
+            let file = create_private_file(&temporary)?;
+            let mut writer = crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
+            for host in all {
+                writer.write(&HostRecord::from(host))?;
+            }
+            writer.flush()?;
+        }
+
+        fs::rename(&temporary, &destination)?;
+        claim_for_invoking_user(&destination);
+        self.appended = all.len();
+        Ok(())
     }
 
     /// What earlier sittings of this scan did.
@@ -217,8 +278,10 @@ impl Journal {
     /// anything is added to it.
     fn open_findings(&mut self) -> Result<(), JournalError> {
         for name in [HOSTS, PHASES] {
-            let file = fs::File::create(self.directory.join(name))?;
+            let path = self.directory.join(name);
+            let file = create_private_file(&path)?;
             crate::journal::format::Writer::create(std::io::BufWriter::new(file))?.flush()?;
+            claim_for_invoking_user(&path);
         }
         Ok(())
     }
@@ -356,10 +419,17 @@ pub fn remove(directory: &Path) -> Result<(), OpenError> {
 
 /// Reads back what a journal's earlier sittings found.
 ///
-/// Records for one address are folded together with [`Host::merge`], so a host
-/// written once when it answered and again when its ports were classified comes
-/// back whole. A missing file is no findings rather than a failure: a journal
-/// can be read before its first host is written.
+/// Records are folded together with [`Host::merge`], so a host written once when
+/// it answered and again when its ports were classified comes back whole.
+///
+/// **Two records are the same host when they share any address**, not when their
+/// primary addresses match. Local discovery promotes a host's primary address
+/// when a better one turns up — a link-local giving way to a global — so the
+/// same machine is written under one address and then another. Keyed on the
+/// primary alone it would come back as two hosts that were never two.
+///
+/// A missing file is no findings rather than a failure: a journal can be read
+/// before its first host is written.
 fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
     let file = match fs::File::open(directory.join(HOSTS)) {
         Ok(file) => file,
@@ -375,20 +445,59 @@ fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
         Err(e) => return Err(e),
     };
 
-    let mut hosts: std::collections::BTreeMap<std::net::IpAddr, Host> =
+    // Slots rather than a map: a record can join two hosts that were separate
+    // until it arrived, and the one it merges into keeps its slot while the
+    // other empties.
+    let mut hosts: Vec<Option<Host>> = Vec::new();
+    let mut slot_of: std::collections::BTreeMap<std::net::IpAddr, usize> =
         std::collections::BTreeMap::new();
 
     while let Some(record) = reader.read::<HostRecord>()? {
         let host = Host::from(&record);
-        match hosts.get_mut(&host.primary_ip()) {
-            Some(existing) => existing.merge(host),
-            None => {
-                hosts.insert(host.primary_ip(), host);
+
+        let mut matched: Vec<usize> = host
+            .ips()
+            .iter()
+            .filter_map(|ip| slot_of.get(ip).copied())
+            .collect();
+        matched.sort_unstable();
+        matched.dedup();
+
+        let slot = match matched.split_first() {
+            Some((&keep, absorb)) => {
+                // Every host this record has an address in common with is the
+                // same machine, so they fold into one another as well.
+                for &other in absorb {
+                    if let Some(other) = hosts[other].take() {
+                        merge_into(&mut hosts, keep, other);
+                    }
+                }
+                merge_into(&mut hosts, keep, host);
+                keep
             }
+            None => {
+                hosts.push(Some(host));
+                hosts.len() - 1
+            }
+        };
+
+        let Some(settled) = hosts[slot].as_ref() else {
+            continue;
+        };
+        for ip in settled.ips() {
+            slot_of.insert(*ip, slot);
         }
     }
 
-    Ok(hosts.into_values().collect())
+    Ok(hosts.into_iter().flatten().collect())
+}
+
+/// Folds `host` into the one at `slot`, or puts it there if the slot is empty.
+fn merge_into(hosts: &mut [Option<Host>], slot: usize, host: Host) {
+    match hosts[slot].as_mut() {
+        Some(existing) => existing.merge(host),
+        None => hosts[slot] = Some(host),
+    }
 }
 
 /// Reads back what a journal's earlier sittings did, oldest first.
@@ -475,10 +584,31 @@ fn create_private_dir(path: &Path) -> Result<(), JournalError> {
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
-    fs::write(path, bytes)?;
-    restrict(path, 0o600)?;
+    use std::io::Write;
+
+    let mut file = create_private_file(path)?;
+    file.write_all(bytes)?;
     claim_for_invoking_user(path);
     Ok(())
+}
+
+/// Creates or truncates a file only this user can read.
+///
+/// The mode is set as the file is created rather than after, so there is no
+/// moment where a journal's findings are readable by anyone else. The directory
+/// is `0700` as well, which would cover it either way — this is the belt to that
+/// pair of braces, and it costs one flag.
+fn create_private_file(path: &Path) -> Result<fs::File, JournalError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    Ok(options.open(path)?)
 }
 
 #[cfg(unix)]
@@ -518,6 +648,161 @@ fn claim_for_invoking_user(path: &Path) {
 
 #[cfg(not(unix))]
 fn claim_for_invoking_user(_path: &Path) {}
+
+/// How long journals are kept.
+///
+/// A journal holds the addresses an engagement was pointed at, so it should not
+/// accumulate in a state directory nobody looks at. It is also evidence, so it
+/// should not vanish at a moment nobody chose. The defaults below take the
+/// second more seriously than the first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retention {
+    /// How long a finished journal is kept, or `None` to keep it indefinitely.
+    pub completed_for: Option<Duration>,
+    /// How long an unfinished one is kept, or `None` to keep it indefinitely.
+    pub incomplete_for: Option<Duration>,
+    /// The most journals to keep, or `None` for no cap.
+    ///
+    /// Applied after the ages above, and it removes finished journals before
+    /// unfinished ones: a cap exists to bound a directory, and an unfinished
+    /// journal is the one thing there somebody may still want.
+    pub keep_at_most: Option<usize>,
+}
+
+impl Default for Retention {
+    /// A month for finished journals, indefinitely for unfinished ones, and a
+    /// cap of two hundred.
+    ///
+    /// The asymmetry is the point. A finished scan has a report; its journal is
+    /// a duplicate that ages out. An unfinished one is the only copy of work
+    /// somebody may still mean to continue, so nothing but the cap removes it.
+    fn default() -> Self {
+        Self {
+            completed_for: Some(Duration::from_secs(30 * 24 * 60 * 60)),
+            incomplete_for: None,
+            keep_at_most: Some(200),
+        }
+    }
+}
+
+impl Retention {
+    /// Removes nothing. For a caller who prunes on their own terms.
+    pub fn keep_everything() -> Self {
+        Self {
+            completed_for: None,
+            incomplete_for: None,
+            keep_at_most: None,
+        }
+    }
+
+    /// Which of `entries` this policy would remove, newest-first as [`list`]
+    /// yields them.
+    ///
+    /// Pure, and separate from [`prune`] for the reason
+    /// [`lock::classify`](crate::journal::lock::classify) is: the interesting
+    /// cases are a directory full of journals of different ages and states, and
+    /// arranging those on a real filesystem to test the policy would test the
+    /// filesystem.
+    ///
+    /// A journal something is writing is never selected, whatever its age.
+    pub fn expired(&self, entries: &[Entry], now: SystemTime) -> Vec<usize> {
+        let age_of = |entry: &Entry| {
+            now.duration_since(entry.manifest.created_at)
+                .unwrap_or_default()
+        };
+
+        let mut removing: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.lock.is_resumable())
+            .filter(|(_, entry)| {
+                let limit = if entry.is_complete() {
+                    self.completed_for
+                } else {
+                    self.incomplete_for
+                };
+                limit.is_some_and(|limit| age_of(entry) > limit)
+            })
+            .map(|(index, _)| index)
+            .collect();
+
+        let Some(cap) = self.keep_at_most else {
+            return removing;
+        };
+
+        // What the ages left behind, oldest last, since `list` is newest first.
+        let mut surviving: Vec<usize> = (0..entries.len())
+            .filter(|index| !removing.contains(index))
+            .collect();
+
+        // Ordered by how much a journal is worth keeping, most first: unfinished
+        // before finished, and newer before older. The cap is then applied by
+        // dropping from the end, so what goes is the oldest duplicate of work
+        // that already has a report.
+        surviving.sort_by_key(|&index| {
+            let entry = &entries[index];
+            (
+                entry.is_complete(),
+                std::cmp::Reverse(entry.manifest.created_at),
+            )
+        });
+
+        while surviving.len() > cap {
+            let Some(index) = surviving.pop() else { break };
+            if entries[index].lock.is_resumable() {
+                removing.push(index);
+            }
+        }
+
+        removing.sort_unstable();
+        removing
+    }
+}
+
+/// What a prune did, and what it left alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pruned {
+    /// The journals removed, by id.
+    pub removed: Vec<String>,
+    /// The journals a policy selected but that could not be removed, each with
+    /// why.
+    ///
+    /// Reported rather than swallowed: a sweep that quietly leaves things behind
+    /// is one nobody can tell has stopped working.
+    pub held: Vec<Held>,
+}
+
+/// A journal a prune could not remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    /// Which journal.
+    pub id: String,
+    /// Why it is still there.
+    pub reason: String,
+}
+
+/// Removes the journals under `root` that `retention` no longer keeps.
+///
+/// Journals a scan is writing are never removed, and are not reported as held
+/// either: they were never selected. What reaches [`Pruned::held`] is a journal
+/// the policy chose and the filesystem refused.
+pub fn prune(root: &Path, retention: &Retention) -> Result<Pruned, JournalError> {
+    let entries = list(root)?;
+    let mut pruned = Pruned::default();
+
+    for index in retention.expired(&entries, SystemTime::now()) {
+        let entry = &entries[index];
+        match remove(&entry.directory) {
+            Ok(()) => pruned.removed.push(entry.manifest.id.clone()),
+            Err(error) => pruned.held.push(Held {
+                id: entry.manifest.id.clone(),
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(pruned)
+}
 
 /// How often a running scan writes down how far it got.
 ///
@@ -567,7 +852,17 @@ pub fn spawn_checkpoints(
                     // scan over: the previous one still stands, and the scan is
                     // still producing results. Reported through the same channel
                     // every other narrowing uses.
-                    if let Err(e) = journal.record(&ctx.take_changed_hosts(), ctx.settlements()) {
+                    let changed = ctx.take_changed_hosts();
+                    let outcome = if journal.should_compact(ctx.host_count()) {
+                        // The snapshot covers `changed` as well, so nothing is
+                        // lost by not appending them.
+                        journal.compact(&ctx.hosts_snapshot())
+                    } else {
+                        journal.record_hosts(&changed)
+                    }
+                    .and_then(|()| journal.checkpoint(ctx.settlements()));
+
+                    if let Err(e) = outcome {
                         ctx.record_failure(
                             crate::scanner::session::ScannerKind::Composite,
                             format!("journal checkpoint failed, so a resume would replay further back than it should: {e}"),
@@ -963,5 +1258,355 @@ mod tests {
         let (journal, _) =
             Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
         assert!(journal.restored().is_empty());
+    }
+
+    fn aged(id: &str, created_at: SystemTime, settled: u64, total: u128) -> Entry {
+        Entry {
+            directory: PathBuf::from(id),
+            manifest: Manifest {
+                journal_version: crate::journal::JOURNAL_VERSION,
+                id: id.to_string(),
+                engine_version: "0.0.0".to_string(),
+                created_at,
+                plan: crate::journal::manifest::PlanFingerprint::of(
+                    &plan("192.0.2.1", "80"),
+                    TcpScanTechnique::Syn,
+                    true,
+                ),
+                total_targets: total,
+                summary: String::new(),
+            },
+            checkpoint: Some(Checkpoint {
+                watermark: settled,
+                settled_above: Vec::new(),
+            }),
+            lock: LockState::Free,
+        }
+    }
+
+    fn ago(seconds: u64) -> SystemTime {
+        now() - Duration::from_secs(seconds)
+    }
+
+    fn now() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
+    }
+
+    /// Finished journals age out; unfinished ones do not, because they are the
+    /// only copy of work somebody may still mean to continue.
+    #[test]
+    fn age_removes_finished_journals_and_keeps_unfinished_ones() {
+        let entries = vec![
+            aged("finished-old", ago(100), 1, 1),
+            aged("unfinished-old", ago(100), 0, 1),
+            aged("finished-new", ago(1), 1, 1),
+        ];
+
+        let retention = Retention {
+            completed_for: Some(Duration::from_secs(50)),
+            incomplete_for: None,
+            keep_at_most: None,
+        };
+
+        assert_eq!(retention.expired(&entries, now()), vec![0]);
+    }
+
+    /// A journal something is writing is never selected, however old.
+    #[test]
+    fn a_live_journal_is_never_pruned() {
+        let mut entries = vec![aged("held", ago(10_000), 1, 1)];
+        entries[0].lock = LockState::Held {
+            pid: 1,
+            last_beat: Duration::from_secs(1),
+        };
+
+        let retention = Retention {
+            completed_for: Some(Duration::from_secs(1)),
+            incomplete_for: Some(Duration::from_secs(1)),
+            keep_at_most: Some(0),
+        };
+
+        assert!(retention.expired(&entries, now()).is_empty());
+    }
+
+    /// The cap takes finished journals before unfinished ones, and the oldest
+    /// first within each — a directory is bounded without losing the work
+    /// somebody has not finished.
+    #[test]
+    fn the_cap_removes_duplicates_before_unfinished_work() {
+        // `list` yields newest first.
+        let entries = vec![
+            aged("finished-new", ago(1), 1, 1),
+            aged("unfinished-mid", ago(2), 0, 1),
+            aged("finished-old", ago(3), 1, 1),
+        ];
+
+        let retention = Retention {
+            completed_for: None,
+            incomplete_for: None,
+            keep_at_most: Some(2),
+        };
+
+        let removed = retention.expired(&entries, now());
+        assert_eq!(removed, vec![2], "the older of the two finished ones");
+
+        // Tighter still, and the unfinished one is the last to go.
+        let retention = Retention {
+            keep_at_most: Some(1),
+            ..retention
+        };
+        let removed = retention.expired(&entries, now());
+        assert_eq!(
+            removed,
+            vec![0, 2],
+            "both finished ones, the unfinished kept"
+        );
+    }
+
+    /// Keeping everything keeps everything.
+    #[test]
+    fn keeping_everything_removes_nothing() {
+        let entries = vec![
+            aged("ancient", ago(900_000), 1, 1),
+            aged("also-ancient", ago(900_000), 0, 1),
+        ];
+
+        assert!(
+            Retention::keep_everything()
+                .expired(&entries, now())
+                .is_empty()
+        );
+    }
+
+    /// The default keeps an unfinished scan whatever its age, and lets a
+    /// finished one go after a month.
+    #[test]
+    fn the_default_favours_unfinished_work() {
+        let two_months = Duration::from_secs(60 * 24 * 60 * 60);
+        let created = now() - two_months;
+
+        let entries = vec![
+            aged("finished", created, 1, 1),
+            aged("unfinished", created, 0, 1),
+        ];
+
+        assert_eq!(Retention::default().expired(&entries, now()), vec![0]);
+    }
+
+    /// End to end: a prune removes what the policy chose and says which.
+    #[test]
+    fn pruning_removes_what_the_policy_selected() {
+        let root = scratch("retention");
+        let map = plan("192.0.2.1", "80");
+
+        // Finished, so the default lets it go once it is old enough.
+        let mut journal = begin(&root, &map);
+        let settlements = Settlements::default();
+        settlements.record(Outcome::Answered { position: 0 });
+        journal.checkpoint(&settlements).expect("checkpoints");
+        let id = journal.manifest().id.clone();
+        journal.close().expect("closes");
+
+        // Nothing is old enough for the default yet.
+        let untouched = prune(&root, &Retention::default()).expect("prunes");
+        assert!(untouched.removed.is_empty());
+        assert_eq!(list(&root).expect("lists").len(), 1);
+
+        // A policy that keeps nothing finished takes it, and names it.
+        let swept = prune(
+            &root,
+            &Retention {
+                completed_for: Some(Duration::ZERO),
+                ..Retention::default()
+            },
+        )
+        .expect("prunes");
+
+        assert_eq!(swept.removed, vec![id]);
+        assert!(swept.held.is_empty());
+        assert!(list(&root).expect("lists").is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A host whose primary address is promoted mid-scan is still one host.
+    ///
+    /// Local discovery calls `Host::consider_primary_ip` when a better address
+    /// turns up, so the same machine can be written once under a link-local
+    /// address and again under a global one. Keyed on the primary alone, those
+    /// come back as two hosts that were never two.
+    #[test]
+    fn a_host_written_under_two_addresses_comes_back_as_one() {
+        use crate::model::host::HostStatus;
+
+        let root = scratch("promoted");
+        let map = plan("192.0.2.1", "80");
+        let link_local: std::net::IpAddr = "fe80::1".parse().expect("an address");
+        let global: std::net::IpAddr = "2001:db8::1".parse().expect("an address");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+
+            // Found over its link-local address first.
+            let mut early = Host::new(link_local);
+            early.set_status(HostStatus::Up);
+            journal.record_hosts(&[early]).expect("records");
+
+            // Then a global address arrives and takes the primary slot.
+            let mut promoted = Host::new(link_local);
+            promoted.add_ip(global);
+            assert!(
+                promoted.consider_primary_ip(global),
+                "the global address should lead"
+            );
+            promoted.set_hostname(Some("router.example".to_string()));
+            journal.record_hosts(&[promoted]).expect("records again");
+
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let (journal, _) =
+            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+
+        let restored = journal.restored();
+        assert_eq!(
+            restored.len(),
+            1,
+            "one machine, written twice: {:?}",
+            restored.iter().map(Host::primary_ip).collect::<Vec<_>>()
+        );
+        assert!(restored[0].is_alive(), "the first record's status survived");
+        assert_eq!(restored[0].hostname(), Some("router.example"));
+    }
+
+    /// A journal holds the addresses an engagement was pointed at and what was
+    /// found there. Nobody else on the machine has business reading it.
+    #[cfg(unix)]
+    #[test]
+    fn every_file_a_journal_writes_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = scratch("modes");
+        let map = plan("192.0.2.1", "80");
+
+        let mut journal = begin(&root, &map);
+        let settlements = Settlements::default();
+        settlements.record(Outcome::Answered { position: 0 });
+        journal
+            .record(
+                &[Host::new("192.0.2.1".parse().expect("an address"))],
+                &settlements,
+            )
+            .expect("records");
+        let directory = journal.directory().to_path_buf();
+
+        let mode_of = |path: &Path| {
+            fs::metadata(path)
+                .unwrap_or_else(|e| panic!("{path:?}: {e}"))
+                .permissions()
+                .mode()
+                & 0o777
+        };
+
+        assert_eq!(mode_of(&directory), 0o700, "the directory");
+        for name in [MANIFEST, CURSOR, HOSTS, PHASES, LOCK] {
+            assert_eq!(mode_of(&directory.join(name)), 0o600, "{name}");
+        }
+
+        // And again after a heartbeat, which replaces the lock file.
+        journal.checkpoint(&settlements).expect("beats");
+        assert_eq!(mode_of(&directory.join(LOCK)), 0o600, "after a heartbeat");
+
+        journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A journal that could not take its lock leaves nothing behind, rather than
+    /// a directory that reads as a scan which found nothing.
+    #[test]
+    fn a_journal_that_cannot_be_locked_leaves_no_directory() {
+        let root = scratch("unlockable");
+        let map = plan("192.0.2.1", "80");
+
+        // A file where the scan directory would go: the create cannot proceed,
+        // and whatever it did get to must be undone.
+        let before = list(&root).expect("lists").len();
+        assert_eq!(before, 0);
+
+        let journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        // Held by this process, so a second journal over the same directory is
+        // refused — the same path a real contention takes.
+        assert!(matches!(
+            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true),
+            Err(OpenError::Locked(_))
+        ));
+        assert!(directory.exists(), "the held journal is untouched");
+
+        journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A long scan appends a host each interval anything about it changes, so
+    /// the findings file grows with the scan's duration rather than with what it
+    /// found. Compaction bounds it, and must lose nothing doing so.
+    #[test]
+    fn compaction_bounds_the_findings_file_without_losing_a_host() {
+        use crate::model::host::HostStatus;
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let root = scratch("compaction");
+        let map = plan("192.0.2.1-192.0.2.4", "80");
+        let addresses: Vec<std::net::IpAddr> = (1..=4)
+            .map(|last| format!("192.0.2.{last}").parse().expect("an address"))
+            .collect();
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+
+            // Four hosts, rewritten many times over, as a long scan does.
+            let mut live: Vec<Host> = addresses.iter().map(|ip| Host::new(*ip)).collect();
+            for round in 0..70 {
+                for host in &mut live {
+                    host.set_status(HostStatus::Up);
+                    host.add_port(Port::new(1000 + round, Protocol::Tcp, PortState::Open));
+                }
+                journal.record_hosts(&live).expect("records");
+            }
+
+            assert!(
+                journal.should_compact(live.len()),
+                "280 records for four hosts is what compaction is for"
+            );
+            journal.compact(&live).expect("compacts");
+            assert!(!journal.should_compact(live.len()));
+
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        // The file now holds one record per host.
+        let lines = std::fs::read_to_string(directory.join(HOSTS))
+            .expect("reads")
+            .lines()
+            .count();
+        assert_eq!(lines, 1 + 4, "a header and one record each");
+
+        // And nothing was lost.
+        let (journal, _) =
+            Journal::resume(&directory, &map, TcpScanTechnique::Syn, true).expect("resumes");
+
+        let restored = journal.restored();
+        assert_eq!(restored.len(), 4);
+        for host in restored {
+            assert!(host.is_alive());
+            assert_eq!(host.port_count(), 70, "every round's port survived");
+        }
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

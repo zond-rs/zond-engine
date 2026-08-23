@@ -217,6 +217,23 @@ mod persistence {
     use super::Checkpoint;
     use crate::journal::format::JournalError;
 
+    /// Creates or truncates a file only this user can read.
+    ///
+    /// The mode is set as the file is created rather than after, so there is no
+    /// moment where what a scan is recording can be read by anyone else.
+    fn create_private(path: &Path) -> std::io::Result<fs::File> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        options.open(path)
+    }
+
     impl Checkpoint {
         /// Writes the checkpoint so that a process killed mid-write leaves the
         /// previous one intact.
@@ -240,7 +257,7 @@ mod persistence {
             // file still held open is a footgun on the platforms this may yet
             // reach, and costs nothing to avoid.
             {
-                let mut file = fs::File::create(&temporary)?;
+                let mut file = create_private(&temporary)?;
                 file.write_all(serde_json::to_string(self)?.as_bytes())?;
             }
 

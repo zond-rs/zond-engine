@@ -695,9 +695,12 @@ impl ScanContext {
     /// Seeds the store with hosts an earlier sitting found.
     ///
     /// Merged rather than inserted, so a host this sitting has already seen
-    /// keeps both readings. The restored hosts are not marked as changed: they
-    /// came from the journal, and writing them straight back would be work with
-    /// nothing new in it.
+    /// keeps both readings.
+    ///
+    /// Each restored host is announced, because to a caller watching the stream
+    /// these hosts have just appeared. They are not marked as *changed*, though:
+    /// they came from the journal, and writing them straight back would be work
+    /// with nothing new in it.
     pub fn restore_hosts(&self, hosts: &[Host]) {
         for host in hosts {
             let ip = host.primary_ip();
@@ -707,7 +710,24 @@ impl ScanContext {
                     self.store.insert(ip, host.clone());
                 }
             }
+            let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
         }
+    }
+
+    /// Every host found so far, cloned.
+    ///
+    /// For a journal compacting its findings, which needs the whole state rather
+    /// than what changed recently.
+    pub fn hosts_snapshot(&self) -> Vec<Host> {
+        self.store
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    /// How many hosts have been found so far.
+    pub fn host_count(&self) -> usize {
+        self.store.len()
     }
 
     /// Takes the hosts whose findings have changed since this was last called,

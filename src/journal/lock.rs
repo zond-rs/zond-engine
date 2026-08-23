@@ -478,7 +478,10 @@ mod persistence {
         fn write(path: &Path, record: &LockRecord) -> std::io::Result<()> {
             let temporary = path.with_extension("lock-tmp");
             {
-                let mut file = fs::File::create(&temporary)?;
+                // Private from creation, as `create_exclusively` makes the
+                // original: a heartbeat replaces the file, and a replacement
+                // that widened its mode would undo that.
+                let mut file = create_private(&temporary)?;
                 file.write_all(
                     serde_json::to_string(record)
                         .map_err(std::io::Error::other)?
@@ -487,6 +490,23 @@ mod persistence {
             }
             fs::rename(&temporary, path)
         }
+    }
+
+    /// Creates or truncates a file only this user can read.
+    ///
+    /// The mode is set as the file is created rather than after, so there is no
+    /// moment where what a scan is recording can be read by anyone else.
+    fn create_private(path: &Path) -> std::io::Result<fs::File> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        options.open(path)
     }
 
     impl Drop for Lock {

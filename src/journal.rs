@@ -102,8 +102,41 @@
 //! locked behind a process id that has been reissued.
 //!
 //! [`Journal`] is the whole of it on disk: a directory holding the manifest, the
-//! cursor and the lock, created for a scan and reopened to continue one.
-//! [`store::list`] enumerates them.
+//! cursor, the findings and the lock, created for a scan and reopened to
+//! continue one. [`store::list`] enumerates them and
+//! [`store::prune`](store::prune) applies a [`Retention`](store::Retention)
+//! policy, so a state directory nobody looks at does not grow without bound.
+//!
+//! ## What survives what
+//!
+//! A journal is written as the scan runs and flushed but not `fsync`ed, because
+//! every failure below except the last is a *process* death, and the page cache
+//! outlives a process. Paying a flush on every checkpoint would buy protection
+//! against one case at a cost on every scan that does not need it.
+//!
+//! | Failure | Survives | What is lost |
+//! |---|---|---|
+//! | `SIGINT`, `SIGTERM` | yes | nothing: the scan finishes its last checkpoint |
+//! | A dropped session, `SIGHUP` | yes | at most one checkpoint interval |
+//! | An out-of-memory kill, a panic | yes | at most one checkpoint interval |
+//! | The machine losing power | mostly | one interval, plus whatever the page cache had not flushed |
+//! | A disk filling mid-write | yes | nothing: the cursor is replaced by rename, so the previous one stands |
+//!
+//! An interval is [`CHECKPOINT_EVERY`](store::CHECKPOINT_EVERY). Losing one
+//! costs the targets settled within it being probed again, never a target being
+//! skipped: what a cursor does not claim is re-probed.
+//!
+//! ## Journalling is something a caller asks for
+//!
+//! There is no setting that turns it on, because there is nothing to turn off: a
+//! scan journals when a caller hands it a journal and does not when they do not.
+//! The engine never writes to a filesystem it was not pointed at — see
+//! `import::settings`, which draws that boundary and explains it — so declining
+//! is the default and asking is the deliberate act.
+//!
+//! A front end that wants every scan resumable opens a journal for every scan,
+//! and one that wants a standing "not on this machine" keeps that preference in
+//! its own configuration. Neither is the engine's business.
 
 //! [`manifest`] is what a journal is a journal *of*: the plan its positions are
 //! counted in, fingerprinted, so a resume against an edited plan is refused

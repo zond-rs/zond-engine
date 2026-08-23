@@ -27,8 +27,8 @@
 //!
 //! | | Journal root |
 //! |---|---|
-//! | Unix (incl. macOS) | `$XDG_STATE_HOME/zond/scans`, else `$HOME/.local/state/zond/scans` |
-//! | Windows | `%LOCALAPPDATA%\zond\scans` |
+//! | Unix (incl. macOS) | `$XDG_STATE_HOME/zond/journals`, else `$HOME/.local/state/zond/journals` |
+//! | Windows | `%LOCALAPPDATA%\zond\journals` |
 //!
 //! `%LOCALAPPDATA%` rather than the `%APPDATA%` the settings module uses, and
 //! the difference is the point: `%APPDATA%` roams between machines on a domain
@@ -40,7 +40,7 @@
 //!
 //! Every raw strategy needs root, so most scans are run under `sudo`, and under
 //! `sudo` `$HOME` is root's. Left alone, journals would be written to
-//! `/root/.local/state/zond/scans`, while anything that lists them — which needs
+//! `/root/.local/state/zond/journals`, while anything that lists them — which needs
 //! no privilege, and so is not normally run under `sudo` — reads the invoking
 //! user's directory and finds nothing. The feature would appear broken to most of
 //! its users on first contact, and the data would be sitting somewhere they did
@@ -72,12 +72,17 @@ use std::path::PathBuf;
 /// vendor directory, two roots, so `zond/` means the same thing in both.
 const DIRECTORY: &str = "zond";
 
-/// The journal's own subdirectory, holding one directory per scan.
+/// The subdirectory holding one journal per scan.
 ///
 /// Named rather than implied because the state root is going to acquire
-/// neighbours — a fingerprint submission queue is the obvious next one — and a
-/// scan journal that had claimed the root would have to move when it did.
-const SCANS: &str = "scans";
+/// neighbours — a fingerprint submission queue is the obvious next one — and
+/// journals that had claimed the root would have to move when it did.
+///
+/// `journals` rather than `scans`, so that everything from this module to
+/// whatever a front end calls its subcommand uses one word for one thing. A
+/// directory of `scans` beside a `Journal` type invites the reader to wonder
+/// what the difference is.
+const JOURNALS: &str = "journals";
 
 /// Who invoked a process that is now running elevated.
 ///
@@ -107,7 +112,7 @@ pub struct InvokingUser {
 /// Under `sudo`, this is the *invoking* user's directory. See the module
 /// documentation.
 pub fn root() -> Option<PathBuf> {
-    state_root().map(|root| root.join(DIRECTORY).join(SCANS))
+    state_root().map(|root| root.join(DIRECTORY).join(JOURNALS))
 }
 
 /// Where one scan's directory would be, given its id.
@@ -296,7 +301,10 @@ mod tests {
     fn the_root_ends_in_the_expected_directories() {
         if let Some(path) = root() {
             assert!(path.is_absolute(), "{path:?}");
-            assert!(path.ends_with(format!("{DIRECTORY}/{SCANS}")), "{path:?}");
+            assert!(
+                path.ends_with(format!("{DIRECTORY}/{JOURNALS}")),
+                "{path:?}"
+            );
         }
     }
 
