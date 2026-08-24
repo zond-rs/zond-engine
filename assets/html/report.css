@@ -882,3 +882,52 @@ ul {
     overflow-x: visible;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   The comparison page
+   ---------------------------------------------------------------------------
+   A comparison reuses the report's masthead, tiles, notices and host cards, so
+   what is added here is only what has no counterpart there: the three states a
+   host can be in between two scans, and the before/after pair a changed field
+   is rendered as.
+   --------------------------------------------------------------------------- */
+
+/* A host only the later scan holds, only the earlier one, or both. The colour
+   carries the direction so a reader running down the left edge sees the shape of
+   the night before reading a word of it. */
+.d-added   { border-left: 3px solid var(--found); }
+.d-removed { border-left: 3px solid var(--none); }
+.d-changed { border-left: 3px solid var(--partial); }
+
+/* One field that moved. `was` and `now` are a pair and are read as one line, so
+   they sit on one row with the arrow between them rather than in two columns
+   that a long value would tear apart. */
+.change {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: baseline;
+  padding: 0.2rem 0;
+}
+.change-kind {
+  min-width: 11rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.change-was { text-decoration: line-through; opacity: 0.7; }
+.change-arrow { color: var(--faint); }
+
+/* Said once per host, and only when it changes what the block above means: the
+   other scan is not known to have looked here at all. */
+.unconfirmed {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+@media print {
+  .d-added, .d-removed, .d-changed { border-left-width: 2pt; }
+  .change-was { text-decoration: line-through; opacity: 1; }
+}

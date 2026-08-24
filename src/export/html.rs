@@ -93,7 +93,7 @@ use crate::scanner::report::ScanReport;
 /// A file of its own rather than a string in this one: it is a stylesheet, it is
 /// edited as a stylesheet, and a test pins the class names it defines to the
 /// ones written here.
-const STYLE: &str = include_str!("../../assets/html/report.css");
+pub(crate) const STYLE: &str = include_str!("../../assets/html/report.css");
 
 /// The heading a report carries when the caller names none.
 const DEFAULT_HEADING: &str = "Scan report";
@@ -110,19 +110,19 @@ const PORT_COLUMNS: usize = 7;
 // ---------------------------------------------------------------------------
 
 /// Something is there and answering: `up`, `open`.
-const TONE_FOUND: &str = "s-found";
+pub(crate) const TONE_FOUND: &str = "s-found";
 
 /// Something is there and the scan could not pin it down. Drawn hatched as well
 /// as coloured, because green against amber is the pair a colour-blind reader
 /// loses first and a printed report is often greyscale.
-const TONE_PARTIAL: &str = "s-partial";
+pub(crate) const TONE_PARTIAL: &str = "s-partial";
 
 /// A definite negative: `down`, `closed`. Real evidence, and rarely what the
 /// reader came for.
-const TONE_INERT: &str = "s-inert";
+pub(crate) const TONE_INERT: &str = "s-inert";
 
 /// Nothing was established at all.
-const TONE_NONE: &str = "s-none";
+pub(crate) const TONE_NONE: &str = "s-none";
 
 /// The tone a host status is drawn in.
 fn host_tone(status: HostStatus) -> &'static str {
@@ -1230,9 +1230,13 @@ fn write_colophon(
 /// a report claims to have found should be legible as bytes.
 ///
 /// This writes markup, so it belongs in element content and nowhere else. No
-/// value from a report is written into an attribute anywhere in this module,
-/// which is what keeps that a rule rather than something to remember.
-struct Text<'a>(&'a str);
+/// value from a report is written into an attribute anywhere in this module or
+/// in [`diff::html`](super::diff::html), which is what keeps that a rule rather
+/// than something to remember.
+///
+/// Shared with the comparison page rather than copied, so there is one escaper
+/// in this crate and no second one to keep in step with it.
+pub(crate) struct Text<'a>(pub(crate) &'a str);
 
 impl fmt::Display for Text<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1261,7 +1265,7 @@ impl fmt::Display for Text<'_> {
 /// as its own source. A neutralized character therefore becomes the replacement
 /// character, which already means "something was here that this cannot show"
 /// everywhere else.
-struct Plain<'a>(&'a str);
+pub(crate) struct Plain<'a>(pub(crate) &'a str);
 
 impl fmt::Display for Plain<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

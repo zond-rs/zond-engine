@@ -53,6 +53,9 @@
 
 pub mod schema;
 
+#[cfg(feature = "export-html")]
+pub mod html;
+
 #[cfg(feature = "export-json")]
 pub mod json;
 
@@ -60,6 +63,9 @@ use std::io::Write;
 
 use crate::diff::ScanDiff;
 use crate::export::ExportError;
+
+#[cfg(feature = "export-html")]
+pub use html::HtmlDiffExporter;
 
 #[cfg(feature = "export-json")]
 pub use json::JsonDiffExporter;

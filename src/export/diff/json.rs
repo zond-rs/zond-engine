@@ -324,4 +324,3 @@ mod tests {
         assert_eq!(bytes.last(), Some(&b'\n'));
     }
 }
-
