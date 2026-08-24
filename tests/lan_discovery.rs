@@ -874,3 +874,71 @@ async fn every_frame_the_sweep_sends_is_counted() {
         "the simulated segment accepts every frame"
     );
 }
+
+// ---------------------------------------------------------------------------
+// What the phase records about the ground it covered
+// ---------------------------------------------------------------------------
+
+/// The phase a sweep produces says it covered the whole link, not only the
+/// addresses it was handed.
+///
+/// A sweep sends one all-nodes solicitation that every IPv6 neighbour on the
+/// segment is required to answer, so it reaches hosts holding addresses no
+/// target set could have named. Nothing else in a report expresses that: a link
+/// is not an address range. Without this the neighbours a sweep finds read as
+/// ground nobody covered, and a comparison can never say a new device *appeared*
+/// on a segment somebody was watching.
+///
+/// Asserted through the finished report rather than through the context,
+/// because the whole path — strategy, context, recorder, scope — is what has to
+/// work. Reading the context would pass with the last two links missing.
+#[tokio::test]
+async fn a_segment_sweep_records_the_link_it_covered() {
+    use zond_engine::ZondConfig;
+    use zond_engine::model::exclusion::Exclusions;
+    use zond_engine::scanner::report::{PhaseRecorder, ScanKind, TargetScope};
+
+    let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A));
+    let (_session, ctx) = sweep_audited(&lan, &[v4(10)], Scope::Sweep).await;
+
+    let mut ips = IpSet::new();
+    ips.insert(v4(10));
+    let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
+    let report =
+        PhaseRecorder::start(ScanKind::Discovery, true, scope, &ZondConfig::default()).finish(&ctx);
+
+    let links = report.phases()[0].targets().links();
+    assert_eq!(
+        links.len(),
+        1,
+        "a sweep covers the link it was run on: {links:?}"
+    );
+    assert_eq!(links[0].name(), scanner_interface().name);
+}
+
+/// A targeted run sends no all-nodes solicitation, so it covers the addresses it
+/// was given and no more.
+///
+/// The other half of the pair, and the one that stops the record over-claiming:
+/// `zond scan` on one host must not report that it swept the segment that host
+/// is on.
+#[tokio::test]
+async fn a_targeted_run_claims_no_link() {
+    use zond_engine::ZondConfig;
+    use zond_engine::model::exclusion::Exclusions;
+    use zond_engine::scanner::report::{PhaseRecorder, ScanKind, TargetScope};
+
+    let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A));
+    let (_session, ctx) = sweep_audited(&lan, &[v4(10)], Scope::Targeted).await;
+
+    let mut ips = IpSet::new();
+    ips.insert(v4(10));
+    let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
+    let report =
+        PhaseRecorder::start(ScanKind::Discovery, true, scope, &ZondConfig::default()).finish(&ctx);
+
+    assert!(
+        report.phases()[0].targets().links().is_empty(),
+        "nothing was sent that every host on the link would answer"
+    );
+}

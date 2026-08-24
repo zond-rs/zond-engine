@@ -288,6 +288,7 @@
       "additionalProperties": false,
       "required": [
         "ranges",
+        "links",
         "addresses",
         "probes",
         "ports",
@@ -300,6 +301,13 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/range"
+          }
+        },
+        "links": {
+          "description": "The links this phase swept whole, by interface name, ascending. `ranges` is what a target set named; a sweep of a local segment also reaches every host on the link, which is ground no range expresses - an all-nodes solicitation is one probe every IPv6 neighbour is required to answer. A consumer checking whether a host was in scope reads both. Empty for a phase that swept no segment.",
+          "type": "array",
+          "items": {
+            "type": "string"
           }
         },
         "addresses": {

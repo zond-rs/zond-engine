@@ -122,7 +122,14 @@ pub struct NdpProtocol;
 impl DiscoveryProtocol for NdpProtocol {
     fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
         match ndp::advertised_target(frame) {
-            Some(target) => Ok(ProtocolMatch::Solicited(Some(IpAddr::V6(target)))),
+            Some(target) if is_assignable(target) => {
+                Ok(ProtocolMatch::Solicited(Some(IpAddr::V6(target))))
+            }
+            // An advertisement naming an address nothing can hold proves its
+            // sender exists and says nothing about *which* address that is, so
+            // the frame is left for another protocol to claim rather than
+            // crediting a host with an address it cannot have.
+            Some(_) => Ok(ProtocolMatch::Unhandled),
             None => Ok(ProtocolMatch::Unhandled),
         }
     }
@@ -130,6 +137,30 @@ impl DiscoveryProtocol for NdpProtocol {
     fn status_protocol(&self) -> StatusProtocol {
         StatusProtocol::Ndp
     }
+}
+
+/// Whether an address is one an interface can actually hold.
+///
+/// A neighbour advertisement carries whatever its sender put in it, and devices
+/// on real segments send ones naming addresses that are not addresses. Two are
+/// worth refusing by name because both would otherwise be recorded as an address
+/// of the host that sent them, and then reported as an address it *gained* the
+/// next time the segment was swept:
+///
+/// - **The unspecified address.** `::` names nothing by definition.
+/// - **A link-local with a zero interface identifier.** `fe80::` is the prefix,
+///   not an address in it; RFC 4291 gives every link-local unicast address a
+///   64-bit interface identifier, and one made entirely of zeros is reserved.
+fn is_assignable(address: std::net::Ipv6Addr) -> bool {
+    if address.is_unspecified() {
+        return false;
+    }
+
+    let segments = address.segments();
+    let link_local = (segments[0] & 0xffc0) == 0xfe80;
+    let no_interface_id = segments[4..] == [0, 0, 0, 0];
+
+    !(link_local && no_interface_id)
 }
 
 /// Recognizes ICMPv6 echo replies as answers to the all-nodes echo request sent
@@ -195,6 +226,28 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
 
 #[cfg(test)]
 mod tests {
+
+    /// A segment produced an advertisement naming `fe80::`, and the host that
+    /// sent it was then credited with an address nothing can hold — which read
+    /// as an address it had *gained* when the segment was swept again.
+    #[test]
+    fn an_advertisement_naming_an_address_nothing_can_hold_is_left_alone() {
+        use std::net::Ipv6Addr;
+
+        assert!(!is_assignable(Ipv6Addr::UNSPECIFIED));
+        assert!(
+            !is_assignable("fe80::".parse().expect("a valid address")),
+            "the link-local prefix is not an address in it"
+        );
+
+        assert!(is_assignable("fe80::1".parse().expect("a valid address")));
+        assert!(is_assignable(
+            "fe80::ca52:61ff:fec7:594".parse().expect("a valid address")
+        ));
+        assert!(is_assignable(
+            "2a02:908:8c1:b880::1".parse().expect("a valid address")
+        ));
+    }
     use super::*;
     use crate::protocols::{arp, ethernet, ip as ip_protocol};
     use pnet::datalink::MacAddr;

@@ -40,11 +40,15 @@
 //! evidence instead — which is the same inference this engine's own port scanner
 //! makes.
 //!
-//! **A service nmap identified by `method="table"` is dropped.** That method
-//! means nmap looked the port number up in a file, and this engine never records
-//! a service it did not obtain from the service itself. Keeping them would make
-//! every well-known port read as a service that appeared the moment an nmap scan
-//! entered a comparison. Only `method="probed"` survives.
+//! **A service nmap identified by `method="table"` is recorded at confidence
+//! zero.** That method means nmap looked the port number up in a file, which is
+//! exactly what this engine's own
+//! [`baseline_service`](crate::fingerprint::baseline_service) does to every
+//! classified port. Recording it the same way keeps the two symmetrical, and
+//! [`Service::is_inferred`](crate::model::port::Service::is_inferred) is what
+//! tells either apart from an identification — a comparison ignores both, so
+//! two tools with different port catalogues do not appear to disagree about
+//! every port on the network.
 //!
 //! ## What the report says it covered
 //!
@@ -103,9 +107,12 @@ const FORMAT: &str = "nmap XML";
 /// by the element the parser is inside, never by the name alone.
 ///
 /// `args` is deliberately absent: it runs to kilobytes and nothing reads it.
-/// `services` is kept despite doing the same, because it is the one thing nmap
-/// records that this engine's own scope could not until recently — the resolved
-/// port set — and it is what lets a comparison say an endpoint was probed.
+/// `services` and `ports` are kept despite doing the same, because between them
+/// they are what nmap knows and its port list does not say: which ports were
+/// walked, and which of them it found uninteresting enough to leave out. Both
+/// are [lossy](crate::import::xml::Parser::with_lossy) — a sparse sweep of every
+/// port could write several hundred kilobytes of either, and neither is worth
+/// refusing a file over.
 const KEPT: &[&[u8]] = &[
     b"addr",
     b"addrtype",
@@ -130,8 +137,16 @@ const KEPT: &[&[u8]] = &[
     b"elapsed",
     b"numservices",
     b"services",
+    b"ports",
     b"scanner",
 ];
+
+/// The attributes dropped rather than refused when they run long.
+///
+/// Both are port lists, and both only ever enrich: without them a comparison
+/// falls back to saying it cannot tell whether an endpoint was probed, which is
+/// the honest answer rather than a wrong one.
+const LOSSY: &[&[u8]] = &[b"services", b"ports"];
 
 /// The longest attribute value kept, in bytes.
 ///
@@ -163,10 +178,13 @@ impl NmapXmlReportReader {
 impl ReportReader for NmapXmlReportReader {
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
         let mut parser = Parser::new(input, self.options.limits.max_line_bytes, FORMAT, KEPT)
-            .with_max_value_bytes(MAX_VALUE_BYTES);
+            .with_max_value_bytes(MAX_VALUE_BYTES)
+            .with_lossy(LOSSY);
         let mut run = Run::default();
         let mut host: Option<HostAcc> = None;
         let mut port: Option<PortAcc> = None;
+        // The state an `<extraports>` block is reporting, while inside one.
+        let mut bulk: Option<String> = None;
         let mut inside = Inside::Nothing;
 
         loop {
@@ -214,6 +232,18 @@ impl ReportReader for NmapXmlReportReader {
                             }
                         }
                         Tag::Port => port = Some(PortAcc::open(&parser.element, &parser)?),
+                        // The ports nmap did not think worth listing one by
+                        // one. It still probed them and still knows what it
+                        // found, and both are here.
+                        Tag::ExtraPorts => {
+                            bulk = attr(&parser.element, b"state");
+                        }
+                        Tag::ExtraReasons => {
+                            if let (Some(host), Some(state)) = (host.as_mut(), bulk.as_deref()) {
+                                let state = PortAcc::state_named(state, &parser)?;
+                                host.extend(state, &parser.element);
+                            }
+                        }
                         Tag::State => {
                             if port.is_some() {
                                 let settled = PortAcc::read_state(&parser.element, &parser)?;
@@ -280,6 +310,7 @@ impl ReportReader for NmapXmlReportReader {
                 }
 
                 Event::End => match Tag::of(&parser.element.name) {
+                    Tag::ExtraPorts => bulk = None,
                     Tag::Host => run.close(host.take()),
                     Tag::Port => {
                         if let (Some(host), Some(port)) = (host.as_mut(), port.take()) {
@@ -349,6 +380,8 @@ enum Tag {
     Address,
     HostName,
     Port,
+    ExtraPorts,
+    ExtraReasons,
     State,
     Service,
     Cpe,
@@ -368,6 +401,8 @@ impl Tag {
             b"address" => Tag::Address,
             b"hostname" => Tag::HostName,
             b"port" => Tag::Port,
+            b"extraports" => Tag::ExtraPorts,
+            b"extrareasons" => Tag::ExtraReasons,
             b"state" => Tag::State,
             b"service" => Tag::Service,
             b"cpe" => Tag::Cpe,
@@ -543,6 +578,9 @@ impl Run {
             let mut scope = TargetScope::from_ip_set(&mut self.accounted, &Exclusions::none());
             scope = TargetScope::from_parts(ScopeParts {
                 ranges: scope.ranges().to_vec(),
+                // Nmap's document names no interface, so it cannot say it swept
+                // a link whole even where it did.
+                links: Vec::new(),
                 addresses: scope.addresses(),
                 probes: self.probes,
                 ports,
@@ -554,6 +592,7 @@ impl Run {
         } else {
             TargetScope::from_parts(ScopeParts {
                 ranges: Vec::new(),
+                links: Vec::new(),
                 addresses: 0,
                 probes: self.probes,
                 ports,
@@ -669,6 +708,44 @@ impl HostAcc {
         match address {
             Address::Ip(ip) => self.addresses.push(ip),
             Address::Hardware(mac) => self.macs.push(mac),
+        }
+    }
+
+    /// Takes an `<extrareasons>`, which names every port nmap left out of its
+    /// list along with what it found there.
+    ///
+    /// This is the difference between a comparison that is readable and one that
+    /// is a wall. Nmap lists the interesting ports and summarises the rest; this
+    /// engine's own scans record every port they probed. Without this the
+    /// hundreds nmap summarised read as ports that *appeared* the moment the two
+    /// were compared, when in fact both scans found them closed.
+    ///
+    /// A `ports` attribute that ran past the parser's bound is simply absent,
+    /// and then nothing is recorded — which reads as "not probed" rather than as
+    /// a wrong verdict. See [`LOSSY`].
+    fn extend(&mut self, state: PortState, element: &Element) {
+        let Some(list) = element.value(b"ports") else {
+            return;
+        };
+        let protocol = match element.value(b"proto") {
+            Some("udp") => Protocol::Udp,
+            // `tcp`, and anything this engine has no word for is left alone
+            // rather than recorded as TCP.
+            Some("tcp") | None => Protocol::Tcp,
+            Some(_) => return,
+        };
+
+        let Some(ports) = services(list, protocol) else {
+            return;
+        };
+        let reason = element.value(b"reason").map(str::to_owned);
+
+        for (number, protocol) in ports.iter() {
+            let mut port = Port::new(number, protocol, state);
+            if let Some(reason) = &reason {
+                port = port.with_discovery(Discovery::new(scan_response(reason)));
+            }
+            self.ports.push(port);
         }
     }
 
@@ -864,7 +941,18 @@ impl PortAcc {
             return Ok(None);
         };
 
-        let state = match state {
+        Ok(Some((
+            Self::state_named(state, parser)?,
+            attr(element, b"reason"),
+        )))
+    }
+
+    /// One of nmap's six verdicts, in this engine's terms.
+    ///
+    /// An unrecognised one is refused rather than guessed at, for the reason the
+    /// target reader gives: it is the value that decides what the record says.
+    fn state_named(state: &str, parser: &Parser<'_>) -> Result<PortState, ImportError> {
+        Ok(match state {
             "open" => PortState::Open,
             "closed" => PortState::Closed,
             "filtered" => PortState::Filtered,
@@ -876,28 +964,29 @@ impl PortAcc {
                     "a port is in state '{other}', which this engine has no verdict for"
                 )));
             }
-        };
-
-        Ok(Some((state, attr(element, b"reason"))))
+        })
     }
 
     /// Takes the `<service>` inside a port, unless nmap only looked the number
     /// up.
     fn identify(&mut self, element: &Element) {
-        // `table` means nmap read the port number out of a file. See the module
-        // documentation for why that is not a finding.
-        if element.value(b"method") != Some("probed") {
-            return;
-        }
         let Some(name) = element.value(b"name") else {
             return;
         };
 
-        let confidence = element
-            .value(b"conf")
-            .and_then(|c| c.parse::<u8>().ok())
-            .unwrap_or(0)
-            .saturating_mul(CONFIDENCE_SCALE);
+        // `table` means nmap read the port number out of a file rather than
+        // asking the service. Confidence zero is how this engine records the
+        // same thing about its own port-number labels, and what a comparison
+        // reads to know it is not a finding.
+        let confidence = if element.value(b"method") == Some("probed") {
+            element
+                .value(b"conf")
+                .and_then(|c| c.parse::<u8>().ok())
+                .unwrap_or(0)
+                .saturating_mul(CONFIDENCE_SCALE)
+        } else {
+            0
+        };
 
         let mut service = Service::new(name, confidence);
         if let Some(product) = element.value(b"product") {
@@ -1046,16 +1135,47 @@ mod tests {
         );
     }
 
+    /// A port-number lookup is recorded, and recorded as the guess it is.
+    ///
+    /// This engine seeds the same label on every classified port of its own, so
+    /// dropping nmap's would make the two asymmetrical — and a comparison would
+    /// then report a service on every well-known port the moment an nmap scan
+    /// entered one.
     #[test]
-    fn a_service_nmap_looked_up_in_a_table_is_not_recorded() {
+    fn a_service_nmap_looked_up_in_a_table_is_marked_as_inferred() {
         let report = read(SWEEP).expect("a readable document");
         let host = report.host(&ip(10)).expect("the host");
         let http = host.ports().find(|port| port.number() == 80).expect("80");
 
         assert_eq!(http.state(), PortState::Closed);
+        let service = http.service().expect("the label is kept");
+        assert_eq!(service.name(), "http");
         assert!(
-            http.service().is_none(),
-            "a port-number lookup is not a service this engine would have recorded"
+            service.is_inferred(),
+            "nothing asked the port what it was running"
+        );
+
+        // And a probed one is not.
+        let ssh = host.ports().find(|port| port.number() == 22).expect("22");
+        assert!(!ssh.service().expect("a probed service").is_inferred());
+    }
+
+    /// The property the one above exists to protect.
+    #[test]
+    fn a_port_number_label_never_reaches_a_comparison() {
+        let report = read(SWEEP).expect("a readable document");
+
+        // The same scan with nmap's table label changed to another one, which is
+        // what a different port catalogue amounts to.
+        let renamed = SWEEP.replace(
+            r#"<service name="http" method="table" conf="3"/>"#,
+            r#"<service name="www" method="table" conf="3"/>"#,
+        );
+        let other = read(&renamed).expect("a readable document");
+
+        assert!(
+            ScanDiff::between(&report, &other).is_empty(),
+            "two port catalogues disagreeing is not a change to the network"
         );
     }
 

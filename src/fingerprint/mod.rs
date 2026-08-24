@@ -147,13 +147,24 @@ pub fn lookup_service_name(port: u16, _protocol: Protocol) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// The confidence-0 service every scan path seeds before deeper fingerprinting:
-/// the port→name label, or the `???` placeholder when a port has no registered
-/// name. Centralising it keeps the SYN, connect, and service-detection paths
-/// agreeing on the same starting point.
-pub fn baseline_service(port: u16, protocol: Protocol) -> Service {
-    let name = lookup_service_name(port, protocol).unwrap_or_else(|| "???".to_string());
-    Service::new(name, 0)
+/// The confidence-0 label every scan path seeds before deeper fingerprinting:
+/// the name the port number is registered under, and **nothing at all where it
+/// is registered under none**.
+///
+/// Centralising it keeps the SYN, connect and service-detection paths agreeing
+/// on the same starting point.
+///
+/// A port with no registered name yields `None` rather than a placeholder.
+/// A placeholder is a service name as far as every consumer is concerned: it
+/// reaches the exported JSON, the CSV a spreadsheet opens, the HTML somebody
+/// reads and the nmap XML another tool ingests, and each of them then says the
+/// port is running something called `???`. Absence is what the scan actually
+/// established, and absence is representable.
+///
+/// The zero is what marks the rest as guesses; see
+/// [`Service::is_inferred`](crate::model::port::Service::is_inferred).
+pub fn baseline_service(port: u16, protocol: Protocol) -> Option<Service> {
+    lookup_service_name(port, protocol).map(|name| Service::new(name, 0))
 }
 
 /// A [`Port`] in the given `state` carrying only the [`baseline_service`] label.
@@ -164,7 +175,9 @@ pub fn baseline_service(port: u16, protocol: Protocol) -> Service {
 /// [`fingerprint_tcp`] to upgrade in place.
 pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
     let mut classified = Port::new(port, protocol, state);
-    classified.set_service(baseline_service(port, protocol));
+    if let Some(service) = baseline_service(port, protocol) {
+        classified.set_service(service);
+    }
     classified
 }
 
@@ -751,6 +764,47 @@ fn first_printable(responses: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A port number nothing is registered under yields no service at all.
+    ///
+    /// The alternative was a placeholder, and a placeholder is a service name as
+    /// far as every consumer is concerned — the exported JSON, the CSV, the HTML
+    /// page and the nmap XML another tool ingests each then say the port is
+    /// running something called `???`.
+    #[test]
+    fn an_unregistered_port_is_seeded_with_nothing() {
+        use crate::model::port::Protocol;
+
+        // 1 is `tcpmux` and registered; a high ephemeral port is not.
+        assert!(baseline_service(22, Protocol::Tcp).is_some());
+
+        let unregistered = (40_000..=65_535)
+            .find(|port| lookup_service_name(*port, Protocol::Tcp).is_none())
+            .expect("some port in the ephemeral range is unregistered");
+
+        assert!(
+            baseline_service(unregistered, Protocol::Tcp).is_none(),
+            "port {unregistered} invented a service name"
+        );
+        assert!(
+            baseline_port(unregistered, Protocol::Tcp, PortState::Closed)
+                .service()
+                .is_none()
+        );
+    }
+
+    /// And what is seeded is marked as the guess it is.
+    #[test]
+    fn a_seeded_label_is_never_mistaken_for_an_identification() {
+        use crate::model::port::Protocol;
+
+        let seeded = baseline_service(22, Protocol::Tcp).expect("ssh is registered");
+        assert_eq!(seeded.name(), "ssh");
+        assert!(
+            seeded.is_inferred(),
+            "nothing asked port 22 what it was running"
+        );
+    }
     /// The root of a self-hosted application is very often a redirect and
     /// nothing else, and the page one hop away is the only thing that names it.
     #[test]

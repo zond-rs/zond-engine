@@ -91,6 +91,24 @@ impl Service {
         &self.name
     }
 
+    /// Whether the name came from the port number rather than from the service.
+    ///
+    /// A confidence of zero is what every scan path seeds a classified port
+    /// with: the label the port number is registered under, or a placeholder
+    /// where it is registered under none. **It is not a finding.** Nothing was
+    /// asked and nothing answered, and a port called `http` on the strength of
+    /// being port 80 may be anything at all — which is the point
+    /// [`ServiceDetection::Off`](crate::config::ServiceDetection::Off) makes
+    /// about the same label.
+    ///
+    /// Read by anything that must not mistake a guess for an identification:
+    /// [`diff`](crate::diff) ignores an inferred service entirely, because two
+    /// tools with different port catalogues would otherwise appear to disagree
+    /// about every port on the network.
+    pub fn is_inferred(&self) -> bool {
+        self.confidence == 0
+    }
+
     /// Returns the identification confidence score (0-100).
     pub fn confidence(&self) -> u8 {
         self.confidence

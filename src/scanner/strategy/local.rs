@@ -326,6 +326,13 @@ impl HostScanner for LocalScanner {
         // window falls inside the scan.
         if matches!(self.scope, Scope::Sweep) && self.identity.link_local_ipv6.is_some() {
             self.ipv6.arm_solicitation(Instant::now());
+
+            // Recorded where the probe is armed, because this is the one
+            // condition under which the phase covers the whole link rather than
+            // the addresses it was handed. A host found here holds an address
+            // no target set named, and without this the record cannot say it
+            // was looked for.
+            self.ctx.record_sweep(self.identity.zone.clone());
         }
 
         let mut sending_finished = false;

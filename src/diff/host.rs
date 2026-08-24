@@ -182,8 +182,15 @@ pub(crate) fn compare(
     clocks: &Clocks,
 ) -> HostDelta {
     let address = *address;
-    let baseline_coverage = baseline_scope.address(&address);
-    let current_coverage = current_scope.address(&address);
+
+    // Each scope is asked about the record the *other* side holds, because that
+    // is the host whose absence is in question. Where only one side has a
+    // record, both questions are about it.
+    let known = current
+        .or(baseline)
+        .expect("a delta has a record on one side");
+    let baseline_coverage = baseline_scope.of_host(known);
+    let current_coverage = current_scope.of_host(baseline.or(current).expect("likewise"));
 
     let presence = match (baseline, current) {
         (Some(_), Some(_)) => Presence::Both,

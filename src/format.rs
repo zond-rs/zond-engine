@@ -48,6 +48,18 @@
 /// time the engine does.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// The version a comparison document declares, and the highest a reader in this
+/// build understands.
+///
+/// Counted separately from [`SCHEMA_VERSION`] on the same reasoning the journal's
+/// version is counted separately from both: the two answer different questions —
+/// one is "what did this scan find", the other is "what changed between two of
+/// them" — and coupling them would mean a report gaining a field invalidating
+/// every stored comparison. A comparison document *quotes* report documents for
+/// the records on either side of a change, so the two move together often; that
+/// they usually agree is not a reason to make them the same number.
+pub const DIFF_SCHEMA_VERSION: u32 = 1;
+
 /// The name reported in a document's `engine.name` field, and the name a reader
 /// checks to decide whether a document is one this engine wrote.
 pub const ENGINE_NAME: &str = "zond-engine";

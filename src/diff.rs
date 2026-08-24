@@ -596,6 +596,7 @@ mod tests {
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
         let scope = TargetScope::from_parts(ScopeParts {
             ranges: scope.ranges().to_vec(),
+            links: Vec::new(),
             addresses: scope.addresses(),
             probes: None,
             ports,
@@ -617,6 +618,49 @@ mod tests {
         });
 
         ScanReport::recorded("test", vec![phase], hosts)
+    }
+
+    /// A report whose phase swept `covered` and also swept the link on `link`.
+    fn swept(hosts: Vec<Host>, covered: &str, link: &str, at: SystemTime) -> ScanReport {
+        use crate::model::ip::scoped::Zone;
+
+        let mut targets = to_set(&[covered], None, None).expect("a parseable range");
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
+        let scope = TargetScope::from_parts(ScopeParts {
+            ranges: scope.ranges().to_vec(),
+            links: vec![Zone::new(1, link)],
+            addresses: scope.addresses(),
+            probes: None,
+            ports: PortScope::NoPorts,
+            protocols: Vec::new(),
+            excluded: Vec::new(),
+            withheld: 0,
+        });
+
+        let phase = ScanPhase::from_parts(PhaseParts {
+            kind: ScanKind::Discovery,
+            started_at: at,
+            elapsed: Duration::from_secs(1),
+            privileged: true,
+            targets: scope,
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            unroutable: Vec::new(),
+            probes: Vec::new(),
+        });
+
+        ScanReport::recorded("test", vec![phase], hosts)
+    }
+
+    /// A host reachable only at a link-local address on `link`.
+    fn neighbour(last: u16, link: &str) -> Host {
+        use crate::model::ip::scoped::Zone;
+        use std::net::Ipv6Addr;
+
+        let mut host = Host::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, last)));
+        host.set_status(HostStatus::Up);
+        host.set_zone(Zone::new(1, link));
+        host
     }
 
     fn ports(spec: &str) -> PortSet {
@@ -1092,6 +1136,137 @@ mod tests {
                 before: Coverage::Unstated
             },
             "the sweep's certainty about its own half is not the job's"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // A link is covered ground, and no range says so
+    // -----------------------------------------------------------------------
+
+    /// A sweep of a local segment reaches every IPv6 neighbour on the link,
+    /// holding addresses no target set could have named. Without this the
+    /// neighbours read as ground nobody covered, and a new device on a watched
+    /// segment never counts as having appeared.
+    #[test]
+    fn a_neighbour_on_a_swept_link_is_covered_ground() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let diff = ScanDiff::between(
+            &swept(vec![host(10)], "192.168.0.0/24", "en1", at),
+            &swept(
+                vec![host(10), neighbour(0x41a, "en1")],
+                "192.168.0.0/24",
+                "en1",
+                at + DAY,
+            ),
+        );
+
+        let appeared = diff
+            .hosts()
+            .iter()
+            .find(|delta| delta.address().is_ipv6())
+            .expect("the neighbour is in the diff");
+
+        assert_eq!(
+            appeared.presence(),
+            Presence::Added {
+                before: Coverage::Covered
+            },
+            "the earlier scan swept this link and did not find it"
+        );
+        assert!(appeared.presence().is_confirmed());
+        assert_eq!(diff.summary().hosts_added.confirmed, 1);
+    }
+
+    /// And a link nobody swept claims nothing.
+    #[test]
+    fn a_neighbour_on_a_link_that_was_not_swept_is_not_confirmed() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let diff = ScanDiff::between(
+            // The earlier scan swept a different interface's link.
+            &swept(vec![host(10)], "192.168.0.0/24", "en0", at),
+            &swept(
+                vec![host(10), neighbour(0x41a, "en1")],
+                "192.168.0.0/24",
+                "en1",
+                at + DAY,
+            ),
+        );
+
+        let appeared = diff
+            .hosts()
+            .iter()
+            .find(|delta| delta.address().is_ipv6())
+            .expect("the neighbour is in the diff");
+
+        assert_eq!(
+            appeared.presence(),
+            Presence::Added {
+                before: Coverage::OutOfScope
+            },
+            "fe80::1 on two interfaces is two machines"
+        );
+        assert_eq!(diff.summary().hosts_added.confirmed, 0);
+    }
+
+    /// A link sweep covers the link and says nothing about routable ground.
+    #[test]
+    fn a_swept_link_does_not_cover_a_global_address() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mut routable = Host::new("2001:db8::1".parse::<IpAddr>().expect("a valid address"));
+        routable.set_status(HostStatus::Up);
+
+        let diff = ScanDiff::between(
+            &swept(vec![host(10)], "192.168.0.0/24", "en1", at),
+            &swept(vec![host(10), routable], "192.168.0.0/24", "en1", at + DAY),
+        );
+
+        let appeared = diff
+            .hosts()
+            .iter()
+            .find(|delta| delta.address().is_ipv6())
+            .expect("the host is in the diff");
+
+        assert!(
+            !appeared.presence().is_confirmed(),
+            "a routable address is in scope only if a range said so"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // A host is covered if the scan walked ground it stood on
+    // -----------------------------------------------------------------------
+
+    /// Which address a report keys a host under is the report's business. A
+    /// dual-stack machine keyed under IPv6 was in reach of a sweep of the IPv4
+    /// range all the same.
+    #[test]
+    fn a_host_is_covered_by_any_address_it_answers_at() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        // Keyed under IPv6, and also holding an address the sweep walked.
+        let mut dual = Host::new("2001:db8::5".parse::<IpAddr>().expect("valid"));
+        dual.set_status(HostStatus::Up);
+        dual.add_ip(ip(11));
+
+        let diff = ScanDiff::between(
+            &scoped(vec![host(10)], "192.168.0.0/24", &[], at),
+            &scoped(vec![host(10), dual], "192.168.0.0/24", &[], at + DAY),
+        );
+
+        let appeared = diff
+            .hosts()
+            .iter()
+            .find(|delta| delta.address().is_ipv6())
+            .expect("the host is in the diff");
+
+        assert_eq!(
+            appeared.presence(),
+            Presence::Added {
+                before: Coverage::Covered
+            },
+            "the earlier scan walked 192.168.0.11 and found nothing there"
         );
     }
 

@@ -160,6 +160,9 @@ pub(crate) struct Parser<'a> {
     /// The attributes whose values are stored. Everything else is skipped
     /// unbuffered.
     kept: &'static [&'static [u8]],
+    /// Kept attributes that are dropped rather than refused when they run past
+    /// the bound. See [`with_lossy`](Parser::with_lossy).
+    lossy: &'static [&'static [u8]],
     /// The longest kept value, in bytes.
     max_value_bytes: usize,
     /// How deeply elements are currently nested.
@@ -189,11 +192,30 @@ impl<'a> Parser<'a> {
             element: Element::default(),
             format,
             kept,
+            lossy: &[],
             max_value_bytes: MAX_VALUE_BYTES,
             depth: 0,
             capture: false,
             text: Vec::new(),
         }
+    }
+
+    /// Names attributes whose value is dropped, rather than refused, when it
+    /// runs past the bound.
+    ///
+    /// For a value that enriches a record without deciding what it says. Nmap
+    /// lists the ports it found uninteresting, and that list is bounded only by
+    /// how many ports were scanned — a sparse sweep of all 65 535 could write
+    /// several hundred kilobytes of it. Refusing the file over an attribute
+    /// nothing depends on would be the wrong trade, and so would raising every
+    /// bound to fit the worst case.
+    ///
+    /// **Dropped whole, never truncated.** A prefix of a port list is a claim
+    /// that the ports past the cut were not probed, which is a different and
+    /// worse answer than not knowing.
+    pub(crate) fn with_lossy(mut self, lossy: &'static [&'static [u8]]) -> Self {
+        self.lossy = lossy;
+        self
     }
 
     /// Raises the bound on a kept attribute value.
@@ -501,8 +523,11 @@ impl<'a> Parser<'a> {
         self.skip_whitespace()?;
 
         let keep = self.kept.contains(&name.as_slice());
-        let value = self.read_value(keep)?;
-        if keep {
+        let lossy = keep && self.lossy.contains(&name.as_slice());
+
+        if let Some(value) = self.read_value(keep, lossy)?
+            && keep
+        {
             self.element.values.push((name, value));
         }
 
@@ -515,7 +540,7 @@ impl<'a> Parser<'a> {
     /// unwanted value is not accumulated at all, which is what lets nmap's very
     /// long `args` and `services` attributes through without any limit tuned
     /// around them - only the element's total markup is bounded.
-    fn read_value(&mut self, keep: bool) -> Result<Vec<u8>, ImportError> {
+    fn read_value(&mut self, keep: bool, lossy: bool) -> Result<Option<Vec<u8>>, ImportError> {
         let Some(quote) = self.peek()? else {
             return Err(self.malformed("the document ends inside a tag".to_string()));
         };
@@ -525,6 +550,11 @@ impl<'a> Parser<'a> {
         self.bump()?;
 
         let mut value = Vec::new();
+        // Set once a lossy value has run past the bound. Everything after is
+        // scanned past and nothing is kept, so what comes back is the absence of
+        // the attribute rather than a prefix of it.
+        let mut dropped = false;
+
         loop {
             let Some(byte) = self.peek()? else {
                 return Err(
@@ -534,20 +564,29 @@ impl<'a> Parser<'a> {
 
             if byte == quote {
                 self.bump()?;
-                return Ok(value);
+                return Ok((!dropped).then_some(value));
             }
 
-            if byte == b'&' {
-                let resolved = self.entity()?;
-                if keep {
-                    push_bounded(&mut value, &resolved, self)?;
+            let bytes = if byte == b'&' {
+                self.entity()?
+            } else {
+                self.bump()?;
+                vec![byte]
+            };
+
+            if keep && !dropped {
+                if value.len() + bytes.len() > self.max_value_bytes {
+                    if !lossy {
+                        return Err(self.malformed(format!(
+                            "an attribute value longer than {} bytes",
+                            self.max_value_bytes
+                        )));
+                    }
+                    dropped = true;
+                    value = Vec::new();
+                } else {
+                    value.extend_from_slice(&bytes);
                 }
-                continue;
-            }
-
-            self.bump()?;
-            if keep {
-                push_bounded(&mut value, &[byte], self)?;
             }
         }
     }
@@ -665,18 +704,6 @@ impl Parser<'_> {
         self.text.extend_from_slice(bytes);
         Ok(())
     }
-}
-
-/// Appends to a kept attribute value, bounded.
-fn push_bounded(value: &mut Vec<u8>, bytes: &[u8], parser: &Parser<'_>) -> Result<(), ImportError> {
-    if value.len() + bytes.len() > parser.max_value_bytes {
-        return Err(parser.malformed(format!(
-            "an attribute value longer than {} bytes",
-            parser.max_value_bytes
-        )));
-    }
-    value.extend_from_slice(bytes);
-    Ok(())
 }
 
 /// Whether a byte may appear in an element or attribute name.

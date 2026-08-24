@@ -210,12 +210,208 @@ pub(crate) fn report() -> ScanReport {
 
     ctx.record_failure(ScannerKind::Local, "raw socket unavailable".to_string());
     ctx.record_probe_stats(probe_stats());
+    // A sweep covers the link it ran on as well as the addresses it was handed,
+    // so the exported scope carries one — otherwise every test of that field
+    // compares an empty list with an empty list.
+    ctx.record_sweep(crate::model::ip::scoped::Zone::new(3, "en0"));
 
     for host in [router(), filtered_host(), bare_host()] {
         ctx.store.insert(host.primary_ip(), host);
     }
 
     recorder.finish(&ctx)
+}
+
+// ---------------------------------------------------------------------------
+// A network, and the same network later
+// ---------------------------------------------------------------------------
+
+/// The moment the earlier of the two comparison scans ran.
+const BASELINE_AT: Duration = Duration::from_secs(1_780_000_000);
+
+/// A day, for placing the fixtures apart.
+const DAY: Duration = Duration::from_secs(86_400);
+
+/// The port set both comparison scans walked, on every address.
+const COMPARED_PORTS: &str = "22,80,443,8080,8443";
+
+/// Two scans of one network, thirty-five days apart, differing in one of every
+/// way a comparison can report.
+///
+/// Built for a schema rather than for plausibility: a host gone, a host arrived,
+/// a port opened, a port shut, a service moved a version, a certificate rotated,
+/// a certificate that nobody touched crossing its expiry threshold, an operating
+/// system reidentified and a name resolved differently. A comparison of the two
+/// therefore carries at least one change of nearly every kind, which is what
+/// lets a test assert the whole document rather than the corner of it one change
+/// happens to reach.
+///
+/// Both phases are port scans that state which ports they walked, because a
+/// discovery sweep walks none — and against one of those every endpoint change
+/// reads as ground nobody covered, which exercises the coverage rules rather
+/// than the change vocabulary.
+///
+/// Times are fixed rather than taken from the clock. A certificate crossing a
+/// threshold *between* two scans is only expressible if the two scans are a
+/// known distance apart.
+pub(crate) fn compared() -> (ScanReport, ScanReport) {
+    (
+        compared_phase(0, before_hosts()),
+        compared_phase(35, after_hosts()),
+    )
+}
+
+/// One side of [`compared`]: a port-scan phase `days` after the baseline,
+/// stating the ports it walked.
+fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
+    use crate::model::port::PortSet;
+    use crate::model::target::{TargetMap, TargetSet};
+    use crate::scanner::report::{PhaseParts, ScanPhase, ScanSettings};
+
+    let mut targets = TargetMap::new();
+    let mut addresses = IpSet::new();
+    addresses.insert_range("192.168.0.0/25".parse().expect("a valid range"));
+    targets.add_unit(TargetSet::new(
+        addresses,
+        PortSet::try_from(COMPARED_PORTS).expect("a valid port set"),
+    ));
+
+    let phase = ScanPhase::from_parts(PhaseParts {
+        kind: ScanKind::PortScan,
+        started_at: std::time::UNIX_EPOCH + BASELINE_AT + DAY * days as u32,
+        elapsed: Duration::from_secs(12),
+        privileged: true,
+        targets: TargetScope::from_target_map(&mut targets, &Exclusions::none()),
+        settings: ScanSettings::from(&ZondConfig::default()),
+        failures: Vec::new(),
+        unroutable: Vec::new(),
+        probes: Vec::new(),
+    });
+
+    ScanReport::recorded(crate::scanner::report::ENGINE_VERSION, vec![phase], hosts)
+}
+
+/// A certificate, by the two things that make one distinguishable.
+fn certificate(fingerprint: &str, issuer: &str, ends: Duration) -> Security {
+    Security::new()
+        .with_tls_version("TLSv1.3")
+        .with_cipher_suite("TLS_AES_256_GCM_SHA384")
+        .with_certificate(CertificateInfo::new(
+            "www.example.test",
+            issuer,
+            std::time::UNIX_EPOCH + BASELINE_AT - DAY * 90,
+            std::time::UNIX_EPOCH + ends,
+            fingerprint,
+        ))
+}
+
+/// The gateway, whose every field moves between the two scans.
+fn compared_router(later: bool) -> Host {
+    let mut host = Host::new(ip(1));
+    host.set_status(HostStatus::Up);
+    host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
+    host.record_mac(MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3));
+    host.set_hostname(Some(
+        if later {
+            "gateway.local"
+        } else {
+            "router.local"
+        }
+        .to_string(),
+    ));
+    host.set_os(
+        OsFingerprint::new("Linux", 95)
+            .with_family("Unix-like")
+            .with_generation(if later { "6.1.0" } else { "5.15.0" }),
+    );
+
+    // A service that moved a version.
+    host.add_port(
+        Port::new(22, Protocol::Tcp, PortState::Open).with_service(
+            Service::new("ssh", 100)
+                .with_product("OpenSSH")
+                .with_version(if later { "9.6p1" } else { "8.9p1" }),
+        ),
+    );
+
+    // A port that shut.
+    host.add_port(Port::new(
+        80,
+        Protocol::Tcp,
+        if later {
+            PortState::Closed
+        } else {
+            PortState::Open
+        },
+    ));
+
+    // A certificate replaced by a different one.
+    host.add_port(
+        Port::new(443, Protocol::Tcp, PortState::Open).with_security(if later {
+            certificate(
+                "bbbb2b0b822cd15d6c15b0f00a089f86d081884c7d659a2feaa0c55ad015",
+                "Public CA",
+                BASELINE_AT + DAY * 400,
+            )
+        } else {
+            certificate(
+                "aaaa884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                "Local CA",
+                BASELINE_AT + DAY * 200,
+            )
+        }),
+    );
+
+    // A port that opened.
+    if later {
+        host.add_port(
+            Port::new(8080, Protocol::Tcp, PortState::Open).with_service(
+                Service::new("http-alt", 90)
+                    .with_product("Caddy")
+                    .with_version("2.7.6"),
+            ),
+        );
+    }
+
+    host
+}
+
+/// A host presenting the same certificate in both scans, which falls inside the
+/// expiry threshold somewhere between them.
+fn compared_expiring() -> Host {
+    let mut host = Host::new(ip(4));
+    host.set_status(HostStatus::Up);
+    host.add_port(
+        Port::new(8443, Protocol::Tcp, PortState::Open)
+            // Sixty days of life at the baseline, twenty-five at the later scan:
+            // outside a thirty-day threshold and then inside it, with nothing
+            // about the certificate having moved.
+            .with_security(certificate(
+                "cccc7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                "Local CA",
+                BASELINE_AT + DAY * 60,
+            )),
+    );
+    host
+}
+
+/// What the earlier scan found.
+fn before_hosts() -> Vec<Host> {
+    let mut gone = Host::new(ip(9));
+    gone.set_status(HostStatus::Up);
+
+    vec![compared_router(false), compared_expiring(), gone]
+}
+
+/// What the later scan found: the gateway changed, the expiring host untouched,
+/// one host gone and one arrived.
+fn after_hosts() -> Vec<Host> {
+    let mut arrived = Host::new(ip(7));
+    arrived.set_status(HostStatus::Up);
+    arrived.add_reason(StatusReason::new(StatusProtocol::IcmpEcho, "echo reply"));
+    arrived.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+
+    vec![compared_router(true), compared_expiring(), arrived]
 }
 
 // ---------------------------------------------------------------------------

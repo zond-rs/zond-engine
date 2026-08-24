@@ -231,6 +231,7 @@ impl PortScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetScope {
     ranges: Vec<IpRange>,
+    links: Vec<Zone>,
     addresses: u128,
     probes: Option<u128>,
     ports: PortScope,
@@ -263,6 +264,7 @@ impl TargetScope {
 
         Self {
             ranges,
+            links: Vec::new(),
             addresses,
             probes: None,
             ports: PortScope::NoPorts,
@@ -305,6 +307,7 @@ impl TargetScope {
 
         Self {
             ranges,
+            links: Vec::new(),
             addresses,
             probes,
             ports,
@@ -333,6 +336,61 @@ impl TargetScope {
     /// The transport protocols in scope, in ascending order. Empty for a
     /// discovery sweep, whose probes are chosen by the strategy rather than by
     /// the caller.
+    /// The links this phase swept whole, by the interface each is on.
+    ///
+    /// [`ranges`](Self::ranges) is what a target set named, and for a sweep of a
+    /// local segment that is only part of what was covered: an all-nodes
+    /// solicitation is one probe every IPv6 neighbour on the link is required to
+    /// answer, and it reaches hosts holding addresses nobody could have named in
+    /// advance.
+    ///
+    /// **A link is not an address range and is deliberately not recorded as
+    /// one.** `fe80::/64` would be the obvious thing to put in `ranges`, and it
+    /// would make [`addresses`](Self::addresses) read eighteen quintillion —
+    /// destroying the one property that type has, that a report saying it
+    /// covered 254 hosts can be believed. A link is named by its interface, so
+    /// that is what is recorded.
+    ///
+    /// Empty for a phase that swept no segment, which is every port scan and
+    /// every sweep of a routed range.
+    pub fn links(&self) -> &[Zone] {
+        &self.links
+    }
+
+    /// Whether an address is one this phase's sweeps would have reached.
+    ///
+    /// True for a link-local address on a link that was swept. A global address
+    /// is not covered by a link sweep however it was found: it is routable, and
+    /// whether it was in scope is [`ranges`](Self::ranges)'s question.
+    ///
+    /// `zone` is the interface the address was seen on, which is what a
+    /// link-local address needs to name a host at all — `fe80::1` on two
+    /// interfaces is two machines. An address with no zone cannot be placed and
+    /// is not claimed.
+    pub fn sweeps(&self, ip: &IpAddr, zone: Option<&Zone>) -> bool {
+        let Some(zone) = zone else {
+            return false;
+        };
+        if !is_link_local(ip) {
+            return false;
+        }
+
+        self.links.iter().any(|link| link.name() == zone.name())
+    }
+
+    /// Records that this phase swept a link whole.
+    ///
+    /// Called once a phase is over, because which links its strategies reached
+    /// is only knowable then — the scope itself is fixed before a probe goes
+    /// out. See [`PhaseRecorder::finish`].
+    pub(crate) fn record_sweeps(&mut self, links: Vec<Zone>) {
+        for link in links {
+            if !self.links.iter().any(|held| held.name() == link.name()) {
+                self.links.push(link);
+            }
+        }
+    }
+
     /// Which ports the phase walked, and whether it walked the same ones for
     /// every address.
     ///
@@ -373,6 +431,14 @@ impl TargetScope {
     /// that was merely configured, and those look identical without it.
     pub fn withheld(&self) -> u128 {
         self.withheld
+    }
+}
+
+/// Whether an address is only meaningful on one link.
+fn is_link_local(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
     }
 }
 
@@ -777,6 +843,8 @@ impl fmt::Display for ScannerFailure {
 pub struct ScopeParts {
     /// The ranges that were walked, after exclusions.
     pub ranges: Vec<IpRange>,
+    /// The links swept whole, by the interface each is on.
+    pub links: Vec<Zone>,
     /// How many distinct addresses those ranges hold.
     pub addresses: u128,
     /// How many probes the scope implies, where ports were known.
@@ -800,6 +868,7 @@ impl TargetScope {
     pub fn from_parts(parts: ScopeParts) -> Self {
         Self {
             ranges: parts.ranges,
+            links: parts.links,
             addresses: parts.addresses,
             probes: parts.probes,
             ports: parts.ports,
@@ -1092,6 +1161,12 @@ impl PhaseRecorder {
     /// [`ScanContext::failures_snapshot`](crate::scanner::session::ScanContext::failures_snapshot)
     /// and its probe-statistics counterpart.
     pub fn finish(self, ctx: &ScanContext) -> ScanReport {
+        // Which links the strategies reached is only knowable now: the scope was
+        // fixed before the first probe went out, and a sweep of a segment covers
+        // ground no target set named.
+        let mut targets = self.targets;
+        targets.record_sweeps(ctx.take_swept_links());
+
         let phase = ScanPhase {
             kind: self.kind,
             started_at: self.started_at,
@@ -1100,7 +1175,7 @@ impl PhaseRecorder {
             // otherwise report a duration that never elapsed.
             elapsed: self.started.elapsed(),
             privileged: self.privileged,
-            targets: self.targets,
+            targets,
             settings: self.settings,
             failures: ctx.take_failures(),
             unroutable: ctx.take_unroutable(),

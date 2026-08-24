@@ -538,6 +538,16 @@ pub struct ScopeDto {
     /// rather than as a plausible-looking number. The phase `kind` tells the
     /// two apart.
     pub probes: Option<String>,
+    /// The links this phase swept whole, by interface name, ascending.
+    ///
+    /// `ranges` is what a target set named; a sweep of a local segment also
+    /// reaches every host on the link, which is ground no range expresses. A
+    /// consumer checking whether a host was in scope has to read both.
+    ///
+    /// Empty for a phase that swept no segment. Only the interface name travels:
+    /// its index is a runtime detail of the machine that scanned, and means
+    /// nothing on the machine reading this.
+    pub links: Vec<String>,
     /// Which ports the phase walked, and whether it walked the same ones for
     /// every address.
     ///
@@ -607,6 +617,15 @@ impl ScopeDto {
     pub fn new(scope: &TargetScope) -> Self {
         Self {
             ranges: scope.ranges().iter().map(RangeDto::new).collect(),
+            links: {
+                let mut links: Vec<String> = scope
+                    .links()
+                    .iter()
+                    .map(|zone| zone.name().to_owned())
+                    .collect();
+                links.sort();
+                links
+            },
             addresses: scope.addresses().to_string(),
             probes: scope.probes().map(|count| count.to_string()),
             ports: PortScopeDto::new(scope.ports()),

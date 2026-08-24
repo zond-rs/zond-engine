@@ -358,7 +358,16 @@ fn changes_between(
 }
 
 /// What moved about the service on an endpoint.
+///
+/// A service the scan *inferred* from the port number is not one it found, and
+/// is read here as no service at all. Every scan path seeds one on every
+/// classified port, and so does nmap; comparing them would have two tools with
+/// different port catalogues disagree about every port on the network, and two
+/// releases of one tool disagree whenever the catalogue grew.
 fn service_changes(before: Option<&Service>, after: Option<&Service>) -> Vec<ServiceChange> {
+    let before = before.filter(|service| !service.is_inferred());
+    let after = after.filter(|service| !service.is_inferred());
+
     match (before, after) {
         (None, None) => Vec::new(),
         (None, Some(after)) => vec![ServiceChange::Identified(after.clone())],

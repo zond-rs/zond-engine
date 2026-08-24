@@ -493,11 +493,19 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
             write!(out, r#" extrainfo="{}""#, Attr(extrainfo))?;
         }
         // `probed` is nmap's word for a service identified by talking to the
-        // port rather than by looking it up in a table, which is what this
-        // engine's fingerprinting does.
+        // port, and `table` for one read out of a port-number list. This engine
+        // makes the same distinction and must not lose it here: every classified
+        // port is seeded with a port-number label, and writing those as `probed`
+        // would tell every consumer of this document that a thousand closed
+        // ports had been interrogated.
         writeln!(
             out,
-            r#" method="probed" conf="{}"/>"#,
+            r#" method="{}" conf="{}"/>"#,
+            if service.is_inferred() {
+                "table"
+            } else {
+                "probed"
+            },
             nmap_confidence(service.confidence()),
         )?;
     }
@@ -582,8 +590,18 @@ fn transport(protocol: Protocol) -> &'static str {
 /// so the mapping is arithmetic rather than a judgement. It never reaches 0,
 /// which is not a value nmap's scale has.
 fn nmap_confidence(confidence: u8) -> u8 {
+    // Three is what nmap records for a port-number lookup, and zero is how this
+    // engine spells the same thing. Mapping it anywhere else would put a
+    // guess and a weak identification on the same footing.
+    if confidence == 0 {
+        return TABLE_CONFIDENCE;
+    }
+
     (u16::from(confidence).saturating_mul(10) / 100).clamp(1, 10) as u8
 }
+
+/// What nmap records for a service it read out of its port-number list.
+const TABLE_CONFIDENCE: u8 = 3;
 
 // ---------------------------------------------------------------------------
 // Times
@@ -909,8 +927,37 @@ mod tests {
         assert_eq!(nmap_confidence(100), 10);
         assert_eq!(nmap_confidence(85), 8);
         assert_eq!(nmap_confidence(50), 5);
-        assert_eq!(nmap_confidence(0), 1, "nmap's scale starts at 1");
         assert_eq!(nmap_confidence(255), 10, "and stops at 10");
+        assert_eq!(
+            nmap_confidence(0),
+            TABLE_CONFIDENCE,
+            "a port-number lookup is what nmap spells 3, not the weakest identification"
+        );
+    }
+
+    /// A guess and an identification must not read alike, or every consumer of
+    /// this document is told a thousand closed ports were interrogated.
+    #[test]
+    fn a_port_number_label_is_written_as_the_lookup_it_is() {
+        use crate::model::port::{Port, PortState, Protocol, Service};
+
+        let mut out = Vec::new();
+        write_port(
+            &mut out,
+            &Port::new(80, Protocol::Tcp, PortState::Closed).with_service(Service::new("http", 0)),
+        )
+        .expect("writing to a vector");
+        let inferred = String::from_utf8(out).expect("UTF-8");
+        assert!(inferred.contains(r#"method="table""#), "{inferred}");
+
+        let mut out = Vec::new();
+        write_port(
+            &mut out,
+            &Port::new(80, Protocol::Tcp, PortState::Open).with_service(Service::new("http", 100)),
+        )
+        .expect("writing to a vector");
+        let probed = String::from_utf8(out).expect("UTF-8");
+        assert!(probed.contains(r#"method="probed""#), "{probed}");
     }
 
     /// Every attacker-controlled string reaches the document escaped.

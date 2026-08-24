@@ -51,6 +51,7 @@ use crate::info;
 use crate::journal::settle::{Outcome, Settled, Settlements};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::Host;
+use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::Positions;
 use crate::model::technique::TcpScanTechnique;
 use crate::scanner::handle::ScanHandle;
@@ -425,6 +426,31 @@ impl UnroutableLog {
     }
 }
 
+/// The links a phase swept, gathered as its strategies run.
+///
+/// A sweep of a local segment reaches every host on the link, not only the
+/// addresses it was handed: an all-nodes solicitation is one probe every IPv6
+/// neighbour is required to answer. That is coverage, and there is no address
+/// range that expresses it — a link is named by the interface it is on.
+///
+/// Keyed by interface name, so a link swept by two strategies is recorded once.
+#[derive(Debug, Default)]
+pub(crate) struct SweptLinks {
+    entries: Mutex<std::collections::BTreeMap<String, Zone>>,
+}
+
+impl SweptLinks {
+    fn insert(&self, zone: Zone) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.insert(zone.name().to_owned(), zone);
+    }
+
+    fn drain(&self) -> Vec<Zone> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries).into_values().collect()
+    }
+}
+
 /// What a journal needs from a running scan, and nothing more.
 ///
 /// See [`ScanContext::progress`] for why this exists rather than a context.
@@ -538,6 +564,7 @@ pub struct ScanContext {
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
     /// Addresses this host has no route to, so nothing could be sent to them.
     pub(crate) unroutable: Arc<UnroutableLog>,
+    pub(crate) swept_links: Arc<SweptLinks>,
     /// Addresses no finding may be recorded against.
     ///
     /// Behind an `Arc` because a context is cloned once per strategy and the
@@ -756,6 +783,23 @@ impl ScanContext {
         self.unroutable.drain()
     }
 
+    /// Records that this phase swept a whole link, not merely the addresses on
+    /// it that were named.
+    ///
+    /// Called by a strategy that put a probe on the segment which every host
+    /// there is required to answer. What it buys is stated on
+    /// [`TargetScope::links`](crate::scanner::report::TargetScope::links): a
+    /// comparison can then tell a host that appeared on a link somebody was
+    /// watching from one that turned up on ground nobody had covered.
+    pub fn record_sweep(&self, zone: Zone) {
+        self.swept_links.insert(zone);
+    }
+
+    /// Takes the links swept so far, leaving the log empty.
+    pub(crate) fn take_swept_links(&self) -> Vec<Zone> {
+        self.swept_links.drain()
+    }
+
     /// Records what became of one target, for a later resume.
     ///
     /// Not the same question as the verdict: a target reaches the store with a
@@ -967,6 +1011,7 @@ impl ScanSession {
             failures: Arc::new(FailureLog::default()),
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
+            swept_links: Arc::new(SweptLinks::default()),
             exclusions: Arc::new(exclusions),
             changed: Arc::new(ChangedHosts::default()),
             settlements: Arc::new(Settlements::resuming(settled)),

@@ -31,10 +31,12 @@ use crate::model::technique::TcpScanTechnique;
 /// against a file that was not shipped.
 const SCHEMA: &str = include_str!("../../assets/schema/zond-report-v1.schema.json");
 const LINES_SCHEMA: &str = include_str!("../../assets/schema/zond-lines-v1.schema.json");
+const DIFF_SCHEMA: &str = include_str!("../../assets/schema/zond-diff-v1.schema.json");
 
 /// The identifiers the schemas declare for themselves.
 const SCHEMA_URL: &str = "https://zond.rs/schema/zond-report-v1.schema.json";
 const LINES_SCHEMA_URL: &str = "https://zond.rs/schema/zond-lines-v1.schema.json";
+const DIFF_SCHEMA_URL: &str = "https://zond.rs/schema/zond-diff-v1.schema.json";
 
 /// A compiled validator over one of the published schemas.
 struct Validator {
@@ -55,17 +57,26 @@ impl Validator {
         Self::over(LINES_SCHEMA_URL)
     }
 
+    /// A validator over the comparison schema.
+    fn diff() -> Self {
+        Self::over(DIFF_SCHEMA_URL)
+    }
+
     /// Compiles both schemas and points a validator at one of them.
     ///
-    /// Both are registered whichever is being compiled, because the lines
-    /// schema is written entirely in terms of the report schema's definitions -
-    /// which is what stops the two drifting apart - and cannot resolve without
-    /// it.
+    /// All three are registered whichever is being compiled, because the lines
+    /// and comparison schemas are written in terms of the report schema's
+    /// definitions - which is what stops them drifting apart - and cannot
+    /// resolve without it.
     fn over(url: &str) -> Self {
         let mut schemas = Schemas::new();
         let mut compiler = Compiler::new();
 
-        for (id, text) in [(SCHEMA_URL, SCHEMA), (LINES_SCHEMA_URL, LINES_SCHEMA)] {
+        for (id, text) in [
+            (SCHEMA_URL, SCHEMA),
+            (LINES_SCHEMA_URL, LINES_SCHEMA),
+            (DIFF_SCHEMA_URL, DIFF_SCHEMA),
+        ] {
             let document: Value =
                 serde_json::from_str(text).expect("the schema file is valid JSON");
             compiler
@@ -298,4 +309,128 @@ fn the_lines_schema_rejects_a_record_it_should_reject() {
         !validator.accepts(&surprising),
         "a field the schema does not describe must not validate"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The comparison document
+// ---------------------------------------------------------------------------
+
+/// Exports a comparison and parses it back.
+fn comparison(
+    baseline: &crate::scanner::report::ScanReport,
+    current: &crate::scanner::report::ScanReport,
+    options: ExportOptions,
+) -> Value {
+    use crate::diff::ScanDiff;
+    use crate::export::diff::{DiffExporter, JsonDiffExporter};
+
+    let diff = ScanDiff::between(baseline, current);
+    let mut bytes = Vec::new();
+    JsonDiffExporter::new(options)
+        .export(&diff, &mut bytes)
+        .expect("the export succeeds");
+
+    serde_json::from_slice(&bytes).expect("the export parses as JSON")
+}
+
+#[test]
+fn the_published_comparison_schema_compiles() {
+    let _ = Validator::diff();
+}
+
+/// The version the code emits and the version the schema pins are the same
+/// number, counted apart from the report's.
+#[test]
+fn the_comparison_schema_pins_the_version_the_code_emits() {
+    let schema: Value = serde_json::from_str(DIFF_SCHEMA).expect("valid JSON");
+
+    assert_eq!(
+        schema["properties"]["schema_version"]["const"],
+        Value::from(crate::format::DIFF_SCHEMA_VERSION)
+    );
+}
+
+/// A comparison carrying one of every kind of change is a document the published
+/// schema accepts.
+#[test]
+fn a_comparison_matches_the_published_schema() {
+    let (before, after) = fixture::compared();
+    let document = comparison(&before, &after, ExportOptions::new());
+    Validator::diff().check(&document);
+}
+
+/// Two scans that found the same things still produce a document, and it is a
+/// valid one: a consumer polling nightly gets the same shape whether or not
+/// anything moved.
+#[test]
+fn an_unchanged_comparison_matches_the_published_schema() {
+    let report = fixture::report();
+    let document = comparison(&report, &report, ExportOptions::new());
+
+    Validator::diff().check(&document);
+    assert_eq!(document["unchanged"], Value::Bool(true));
+    assert_eq!(document["hosts"].as_array().map(Vec::len), Some(0));
+}
+
+/// Redaction is an export-time policy here as it is for a report, and a
+/// comparison leaks the same fields if it is not applied.
+#[test]
+fn a_redacted_comparison_masks_what_a_redacted_report_masks() {
+    let (before, after) = fixture::compared();
+    let document = comparison(
+        &before,
+        &after,
+        ExportOptions::new().with_redaction(Redaction::Standard),
+    );
+
+    Validator::diff().check(&document);
+
+    let rendered = document.to_string();
+    assert!(
+        !rendered.contains("router.local") && !rendered.contains("gateway.local"),
+        "a hostname survived redaction into the comparison"
+    );
+    assert!(
+        !rendered.contains("2c:cf:67:f2:51:e3"),
+        "a hardware address survived redaction into the comparison"
+    );
+}
+
+/// Every token the change vocabulary can emit is a value the published schema
+/// accepts.
+///
+/// The document tests above only exercise whichever changes the fixtures happen
+/// to produce, so a token added to `ChangeDto` could ship and pass all of them
+/// while producing documents no consumer's validator accepts. This is the check
+/// that fails instead.
+#[test]
+fn every_change_the_fixtures_produce_is_a_token_the_schema_accepts() {
+    let schema: Value = serde_json::from_str(DIFF_SCHEMA).expect("valid JSON");
+    let accepted: Vec<&str> = schema["$defs"]["change"]["properties"]["kind"]["enum"]
+        .as_array()
+        .expect("the schema names the tokens it accepts")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+
+    let (before, after) = fixture::compared();
+    let document = comparison(&before, &after, ExportOptions::new());
+    let mut seen = 0usize;
+
+    for host in document["hosts"].as_array().expect("hosts") {
+        for change in host["changes"].as_array().expect("changes") {
+            let kind = change["kind"].as_str().expect("a token");
+            assert!(accepted.contains(&kind), "'{kind}' is not in the schema");
+            seen += 1;
+        }
+        for port in host["ports"].as_array().expect("ports") {
+            for change in port["changes"].as_array().expect("changes") {
+                let kind = change["kind"].as_str().expect("a token");
+                assert!(accepted.contains(&kind), "'{kind}' is not in the schema");
+                seen += 1;
+            }
+        }
+    }
+
+    assert!(seen > 0, "the fixtures produced no changes to check");
 }

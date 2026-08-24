@@ -373,6 +373,7 @@ impl PhaseDto {
 #[serde(default)]
 struct ScopeDto {
     ranges: Vec<RangeDto>,
+    links: Vec<String>,
     addresses: String,
     probes: Option<String>,
     ports: Option<PortScopeDto>,
@@ -393,6 +394,13 @@ impl ScopeDto {
                 .into_iter()
                 .map(RangeDto::record)
                 .collect::<Result<_, _>>()?,
+            // The document carries the interface name and not its index, which
+            // is what an unresolved zone is: a name nothing has looked up yet.
+            links: self
+                .links
+                .into_iter()
+                .map(|name| crate::record::ZoneRecord { index: None, name })
+                .collect(),
             addresses: count(&self.addresses)?,
             probes: maybe(self.probes.as_deref(), count)?,
             ports: maybe(self.ports, PortScopeDto::record)?,
@@ -1005,6 +1013,7 @@ mod tests {
     use crate::diff::ScanDiff;
     use crate::export::{Exporter, JsonExporter};
     use crate::model::host::HostStatus;
+    use crate::model::ip::scoped::Zone;
 
     /// The fixture report, written out as the document consumers parse.
     ///
@@ -1121,6 +1130,17 @@ mod tests {
                 after.targets().ports(),
                 before.targets().ports(),
                 "the port scope is what a comparison asks about endpoints"
+            );
+
+            let links: Vec<&str> = after.targets().links().iter().map(Zone::name).collect();
+            let before_links: Vec<&str> = before.targets().links().iter().map(Zone::name).collect();
+            assert_eq!(
+                links, before_links,
+                "a swept link is the only way a comparison knows a neighbour was looked for"
+            );
+            assert!(
+                !links.is_empty(),
+                "the fixture sweeps one, or this proves nothing"
             );
             assert_eq!(after.settings(), before.settings());
             assert_eq!(after.failures().len(), before.failures().len());

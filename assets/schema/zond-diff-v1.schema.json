@@ -1,0 +1,413 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zond.rs/schema/zond-diff-v1.schema.json",
+  "title": "Zond scan comparison",
+  "description": "What changed between two zond scan reports. Version 1, counted apart from the report schema's version. Every change is one scalar fact - `{kind, before, after}` - so a set that gained two members produces two changes rather than one carrying a list. Every host and endpoint carries `confirmed`, which says whether the scan lacking a record is known to have looked at all; a consumer that ignores it will report hosts as gone every time somebody narrows a scan. Timestamps are RFC 3339 in UTC. Unknown fields may appear and must be ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "engine",
+    "generated_at",
+    "baseline",
+    "current",
+    "unchanged",
+    "summary",
+    "hosts"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "The version of this document's shape. Counted apart from the report schema's, because the two answer different questions.",
+      "const": 1
+    },
+    "engine": {
+      "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/properties/engine",
+      "description": "Which build wrote the document. Not which produced either scan, for which see `baseline` and `current`."
+    },
+    "generated_at": {
+      "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/timestamp",
+      "description": "When the comparison was taken."
+    },
+    "baseline": {
+      "$ref": "#/$defs/provenance",
+      "description": "The earlier scan."
+    },
+    "current": {
+      "$ref": "#/$defs/provenance",
+      "description": "The later scan."
+    },
+    "unchanged": {
+      "description": "Whether the two scans describe the same network. Derivable from an empty `hosts`, and stated because it is the first question every consumer asks.",
+      "type": "boolean"
+    },
+    "summary": {
+      "$ref": "#/$defs/summary"
+    },
+    "hosts": {
+      "description": "Every host that differs, ascending by address. Hosts that did not are not here.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/host_delta"
+      }
+    }
+  },
+  "$defs": {
+    "provenance": {
+      "description": "Which scan one side of the comparison was.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine_version",
+        "at",
+        "hosts",
+        "kinds",
+        "states_scope"
+      ],
+      "properties": {
+        "engine_version": {
+          "description": "The engine that produced the report, as it attributed itself. A report built from another tool's output says so - `nmap 7.94` and not this engine.",
+          "type": "string"
+        },
+        "at": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/timestamp",
+          "description": "The moment the scan is judged to have happened, and the moment its certificates were judged against."
+        },
+        "hosts": {
+          "description": "How many hosts the report held.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "kinds": {
+          "description": "Which phases the report recorded, in the order they ran. Empty for a report carrying none.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "discovery",
+              "port_scan"
+            ]
+          }
+        },
+        "states_scope": {
+          "description": "Whether the report says what it covered. False makes every coverage answer about this side `unstated`, so nothing appearing or disappearing against it can be confirmed.",
+          "type": "boolean"
+        }
+      }
+    },
+    "confirmed": {
+      "description": "A count, and how much of it the other scan is known to have looked for. A consumer that alerts on one of these numbers should alert on `confirmed`: `total` includes records the other scan never covered, which are findings about the scan rather than about the network.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "confirmed"
+      ],
+      "properties": {
+        "total": {
+          "description": "How many, whatever the other scan covered.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "confirmed": {
+          "description": "How many the other scan is known to have covered.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "summary": {
+      "description": "Counts over the whole comparison, derived from the host deltas.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hosts_added",
+        "hosts_removed",
+        "hosts_changed",
+        "ports_opened",
+        "ports_closed",
+        "ports_changed",
+        "services_changed",
+        "certificates_rotated",
+        "certificates_expiring",
+        "certificates_expired"
+      ],
+      "properties": {
+        "hosts_added": {
+          "$ref": "#/$defs/confirmed"
+        },
+        "hosts_removed": {
+          "$ref": "#/$defs/confirmed"
+        },
+        "hosts_changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ports_opened": {
+          "$ref": "#/$defs/confirmed"
+        },
+        "ports_closed": {
+          "$ref": "#/$defs/confirmed"
+        },
+        "ports_changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "services_changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "certificates_rotated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "certificates_expiring": {
+          "description": "Endpoints whose certificate is now inside the expiry threshold and was not when the earlier scan ran.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "certificates_expired": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "host_delta": {
+      "description": "One host, as the two scans between them hold it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "presence",
+        "coverage",
+        "confirmed",
+        "records",
+        "regrouped",
+        "changes",
+        "ports",
+        "baseline",
+        "current"
+      ],
+      "properties": {
+        "address": {
+          "description": "The address the host is reported under: the later scan's primary where it has a record, the earlier scan's where it does not.",
+          "type": "string"
+        },
+        "presence": {
+          "description": "Which scans hold a record.",
+          "enum": [
+            "both",
+            "added",
+            "removed"
+          ]
+        },
+        "coverage": {
+          "description": "What the scan lacking a record says about having covered the target. Null when both hold one, where the question does not arise.",
+          "oneOf": [
+            {
+              "enum": [
+                "covered",
+                "withheld",
+                "out_of_scope",
+                "unstated"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmed": {
+          "description": "Whether this is a finding about the network rather than about the scan. This is the field to alert on.",
+          "type": "boolean"
+        },
+        "records": {
+          "$ref": "#/$defs/records"
+        },
+        "regrouped": {
+          "description": "Whether the two scans grouped this host's addresses differently: what one holds as a single record the other holds as several. It happens when one scan reached the link layer and the other did not. Both sides are still compared, merged.",
+          "type": "boolean"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/change"
+          }
+        },
+        "ports": {
+          "description": "Every endpoint that moved, ascending by number then transport. Endpoints identical in both scans are not here.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port_delta"
+          }
+        },
+        "baseline": {
+          "description": "The earlier scan's whole record, in the report document's schema, or null where only the later scan has one.",
+          "oneOf": [
+            {
+              "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/host"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current": {
+          "description": "The later scan's whole record, or null where only the earlier scan has one.",
+          "oneOf": [
+            {
+              "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/host"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "port_delta": {
+      "description": "One endpoint, as the two scans between them hold it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "protocol",
+        "presence",
+        "coverage",
+        "confirmed",
+        "opened",
+        "closed",
+        "changes"
+      ],
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "protocol": {
+          "$ref": "https://zond.rs/schema/zond-report-v1.schema.json#/$defs/protocol"
+        },
+        "presence": {
+          "description": "Which scans hold a record.",
+          "enum": [
+            "both",
+            "added",
+            "removed"
+          ]
+        },
+        "coverage": {
+          "description": "What the scan lacking a record says about having covered the target. Null when both hold one, where the question does not arise.",
+          "oneOf": [
+            {
+              "enum": [
+                "covered",
+                "withheld",
+                "out_of_scope",
+                "unstated"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmed": {
+          "description": "Whether this is a finding about the network rather than about the scan. True when both scans hold a record, and when the one that does not is known to have probed the endpoint anyway. This is the field to alert on.",
+          "type": "boolean"
+        },
+        "opened": {
+          "description": "Whether the endpoint accepts connections now and did not before.",
+          "type": "boolean"
+        },
+        "closed": {
+          "description": "Whether it accepted connections before and does not now.",
+          "type": "boolean"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/change"
+          }
+        }
+      }
+    },
+    "records": {
+      "description": "How many records each scan held for one host. `{1, 1}` ordinarily; anything else is a regrouping.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline",
+        "current"
+      ],
+      "properties": {
+        "baseline": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "current": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "change": {
+      "description": "One field that moved, as one scalar fact. A set that gained two members produces two of these rather than one carrying a list, so every change has the same shape and a rule can be written against `kind` alone.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "kind": {
+          "description": "Which field moved. `certificate_expiring` and `certificate_expired` are the two an untouched certificate undergoes: nothing about it moved, a threshold was crossed between the two scans, and `after` is when it lapses.",
+          "enum": [
+            "status",
+            "hostname",
+            "address_gained",
+            "address_lost",
+            "os",
+            "mac_gained",
+            "mac_lost",
+            "vendor",
+            "role_gained",
+            "role_lost",
+            "port_state",
+            "service_identified",
+            "service_lost",
+            "service_name",
+            "service_product",
+            "service_vendor",
+            "service_version",
+            "service_extrainfo",
+            "cpe_gained",
+            "cpe_lost",
+            "tls_version",
+            "cipher_suite",
+            "alpn_gained",
+            "alpn_lost",
+            "certificate_presented",
+            "certificate_withdrawn",
+            "certificate_rotated",
+            "certificate_expiring",
+            "certificate_expired"
+          ]
+        },
+        "before": {
+          "description": "What the earlier scan found, or null where it found nothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "after": {
+          "description": "What the later scan found, or null where it finds nothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

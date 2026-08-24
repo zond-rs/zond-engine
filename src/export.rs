@@ -73,6 +73,7 @@
 //! behind a cargo feature so a consumer who wants none of them pays for none of
 //! them. `export-json` is on by default.
 
+pub mod diff;
 pub mod redact;
 pub mod schema;
 

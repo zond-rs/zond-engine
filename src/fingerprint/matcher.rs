@@ -136,10 +136,15 @@ impl Signature {
         // signature that names a product outranks a bare protocol match.
         let detail = self.product.is_some() as u8 + self.vendor.is_some() as u8;
 
-        let mut evidence = Evidence::new(SourceId::BannerRegex, confidence)
-            .with_service(self.service.clone())
-            // Fall back to the service name as product when the rule names none.
-            .with_product(self.product.clone().unwrap_or_else(|| self.service.clone()));
+        // A signature that names no product leaves none. Filling it with the
+        // service name would put "dns" in a field meaning "the software behind
+        // the protocol", which is a different claim and not one anything
+        // established — the `detail` score above already reads
+        // `self.product.is_some()` to rank a rule that does name one, so nothing
+        // here depends on the field being populated.
+        let mut evidence =
+            Evidence::new(SourceId::BannerRegex, confidence).with_service(self.service.clone());
+        evidence.product = self.product.clone();
         evidence.vendor = self.vendor.clone();
         evidence.version = version;
 
@@ -227,15 +232,26 @@ mod tests {
         assert_eq!(ev.confidence, Confidence::Strong);
     }
 
+    /// A rule that recognised the protocol and nothing else names no product.
+    ///
+    /// The service name is what protocol was spoken; the product is what
+    /// software spoke it. Copying the first into the second reports `dns` as the
+    /// software behind DNS, which is a claim nothing made — and one that then
+    /// disagrees with every other scanner's answer for the same port.
     #[test]
-    fn bare_match_is_probable_and_defaults_product() {
+    fn bare_match_is_probable_and_names_no_product() {
         let sig = Signature::new("http", &rule("^HTTP/1.1", None, None));
         let ev = sig
             .identify("HTTP/1.1 200 OK")
             .expect("should match")
             .evidence;
+
         assert_eq!(ev.confidence, Confidence::Probable);
-        assert_eq!(ev.product.as_deref(), Some("http"));
+        assert_eq!(ev.service.as_deref(), Some("http"));
+        assert_eq!(
+            ev.product, None,
+            "the rule named no product, so neither does the evidence"
+        );
     }
 
     #[test]

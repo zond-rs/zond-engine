@@ -895,6 +895,11 @@ pub struct ScopeRecord {
     /// The ranges walked, after exclusions, as `start-end`.
     #[serde(default)]
     pub ranges: Vec<RangeRecord>,
+    /// The links swept whole, by the interface each is on. Empty for a phase
+    /// that swept no segment, and for one recorded before this field existed —
+    /// which read back the same way, since neither claims a link was covered.
+    #[serde(default)]
+    pub links: Vec<ZoneRecord>,
     /// How many distinct addresses those hold.
     pub addresses: u128,
     /// How many probes the scope implies, where ports were known.
@@ -919,6 +924,7 @@ impl From<&TargetScope> for ScopeRecord {
     fn from(scope: &TargetScope) -> Self {
         Self {
             ranges: scope.ranges().iter().map(RangeRecord::from).collect(),
+            links: scope.links().iter().map(ZoneRecord::from).collect(),
             addresses: scope.addresses(),
             probes: scope.probes(),
             ports: PortsRecord::of(scope.ports()),
@@ -941,6 +947,7 @@ impl From<&ScopeRecord> for TargetScope {
                 .iter()
                 .filter_map(RangeRecord::rebuild)
                 .collect(),
+            links: record.links.iter().map(Zone::from).collect(),
             addresses: record.addresses,
             probes: record.probes,
             ports: record
