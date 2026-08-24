@@ -17,7 +17,6 @@ use std::net::IpAddr;
 use crate::diff::change::Coverage;
 use crate::model::host::Host;
 use crate::model::ip::range::IpRange;
-use crate::model::ip::scoped::Zone;
 use crate::model::port::Protocol;
 use crate::scanner::report::{PortScope, ScanReport, TargetScope};
 
@@ -77,11 +76,17 @@ impl ScopeIndex {
     /// The strongest answer over those addresses wins, on the same reasoning
     /// that makes covered beat withheld for one of them.
     pub(crate) fn of_host(&self, host: &Host) -> Coverage {
-        let zone = host.zone();
+        // A sweep of the link the host was found on covers it whatever
+        // addresses it holds, so this is asked first and once rather than per
+        // address. See `TargetScope::swept`.
+        if self.scopes.iter().any(|scope| scope.swept(host.zone())) {
+            return Coverage::Covered;
+        }
+
         let mut best = Coverage::Unstated;
 
         for ip in host.ips() {
-            match self.address(ip, zone) {
+            match self.address(ip) {
                 Coverage::Covered => return Coverage::Covered,
                 Coverage::Withheld => best = Coverage::Withheld,
                 Coverage::OutOfScope if best != Coverage::Withheld => {
@@ -100,14 +105,11 @@ impl ScopeIndex {
     /// discovery sweep that walked an address and a port scan that was forbidden
     /// it still means somebody looked.
     ///
-    /// A link-local address is covered by a phase that swept its link, whether
-    /// or not any range named it — which is the only way an address nobody could
-    /// have named in advance is ever covered. See
-    /// [`TargetScope::links`](crate::scanner::report::TargetScope::links).
-    pub(crate) fn address(&self, ip: &IpAddr, zone: Option<&Zone>) -> Coverage {
-        if self.covered.iter().any(|range| range.contains(ip))
-            || self.scopes.iter().any(|scope| scope.sweeps(ip, zone))
-        {
+    /// Whether a *link* was swept is a separate question, asked by
+    /// [`of_host`](Self::of_host), because it is about the host rather than
+    /// about any one of its addresses.
+    pub(crate) fn address(&self, ip: &IpAddr) -> Coverage {
+        if self.covered.iter().any(|range| range.contains(ip)) {
             Coverage::Covered
         } else if self.withheld.iter().any(|range| range.contains(ip)) {
             Coverage::Withheld

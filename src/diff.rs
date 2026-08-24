@@ -1210,11 +1210,48 @@ mod tests {
         assert_eq!(diff.summary().hosts_added.confirmed, 0);
     }
 
-    /// A link sweep covers the link and says nothing about routable ground.
+    /// A host found on a swept link is covered whatever address it is keyed by.
+    ///
+    /// The case a real segment produced, and the one an earlier version of this
+    /// got wrong by asking whether the *address* was link-local. A neighbour
+    /// that answers an all-nodes solicitation is routinely keyed under a global
+    /// address, because this engine prefers a routable one when both are known.
+    /// The sweep still reached it, on the link.
     #[test]
-    fn a_swept_link_does_not_cover_a_global_address() {
+    fn a_host_on_a_swept_link_is_covered_whatever_it_is_keyed_by() {
+        use crate::model::ip::scoped::Zone;
+
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let mut routable = Host::new("2001:db8::1".parse::<IpAddr>().expect("a valid address"));
+        let mut routable = Host::new("2a02:908:8c1:b880::4".parse::<IpAddr>().expect("valid"));
+        routable.set_status(HostStatus::Up);
+        routable.set_zone(Zone::new(1, "en1"));
+
+        let diff = ScanDiff::between(
+            &swept(vec![host(10), routable], "192.168.0.0/24", "en1", at),
+            &swept(vec![host(10)], "192.168.0.0/24", "en1", at + DAY),
+        );
+
+        let gone = diff
+            .hosts()
+            .iter()
+            .find(|delta| delta.address().is_ipv6())
+            .expect("the host is in the diff");
+
+        assert_eq!(
+            gone.presence(),
+            Presence::Removed {
+                after: Coverage::Covered
+            },
+            "the later scan swept the link this host was found on"
+        );
+        assert_eq!(diff.summary().hosts_removed.confirmed, 1);
+    }
+
+    /// A host nothing found on a link is not covered by having swept one.
+    #[test]
+    fn a_host_with_no_link_is_not_covered_by_a_sweep() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mut routable = Host::new("2001:db8::1".parse::<IpAddr>().expect("valid"));
         routable.set_status(HostStatus::Up);
 
         let diff = ScanDiff::between(
@@ -1230,7 +1267,7 @@ mod tests {
 
         assert!(
             !appeared.presence().is_confirmed(),
-            "a routable address is in scope only if a range said so"
+            "a host with no zone was not found on any link"
         );
     }
 

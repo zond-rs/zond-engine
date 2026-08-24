@@ -357,23 +357,22 @@ impl TargetScope {
         &self.links
     }
 
-    /// Whether an address is one this phase's sweeps would have reached.
+    /// Whether this phase swept the link a host was found on.
     ///
-    /// True for a link-local address on a link that was swept. A global address
-    /// is not covered by a link sweep however it was found: it is routable, and
-    /// whether it was in scope is [`ranges`](Self::ranges)'s question.
+    /// **The question is about the link, not about the addresses on it.** An
+    /// all-nodes solicitation reaches every IPv6 host on the segment whatever
+    /// addresses it holds, and a host that answers one is routinely keyed under
+    /// a global address — this engine prefers a routable address over a
+    /// link-local one when both are known. Asking whether the *address* is
+    /// link-local would then miss exactly the hosts this exists to cover.
     ///
-    /// `zone` is the interface the address was seen on, which is what a
-    /// link-local address needs to name a host at all — `fe80::1` on two
-    /// interfaces is two machines. An address with no zone cannot be placed and
-    /// is not claimed.
-    pub fn sweeps(&self, ip: &IpAddr, zone: Option<&Zone>) -> bool {
+    /// `zone` is the interface the host was found on, which a record carries
+    /// whenever a local scanner put it there. A host with no zone was not found
+    /// on a link and is not claimed.
+    pub fn swept(&self, zone: Option<&Zone>) -> bool {
         let Some(zone) = zone else {
             return false;
         };
-        if !is_link_local(ip) {
-            return false;
-        }
 
         self.links.iter().any(|link| link.name() == zone.name())
     }
@@ -431,14 +430,6 @@ impl TargetScope {
     /// that was merely configured, and those look identical without it.
     pub fn withheld(&self) -> u128 {
         self.withheld
-    }
-}
-
-/// Whether an address is only meaningful on one link.
-fn is_link_local(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_link_local(),
-        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
     }
 }
 

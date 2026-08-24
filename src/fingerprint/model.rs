@@ -274,6 +274,16 @@ impl ServiceVerdict {
             .or_else(|| evidence.iter().find_map(|ev| ev.product.as_deref()))
             .map(str::to_string);
 
+        // An echo is kept above only because it may be the *name* — `to_service`
+        // falls back to the product when nothing named a service. Once a service
+        // is named it conveys nothing, and reporting `dns` as the software
+        // behind DNS is a claim nothing made: it disagrees with every other
+        // scanner's answer for the same port, and a comparison then reports a
+        // difference between two tools that found the same thing.
+        if verdict.product == verdict.service {
+            verdict.product = None;
+        }
+
         verdict.evidence = evidence;
         verdict
     }
@@ -379,16 +389,41 @@ mod tests {
         assert_eq!(verdict.product.as_deref(), Some("cloudflare"));
     }
 
+    /// A product that merely repeats the service is dropped.
+    ///
+    /// This reverses an earlier choice, which surfaced the echo "rather than
+    /// dropping the product entirely". What that cost only became visible when
+    /// two scanners were compared: nmap reports port 53 as `domain / Unbound`
+    /// and this engine reported it as `dns / dns`, so a comparison of the two
+    /// showed a product changing where both tools had found the same thing and
+    /// only one of them had named the software.
+    ///
+    /// `dns` is not the software behind DNS. Where nothing named a product,
+    /// none is named.
     #[test]
-    fn service_echo_product_is_kept_when_nothing_more_specific_exists() {
-        // With no informative product available, the echo is still surfaced
-        // rather than dropping the product entirely.
+    fn a_product_that_only_repeats_the_service_is_dropped() {
         let verdict = ServiceVerdict::resolve(vec![
             ev(Confidence::Probable)
                 .with_service("http")
                 .with_product("http"),
         ]);
-        assert_eq!(verdict.product.as_deref(), Some("http"));
+
+        assert_eq!(verdict.service.as_deref(), Some("http"));
+        assert_eq!(verdict.product, None);
+    }
+
+    /// And the echo is still what *names* the service where nothing else did,
+    /// which is the one thing the earlier choice was protecting.
+    #[test]
+    fn a_product_with_no_service_beside_it_still_names_the_service() {
+        let verdict = ServiceVerdict::resolve(vec![ev(Confidence::Probable).with_product("nginx")]);
+
+        assert_eq!(verdict.product.as_deref(), Some("nginx"));
+        assert_eq!(
+            verdict.to_service().map(|s| s.name().to_owned()),
+            Some("nginx".to_string()),
+            "with no service named, the product is what the port is called"
+        );
     }
 
     #[test]
