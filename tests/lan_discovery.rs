@@ -20,14 +20,14 @@
 
 mod common;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use common::fake_lan::{FakeLan, LanHost, LanProbe};
 use common::*;
 use pnet::datalink::MacAddr;
-use zond_engine::model::host::HostStatus;
 use zond_engine::model::host::telemetry::RttSource;
+use zond_engine::model::host::{HostStatus, NetworkRole};
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
@@ -940,5 +940,145 @@ async fn a_targeted_run_claims_no_link() {
     assert!(
         report.phases()[0].targets().links().is_empty(),
         "nothing was sent that every host on the link would answer"
+    );
+}
+
+/// A sweep asks the segment's routers to identify themselves, and the answer is
+/// a role rather than merely another host.
+///
+/// The evidence a network is *shaped* by — which box forwards — cannot be
+/// obtained by asking any address a question. A router advertisement is sent to
+/// the segment, and the one thing that makes it reliable to collect during a
+/// scan of seconds is asking for it: unprompted, a router sends one every few
+/// minutes.
+#[tokio::test]
+async fn a_sweep_asks_the_segment_for_its_routers_and_names_the_one_that_answers() {
+    let router = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    let lan = FakeLan::new().routing(router, PEER_A);
+
+    let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
+
+    assert!(
+        lan.probes()
+            .iter()
+            .any(|probe| matches!(probe, LanProbe::RouterSolicit { .. })),
+        "a sweep has to ask, or it finds a router only by luck"
+    );
+
+    let host = session
+        .hosts()
+        .get(&IpAddr::V6(router))
+        .expect("the router answered, so it is a host like any other");
+    assert!(
+        host.network_roles().contains(&NetworkRole::Router),
+        "an advertisement is a machine saying it forwards"
+    );
+    assert_eq!(host.status(), HostStatus::Up);
+}
+
+/// The IPv4 half of the same idea, and the only way a DHCP server can be found:
+/// the protocol is built on broadcast, so no address can be asked the question.
+#[tokio::test]
+async fn a_sweep_asks_the_segment_who_configures_it() {
+    let server = Ipv4Addr::new(192, 168, 1, 1);
+    let lan = FakeLan::new().serving_dhcp(server, PEER_B);
+
+    let session = sweep(&lan, &[v4(1), v4(10)], Scope::Sweep).await;
+
+    assert!(
+        lan.probes()
+            .iter()
+            .any(|probe| matches!(probe, LanProbe::DhcpInform { .. })),
+        "an inform asks for configuration without asking for an address"
+    );
+
+    let host = session
+        .hosts()
+        .get(&IpAddr::V4(server))
+        .expect("the server answered");
+    assert!(host.network_roles().contains(&NetworkRole::DhcpServer));
+}
+
+/// A relay agent forwards for a server on another segment, so the address the
+/// reply comes from and the address the message names are two different
+/// machines. Neither reading is safe: marking the sender names a relay a DHCP
+/// server, and marking the named address attaches the role to a machine this
+/// frame is no evidence about.
+#[tokio::test]
+async fn a_relayed_answer_names_nobody_a_dhcp_server() {
+    let relay = Ipv4Addr::new(192, 168, 1, 1);
+    let elsewhere = Ipv4Addr::new(10, 0, 0, 53);
+    let lan = FakeLan::new().serving_dhcp_as(relay, elsewhere, PEER_B);
+
+    let session = sweep(&lan, &[v4(1), v4(10)], Scope::Sweep).await;
+
+    let host = session
+        .hosts()
+        .get(&IpAddr::V4(relay))
+        .expect("the relay answered, which proves the relay is there");
+    assert_eq!(host.status(), HostStatus::Up);
+    assert!(
+        !host.network_roles().contains(&NetworkRole::DhcpServer),
+        "the machine that answered is not the one the message named"
+    );
+}
+
+/// A targeted run asks the segment its two questions, and still reports only
+/// the hosts it was asked about.
+///
+/// Both halves are the decision. Neither question can be put to an address —
+/// a router answers from a link-local nobody named, a DHCP server answers a
+/// broadcast — so a scan that declines to ask them reports a segment without
+/// the two machines it is built around, which is most of what a person scans a
+/// segment to learn. What keeps the run targeted is not silence but what may be
+/// *recorded*: a declaration is filed against the hardware address that made it
+/// and applied only if that machine turns out to be one the scan asked about.
+///
+/// The ordering this exercises is the one that decides whether any of it works.
+/// The advertisement arrives within half a second of the solicitation, and the
+/// ARP request that identifies its sender leaves on a paced ticker some way
+/// into the run — so the claim almost always arrives before there is a host to
+/// put it on.
+#[tokio::test]
+async fn a_targeted_run_asks_the_segment_and_records_only_what_it_asked_about() {
+    // One machine, as a home network has: the router at .1 is also the segment's
+    // IPv6 router and its DHCP server.
+    let gateway = Ipv4Addr::new(192, 168, 1, 1);
+    let lan = FakeLan::new()
+        .host(v4(1), LanHost::at(PEER_A))
+        .routing(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), PEER_A)
+        .serving_dhcp(gateway, PEER_A);
+
+    let session = sweep(&lan, &[v4(1)], Scope::Targeted).await;
+
+    assert!(
+        lan.probes()
+            .iter()
+            .any(|probe| matches!(probe, LanProbe::RouterSolicit { .. })),
+        "the question a router answers cannot be put to an address"
+    );
+    assert!(
+        !lan.probes()
+            .iter()
+            .any(|probe| matches!(probe, LanProbe::Solicitation { .. })),
+        "the all-nodes echo is still the sweep's alone: everything it draws is \
+         an address nobody asked about"
+    );
+
+    let host = session
+        .hosts()
+        .get(&v4(1))
+        .expect("the address the scan was given");
+    assert!(
+        host.network_roles().contains(&NetworkRole::Router),
+        "the advertisement came from a link-local, and the machine that sent it \
+         is the one at the address we asked about"
+    );
+    assert!(host.network_roles().contains(&NetworkRole::DhcpServer));
+
+    assert_eq!(
+        session.hosts().len(),
+        1,
+        "and nothing the scan was not asked about became a host"
     );
 }

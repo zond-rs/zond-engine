@@ -97,7 +97,7 @@ pub(crate) fn get_lan_link_with(
 
     info!(
         verbosity = 1,
-        "Identified {} network {}, picking the best one...",
+        "identified {} network {}, picking the best one",
         interfaces.len(),
         interfaces_str
     );
@@ -116,7 +116,7 @@ pub(crate) fn get_lan_link_with(
         if let Some(interface) = select_best_lan_interface(interfaces, is_wired) {
             info!(
                 verbosity = 1,
-                "Performing LAN scan on interface {}", interface.name
+                "performing LAN scan on interface {}", interface.name
             );
             interface
         } else {

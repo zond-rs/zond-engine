@@ -83,7 +83,7 @@
 //! run under `sudo`. It creates nothing; a caller that means to write asks it
 //! where and then writes.
 //!
-//! [`format`] is the on-disk shape: the framing, the version bargain, and the
+//! [`format`](mod@format) is the on-disk shape: the framing, the version bargain, and the
 //! vocabulary it shares with the export path. It is behind the `journal-format`
 //! feature because it is the one part that needs `serde_json`; [`paths`] needs
 //! nothing and is always present, so a front end can list and locate journals
@@ -174,7 +174,7 @@
 
 /// The version of the on-disk journal format this build writes.
 ///
-/// Lives here rather than beside the reader in [`format`], because it identifies
+/// Lives here rather than beside the reader in [`format`](mod@format), because it identifies
 /// the format whether or not this build compiled a reader for it: a
 /// [`manifest`] is written and checked either way.
 ///

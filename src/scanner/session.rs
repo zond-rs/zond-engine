@@ -493,7 +493,7 @@ impl ScanProgress {
     /// Files a failure to the report. Not to the event stream; see
     /// [`ScanContext::progress`].
     pub fn record_failure(&self, scanner: ScannerKind, reason: String) {
-        error!("Journal: {reason}");
+        error!("journal: {reason}");
         self.failures.push(ScannerFailure::new(scanner, reason));
     }
 }
@@ -718,7 +718,7 @@ impl ScanContext {
     /// custom strategy that could not would produce a report claiming a clean
     /// run over a scan that lost half its work.
     pub fn record_failure(&self, scanner: ScannerKind, reason: String) {
-        error!("Scanner {scanner:?} failed: {reason}");
+        error!("scanner {scanner:?} failed: {reason}");
         self.failures
             .push(ScannerFailure::new(scanner, reason.clone()));
         let _ = self
@@ -804,7 +804,7 @@ impl ScanContext {
     ///
     /// Not the same question as the verdict: a target reaches the store with a
     /// port state, and this says whether the scan *earned* it or assigned it
-    /// because the run ended. See [`Outcome`](crate::journal::settle::Outcome).
+    /// because the run ended. See [`Outcome`].
     pub fn record_outcome(&self, outcome: Outcome) {
         self.settlements.record(outcome);
     }

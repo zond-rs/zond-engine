@@ -27,7 +27,7 @@
 use crate::config::ServiceDetection;
 use crate::error;
 use crate::journal::settle::{Outcome, Settled};
-use crate::model::host::{Host, HostStatus, StatusProtocol, StatusReason};
+use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::port::{Port, PortSet, PortState, Protocol};
 use crate::model::target::PlannedTarget;
@@ -107,6 +107,13 @@ struct Probed {
     /// timeout proves nothing about the host and still settles the target,
     /// because the connect made its one and only attempt.
     outcome: Outcome,
+    /// What the reply proved the host *is*, where its protocol says so.
+    ///
+    /// A claim about the host rather than about the port, and carried alongside
+    /// the verdict rather than folded into it for that reason: a name server
+    /// and a socket bound to 53 produce the same `Open`, and only one of them
+    /// is a name server. See [`payload::declared_role`].
+    role: Option<NetworkRole>,
 }
 
 /// The outcome of one finished [`port_prober`] task.
@@ -287,13 +294,16 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
         // not knowable from here.
         audit.record_host_found(None);
     }
-    if probed.port.is_none() && !probed.answered {
+    if probed.port.is_none() && !probed.answered && probed.role.is_none() {
         return;
     }
 
     ctx.update_host(probed.ip, |host| {
         if let Some(port) = probed.port.clone() {
             host.add_port(port);
+        }
+        if let Some(role) = probed.role {
+            host.add_network_role(role);
         }
         if probed.answered {
             host.record_evidence(
@@ -334,6 +344,9 @@ async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> Pro
                 port: Some(port),
                 answered: true,
                 outcome: Outcome::Answered { position },
+                // A TCP handshake proves a service, and the service is the
+                // port's to name. No role is read from one.
+                role: None,
             })
         }
         Ok(Err(e)) => {
@@ -360,6 +373,7 @@ async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> Pro
                     )),
                     answered: true,
                     outcome: Outcome::Answered { position },
+                    role: None,
                 }),
                 // Anything else failed without the target having answered - a
                 // local routing failure, an exhausted resource - so the port is
@@ -375,6 +389,7 @@ async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> Pro
                     )),
                     answered: false,
                     outcome: Outcome::Unroutable,
+                    role: None,
                 }),
             }
         }
@@ -390,6 +405,7 @@ async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> Pro
             )),
             answered: false,
             outcome: Outcome::Exhausted { position },
+            role: None,
         }),
     }
 }
@@ -446,6 +462,8 @@ async fn udp_port_prober(planned: PlannedTarget) -> ProbedPort {
             )),
             answered,
             outcome,
+            // Filled in by the one arm that has a reply to read it from.
+            role: None,
         })
     };
 
@@ -454,7 +472,7 @@ async fn udp_port_prober(planned: PlannedTarget) -> ProbedPort {
         Err(e) => {
             error!(
                 verbosity = 2,
-                "No UDP socket for probing {socket_addr}: {e}"
+                "no UDP socket for probing {socket_addr}: {e}"
             );
             return None;
         }
@@ -463,7 +481,7 @@ async fn udp_port_prober(planned: PlannedTarget) -> ProbedPort {
     if let Err(e) = socket.connect(socket_addr).await {
         error!(
             verbosity = 2,
-            "Cannot address UDP probe to {socket_addr}: {e}"
+            "cannot address UDP probe to {socket_addr}: {e}"
         );
         return None;
     }
@@ -478,7 +496,7 @@ async fn udp_port_prober(planned: PlannedTarget) -> ProbedPort {
             _ => {
                 error!(
                     verbosity = 2,
-                    "Failed to send UDP probe to {socket_addr}: {e}"
+                    "failed to send UDP probe to {socket_addr}: {e}"
                 );
                 None
             }
@@ -487,8 +505,16 @@ async fn udp_port_prober(planned: PlannedTarget) -> ProbedPort {
 
     let mut buf = [0u8; 1024];
     match timeout(CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
-        // Something answered, so something is listening.
-        Ok(Ok(_)) => record(PortState::Open, true, Outcome::Answered { position }),
+        // Something answered, so something is listening — and what it said may
+        // prove what the host is, which is a claim no port verdict can make.
+        // Read here rather than left to the privileged path, so a scan without
+        // root reaches the same conclusions about the network.
+        Ok(Ok(read)) => {
+            record(PortState::Open, true, Outcome::Answered { position }).map(|probed| Probed {
+                role: payload::declared_role(target.port, &buf[..read]),
+                ..probed
+            })
+        }
         // An ICMP Port Unreachable, surfaced against the connected peer.
         Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => {
             record(PortState::Closed, false, Outcome::Answered { position })
@@ -547,7 +573,7 @@ fn finish(
 /// finished with.
 ///
 /// Addresses are drawn from
-/// [`shuffled_addresses`](crate::scanner::dispatcher::shuffled_addresses) to
+/// [`shuffled_addresses`] to
 /// spread load across the network instead of hammering one subnet at a time, and
 /// each connect waits out the [`CONNECT_PROBE_TIMEOUT`] so that hosts on slow or
 /// distant links still register.
@@ -619,7 +645,11 @@ struct ProbedHost {
 /// [`settle`](crate::journal::settle).
 enum Fate {
     /// It answered, and this is what the answer proved.
-    Answered(Host),
+    ///
+    /// Boxed because a [`Host`] is by far the largest thing a fate can carry and
+    /// four of the five variants carry nothing: unboxed, every probe that found
+    /// silence would still move a host-sized value through the sweep.
+    Answered(Box<Host>),
     /// Every port was asked once and not one of them answered. **Settled**: a
     /// connect gets one attempt per port and those were all of them.
     Exhausted,
@@ -651,7 +681,7 @@ fn absorb_host(ctx: &ScanContext, probed: ProbedHost, audit: &mut ProbeAudit) {
             // answer to, so every host it finds is counted as unattributed.
             audit.record_host_found(None);
             ctx.settle_address(probed.ip, Settled::Answered);
-            ctx.update_host(ip, |existing| existing.merge(host));
+            ctx.update_host(ip, |existing| existing.merge(*host));
         }
         Fate::Exhausted => ctx.settle_address(probed.ip, Settled::Exhausted),
         Fate::Unroutable => ctx.record_outcome(Outcome::Unroutable),
@@ -741,7 +771,7 @@ fn answered(ip: IpAddr, start: Instant) -> ProbedHost {
 
     ProbedHost {
         ip,
-        fate: Fate::Answered(host),
+        fate: Fate::Answered(Box::new(host)),
     }
 }
 

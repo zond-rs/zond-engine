@@ -308,7 +308,7 @@ async fn main() {
                     continue;
                 }
 
-                let Some(target) = ndp::advertised_target(&frame) else { continue };
+                let Some(target) = ndp::advertisement(&frame).map(|advert| advert.target) else { continue };
 
                 // Only the first advertisement counts. A neighbour may repeat
                 // one, and a later copy would overwrite a real round trip with

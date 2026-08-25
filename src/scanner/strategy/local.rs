@@ -41,7 +41,7 @@ use tokio::time::Interval;
 use crate::config::RetryConfig;
 use crate::journal::settle::{Outcome, Settled};
 use crate::model::host::telemetry::RttSource;
-use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+use crate::model::host::{HostStatus, NetworkRole, StatusProtocol, StatusReason};
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::protocols::{self as protocol, ethernet};
@@ -57,7 +57,10 @@ use crate::transport::channel::{self, EthernetHandle};
 use crate::transport::mac::IntoCoreMac;
 use crate::{error, info};
 
-use discovery::{ArpProtocol, DiscoveryProtocol, Icmpv6EchoProtocol, NdpProtocol, ProtocolMatch};
+use discovery::{
+    ArpProtocol, DhcpProtocol, DiscoveryProtocol, Icmpv6EchoProtocol, NdpProtocol, ProtocolMatch,
+    Reading, RouterAdvertProtocol,
+};
 use ipv6::Ipv6Discovery;
 
 /// Outstanding ARP requests and the schedule they are retried on.
@@ -96,6 +99,21 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     0.2,
     None,
 );
+
+/// How many machines may declare what they are before this scanner knows which
+/// hosts they are.
+///
+/// One bound on what the segment can make this process hold. A router
+/// advertisement and a DHCP reply are unsolicited traffic, so unlike every
+/// other record here this one grows from frames nobody asked for, and a
+/// neighbour sending them under a new hardware address each time would
+/// otherwise grow it without limit.
+///
+/// Sixty-four is past any segment that has this many routers and DHCP servers
+/// on it, and small enough that reaching the cap costs nothing worth measuring.
+/// Past it, a declaration from a machine still unknown is dropped like any other
+/// off-target frame: it is a claim about a host this scan has not found.
+const MAX_DECLARING_MACS: usize = 64;
 
 /// Why a captured frame is not a discovery finding.
 ///
@@ -271,6 +289,25 @@ pub struct LocalScanner {
     /// Maps each MAC seen back to the first address observed from it, so a
     /// host reachable at more than one address is recorded once.
     mac_to_ip: HashMap<MacAddr, IpAddr>,
+    /// What a machine said it is, held until this scanner knows which host that
+    /// machine is.
+    ///
+    /// The two segment-wide questions are answered from an address the scan was
+    /// never asked about — a router advertises from its link-local, a DHCP
+    /// server may sit outside the range — so on a targeted run the answer
+    /// arrives before, and often instead of, anything that identifies its
+    /// sender. Held by MAC rather than dropped, and applied the moment that MAC
+    /// answers a probe of ours.
+    ///
+    /// **This is what keeps a targeted run targeted.** Nothing here creates a
+    /// host or adds an address: a declaration only ever lands on a record the
+    /// scan built by asking, so a run handed one address still reports one
+    /// host — with, if it happens to be the router, the fact that it routes.
+    ///
+    /// Bounded by [`MAX_DECLARING_MACS`], unlike `mac_to_ip`, which only ever
+    /// grows from replies to probes this scanner sent. This grows from traffic
+    /// nobody solicited.
+    declared: HashMap<MacAddr, HashSet<NetworkRole>>,
     /// Whether to sweep the segment or probe only the given targets.
     scope: Scope,
     /// Target addresses that have answered, so a targeted run can stop the
@@ -334,6 +371,19 @@ impl HostScanner for LocalScanner {
             // was looked for.
             self.ctx.record_sweep(self.identity.zone.clone());
         }
+
+        // Asked on every local run, sweep or not, and answered by a class of
+        // machine rather than by an address: neither question can be put to a
+        // target, and a scan of a segment that does not ask them reports the
+        // segment without the two machines it is built around.
+        //
+        // This is not the sweep's reach in disguise. A sweep may *record* a
+        // host nobody named; a targeted run still may not, and does not — an
+        // answer from an address outside the target set is read for what its
+        // sender said it is and for nothing else. See
+        // [`note_declaration`](Self::note_declaration).
+        self.solicit_routers();
+        self.ask_for_configuration();
 
         let mut sending_finished = false;
         // What the packet iterator has handed out, so what it still holds can be
@@ -567,6 +617,8 @@ impl LocalScanner {
             protocols: vec![
                 Box::new(ArpProtocol),
                 Box::new(NdpProtocol),
+                Box::new(RouterAdvertProtocol),
+                Box::new(DhcpProtocol),
                 Box::new(Icmpv6EchoProtocol),
             ],
             ledger: Ledger::new(retry, target_count),
@@ -576,6 +628,7 @@ impl LocalScanner {
 
             dns_tx,
             mac_to_ip: HashMap::new(),
+            declared: HashMap::new(),
             scope,
             responded: HashSet::new(),
             ipv6: Ipv6Discovery::new(target_count),
@@ -675,8 +728,70 @@ impl LocalScanner {
         self.ipv6.record_confirmation_sent(target, now);
         info!(
             verbosity = 2,
-            "Asked {target} directly, having only overheard it"
+            "asked {target} directly, having only overheard it"
         );
+    }
+
+    /// Asks every router on the segment to say so, once, at the head of a
+    /// sweep.
+    ///
+    /// One packet for a question nothing else on the segment answers. A router
+    /// advertises itself unprompted on a timer measured in minutes, which
+    /// outlasts any sweep, so without asking the engine finds the segment's
+    /// routers only by luck. The reply is an ordinary advertisement claimed by
+    /// [`RouterAdvertProtocol`], so the router arrives as a host in the same
+    /// breath as being named one.
+    ///
+    /// Sent on any local run, unlike the all-nodes echo. The rule that keeps a
+    /// targeted run targeted is about what may be *recorded*, and it is
+    /// enforced where records are made: an answer from an address nobody asked
+    /// about is read for the role its sender claims and never becomes a host.
+    /// The echo has no such reading — everything it draws is a new address —
+    /// which is why it stays behind the sweep.
+    ///
+    /// Not repeated. A lost solicitation costs the *unsolicited* route to this
+    /// finding, not the finding: a router that answers any of the scan's
+    /// ordinary neighbour solicitations declares itself in the R flag of the
+    /// reply, and every address the sweep asks about is asked more than once.
+    fn solicit_routers(&mut self) {
+        let Some(link_local) = self.identity.link_local_ipv6 else {
+            return;
+        };
+
+        let packet = protocol::ndp::create_router_solicitation(&self.identity.mac, &link_local);
+        self.emit(&packet, "router solicitation");
+    }
+
+    /// Asks the segment which machine configures it, once.
+    ///
+    /// A `DHCPINFORM`, which asks for configuration without asking for an
+    /// address, so every server on the link answers and none of them reserves
+    /// anything for a client that will never appear. See
+    /// [`dhcp`](crate::protocols::dhcp) for why this is a broadcast rather than
+    /// a port probe.
+    ///
+    /// Broadcast, and therefore seen by every device on the segment — which is
+    /// the same reach an ARP request has, and a scan of a range sends one of
+    /// those per address in it. Sent on any local run, on the same terms as the
+    /// router solicitation: what a targeted run may record is enforced where
+    /// records are made, not by declining to ask.
+    ///
+    /// The one run this is disproportionate for is a scan of a single address,
+    /// where it triples a discovery phase that would otherwise put one ARP
+    /// request on the wire. It is still two frames, on a segment this machine
+    /// is already on.
+    ///
+    /// The answer comes back to this host's address, and is read off the
+    /// segment by [`DhcpProtocol`] rather than through a socket: binding UDP/68
+    /// is a privilege this scanner already has a better use for, and the
+    /// capture sees the reply either way.
+    fn ask_for_configuration(&mut self) {
+        let Some(source) = self.identity.ipv4 else {
+            return;
+        };
+
+        let packet = protocol::dhcp::create_inform(&self.identity.mac, &source);
+        self.emit(&packet, "dhcp inform");
     }
 
     /// Sends the all-nodes solicitation again.
@@ -862,7 +977,7 @@ impl LocalScanner {
             return Ok(());
         }
 
-        let Some((matched, protocol)) = self.interpret_response(&eth_frame) else {
+        let Some((reading, protocol)) = self.interpret_response(&eth_frame) else {
             // Common in promiscuous mode: traffic between other hosts, or
             // forwarded through a router. Not this scan's, and not a fault.
             self.audit.record_off_target();
@@ -874,7 +989,7 @@ impl LocalScanner {
         // several addresses answers from whichever its stack prefers - so the
         // claim has to be read before the frame is judged, or a reply to a probe
         // this scan sent is discarded for naming an address nobody asked about.
-        let subject = match matched {
+        let subject = match reading.matched {
             ProtocolMatch::Solicited(Some(claimed)) => claimed,
             _ => source_addr,
         };
@@ -886,6 +1001,18 @@ impl LocalScanner {
             Scope::Sweep => subject.is_ipv4() && !self.ip_set.contains(&subject),
         };
         if out_of_range {
+            // Out of range and still worth reading, in the one case where the
+            // frame says something about a machine rather than about an
+            // address: a router advertising from its link-local, a DHCP server
+            // answering from outside the range. The claim is filed against the
+            // sender's hardware address and applied only if that machine turns
+            // out to be one this scan asked about.
+            if let Some(role) = reading.declared
+                && self.note_declaration(source_mac, role)
+            {
+                return Ok(());
+            }
+
             self.audit.record_off_target();
             return Err(FrameRejected::AddressOutOfRange(subject).into());
         }
@@ -903,7 +1030,7 @@ impl LocalScanner {
         // was put to the whole segment and answers no address's own probe.
         let mut answered_attempt = None;
 
-        let rtt = match matched {
+        let rtt = match reading.matched {
             // `interpret_response` returns `None` rather than this, so the arm
             // exists only to satisfy the match.
             ProtocolMatch::Unhandled => return Ok(()),
@@ -948,6 +1075,19 @@ impl LocalScanner {
                     }
                 },
             },
+            // Proof of presence and of nothing else. A probe may well be
+            // outstanding for this address, and it stays outstanding: this
+            // message did not answer it, so retiring it here would credit our
+            // question with somebody else's answer and time it from the moment
+            // we asked.
+            //
+            // Asked directly instead, which is the same treatment an overheard
+            // address gets, and the only way one of these senders is ever
+            // measured.
+            ProtocolMatch::Unsolicited => {
+                self.confirm(subject);
+                None
+            }
             // Measured against the exact request it answers, which the echoed
             // identifier and sequence name outright. That is what a neighbor
             // advertisement can never do, and it is why this probe is timed at
@@ -992,7 +1132,14 @@ impl LocalScanner {
         if self.ip_set.contains(&subject) {
             self.responded.insert(subject);
         }
-        self.record_response(source_mac, subject, rtt, protocol.clone(), answered_attempt);
+        self.record_response(
+            source_mac,
+            subject,
+            rtt,
+            protocol.clone(),
+            answered_attempt,
+            reading.declared,
+        );
 
         // The address the reply came *from* belongs to the same host and is just
         // as real, so it is recorded too - but only after the subject, which is
@@ -1000,7 +1147,10 @@ impl LocalScanner {
         // about is how a phone solicited at one address came back reported under
         // another.
         if subject != source_addr {
-            self.record_response(source_mac, source_addr, None, protocol, None);
+            // The declaration went in with the subject above, and both calls
+            // reach the same record: a host is keyed by the MAC that answered,
+            // whichever of its addresses this frame was about.
+            self.record_response(source_mac, source_addr, None, protocol, None, None);
         }
 
         Ok(())
@@ -1036,22 +1186,54 @@ impl LocalScanner {
     /// hosts, or traffic forwarded through a router rather than sent directly,
     /// whose Ethernet source is the router itself and not the host the IP packet
     /// originated from.
-    fn interpret_response(
-        &mut self,
-        frame: &EthernetPacket,
-    ) -> Option<(ProtocolMatch, StatusProtocol)> {
+    fn interpret_response(&mut self, frame: &EthernetPacket) -> Option<(Reading, StatusProtocol)> {
         for protocol in &self.protocols {
             match protocol.interpret(frame) {
-                Ok(ProtocolMatch::Unhandled) => continue,
-                Ok(matched) => return Some((matched, protocol.status_protocol())),
+                Ok(Reading {
+                    matched: ProtocolMatch::Unhandled,
+                    ..
+                }) => continue,
+                Ok(reading) => return Some((reading, protocol.status_protocol())),
                 Err(e) => {
-                    error!(verbosity = 1, "Failed to interpret discovery response: {e}");
+                    error!(verbosity = 1, "failed to interpret discovery response: {e}");
                     return None;
                 }
             }
         }
 
         None
+    }
+
+    /// Files what a machine said it is, against the hardware address that said
+    /// it.
+    ///
+    /// Returns whether the claim was kept, which is the caller's answer to
+    /// whether the frame was worth receiving.
+    ///
+    /// Applied immediately where the MAC is already on the roster, and held
+    /// otherwise, because the order is not ours to choose: a router answers a
+    /// solicitation within half a second (RFC 4861 §6.2.6) and the ARP request
+    /// that will identify it leaves on a paced ticker some way into the sweep.
+    /// Dropping the early half of that race is dropping the common case.
+    ///
+    /// Never creates a host and never records an address. A declaration is a
+    /// claim about a machine, and the machine has to be one the scan found by
+    /// asking before there is anything for the claim to attach to.
+    fn note_declaration(&mut self, source_mac: MacAddr, role: NetworkRole) -> bool {
+        if let Some(ip) = self.mac_to_ip.get(&source_mac).copied() {
+            self.ctx.write_host(ip, |host| {
+                host.add_network_role(role);
+                true
+            });
+            return true;
+        }
+
+        if self.declared.len() >= MAX_DECLARING_MACS && !self.declared.contains_key(&source_mac) {
+            return false;
+        }
+
+        self.declared.entry(source_mac).or_default().insert(role);
+        true
     }
 
     /// Applies a discovery response to shared scan state. It creates or updates
@@ -1070,6 +1252,12 @@ impl LocalScanner {
     /// ranks the two: a reply to a segment-wide probe is an upper bound rather
     /// than a round trip, and pooling it with a directed probe's answer is what
     /// reported a router that answers in 5 ms as answering in 37.
+    ///
+    /// `declared` is what the sender said it *is*, where the frame carried such
+    /// a claim — the R flag on an advertisement, or an advertisement only a
+    /// router sends. It is the host's own word rather than an inference of
+    /// ours, which is why it is recorded here beside the liveness evidence and
+    /// not derived later from what the record ended up holding.
     fn record_response(
         &mut self,
         source_mac: MacAddr,
@@ -1077,6 +1265,7 @@ impl LocalScanner {
         rtt: Option<(Duration, RttSource)>,
         protocol: StatusProtocol,
         answered_attempt: Option<u8>,
+        declared: Option<NetworkRole>,
     ) {
         // Whether *this scanner* has seen this device before, which is not the
         // same question as whether the store has a host at this address. In a
@@ -1096,6 +1285,12 @@ impl LocalScanner {
 
         let first_sighting = !self.mac_to_ip.contains_key(&source_mac);
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
+
+        // Whatever this machine told the segment before this scan knew which
+        // host it was. Taken out of the roster rather than left in it: the MAC
+        // is on `mac_to_ip` from here on, so a later declaration is applied on
+        // the spot.
+        let held = self.declared.remove(&source_mac);
 
         // Host mutation only. `write_host` owns the guard, the drop-before-emit
         // ordering, and the event. `is_new_ip` is returned for the DNS decision
@@ -1118,6 +1313,16 @@ impl LocalScanner {
             host.record_evidence(HostStatus::Up, StatusReason::basic(protocol.clone()));
 
             let mut changed = rtt.is_some() || !was_up;
+            for role in held.into_iter().flatten() {
+                changed |= host.add_network_role(role);
+            }
+            if let Some(role) = declared {
+                // A watcher told about this host before its sender said what it
+                // is has to hear the correction, so a role it did not carry is
+                // news in the same way a status change is. Repeating one is not:
+                // a router advertises on a timer.
+                changed |= host.add_network_role(role);
+            }
             match rtt {
                 Some((rtt, RttSource::Direct)) => host.add_rtt(rtt),
                 Some((rtt, RttSource::SegmentWide)) => host.add_segment_wide_rtt(rtt),

@@ -64,11 +64,6 @@ pub const DIFF_SCHEMA_VERSION: u32 = 1;
 /// checks to decide whether a document is one this engine wrote.
 pub const ENGINE_NAME: &str = "zond-engine";
 
-/// Rendering and reading the one timestamp shape every document here uses.
-///
-/// A function rather than a constant, and it belongs by the same rule: changing
-/// how a timestamp is written breaks every reader of it. Compiled in
-/// unconditionally, since it costs nothing and both directions want it.
 pub mod time;
 
 /// The header row of this engine's CSV, which the writer emits and the reader

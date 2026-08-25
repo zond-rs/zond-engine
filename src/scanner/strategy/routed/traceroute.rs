@@ -50,7 +50,7 @@
 //! **only hosts that answered are traced**. The distance is read out of the
 //! reply: a hop counter arrives having been decremented once per router, so the
 //! gap between what arrived and the value it plausibly started at is the
-//! distance. See [`distance_from`].
+//! distance. See `distance_from`.
 //!
 //! ## What the cache assumes
 //!

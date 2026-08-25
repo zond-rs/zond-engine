@@ -108,9 +108,15 @@ pub fn protocol(name: &str) -> Option<Protocol> {
     })
 }
 
-/// A role inferred from where a host sits or what it runs.
+/// A role the scan concluded about a host.
 pub fn network_role_name(role: NetworkRole) -> &'static str {
     match role {
+        NetworkRole::Router => "router",
+        NetworkRole::DnsServer => "dns",
+        NetworkRole::DhcpServer => "dhcp",
+        NetworkRole::NtpServer => "ntp",
+        NetworkRole::SnmpAgent => "snmp",
+        NetworkRole::Origin => "origin",
         NetworkRole::Tarpit => "tarpit",
         NetworkRole::Truncated => "truncated",
     }
@@ -119,6 +125,12 @@ pub fn network_role_name(role: NetworkRole) -> &'static str {
 /// [`network_role_name`] read back.
 pub fn network_role(name: &str) -> Option<NetworkRole> {
     Some(match name {
+        "router" => NetworkRole::Router,
+        "dns" => NetworkRole::DnsServer,
+        "dhcp" => NetworkRole::DhcpServer,
+        "ntp" => NetworkRole::NtpServer,
+        "snmp" => NetworkRole::SnmpAgent,
+        "origin" => NetworkRole::Origin,
         "tarpit" => NetworkRole::Tarpit,
         "truncated" => NetworkRole::Truncated,
         _ => return None,
@@ -134,6 +146,7 @@ pub fn status_protocol_name(protocol: &StatusProtocol) -> Cow<'_, str> {
         StatusProtocol::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
         StatusProtocol::TcpSyn => Cow::Borrowed("tcp_syn"),
         StatusProtocol::Tcp => Cow::Borrowed("tcp"),
+        StatusProtocol::Dhcp => Cow::Borrowed("dhcp"),
         StatusProtocol::Udp => Cow::Borrowed("udp"),
         StatusProtocol::Custom(name) => Cow::Owned(format!("{CUSTOM}{name}")),
     }
@@ -155,6 +168,7 @@ pub fn status_protocol(name: &str) -> Option<StatusProtocol> {
         "icmp_unreachable" => StatusProtocol::IcmpUnreachable,
         "tcp_syn" => StatusProtocol::TcpSyn,
         "tcp" => StatusProtocol::Tcp,
+        "dhcp" => StatusProtocol::Dhcp,
         "udp" => StatusProtocol::Udp,
         _ => return None,
     })
@@ -287,6 +301,38 @@ pub fn stop_reason(name: &str) -> Option<StopReason> {
     })
 }
 
+/// The wire name of a phase's port scope.
+///
+/// The set itself travels separately, as a port specification; this names which
+/// of the four things that set *is*. A scope with no set has a name here all the
+/// same, because "the phase walked no ports" and "the record does not say" are
+/// the two that must never be read as each other.
+pub fn port_scope_name(scope: &PortScope) -> &'static str {
+    match scope {
+        PortScope::Unstated => "unstated",
+        PortScope::NoPorts => "none",
+        PortScope::Every(_) => "every",
+        PortScope::Mixed(_) => "mixed",
+    }
+}
+
+/// [`port_scope_name`] read back, given the set that travelled with it.
+///
+/// A name this build does not know reads as `None`, which a caller turns into
+/// [`PortScope::Unstated`] — the reading that claims nothing.
+pub fn port_scope(name: &str, ports: Option<PortSet>) -> Option<PortScope> {
+    Some(match (name, ports) {
+        ("unstated", _) => PortScope::Unstated,
+        ("none", _) => PortScope::NoPorts,
+        ("every", Some(ports)) => PortScope::Every(ports),
+        ("mixed", Some(ports)) => PortScope::Mixed(ports),
+        // A set is what makes those two mean anything, so a name that needs one
+        // and did not travel with one says nothing.
+        ("every" | "mixed", None) => PortScope::Unstated,
+        _ => return None,
+    })
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -362,7 +408,7 @@ mod tests {
             assert_eq!(protocol(protocol_name(value)), Some(value));
         }
 
-        for value in [NetworkRole::Tarpit, NetworkRole::Truncated] {
+        for value in NetworkRole::ALL {
             assert_eq!(network_role(network_role_name(value)), Some(value));
         }
 
@@ -382,6 +428,7 @@ mod tests {
             StatusProtocol::IcmpUnreachable,
             StatusProtocol::TcpSyn,
             StatusProtocol::Tcp,
+            StatusProtocol::Dhcp,
             StatusProtocol::Udp,
             StatusProtocol::Custom("a-strategy".into()),
         ] {
@@ -400,6 +447,73 @@ mod tests {
         ] {
             let name = scan_response_name(&value);
             assert_eq!(scan_response(&name), Some(value.clone()), "{name}");
+        }
+    }
+
+    /// Every built-in protocol is spelled in all three places at once: the
+    /// writer, the reader, and the report schema.
+    ///
+    /// The first two are exhaustive matches, so the compiler already refuses a
+    /// variant that has no name. The schema is a JSON file on disk and the
+    /// compiler cannot see it at all — which is the one gap, and the one that
+    /// lets a finding survive a scan and disappear on the way to the report.
+    ///
+    /// The `match` below has no wildcard for exactly that reason: a variant
+    /// added to [`StatusProtocol`] stops this test compiling until somebody has
+    /// decided what the document calls it.
+    #[test]
+    fn every_built_in_protocol_is_named_everywhere() {
+        const SCHEMA: &str = include_str!("../../assets/schema/zond-report-v1.schema.json");
+
+        // Scoped to the one `enum` block that holds these names, because the
+        // document spells some of them twice: `dhcp` is a protocol here and a
+        // network role four hundred lines up, and a search of the whole file
+        // finds the wrong one and passes. Anchored on the description, which
+        // occurs exactly once, and running to the first `]`, which closes the
+        // enum.
+        let described = SCHEMA
+            .find("The protocol event that produced the evidence")
+            .expect("the schema describes the evidence protocol");
+        let names = &SCHEMA[described..];
+        let names = &names[..names.find(']').expect("the enum closes")];
+
+        // The scoping is the part that can silently stop working, so it is
+        // asserted rather than assumed: a role name has no business in here.
+        assert!(
+            !names.contains("\"router\""),
+            "the search caught the network-role enum instead"
+        );
+
+        for protocol in [
+            StatusProtocol::Arp,
+            StatusProtocol::Ndp,
+            StatusProtocol::IcmpEcho,
+            StatusProtocol::IcmpUnreachable,
+            StatusProtocol::TcpSyn,
+            StatusProtocol::Tcp,
+            StatusProtocol::Dhcp,
+            StatusProtocol::Udp,
+        ] {
+            match protocol {
+                StatusProtocol::Arp
+                | StatusProtocol::Ndp
+                | StatusProtocol::IcmpEcho
+                | StatusProtocol::IcmpUnreachable
+                | StatusProtocol::TcpSyn
+                | StatusProtocol::Tcp
+                | StatusProtocol::Dhcp
+                | StatusProtocol::Udp => {}
+                StatusProtocol::Custom(_) => {
+                    unreachable!("the list above holds no strategy-supplied names")
+                }
+            }
+
+            let name = status_protocol_name(&protocol);
+            assert_eq!(status_protocol(&name), Some(protocol.clone()));
+            assert!(
+                names.contains(&format!("\"{name}\"")),
+                "the report schema does not name '{name}'"
+            );
         }
     }
 
@@ -425,36 +539,4 @@ mod tests {
         assert_eq!(status_protocol(CUSTOM), None);
         assert_eq!(scan_response(CUSTOM), None);
     }
-}
-
-/// The wire name of a phase's port scope.
-///
-/// The set itself travels separately, as a port specification; this names which
-/// of the four things that set *is*. A scope with no set has a name here all the
-/// same, because "the phase walked no ports" and "the record does not say" are
-/// the two that must never be read as each other.
-pub fn port_scope_name(scope: &PortScope) -> &'static str {
-    match scope {
-        PortScope::Unstated => "unstated",
-        PortScope::NoPorts => "none",
-        PortScope::Every(_) => "every",
-        PortScope::Mixed(_) => "mixed",
-    }
-}
-
-/// [`port_scope_name`] read back, given the set that travelled with it.
-///
-/// A name this build does not know reads as `None`, which a caller turns into
-/// [`PortScope::Unstated`] — the reading that claims nothing.
-pub fn port_scope(name: &str, ports: Option<PortSet>) -> Option<PortScope> {
-    Some(match (name, ports) {
-        ("unstated", _) => PortScope::Unstated,
-        ("none", _) => PortScope::NoPorts,
-        ("every", Some(ports)) => PortScope::Every(ports),
-        ("mixed", Some(ports)) => PortScope::Mixed(ports),
-        // A set is what makes those two mean anything, so a name that needs one
-        // and did not travel with one says nothing.
-        ("every" | "mixed", None) => PortScope::Unstated,
-        _ => return None,
-    })
 }

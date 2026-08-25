@@ -1502,8 +1502,20 @@ mod tests {
         assert_eq!(host_status_name(HostStatus::Filtered), "filtered");
         assert_eq!(port_state_name(PortState::OpenFiltered), "open_filtered");
         assert_eq!(protocol_name(Protocol::Udp), "udp");
-        assert_eq!(network_role_name(NetworkRole::Tarpit), "tarpit");
-        assert_eq!(network_role_name(NetworkRole::Truncated), "truncated");
+        // Spelled out in full, unlike the enums above: this is the whole role
+        // vocabulary a consumer switches on, and it is the one that grows.
+        for (role, name) in [
+            (NetworkRole::Router, "router"),
+            (NetworkRole::DnsServer, "dns"),
+            (NetworkRole::DhcpServer, "dhcp"),
+            (NetworkRole::NtpServer, "ntp"),
+            (NetworkRole::SnmpAgent, "snmp"),
+            (NetworkRole::Origin, "origin"),
+            (NetworkRole::Tarpit, "tarpit"),
+            (NetworkRole::Truncated, "truncated"),
+        ] {
+            assert_eq!(network_role_name(role), name);
+        }
         assert_eq!(
             stop_reason_name(StopReason::AttemptsSpent),
             "attempts_spent"

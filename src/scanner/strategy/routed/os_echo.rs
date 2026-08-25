@@ -227,7 +227,7 @@ impl OsEchoScanner {
         ) {
             Ok(message) => message,
             Err(e) => {
-                error!(verbosity = 2, "Cannot build an echo for {target}: {e}");
+                error!(verbosity = 2, "cannot build an echo for {target}: {e}");
                 self.audit.record_send(false);
                 return;
             }
@@ -239,13 +239,13 @@ impl OsEchoScanner {
             .send(&message, source, target, Emission::routed())
         {
             Ok(()) => {
-                success!(verbosity = 2, "Sent OS echo probe to {target}");
+                success!(verbosity = 2, "sent OS echo probe to {target}");
                 true
             }
             Err(e) => {
                 error!(
                     verbosity = 2,
-                    "Failed to send OS echo probe to {target}: {e:#}"
+                    "failed to send OS echo probe to {target}: {e:#}"
                 );
                 self.send_failure = Some(format!("{e:#}"));
                 false

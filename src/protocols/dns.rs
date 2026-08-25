@@ -80,6 +80,30 @@ pub fn parse_ptr_response(payload: &[u8]) -> Result<PtrResponse> {
     })
 }
 
+/// Whether `payload` is a DNS server answering a question.
+///
+/// The evidence behind [`NetworkRole::DnsServer`], and the reason it is a claim
+/// about the host rather than about a port: something bound to 53 is a socket,
+/// and something that answers in DNS is a name server.
+///
+/// The question the answer carries is deliberately not compared against the one
+/// the engine asked. Three facts already correlate this reply with that probe —
+/// it came from port 53, it is addressed to the source port this scan probes
+/// from, and a datagram went to that port carrying a DNS query — and comparing
+/// the question here would put the corpus's choice of probe inside the scanner
+/// that merely sends it. What is checked instead is that the message parses
+/// whole: a header, and every question and record it claims to carry, which is
+/// not something arbitrary bytes do.
+///
+/// A response that says *no* still counts. `REFUSED` and `NOTIMP` are a
+/// nameserver declining a question, and declining in DNS is something only a
+/// nameserver can do.
+///
+/// [`NetworkRole::DnsServer`]: crate::model::host::NetworkRole::DnsServer
+pub fn is_response(payload: &[u8]) -> bool {
+    Packet::parse(payload).is_ok_and(|packet| !packet.header.query)
+}
+
 /// The reverse name `ip` is looked up under: `in-addr.arpa` for IPv4, and
 /// `ip6.arpa` - one label per nibble, least significant first - for IPv6.
 pub fn reverse_pointer_name(ip: &IpAddr) -> String {

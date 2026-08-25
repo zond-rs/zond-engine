@@ -503,7 +503,7 @@ impl PortScanPlan {
         // Raw scanning needs both the privilege and an address to probe from.
         let raw = privileged && interface::SourceResolver::from_system().has_sources();
         if privileged && !raw {
-            warn!("No usable network interface found; using TCP connect fallback");
+            warn!("no usable network interface found; using TCP connect fallback");
         }
 
         if raw {
@@ -590,7 +590,7 @@ fn include_swept_link(local: &mut HashMap<NetworkInterface, IpSet>) {
 
     info!(
         verbosity = 1,
-        "Sweeping {} for IPv6 neighbours; it has no IPv4 range to walk", link.interface.name
+        "sweeping {} for IPv6 neighbours; it has no IPv4 range to walk", link.interface.name
     );
     local.insert(link.interface, IpSet::new());
 }
@@ -651,7 +651,7 @@ fn seed_from_neighbor_table_with(
             targets.canonicalize();
             info!(
                 verbosity = 1,
-                "Took {seeded} IPv6 address(es) from the neighbour table as candidates on {}",
+                "took {seeded} IPv6 address(es) from the neighbour table as candidates on {}",
                 intf.name
             );
         }

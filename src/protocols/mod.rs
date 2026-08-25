@@ -61,6 +61,7 @@
 
 pub mod arp;
 pub mod craft;
+pub mod dhcp;
 pub mod dns;
 pub mod error;
 pub mod ethernet;

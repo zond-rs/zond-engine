@@ -97,7 +97,7 @@ impl Signature {
                     Ok(compiled) => Some(compiled),
                     Err(e) => {
                         warn!(
-                            "Fingerprint signature for service '{}' was skipped: its pattern \
+                            "fingerprint signature for service '{}' was skipped: its pattern \
                              failed to compile ({e}); pattern = {:?}",
                             self.service, self.pattern
                         );

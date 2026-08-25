@@ -80,13 +80,13 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
 
         info!(
             verbosity = 1,
-            "Resolved LAN: {} - {}",
+            "resolved LAN: {} - {}",
             range.start_addr(),
             range.end_addr()
         );
         set.insert_range(IpRange::V4(range));
     } else {
-        warn!("Small subnet; scanning full network range.");
+        warn!("small subnet; scanning full network range");
         let range = Ipv4Range::new(net.network(), net.broadcast()).unwrap();
         set.insert_range(IpRange::V4(range));
     }

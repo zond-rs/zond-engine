@@ -50,7 +50,7 @@
 //! 4960 §6.8) computed over the whole packet with the field zeroed and — the
 //! part that catches everyone — written into the field little-endian. It covers
 //! no pseudo-header, so unlike a TCP or UDP probe an SCTP one needs no addresses
-//! to be built. The computation lives in [`craft`](super::craft); this module
+//! to be built. The computation lives in [`craft`]; this module
 //! assembles the chunks around it.
 
 use crate::protocols::craft;

@@ -45,8 +45,23 @@
 //! This module is the seam. Scanners ask it what to send, and it answers from
 //! the corpus, so the "which payload for this port" policy has one home and the
 //! scanners keep no protocol knowledge of their own.
+//!
+//! ## And what an answer proves
+//!
+//! [`declared_role`] is the same seam read in the other direction. A reply is
+//! already counted as evidence the port is open; for a handful of ports it is
+//! also proof of what the host *is*, and that proof is in the reply's own
+//! protocol rather than in the port number it came from. Both scanners that
+//! send UDP probes — the raw one and the unprivileged fallback — ask here, so a
+//! scan concludes the same roles whichever transport it had available.
 
 use crate::fingerprint::SignatureDb;
+use crate::model::host::NetworkRole;
+use crate::protocols::dns;
+
+/// Where a name server answers. The rest of the vocabulary a role is read from
+/// lives beside each protocol's own parser.
+const DNS: u16 = 53;
 
 /// The payload to send when probing `port`.
 ///
@@ -65,6 +80,26 @@ pub fn for_port(port: u16) -> &'static [u8] {
         .udp_probe_payloads(port)
         .first()
         .map_or(&[], Vec::as_slice)
+}
+
+/// What a reply to the probe for `port` proves the host *does*, if its own
+/// protocol says so.
+///
+/// **The port is which question to ask, never the answer.** UDP/53 open means
+/// something is bound there; a DNS response means a name server answered. The
+/// first is a port verdict and already recorded as one, and promoting it to a
+/// role would put an infrastructure marking on every host with a socket open.
+///
+/// One arm per role, and the arms that are missing are missing on purpose.
+/// [`NtpServer`](NetworkRole::NtpServer) and [`SnmpAgent`](NetworkRole::SnmpAgent)
+/// have probes in the corpus already — 123 and 161 are both sent — so each is
+/// one validated reply away from being concluded here, and neither is concluded
+/// until that reply is actually read.
+pub fn declared_role(port: u16, reply: &[u8]) -> Option<NetworkRole> {
+    match port {
+        DNS => dns::is_response(reply).then_some(NetworkRole::DnsServer),
+        _ => None,
+    }
 }
 
 // ╔════════════════════════════════════════════╗
@@ -96,6 +131,46 @@ mod tests {
                 "port {port} lost its UDP probe from the corpus"
             );
         }
+    }
+
+    /// The engine's own question with the QR bit set: what a name server sends
+    /// back, built from the probe so the test cannot drift from what is asked.
+    fn dns_response() -> Vec<u8> {
+        let mut message = for_port(DNS).to_vec();
+        message[2] |= 0b1000_0000;
+        message
+    }
+
+    /// A role is read from the reply, and the port only decides which question
+    /// to ask of it.
+    ///
+    /// Two of the three cases here are the ones that would put the marking on a
+    /// host that never earned it. **Our own probe echoed back** is a query, not
+    /// an answer, and a reflector or a proxy that returns it must not be read as
+    /// a name server. **A DNS message on 5353** is mDNS, which nearly every
+    /// laptop and printer on a segment speaks — sharing DNS's framing does not
+    /// make a responder a nameserver, and reading it as one would put the role
+    /// on half a network.
+    #[test]
+    fn a_role_is_read_from_the_reply_and_not_from_the_port() {
+        assert_eq!(
+            declared_role(DNS, &dns_response()),
+            Some(NetworkRole::DnsServer)
+        );
+
+        assert_eq!(
+            declared_role(DNS, for_port(DNS)),
+            None,
+            "a query is not an answer"
+        );
+        assert_eq!(declared_role(DNS, b"not a dns message at all"), None);
+        assert_eq!(declared_role(DNS, &[]), None);
+
+        assert_eq!(
+            declared_role(5353, &dns_response()),
+            None,
+            "an mDNS responder is not a name server"
+        );
     }
 
     #[test]

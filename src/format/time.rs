@@ -19,6 +19,9 @@
 //! [`rfc3339`] and [`parse_rfc3339`] are inverses, and
 //! `a_rendered_timestamp_reads_back_as_itself` is what keeps them so.
 //!
+//! Compiled in unconditionally, unlike the CSV header beside it, since it costs
+//! nothing and both directions want it.
+//!
 //! The alternative - a float of seconds since the epoch - is the trap this
 //! module exists to avoid. A `f64` holds a microsecond-resolution epoch time to
 //! about a quarter of a microsecond today and steadily worse as the epoch
@@ -91,6 +94,73 @@ pub fn rfc3339(time: SystemTime) -> String {
         "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z",
         micros = nanos / 1_000
     )
+}
+
+/// Formats a moment in the reader's own timezone, to the second.
+///
+/// `2026-08-25 18:21:36 +0200`. For a line a person reads once — a banner, a
+/// heading — where [`rfc3339`]'s `T`, its `Z` and its six digits of fractional
+/// second are three pieces of precision nobody is going to use and one shape
+/// nobody enjoys.
+///
+/// **The offset is not optional.** A local time with no offset beside it cannot
+/// be lined up against anything else — a firewall log, a packet capture, a
+/// colleague's transcript from another continent — and a scan whose findings
+/// cannot be correlated with the rest of the evidence is a scan somebody has to
+/// run again. `+0200` costs five columns and removes the ambiguity entirely.
+///
+/// Records keep [`rfc3339`]. This is for reading, that is for comparing, and
+/// neither is derived from the other because the precision differs.
+///
+/// Falls back to [`rfc3339`] where the platform will not say what the local time
+/// is, which is a container with no zone database rather than anything a user
+/// did wrong.
+pub fn local(time: SystemTime) -> String {
+    let Some(broken) = local_parts(time) else {
+        return rfc3339(time);
+    };
+
+    let (offset_hours, offset_minutes) = (
+        broken.tm_gmtoff.abs() / 3_600,
+        (broken.tm_gmtoff.abs() % 3_600) / 60,
+    );
+
+    format!(
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} {sign}{offset_hours:02}{offset_minutes:02}",
+        year = broken.tm_year + 1_900,
+        month = broken.tm_mon + 1,
+        day = broken.tm_mday,
+        hour = broken.tm_hour,
+        minute = broken.tm_min,
+        second = broken.tm_sec,
+        sign = if broken.tm_gmtoff < 0 { '-' } else { '+' },
+    )
+}
+
+/// The moment as the C library breaks it down for this machine's timezone.
+///
+/// `localtime_r` rather than `localtime`: the reentrant form writes into a
+/// caller-supplied `tm` instead of a shared static, which is the difference
+/// between a scan that can format a time from any task and one that cannot.
+///
+/// `None` for a time the platform will not convert — outside what its `time_t`
+/// holds, or a machine with no zone database at all.
+fn local_parts(time: SystemTime) -> Option<libc::tm> {
+    let (secs, _) = epoch_parts(time);
+    let secs = libc::time_t::try_from(secs).ok()?;
+
+    // SAFETY: `localtime_r` fills `broken` or returns null, and is passed one
+    // valid pointer to each. The `tm` is zeroed first so that a partial write
+    // cannot leave it reading uninitialised memory.
+    let broken = unsafe {
+        let mut broken: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&secs, &mut broken).is_null() {
+            return None;
+        }
+        broken
+    };
+
+    Some(broken)
 }
 
 /// Reads an RFC 3339 timestamp in UTC back as the moment it names.
@@ -275,6 +345,43 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    /// A local time reads as one, and carries the offset that makes it
+    /// comparable with anything else.
+    ///
+    /// Asserted against the shape rather than against a fixed answer: what
+    /// `18:21` means depends on where the machine running the test is, and a
+    /// test that only passes in one timezone is a test that fails in CI.
+    #[test]
+    fn a_local_time_is_readable_and_still_unambiguous() {
+        let moment = UNIX_EPOCH + Duration::from_secs(1_770_000_000);
+        let shown = local(moment);
+
+        // `YYYY-MM-DD HH:MM:SS ±HHMM`, and nothing else.
+        assert_eq!(shown.len(), 25, "{shown}");
+        assert_eq!(shown.as_bytes()[10], b' ', "{shown}");
+        assert_eq!(shown.as_bytes()[19], b' ', "{shown}");
+        assert!(
+            matches!(shown.as_bytes()[20], b'+' | b'-'),
+            "no offset: {shown}"
+        );
+        assert!(
+            !shown.contains('T'),
+            "still reads as a machine format: {shown}"
+        );
+        assert!(!shown.ends_with('Z'), "claims to be UTC: {shown}");
+
+        // The same instant either way, whatever this machine's zone is.
+        assert_eq!(&rfc3339(moment)[..4], &shown[..4]);
+    }
+
+    /// Records keep their precision; a line somebody reads does not need it.
+    #[test]
+    fn a_record_keeps_what_a_banner_drops() {
+        let moment = UNIX_EPOCH + Duration::new(1_770_000_000, 123_456_789);
+
+        assert!(rfc3339(moment).contains(".123456"));
+        assert!(!local(moment).contains(".123456"));
+    }
 
     /// The one property that matters about a pair of inverses.
     #[test]

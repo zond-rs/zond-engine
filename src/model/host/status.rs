@@ -95,7 +95,31 @@ pub enum StatusProtocol {
     /// a connection. Which probe drew it is named in
     /// [`StatusReason::details`](super::StatusReason::details).
     Tcp,
+    /// Discovered via a DHCP server reply overheard on the segment.
+    ///
+    /// Kept apart from [`Udp`](Self::Udp) for the reason [`Tcp`](Self::Tcp) is
+    /// kept apart from [`TcpSyn`](Self::TcpSyn): the two prove different things,
+    /// and a reader of the evidence should not have to work out which. `Udp`
+    /// names nothing above the transport because a reply to an arbitrary probed
+    /// port has nothing above it to name. This frame does — it is a DHCP server
+    /// reply — and naming it is the whole of what makes the line worth reading.
+    /// `udp` in an evidence list tells a reader that something answered; `dhcp`
+    /// tells them what.
+    ///
+    /// Unsolicited, like a router advertisement and unlike everything else here:
+    /// a DHCP server answers the segment's own traffic and a sweep is listening
+    /// anyway, so this is evidence that arrives without a probe having been sent
+    /// for it.
+    ///
+    /// Proves only that the sender is there. Whether it also makes the sender a
+    /// [`NetworkRole::DhcpServer`](crate::model::host::NetworkRole::DhcpServer)
+    /// is a separate question a relay can answer differently; see `DhcpProtocol`.
+    Dhcp,
     /// Discovered via a valid application-level response over UDP.
+    ///
+    /// The transport and nothing above it, which is the honest answer for a
+    /// reply to a port the scan probed without knowing what would be listening.
+    /// Where the engine *can* name what answered, it has a variant for it.
     Udp,
     /// A custom discovery method initiated by a specialized scanning script.
     Custom(Arc<str>),

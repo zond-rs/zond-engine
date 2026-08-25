@@ -143,7 +143,12 @@ pub enum HostChange {
     ///
     /// Only the identification moved. A fingerprint recorded at a different
     /// confidence for the same system is not a change and is not reported.
-    Os(Change<Option<OsFingerprint>>),
+    ///
+    /// Boxed because a pair of fingerprints is several times the size of any
+    /// other variant, and a change list is mostly the other variants: unboxed,
+    /// every hostname change in a diff would be stored in a slot wide enough for
+    /// two operating systems. A reader dereferences it like any other change.
+    Os(Box<Change<Option<OsFingerprint>>>),
     /// The hardware addresses the host was seen at changed, each list ascending.
     ///
     /// Only a scan that reached the link layer sees these at all, so both lists
@@ -257,10 +262,10 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
     }
 
     if !same_system(before.os(), after.os()) {
-        changes.push(HostChange::Os(Change::new(
+        changes.push(HostChange::Os(Box::new(Change::new(
             before.os().cloned(),
             after.os().cloned(),
-        )));
+        ))));
     }
 
     let (gained, lost) = difference(

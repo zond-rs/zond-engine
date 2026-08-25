@@ -411,7 +411,7 @@ impl OsSeriesScanner {
             Err(e) => {
                 error!(
                     verbosity = 2,
-                    "Cannot build a series probe for {address}: {e}"
+                    "cannot build a series probe for {address}: {e}"
                 );
                 self.audit.record_send(false);
                 return;
@@ -433,7 +433,7 @@ impl OsSeriesScanner {
             Err(e) => {
                 error!(
                     verbosity = 2,
-                    "Failed to send a series probe to {address}: {e:#}"
+                    "failed to send a series probe to {address}: {e:#}"
                 );
                 self.send_failure = Some(format!("{e:#}"));
                 self.audit.record_send(false);
@@ -578,7 +578,7 @@ impl OsSeriesScanner {
             };
             success!(
                 verbosity = 2,
-                "Series probe named {} as {}",
+                "series probe named {} as {}",
                 target.address,
                 verdict.family
             );
@@ -648,7 +648,7 @@ impl HostScanner for OsSeriesScanner {
         if self.named > 0 {
             info!(
                 verbosity = 1,
-                "Named {} host(s) from repeated probes", self.named
+                "named {} host(s) from repeated probes", self.named
             );
         }
 

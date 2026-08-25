@@ -23,7 +23,7 @@
 //! spend that freedom to serve a different caller.
 //!
 //! So the readers here are separate, and the two directions share only the
-//! parsing machinery that has no opinion about either — [`xml`](super::xml) for
+//! parsing machinery that has no opinion about either — `xml` for
 //! the documents that are XML.
 //!
 //! ## What this unlocks

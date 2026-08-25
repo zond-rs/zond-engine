@@ -28,6 +28,23 @@
 //! [`resolve_hosts_async`] is the unprivileged fallback. With no raw socket to
 //! sniff, it simply issues reverse lookups through the system resolver for every
 //! host that still lacks a name.
+//!
+//! ## What answering proves
+//!
+//! Both paths above read DNS *responses*, and a machine that answers a DNS
+//! question is a name server — [`NetworkRole::DnsServer`], concluded from the
+//! protocol's own traffic rather than from a port being open. This is the only
+//! place a scan that never touches a port can conclude it, and on a local
+//! segment it is the usual place: the resolver a machine is configured with is
+//! generally the router it is scanning.
+//!
+//! Recorded against hosts the scan already found and never against anything
+//! else, so an upstream resolver nobody asked about does not appear in a report
+//! as a host. The unprivileged fallback contributes nothing here: it asks
+//! through the system resolver, which does not say which server answered.
+//!
+//! mDNS is deliberately not counted. It shares DNS's framing and answers on
+//! 5353, and nearly every laptop and printer on a segment responds to it.
 
 use hickory_resolver::config::ProtocolConfig;
 use hickory_resolver::system_conf::read_system_conf;
@@ -39,6 +56,7 @@ use std::{
     time::Duration,
 };
 
+use crate::model::host::NetworkRole;
 use crate::protocols::{
     dns,
     mdns::{self, MdnsHost},
@@ -98,6 +116,14 @@ pub struct HostnameResolver {
     mdns_cache: HashMap<IpAddr, MdnsHost>,
     /// Hostnames resolved so far, keyed by IP.
     hostname_map: HashMap<IpAddr, Hostname>,
+    /// Addresses seen answering a DNS question, whoever asked it.
+    ///
+    /// Two sources, and neither costs a probe: a reply to one of this
+    /// resolver's own queries, and a response sniffed off the wire that some
+    /// other machine's lookup drew. Written into the store by
+    /// [`resolve_hosts`](Self::resolve_hosts) alongside the names, since both
+    /// are findings about hosts and the store is walked once.
+    name_servers: HashSet<IpAddr>,
     /// Stream of IPs to resolve, fed by the discovery and scanning strategies.
     dns_rx: UnboundedReceiver<IpAddr>,
     /// Source of transaction IDs for outgoing queries.
@@ -145,6 +171,7 @@ impl HostnameResolver {
             queried: HashSet::new(),
             mdns_cache: HashMap::new(),
             hostname_map: HashMap::new(),
+            name_servers: HashSet::new(),
             dns_rx,
             id_counter: AtomicU16::new(0),
         })
@@ -177,7 +204,7 @@ impl HostnameResolver {
                 (payload, from) = recv_reply(&v6) => self.absorb_reply(&payload, from),
                 pkt = self.transport.rx.recv(), if sniffing => {
                     match pkt {
-                        Some(reply) => self.absorb_sniffed(&reply.bytes),
+                        Some(reply) => self.absorb_sniffed(&reply.bytes, reply.source),
                         None => sniffing = false,
                     }
                 }
@@ -194,7 +221,7 @@ impl HostnameResolver {
                         (payload, from) = recv_reply(&v6) => self.absorb_reply(&payload, from),
                         pkt = self.transport.rx.recv(), if sniffing => {
                             match pkt {
-                                Some(reply) => self.absorb_sniffed(&reply.bytes),
+                                Some(reply) => self.absorb_sniffed(&reply.bytes, reply.source),
                                 None => sniffing = false,
                             }
                         }
@@ -209,7 +236,7 @@ impl HostnameResolver {
         // already, so take whatever is there rather than dropping names the
         // network has in fact already told us.
         while let Ok(reply) = self.transport.rx.try_recv() {
-            self.absorb_sniffed(&reply.bytes);
+            self.absorb_sniffed(&reply.bytes, reply.source);
         }
 
         self
@@ -226,9 +253,9 @@ impl HostnameResolver {
             Ok(count) => info!(
                 outgoing,
                 verbosity = 1,
-                "Reverse query for {ip} sent to {count} resolver(s)"
+                "reverse query for {ip} sent to {count} resolver(s)"
             ),
-            Err(e) => error!("Reverse query for {ip} failed: {e}"),
+            Err(e) => error!("reverse query for {ip} failed: {e}"),
         }
     }
 
@@ -282,10 +309,16 @@ impl HostnameResolver {
         let response = match dns::parse_ptr_response(payload) {
             Ok(response) => response,
             Err(e) => {
-                error!(verbosity = 2, "Unreadable reply from resolver {from}: {e}");
+                error!(verbosity = 2, "unreadable reply from resolver {from}: {e}");
                 return;
             }
         };
+
+        // It answered, which is the whole of the claim and is settled before the
+        // checks below. Those decide whether this reply names *a host*; a
+        // resolver that declines the question, or answers one we are no longer
+        // waiting on, is a name server either way.
+        self.name_servers.insert(from.ip());
 
         let Some(ip) = self.dns_map.get(&response.id).copied() else {
             return;
@@ -319,13 +352,21 @@ impl HostnameResolver {
     /// machines' service discovery - so a segment that will not parse, or that
     /// concerns no address, is simply not ours. Logging each one turned ordinary
     /// background traffic into a wall of scan errors.
-    fn absorb_sniffed(&mut self, segment: &[u8]) {
+    fn absorb_sniffed(&mut self, segment: &[u8], source: IpAddr) {
         let Some(udp_packet) = UdpPacket::new(segment) else {
             return;
         };
 
         match udp_packet.get_source() {
-            DNS_PORT => self.absorb_sniffed_dns(udp_packet.payload()),
+            DNS_PORT => {
+                // Somebody else's lookup, answered in front of us. The name in
+                // it may be about a host the scan never found; the machine that
+                // sent it is one we can see, and it just served DNS.
+                if dns::is_response(udp_packet.payload()) {
+                    self.name_servers.insert(source);
+                }
+                self.absorb_sniffed_dns(udp_packet.payload());
+            }
             MDNS_PORT => self.absorb_sniffed_mdns(udp_packet.payload()),
             _ => {}
         }
@@ -347,7 +388,7 @@ impl HostnameResolver {
         };
 
         if self.hostname_map.insert(ip, hostname.clone()).is_none() {
-            info!(verbosity = 1, "Overheard {ip} named {hostname}");
+            info!(verbosity = 1, "overheard {ip} named {hostname}");
         }
     }
 
@@ -389,11 +430,19 @@ impl HostnameResolver {
     pub fn resolve_hosts(&mut self, ctx: &ScanContext) {
         for key in ctx.host_addresses() {
             let (hostname_map, mdns_cache) = (&mut self.hostname_map, &mut self.mdns_cache);
+            let name_servers = &self.name_servers;
 
             ctx.write_host(key, |host| {
                 let mut named = false;
 
                 for ip in host.ips().clone() {
+                    // Not `else`-chained with the names below: a resolver that
+                    // answers about other hosts and has no name of its own is
+                    // the ordinary case for a router.
+                    if name_servers.contains(&ip) {
+                        named |= host.add_network_role(NetworkRole::DnsServer);
+                    }
+
                     // Prefer a hostname learned over unicast DNS.
                     if host.hostname().is_none()
                         && let Some(hostname) = hostname_map.remove(&ip)
@@ -453,7 +502,7 @@ async fn recv_reply(socket: &Option<Arc<UdpSocket>>) -> (Vec<u8>, SocketAddr) {
     match socket.recv_from(&mut buf).await {
         Ok((len, from)) => (buf[..len].to_vec(), from),
         Err(e) => {
-            error!("Reverse query socket failed: {e}");
+            error!("reverse query socket failed: {e}");
             std::future::pending().await
         }
     }
@@ -503,7 +552,7 @@ fn bind_query_targets(servers: &[SocketAddr]) -> anyhow::Result<Vec<QueryTarget>
 
     info!(
         verbosity = 1,
-        "Reverse queries go to {}",
+        "reverse queries go to {}",
         targets
             .iter()
             .map(|t| t.server.to_string())
@@ -528,7 +577,7 @@ fn bind_family(
     match bind_ephemeral(bind_addr) {
         Ok(socket) => Some(Arc::new(socket)),
         Err(e) => {
-            warn!("Could not bind {bind_addr} for reverse queries: {e}");
+            warn!("could not bind {bind_addr} for reverse queries: {e}");
             None
         }
     }
@@ -567,7 +616,7 @@ fn dns_server_candidates() -> Vec<SocketAddr> {
                 }
             }
         }
-        Err(e) => warn!("Could not read the system resolver configuration: {e}"),
+        Err(e) => warn!("could not read the system resolver configuration: {e}"),
     }
 
     for gateway in netdev::get_interfaces()
@@ -712,20 +761,135 @@ mod tests {
         }
     }
 
-    /// A resolver holding one name for `ip`, with no sockets behind it.
-    fn resolver_holding(ip: IpAddr, hostname: &str) -> HostnameResolver {
+    /// A resolver that would send its queries to `servers`, with no sockets
+    /// behind it.
+    fn resolver_asking(servers: Vec<SocketAddr>) -> HostnameResolver {
         let (_tx, dns_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut resolver = HostnameResolver::with_transport(
+        HostnameResolver::with_transport(
             dns_rx,
             ProbeTransport::from_parts(Box::new(Silent), reply_rx),
-            // Never queried. `resolve_hosts` only folds the caches into the
-            // store, but the constructor insists on somewhere to send to.
-            vec!["127.0.0.1:53".parse().expect("a valid socket address")],
+            servers,
         )
-        .expect("a loopback query target binds");
+        .expect("a query target binds")
+    }
+
+    /// A resolver holding one name for `ip`, with no sockets behind it.
+    fn resolver_holding(ip: IpAddr, hostname: &str) -> HostnameResolver {
+        // Never queried. `resolve_hosts` only folds the caches into the store,
+        // but the constructor insists on somewhere to send to.
+        let mut resolver = resolver_asking(vec![
+            "127.0.0.1:53".parse().expect("a valid socket address"),
+        ]);
         resolver.hostname_map.insert(ip, hostname.to_string());
         resolver
+    }
+
+    /// A DNS *response* about `subject`, built from the query this engine sends
+    /// so the message is one a real server could have produced.
+    ///
+    /// It carries no answer, which is deliberate: a server that has no name for
+    /// an address, or declines to look, has still answered in DNS.
+    fn dns_response(subject: IpAddr) -> Vec<u8> {
+        let mut message = dns::create_ptr_packet(&subject, 0x1234).expect("a query");
+        message[2] |= 0b1000_0000; // QR: this is a response
+        message
+    }
+
+    /// One UDP segment as it arrives off the wire, from `port`.
+    fn from_port(port: u16, message: Vec<u8>) -> Vec<u8> {
+        crate::protocols::craft::Udp::new(port, 40_000)
+            .with_payload(message)
+            .to_bytes(None)
+            .expect("a datagram")
+    }
+
+    /// A host that answered a DNS question is a name server, and that is how a
+    /// scan which never touches a port concludes it at all.
+    ///
+    /// On a local segment this is the *usual* way: the machine a scan asks for
+    /// names is generally the router it is scanning, and the answer is proof in
+    /// DNS's own protocol. Without this, a scan came back with every hostname
+    /// resolved and no idea what had resolved them.
+    ///
+    /// The second half is the trap on exactly those segments. mDNS shares DNS's
+    /// framing and answers on 5353, and nearly every laptop and printer speaks
+    /// it — so the identical message from that port must name nobody.
+    #[tokio::test]
+    async fn a_machine_that_answers_dns_is_a_name_server_and_an_mdns_responder_is_not() {
+        let server = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53));
+        let responder = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 60));
+        let subject = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+
+        let (session, ctx) = ScanSession::new();
+        for ip in [server, responder] {
+            ctx.update_host(ip, |host| host.set_status(HostStatus::Up));
+        }
+
+        let mut resolver = resolver_holding(subject, "printer.local");
+        resolver.absorb_sniffed(&from_port(DNS_PORT, dns_response(subject)), server);
+        resolver.absorb_sniffed(&from_port(MDNS_PORT, dns_response(subject)), responder);
+        resolver.resolve_hosts(&ctx);
+
+        assert!(
+            session
+                .hosts()
+                .get(&server)
+                .expect("the server is a scanned host")
+                .network_roles()
+                .contains(&NetworkRole::DnsServer),
+            "it answered a lookup in front of us"
+        );
+        assert!(
+            session
+                .hosts()
+                .get(&responder)
+                .expect("the responder is a scanned host")
+                .network_roles()
+                .is_empty(),
+            "answering mDNS is not serving DNS"
+        );
+    }
+
+    /// The reply to our own reverse query proves the same thing, and only from
+    /// a resolver we actually asked.
+    ///
+    /// The second half is what the socket needs: it is open to the whole
+    /// network, so anything can send a DNS-shaped datagram to it, and a scan
+    /// that named the sender a name server would be reporting whoever spoke
+    /// last.
+    #[tokio::test]
+    async fn only_a_resolver_the_scan_asked_is_named_by_its_answer() {
+        let asked = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53));
+        let stranger = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 99));
+        let subject = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+
+        let (session, ctx) = ScanSession::new();
+        for ip in [asked, stranger] {
+            ctx.update_host(ip, |host| host.set_status(HostStatus::Up));
+        }
+
+        let mut resolver = resolver_asking(vec![SocketAddr::new(asked, DNS_PORT)]);
+        resolver.absorb_reply(&dns_response(subject), SocketAddr::new(asked, DNS_PORT));
+        resolver.absorb_reply(&dns_response(subject), SocketAddr::new(stranger, DNS_PORT));
+        resolver.resolve_hosts(&ctx);
+
+        let hosts = session.hosts();
+        assert!(
+            hosts
+                .get(&asked)
+                .expect("scanned")
+                .network_roles()
+                .contains(&NetworkRole::DnsServer)
+        );
+        assert!(
+            hosts
+                .get(&stranger)
+                .expect("scanned")
+                .network_roles()
+                .is_empty(),
+            "nothing was asked of it, so its datagram answers nothing"
+        );
     }
 
     /// A hostname is a finding like any other, so attaching one has to announce

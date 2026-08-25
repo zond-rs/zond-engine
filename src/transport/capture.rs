@@ -280,7 +280,7 @@ pub fn start(
     for name in interfaces {
         match open(name, filter) {
             Ok((capture, link)) => {
-                info!(verbosity = 3, "Capturing on {name} (link type {link:?})");
+                info!(verbosity = 3, "capturing on {name} (link type {link:?})");
                 opened.push(name.as_str());
                 let tx = tx.clone();
                 let stop = stop.clone();
@@ -294,7 +294,7 @@ pub fn start(
                         .expect("spawning capture thread"),
                 );
             }
-            Err(e) => warn!("Skipping capture on {name}: {e}"),
+            Err(e) => warn!("skipping capture on {name}: {e}"),
         }
     }
 
@@ -304,7 +304,7 @@ pub fn start(
 
     info!(
         verbosity = 1,
-        "Capturing on {} interface(s) with filter: {filter}",
+        "capturing on {} interface(s) with filter: {filter}",
         opened.len()
     );
 
@@ -397,7 +397,7 @@ fn reader_loop(
             Err(pcap::Error::TimeoutExpired) => {}
             Err(pcap::Error::NoMorePackets) => break,
             Err(e) => {
-                error!("Capture read error: {e}");
+                error!("capture read error: {e}");
                 break;
             }
         }
@@ -423,7 +423,7 @@ fn reader_loop(
     if counts.dropped > 0 || counts.if_dropped > 0 {
         info!(
             verbosity = 1,
-            "Capture on {name} lost frames: {} dropped, {} dropped by the interface, of {} received",
+            "capture on {name} lost frames: {} dropped, {} dropped by the interface, of {} received",
             counts.dropped,
             counts.if_dropped,
             counts.received

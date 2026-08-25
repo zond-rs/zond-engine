@@ -133,9 +133,9 @@ impl ScanCapabilities {
     pub(super) fn resolve(cfg: &ZondConfig) -> Self {
         let privileged = is_elevated();
         if privileged {
-            success!("Root privileges detected, raw socket scan enabled");
+            success!("raw sockets available: probing with ARP, ICMPv6 and SYN");
         } else {
-            warn!("Root privileges missing, defaulting to unprivileged TCP scan");
+            warn!("no raw sockets: probing with TCP connect only");
         }
         Self {
             privileged,
@@ -224,7 +224,7 @@ pub(super) async fn spawn_explorers(
         let kind = step.kind();
         info!(
             verbosity = 1,
-            "Spawning {:?} scanner for {} target(s)",
+            "spawning {:?} scanner for {} target(s)",
             kind,
             step.target_count()
         );
@@ -485,7 +485,7 @@ pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsD
     if named > 0 {
         info!(
             verbosity = 1,
-            "Named {named} host(s) from what the sweep already knew"
+            "named {named} host(s) from what the sweep already knew"
         );
     }
 }
@@ -555,7 +555,7 @@ pub(super) async fn run_active_os_series(
     } else {
         strategy::routed::ACTIVE_SAMPLES
     };
-    info!("Following {} host(s) over {samples} samples", targets.len());
+    info!("following {} host(s) over {samples} samples", targets.len());
 
     match strategy::routed::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning.send_mode) {
         Ok(mut scanner) => {
@@ -640,7 +640,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         return;
     }
 
-    info!("Asking {} host(s) for their kernel", targets.len());
+    info!("asking {} host(s) for their kernel", targets.len());
 
     let mut named = 0usize;
     let mut pool = ProbePool::new(
@@ -668,7 +668,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
     pool.drain().await;
 
     if named > 0 {
-        info!(verbosity = 1, "Named {named} host(s) by SNMP");
+        info!(verbosity = 1, "named {named} host(s) by SNMP");
     }
 }
 
@@ -749,7 +749,7 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
         return;
     }
 
-    info!("Measuring the route to {} host(s)", alive.len());
+    info!("measuring the route to {} host(s)", alive.len());
     strategy::routed::traceroute::trace(ctx, alive).await;
 }
 
@@ -783,7 +783,7 @@ pub(super) async fn run_active_os_probe(
     }
 
     info!(
-        "Probing {} host(s) the passive sources could not name, by echo",
+        "probing {} host(s) the passive sources could not name, by echo",
         unnamed.len()
     );
 
@@ -834,11 +834,11 @@ pub(super) async fn spawn_resolver(
     tokio::spawn(async move {
         match HostnameResolver::new(dns_rx) {
             Ok(resolver) => {
-                success!("Successfully initialized hostname resolver");
+                success!("successfully initialized hostname resolver");
                 Some(resolver.run().await)
             }
             Err(e) => {
-                error!("Resolver failed to start: {e}");
+                error!("resolver failed to start: {e}");
                 None
             }
         }
@@ -990,6 +990,7 @@ fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::host::{Host, HostStatus};
     use crate::scanner::report::ScannerFailure;
     use crate::scanner::session::ScanSession;
     use tokio::sync::mpsc;
@@ -1512,9 +1513,6 @@ mod tests {
             .expect("the host is in the store");
         assert!(!named);
     }
-
-    use super::*;
-    use crate::model::host::{Host, HostStatus};
 
     /// A context whose store already holds `hosts`, as a finished liveness phase
     /// would have left it.

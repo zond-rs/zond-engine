@@ -93,7 +93,7 @@
 //! Hosts do not pair by address alone: a machine can change address between two
 //! scans, and one scan can see as a single host what another sees as two. That
 //! decision is [`HostIdentity`]'s, it is a field of [`DiffOptions`], and
-//! [`pairing`](self::pairing) is the whole argument for how it is made.
+//! [`pairing`] is the whole argument for how it is made.
 //!
 //! ## Which clock a certificate is judged against
 //!

@@ -61,7 +61,7 @@
 //! A scan begun privileged and resumed unprivileged is not the same scan
 //! continued. The connect fallback can only complete handshakes, so it answers a
 //! different question than a raw technique does —
-//! [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique) makes exactly
+//! [`TcpScanTechnique`] makes exactly
 //! this argument about not quietly substituting one for the other. Folding it
 //! into the fingerprint means the refusal happens up front, rather than the
 //! second sitting silently filling the first one's gaps with weaker evidence.

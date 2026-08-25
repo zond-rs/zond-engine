@@ -55,10 +55,12 @@ use crate::journal::settle::Outcome;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::PlannedTarget;
+use crate::protocols::sizes::UDP_HDR_LEN;
 use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy, SilentHostPolicy};
 use crate::scanner::pacing::timer::ScanBudget;
+use crate::scanner::payload;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::system::interface::SourceResolver;
@@ -330,12 +332,17 @@ impl UdpPortScanner {
 /// no filter at all (`ProbeTransport::from_parts`), and a filter that silently
 /// stopped matching would otherwise turn into false `Open`s. The check is cheap
 /// and it is the only thing making the reply *ours*.
-fn answering_probe(bytes: &[u8], src_port: u16) -> Option<u16> {
+fn answering_probe(bytes: &[u8], src_port: u16) -> Option<(u16, &[u8])> {
     let udp = UdpPacket::new(bytes)?;
     if udp.get_destination() != src_port {
         return None;
     }
-    Some(udp.get_source())
+    // The datagram's own payload, which is where the answer to "what is this
+    // host" lives when the port's protocol can say. Sliced from `bytes` at the
+    // fixed header length rather than taken from the parsed packet, whose
+    // borrow ends with it — and rather than derived from the length field,
+    // which a padded frame makes shorter than what was actually captured.
+    Some((udp.get_source(), &bytes[UDP_HDR_LEN..]))
 }
 
 /// What a reply is a statement about: the port that was probed, or the address
@@ -437,8 +444,20 @@ impl RawPortScan for UdpPortScanner {
     /// resolves that probe.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
         let classified = match reply.protocol {
-            IpNextHeaderProtocols::Udp => answering_probe(&reply.bytes, self.core.src_port)
-                .map(|port| ((reply.source, port), Verdict::Port(PortState::Open))),
+            IpNextHeaderProtocols::Udp => {
+                answering_probe(&reply.bytes, self.core.src_port).map(|(port, datagram)| {
+                    // What the reply proves about the *host*, which is a
+                    // separate claim from the port verdict below and survives
+                    // the probe being resolved twice: a duplicate answer is
+                    // still a name server answering.
+                    if let Some(role) = payload::declared_role(port, datagram) {
+                        self.core.ctx.update_host(reply.source, |host| {
+                            host.add_network_role(role);
+                        });
+                    }
+                    ((reply.source, port), Verdict::Port(PortState::Open))
+                })
+            }
             _ => icmp_error::parse(reply).and_then(|error| {
                 let target = quoted_probe(&error, self.core.src_port)?;
                 Some((target, verdict_of(error.reason)))
@@ -571,7 +590,7 @@ impl UdpPortScanner {
         let Some(src_addr) = self.core.resolver.resolve(ip) else {
             error!(
                 verbosity = 2,
-                "No route to {ip}; skipping UDP probe to {ip}:{port}"
+                "no route to {ip}; skipping UDP probe to {ip}:{port}"
             );
             return;
         };
@@ -613,6 +632,7 @@ impl UdpPortScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::host::NetworkRole;
     use crate::model::target::Target;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -720,10 +740,16 @@ mod tests {
 
     /// A direct UDP reply from `src_port`, addressed back to `dst_port`.
     fn udp_reply(src_port: u16, dst_port: u16) -> CapturedSegment {
+        udp_reply_saying(src_port, dst_port, vec![])
+    }
+
+    /// A reply carrying something, for the ports whose answers say more than
+    /// "somebody is listening".
+    fn udp_reply_saying(src_port: u16, dst_port: u16, said: Vec<u8>) -> CapturedSegment {
         captured(
             TARGET,
             IpNextHeaderProtocols::Udp,
-            udp::create_packet(&TARGET, &LOCAL_V4, src_port, dst_port, vec![]).unwrap(),
+            udp::create_packet(&TARGET, &LOCAL_V4, src_port, dst_port, said).unwrap(),
         )
     }
 
@@ -778,6 +804,48 @@ mod tests {
         payload.extend_from_slice(&quoted);
         packet.set_payload(&payload);
         captured(to, IpNextHeaderProtocols::Icmpv6, buf)
+    }
+
+    /// A port verdict and a claim about the host are two findings, and the
+    /// second is read out of the datagram the first was inferred from. The
+    /// payload has to be sliced off at exactly the UDP header: one byte either
+    /// way and the message no longer parses, which reads as an ordinary open
+    /// port and silently loses the role on every name server a scan finds.
+    #[test]
+    fn a_dns_answer_names_the_host_a_name_server() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+
+        // The engine's own question with the QR bit set, which is what a name
+        // server sends back.
+        let mut answer = crate::scanner::payload::for_port(53).to_vec();
+        answer[2] |= 0b1000_0000;
+
+        scanner.handle_reply(&udp_reply_saying(53, SCAN_SRC_PORT, answer), Instant::now());
+
+        assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Open));
+        let host = session.hosts().get(&TARGET).expect("the host answered");
+        assert!(
+            host.network_roles().contains(&NetworkRole::DnsServer),
+            "the reply parsed as DNS, which a bound socket cannot fake"
+        );
+    }
+
+    /// The same port answering with something that is not DNS is an open port
+    /// and nothing more — a socket bound to 53 is not a name server.
+    #[test]
+    fn an_open_port_53_that_does_not_speak_dns_is_only_an_open_port() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+
+        scanner.handle_reply(
+            &udp_reply_saying(53, SCAN_SRC_PORT, b"hello".to_vec()),
+            Instant::now(),
+        );
+
+        assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Open));
+        let host = session.hosts().get(&TARGET).expect("the host answered");
+        assert!(host.network_roles().is_empty());
     }
 
     #[test]
@@ -1292,8 +1360,8 @@ mod tests {
 
         assert_eq!(
             answering_probe(&reply.bytes, src_port),
-            Some(service_port),
-            "a real reply must resolve to the port that sent it",
+            Some((service_port, b"ping".as_slice())),
+            "a real reply must resolve to the port that sent it, and to what it said",
         );
     }
 

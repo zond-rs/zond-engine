@@ -14,7 +14,7 @@
 //!
 //! ## Why the model does not do this itself
 //!
-//! Deriving `serde` on [`Host`](crate::model::host::Host) and its neighbours
+//! Deriving `serde` on [`Host`] and its neighbours
 //! would be two lines a type and would be wrong in four ways. It welds the
 //! on-disk format to the struct layout, so renaming a field breaks every file
 //! ever written. It bypasses the invariants the constructors maintain, so a
@@ -823,7 +823,7 @@ impl From<&DiscoveryRecord> for Discovery {
 
 /// One sitting of a scan, as a file holds it.
 ///
-/// Mirrors [`PhaseParts`](crate::scanner::report::PhaseParts), which mirrors the
+/// Mirrors [`PhaseParts`], which mirrors the
 /// phase. A field added to any of the three has to be added to all of them, and
 /// the compiler says so.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -972,7 +972,7 @@ impl From<&ScopeRecord> for TargetScope {
 /// A phase's port scope, as a file holds it.
 ///
 /// The set is written as the specification
-/// [`PortSet`](crate::model::port::PortSet) parses, so a full sweep is six bytes
+/// [`PortSet`] parses, so a full sweep is six bytes
 /// rather than a hundred and thirty thousand entries, and a person reading the
 /// file can see what was scanned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -984,7 +984,7 @@ pub struct PortsRecord {
     /// reader may conclude that one endpoint of a covered address was probed.
     pub kind: String,
     /// The ports, as the specification
-    /// [`PortSet`](crate::model::port::PortSet) parses. Empty where the kind
+    /// [`PortSet`] parses. Empty where the kind
     /// carries no set.
     #[serde(default)]
     pub spec: String,

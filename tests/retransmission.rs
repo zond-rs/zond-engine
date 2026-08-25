@@ -555,9 +555,9 @@ async fn an_empty_address_is_probed_a_bounded_number_of_times() {
         "an empty address should be probed exactly {ATTEMPTS} times"
     );
     assert!(
-        lan.probes()
+        !lan.probes()
             .iter()
-            .all(|p| matches!(p, LanProbe::Arp { .. })),
+            .any(|p| matches!(p, LanProbe::Solicitation { .. })),
         "a targeted run must not emit an all-nodes solicitation"
     );
 }
@@ -595,7 +595,10 @@ async fn the_all_nodes_solicitation_is_repeated_and_spaced() {
         .iter()
         .filter_map(|probe| match probe {
             LanProbe::Solicitation { at } => Some(*at),
-            LanProbe::Arp { .. } | LanProbe::Solicit { .. } => None,
+            LanProbe::Arp { .. }
+            | LanProbe::Solicit { .. }
+            | LanProbe::RouterSolicit { .. }
+            | LanProbe::DhcpInform { .. } => None,
         })
         .collect();
 

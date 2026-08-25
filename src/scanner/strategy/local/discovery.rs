@@ -19,8 +19,8 @@ use std::net::IpAddr;
 
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 
-use crate::model::host::StatusProtocol;
-use crate::protocols::{ip, ndp};
+use crate::model::host::{NetworkRole, StatusProtocol};
+use crate::protocols::{dhcp, ip, ndp};
 
 /// What a [`DiscoveryProtocol`] found when asked to interpret one received frame.
 ///
@@ -48,6 +48,21 @@ pub enum ProtocolMatch {
     /// `None` where the frame's source *is* the address, which is ARP's case:
     /// the sender protocol address is the whole content of the reply.
     Solicited(Option<IpAddr>),
+    /// A message that proves its sender is present and answers nothing this
+    /// scan sent.
+    ///
+    /// A router advertising itself on its own timer, a DHCP server answering
+    /// the segment. The distinction from [`Solicited`](Self::Solicited) is not
+    /// bookkeeping: a probe may well be outstanding for the same address, and
+    /// retiring it here would credit our question with somebody else's answer
+    /// and time it from the moment we asked — a round trip that measures the
+    /// gap between two unrelated messages. The probe is left to be answered or
+    /// to expire on its own schedule.
+    ///
+    /// The sender is asked directly afterwards, which is what turns an
+    /// overheard neighbour into a measured one. See
+    /// [`LocalScanner::confirm`](super::LocalScanner::confirm).
+    Unsolicited,
     /// A reply to the all-nodes echo request, carrying the identifier and
     /// sequence number it echoed back.
     ///
@@ -61,6 +76,52 @@ pub enum ProtocolMatch {
     AllNodes { identifier: u16, sequence: u16 },
 }
 
+/// Everything one frame turned out to say.
+///
+/// Two questions, kept apart because they have different answers and different
+/// consequences. [`matched`](Self::matched) is what the frame does to the scan's
+/// ledger of outstanding probes; [`declared`](Self::declared) is what its sender
+/// said about *itself* in the same message, which no probe was outstanding for
+/// and which no round trip depends on.
+///
+/// They arrive together because they are read from the same bytes. A neighbour
+/// advertisement answers the solicitation this scan sent and sets the R flag in
+/// the same message; parsing it twice to ask the second question separately
+/// would let the two answers come from different readings of one frame.
+pub struct Reading {
+    /// What the frame answers, and what it therefore retires.
+    pub matched: ProtocolMatch,
+    /// What the sender declared about itself beyond being present, when a
+    /// protocol carries such a claim at all.
+    pub declared: Option<NetworkRole>,
+}
+
+impl Reading {
+    /// A frame this protocol does not recognize.
+    fn unhandled() -> Self {
+        Self {
+            matched: ProtocolMatch::Unhandled,
+            declared: None,
+        }
+    }
+
+    /// A frame that means something, and claims nothing beyond it.
+    fn matched(matched: ProtocolMatch) -> Self {
+        Self {
+            matched,
+            declared: None,
+        }
+    }
+
+    /// The same, from a sender that also named what it is.
+    fn declaring(matched: ProtocolMatch, role: NetworkRole) -> Self {
+        Self {
+            matched,
+            declared: Some(role),
+        }
+    }
+}
+
 /// A wire-level protocol capable of recognizing discovery responses.
 ///
 /// [`LocalScanner`](super::LocalScanner) tries each configured protocol against
@@ -70,7 +131,7 @@ pub enum ProtocolMatch {
 /// the scan) before a protocol ever sees the frame, so an implementation is a
 /// pure function of the bytes in front of it.
 pub trait DiscoveryProtocol: Send {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch>;
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading>;
 
     /// The evidence this protocol produces, for the liveness record of whichever
     /// host it claims a frame from.
@@ -91,12 +152,12 @@ pub trait DiscoveryProtocol: Send {
 pub struct ArpProtocol;
 
 impl DiscoveryProtocol for ArpProtocol {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
         if frame.get_ethertype() != EtherTypes::Arp {
-            return Ok(ProtocolMatch::Unhandled);
+            return Ok(Reading::unhandled());
         }
 
-        Ok(ProtocolMatch::Solicited(None))
+        Ok(Reading::matched(ProtocolMatch::Solicited(None)))
     }
 
     fn status_protocol(&self) -> StatusProtocol {
@@ -120,17 +181,20 @@ impl DiscoveryProtocol for ArpProtocol {
 pub struct NdpProtocol;
 
 impl DiscoveryProtocol for NdpProtocol {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
-        match ndp::advertised_target(frame) {
-            Some(target) if is_assignable(target) => {
-                Ok(ProtocolMatch::Solicited(Some(IpAddr::V6(target))))
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
+        match ndp::advertisement(frame) {
+            Some(advert) if is_assignable(advert.target) => {
+                let matched = ProtocolMatch::Solicited(Some(IpAddr::V6(advert.target)));
+                Ok(match advert.router {
+                    true => Reading::declaring(matched, NetworkRole::Router),
+                    false => Reading::matched(matched),
+                })
             }
             // An advertisement naming an address nothing can hold proves its
             // sender exists and says nothing about *which* address that is, so
             // the frame is left for another protocol to claim rather than
             // crediting a host with an address it cannot have.
-            Some(_) => Ok(ProtocolMatch::Unhandled),
-            None => Ok(ProtocolMatch::Unhandled),
+            Some(_) | None => Ok(Reading::unhandled()),
         }
     }
 
@@ -163,6 +227,75 @@ fn is_assignable(address: std::net::Ipv6Addr) -> bool {
     !(link_local && no_interface_id)
 }
 
+/// Recognizes router advertisements, the message only a router sends.
+///
+/// The one piece of evidence this scanner does not have to provoke. Routers
+/// advertise themselves unprompted every few minutes, and the sweep's capture is
+/// promiscuous, so an advertisement that crosses the segment while a scan is
+/// running arrives here for free. A sweep also asks for one outright — see
+/// [`LocalScanner`](super::LocalScanner) — because the unprompted timer is
+/// measured in minutes and a sweep is measured in seconds.
+///
+/// Claimed as [`Unsolicited`](ProtocolMatch::Unsolicited), and filed under the
+/// frame's source: an advertisement names no target of its own, and its source
+/// is required to be the sending interface's link-local address (RFC 4861
+/// §4.2). Unsolicited rather than solicited even when the sweep asked for it,
+/// because the sweep's solicitation goes to every router at once and no reply
+/// to it belongs to any one address's probe.
+pub struct RouterAdvertProtocol;
+
+impl DiscoveryProtocol for RouterAdvertProtocol {
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
+        Ok(match ndp::is_router_advertisement(frame) {
+            true => Reading::declaring(ProtocolMatch::Unsolicited, NetworkRole::Router),
+            false => Reading::unhandled(),
+        })
+    }
+
+    fn status_protocol(&self) -> StatusProtocol {
+        StatusProtocol::Ndp
+    }
+}
+
+/// Recognizes a DHCP server answering the segment.
+///
+/// The counterpart of [`RouterAdvertProtocol`] over IPv4, and the only way a
+/// DHCP server can be found at all: the protocol is built on broadcast, so the
+/// server is discovered rather than addressed. See
+/// [`dhcp`](crate::protocols::dhcp) for why a port scan cannot ask this
+/// question.
+///
+/// **The role goes on the address the server named for itself, and only when
+/// the message came from that address.** A relay agent forwarding for a server
+/// on another segment sends the reply from its own address while the message
+/// inside names the server; marking the sender would name the relay a DHCP
+/// server, and marking the named address would attach the role to a machine
+/// this frame is no evidence about. Where they disagree the reply still proves
+/// its sender is there, which is all it proves.
+pub struct DhcpProtocol;
+
+impl DiscoveryProtocol for DhcpProtocol {
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
+        let Some(reply) = dhcp::server_reply(frame) else {
+            return Ok(Reading::unhandled());
+        };
+
+        let named_itself = matches!(
+            (reply.server, ip::ipv4_source(frame)),
+            (Some(server), Ok(source)) if server == source
+        );
+
+        Ok(match named_itself {
+            true => Reading::declaring(ProtocolMatch::Unsolicited, NetworkRole::DhcpServer),
+            false => Reading::matched(ProtocolMatch::Unsolicited),
+        })
+    }
+
+    fn status_protocol(&self) -> StatusProtocol {
+        StatusProtocol::Dhcp
+    }
+}
+
 /// Recognizes ICMPv6 echo replies as answers to the all-nodes echo request sent
 /// at the start of a sweep.
 ///
@@ -187,9 +320,9 @@ fn is_assignable(address: std::net::Ipv6Addr) -> bool {
 pub struct Icmpv6EchoProtocol;
 
 impl DiscoveryProtocol for Icmpv6EchoProtocol {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<ProtocolMatch> {
+    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
         if frame.get_ethertype() != EtherTypes::Ipv6 {
-            return Ok(ProtocolMatch::Unhandled);
+            return Ok(Reading::unhandled());
         }
 
         // The probe leaves from this host's link-local address, so an answer to
@@ -198,15 +331,15 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
         // out the multicast and global traffic a promiscuous capture also sees.
         let destination = ip::ipv6_destination(frame)?;
         if !destination.is_unicast_link_local() {
-            return Ok(ProtocolMatch::Unhandled);
+            return Ok(Reading::unhandled());
         }
 
         match ip::icmpv6_echo_token(frame) {
-            Some((identifier, sequence)) => Ok(ProtocolMatch::AllNodes {
+            Some((identifier, sequence)) => Ok(Reading::matched(ProtocolMatch::AllNodes {
                 identifier,
                 sequence,
-            }),
-            None => Ok(ProtocolMatch::Unhandled),
+            })),
+            None => Ok(Reading::unhandled()),
         }
     }
 
@@ -320,7 +453,7 @@ mod tests {
 
         let result = ArpProtocol.interpret(&frame);
 
-        assert!(matches!(result.unwrap(), ProtocolMatch::Unhandled));
+        assert!(matches!(result.unwrap().matched, ProtocolMatch::Unhandled));
     }
 
     /// An ARP frame answers a probe aimed at the address that sent it, which is
@@ -332,7 +465,7 @@ mod tests {
 
         let result = ArpProtocol.interpret(&frame).unwrap();
 
-        assert!(matches!(result, ProtocolMatch::Solicited(None)));
+        assert!(matches!(result.matched, ProtocolMatch::Solicited(None)));
     }
 
     #[test]
@@ -342,7 +475,7 @@ mod tests {
 
         let result = Icmpv6EchoProtocol.interpret(&frame);
 
-        assert!(matches!(result.unwrap(), ProtocolMatch::Unhandled));
+        assert!(matches!(result.unwrap().matched, ProtocolMatch::Unhandled));
     }
 
     #[test]
@@ -352,7 +485,7 @@ mod tests {
 
         let result = Icmpv6EchoProtocol.interpret(&frame);
 
-        assert!(matches!(result.unwrap(), ProtocolMatch::Unhandled));
+        assert!(matches!(result.unwrap().matched, ProtocolMatch::Unhandled));
     }
 
     /// An echo reply aimed at this host answers the all-nodes echo request, and
@@ -365,7 +498,7 @@ mod tests {
 
         for _ in 0..2 {
             let result = Icmpv6EchoProtocol.interpret(&frame).unwrap();
-            assert!(matches!(result, ProtocolMatch::AllNodes { .. }));
+            assert!(matches!(result.matched, ProtocolMatch::AllNodes { .. }));
         }
         assert_eq!(
             Icmpv6EchoProtocol.status_protocol(),
@@ -386,7 +519,7 @@ mod tests {
         let result = Icmpv6EchoProtocol.interpret(&frame).unwrap();
 
         assert!(matches!(
-            result,
+            result.matched,
             ProtocolMatch::AllNodes {
                 identifier: 0x5ac5,
                 sequence: 2
@@ -420,9 +553,171 @@ mod tests {
         ] {
             let frame = EthernetPacket::new(&frame_bytes).unwrap();
             assert!(matches!(
-                Icmpv6EchoProtocol.interpret(&frame).unwrap(),
+                Icmpv6EchoProtocol.interpret(&frame).unwrap().matched,
                 ProtocolMatch::Unhandled
             ));
         }
+    }
+
+    /// A frame carrying a neighbour discovery message, which is the one kind of
+    /// traffic that must arrive with a hop limit of 255 to be believed.
+    fn ndp_frame(body: &[u8]) -> Vec<u8> {
+        let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
+        let eth_header = ethernet::create_header(
+            PEER_MAC,
+            LOCAL_MAC,
+            pnet::packet::ethernet::EtherTypes::Ipv6,
+        );
+        let ip_header = ip_protocol::create_ipv6_header(
+            source,
+            Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1),
+            body.len() as u16,
+            IpNextHeaderProtocols::Icmpv6,
+            ip_protocol::HOP_LIMIT_NDP,
+        );
+
+        [eth_header, ip_header, body.to_vec()].concat()
+    }
+
+    /// A neighbour advertisement for `target`, with the flag byte a real one
+    /// carries.
+    fn advertisement_body(target: Ipv6Addr, flags: u8) -> Vec<u8> {
+        let mut body = vec![0u8; 24];
+        {
+            let mut advert = pnet::packet::icmpv6::ndp::MutableNeighborAdvertPacket::new(&mut body)
+                .expect("advertisement buffer");
+            advert.set_icmpv6_type(Icmpv6Types::NeighborAdvert);
+            advert.set_target_addr(target);
+            advert.set_flags(flags);
+        }
+        body
+    }
+
+    /// The declaration has to survive the trip from the wire to the scanner. A
+    /// neighbour that answers our solicitation and sets the R flag is a router
+    /// found for free, in a reply the sweep was already going to receive — and
+    /// the same reply without the flag claims nothing, which is what keeps the
+    /// role off every host that merely answered.
+    #[test]
+    fn an_advertisement_declares_a_router_only_when_its_sender_said_so() {
+        let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
+
+        for (flags, declared) in [(0b1000_0000, Some(NetworkRole::Router)), (0, None)] {
+            let frame_bytes = ndp_frame(&advertisement_body(target, flags));
+            let frame = EthernetPacket::new(&frame_bytes).unwrap();
+
+            let reading = NdpProtocol.interpret(&frame).unwrap();
+
+            assert!(matches!(
+                reading.matched,
+                ProtocolMatch::Solicited(Some(IpAddr::V6(claimed))) if claimed == target
+            ));
+            assert_eq!(reading.declared, declared, "flags {flags:#010b}");
+        }
+    }
+
+    /// An advertisement only a router sends: claimed for its source, because
+    /// unlike a neighbour advertisement it names no target of its own, and
+    /// declaring what its sender is is the whole of why it is read.
+    #[test]
+    fn a_router_advertisement_names_its_sender_a_router() {
+        let mut body = vec![0u8; 16];
+        body[0] = Icmpv6Types::RouterAdvert.0;
+        let frame_bytes = ndp_frame(&body);
+        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+
+        let reading = RouterAdvertProtocol.interpret(&frame).unwrap();
+
+        assert!(matches!(reading.matched, ProtocolMatch::Unsolicited));
+        assert_eq!(reading.declared, Some(NetworkRole::Router));
+        assert_eq!(RouterAdvertProtocol.status_protocol(), StatusProtocol::Ndp);
+
+        // Everything else on the segment stays with whichever protocol owns it.
+        let neighbour = ndp_frame(&advertisement_body(
+            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA),
+            0b1000_0000,
+        ));
+        let frame = EthernetPacket::new(&neighbour).unwrap();
+        assert!(matches!(
+            RouterAdvertProtocol.interpret(&frame).unwrap().matched,
+            ProtocolMatch::Unhandled
+        ));
+    }
+
+    /// A server's answer names the server, and a relay's forwarding does not
+    /// name the relay.
+    ///
+    /// The second half is the one worth pinning. On a network with a relay
+    /// agent the reply arrives from the relay's address carrying a server
+    /// identifier for a machine on another segment, and both of the obvious
+    /// readings are wrong: marking the sender names a relay a DHCP server, and
+    /// marking the named address attaches a role to a machine this frame says
+    /// nothing about. It proves the relay is there, and that is all.
+    #[test]
+    fn a_dhcp_answer_names_a_server_only_where_the_server_answered() {
+        let server = Ipv4Addr::new(192, 168, 1, 1);
+
+        let itself = dhcp_reply_frame(server, Some(server));
+        let frame = EthernetPacket::new(&itself).unwrap();
+        let reading = DhcpProtocol.interpret(&frame).unwrap();
+        assert!(matches!(reading.matched, ProtocolMatch::Unsolicited));
+        assert_eq!(reading.declared, Some(NetworkRole::DhcpServer));
+
+        // The same message forwarded by a relay, which is where the address in
+        // the packet and the address in the message part company.
+        let relayed = dhcp_reply_frame(server, Some(Ipv4Addr::new(10, 0, 0, 254)));
+        let frame = EthernetPacket::new(&relayed).unwrap();
+        let reading = DhcpProtocol.interpret(&frame).unwrap();
+        assert!(matches!(reading.matched, ProtocolMatch::Unsolicited));
+        assert_eq!(
+            reading.declared, None,
+            "the sender is a relay, not a server"
+        );
+
+        // A client's own broadcast, which every machine on the segment sends.
+        let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 168, 1, 20));
+        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        assert!(matches!(
+            DhcpProtocol.interpret(&frame).unwrap().matched,
+            ProtocolMatch::Unhandled
+        ));
+    }
+
+    /// A DHCP acknowledgement sent from `from`, naming `server_id` as the
+    /// server.
+    fn dhcp_reply_frame(server_id: Ipv4Addr, from: Option<Ipv4Addr>) -> Vec<u8> {
+        const BOOTREPLY: u8 = 2;
+        const FIXED_LEN: usize = 236;
+
+        let mut message = vec![0u8; FIXED_LEN];
+        message[0] = BOOTREPLY;
+        message.extend_from_slice(&[99, 130, 83, 99]);
+        message.extend_from_slice(&[53, 1, 5]); // DHCPACK
+        message.push(54);
+        message.push(4);
+        message.extend_from_slice(&server_id.octets());
+        message.push(255);
+
+        let datagram = crate::protocols::craft::Packet::new()
+            .push(crate::protocols::craft::Ipv4::new(
+                from.unwrap_or(server_id),
+                Ipv4Addr::new(192, 168, 1, 50),
+            ))
+            .push(
+                crate::protocols::craft::Udp::new(dhcp::SERVER_PORT, dhcp::CLIENT_PORT)
+                    .with_payload(message),
+            )
+            .build()
+            .expect("a test datagram");
+
+        [
+            ethernet::create_header(
+                PEER_MAC,
+                LOCAL_MAC,
+                pnet::packet::ethernet::EtherTypes::Ipv4,
+            ),
+            datagram,
+        ]
+        .concat()
     }
 }

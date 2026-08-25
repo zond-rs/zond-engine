@@ -46,7 +46,7 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::udp::{MutableUdpPacket, ipv6_checksum as udp_ipv6_checksum};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-use zond_engine::protocols::{ethernet, ip};
+use zond_engine::protocols::{craft, ethernet, ip};
 use zond_engine::transport::channel::EthernetHandle;
 
 use super::fake_net::{Loss, SplitMix64};
@@ -62,6 +62,10 @@ const UDP_HDR_LEN: usize = 8;
 
 /// The port multicast DNS is spoken on.
 const MDNS_PORT: u16 = 5353;
+
+/// Where a DHCP server listens, and where its answer is addressed back to.
+const DHCP_SERVER_PORT: u16 = 67;
+const DHCP_CLIENT_PORT: u16 = 68;
 
 /// Pads `frame` out to the minimum Ethernet payload, leaving anything already
 /// longer alone.
@@ -200,6 +204,10 @@ pub enum LanProbe {
     /// [`LanProbe::Arp`], and counted the same way: more than one for an address
     /// means the scanner retried.
     Solicit { target: Ipv6Addr, at: Instant },
+    /// A router solicitation, put to every router on the segment at once.
+    RouterSolicit { at: Instant },
+    /// A `DHCPINFORM`, broadcast at the segment.
+    DhcpInform { at: Instant },
 }
 
 /// A simulated Ethernet segment a [`LocalScanner`] can be pointed at.
@@ -221,8 +229,30 @@ pub struct FakeLan {
     /// segment shouts these constantly, and they name addresses no probe of
     /// ours has ever been answered for.
     announcements: Vec<(String, Ipv6Addr, MacAddr)>,
+    /// The segment's DHCP server, which answers an inform and nothing else.
+    dhcp: Option<Server>,
+    /// The segment's IPv6 router, which answers a router solicitation.
+    router: Option<Router>,
     seed: u64,
     state: Arc<Mutex<State>>,
+}
+
+/// A DHCP server on the segment.
+#[derive(Debug, Clone, Copy)]
+struct Server {
+    mac: MacAddr,
+    /// The address the reply comes *from*.
+    address: Ipv4Addr,
+    /// The address it names as the server in the message (option 54), which is
+    /// a different machine wherever a relay agent is forwarding.
+    identifier: Ipv4Addr,
+}
+
+/// An IPv6 router on the segment.
+#[derive(Debug, Clone, Copy)]
+struct Router {
+    mac: MacAddr,
+    address: Ipv6Addr,
 }
 
 /// The segment's mutable half.
@@ -245,6 +275,8 @@ impl FakeLan {
             hosts: HashMap::new(),
             unsolicited: Vec::new(),
             announcements: Vec::new(),
+            dhcp: None,
+            router: None,
             seed,
             state: Arc::new(Mutex::new(State {
                 rng: SplitMix64::new(seed),
@@ -252,6 +284,35 @@ impl FakeLan {
                 log: Vec::new(),
             })),
         }
+    }
+
+    /// Puts `host` on the segment at `ip`.
+    /// Puts a DHCP server at `address`, answering informs as itself.
+    pub fn serving_dhcp(self, address: Ipv4Addr, mac: MacAddr) -> Self {
+        self.serving_dhcp_as(address, address, mac)
+    }
+
+    /// The same, answering *from* `address` while naming `identifier` as the
+    /// server — which is what a relay agent forwarding for a server on another
+    /// segment produces.
+    pub fn serving_dhcp_as(
+        mut self,
+        address: Ipv4Addr,
+        identifier: Ipv4Addr,
+        mac: MacAddr,
+    ) -> Self {
+        self.dhcp = Some(Server {
+            mac,
+            address,
+            identifier,
+        });
+        self
+    }
+
+    /// Puts an IPv6 router at `address`, answering router solicitations.
+    pub fn routing(mut self, address: Ipv6Addr, mac: MacAddr) -> Self {
+        self.router = Some(Router { mac, address });
+        self
     }
 
     /// Puts `host` on the segment at `ip`.
@@ -300,6 +361,8 @@ impl FakeLan {
             hosts: self.hosts.clone(),
             unsolicited: self.unsolicited.clone(),
             announcements: self.announcements.clone(),
+            dhcp: self.dhcp,
+            router: self.router,
             state: Arc::clone(&self.state),
             frames,
         };
@@ -333,6 +396,8 @@ impl Default for FakeLan {
 /// The send half of a [`FakeLan`]: the scanner's view of the wire.
 struct FakeSegment {
     hosts: HashMap<IpAddr, LanHost>,
+    dhcp: Option<Server>,
+    router: Option<Router>,
     /// Addresses that advertise themselves once, unprompted, the first time the
     /// scanner sends anything.
     unsolicited: Vec<Ipv6Addr>,
@@ -362,6 +427,7 @@ impl DataLinkSender for FakeSegment {
 
         match frame.get_ethertype() {
             EtherTypes::Arp => self.answer_arp(&frame),
+            EtherTypes::Ipv4 => self.answer_dhcp(&frame),
             // The two IPv6 probes are told apart by their ICMPv6 type, not by
             // the frame: one asks the whole segment, the other asks about one
             // address, and answering them identically is what let the engine
@@ -369,6 +435,7 @@ impl DataLinkSender for FakeSegment {
             EtherTypes::Ipv6 => match ip::icmpv6_type(&frame) {
                 Some(Icmpv6Types::NeighborSolicit) => self.answer_neighbor_solicit(&frame),
                 Some(Icmpv6Types::EchoRequest) => self.answer_all_nodes_echo(&frame),
+                Some(Icmpv6Types::RouterSolicit) => self.answer_router_solicit(&frame),
                 _ => {}
             },
             // Nothing else is a discovery probe, so nothing else is answered.
@@ -400,6 +467,51 @@ impl DataLinkSender for FakeSegment {
 }
 
 impl FakeSegment {
+    /// Answers a `DHCPINFORM` on behalf of the segment's server, if one was
+    /// declared and the frame is one.
+    ///
+    /// Every other IPv4 frame reaching here is left alone: this segment carries
+    /// whatever the scanner puts on it, and only DHCP has an answer.
+    fn answer_dhcp(&mut self, frame: &EthernetPacket) {
+        let Some(message) = dhcp_message(frame) else {
+            return;
+        };
+        // The message type option, which is what tells an inform from the
+        // discovers and requests a real segment is full of.
+        if message.first() != Some(&1) || !message.windows(3).any(|w| w == [53, 1, 8]) {
+            return;
+        }
+
+        self.log(LanProbe::DhcpInform { at: Instant::now() });
+
+        let Some(server) = self.dhcp else {
+            return;
+        };
+        let scanner_mac = frame.get_source();
+        let Ok(scanner_ip) = ip::ipv4_source(frame) else {
+            return;
+        };
+
+        if let Some(reply) = dhcp_ack(server, scanner_mac, scanner_ip) {
+            self.deliver(reply, Duration::ZERO);
+        }
+    }
+
+    /// Answers a router solicitation with an advertisement, if a router was
+    /// declared.
+    fn answer_router_solicit(&mut self, frame: &EthernetPacket) {
+        self.log(LanProbe::RouterSolicit { at: Instant::now() });
+
+        let Some(router) = self.router else {
+            return;
+        };
+        let scanner_mac = frame.get_source();
+
+        if let Some(advert) = router_advertisement(router, scanner_mac) {
+            self.deliver(advert, Duration::ZERO);
+        }
+    }
+
     /// Answers an ARP request, if the address it asks about has a host on it.
     fn answer_arp(&mut self, frame: &EthernetPacket) {
         let Some(request) = ArpPacket::new(frame.payload()) else {
@@ -788,6 +900,82 @@ fn icmpv6_echo_reply(
     frame.extend_from_slice(&header);
     frame.extend_from_slice(&ipv6);
     frame.extend_from_slice(&body);
+    pad_to_min_frame(&mut frame);
+    Some(frame)
+}
+
+/// The BOOTP message inside `frame`, if it is a DHCP datagram at all.
+fn dhcp_message<'a>(frame: &'a EthernetPacket<'a>) -> Option<Vec<u8>> {
+    let packet = pnet::packet::ipv4::Ipv4Packet::new(frame.payload())?;
+    if packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp {
+        return None;
+    }
+
+    let datagram = pnet::packet::udp::UdpPacket::new(packet.payload())?;
+    (datagram.get_destination() == DHCP_SERVER_PORT).then(|| datagram.payload().to_vec())
+}
+
+/// A `DHCPACK` from `server`, unicast back to the scanner as RFC 2131 §4.3.5
+/// requires for an inform.
+fn dhcp_ack(server: Server, scanner_mac: MacAddr, scanner_ip: Ipv4Addr) -> Option<Vec<u8>> {
+    /// op, htype, hlen, hops, xid, secs, flags, and the four addresses through
+    /// `chaddr`, `sname` and `file`.
+    const BOOTP_FIXED_LEN: usize = 236;
+
+    let mut message = vec![0u8; BOOTP_FIXED_LEN];
+    message[0] = 2; // BOOTREPLY
+    message[1] = 1; // Ethernet
+    message[2] = 6;
+    message.extend_from_slice(&[99, 130, 83, 99]); // magic cookie
+    message.extend_from_slice(&[53, 1, 5]); // DHCPACK
+    message.push(54); // server identifier
+    message.push(4);
+    message.extend_from_slice(&server.identifier.octets());
+    message.push(255); // end
+
+    let datagram = craft::Packet::new()
+        .push(craft::Ipv4::new(server.address, scanner_ip))
+        .push(craft::Udp::new(DHCP_SERVER_PORT, DHCP_CLIENT_PORT).with_payload(message))
+        .build()
+        .ok()?;
+
+    let mut frame = ethernet::create_header(server.mac, scanner_mac, EtherTypes::Ipv4);
+    frame.extend_from_slice(&datagram);
+    pad_to_min_frame(&mut frame);
+    Some(frame)
+}
+
+/// A router advertisement from `router`, addressed to the all-nodes group as a
+/// real one is.
+///
+/// Carries the hop limit RFC 4861 §6.1.2 requires a receiver to check, because
+/// the engine checks it: an advertisement built with anything less is one a
+/// conformant listener discards, and a fake that sent one would be testing the
+/// wrong half of the rule.
+fn router_advertisement(router: Router, scanner_mac: MacAddr) -> Option<Vec<u8>> {
+    /// Reachable time and retransmission timer, both left as "unspecified".
+    const RA_BODY_LEN: usize = 8;
+
+    let message = craft::Icmpv6 {
+        icmp_type: Icmpv6Types::RouterAdvert.0,
+        code: 0,
+        checksum: craft::Field::Computed,
+        // Current hop limit, flags, then a router lifetime of 1800 seconds —
+        // the field that would be zero if this router were declining to be a
+        // default one.
+        rest_of_header: [64, 0, 0x07, 0x08],
+        payload: vec![0u8; RA_BODY_LEN],
+    };
+
+    let all_nodes = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
+    let packet = craft::Packet::new()
+        .push(craft::Ipv6::new(router.address, all_nodes).with_hop_limit(ip::HOP_LIMIT_NDP))
+        .push(message)
+        .build()
+        .ok()?;
+
+    let mut frame = ethernet::create_header(router.mac, scanner_mac, EtherTypes::Ipv6);
+    frame.extend_from_slice(&packet);
     pad_to_min_frame(&mut frame);
     Some(frame)
 }

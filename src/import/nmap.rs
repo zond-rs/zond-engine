@@ -15,7 +15,7 @@
 //!
 //! ## The refusals are the security control
 //!
-//! The parsing is [`xml`](super::xml)'s, and so are the refusals that make
+//! The parsing is `xml`'s, and so are the refusals that make
 //! reading a file somebody else wrote defensible: no declaration of any kind is
 //! accepted, so no entity can be expanded or fetched, and depth, element count,
 //! name length and attribute length are all bounded. That module is where the

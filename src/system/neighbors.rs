@@ -124,7 +124,7 @@ mod platform {
             Err(e) => {
                 warn!(
                     verbosity = 1,
-                    "Could not read the IPv6 neighbour table: {e}"
+                    "could not read the IPv6 neighbour table: {e}"
                 );
                 return Vec::new();
             }
@@ -345,7 +345,7 @@ mod platform {
     pub(super) fn ipv6_neighbors() -> Vec<Neighbor> {
         warn!(
             verbosity = 1,
-            "Reading the IPv6 neighbour table is not implemented on this platform; \
+            "reading the IPv6 neighbour table is not implemented on this platform; \
              discovery will not use it as a source of candidate addresses"
         );
         Vec::new()

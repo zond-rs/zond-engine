@@ -15,7 +15,7 @@
 //! last quarter and a scan this engine ran tonight are the same input to
 //! [`diff`](crate::diff).
 //!
-//! The parsing is [`xml`](crate::import::xml)'s, refusals and bounds included.
+//! The parsing is `xml`'s, refusals and bounds included.
 //! This module is the mapping and nothing else.
 //!
 //! ## Nmap's vocabulary is not this engine's, and the gaps are where the care is

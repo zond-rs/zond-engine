@@ -8,7 +8,8 @@
 
 //! # Writing a comparison out
 //!
-//! What [`export`](crate::export) is to a [`ScanReport`], this is to a
+//! What [`export`](crate::export) is to a [`ScanReport`](crate::ScanReport),
+//! this is to a
 //! [`ScanDiff`]: the document somebody else reads. A comparison that only ever
 //! reaches a terminal serves the person who ran it and nobody downstream, and
 //! downstream is where a nightly comparison earns its keep — an alerting rule, a
@@ -21,8 +22,8 @@
 //! moved, and the two values, either of which may be `null`. A host that gained
 //! three addresses produces three changes rather than one carrying a list.
 //!
-//! That costs some faithfulness to the engine's own [`HostChange`] and
-//! [`PortChange`], which group set changes together. It buys a document a rule
+//! That costs some faithfulness to the engine's own [`HostChange`](crate::diff::HostChange)
+//! and [`PortChange`](crate::diff::PortChange), which group set changes together. It buys a document a rule
 //! engine can act on without a parser per variant: one shape, one code path,
 //! and a `kind` that maps directly onto "alert me when this happens". The same
 //! flattening produces a front end's per-line output, so a comparison printed in
@@ -48,7 +49,7 @@
 //!
 //! ## Versioned apart from the report
 //!
-//! The document declares [`DIFF_SCHEMA_VERSION`], which is counted separately
+//! The document declares [`DIFF_SCHEMA_VERSION`](schema::DIFF_SCHEMA_VERSION), which is counted separately
 //! from the report's. See that constant for why.
 
 pub mod schema;

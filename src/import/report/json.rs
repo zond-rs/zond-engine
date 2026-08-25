@@ -19,7 +19,7 @@
 //! down and read back, and every one of its types already rebuilds a model value
 //! through the model's own constructors — so a rebuilt host passed the same
 //! checks a scanned one did. Repeating that here would be a second place that
-//! knows how to assemble a [`Host`](crate::model::host::Host), and the two would
+//! knows how to assemble a [`Host`], and the two would
 //! drift.
 //!
 //! So this module maps the *exported* shape onto the *recorded* shape and stops.

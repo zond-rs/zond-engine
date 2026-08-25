@@ -653,7 +653,7 @@ fn send_tcp_probe(
         Err(e) => {
             error!(
                 verbosity = 2,
-                "Failed to create {technique} probe for {dst_addr}:{dst_port}: {e}"
+                "failed to create {technique} probe for {dst_addr}:{dst_port}: {e}"
             );
             return None;
         }
@@ -663,7 +663,7 @@ fn send_tcp_probe(
         Ok(()) => {
             success!(
                 verbosity = 2,
-                "Sent {technique} probe to {dst_addr}:{dst_port}"
+                "sent {technique} probe to {dst_addr}:{dst_port}"
             );
             Some(TcpToken { nonce })
         }
@@ -681,7 +681,7 @@ fn send_tcp_probe(
             if reason.is_none() {
                 error!(
                     verbosity = 2,
-                    "Failed to send {technique} probe to {dst_addr}:{dst_port}: {e:#}"
+                    "failed to send {technique} probe to {dst_addr}:{dst_port}: {e:#}"
                 );
                 *reason = Some(format!("{e:#}"));
             }
@@ -746,7 +746,7 @@ impl TcpPortScanner {
     /// that has never gone out, since the ledger keeps it thereafter.
     fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
         let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(verbosity = 2, "No route to {ip}; skipping {ip}:{port}");
+            error!(verbosity = 2, "no route to {ip}; skipping {ip}:{port}");
             return;
         };
 

@@ -234,7 +234,7 @@ impl Checkpoint {
     /// this checkpoint does not account for.
     ///
     /// The positions are why this yields [`PlannedTarget`] rather than
-    /// [`Target`](crate::model::target::Target). A resumed sitting is scanning a
+    /// [`Target`]. A resumed sitting is scanning a
     /// *subset*, so numbering it afresh would give position 0 to whatever
     /// happens to be left — and the two sittings' cursors would then count
     /// different things. The original numbering has to survive the filtering.

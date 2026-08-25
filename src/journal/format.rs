@@ -475,7 +475,7 @@ mod tests {
             assert_eq!(parse::protocol(name), Some(protocol), "{name}");
         }
 
-        for role in [NetworkRole::Tarpit, NetworkRole::Truncated] {
+        for role in NetworkRole::ALL {
             let name = schema::network_role_name(role);
             assert_eq!(parse::network_role(name), Some(role), "{name}");
         }

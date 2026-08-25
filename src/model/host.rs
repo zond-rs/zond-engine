@@ -89,15 +89,114 @@ pub const TARPIT_OPEN_PORTS: usize = 1_000;
 
 /// What a host turned out to be, beyond an address with ports on it.
 ///
-/// A variant exists here only once something assigns it. A role nothing can
-/// infer would promise every consumer that the engine looks for it, so an empty
-/// `roles` array would mean "not one" when it really means "never asked".
-/// Gateway, DHCP and DNS attributions all belong here once a strategy can
-/// conclude them, and the enum is `#[non_exhaustive]` so that adding them costs
-/// a recompile rather than a major version.
+/// Two kinds of claim share the enum. Most of it names a function *the rest of
+/// the network depends on* — forwarding, naming, addressing — and the last
+/// three are claims about the record rather than about the machine. Both are
+/// things a reader acts on without reading anything else about the host, which
+/// is what a role is for.
+///
+/// **A role is never a port number restated.** A host with 80 open is not a web
+/// server here; that is [`Port::service`](crate::model::port::Port::service),
+/// which carries the confidence such an identification needs. Every role is
+/// concluded from evidence in its own protocol — an advertisement that says "I
+/// forward", a DNS message that parses as a response, a DHCP server naming
+/// itself — so a consumer can act on one without asking how sure it is. Letting
+/// in a weaker claim would cost the set that property, since a `HashSet` cannot
+/// say which of its members was a guess.
+///
+/// A variant is meant to exist here only once something assigns it: a role
+/// nothing can infer would promise every consumer that the engine looks for it,
+/// so an empty `roles` array would mean "not one" when it really means "never
+/// asked". Where that is not yet true the variant says so in its own
+/// documentation, which is the sentence to delete when it stops being true.
+///
+/// The enum is `#[non_exhaustive]` so that adding one costs a recompile rather
+/// than a major version; [`ALL`](Self::ALL) is the list to iterate instead of
+/// writing one out.
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum NetworkRole {
+    /// Forwards traffic on behalf of other hosts.
+    ///
+    /// Three independent proofs, and the engine takes whichever the segment
+    /// offers, because no one of them covers a whole network:
+    ///
+    /// 1. A **neighbour advertisement with the R flag** set (RFC 4861 §4.4).
+    ///    The host is answering an ordinary discovery probe and saying, in the
+    ///    same message, that it routes.
+    /// 2. A **router advertisement** (ICMPv6 type 134). Routers send these
+    ///    unprompted every few minutes, and a segment sweep is listening
+    ///    anyway; it is the one role evidence that arrives without a probe.
+    /// 3. **This machine's own routing table.** The address is a default
+    ///    gateway of an interface the scan runs on. IPv4 has neither message
+    ///    above, so on a v4-only segment this is the only proof available.
+    ///
+    /// Deliberately not called a gateway. A gateway is relational — somebody's
+    /// next hop — and two hosts on one segment can each be one for a different
+    /// neighbour. What every proof above establishes is the intrinsic half:
+    /// this box forwards. Which of them is *your* way out is a question about
+    /// your routing table, not about the network.
+    Router,
+
+    /// Answered a query on port 53 with a message that parses as a DNS
+    /// response.
+    ///
+    /// The reply itself is the evidence, not the port: a resolver that answers
+    /// is doing the thing, where an open 53 is a socket somebody bound. The
+    /// engine's UDP probe for the port carries a real question (the corpus
+    /// registers one beside the service's match rules), so an answer is the
+    /// ordinary outcome rather than a lucky one.
+    ///
+    /// **Not mDNS or LLMNR.** Those answer on 5353 and 5355, and nearly every
+    /// laptop and printer on a segment responds to them. Counting one as a name
+    /// server would put the role on half a network and make it worthless on the
+    /// half that deserves it.
+    DnsServer,
+
+    /// Answered a DHCP message as a server.
+    ///
+    /// Concluded from an exchange in DHCP's own protocol: the engine sends a
+    /// `DHCPINFORM`, which asks for configuration without asking for an
+    /// address, and reads the server identifier (option 54) out of the reply.
+    /// A server names itself there, and the role goes on that address only when
+    /// the reply also came from it — where a relay agent forwards for a server
+    /// on another segment the two differ, and neither machine has then been
+    /// shown to serve DHCP on this one.
+    ///
+    /// It cannot be concluded from port state. UDP/67 is `open|filtered` on
+    /// silence like every other UDP port, and a DHCP server is found by
+    /// broadcasting at the segment rather than by connecting to a listener.
+    DhcpServer,
+
+    /// Answered with a valid NTP response, so it serves time.
+    ///
+    /// **Nothing assigns this yet.** The probe already goes out — the corpus
+    /// registers a client packet for port 123 — and what is missing is reading
+    /// the reply as NTP instead of counting it as "something answered". Until
+    /// that is wired, the variant is vocabulary rather than a finding.
+    NtpServer,
+
+    /// Answered SNMP, so it is managed over it.
+    ///
+    /// **Nothing assigns this yet**, for the reason [`NtpServer`](Self::NtpServer)
+    /// gives: the probe for port 161 is sent and its reply is already parsed
+    /// for operating-system evidence, but no strategy concludes the role from
+    /// it.
+    SnmpAgent,
+
+    /// The machine this scan is running from.
+    ///
+    /// A sweep of your own segment contains you, and the record it produces is
+    /// unlike every other one in it: services answer over the loopback path
+    /// that a neighbour would never reach, latency is not a network
+    /// measurement, and no probe of ours ever crossed a wire. Saying so is
+    /// cheaper than every consumer rediscovering it.
+    ///
+    /// Read from the addresses assigned to this machine's interfaces, so it is
+    /// established without sending anything and holds for an address the scan
+    /// never reached.
+    Origin,
+
     /// Reported more ports **open** than any machine plausibly runs services on.
     ///
     /// A claim about the host: past [`TARPIT_OPEN_PORTS`] it is answering
@@ -118,6 +217,54 @@ pub enum NetworkRole {
     /// ordinary host probed widely enough was reported as a tarpit, and a real
     /// tarpit answering a narrow scan was reported as nothing at all.
     Truncated,
+}
+
+impl NetworkRole {
+    /// Every role this build knows, in declaration order.
+    ///
+    /// The enum is `#[non_exhaustive]`, so nothing outside the crate can write
+    /// an exhaustive list of its own and nothing inside should: a role added
+    /// without a name on the wire, or without a place in the schema, is a
+    /// finding that survives a scan and disappears on the way to the report.
+    /// Every round trip through [`wire`](crate::record::wire) is tested over
+    /// this, so a new variant fails those tests until it is spelled everywhere.
+    /// How a role is written for a person to read.
+    ///
+    /// Separate from [`network_role_name`](crate::record::wire::network_role_name),
+    /// which is the one place a role is spelled for a *machine*. A model that
+    /// knew its own wire spelling would be a second vocabulary site, and the
+    /// two answer to different masters: this one may be reworded whenever it
+    /// reads better, and that one may never change at all.
+    ///
+    /// **An acronym is capitals and a word is not.** `DNS` is a name written in
+    /// initials and `router` is an ordinary English noun, so capitalising the
+    /// second to match the first is shouting rather than spelling — the same
+    /// rule that makes `ICMP unreachable` the name of a thing and
+    /// `ICMP_UNREACHABLE` a shout. A list mixing the two reads as what it is:
+    /// `router, DNS, DHCP`.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Router => "router",
+            Self::DnsServer => "DNS",
+            Self::DhcpServer => "DHCP",
+            Self::NtpServer => "NTP",
+            Self::SnmpAgent => "SNMP",
+            Self::Origin => "origin",
+            Self::Tarpit => "tarpit",
+            Self::Truncated => "truncated",
+        }
+    }
+
+    pub const ALL: [NetworkRole; 8] = [
+        Self::Router,
+        Self::DnsServer,
+        Self::DhcpServer,
+        Self::NtpServer,
+        Self::SnmpAgent,
+        Self::Origin,
+        Self::Tarpit,
+        Self::Truncated,
+    ];
 }
 
 /// A single machine, and what a scan established about it.
@@ -718,10 +865,18 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
-    /// Adds a network role and bumps `last_seen`.
-    pub fn add_network_role(&mut self, role: NetworkRole) {
-        self.network_roles.insert(role);
+    /// Records a role for this host, returning whether it is one the record did
+    /// not already carry.
+    ///
+    /// The return is what a caller announces on. A role is concluded from
+    /// whatever evidence turns up, and the same evidence turns up repeatedly —
+    /// a router advertises on a timer, a name server answers every lookup —
+    /// so "recorded" and "learned" are different events and only the second is
+    /// news. Bumps `last_seen` either way: the host was heard from.
+    pub fn add_network_role(&mut self, role: NetworkRole) -> bool {
+        let is_new = self.network_roles.insert(role);
         self.last_seen = SystemTime::now();
+        is_new
     }
 
     /// Returns the minimum recorded RTT.
@@ -911,11 +1066,31 @@ impl std::fmt::Display for Host {
         if let Some(ref os) = self.os {
             write!(f, " - {}", os)?;
         }
-        if self.network_roles.contains(&NetworkRole::Tarpit) {
-            write!(f, " [TARPIT]")?;
-        } else if self.network_roles.contains(&NetworkRole::Truncated) {
-            write!(f, " [TRUNCATED]")?;
-        } else {
+
+        // Listed in `NetworkRole::ALL` order rather than the set's, so two runs
+        // that found the same things print the same line. A `HashSet` iterates
+        // in whatever order its hashing produced.
+        let mut roles = NetworkRole::ALL
+            .iter()
+            .filter(|role| self.network_roles.contains(role))
+            .peekable();
+        if roles.peek().is_some() {
+            write!(f, " [")?;
+            for (n, role) in roles.enumerate() {
+                if n > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", role.label())?;
+            }
+            write!(f, "]")?;
+        }
+
+        // A latency beside a host whose port list is meaningless invites the
+        // reader to act on the rest of the line, so the two markings that say
+        // "do not" take the space instead.
+        if !self.network_roles.contains(&NetworkRole::Tarpit)
+            && !self.network_roles.contains(&NetworkRole::Truncated)
+        {
             write!(f, " [{}]", self.telemetry)?;
         }
         Ok(())
@@ -1055,6 +1230,56 @@ mod tests {
             host.ports().next().expect("tcp/53").state(),
             PortState::Open
         );
+    }
+
+    /// Roles are held in a `HashSet`, which iterates in whatever order its
+    /// hashing produced — so a line built by walking it directly differs
+    /// between two runs that found exactly the same things, and between two
+    /// machines reading the same journal. A report a reader diffs by eye has to
+    /// be stable.
+    #[test]
+    fn a_host_prints_its_roles_in_one_order_however_they_were_recorded() {
+        let expected = "192.168.0.100 (Up) [router, DNS, origin]";
+
+        for order in [
+            [
+                NetworkRole::Router,
+                NetworkRole::DnsServer,
+                NetworkRole::Origin,
+            ],
+            [
+                NetworkRole::Origin,
+                NetworkRole::Router,
+                NetworkRole::DnsServer,
+            ],
+            [
+                NetworkRole::DnsServer,
+                NetworkRole::Origin,
+                NetworkRole::Router,
+            ],
+        ] {
+            let mut host = Host::new(IP_ADDR);
+            host.set_status(HostStatus::Up);
+            for role in order {
+                host.add_network_role(role);
+            }
+
+            let line = host.to_string();
+            let (roles, _telemetry) = line.rsplit_once(" [").expect("telemetry follows the roles");
+            assert_eq!(roles, expected, "recorded as {order:?}");
+        }
+    }
+
+    /// A latency printed beside a host whose port list is meaningless invites
+    /// the reader to act on the rest of the line, so the two markings that say
+    /// not to take the space instead.
+    #[test]
+    fn a_tarpit_prints_the_marking_where_the_latency_would_be() {
+        let mut host = Host::new(IP_ADDR);
+        host.set_status(HostStatus::Up);
+        host.add_network_role(NetworkRole::Tarpit);
+
+        assert_eq!(host.to_string(), "192.168.0.100 (Up) [tarpit]");
     }
 
     /// A dropped port is a truncated list, and the caller is the only one that

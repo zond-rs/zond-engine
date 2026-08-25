@@ -829,12 +829,16 @@
           }
         },
         "roles": {
+          "description": "What the scan concluded the host is, each from evidence in its own protocol. Sorted, and empty for a host nothing was concluded about.",
           "type": "array",
           "items": {
             "enum": [
-              "gateway",
-              "dhcp",
+              "router",
               "dns",
+              "dhcp",
+              "ntp",
+              "snmp",
+              "origin",
               "tarpit",
               "truncated"
             ]
@@ -905,6 +909,7 @@
                 "icmp_unreachable",
                 "tcp_syn",
                 "tcp",
+                "dhcp",
                 "udp"
               ]
             },

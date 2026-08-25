@@ -354,7 +354,7 @@ fn send_syn(
         Err(e) => {
             error!(
                 verbosity = 2,
-                "Failed to create SYN packet for {dst_addr}:{dst_port}: {e}"
+                "failed to create SYN packet for {dst_addr}:{dst_port}: {e}"
             );
             return None;
         }
@@ -362,7 +362,7 @@ fn send_syn(
 
     match sender.send(&packet, src_addr, dst_addr, Emission::routed()) {
         Ok(_) => {
-            success!(verbosity = 2, "Sent SYN probe to {dst_addr}:{dst_port}");
+            success!(verbosity = 2, "sent SYN probe to {dst_addr}:{dst_port}");
             Some(SynToken {
                 seq: seq_num,
                 src_port,
@@ -395,7 +395,7 @@ fn send_syn(
                 // distinguishes neither.
                 error!(
                     verbosity = 2,
-                    "Failed to send SYN probe to {dst_addr}:{dst_port}: {e:#}"
+                    "failed to send SYN probe to {dst_addr}:{dst_port}: {e:#}"
                 );
             }
             faults.record(dst_addr, &e);
@@ -436,7 +436,7 @@ fn send_udp(
         Err(e) => {
             error!(
                 verbosity = 2,
-                "Failed to create UDP packet for {dst_addr}:{dst_port}: {e}"
+                "failed to create UDP packet for {dst_addr}:{dst_port}: {e}"
             );
             return None;
         }
@@ -444,7 +444,7 @@ fn send_udp(
 
     match sender.send(&packet, src_addr, dst_addr, Emission::routed()) {
         Ok(_) => {
-            success!(verbosity = 2, "Sent UDP probe to {dst_addr}:{dst_port}");
+            success!(verbosity = 2, "sent UDP probe to {dst_addr}:{dst_port}");
             Some(())
         }
         Err(e) => {
@@ -456,7 +456,7 @@ fn send_udp(
             if reason.is_none() {
                 error!(
                     verbosity = 2,
-                    "Failed to send UDP probe to {dst_addr}:{dst_port}: {e:#}"
+                    "failed to send UDP probe to {dst_addr}:{dst_port}: {e:#}"
                 );
                 *reason = Some(format!("{e:#}"));
             }

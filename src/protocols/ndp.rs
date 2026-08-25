@@ -61,6 +61,18 @@ const OPTION_LEN: usize = 8;
 /// ICMPv6 neighbor solicitation, RFC 4861.
 const NEIGHBOR_SOLICIT: u8 = 135;
 
+/// ICMPv6 router solicitation, RFC 4861 §4.1.
+const ROUTER_SOLICIT: u8 = 133;
+
+/// The bit a neighbour sets in an advertisement to say it forwards traffic,
+/// RFC 4861 §4.4. The high bit of the byte that follows the ICMP header, ahead
+/// of the solicited and override flags.
+const ROUTER_FLAG: u8 = 0b1000_0000;
+
+/// Where a router solicitation goes: every router on the segment, and nothing
+/// else. RFC 4291 §2.7.1.
+const ALL_ROUTERS: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 2);
+
 /// The option that tells the answering neighbour where to reply, so it does not
 /// have to solicit us back first. RFC 4861 §4.6.1.
 const NDP_OPTION_SOURCE_LL_ADDR: u8 = 1;
@@ -153,29 +165,108 @@ pub fn create_neighbor_solicitation(
         .expect("a solicitation fits every length field it is counted by")
 }
 
-/// The address a neighbor advertisement is announcing, if `frame` is one.
+/// Builds a router solicitation: one packet that asks every router on the
+/// segment to identify itself, RFC 4861 §4.1.
 ///
-/// The target address is what ties an advertisement to the solicitation it
-/// answers, and it is not always the frame's IPv6 source: a router proxying for
-/// another host answers on its behalf, and an unsolicited advertisement is sent
-/// to the all-nodes group rather than to us. Reading the target rather than the
-/// source keeps a reply attributed to the address it is about.
-pub fn advertised_target(frame: &EthernetPacket) -> Option<Ipv6Addr> {
-    if frame.get_ethertype() != EtherTypes::Ipv6 {
-        return None;
-    }
+/// A router answers this within half a second (§6.2.6), where an unsolicited
+/// advertisement is sent on a timer measured in minutes — longer than any sweep
+/// runs. Asking is the difference between finding the segment's routers and
+/// happening to be listening when one spoke.
+///
+/// Carries the source link-layer address option for the reason a neighbor
+/// solicitation does: the answer can then come back directly instead of being
+/// preceded by a solicitation of its own.
+pub fn create_router_solicitation(src_mac: &MacAddr, src_addr: &Ipv6Addr) -> Vec<u8> {
+    let mut body = Vec::with_capacity(OPTION_LEN);
+    body.push(NDP_OPTION_SOURCE_LL_ADDR);
+    body.push(1);
+    body.extend_from_slice(&src_mac.octets());
 
-    let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
-    if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
-        return None;
-    }
+    let message = Icmpv6 {
+        icmp_type: ROUTER_SOLICIT,
+        code: 0,
+        checksum: Field::Computed,
+        // Four reserved bytes, which RFC 4861 §4.1 requires to be zero.
+        rest_of_header: [0; 4],
+        payload: body,
+    };
+
+    Packet::new()
+        .push(Ethernet::new(*src_mac, multicast_mac(ALL_ROUTERS)).with_ethertype(EtherTypes::Ipv6))
+        .push(Ipv6::new(*src_addr, ALL_ROUTERS).with_hop_limit(ip::HOP_LIMIT_NDP))
+        .push(message)
+        .build()
+        .expect("a router solicitation fits every length field it is counted by")
+}
+
+/// A neighbor advertisement, reduced to what discovery reads from one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Advertisement {
+    /// The address being announced.
+    ///
+    /// Not always the frame's IPv6 source: a router proxying for another host
+    /// answers on its behalf, and an unsolicited advertisement is sent to the
+    /// all-nodes group rather than to us. Reading the target rather than the
+    /// source keeps a reply attributed to the address it is about.
+    pub target: Ipv6Addr,
+    /// Whether the sender set the R flag, saying it forwards traffic for
+    /// others (RFC 4861 §4.4).
+    ///
+    /// Free evidence: this is an ordinary discovery reply, and the same message
+    /// that proves the neighbour is there says what it is.
+    pub router: bool,
+}
+
+/// Reads `frame` as a neighbor advertisement, if it is one.
+pub fn advertisement(frame: &EthernetPacket) -> Option<Advertisement> {
+    let packet = icmpv6(frame)?;
 
     let advert = NeighborAdvertPacket::new(packet.payload())?;
     if advert.get_icmpv6_type() != Icmpv6Types::NeighborAdvert {
         return None;
     }
 
-    Some(advert.get_target_addr())
+    Some(Advertisement {
+        target: advert.get_target_addr(),
+        // The flag is believed only from a message that cannot have been
+        // forwarded, which is the check RFC 4861 §7.1.2 puts on a receiver and
+        // the whole of what stops an off-link sender from claiming the segment's
+        // routing. Presence is not held to it: this engine is not a stack, and
+        // refusing a malformed advertisement outright would lose a host that is
+        // demonstrably there over a claim it never made.
+        router: advert.get_flags() & ROUTER_FLAG != 0
+            && packet.get_hop_limit() == ip::HOP_LIMIT_NDP,
+    })
+}
+
+/// Whether `frame` is a router advertisement, which its sender is only entitled
+/// to send if it routes (RFC 4861 §4.2).
+///
+/// Held to the hop limit the RFC requires (§6.1.2), so an advertisement that
+/// crossed a router — and therefore did not come from the segment it claims to
+/// serve — establishes nothing. Unlike a neighbour advertisement there is no
+/// second claim here to preserve: the whole message is the router's account of
+/// itself.
+pub fn is_router_advertisement(frame: &EthernetPacket) -> bool {
+    let Some(packet) = icmpv6(frame) else {
+        return false;
+    };
+
+    packet
+        .payload()
+        .first()
+        .is_some_and(|icmp_type| *icmp_type == Icmpv6Types::RouterAdvert.0)
+        && packet.get_hop_limit() == ip::HOP_LIMIT_NDP
+}
+
+/// The IPv6 packet inside `frame`, if it carries ICMPv6.
+fn icmpv6<'a>(frame: &'a EthernetPacket<'_>) -> Option<pnet::packet::ipv6::Ipv6Packet<'a>> {
+    if frame.get_ethertype() != EtherTypes::Ipv6 {
+        return None;
+    }
+
+    let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
+    (packet.get_next_header() == IpNextHeaderProtocols::Icmpv6).then_some(packet)
 }
 
 // ╔════════════════════════════════════════════╗
@@ -194,7 +285,9 @@ mod tests {
     use crate::protocols::sizes::ETH_HDR_LEN;
     use pnet::packet::icmpv6::Icmpv6Type;
     use pnet::packet::icmpv6::ndp::NdpOptionTypes;
-    use pnet::packet::icmpv6::ndp::{MutableNeighborAdvertPacket, NeighborSolicitPacket};
+    use pnet::packet::icmpv6::ndp::{
+        MutableNeighborAdvertPacket, NeighborSolicitPacket, RouterSolicitPacket,
+    };
     use pnet::packet::ipv6::Ipv6Packet;
 
     const SRC_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0x01);
@@ -307,11 +400,23 @@ mod tests {
     }
 
     fn advertisement_frame(target: Ipv6Addr, message_type: Icmpv6Type) -> Vec<u8> {
+        advertisement_frame_with(target, message_type, 0, ip::HOP_LIMIT_NDP)
+    }
+
+    /// An advertisement built with the flag byte and hop limit a real one
+    /// arrives with, which are the two things a router claim is read from.
+    fn advertisement_frame_with(
+        target: Ipv6Addr,
+        message_type: Icmpv6Type,
+        flags: u8,
+        hop_limit: u8,
+    ) -> Vec<u8> {
         let mut message = vec![0u8; 24];
         {
             let mut advert = MutableNeighborAdvertPacket::new(&mut message).unwrap();
             advert.set_icmpv6_type(message_type);
             advert.set_target_addr(target);
+            advert.set_flags(flags);
         }
 
         let eth = ethernet::create_header(SRC_MAC, SRC_MAC, EtherTypes::Ipv6);
@@ -320,7 +425,7 @@ mod tests {
             src_addr(),
             message.len() as u16,
             IpNextHeaderProtocols::Icmpv6,
-            ip::HOP_LIMIT_NDP,
+            hop_limit,
         );
 
         [eth, ipv6, message].concat()
@@ -332,7 +437,13 @@ mod tests {
         let frame = advertisement_frame(target, Icmpv6Types::NeighborAdvert);
         let eth = EthernetPacket::new(&frame).unwrap();
 
-        assert_eq!(advertised_target(&eth), Some(target));
+        assert_eq!(
+            advertisement(&eth),
+            Some(Advertisement {
+                target,
+                router: false
+            })
+        );
     }
 
     /// Everything else on the segment has to be refused, including the
@@ -346,11 +457,106 @@ mod tests {
         for message_type in [Icmpv6Types::NeighborSolicit, Icmpv6Types::EchoReply] {
             let frame = advertisement_frame(target, message_type);
             let eth = EthernetPacket::new(&frame).unwrap();
-            assert_eq!(advertised_target(&eth), None);
+            assert_eq!(advertisement(&eth), None);
         }
 
         let arp = [0u8; ETH_HDR_LEN + 8];
         let eth = EthernetPacket::new(&arp).unwrap();
-        assert_eq!(advertised_target(&eth), None);
+        assert_eq!(advertisement(&eth), None);
+    }
+
+    /// The R flag is the neighbour's own word that it forwards, and it rides on
+    /// an advertisement the scan solicited anyway. The bit next to it — S, for
+    /// solicited — must not be read as it: they differ by one position, and a
+    /// reply to our own probe carries S set on every host that answers.
+    #[test]
+    fn an_advertisement_carries_whether_its_sender_routes() {
+        let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
+
+        for (flags, routes) in [(ROUTER_FLAG, true), (0b0100_0000, false), (0, false)] {
+            let frame = advertisement_frame_with(
+                target,
+                Icmpv6Types::NeighborAdvert,
+                flags,
+                ip::HOP_LIMIT_NDP,
+            );
+            let eth = EthernetPacket::new(&frame).unwrap();
+
+            assert_eq!(
+                advertisement(&eth).expect("an advertisement").router,
+                routes,
+                "flags {flags:#010b}"
+            );
+        }
+    }
+
+    /// RFC 4861 §7.1.2: a message that did not arrive with a hop limit of 255
+    /// may have been forwarded, so nothing off the segment can claim to route
+    /// it. The host itself is still there — the frame reached us — so the
+    /// address survives the claim being dropped.
+    #[test]
+    fn a_forwarded_advertisement_proves_presence_but_never_routing() {
+        let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
+        let frame = advertisement_frame_with(target, Icmpv6Types::NeighborAdvert, ROUTER_FLAG, 254);
+        let eth = EthernetPacket::new(&frame).unwrap();
+
+        assert_eq!(
+            advertisement(&eth),
+            Some(Advertisement {
+                target,
+                router: false
+            })
+        );
+    }
+
+    /// Only a router sends one, so the message type is the whole claim — held
+    /// to the same hop limit, for the same reason.
+    #[test]
+    fn a_router_advertisement_is_recognised_only_from_the_segment() {
+        let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x01);
+
+        let from_the_segment =
+            advertisement_frame_with(target, Icmpv6Types::RouterAdvert, 0, ip::HOP_LIMIT_NDP);
+        assert!(is_router_advertisement(
+            &EthernetPacket::new(&from_the_segment).unwrap()
+        ));
+
+        let forwarded = advertisement_frame_with(target, Icmpv6Types::RouterAdvert, 0, 254);
+        assert!(!is_router_advertisement(
+            &EthernetPacket::new(&forwarded).unwrap()
+        ));
+
+        let neighbour = advertisement_frame(target, Icmpv6Types::NeighborAdvert);
+        assert!(!is_router_advertisement(
+            &EthernetPacket::new(&neighbour).unwrap()
+        ));
+    }
+
+    /// The one packet that makes routers answer now rather than on their own
+    /// timer. Wrong at either layer it reaches nothing: the all-routers group is
+    /// what routers listen to, and a hop limit below 255 is discarded by every
+    /// conformant receiver (RFC 4861 §6.1.1).
+    #[test]
+    fn a_router_solicitation_asks_every_router_and_nobody_else() {
+        let frame = create_router_solicitation(&SRC_MAC, &src_addr());
+
+        let eth = EthernetPacket::new(&frame).unwrap();
+        assert_eq!(
+            eth.get_destination(),
+            MacAddr::new(0x33, 0x33, 0x00, 0x00, 0x00, 0x02)
+        );
+
+        let packet = Ipv6Packet::new(eth.payload()).unwrap();
+        assert_eq!(packet.get_destination(), ALL_ROUTERS);
+        assert_eq!(packet.get_hop_limit(), 255);
+
+        let solicit = RouterSolicitPacket::new(packet.payload()).unwrap();
+        assert_eq!(solicit.get_icmpv6_type(), Icmpv6Types::RouterSolicit);
+        assert_ne!(solicit.get_checksum(), 0);
+
+        let options = solicit.get_options();
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].option_type, NdpOptionTypes::SourceLLAddr);
+        assert_eq!(options[0].data, SRC_MAC.octets().to_vec());
     }
 }
