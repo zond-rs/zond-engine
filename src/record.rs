@@ -72,8 +72,8 @@ use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{
-    Origin, PhaseParts, PortScope, ProbeStats, ProbeStatsParts, ScanKind, ScanPhase, ScanSettings,
-    ScannerFailure, ScopeParts, StopReason, TargetScope,
+    Attachment, AttachmentSource, Origin, PhaseParts, PortScope, ProbeStats, ProbeStatsParts,
+    ScanKind, ScanPhase, ScanSettings, ScannerFailure, ScopeParts, StopReason, TargetScope,
 };
 use crate::scanner::session::ScannerKind;
 
@@ -866,6 +866,91 @@ pub struct PhaseRecord {
     /// Which document this sitting was folded in from, for a merged report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<OriginRecord>,
+    /// Which switch ports the machine running this sitting was plugged into.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentRecord>,
+}
+
+/// Where the machine running a sitting was plugged in, as a file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentRecord {
+    /// Which of the scanning machine's interfaces the announcement arrived on.
+    pub link: String,
+    /// The interface index, where the reading host knew it. Absent rather than
+    /// zero, since zero is what "no interface" means to a kernel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_index: Option<u32>,
+    /// Which protocol the announcement was read from.
+    pub source: String,
+    /// The hardware address the device identified its chassis with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_mac: Option<String>,
+    /// What the device calls itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    /// What the device calls the port this machine is plugged into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
+    /// The VLAN untagged traffic on this port lands in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_vlan: Option<u16>,
+    /// An address the device is managed at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_address: Option<IpAddr>,
+    /// When the announcement arrived.
+    pub observed_at: SystemTime,
+}
+
+impl From<&Attachment> for AttachmentRecord {
+    fn from(attachment: &Attachment) -> Self {
+        Self {
+            link: attachment.link().name().to_owned(),
+            link_index: attachment.link().index(),
+            source: wire::attachment_source_name(attachment.source()).to_owned(),
+            device_mac: attachment.device_mac().map(|mac| mac.to_string()),
+            device_name: attachment.device_name().map(str::to_owned),
+            port: attachment.port().map(str::to_owned),
+            native_vlan: attachment.native_vlan(),
+            management_address: attachment.management_address(),
+            observed_at: attachment.observed_at(),
+        }
+    }
+}
+
+impl From<&AttachmentRecord> for Attachment {
+    fn from(record: &AttachmentRecord) -> Self {
+        let link = match record.link_index {
+            Some(index) => Zone::new(index, record.link.as_str()),
+            None => Zone::unresolved(record.link.as_str()),
+        };
+
+        // A source this build cannot place is read as LLDP: it is the standard
+        // one, and the field says which protocol carried the fields rather than
+        // deciding what any of them mean.
+        let source = wire::attachment_source(&record.source).unwrap_or(AttachmentSource::Lldp);
+
+        let mut attachment = Attachment::new(link, source, record.observed_at);
+        if let Some(mac) = record
+            .device_mac
+            .as_deref()
+            .and_then(|mac| mac.parse().ok())
+        {
+            attachment = attachment.with_device_mac(mac);
+        }
+        if let Some(name) = record.device_name.as_deref() {
+            attachment = attachment.with_device_name(name);
+        }
+        if let Some(port) = record.port.as_deref() {
+            attachment = attachment.with_port(port);
+        }
+        if let Some(vlan) = record.native_vlan {
+            attachment = attachment.with_native_vlan(vlan);
+        }
+        if let Some(address) = record.management_address {
+            attachment = attachment.with_management_address(address);
+        }
+        attachment
+    }
 }
 
 /// Which document a sitting came from, as a file holds it.
@@ -914,6 +999,11 @@ impl From<&ScanPhase> for PhaseRecord {
                 .map(ProbeStatsRecord::from)
                 .collect(),
             origin: phase.origin().map(OriginRecord::from),
+            attachments: phase
+                .attachments()
+                .iter()
+                .map(AttachmentRecord::from)
+                .collect(),
         }
     }
 }
@@ -921,8 +1011,11 @@ impl From<&ScanPhase> for PhaseRecord {
 impl From<&PhaseRecord> for ScanPhase {
     fn from(record: &PhaseRecord) -> Self {
         ScanPhase::from_parts(PhaseParts {
-            // A sitting whose kind this build cannot place is reported as the
-            // cheaper of the two, so a reader is not told ports were scanned.
+            // A sitting whose kind this build cannot place is read as a
+            // discovery sweep. Of the kinds that exist it claims the least
+            // while still claiming the addresses were walked: a reader is not
+            // told ports were scanned, and is not told the sitting covered
+            // nothing when its scope says it covered a range.
             kind: wire::scan_kind(&record.kind).unwrap_or(ScanKind::Discovery),
             started_at: record.started_at,
             elapsed: record.elapsed,
@@ -933,6 +1026,7 @@ impl From<&PhaseRecord> for ScanPhase {
             unroutable: record.unroutable.clone(),
             probes: record.probes.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(Origin::from),
+            attachments: record.attachments.iter().map(Attachment::from).collect(),
         })
     }
 }
@@ -948,6 +1042,11 @@ pub struct ScopeRecord {
     /// which read back the same way, since neither claims a link was covered.
     #[serde(default)]
     pub links: Vec<ZoneRecord>,
+    /// The links whose traffic was read without anything being probed on them.
+    /// Never coverage — see `TargetScope::listened`. Empty for a phase that
+    /// sent probes, and for one recorded before this field existed.
+    #[serde(default)]
+    pub listened: Vec<ZoneRecord>,
     /// How many distinct addresses those hold.
     pub addresses: u128,
     /// How many probes the scope implies, where ports were known.
@@ -973,6 +1072,7 @@ impl From<&TargetScope> for ScopeRecord {
         Self {
             ranges: scope.ranges().iter().map(RangeRecord::from).collect(),
             links: scope.links().iter().map(ZoneRecord::from).collect(),
+            listened: scope.listened().iter().map(ZoneRecord::from).collect(),
             addresses: scope.addresses(),
             probes: scope.probes(),
             ports: PortsRecord::of(scope.ports()),
@@ -996,6 +1096,7 @@ impl From<&ScopeRecord> for TargetScope {
                 .filter_map(RangeRecord::rebuild)
                 .collect(),
             links: record.links.iter().map(Zone::from).collect(),
+            listened: record.listened.iter().map(Zone::from).collect(),
             addresses: record.addresses,
             probes: record.probes,
             ports: record
@@ -1741,8 +1842,9 @@ mod tests {
         for phase in report.phases() {
             let rebuilt = ScanPhase::from(&PhaseRecord::from(phase));
 
+            let options = crate::export::ExportOptions::default();
             let render = |phase: &ScanPhase| {
-                serde_json::to_value(crate::export::schema::PhaseDto::new(phase))
+                serde_json::to_value(crate::export::schema::PhaseDto::new(phase, &options))
                     .expect("a phase renders")
             };
             assert_eq!(render(phase), render(&rebuilt), "a field was lost");

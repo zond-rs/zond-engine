@@ -1423,7 +1423,9 @@ mod tests {
         drop(reserved);
 
         let filter = format!("icmp or icmp6 or (udp and dst port {src_port})");
-        let (mut rx, _capture) = capture::start(&[loopback.name], &filter).unwrap();
+        let link = crate::model::ip::scoped::Zone::new(loopback.index, loopback.name);
+        let (mut rx, _capture) =
+            capture::segments(&[link], &capture::CaptureOptions::for_replies(filter)).unwrap();
         // The capture threads open their devices asynchronously; a probe sent
         // before they are listening would simply not be seen.
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1482,7 +1484,9 @@ mod tests {
         });
 
         let filter = format!("icmp or icmp6 or (udp and dst port {src_port})");
-        let (mut rx, _capture) = capture::start(&[loopback.name], &filter).unwrap();
+        let link = crate::model::ip::scoped::Zone::new(loopback.index, loopback.name);
+        let (mut rx, _capture) =
+            capture::segments(&[link], &capture::CaptureOptions::for_replies(filter)).unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         socket

@@ -494,6 +494,11 @@ fn phase_name(kind: ScanKind) -> &'static str {
     match kind {
         ScanKind::Discovery => "host-discovery sweep",
         ScanKind::PortScan => "port scan",
+        // Reachable only through a journal written by a build that records one,
+        // which none does: a listening phase enumerates nothing, so there is no
+        // plan to count it in and no cursor to continue it from. See the
+        // passive listening design's §7 for the fork that is still open.
+        ScanKind::Listen => "listening phase",
     }
 }
 

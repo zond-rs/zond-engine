@@ -84,7 +84,7 @@ use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::Positions;
 use crate::model::technique::TcpScanTechnique;
 use crate::scanner::handle::ScanHandle;
-use crate::scanner::report::{ProbeStats, ScannerFailure};
+use crate::scanner::report::{Attachment, AttachmentSource, ProbeStats, ScannerFailure};
 
 /// Which scanning strategy a [`ScanEvent::ScannerFailed`] refers to.
 ///
@@ -96,6 +96,14 @@ use crate::scanner::report::{ProbeStats, ScannerFailure};
 pub enum ScannerKind {
     /// Layer-2 discovery (ARP/NDP) on a local segment.
     Local,
+    /// Reading a link's own traffic, having sent nothing.
+    ///
+    /// The one strategy here that puts no packet on the wire, which changes
+    /// what its counters mean. `sends_attempted` is zero for it and always
+    /// will be; what it saw is bounded by what the network happened to carry
+    /// rather than by anything this engine chose, so a quiet run says the
+    /// segment was quiet and never that a host was absent.
+    Passive,
     /// Raw TCP SYN discovery for gateway-routed targets.
     Routed,
     /// Raw TCP SYN port scanning (the port-scan phase, distinct from [`Routed`]
@@ -488,6 +496,36 @@ impl SweptLinks {
     }
 }
 
+/// The switch ports a phase found itself plugged into, gathered as its
+/// strategies run.
+///
+/// Keyed by the link and the protocol the announcement came from, so a switch
+/// re-announcing itself every thirty seconds — which is what they do — is
+/// recorded once rather than once per frame. The *latest* announcement wins,
+/// because the question is what this machine is plugged into now and a cable
+/// somebody moved should not be reported as two attachments held at once.
+///
+/// A link answering on both LLDP and CDP keeps both, deliberately: which
+/// protocols a network speaks is itself a fact about what it is made of, and
+/// the two carry different fields.
+#[derive(Debug, Default)]
+pub(crate) struct Attachments {
+    entries: Mutex<std::collections::BTreeMap<(String, AttachmentSource), Attachment>>,
+}
+
+impl Attachments {
+    fn insert(&self, attachment: Attachment) {
+        let key = (attachment.link().name().to_owned(), attachment.source());
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.insert(key, attachment);
+    }
+
+    fn drain(&self) -> Vec<Attachment> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries).into_values().collect()
+    }
+}
+
 /// What a journal needs from a running scan, and nothing more.
 ///
 /// See [`ScanContext::progress`] for why this exists rather than a context.
@@ -602,6 +640,8 @@ pub struct ScanContext {
     /// Addresses this host has no route to, so nothing could be sent to them.
     pub(crate) unroutable: Arc<UnroutableLog>,
     pub(crate) swept_links: Arc<SweptLinks>,
+    /// Where this machine turned out to be plugged in, as the equipment said.
+    pub(crate) attachments: Arc<Attachments>,
     /// Addresses no finding may be recorded against.
     ///
     /// Behind an `Arc` because a context is cloned once per strategy and the
@@ -858,6 +898,22 @@ impl ScanContext {
         self.swept_links.drain()
     }
 
+    /// Records which switch port this machine turned out to be plugged into.
+    ///
+    /// Called by whatever read an announcement off a link — see
+    /// [`Attachment`](crate::scanner::report::Attachment) for why this is a fact
+    /// about the phase rather than about any host in it. A device re-announcing
+    /// itself replaces the previous reading for that link and protocol rather
+    /// than adding to it.
+    pub fn record_attachment(&self, attachment: Attachment) {
+        self.attachments.insert(attachment);
+    }
+
+    /// Takes the attachments observed so far, leaving the log empty.
+    pub(crate) fn take_attachments(&self) -> Vec<Attachment> {
+        self.attachments.drain()
+    }
+
     /// Records what became of one target, for a later resume.
     ///
     /// Not the same question as the verdict: a target reaches the store with a
@@ -1070,6 +1126,7 @@ impl ScanSession {
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             swept_links: Arc::new(SweptLinks::default()),
+            attachments: Arc::new(Attachments::default()),
             exclusions: Arc::new(exclusions),
             changed: Arc::new(ChangedHosts::default()),
             settlements: Arc::new(Settlements::resuming(settled)),

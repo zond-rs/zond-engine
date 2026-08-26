@@ -41,13 +41,14 @@
 
 use pnet::datalink::MacAddr;
 use pnet::packet::Packet as _;
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::ethernet::EtherTypes;
 use pnet::packet::icmpv6::Icmpv6Types;
 use pnet::packet::icmpv6::ndp::NeighborAdvertPacket;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use std::net::Ipv6Addr;
 
 use crate::protocols::craft::{Ethernet, Field, Icmpv6, Ipv6, Packet};
+use crate::protocols::ethernet::Frame;
 use crate::protocols::ip;
 
 /// What a solicitation carries after the shared ICMPv6 header: the sixteen-byte
@@ -218,7 +219,7 @@ pub struct Advertisement {
 }
 
 /// Reads `frame` as a neighbor advertisement, if it is one.
-pub fn advertisement(frame: &EthernetPacket) -> Option<Advertisement> {
+pub fn advertisement(frame: &Frame<'_>) -> Option<Advertisement> {
     let packet = icmpv6(frame)?;
 
     let advert = NeighborAdvertPacket::new(packet.payload())?;
@@ -247,7 +248,7 @@ pub fn advertisement(frame: &EthernetPacket) -> Option<Advertisement> {
 /// serve — establishes nothing. Unlike a neighbour advertisement there is no
 /// second claim here to preserve: the whole message is the router's account of
 /// itself.
-pub fn is_router_advertisement(frame: &EthernetPacket) -> bool {
+pub fn is_router_advertisement(frame: &Frame<'_>) -> bool {
     let Some(packet) = icmpv6(frame) else {
         return false;
     };
@@ -260,8 +261,8 @@ pub fn is_router_advertisement(frame: &EthernetPacket) -> bool {
 }
 
 /// The IPv6 packet inside `frame`, if it carries ICMPv6.
-fn icmpv6<'a>(frame: &'a EthernetPacket<'_>) -> Option<pnet::packet::ipv6::Ipv6Packet<'a>> {
-    if frame.get_ethertype() != EtherTypes::Ipv6 {
+fn icmpv6<'a>(frame: &Frame<'a>) -> Option<pnet::packet::ipv6::Ipv6Packet<'a>> {
+    if frame.ethertype() != EtherTypes::Ipv6 {
         return None;
     }
 
@@ -340,7 +341,7 @@ mod tests {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
         let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
 
-        let eth = EthernetPacket::new(&frame).unwrap();
+        let eth = super::super::ethernet::parse(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
 
         assert_eq!(packet.get_hop_limit(), 255);
@@ -353,9 +354,9 @@ mod tests {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0x11aa, 0xbbcc);
         let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
 
-        let eth = EthernetPacket::new(&frame).unwrap();
+        let eth = super::super::ethernet::parse(&frame).unwrap();
         assert_eq!(
-            eth.get_destination(),
+            eth.destination(),
             MacAddr::new(0x33, 0x33, 0xff, 0xaa, 0xbb, 0xcc)
         );
 
@@ -371,7 +372,7 @@ mod tests {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
         let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
 
-        let eth = EthernetPacket::new(&frame).unwrap();
+        let eth = super::super::ethernet::parse(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
         let solicit = NeighborSolicitPacket::new(packet.payload()).unwrap();
 
@@ -392,7 +393,7 @@ mod tests {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
         let frame = create_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
 
-        let eth = EthernetPacket::new(&frame).unwrap();
+        let eth = super::super::ethernet::parse(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
         let solicit = NeighborSolicitPacket::new(packet.payload()).unwrap();
 
@@ -435,7 +436,7 @@ mod tests {
     fn an_advertisement_yields_the_address_it_announces() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
         let frame = advertisement_frame(target, Icmpv6Types::NeighborAdvert);
-        let eth = EthernetPacket::new(&frame).unwrap();
+        let eth = super::super::ethernet::parse(&frame).unwrap();
 
         assert_eq!(
             advertisement(&eth),
@@ -456,12 +457,12 @@ mod tests {
 
         for message_type in [Icmpv6Types::NeighborSolicit, Icmpv6Types::EchoReply] {
             let frame = advertisement_frame(target, message_type);
-            let eth = EthernetPacket::new(&frame).unwrap();
+            let eth = super::super::ethernet::parse(&frame).unwrap();
             assert_eq!(advertisement(&eth), None);
         }
 
         let arp = [0u8; ETH_HDR_LEN + 8];
-        let eth = EthernetPacket::new(&arp).unwrap();
+        let eth = super::super::ethernet::parse(&arp).unwrap();
         assert_eq!(advertisement(&eth), None);
     }
 
@@ -480,7 +481,7 @@ mod tests {
                 flags,
                 ip::HOP_LIMIT_NDP,
             );
-            let eth = EthernetPacket::new(&frame).unwrap();
+            let eth = super::super::ethernet::parse(&frame).unwrap();
 
             assert_eq!(
                 advertisement(&eth).expect("an advertisement").router,
@@ -498,7 +499,7 @@ mod tests {
     fn a_forwarded_advertisement_proves_presence_but_never_routing() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
         let frame = advertisement_frame_with(target, Icmpv6Types::NeighborAdvert, ROUTER_FLAG, 254);
-        let eth = EthernetPacket::new(&frame).unwrap();
+        let eth = super::super::ethernet::parse(&frame).unwrap();
 
         assert_eq!(
             advertisement(&eth),
@@ -518,17 +519,17 @@ mod tests {
         let from_the_segment =
             advertisement_frame_with(target, Icmpv6Types::RouterAdvert, 0, ip::HOP_LIMIT_NDP);
         assert!(is_router_advertisement(
-            &EthernetPacket::new(&from_the_segment).unwrap()
+            &super::super::ethernet::parse(&from_the_segment).unwrap()
         ));
 
         let forwarded = advertisement_frame_with(target, Icmpv6Types::RouterAdvert, 0, 254);
         assert!(!is_router_advertisement(
-            &EthernetPacket::new(&forwarded).unwrap()
+            &super::super::ethernet::parse(&forwarded).unwrap()
         ));
 
         let neighbour = advertisement_frame(target, Icmpv6Types::NeighborAdvert);
         assert!(!is_router_advertisement(
-            &EthernetPacket::new(&neighbour).unwrap()
+            &super::super::ethernet::parse(&neighbour).unwrap()
         ));
     }
 
@@ -540,9 +541,9 @@ mod tests {
     fn a_router_solicitation_asks_every_router_and_nobody_else() {
         let frame = create_router_solicitation(&SRC_MAC, &src_addr());
 
-        let eth = EthernetPacket::new(&frame).unwrap();
+        let eth = super::super::ethernet::parse(&frame).unwrap();
         assert_eq!(
-            eth.get_destination(),
+            eth.destination(),
             MacAddr::new(0x33, 0x33, 0x00, 0x00, 0x00, 0x02)
         );
 

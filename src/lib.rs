@@ -14,10 +14,18 @@
 //! the report and the file formats — so that a CLI, a web service and an
 //! embedded consumer produce the same results and the same documents.
 //!
-//! # Two phases
+//! # Three phases
 //!
 //! [`discover`] establishes which hosts exist. [`scan`] classifies the ports of
-//! hosts already known. They are separate calls because they cost very different
+//! hosts already known. [`listen`] sends nothing at all and reads what a link
+//! already carries — for the networks the other two may not touch, and for the
+//! findings no probe obtains: which switch port this machine is on, which VLANs
+//! a link carries, what a device says about itself while asking for an address.
+//!
+//! The first two are jobs and finish. A listener is a service and finishes when
+//! it is told to, because having asked nothing it can never be complete.
+//!
+//! [`discover`] and [`scan`] are separate calls because they cost very different
 //! amounts: a sweep of a `/24` is a few hundred packets, and port-scanning all of
 //! it is a few hundred thousand. Run the cheap one first and spend the expensive
 //! one only on what answered.
@@ -25,7 +33,9 @@
 //! Both are unprivileged-safe. With root they use raw sockets — ARP and ICMPv6
 //! on the local segment, raw TCP and UDP elsewhere — and without it they fall
 //! back to ordinary TCP connect attempts. The phase records which it was, so a
-//! result can be read for what it is worth.
+//! result can be read for what it is worth. [`listen`] has no such fallback and
+//! cannot: reading a link *is* the capability, where a scan can degrade to
+//! connect attempts and still be a scan.
 //!
 //! # Live results, and the record afterwards
 //!
@@ -244,7 +254,7 @@ pub use crate::scanner::handle::ScanHandle;
 pub use crate::scanner::report::{ScanReport, ScanSummary};
 pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
 pub use crate::scanner::strategy::StrategyError;
-pub use crate::scanner::{ScanError, ScanTask, discover, scan};
+pub use crate::scanner::{ListenScope, ScanError, ScanTask, Until, discover, listen, scan};
 #[cfg(feature = "journal-format")]
 pub use crate::scanner::{discover_with_journal, scan_with_journal};
 

@@ -579,6 +579,8 @@ impl Run {
         let targets = if self.exhaustive {
             let mut scope = TargetScope::from_ip_set(&mut self.accounted, &Exclusions::none());
             scope = TargetScope::from_parts(ScopeParts {
+                // Nmap sends probes; it has no notion of a phase that only listens.
+                listened: Vec::new(),
                 ranges: scope.ranges().to_vec(),
                 // Nmap's document names no interface, so it cannot say it swept
                 // a link whole even where it did.
@@ -593,6 +595,8 @@ impl Run {
             scope
         } else {
             TargetScope::from_parts(ScopeParts {
+                // Nmap sends probes; it has no notion of a phase that only listens.
+                listened: Vec::new(),
                 ranges: Vec::new(),
                 links: Vec::new(),
                 addresses: 0,
@@ -605,6 +609,9 @@ impl Run {
         };
 
         let phase = ScanPhase::from_parts(PhaseParts {
+            // Nmap's format has no place for one, and a scan it ran was not run
+            // from here.
+            attachments: Vec::new(),
             kind,
             started_at: self.started.unwrap_or(SystemTime::UNIX_EPOCH),
             elapsed: self.elapsed.unwrap_or_default(),

@@ -21,6 +21,22 @@
 //! Linux, so replies always come back through a `libpcap` [`capture`] at the
 //! link layer.
 //!
+//! ## One way in
+//!
+//! **Everything this crate hears arrives through [`capture`]**, in one of two
+//! shapes. [`capture::segments`] parses each admitted frame down to the Layer-4
+//! segment a port scanner reads; [`capture::frames`] forwards it whole, for a
+//! reader whose answer is below that — ARP, neighbour discovery, a VLAN tag, a
+//! hardware address. They share the filter, the counters, the threading and the
+//! shutdown, and differ only in what they hand over.
+//!
+//! That was two stacks until it was one. A local sweep read frames through a
+//! second, unfiltered receive path that copied the whole segment into this
+//! process to discard nearly all of it, could not report what the kernel had
+//! dropped, and had no way to be told to stop. [`channel`] is what remains of it:
+//! a link-layer *sender* paired with a capture, because building and emitting a
+//! frame byte for byte is a genuinely different job from hearing one.
+//!
 //! The two send backends are named for the layer they write at. [`raw`] hands a
 //! segment to a raw Layer-4 socket and lets the kernel route it, resolve the
 //! next hop and fragment it. [`link`] builds the whole Ethernet frame itself,

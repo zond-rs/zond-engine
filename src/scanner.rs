@@ -120,6 +120,7 @@ use crate::scanner::orchestrator::{
 };
 use crate::scanner::report::{PhaseRecorder, ScanKind, ScanPhase, ScanReport, TargetScope};
 use crate::scanner::session::{ScanContext, ScanSession, ScannerKind};
+use crate::scanner::strategy::passive::Listener as _;
 use strategy::local::Scope;
 
 // What running a scan produces: a `ScanSession` to watch it, a `ScanHandle` to
@@ -488,6 +489,173 @@ async fn run_discovery(
     }
 
     orchestrator::run_passive_os_identification(ctx, cfg.os_detection);
+}
+
+/// What a listening phase reads, and for how long.
+///
+/// A listener is aimed at a **link**, not at addresses, which is the whole of
+/// what makes it a different phase. It cannot narrow what it hears, so the only
+/// control there is sits at the other end: what may be recorded.
+///
+/// **Nothing here reaches into the host on its own.** A caller who wants every
+/// link says which links those are; see [`system::interface`](crate::system::interface)
+/// for how to find them. That is the same rule that keeps the engine from
+/// opening a journal nobody asked for.
+#[derive(Debug, Clone)]
+pub struct ListenScope {
+    links: Vec<crate::model::ip::scoped::Zone>,
+    recording: strategy::passive::Recording,
+    until: Until,
+}
+
+/// When a listening phase stops.
+///
+/// A scan ends when it has asked everything it meant to ask. A listener has
+/// asked nothing and can never be finished, so somebody else decides — which is
+/// why this is a required part of the scope rather than a setting with a
+/// default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Until {
+    /// It runs until the caller stops it through
+    /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort).
+    ///
+    /// The honest default for a sensor, and the shape an embedded consumer
+    /// wants: a listener is a service rather than a job.
+    #[default]
+    Stopped,
+    /// It runs for this long and then closes.
+    ///
+    /// For a caller who wants a bounded sample — an inventory of what a segment
+    /// says over ten minutes — without having to hold the handle and time it.
+    Elapsed(std::time::Duration),
+}
+
+impl ListenScope {
+    /// Listens on `links`, recording whatever is heard, until stopped.
+    pub fn on(links: Vec<crate::model::ip::scoped::Zone>) -> Self {
+        Self {
+            links,
+            recording: strategy::passive::Recording::Everything,
+            until: Until::Stopped,
+        }
+    }
+
+    /// Records findings only about `addresses`.
+    ///
+    /// Everything on the link is still *heard* — a listener cannot decline to
+    /// receive — and anything outside this is dropped before it reaches the
+    /// store. Which is where a passive phase's scope has to live: there is no
+    /// asking to narrow.
+    pub fn recording_only(mut self, addresses: IpSet) -> Self {
+        self.recording = strategy::passive::Recording::Only(addresses);
+        self
+    }
+
+    /// Stops after `span` rather than waiting to be told.
+    pub fn for_at_most(mut self, span: std::time::Duration) -> Self {
+        self.until = Until::Elapsed(span);
+        self
+    }
+
+    /// The links this phase reads.
+    pub fn links(&self) -> &[crate::model::ip::scoped::Zone] {
+        &self.links
+    }
+
+    /// When it stops.
+    pub fn until(&self) -> Until {
+        self.until
+    }
+}
+
+/// Reads what a link already carries, and concludes from it. Sends nothing.
+///
+/// The third phase, beside [`discover`] and [`scan`], and the only one that puts
+/// no packet on the wire. It is for the networks the other two may not touch —
+/// industrial and clinical segments where probing is forbidden, production under
+/// change control, any engagement without an authorised scan window — and for
+/// the findings no probe can obtain: which switch port this machine is on, which
+/// VLANs a link carries, what a device says about itself while asking for an
+/// address.
+///
+/// # What it may conclude
+///
+/// **Only ever a positive claim.** Having sent nothing it cannot time anything
+/// out, so an address it never heard from may be absent, silent, behind a switch
+/// that never forwarded this way, or on a VLAN this link does not carry — and
+/// nothing separates those. It records a host as up and never as down, adds a
+/// role and never removes one, and its phase covers **no address at all**, so a
+/// [`diff`](crate::diff) cannot read a host that stayed quiet as one that went
+/// away.
+///
+/// # What it will not see
+///
+/// On a switched network an unmirrored listener sees broadcast and multicast in
+/// full and very little unicast: the switch forwards a conversation between two
+/// other hosts out the one port that leads to it. That is enough for an asset
+/// and topology inventory — ARP, DHCP, mDNS, router advertisements, LLDP and CDP
+/// are all broadcast or multicast — and it is *not* enough for the endpoints and
+/// flows, which need a mirror port, a tap, or a position traffic transits.
+///
+/// The report says how much was lost rather than leaving it to be guessed: a
+/// wide filter on a busy link drops frames, and for this phase the drop count is
+/// the closest thing there is to the address count the other two report.
+///
+/// # Stopping
+///
+/// [`Until::Stopped`] runs until
+/// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) is called on
+/// the session's handle. The returned [`ScanTask`] resolves when it stops, with
+/// the [`ScanReport`] describing what was heard.
+pub async fn listen(
+    scope: ListenScope,
+    cfg: &ZondConfig,
+) -> Result<(ScanSession, ScanTask), ScanError> {
+    let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
+    let handle = spawn_listen(scope, cfg, ctx);
+    Ok((session, ScanTask::new(handle)))
+}
+
+/// Runs a listening phase against an existing context.
+fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinHandle<ScanReport> {
+    let cfg = cfg.clone();
+
+    tokio::spawn(async move {
+        // Privilege is `Some(true)`: a capture cannot be opened without it, so
+        // a listener that got this far holds it. There is no unprivileged
+        // fallback here and there cannot be one — reading a link is the whole
+        // capability, where a scan can degrade to connect attempts.
+        let recorder = PhaseRecorder::start(
+            ScanKind::Listen,
+            true,
+            TargetScope::listening_on(scope.links.clone(), &cfg.exclusions),
+            &cfg,
+        );
+
+        match strategy::passive::PassiveListener::open(&scope.links, scope.recording, ctx.clone()) {
+            Ok(mut listener) => {
+                if let Until::Elapsed(span) = scope.until {
+                    // Stopped through the same signal a caller would use, so
+                    // there is one way a listening phase ends rather than two.
+                    let handle = ctx.handle.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(span).await;
+                        handle.abort();
+                    });
+                }
+
+                if let Err(error) = listener.observe().await {
+                    ctx.record_failure(ScannerKind::Passive, error.to_string());
+                }
+            }
+            Err(error) => ctx.record_failure(ScannerKind::Passive, error.to_string()),
+        }
+
+        // What this machine's own interfaces say about what was heard. The same
+        // pass a scan ends with, and it sends nothing either.
+        vantage::attribute(&ctx);
+        recorder.finish(&ctx)
+    })
 }
 
 /// Probes a known set of targets for open ports.

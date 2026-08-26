@@ -1367,7 +1367,6 @@ pub(crate) fn crc32c(data: &[u8]) -> u32 {
 mod tests {
     use super::*;
     use pnet::packet::Packet as _;
-    use pnet::packet::ethernet::EthernetPacket;
     use pnet::packet::ipv4::Ipv4Packet;
     use pnet::packet::ipv6::Ipv6Packet;
 
@@ -1419,8 +1418,8 @@ mod tests {
             .build()
             .expect("builds");
 
-        let eth = EthernetPacket::new(&over_udp).expect("a frame");
-        assert_eq!(eth.get_ethertype(), EtherTypes::Ipv4);
+        let eth = super::super::ethernet::parse(&over_udp).expect("a frame");
+        assert_eq!(eth.ethertype(), EtherTypes::Ipv4);
         assert_eq!(
             Ipv4Packet::new(eth.payload())
                 .expect("an IPv4 header")
@@ -1435,8 +1434,8 @@ mod tests {
             .build()
             .expect("builds");
 
-        let eth = EthernetPacket::new(&over_v6).expect("a frame");
-        assert_eq!(eth.get_ethertype(), EtherTypes::Ipv6);
+        let eth = super::super::ethernet::parse(&over_v6).expect("a frame");
+        assert_eq!(eth.ethertype(), EtherTypes::Ipv6);
         assert_eq!(
             Ipv6Packet::new(eth.payload())
                 .expect("an IPv6 header")

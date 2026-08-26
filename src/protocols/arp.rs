@@ -18,11 +18,10 @@
 
 use crate::protocols::craft::{Arp, Ethernet, Packet};
 use crate::protocols::error::{PacketError, Result};
+use crate::protocols::ethernet::Frame;
 use crate::protocols::sizes::{ARP_LEN, MIN_ETH_FRAME_NO_FCS};
 use pnet::datalink::MacAddr;
-use pnet::packet::Packet as _;
 use pnet::packet::arp::ArpPacket;
-use pnet::packet::ethernet::EthernetPacket;
 use std::net::Ipv4Addr;
 
 /// Builds the broadcast ARP request a sweep sends, asking who holds
@@ -86,7 +85,7 @@ fn frame(src_mac: MacAddr, dst_mac: MacAddr, packet: Arp) -> Vec<u8> {
 ///
 /// [`PacketError::Truncated`] when the frame carries too few bytes to be an
 /// ARP packet.
-pub fn sender_address(eth_packet: &EthernetPacket) -> Result<Ipv4Addr> {
+pub fn sender_address(eth_packet: &Frame<'_>) -> Result<Ipv4Addr> {
     let arp_packet = ArpPacket::new(eth_packet.payload()).ok_or_else(|| {
         PacketError::truncated("an ARP packet", ARP_LEN, eth_packet.payload().len())
     })?;
@@ -105,10 +104,9 @@ pub fn sender_address(eth_packet: &EthernetPacket) -> Result<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::Packet;
     use pnet::packet::arp::ArpHardwareTypes;
     use pnet::packet::arp::{ArpOperations, ArpPacket, MutableArpPacket};
-    use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
+    use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
     use pnet::util::MacAddr;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
@@ -156,10 +154,11 @@ mod tests {
         let buffer = create_request(&src_mac, &src_addr, dst_addr);
         assert_eq!(buffer.len(), MIN_ETH_FRAME_NO_FCS);
 
-        let eth_packet = EthernetPacket::new(&buffer).expect("Failed to parse Ethernet packet");
-        assert_eq!(eth_packet.get_destination(), MacAddr::broadcast());
-        assert_eq!(eth_packet.get_source(), src_mac);
-        assert_eq!(eth_packet.get_ethertype(), EtherTypes::Arp);
+        let eth_packet =
+            super::super::ethernet::parse(&buffer).expect("Failed to parse Ethernet packet");
+        assert_eq!(eth_packet.destination(), MacAddr::broadcast());
+        assert_eq!(eth_packet.source(), src_mac);
+        assert_eq!(eth_packet.ethertype(), EtherTypes::Arp);
 
         let arp_payload = eth_packet.payload();
         assert!(arp_payload.len() >= ARP_LEN);
@@ -193,12 +192,8 @@ mod tests {
         let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
 
         let unicast = create_unicast_request(&src_mac, dst_mac, &src_addr, dst_addr);
-        let eth = EthernetPacket::new(&unicast).expect("a frame");
-        assert_eq!(
-            eth.get_destination(),
-            dst_mac,
-            "only that host's card wakes"
-        );
+        let eth = super::super::ethernet::parse(&unicast).expect("a frame");
+        assert_eq!(eth.destination(), dst_mac, "only that host's card wakes");
 
         let arp = ArpPacket::new(eth.payload()).expect("an ARP packet");
         assert_eq!(arp.get_operation(), ArpOperations::Request);
@@ -219,10 +214,10 @@ mod tests {
     fn a_well_formed_frame_is_credited_to_its_sender() {
         let expected = Ipv4Addr::new(192, 168, 1, 123);
         let buffer = build_mock_arp_packet(expected, ARP_LEN);
-        let frame = EthernetPacket::new(&buffer).expect("a frame");
+        let parsed = super::super::ethernet::parse(&buffer).expect("a frame");
 
         assert_eq!(
-            crate::protocols::source_address(&frame).expect("an ARP sender"),
+            crate::protocols::source_address(&parsed).expect("an ARP sender"),
             IpAddr::V4(expected)
         );
     }
@@ -233,10 +228,10 @@ mod tests {
     #[test]
     fn a_truncated_frame_credits_nobody() {
         let buffer = build_mock_arp_packet(Ipv4Addr::UNSPECIFIED, 10);
-        let frame = EthernetPacket::new(&buffer).expect("a frame");
+        let parsed = super::super::ethernet::parse(&buffer).expect("a frame");
 
         assert!(matches!(
-            crate::protocols::source_address(&frame),
+            crate::protocols::source_address(&parsed),
             Err(PacketError::Truncated { got: 10, .. })
         ));
     }
@@ -250,19 +245,19 @@ mod tests {
         MutableEthernetPacket::new(&mut buffer)
             .expect("a frame")
             .set_ethertype(EtherTypes::Ipv4);
-        let frame = EthernetPacket::new(&buffer).expect("a frame");
+        let parsed = super::super::ethernet::parse(&buffer).expect("a frame");
 
         // Ethertype IPv4 with twenty bytes behind it parses as an IPv4 header,
         // so this reads a source rather than refusing: the dispatcher covers
         // more than ARP.
-        assert!(crate::protocols::source_address(&frame).is_ok());
+        assert!(crate::protocols::source_address(&parsed).is_ok());
 
         MutableEthernetPacket::new(&mut buffer)
             .expect("a frame")
             .set_ethertype(pnet::packet::ethernet::EtherType(0x88cc));
-        let frame = EthernetPacket::new(&buffer).expect("a frame");
+        let parsed = super::super::ethernet::parse(&buffer).expect("a frame");
         assert!(matches!(
-            crate::protocols::source_address(&frame),
+            crate::protocols::source_address(&parsed),
             Err(PacketError::UnsupportedEtherType(0x88cc))
         ));
     }

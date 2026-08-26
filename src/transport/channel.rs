@@ -6,14 +6,43 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// use crate::adapters::outbound::terminal::print;
-use pnet::datalink;
-use pnet::datalink::{Channel, Config, DataLinkReceiver, DataLinkSender, NetworkInterface};
-use std::thread;
+//! # Sending and hearing whole frames on one segment
+//!
+//! What a local sweep holds: somewhere to put Ethernet frames, and the frames
+//! that arrived on the same link.
+//!
+//! ## The two halves come from different places, and should
+//!
+//! The send half is a `pnet` link-layer channel, because emitting a frame this
+//! crate built byte for byte is what it is for. The receive half is a
+//! [`capture`](crate::transport::capture), because everything that makes a
+//! receive path trustworthy lives there: a BPF filter the *kernel* applies, the
+//! counters saying what the kernel discarded anyway, and a stop flag every
+//! reader thread checks so that dropping the handle ends them.
+//!
+//! It was one channel doing both until this was split. That channel copied every
+//! frame on the segment into this process to throw nearly all of them away, could
+//! not say what it had lost, and its reader thread had no way to be told to stop.
+//! All three are properties of the receive side alone, and all three were already
+//! solved one module over.
+
+use pnet::datalink::{self, Channel, Config, DataLinkReceiver, DataLinkSender, NetworkInterface};
 use std::time::Duration;
-use tokio::sync::mpsc;
+
+use crate::model::capture::CaptureCounts;
+use crate::model::ip::scoped::Zone;
+use crate::transport::capture::{self, CaptureGuard, CaptureOptions, FrameStream};
 
 const READ_TIMEOUT_MS: u64 = 50;
+
+/// How many frames may wait for the consumer at once.
+///
+/// A sweep reads its queue inside the same loop that paces its probes, so a tick
+/// spent sending is a tick not spent receiving, and the queue is what covers
+/// that gap. Sized for a burst — every host on a `/24` answering an ARP sweep at
+/// once is a few hundred frames — rather than for a sustained rate, which the
+/// caller's filter is what keeps small.
+const QUEUE_DEPTH: usize = 1024;
 
 /// A live Ethernet channel: somewhere to put frames, and a stream of the frames
 /// that arrived.
@@ -23,16 +52,33 @@ const READ_TIMEOUT_MS: u64 = 50;
 /// not the same type. A probe transport carries Layer-4 segments with the link
 /// and IP headers already stripped, which is all the SYN and UDP scanners need.
 /// Local discovery needs the whole frame: it identifies a neighbour by the
-/// Ethernet source MAC, which a capture would have thrown away long before the
-/// segment reached it.
+/// Ethernet source MAC, and reads ARP, which has no Layer-4 segment to strip to.
 pub struct EthernetHandle {
     pub tx: Box<dyn DataLinkSender>,
-    pub rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    pub rx: FrameStream,
+    /// Keeps the capture thread alive for this handle's lifetime, and holds the
+    /// counters it publishes.
+    capture: CaptureGuard,
 }
 
 impl EthernetHandle {
+    /// What the receive path's kernel buffer has done so far.
+    ///
+    /// A sweep reports this alongside its own counters because the two answer
+    /// different halves of one question. The sweep knows how many replies it
+    /// saw; only this knows how many arrived and were discarded before it could.
+    /// A frame lost here is indistinguishable from a host that never answered,
+    /// which makes it the one loss a sweep has to be told about rather than left
+    /// to infer.
+    ///
+    /// `None` for a handle with no capture behind it, so a synthetic frame
+    /// stream never reports a clean receive path it never had.
+    pub fn capture_counts(&self) -> Option<CaptureCounts> {
+        self.capture.counts()
+    }
+
     /// Builds a handle over a caller-supplied sender and frame stream, opening
-    /// no channel and starting no listener thread.
+    /// no channel and starting no capture.
     ///
     /// The link-layer twin of
     /// [`ProbeTransport::from_parts`](crate::transport::probe::ProbeTransport::from_parts):
@@ -43,16 +89,20 @@ impl EthernetHandle {
     ///
     /// Requires the `test-support` feature outside this crate.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn from_parts(tx: Box<dyn DataLinkSender>, rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
-        Self { tx, rx }
+    pub fn from_parts(tx: Box<dyn DataLinkSender>, rx: FrameStream) -> Self {
+        Self {
+            tx,
+            rx,
+            capture: CaptureGuard::noop(),
+        }
     }
 }
 
 /// Why a link-layer channel could not be opened.
 ///
-/// Both variants name the interface, because a scan opens one channel per
-/// segment it means to sweep and "opening a channel failed" is not actionable
-/// without knowing which.
+/// The variants name the interface, because a scan opens one channel per segment
+/// it means to sweep and "opening a channel failed" is not actionable without
+/// knowing which.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
@@ -74,17 +124,67 @@ pub enum ChannelError {
         /// The interface in question.
         interface: String,
     },
+
+    /// The send half opened but nothing could be captured on the interface, so
+    /// probes would leave and no answer could ever be heard.
+    ///
+    /// Separate from [`Open`](Self::Open) because it fails for a different
+    /// reason and at a different layer: the link-layer channel is already
+    /// working by the time this happens.
+    #[error("nothing could be captured on {interface}, so no reply could be heard: {source}")]
+    NoCapture {
+        /// The interface in question.
+        interface: String,
+        /// What the capture layer said.
+        #[source]
+        source: capture::CaptureError,
+    },
 }
 
-pub fn start_capture(intf: &NetworkInterface) -> Result<EthernetHandle, ChannelError> {
+/// Opens both halves on one interface: a link-layer sender, and a capture of the
+/// frames that link carries which `filter` admits.
+///
+/// The capture is promiscuous, and `filter` is what narrows it — two halves of
+/// one decision, argued at
+/// [`CaptureOptions::for_link_traffic`](crate::transport::capture::CaptureOptions::for_link_traffic).
+///
+/// **The filter belongs to the caller**, because what a frame is worth is
+/// decided by whoever reads it. This module knows how to open a capture and
+/// nothing about ARP, neighbour discovery or DHCP; a filter written here would
+/// be a scanner's knowledge kept one layer below the scanner, and would go stale
+/// the first time a reader was added without anybody thinking to look down here.
+pub fn start_capture(
+    intf: &NetworkInterface,
+    filter: &str,
+) -> Result<EthernetHandle, ChannelError> {
     let cfg = Config {
         read_timeout: Some(Duration::from_millis(READ_TIMEOUT_MS)),
+        // The capture opened below is the receive path, and it is the one that
+        // decides whether the interface runs promiscuously. Asking for it here
+        // as well would leave two owners of one setting and no way to tell which
+        // of them a running interface reflects.
+        promiscuous: false,
         ..Default::default()
     };
-    let (tx, rx_socket) = open_eth_channel(intf, datalink::channel, cfg)?;
-    let (queue_tx, queue_rx) = mpsc::unbounded_channel();
-    spawn_eth_listener(queue_tx, rx_socket);
-    Ok(EthernetHandle { tx, rx: queue_rx })
+
+    // The receiving half of this channel is dropped: it is the path this module
+    // used to read frames through, and the capture below replaced it. `pnet`
+    // offers no send-only channel, so what it costs is one small kernel buffer
+    // per interface that nothing drains.
+    let (tx, _unused) = open_eth_channel(intf, datalink::channel, cfg)?;
+
+    let zone = Zone::new(intf.index, intf.name.clone());
+    let (rx, capture) = capture::frames(
+        std::slice::from_ref(&zone),
+        &CaptureOptions::for_link_traffic(filter),
+        QUEUE_DEPTH,
+    )
+    .map_err(|source| ChannelError::NoCapture {
+        interface: intf.name.clone(),
+        source,
+    })?;
+
+    Ok(EthernetHandle { tx, rx, capture })
 }
 
 /// The two halves of an open link-layer channel: somewhere to put frames, and
@@ -110,20 +210,4 @@ where
             interface: intf.name.clone(),
         }),
     }
-}
-
-pub fn spawn_eth_listener(
-    eth_tx: mpsc::UnboundedSender<Vec<u8>>,
-    eth_rx: Box<dyn DataLinkReceiver>,
-) {
-    thread::spawn(move || {
-        let mut eth_iter = eth_rx;
-        loop {
-            if let Ok(frame) = eth_iter.next()
-                && eth_tx.send(frame.to_vec()).is_err()
-            {
-                break;
-            }
-        }
-    });
 }

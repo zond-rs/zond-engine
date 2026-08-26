@@ -17,7 +17,9 @@
 
 use std::net::IpAddr;
 
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::ethernet::EtherTypes;
+
+use crate::protocols::ethernet::Frame;
 
 use crate::model::host::{NetworkRole, StatusProtocol};
 use crate::protocols::{dhcp, ip, ndp};
@@ -131,7 +133,7 @@ impl Reading {
 /// the scan) before a protocol ever sees the frame, so an implementation is a
 /// pure function of the bytes in front of it.
 pub trait DiscoveryProtocol: Send {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading>;
+    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading>;
 
     /// The evidence this protocol produces, for the liveness record of whichever
     /// host it claims a frame from.
@@ -140,6 +142,41 @@ pub trait DiscoveryProtocol: Send {
     /// inferring it from the frame, so a new discovery mechanism stays one more
     /// implementation in this module — the same reason `interpret` lives here.
     fn status_protocol(&self) -> StatusProtocol;
+
+    /// The `libpcap` filter clause admitting the frames this protocol reads.
+    ///
+    /// The sweep's capture narrows in the kernel, so a protocol whose traffic no
+    /// clause admits is never given a frame to interpret — and it fails that way
+    /// silently, since a protocol that is never called and a protocol that
+    /// recognises nothing look identical from the receive loop.
+    ///
+    /// Declared here, beside [`interpret`](Self::interpret), so that the two
+    /// cannot disagree: the sweep's whole filter is the union of these, so
+    /// adding an implementation widens the capture by the same edit that adds
+    /// the reader. Written the other way round — one filter maintained beside
+    /// the list — this module's promise that a new mechanism is one more
+    /// implementation *here* would quietly stop being true.
+    ///
+    /// A clause is a complete expression, combined with the others by `or`, so
+    /// it must parenthesise anything that would not survive that.
+    fn capture_clause(&self) -> &'static str;
+}
+
+/// Every protocol a local sweep reads, in the order it tries them against a
+/// frame.
+///
+/// The single list. It is read twice — once to build the scanner's own
+/// interpreters, and once to work out what its capture must admit — and both
+/// readings have to see the same protocols or the sweep listens for something
+/// other than what it can understand.
+pub fn sweep_protocols() -> Vec<Box<dyn DiscoveryProtocol>> {
+    vec![
+        Box::new(ArpProtocol),
+        Box::new(NdpProtocol),
+        Box::new(RouterAdvertProtocol),
+        Box::new(DhcpProtocol),
+        Box::new(Icmpv6EchoProtocol),
+    ]
 }
 
 /// Recognizes ARP replies as discovery responses.
@@ -152,8 +189,8 @@ pub trait DiscoveryProtocol: Send {
 pub struct ArpProtocol;
 
 impl DiscoveryProtocol for ArpProtocol {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
-        if frame.get_ethertype() != EtherTypes::Arp {
+    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
+        if frame.ethertype() != EtherTypes::Arp {
             return Ok(Reading::unhandled());
         }
 
@@ -162,6 +199,13 @@ impl DiscoveryProtocol for ArpProtocol {
 
     fn status_protocol(&self) -> StatusProtocol {
         StatusProtocol::Arp
+    }
+
+    /// Every ARP frame on the segment, requests included: an unsolicited request
+    /// or a gratuitous announcement proves its sender is there just as well as a
+    /// reply to this scan does.
+    fn capture_clause(&self) -> &'static str {
+        "arp"
     }
 }
 
@@ -181,7 +225,7 @@ impl DiscoveryProtocol for ArpProtocol {
 pub struct NdpProtocol;
 
 impl DiscoveryProtocol for NdpProtocol {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
+    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
         match ndp::advertisement(frame) {
             Some(advert) if is_assignable(advert.target) => {
                 let matched = ProtocolMatch::Solicited(Some(IpAddr::V6(advert.target)));
@@ -200,6 +244,12 @@ impl DiscoveryProtocol for NdpProtocol {
 
     fn status_protocol(&self) -> StatusProtocol {
         StatusProtocol::Ndp
+    }
+
+    /// See [`NdpProtocol::capture_clause`]: a router advertisement is ICMPv6,
+    /// and the clause that admits one admits all of them.
+    fn capture_clause(&self) -> &'static str {
+        "icmp6"
     }
 }
 
@@ -245,7 +295,7 @@ fn is_assignable(address: std::net::Ipv6Addr) -> bool {
 pub struct RouterAdvertProtocol;
 
 impl DiscoveryProtocol for RouterAdvertProtocol {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
+    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
         Ok(match ndp::is_router_advertisement(frame) {
             true => Reading::declaring(ProtocolMatch::Unsolicited, NetworkRole::Router),
             false => Reading::unhandled(),
@@ -254,6 +304,14 @@ impl DiscoveryProtocol for RouterAdvertProtocol {
 
     fn status_protocol(&self) -> StatusProtocol {
         StatusProtocol::Ndp
+    }
+
+    /// All of ICMPv6 rather than the two neighbour-discovery types, which BPF
+    /// cannot select without reading past a header whose length is not fixed.
+    /// The surplus is small — ICMPv6 on a segment is nearly all neighbour
+    /// discovery — and it is the same clause the other two IPv6 readers need.
+    fn capture_clause(&self) -> &'static str {
+        "icmp6"
     }
 }
 
@@ -275,7 +333,7 @@ impl DiscoveryProtocol for RouterAdvertProtocol {
 pub struct DhcpProtocol;
 
 impl DiscoveryProtocol for DhcpProtocol {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
+    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
         let Some(reply) = dhcp::server_reply(frame) else {
             return Ok(Reading::unhandled());
         };
@@ -293,6 +351,15 @@ impl DiscoveryProtocol for DhcpProtocol {
 
     fn status_protocol(&self) -> StatusProtocol {
         StatusProtocol::Dhcp
+    }
+
+    /// Both DHCP ports, though only a server's reply is read.
+    ///
+    /// Matching either direction rather than `src port 67` alone costs nothing
+    /// and leaves a reader that wants to see the request as well as the answer
+    /// something to work with, rather than a silence to debug.
+    fn capture_clause(&self) -> &'static str {
+        "(udp port 67 or udp port 68)"
     }
 }
 
@@ -320,8 +387,8 @@ impl DiscoveryProtocol for DhcpProtocol {
 pub struct Icmpv6EchoProtocol;
 
 impl DiscoveryProtocol for Icmpv6EchoProtocol {
-    fn interpret(&self, frame: &EthernetPacket) -> anyhow::Result<Reading> {
-        if frame.get_ethertype() != EtherTypes::Ipv6 {
+    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
+        if frame.ethertype() != EtherTypes::Ipv6 {
             return Ok(Reading::unhandled());
         }
 
@@ -346,6 +413,12 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
     fn status_protocol(&self) -> StatusProtocol {
         StatusProtocol::IcmpEcho
     }
+
+    /// See [`NdpProtocol::capture_clause`]. The all-nodes echo is answered over
+    /// ICMPv6 and needs no clause of its own.
+    fn capture_clause(&self) -> &'static str {
+        "icmp6"
+    }
 }
 
 // ╔════════════════════════════════════════════╗
@@ -358,7 +431,7 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
 // ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 
     /// A segment produced an advertisement naming `fe80::`, and the host that
     /// sent it was then credited with an address nothing can hold — which read
@@ -389,17 +462,21 @@ mod tests {
     use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    const LOCAL_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
-    const PEER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x02);
-    const ICMPV6_ECHO_LEN: usize = 8;
+    pub(crate) const LOCAL_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
+    pub(crate) const PEER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x02);
+    pub(crate) const ICMPV6_ECHO_LEN: usize = 8;
 
-    fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
+    pub(crate) fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
         arp::create_request(&PEER_MAC, &sender_ip, Ipv4Addr::new(10, 0, 0, 1))
     }
 
     /// An Ethernet-framed IPv6 packet to `destination`, carrying `body` as
     /// `protocol`.
-    fn ipv6_frame(destination: Ipv6Addr, protocol: IpNextHeaderProtocol, body: &[u8]) -> Vec<u8> {
+    pub(crate) fn ipv6_frame(
+        destination: Ipv6Addr,
+        protocol: IpNextHeaderProtocol,
+        body: &[u8],
+    ) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
         let eth_header = ethernet::create_header(
             PEER_MAC,
@@ -420,7 +497,11 @@ mod tests {
     /// The frame a neighbour actually sends back when it answers the all-nodes
     /// echo request, echoing the request's identifier and sequence as RFC 4443
     /// requires.
-    fn echo_reply_frame_with(destination: Ipv6Addr, identifier: u16, sequence: u16) -> Vec<u8> {
+    pub(crate) fn echo_reply_frame_with(
+        destination: Ipv6Addr,
+        identifier: u16,
+        sequence: u16,
+    ) -> Vec<u8> {
         let mut body = vec![0u8; ICMPV6_ECHO_LEN];
         {
             let mut echo = MutableEchoReplyPacket::new(&mut body).expect("echo reply buffer");
@@ -432,12 +513,12 @@ mod tests {
         ipv6_frame(destination, IpNextHeaderProtocols::Icmpv6, &body)
     }
 
-    fn echo_reply_frame(destination: Ipv6Addr) -> Vec<u8> {
+    pub(crate) fn echo_reply_frame(destination: Ipv6Addr) -> Vec<u8> {
         echo_reply_frame_with(destination, 0, 0)
     }
 
     /// A neighbor solicitation body: ICMPv6, but not an answer to our probe.
-    fn neighbor_solicitation_body() -> Vec<u8> {
+    pub(crate) fn neighbor_solicitation_body() -> Vec<u8> {
         let mut body = vec![0u8; MutableIcmpv6Packet::minimum_packet_size() + 20];
         {
             let mut icmp = MutableIcmpv6Packet::new(&mut body).expect("icmpv6 buffer");
@@ -449,7 +530,7 @@ mod tests {
     #[test]
     fn arp_protocol_ignores_non_arp_frames() {
         let frame_bytes = echo_reply_frame(Ipv6Addr::LOCALHOST);
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         let result = ArpProtocol.interpret(&frame);
 
@@ -461,7 +542,7 @@ mod tests {
     #[test]
     fn arp_protocol_claims_arp_frames_as_solicited() {
         let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 168, 1, 50));
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         let result = ArpProtocol.interpret(&frame).unwrap();
 
@@ -471,7 +552,7 @@ mod tests {
     #[test]
     fn icmpv6_protocol_ignores_non_ipv6_frames() {
         let frame_bytes = arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2));
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         let result = Icmpv6EchoProtocol.interpret(&frame);
 
@@ -481,7 +562,7 @@ mod tests {
     #[test]
     fn icmpv6_protocol_ignores_traffic_not_addressed_to_a_link_local_unicast() {
         let frame_bytes = echo_reply_frame(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)); // multicast
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         let result = Icmpv6EchoProtocol.interpret(&frame);
 
@@ -494,7 +575,7 @@ mod tests {
     #[test]
     fn icmpv6_protocol_claims_an_echo_reply_for_the_all_nodes_probe() {
         let frame_bytes = echo_reply_frame(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         for _ in 0..2 {
             let result = Icmpv6EchoProtocol.interpret(&frame).unwrap();
@@ -514,7 +595,7 @@ mod tests {
     fn icmpv6_protocol_carries_the_echoed_token_back() {
         let frame_bytes =
             echo_reply_frame_with(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 0x5ac5, 2);
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         let result = Icmpv6EchoProtocol.interpret(&frame).unwrap();
 
@@ -551,7 +632,7 @@ mod tests {
             // An IPv6 header with nothing behind it at all.
             ipv6_frame(link_local, IpNextHeaderProtocols::Icmpv6, &[]),
         ] {
-            let frame = EthernetPacket::new(&frame_bytes).unwrap();
+            let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
             assert!(matches!(
                 Icmpv6EchoProtocol.interpret(&frame).unwrap().matched,
                 ProtocolMatch::Unhandled
@@ -561,7 +642,7 @@ mod tests {
 
     /// A frame carrying a neighbour discovery message, which is the one kind of
     /// traffic that must arrive with a hop limit of 255 to be believed.
-    fn ndp_frame(body: &[u8]) -> Vec<u8> {
+    pub(crate) fn ndp_frame(body: &[u8]) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
         let eth_header = ethernet::create_header(
             PEER_MAC,
@@ -581,7 +662,7 @@ mod tests {
 
     /// A neighbour advertisement for `target`, with the flag byte a real one
     /// carries.
-    fn advertisement_body(target: Ipv6Addr, flags: u8) -> Vec<u8> {
+    pub(crate) fn advertisement_body(target: Ipv6Addr, flags: u8) -> Vec<u8> {
         let mut body = vec![0u8; 24];
         {
             let mut advert = pnet::packet::icmpv6::ndp::MutableNeighborAdvertPacket::new(&mut body)
@@ -604,7 +685,7 @@ mod tests {
 
         for (flags, declared) in [(0b1000_0000, Some(NetworkRole::Router)), (0, None)] {
             let frame_bytes = ndp_frame(&advertisement_body(target, flags));
-            let frame = EthernetPacket::new(&frame_bytes).unwrap();
+            let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
             let reading = NdpProtocol.interpret(&frame).unwrap();
 
@@ -624,7 +705,7 @@ mod tests {
         let mut body = vec![0u8; 16];
         body[0] = Icmpv6Types::RouterAdvert.0;
         let frame_bytes = ndp_frame(&body);
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
 
         let reading = RouterAdvertProtocol.interpret(&frame).unwrap();
 
@@ -637,7 +718,7 @@ mod tests {
             Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA),
             0b1000_0000,
         ));
-        let frame = EthernetPacket::new(&neighbour).unwrap();
+        let frame = crate::protocols::ethernet::parse(&neighbour).unwrap();
         assert!(matches!(
             RouterAdvertProtocol.interpret(&frame).unwrap().matched,
             ProtocolMatch::Unhandled
@@ -658,7 +739,7 @@ mod tests {
         let server = Ipv4Addr::new(192, 168, 1, 1);
 
         let itself = dhcp_reply_frame(server, Some(server));
-        let frame = EthernetPacket::new(&itself).unwrap();
+        let frame = crate::protocols::ethernet::parse(&itself).unwrap();
         let reading = DhcpProtocol.interpret(&frame).unwrap();
         assert!(matches!(reading.matched, ProtocolMatch::Unsolicited));
         assert_eq!(reading.declared, Some(NetworkRole::DhcpServer));
@@ -666,7 +747,7 @@ mod tests {
         // The same message forwarded by a relay, which is where the address in
         // the packet and the address in the message part company.
         let relayed = dhcp_reply_frame(server, Some(Ipv4Addr::new(10, 0, 0, 254)));
-        let frame = EthernetPacket::new(&relayed).unwrap();
+        let frame = crate::protocols::ethernet::parse(&relayed).unwrap();
         let reading = DhcpProtocol.interpret(&frame).unwrap();
         assert!(matches!(reading.matched, ProtocolMatch::Unsolicited));
         assert_eq!(
@@ -676,7 +757,7 @@ mod tests {
 
         // A client's own broadcast, which every machine on the segment sends.
         let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 168, 1, 20));
-        let frame = EthernetPacket::new(&frame_bytes).unwrap();
+        let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
         assert!(matches!(
             DhcpProtocol.interpret(&frame).unwrap().matched,
             ProtocolMatch::Unhandled
@@ -685,7 +766,7 @@ mod tests {
 
     /// A DHCP acknowledgement sent from `from`, naming `server_id` as the
     /// server.
-    fn dhcp_reply_frame(server_id: Ipv4Addr, from: Option<Ipv4Addr>) -> Vec<u8> {
+    pub(crate) fn dhcp_reply_frame(server_id: Ipv4Addr, from: Option<Ipv4Addr>) -> Vec<u8> {
         const BOOTREPLY: u8 = 2;
         const FIXED_LEN: usize = 236;
 
@@ -706,6 +787,35 @@ mod tests {
             .push(
                 crate::protocols::craft::Udp::new(dhcp::SERVER_PORT, dhcp::CLIENT_PORT)
                     .with_payload(message),
+            )
+            .build()
+            .expect("a test datagram");
+
+        [
+            ethernet::create_header(
+                PEER_MAC,
+                LOCAL_MAC,
+                pnet::packet::ethernet::EtherTypes::Ipv4,
+            ),
+            datagram,
+        ]
+        .concat()
+    }
+
+    /// An mDNS response as it arrives on the segment: UDP from port 5353, which
+    /// is the only thing `absorb_mdns` matches on.
+    pub(crate) fn mdns_frame() -> Vec<u8> {
+        let datagram = crate::protocols::craft::Packet::new()
+            .push(crate::protocols::craft::Ipv4::new(
+                Ipv4Addr::new(192, 168, 1, 50),
+                Ipv4Addr::new(224, 0, 0, 251),
+            ))
+            .push(
+                crate::protocols::craft::Udp::new(
+                    crate::protocols::mdns::PORT,
+                    crate::protocols::mdns::PORT,
+                )
+                .with_payload(vec![0u8; 12]),
             )
             .build()
             .expect("a test datagram");

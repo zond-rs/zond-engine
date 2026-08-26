@@ -33,9 +33,10 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use crate::protocols::craft;
 use crate::protocols::error::{PacketError, Result};
+use crate::protocols::ethernet::Frame;
 use crate::protocols::sizes::{IP_V4_HDR_LEN, IP_V6_HDR_LEN, UDP_HDR_LEN};
 use pnet::packet::Packet;
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::ethernet::EtherTypes;
 use pnet::packet::icmpv6::echo_reply::EchoReplyPacket;
 use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Type, Icmpv6Types};
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
@@ -137,7 +138,7 @@ pub fn create_ipv6_header(
 ///
 /// [`PacketError::Truncated`] when the frame carries too few bytes for a
 /// header.
-pub fn ipv6_source(frame: &EthernetPacket) -> Result<Ipv6Addr> {
+pub fn ipv6_source(frame: &Frame<'_>) -> Result<Ipv6Addr> {
     Ok(ipv6_packet(frame)?.get_source())
 }
 
@@ -147,12 +148,12 @@ pub fn ipv6_source(frame: &EthernetPacket) -> Result<Ipv6Addr> {
 ///
 /// [`PacketError::Truncated`] when the frame carries too few bytes for a
 /// header.
-pub fn ipv6_destination(frame: &EthernetPacket) -> Result<Ipv6Addr> {
+pub fn ipv6_destination(frame: &Frame<'_>) -> Result<Ipv6Addr> {
     Ok(ipv6_packet(frame)?.get_destination())
 }
 
 /// The IPv6 packet inside `frame`, or why it could not be read.
-fn ipv6_packet<'a>(frame: &'a EthernetPacket<'a>) -> Result<Ipv6Packet<'a>> {
+fn ipv6_packet<'a>(frame: &Frame<'a>) -> Result<Ipv6Packet<'a>> {
     Ipv6Packet::new(frame.payload()).ok_or_else(|| {
         PacketError::truncated("an IPv6 packet", IP_V6_HDR_LEN, frame.payload().len())
     })
@@ -166,7 +167,7 @@ fn ipv6_packet<'a>(frame: &'a EthernetPacket<'a>) -> Result<Ipv6Packet<'a>> {
 /// direction to be wrong in for a discovery check - it declines to credit a
 /// frame it cannot read rather than guessing at its type - and the probes this
 /// interprets replies to elicit no extension headers.
-pub fn icmpv6_type(frame: &EthernetPacket) -> Option<Icmpv6Type> {
+pub fn icmpv6_type(frame: &Frame<'_>) -> Option<Icmpv6Type> {
     let packet = Ipv6Packet::new(frame.payload())?;
     if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
         return None;
@@ -182,7 +183,7 @@ pub fn icmpv6_type(frame: &EthernetPacket) -> Option<Icmpv6Type> {
 /// which is what lets a scanner recognize the answer to a particular probe of
 /// its own. Without them an echo reply proves only that its sender exists;
 /// with them it also says when the question was asked.
-pub fn icmpv6_echo_token(frame: &EthernetPacket) -> Option<(u16, u16)> {
+pub fn icmpv6_echo_token(frame: &Frame<'_>) -> Option<(u16, u16)> {
     let packet = Ipv6Packet::new(frame.payload())?;
     if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
         return None;
@@ -204,12 +205,12 @@ pub fn icmpv6_echo_token(frame: &EthernetPacket) -> Option<(u16, u16)> {
 /// fragments — both the same conservative direction as
 /// [`icmpv6_type`]: a frame that cannot be read plainly is declined
 /// rather than guessed at.
-pub fn udp_payload<'a>(frame: &'a EthernetPacket<'a>, port: u16) -> Option<&'a [u8]> {
+pub fn udp_payload<'a>(frame: &Frame<'a>, port: u16) -> Option<&'a [u8]> {
     let packet = frame.payload();
 
     // Offsets rather than `packet.payload()`, because a pnet view owns the
     // slice it hands back and the caller needs one borrowed from the frame.
-    let (header_len, next) = match frame.get_ethertype() {
+    let (header_len, next) = match frame.ethertype() {
         EtherTypes::Ipv6 => (IP_V6_HDR_LEN, Ipv6Packet::new(packet)?.get_next_header()),
         EtherTypes::Ipv4 => {
             let ipv4 = Ipv4Packet::new(packet)?;
@@ -239,7 +240,7 @@ pub fn udp_payload<'a>(frame: &'a EthernetPacket<'a>, port: u16) -> Option<&'a [
 ///
 /// [`PacketError::Truncated`] when the frame carries too few bytes for a
 /// header.
-pub fn ipv4_source(frame: &EthernetPacket) -> Result<Ipv4Addr> {
+pub fn ipv4_source(frame: &Frame<'_>) -> Result<Ipv4Addr> {
     let ipv4_packet = Ipv4Packet::new(frame.payload()).ok_or_else(|| {
         PacketError::truncated("an IPv4 packet", IP_V4_HDR_LEN, frame.payload().len())
     })?;

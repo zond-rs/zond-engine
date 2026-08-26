@@ -396,6 +396,62 @@ fn a_redacted_comparison_masks_what_a_redacted_report_masks() {
     );
 }
 
+/// A phase carried nothing worth masking until it began carrying an
+/// attachment, which names a device and its hardware address.
+///
+/// Neither is less identifying for describing a switch rather than a
+/// workstation — a switch name is an internal hostname and a chassis address is
+/// a real MAC — and both sit outside the `hosts` array, where every existing
+/// redaction test was looking. The JSON Lines writer is checked alongside
+/// because it renders the header through a different type, and a policy applied
+/// to one document and not the other is the shape this failure takes.
+#[test]
+fn redaction_masks_the_switch_a_phase_says_it_was_plugged_into() {
+    let report = fixture::report();
+    let options = ExportOptions::new().with_redaction(Redaction::Standard);
+
+    let attachment = report.phases()[0]
+        .attachments()
+        .first()
+        .expect("the fixture records one");
+    let name = attachment.device_name().expect("a device name");
+    let mac = attachment
+        .device_mac()
+        .expect("a device address")
+        .to_string();
+
+    let mut json = Vec::new();
+    JsonExporter::new(options.clone())
+        .export(&report, &mut json)
+        .expect("the report exports");
+    let json = String::from_utf8(json).expect("valid UTF-8");
+
+    assert!(
+        !json.contains(name),
+        "the switch's name survived redaction: {json}"
+    );
+    assert!(
+        !json.contains(&mac),
+        "the switch's hardware address survived redaction"
+    );
+    assert!(
+        json.contains("GigabitEthernet1/0/14"),
+        "the port is not a name or an address and is what the finding is for"
+    );
+
+    let mut lines = Vec::new();
+    crate::export::JsonLinesExporter::new(options)
+        .export(&report, &mut lines)
+        .expect("the report exports");
+    let lines = String::from_utf8(lines).expect("valid UTF-8");
+
+    assert!(
+        !lines.contains(name) && !lines.contains(&mac),
+        "the header of a record-per-line document leaked what the single \
+         document masked"
+    );
+}
+
 /// Every token the change vocabulary can emit is a value the published schema
 /// accepts.
 ///

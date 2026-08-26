@@ -72,6 +72,7 @@ use crate::model::host::{Host, HostStatus};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::IpSet;
+use crate::model::mac::MacAddr;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::model::technique::TcpScanTechnique;
@@ -94,6 +95,13 @@ pub enum ScanKind {
     Discovery,
     /// Classifying the ports of a known set of hosts.
     PortScan,
+    /// Reading what a link already carries, having sent nothing.
+    ///
+    /// Unlike the other two, this phase covers no address — see
+    /// [`TargetScope::listening_on`]. It can raise a claim and never lower one:
+    /// having sent nothing, it cannot have timed anything out, so silence from
+    /// an address proves nothing about it.
+    Listen,
 }
 
 impl fmt::Display for ScanKind {
@@ -101,6 +109,7 @@ impl fmt::Display for ScanKind {
         match self {
             ScanKind::Discovery => write!(f, "discovery"),
             ScanKind::PortScan => write!(f, "port scan"),
+            ScanKind::Listen => write!(f, "listen"),
         }
     }
 }
@@ -233,6 +242,19 @@ impl PortScope {
 pub struct TargetScope {
     ranges: Vec<IpRange>,
     links: Vec<Zone>,
+    /// Links whose traffic was read without anything being sent to them.
+    ///
+    /// Deliberately not [`links`](Self::links), which means *swept* — a probe
+    /// went out that everything on the link was obliged to answer, so a host
+    /// there and not in the report is a host that was not there. Nothing of the
+    /// kind follows from having listened: a machine that said nothing during
+    /// the window is indistinguishable from one that is absent, and there is no
+    /// experiment that separates them.
+    ///
+    /// Recorded because a reader still wants to know where a phase was
+    /// standing. It never contributes to coverage, which is what keeps a quiet
+    /// host from reading as one that went away.
+    listened: Vec<Zone>,
     addresses: u128,
     probes: Option<u128>,
     ports: PortScope,
@@ -264,6 +286,7 @@ impl TargetScope {
         let addresses = ips.len();
 
         Self {
+            listened: Vec::new(),
             ranges,
             links: Vec::new(),
             addresses,
@@ -272,6 +295,35 @@ impl TargetScope {
             protocols: Vec::new(),
             excluded: exclusions.ranges(),
             withheld,
+        }
+    }
+
+    /// The scope of a phase that sent nothing and read what `links` carried.
+    ///
+    /// **Covers no address, and says so.** A listener did not probe, so it
+    /// cannot have timed anything out, so there is no address it can report as
+    /// empty. The count is zero and the ranges are none — which is not a
+    /// missing measurement but the honest one, and it is what stops a
+    /// comparison reading a host that stayed quiet as a host that disappeared.
+    ///
+    /// The links are recorded as [`listened`](Self::listened) rather than as
+    /// [`links`](Self::links), and the distinction is the whole of the above.
+    ///
+    /// `exclusions` is recorded so the report still shows the policy a passive
+    /// phase was run under — it withholds nothing here, because nothing was
+    /// enumerated for it to withhold, and it is enforced where it matters at
+    /// the point findings are recorded.
+    pub fn listening_on(links: Vec<Zone>, exclusions: &Exclusions) -> Self {
+        Self {
+            ranges: Vec::new(),
+            links: Vec::new(),
+            listened: links,
+            addresses: 0,
+            probes: None,
+            ports: PortScope::NoPorts,
+            protocols: Vec::new(),
+            excluded: exclusions.ranges(),
+            withheld: 0,
         }
     }
 
@@ -307,6 +359,7 @@ impl TargetScope {
         let ports = PortScope::of(targets.units.iter().map(TargetSet::ports));
 
         Self {
+            listened: Vec::new(),
             ranges,
             links: Vec::new(),
             addresses,
@@ -356,6 +409,14 @@ impl TargetScope {
     /// every sweep of a routed range.
     pub fn links(&self) -> &[Zone] {
         &self.links
+    }
+
+    /// The links this phase read traffic from without probing them.
+    ///
+    /// Never coverage. See the field's own documentation, and
+    /// [`listening_on`](Self::listening_on).
+    pub fn listened(&self) -> &[Zone] {
+        &self.listened
     }
 
     /// Whether this phase swept the link a host was found on.
@@ -837,6 +898,8 @@ pub struct ScopeParts {
     pub ranges: Vec<IpRange>,
     /// The links swept whole, by the interface each is on.
     pub links: Vec<Zone>,
+    /// The links read from without being probed, which are never coverage.
+    pub listened: Vec<Zone>,
     /// How many distinct addresses those ranges hold.
     pub addresses: u128,
     /// How many probes the scope implies, where ports were known.
@@ -859,6 +922,7 @@ impl TargetScope {
     /// computed, and this restores the result rather than repeating the work.
     pub fn from_parts(parts: ScopeParts) -> Self {
         Self {
+            listened: parts.listened,
             ranges: parts.ranges,
             links: parts.links,
             addresses: parts.addresses,
@@ -933,6 +997,150 @@ impl ProbeStats {
             found_at: parts.found_at,
             capture: parts.capture,
         }
+    }
+}
+
+/// Which switch port the machine running a phase was plugged into.
+///
+/// Not a finding about any host in the report — a relation between *this*
+/// machine and somebody else's equipment, learned from an announcement the
+/// equipment sends unprompted (see [`crate::protocols::lldp`] and
+/// [`crate::protocols::cdp`]). No probe obtains it, and nothing else in a scan
+/// answers the question it answers: **where, physically, was this run from.**
+///
+/// # Why it hangs on the phase
+///
+/// For the reason [`Origin`] does. A [`merge`](crate::merge) folds phases
+/// measured from several vantage points into one report, and each of them ran
+/// somewhere different. Recorded once for the whole report, two machines'
+/// attachments would have to be arbitrated — a contest with no right answer,
+/// since both are true. On the phase, each keeps the vantage it was actually
+/// observed from and nothing has to be decided.
+///
+/// A phase may carry several: one per link it captured on, and another whenever
+/// the answer changed while it ran, which for a listener running for days is a
+/// cable somebody moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    link: Zone,
+    source: AttachmentSource,
+    device_mac: Option<MacAddr>,
+    device_name: Option<String>,
+    port: Option<String>,
+    native_vlan: Option<u16>,
+    management: Option<IpAddr>,
+    observed_at: SystemTime,
+}
+
+/// Which protocol an [`Attachment`] was read from.
+///
+/// Carried because the two do not cover the same ground: Cisco equipment runs
+/// CDP by default and LLDP only when somebody enables it, so a network that
+/// answers on one and not the other is saying something about what it is made
+/// of. It is also the honest answer to "why does this say VLAN 40" — the two
+/// protocols carry that field in different places and not every device sends
+/// either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AttachmentSource {
+    /// IEEE 802.1AB, which anything may speak.
+    Lldp,
+    /// Cisco Discovery Protocol.
+    Cdp,
+}
+
+impl Attachment {
+    /// An attachment on `link`, read from `source`, with nothing established
+    /// about it yet.
+    pub fn new(link: Zone, source: AttachmentSource, observed_at: SystemTime) -> Self {
+        Self {
+            link,
+            source,
+            device_mac: None,
+            device_name: None,
+            port: None,
+            native_vlan: None,
+            management: None,
+            observed_at,
+        }
+    }
+
+    /// Names the device by the hardware address it identified its chassis with.
+    ///
+    /// The field worth having above the name: it is what ties this attachment to
+    /// a [`Host`] elsewhere in the same report, where a name is a string two
+    /// devices may share.
+    pub fn with_device_mac(mut self, mac: MacAddr) -> Self {
+        self.device_mac = Some(mac);
+        self
+    }
+
+    /// Names the device as it names itself.
+    pub fn with_device_name(mut self, name: impl Into<String>) -> Self {
+        self.device_name = Some(name.into());
+        self
+    }
+
+    /// Names the port, as the device calls it in its own configuration.
+    pub fn with_port(mut self, port: impl Into<String>) -> Self {
+        self.port = Some(port.into());
+        self
+    }
+
+    /// Records the VLAN untagged traffic on this port lands in.
+    pub fn with_native_vlan(mut self, vlan: u16) -> Self {
+        self.native_vlan = Some(vlan);
+        self
+    }
+
+    /// Records an address the device is managed at.
+    pub fn with_management_address(mut self, address: IpAddr) -> Self {
+        self.management = Some(address);
+        self
+    }
+
+    /// Which of this machine's interfaces the announcement arrived on.
+    pub fn link(&self) -> &Zone {
+        &self.link
+    }
+
+    /// Which protocol said so.
+    pub fn source(&self) -> AttachmentSource {
+        self.source
+    }
+
+    /// The hardware address the device identified its chassis with.
+    pub fn device_mac(&self) -> Option<MacAddr> {
+        self.device_mac
+    }
+
+    /// What the device calls itself, which on managed equipment is its
+    /// hostname.
+    pub fn device_name(&self) -> Option<&str> {
+        self.device_name.as_deref()
+    }
+
+    /// What the device calls the port this machine is plugged into.
+    pub fn port(&self) -> Option<&str> {
+        self.port.as_deref()
+    }
+
+    /// The VLAN untagged traffic on this port lands in, where the device said.
+    pub fn native_vlan(&self) -> Option<u16> {
+        self.native_vlan
+    }
+
+    /// An address the device is managed at, where it advertised one.
+    pub fn management_address(&self) -> Option<IpAddr> {
+        self.management
+    }
+
+    /// When the announcement this was read from arrived.
+    ///
+    /// Worth recording separately from the phase's own span, because a phase
+    /// that runs for days may see the answer change — which is somebody moving
+    /// a cable, and is only legible if the two answers can be ordered.
+    pub fn observed_at(&self) -> SystemTime {
+        self.observed_at
     }
 }
 
@@ -1014,6 +1222,8 @@ pub struct PhaseParts {
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
     pub origin: Option<Origin>,
+    /// Which switch ports the machine running the phase was plugged into.
+    pub attachments: Vec<Attachment>,
 }
 
 impl ScanPhase {
@@ -1035,6 +1245,7 @@ impl ScanPhase {
             unroutable: parts.unroutable,
             probes: parts.probes,
             origin: parts.origin,
+            attachments: parts.attachments,
         }
     }
 
@@ -1068,6 +1279,8 @@ pub struct ScanPhase {
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<Origin>,
+    /// Which switch ports the machine running this phase was plugged into.
+    attachments: Vec<Attachment>,
 }
 
 impl ScanPhase {
@@ -1075,6 +1288,17 @@ impl ScanPhase {
     /// from elsewhere. `None` for a phase this process measured.
     pub fn origin(&self) -> Option<&Origin> {
         self.origin.as_ref()
+    }
+
+    /// Where the machine running this phase was plugged in, as the equipment on
+    /// the far end of the cable announced itself.
+    ///
+    /// Empty for a phase that heard no such announcement, which is every phase
+    /// on an unmanaged network and every phase this engine ran before it
+    /// learned to listen for one. Never a claim that the machine is attached to
+    /// nothing.
+    pub fn attachments(&self) -> &[Attachment] {
+        &self.attachments
     }
 
     /// Which entry point this phase records.
@@ -1252,6 +1476,7 @@ impl PhaseRecorder {
             // This process measured it, so it needs no attribution: the
             // report's own is the phase's.
             origin: None,
+            attachments: ctx.take_attachments(),
         };
 
         let hosts = ctx.store.iter().map(|entry| entry.value().clone());
@@ -1802,6 +2027,7 @@ mod tests {
 
     fn phase(kind: ScanKind) -> ScanPhase {
         ScanPhase {
+            attachments: Vec::new(),
             kind,
             started_at: SystemTime::UNIX_EPOCH,
             elapsed: Duration::from_millis(500),

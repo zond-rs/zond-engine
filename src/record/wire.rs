@@ -38,7 +38,7 @@ use crate::fingerprint::os::OsSource;
 use crate::model::host::{HostStatus, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
-use crate::scanner::report::{PortScope, ScanKind, StopReason};
+use crate::scanner::report::{AttachmentSource, PortScope, ScanKind, StopReason};
 use crate::scanner::session::ScannerKind;
 
 /// The prefix that marks a name a strategy supplied rather than one this engine
@@ -116,6 +116,7 @@ pub fn network_role_name(role: NetworkRole) -> &'static str {
         NetworkRole::DhcpServer => "dhcp",
         NetworkRole::NtpServer => "ntp",
         NetworkRole::SnmpAgent => "snmp",
+        NetworkRole::Switch => "switch",
         NetworkRole::Origin => "origin",
         NetworkRole::Tarpit => "tarpit",
         NetworkRole::Truncated => "truncated",
@@ -130,6 +131,7 @@ pub fn network_role(name: &str) -> Option<NetworkRole> {
         "dhcp" => NetworkRole::DhcpServer,
         "ntp" => NetworkRole::NtpServer,
         "snmp" => NetworkRole::SnmpAgent,
+        "switch" => NetworkRole::Switch,
         "origin" => NetworkRole::Origin,
         "tarpit" => NetworkRole::Tarpit,
         "truncated" => NetworkRole::Truncated,
@@ -228,11 +230,30 @@ pub fn os_source(name: &str) -> Option<OsSource> {
     })
 }
 
-/// Which entry point a phase recorded.
+/// Which protocol an attachment was read from.
+pub fn attachment_source_name(source: AttachmentSource) -> &'static str {
+    match source {
+        AttachmentSource::Lldp => "lldp",
+        AttachmentSource::Cdp => "cdp",
+    }
+}
+
+/// The [`AttachmentSource`] a wire name spells, or `None` for one this build
+/// does not know.
+pub fn attachment_source(name: &str) -> Option<AttachmentSource> {
+    Some(match name {
+        "lldp" => AttachmentSource::Lldp,
+        "cdp" => AttachmentSource::Cdp,
+        _ => return None,
+    })
+}
+
+/// The wire name for a scan kind.
 pub fn scan_kind_name(kind: ScanKind) -> &'static str {
     match kind {
         ScanKind::Discovery => "discovery",
         ScanKind::PortScan => "port_scan",
+        ScanKind::Listen => "listen",
     }
 }
 
@@ -241,6 +262,7 @@ pub fn scan_kind(name: &str) -> Option<ScanKind> {
     Some(match name {
         "discovery" => ScanKind::Discovery,
         "port_scan" => ScanKind::PortScan,
+        "listen" => ScanKind::Listen,
         _ => return None,
     })
 }
@@ -249,6 +271,7 @@ pub fn scan_kind(name: &str) -> Option<ScanKind> {
 pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
     match kind {
         ScannerKind::Local => "local",
+        ScannerKind::Passive => "passive",
         ScannerKind::Routed => "routed",
         ScannerKind::SynPort => "syn_port",
         ScannerKind::TcpPort => "tcp_port",
@@ -266,6 +289,7 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
 pub fn scanner_kind(name: &str) -> Option<ScannerKind> {
     Some(match name {
         "local" => ScannerKind::Local,
+        "passive" => ScannerKind::Passive,
         "routed" => ScannerKind::Routed,
         "syn_port" => ScannerKind::SynPort,
         "tcp_port" => ScannerKind::TcpPort,
@@ -376,12 +400,20 @@ mod tests {
             assert_eq!(port_state(port_state_name(value)), Some(value));
         }
 
-        for value in [ScanKind::Discovery, ScanKind::PortScan] {
+        for value in [ScanKind::Discovery, ScanKind::PortScan, ScanKind::Listen] {
             assert_eq!(scan_kind(scan_kind_name(value)), Some(value));
+        }
+
+        for value in [AttachmentSource::Lldp, AttachmentSource::Cdp] {
+            assert_eq!(
+                attachment_source(attachment_source_name(value)),
+                Some(value)
+            );
         }
 
         for value in [
             ScannerKind::Local,
+            ScannerKind::Passive,
             ScannerKind::Routed,
             ScannerKind::SynPort,
             ScannerKind::TcpPort,

@@ -366,6 +366,10 @@ impl PhaseDto {
         known(wire::scan_kind(&self.kind), "a scan phase", &self.kind)?;
 
         Ok(PhaseRecord {
+            // Not read back: a phase somebody else's document describes was
+            // not run from this machine, so where it was plugged in is not
+            // something the reader can learn or has any business inventing.
+            attachments: Vec::new(),
             kind: self.kind,
             started_at: timestamp(&self.started_at)?,
             elapsed: micros(self.elapsed_us),
@@ -400,6 +404,8 @@ impl PhaseDto {
 struct ScopeDto {
     ranges: Vec<RangeDto>,
     links: Vec<String>,
+    #[serde(default)]
+    listened: Vec<String>,
     addresses: String,
     probes: Option<String>,
     ports: Option<PortScopeDto>,
@@ -422,6 +428,11 @@ impl ScopeDto {
                 .collect::<Result<_, _>>()?,
             // The document carries the interface name and not its index, which
             // is what an unresolved zone is: a name nothing has looked up yet.
+            listened: self
+                .listened
+                .into_iter()
+                .map(|name| crate::record::ZoneRecord { index: None, name })
+                .collect(),
             links: self
                 .links
                 .into_iter()

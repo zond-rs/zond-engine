@@ -94,7 +94,7 @@ impl JsonLinesExporter {
 
 impl Exporter for JsonLinesExporter {
     fn export(&self, report: &ScanReport, out: &mut dyn Write) -> Result<(), ExportError> {
-        let header = ReportHeaderDto::new(report);
+        let header = ReportHeaderDto::new(report, &self.options);
         write_line(out, &tagged(REPORT_RECORD, &header))?;
 
         // One host is rendered, written and dropped before the next is built,

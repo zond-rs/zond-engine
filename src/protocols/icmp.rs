@@ -319,7 +319,6 @@ pub fn create_echo_request(
 mod tests {
     use super::*;
     use pnet::packet::Packet as _;
-    use pnet::packet::ethernet::EthernetPacket;
     use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
     use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Types};
     use pnet::packet::ipv4::Ipv4Packet;
@@ -341,9 +340,9 @@ mod tests {
     fn the_all_nodes_request_is_addressed_to_the_whole_segment_and_stays_on_it() {
         let frame = create_all_nodes_echo_request_v6(&SRC_MAC, &v6("fe80::1"), ID, SEQ);
 
-        let eth = EthernetPacket::new(&frame).expect("a frame");
-        assert_eq!(eth.get_destination(), ALL_NODES_MAC);
-        assert_eq!(eth.get_ethertype(), EtherTypes::Ipv6);
+        let eth = super::super::ethernet::parse(&frame).expect("a frame");
+        assert_eq!(eth.destination(), ALL_NODES_MAC);
+        assert_eq!(eth.ethertype(), EtherTypes::Ipv6);
 
         let ip = Ipv6Packet::new(eth.payload()).expect("an IPv6 header");
         assert_eq!(ip.get_destination(), ALL_NODES_V6);
@@ -372,8 +371,8 @@ mod tests {
             SEQ,
         );
 
-        let eth = EthernetPacket::new(&frame).expect("a frame");
-        assert_eq!(eth.get_ethertype(), EtherTypes::Ipv4);
+        let eth = super::super::ethernet::parse(&frame).expect("a frame");
+        assert_eq!(eth.ethertype(), EtherTypes::Ipv4);
 
         let ip = Ipv4Packet::new(eth.payload()).expect("an IPv4 header");
         assert_eq!(
@@ -401,7 +400,7 @@ mod tests {
             ID,
             SEQ,
         );
-        let v4_message = &v4[EthernetPacket::minimum_packet_size() + 20..];
+        let v4_message = &v4[crate::protocols::sizes::ETH_HDR_LEN + 20..];
         assert_eq!(echo_token(v4_message).expect("a token"), (ID, SEQ));
 
         let v6_frame = create_echo_request_v6(
@@ -413,7 +412,7 @@ mod tests {
             ID,
             SEQ,
         );
-        let v6_message = &v6_frame[EthernetPacket::minimum_packet_size() + 40..];
+        let v6_message = &v6_frame[crate::protocols::sizes::ETH_HDR_LEN + 40..];
         assert_eq!(echo_token(v6_message).expect("a token"), (ID, SEQ));
     }
 
@@ -432,9 +431,9 @@ mod tests {
             SEQ,
         );
 
-        let eth = EthernetPacket::new(&frame).expect("a frame");
-        assert_eq!(eth.get_destination(), DST_MAC);
-        assert_ne!(eth.get_destination(), ALL_NODES_MAC);
+        let eth = super::super::ethernet::parse(&frame).expect("a frame");
+        assert_eq!(eth.destination(), DST_MAC);
+        assert_ne!(eth.destination(), ALL_NODES_MAC);
         assert_eq!(
             Ipv6Packet::new(eth.payload())
                 .expect("an IPv6 header")
@@ -472,11 +471,11 @@ mod tests {
         // is random per packet and the header checksum covers it, so two
         // correct frames differ in four bytes by design.
         let read = |frame: &[u8]| {
-            let eth = EthernetPacket::new(frame).expect("a frame");
+            let eth = super::super::ethernet::parse(frame).expect("a frame");
             let ip = Ipv4Packet::new(eth.payload()).expect("a header");
             (
-                eth.get_destination(),
-                eth.get_ethertype(),
+                eth.destination(),
+                eth.ethertype(),
                 ip.get_source(),
                 ip.get_destination(),
                 ip.get_ttl(),

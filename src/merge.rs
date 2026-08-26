@@ -769,6 +769,7 @@ mod tests {
     /// A report of one phase that ran on `at`, attributed to `engine`.
     fn report(engine: &str, at: SystemTime, hosts: Vec<Host>) -> ScanReport {
         let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: at,
             elapsed: Duration::from_secs(60),

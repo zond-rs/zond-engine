@@ -24,11 +24,18 @@
 //! threads (the `libpcap` read is blocking) and funnel parsed
 //! `(segment, source_ip)` pairs into a single Tokio channel, so async scan
 //! code consumes one merged stream regardless of how many interfaces are live.
+//!
+//! [`CaptureOptions`] is how a capture is asked for. Which frames the kernel
+//! admits, how much of each one it keeps, and whether it accepts traffic
+//! addressed elsewhere are three settings that have to be chosen together, and
+//! [`CaptureOptions::for_replies`] is the choice a scanner should take unchanged.
 
 use std::net::IpAddr;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pcap::{Active, Capture, Device};
 use pnet::packet::ip::IpNextHeaderProtocol;
@@ -37,13 +44,138 @@ use std::os::unix::io::AsRawFd;
 use tokio::sync::mpsc;
 
 use crate::model::capture::{CaptureCounts, IpObservation};
+use crate::model::ip::scoped::Zone;
 use crate::transport::frame::{self, LinkType};
 use crate::{error, info, warn};
 use pnet::util::MacAddr;
 
-/// Largest capture we ever need: a scan reply is a bare TCP/UDP segment, but
-/// snapping generously costs nothing and avoids ever truncating one.
-const SNAP_LEN: i32 = 65_535;
+/// Largest capture a scan's receive path ever needs: a reply is a bare TCP/UDP
+/// segment, but snapping generously costs nothing against a filter this narrow
+/// and avoids ever truncating one.
+const REPLY_SNAP_LEN: u32 = 65_535;
+
+/// How a capture is opened: what the kernel admits, how much of each frame it
+/// keeps, and whose traffic it accepts at all.
+///
+/// [`for_replies`](Self::for_replies) is this engine's whole opinion for a
+/// scan's receive path, and a scanner should take it and change nothing. The
+/// builders exist for a caller reading traffic the scan did not cause, whose
+/// answers differ on every setting here.
+///
+/// # Why a value rather than three arguments
+///
+/// Two of these were previously fixed and one was never chosen at all — a
+/// constant for the snapshot length, `libpcap`'s own default for the buffer, and
+/// promiscuity left wherever the library happened to leave it. That was
+/// defensible while one caller existed with one set of needs.
+///
+/// It stops being defensible with a second, because the settings are not
+/// independent. A wide filter with a generous snapshot length and a default
+/// buffer is a capture that discards most of what it admits, and the three have
+/// to be decided together or not at all.
+///
+/// The snapshot length is also the only place a limit on **what this process
+/// reads of other people's traffic** can be enforced by the kernel rather than
+/// by discipline, which is a property worth having a type to hang on.
+#[derive(Debug, Clone)]
+pub struct CaptureOptions {
+    /// A `libpcap` filter expression, in `tcpdump` syntax, compiled to a kernel
+    /// BPF program. Only matching frames are copied into this process.
+    filter: String,
+    /// How many bytes of each matching frame to keep. The rest is discarded by
+    /// the kernel and never reaches this process.
+    snaplen: u32,
+    /// Whether to accept frames not addressed to this host.
+    promiscuous: bool,
+    /// How much the kernel may hold for this capture before it starts
+    /// discarding. `None` leaves `libpcap`'s own default in place.
+    buffer_bytes: Option<u32>,
+}
+
+impl CaptureOptions {
+    /// A capture of what was addressed to **this host**: the replies to probes
+    /// it sent.
+    ///
+    /// **Not promiscuous**, which is the whole of the difference from
+    /// [`for_link_traffic`](Self::for_link_traffic). A reply to a probe this
+    /// host sent comes back to this host, so accepting frames addressed
+    /// elsewhere adds only other people's traffic — which fills the buffer this
+    /// scan's own answers have to fit in.
+    ///
+    /// **The whole frame is kept** ([`REPLY_SNAP_LEN`]). A reply is small and
+    /// the filter is narrow, so snapping generously costs almost nothing where
+    /// truncating one would cost an observation.
+    ///
+    /// **The kernel's default buffer.** These arrivals are bounded by the probes
+    /// this host sent, so there is a rate above which nothing comes, and the
+    /// default has been sufficient for it.
+    pub fn for_replies(filter: impl Into<String>) -> Self {
+        Self {
+            filter: filter.into(),
+            snaplen: REPLY_SNAP_LEN,
+            promiscuous: false,
+            buffer_bytes: None,
+        }
+    }
+
+    /// A capture of everything the link carries that `filter` admits, whoever it
+    /// was addressed to.
+    ///
+    /// **Promiscuous**, which is what separates this from
+    /// [`for_replies`](Self::for_replies), and it is not a preference. Several
+    /// things a segment sweep concludes are carried in frames addressed to
+    /// somebody else: a DHCP server's answer is often unicast to the client that
+    /// asked, and a multicast group this host never joined may be filtered out
+    /// by the interface before `libpcap` is offered it at all.
+    ///
+    /// The narrowing is done by `filter`, in the kernel, which is the better
+    /// instrument for it: promiscuity decides what the interface hands up, and
+    /// the filter decides what is copied into this process. Widening the first
+    /// while keeping the second tight is how a capture sees what it needs and
+    /// carries what it does not need nowhere at all.
+    pub fn for_link_traffic(filter: impl Into<String>) -> Self {
+        Self {
+            promiscuous: true,
+            ..Self::for_replies(filter)
+        }
+    }
+
+    /// Keeps only the first `bytes` of each frame, discarding the rest in the
+    /// kernel.
+    ///
+    /// Two things at once, which is why it is worth setting deliberately. It
+    /// bounds the copying a busy link costs this process, and it bounds what
+    /// this process can see of a payload it has no business reading — the
+    /// second being a limit the kernel enforces rather than one userspace
+    /// promises to keep.
+    pub fn with_snaplen(mut self, bytes: u32) -> Self {
+        self.snaplen = bytes;
+        self
+    }
+
+    /// Accepts frames not addressed to this host.
+    ///
+    /// What the interface would otherwise discard before `libpcap` saw it. On a
+    /// switched network this admits broadcast and multicast in full and unicast
+    /// only where the switch happens to forward it, so it widens what *can* be
+    /// seen without promising that anything will be.
+    pub fn with_promiscuous(mut self, promiscuous: bool) -> Self {
+        self.promiscuous = promiscuous;
+        self
+    }
+
+    /// Lets the kernel hold `bytes` for this capture before it starts
+    /// discarding.
+    ///
+    /// The buffer is what absorbs the gap between a burst arriving and this
+    /// process reading it, so it is the setting that decides whether a spike
+    /// becomes a `dropped` count. Worth raising for any capture whose arrival
+    /// rate is set by the network rather than by probes this host sent.
+    pub fn with_buffer_bytes(mut self, bytes: u32) -> Self {
+        self.buffer_bytes = Some(bytes);
+        self
+    }
+}
 
 /// How long a reader thread waits for a frame before looping back to check the
 /// stop flag. Bounds shutdown latency without busy-looping.
@@ -61,6 +193,14 @@ const READ_TIMEOUT_MS: i32 = 100;
 /// measuring: while frames are arriving faster than they are read the loop
 /// never goes idle, and that is precisely when a buffer overflows.
 const STATS_EVERY_FRAMES: u32 = 128;
+
+/// How long a reader thread waits before offering a frame again, once the
+/// consumer's queue is full.
+///
+/// Short enough that a consumer catching its breath is not made to wait on this
+/// thread, and long enough that a genuinely overrun capture is not spinning a
+/// core while the kernel buffer does the work of absorbing the burst.
+const QUEUE_FULL_PAUSE: Duration = Duration::from_millis(1);
 
 /// One reply lifted off the wire: the Layer-4 segment, who sent it, which
 /// protocol it is, and what its IP header said on the way past.
@@ -131,6 +271,52 @@ impl CapturedSegment {
 /// The parsed receive stream produced by a running capture: [`CapturedSegment`]s
 /// from every captured interface, interleaved in arrival order.
 pub type CaptureStream = mpsc::UnboundedReceiver<CapturedSegment>;
+
+/// One frame as it came off a link, with nothing stripped.
+///
+/// The counterpart to [`CapturedSegment`], and the shape to read when the answer
+/// is not inside a Layer-4 segment. An ARP exchange, a neighbour advertisement,
+/// a switch announcing itself and an 802.1Q tag all live below the point where
+/// [`CapturedSegment`] begins, and by the time one of those exists the evidence
+/// is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedFrame {
+    /// The link this frame arrived on.
+    ///
+    /// Carried because a great deal of what a frame proves is only true of one
+    /// segment. An IPv6 link-local names a different machine on every link, a
+    /// switch announces itself to the port it is announcing *about*, and a VLAN
+    /// tag means nothing without the trunk it was read from. A capture merges
+    /// every link into one stream, so without this the merge would be lossy in
+    /// exactly the cases that matter.
+    pub zone: Zone,
+
+    /// How [`bytes`](Self::bytes) is framed, so a reader knows what it is
+    /// looking at before it looks.
+    pub link: LinkType,
+
+    /// The frame, link header included.
+    ///
+    /// **Possibly truncated**, to whatever [`CaptureOptions::with_snaplen`] the
+    /// capture was opened with. That is deliberate — it is how a capture is
+    /// stopped from reading more of somebody's traffic than it has any business
+    /// reading — and it means a reader must treat a short frame as ordinary
+    /// rather than as corrupt. Every parser in [`crate::protocols`] already
+    /// declines rather than guessing, which is the property this relies on.
+    pub bytes: Vec<u8>,
+
+    /// When the kernel timestamped the frame.
+    pub observed_at: SystemTime,
+}
+
+/// The whole-frame receive stream produced by [`frames`]: [`CapturedFrame`]s
+/// from every captured link, interleaved in arrival order.
+///
+/// Bounded, unlike [`CaptureStream`]. What arrives here is set by the network
+/// rather than by probes this host sent, so there is no rate at which the
+/// consumer is guaranteed to keep up, and an unbounded queue would answer that
+/// by growing until the process died. [`frames`] documents what happens instead.
+pub type FrameStream = mpsc::Receiver<CapturedFrame>;
 
 /// One capture's counters, written by its reader thread and read by whoever
 /// holds the [`CaptureGuard`].
@@ -225,16 +411,6 @@ impl CaptureGuard {
     }
 }
 
-/// Opens a filtered capture on each named interface and starts reading.
-///
-/// `filter` is a `libpcap` filter expression (`tcpdump` syntax) compiled into
-/// a kernel BPF program; only matching frames reach userspace. Interfaces
-/// that fail to open, or whose data-link type this crate can't parse, are
-/// logged and skipped rather than aborting the whole capture - a scan across
-/// several interfaces shouldn't die because one of them is unusual.
-///
-/// Fails only if *no* interface could be captured, since a transport with no
-/// receive path is useless.
 /// Why a capture could not be started.
 ///
 /// One variant, because there is one way this fails. An interface that cannot be
@@ -258,11 +434,136 @@ pub enum CaptureError {
     NoInterface,
 }
 
-pub fn start(
-    interfaces: &[String],
-    filter: &str,
+/// Opens a filtered capture on each named link and starts reading, parsing
+/// every admitted frame down to the Layer-4 segment a scanner reads.
+///
+/// **Frames that are not IP are dropped here**, because the segment is what a
+/// scanner reads and there is none behind an ARP frame. A caller that wants
+/// those is asking a different question and wants the whole frame — see
+/// [`frames`], which this is otherwise the twin of.
+///
+/// # The stream is unbounded, and may be
+///
+/// What arrives here is bounded by what this host sent: a reply exists because a
+/// probe was emitted, and the scanner emitting them is the same task reading
+/// this. There is no rate at which the network can fill this faster than the
+/// scan chooses to. [`frames`] has no such guarantee and is bounded for it.
+pub fn segments(
+    links: &[Zone],
+    options: &CaptureOptions,
 ) -> Result<(CaptureStream, CaptureGuard), CaptureError> {
     let (tx, rx) = mpsc::unbounded_channel();
+
+    let guard = spawn_captures(links, options, move |_zone, link| {
+        let tx = tx.clone();
+        move |packet: &pcap::Packet<'_>| {
+            let Some(parsed) = frame::parse_captured_segment(link, packet.data) else {
+                return ControlFlow::Continue(());
+            };
+
+            let sent = tx.send(CapturedSegment {
+                source: parsed.source,
+                protocol: parsed.protocol,
+                bytes: parsed.payload.to_vec(),
+                observation: Some(parsed.observation),
+                source_mac: frame::source_mac(link, packet.data),
+            });
+
+            if sent.is_err() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        }
+    })?;
+
+    Ok((rx, guard))
+}
+
+/// Opens a filtered capture on each named link and starts reading, forwarding
+/// every admitted frame whole.
+///
+/// The twin of [`segments`], and the one to reach for when the answer is not in
+/// a Layer-4 segment: an ARP exchange, a neighbour advertisement, a switch
+/// announcing itself, the VLAN a frame was tagged with, or the hardware address
+/// behind any of them. Each frame arrives with the link it came off, so a
+/// finding that only means something on one segment can say which.
+///
+/// `queue_depth` bounds how many frames may wait for the consumer at once.
+/// Multiplied by [`CaptureOptions::with_snaplen`] it is also the memory this
+/// costs, which is the reason it is a number the caller states rather than one
+/// this module picks.
+///
+/// # A full queue stalls the reader rather than dropping
+///
+/// When the consumer falls behind, the reader thread waits instead of discarding
+/// the frame it is holding. The kernel buffer then takes up the slack, and when
+/// that fills, `libpcap` counts what it discards — so the loss lands in
+/// [`CaptureCounts::dropped`], which a report already carries and a reader
+/// already knows how to interpret.
+///
+/// Discarding here instead would be a fourth kind of loss, counted nowhere and
+/// indistinguishable in the record from a network that had nothing to say. The
+/// stall makes the existing counter tell the whole truth.
+pub fn frames(
+    links: &[Zone],
+    options: &CaptureOptions,
+    queue_depth: usize,
+) -> Result<(FrameStream, CaptureGuard), CaptureError> {
+    let (tx, rx) = mpsc::channel(queue_depth);
+
+    let guard = spawn_captures(links, options, move |zone, link| {
+        let tx = tx.clone();
+        let zone = zone.clone();
+        move |packet: &pcap::Packet<'_>| {
+            let mut frame = CapturedFrame {
+                zone: zone.clone(),
+                link,
+                bytes: packet.data.to_vec(),
+                observed_at: timestamp_of(packet),
+            };
+
+            // Waits rather than drops; see this function's documentation for why
+            // the loss belongs in the kernel's counter and not in a new one.
+            loop {
+                match tx.try_send(frame) {
+                    Ok(()) => return ControlFlow::Continue(()),
+                    Err(mpsc::error::TrySendError::Closed(_)) => return ControlFlow::Break(()),
+                    Err(mpsc::error::TrySendError::Full(returned)) => {
+                        frame = returned;
+                        thread::sleep(QUEUE_FULL_PAUSE);
+                    }
+                }
+            }
+        }
+    })?;
+
+    Ok((rx, guard))
+}
+
+/// Opens a capture on every link that will have one, starts a reader thread per
+/// capture, and hands back the guard that keeps them alive.
+///
+/// `deliver_for` builds the per-link closure that decides what to do with each
+/// frame, which is the whole of the difference between [`segments`] and
+/// [`frames`]. Everything else — which failures are survivable, how threads are
+/// named and stopped, when counters refresh — is identical for both and lives
+/// here so that it cannot come to differ.
+///
+/// Interfaces that fail to open, or whose data-link type this crate cannot
+/// parse, are logged and skipped rather than aborting the whole capture: a host
+/// has many, most of them irrelevant to any given capture, and refusing because
+/// a virtual bridge declined would be wrong. Only *every* link failing is an
+/// error, since a capture with no link is a receive path that can never hear
+/// anything.
+fn spawn_captures<D>(
+    links: &[Zone],
+    options: &CaptureOptions,
+    mut deliver_for: impl FnMut(&Zone, LinkType) -> D,
+) -> Result<CaptureGuard, CaptureError>
+where
+    D: FnMut(&pcap::Packet<'_>) -> ControlFlow<()> + Send + 'static,
+{
     let stop = Arc::new(AtomicBool::new(false));
     let mut handles = Vec::new();
     let mut stats = Vec::new();
@@ -275,22 +576,25 @@ pub fn start(
     // count is what a person is checking at `-v` ("did it capture at all, and on
     // roughly the right number of things"); which interface got which filter is
     // a question for `-vvv`, and it is still there when asked.
-    let mut opened: Vec<&str> = Vec::new();
+    let mut opened = 0usize;
 
-    for name in interfaces {
-        match open(name, filter) {
+    for zone in links {
+        let name = zone.name();
+        match open(name, options) {
             Ok((capture, link)) => {
                 info!(verbosity = 3, "capturing on {name} (link type {link:?})");
-                opened.push(name.as_str());
-                let tx = tx.clone();
+                opened += 1;
+
+                let deliver = deliver_for(zone, link);
                 let stop = stop.clone();
                 let counters = Arc::new(CaptureStats::default());
                 stats.push(counters.clone());
-                let name = name.clone();
+                let name = name.to_owned();
+
                 handles.push(
                     thread::Builder::new()
                         .name(format!("capture-{name}"))
-                        .spawn(move || reader_loop(capture, link, tx, stop, &name, &counters))
+                        .spawn(move || reader_loop(capture, &stop, &name, &counters, deliver))
                         .expect("spawning capture thread"),
                 );
             }
@@ -304,18 +608,27 @@ pub fn start(
 
     info!(
         verbosity = 1,
-        "capturing on {} interface(s) with filter: {filter}",
-        opened.len()
+        "capturing on {opened} interface(s) with filter: {}", options.filter,
     );
 
-    Ok((
-        rx,
-        CaptureGuard {
-            stop,
-            handles,
-            stats,
-        },
-    ))
+    Ok(CaptureGuard {
+        stop,
+        handles,
+        stats,
+    })
+}
+
+/// When the kernel says it saw this frame.
+///
+/// Wall-clock rather than measured elapsed time, because the question it answers
+/// is "when was this host last heard from", which a reader places against
+/// everything else in the record. A frame whose timestamp cannot be represented
+/// is stamped with the epoch rather than dropped: the frame is still evidence,
+/// and losing it over a clock would be the wrong trade.
+fn timestamp_of(packet: &pcap::Packet<'_>) -> SystemTime {
+    let seconds = u64::try_from(packet.header.ts.tv_sec).unwrap_or(0);
+    let micros = u32::try_from(packet.header.ts.tv_usec).unwrap_or(0);
+    UNIX_EPOCH + Duration::new(seconds, micros.saturating_mul(1_000))
 }
 
 /// Opens and activates a single filtered capture, returning it alongside the
@@ -328,13 +641,22 @@ pub fn start(
 /// caller, so a blocking read on an interface seeing no matching frames never
 /// returns and the stop flag is never observed. BSD's `BPF` (macOS) does return
 /// on timeout, but relying on that would leave Linux broken.
-fn open(name: &str, filter: &str) -> anyhow::Result<(Capture<Active>, LinkType)> {
+fn open(name: &str, options: &CaptureOptions) -> anyhow::Result<(Capture<Active>, LinkType)> {
     let device = Device::from(name);
-    let capture = Capture::from_device(device)?
+    let mut inactive = Capture::from_device(device)?
         .immediate_mode(true)
-        .snaplen(SNAP_LEN)
-        .timeout(READ_TIMEOUT_MS)
-        .open()?;
+        .promisc(options.promiscuous)
+        .snaplen(saturating_i32(options.snaplen))
+        .timeout(READ_TIMEOUT_MS);
+
+    // Left alone unless asked for, so that not choosing a buffer size keeps
+    // whatever the platform's `libpcap` decided rather than this crate picking a
+    // number for every capture on every operating system it runs on.
+    if let Some(bytes) = options.buffer_bytes {
+        inactive = inactive.buffer_size(saturating_i32(bytes));
+    }
+
+    let capture = inactive.open()?;
 
     #[cfg(not(windows))]
     let capture = capture.setnonblock()?;
@@ -346,26 +668,43 @@ fn open(name: &str, filter: &str) -> anyhow::Result<(Capture<Active>, LinkType)>
     }
 
     capture
-        .filter(filter, true)
-        .map_err(|e| anyhow::anyhow!("compiling BPF filter `{filter}`: {e}"))?;
+        .filter(&options.filter, true)
+        .map_err(|e| anyhow::anyhow!("compiling BPF filter `{}`: {e}", options.filter))?;
 
     Ok((capture, link))
 }
 
-/// Read loop for one capture: parse each frame down to its Layer-4 segment and
-/// forward it, until the stop flag is set or the consumer hangs up. Having no
-/// frame ready is the normal idle case, not an error.
+/// Narrows a byte count to the signed width `libpcap` takes, saturating rather
+/// than wrapping.
+///
+/// Both settings this converts are sizes, and both are meaningless as negative
+/// numbers — a wrapped snapshot length is a capture that keeps nothing, which
+/// would read as a quiet network rather than as a bad argument. The `u32` on
+/// [`CaptureOptions`] is the honest type for the engine to speak; this is the
+/// one place the library's `i32` is met.
+fn saturating_i32(bytes: u32) -> i32 {
+    i32::try_from(bytes).unwrap_or(i32::MAX)
+}
+
+/// Read loop for one capture: hand every admitted frame to `deliver` until it
+/// asks to stop, the stop flag is set, or the capture fails. Having no frame
+/// ready is the normal idle case, not an error.
+///
+/// `deliver` is given the whole `libpcap` packet — its bytes and the header
+/// carrying the kernel's timestamp — and says whether to carry on. Both outputs
+/// this module offers are one of these, which is the point: the shutdown
+/// discipline, the poll, and the counter cadence are subtle enough that having
+/// two copies of them would mean having one of them wrong.
 ///
 /// The loop also keeps `counters` current, since what this thread fails to read
 /// in time is invisible everywhere else: a frame the kernel discards for want of
 /// buffer space never reaches the channel, so no downstream counter can miss it.
 fn reader_loop(
     mut capture: Capture<Active>,
-    link: LinkType,
-    tx: mpsc::UnboundedSender<CapturedSegment>,
-    stop: Arc<AtomicBool>,
+    stop: &AtomicBool,
     name: &str,
     counters: &CaptureStats,
+    mut deliver: impl FnMut(&pcap::Packet<'_>) -> ControlFlow<()>,
 ) {
     #[cfg(not(windows))]
     let fd = capture.as_raw_fd();
@@ -380,17 +719,7 @@ fn reader_loop(
         match capture.next_packet() {
             Ok(packet) => {
                 read_frame = true;
-                if let Some(parsed) = frame::parse_captured_segment(link, packet.data)
-                    && tx
-                        .send(CapturedSegment {
-                            source: parsed.source,
-                            protocol: parsed.protocol,
-                            bytes: parsed.payload.to_vec(),
-                            observation: Some(parsed.observation),
-                            source_mac: frame::source_mac(link, packet.data),
-                        })
-                        .is_err()
-                {
+                if deliver(&packet).is_break() {
                     break;
                 }
             }

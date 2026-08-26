@@ -223,7 +223,11 @@ impl Exporter for HtmlExporter {
         let started_at = rfc3339(report.started_at());
         let generated_at = rfc3339(SystemTime::now());
         let summary = SummaryDto::new(&report.summary());
-        let phases: Vec<PhaseDto<'_>> = report.phases().iter().map(PhaseDto::new).collect();
+        let phases: Vec<PhaseDto<'_>> = report
+            .phases()
+            .iter()
+            .map(|phase| PhaseDto::new(phase, &self.options))
+            .collect();
         let elapsed_us = total_elapsed_us(&phases);
 
         write_head(out, &self.title(&started_at))?;

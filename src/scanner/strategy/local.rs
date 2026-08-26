@@ -24,7 +24,6 @@
 //! This scanner requires root privileges. It builds and intercepts raw Ethernet
 //! frames directly, bypassing the operating system's own IP stack.
 
-mod discovery;
 mod ipv6;
 mod probes;
 
@@ -32,9 +31,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
+use crate::protocols::ethernet::Frame;
 use async_trait::async_trait;
 use pnet::datalink::{MacAddr, NetworkInterface};
-use pnet::packet::ethernet::EthernetPacket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
@@ -49,19 +48,77 @@ use crate::scanner::audit::ProbeAudit;
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{Due, ProbeLedger, RetryPolicy};
 use crate::scanner::pacing::timer::ScanBudget;
-use crate::scanner::report::StopReason;
+use crate::scanner::report::{Attachment, AttachmentSource, StopReason};
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{HostScanner, StrategyError};
 use crate::system::interface::NetworkInterfaceExtension;
+use crate::transport::capture::CapturedFrame;
 use crate::transport::channel::{self, EthernetHandle};
+use crate::transport::frame::LinkType;
 use crate::transport::mac::IntoCoreMac;
 use crate::{error, info};
 
-use discovery::{
-    ArpProtocol, DhcpProtocol, DiscoveryProtocol, Icmpv6EchoProtocol, NdpProtocol, ProtocolMatch,
-    Reading, RouterAdvertProtocol,
-};
+use crate::scanner::strategy::discovery::{self, DiscoveryProtocol, ProtocolMatch, Reading};
 use ipv6::Ipv6Discovery;
+
+/// What a local sweep's capture admits, as a `libpcap` filter expression.
+///
+/// The union of what every [`DiscoveryProtocol`] declares it reads, plus the one
+/// thing the sweep reads without one. Derived rather than written down, so that
+/// adding a protocol widens the capture by the same edit that adds the reader —
+/// see [`DiscoveryProtocol::capture_clause`] for why that is not a convenience.
+///
+/// The sweep used to receive the whole segment and reject the surplus in
+/// userspace, which on a busy link meant copying every frame on the wire to
+/// discard almost all of it.
+///
+/// **802.1Q-tagged frames are not admitted**, and that is not a new loss: the
+/// frame reader below takes the EtherType from its fixed offset, so a tagged
+/// frame already read as an unsupported EtherType and was rejected a layer up.
+fn sweep_filter() -> String {
+    let mut clauses: Vec<&'static str> = discovery::sweep_protocols()
+        .iter()
+        .map(|protocol| protocol.capture_clause())
+        .collect();
+
+    clauses.extend(ABSORBED_CLAUSES);
+
+    // Several protocols share a clause — the three IPv6 readers are all
+    // `icmp6` — and a filter repeating it would compile to the same program
+    // while reading as though it meant something.
+    clauses.sort_unstable();
+    clauses.dedup();
+
+    clauses.join(" or ")
+}
+
+/// The clauses for the readers that conclude no liveness, and so have no
+/// [`DiscoveryProtocol`] to declare them.
+///
+/// Every protocol in [`discovery::sweep_protocols`] exists to conclude that a
+/// host is present. These three deliberately do not, and each declines for its
+/// own reason:
+///
+/// - **mDNS** (`absorb_mdns`) reads a name off the segment and credits nobody
+///   with being there for it, because every laptop and printer on a link
+///   answers mDNS and the announcer is often not the machine being announced.
+/// - **LLDP** and **CDP** (`absorb_announcement`) are equipment describing
+///   *itself*, and what they establish is where **this** machine is plugged in
+///   — a fact about the phase rather than about any host in it. See
+///   [`Attachment`].
+///
+/// A fourth reader of this kind needs a clause here, and nothing will say so:
+/// the derivation above covers only the protocols that conclude liveness.
+///
+/// The CDP clause matches the group address rather than the protocol, because
+/// CDP rides 802.3 framing and has no EtherType to match on. That address also
+/// carries VTP, DTP and PAgP, which the reader declines — a small surplus, and
+/// the alternative is reaching past a header whose length BPF cannot express.
+const ABSORBED_CLAUSES: [&str; 3] = [
+    "(udp port 5353)",
+    "(ether proto 0x88cc)",
+    "(ether dst 01:00:0c:cc:cc:cc)",
+];
 
 /// Outstanding ARP requests and the schedule they are retried on.
 ///
@@ -133,6 +190,8 @@ pub(crate) enum FrameRejected {
     SelfSourcedPacket,
     #[error("{0} is not in the scanned range")]
     AddressOutOfRange(IpAddr),
+    #[error("the frame came off a link that prepends no Ethernet header")]
+    UnreadableLink,
 }
 
 /// How long a discovery sweep runs and how it adapts. The base and per-target
@@ -333,10 +392,9 @@ pub struct LocalScanner {
     /// holds can be attributed to loss, to its own deadline, or to correlation
     /// rather than guessed at. Reported once when the loop exits.
     ///
-    /// `capture` is always `None` here: this scanner reads frames off an
-    /// [`EthernetHandle`], which is a plain reader thread with no kernel buffer
-    /// to interrogate, so what the kernel dropped is not knowable from inside
-    /// this scanner rather than being zero.
+    /// `capture` comes from the [`EthernetHandle`]'s own capture, and is `None`
+    /// only for a synthetic frame stream — which has no kernel buffer to have
+    /// overflowed, and must not report a clean receive path it never had.
     audit: ProbeAudit,
     /// Why the first frame that could not be put on the wire failed, if any did.
     ///
@@ -445,9 +503,9 @@ impl HostScanner for LocalScanner {
             tokio::select! {
                 pkt = self.eth_handle.rx.recv() => {
                     match pkt {
-                        Some(bytes) => {
+                        Some(frame) => {
                             self.audit.record_segment();
-                            _ = self.process_eth_packet(&bytes, Instant::now());
+                            _ = self.process_eth_packet(&frame, Instant::now());
                         }
                         None => break StopReason::StreamClosed,
                     }
@@ -533,17 +591,20 @@ impl HostScanner for LocalScanner {
             );
         }
 
-        // No capture counts: frames arrive over an `EthernetHandle`, which is a
-        // reader thread rather than a kernel capture, so what the kernel dropped
-        // is unknowable here rather than zero.
+        // What the kernel discarded before this scanner could read it. A frame
+        // lost there is indistinguishable from a host that never answered, so a
+        // sweep finding fewer hosts than the segment holds can now be attributed
+        // to loss rather than guessed at. `None` only for a synthetic stream,
+        // which has no kernel buffer to have overflowed.
+        let capture = self.eth_handle.capture_counts();
         let targets = self.ip_set.len();
         self.audit
-            .report("local-discovery", targets, reason, None, None);
+            .report("local-discovery", targets, reason, capture, None);
         self.ctx.record_probe_stats(self.audit.stats(
             ScannerKind::Local,
             targets,
             reason,
-            None,
+            capture,
             None,
         ));
         Ok(())
@@ -559,7 +620,7 @@ impl LocalScanner {
         scope: Scope,
         retry: RetryConfig,
     ) -> Result<Self, StrategyError> {
-        let eth_handle: EthernetHandle = channel::start_capture(&intf)?;
+        let eth_handle: EthernetHandle = channel::start_capture(&intf, &sweep_filter())?;
         Self::build(
             intf,
             ip_set,
@@ -630,13 +691,7 @@ impl LocalScanner {
             identity,
             eth_handle,
             deadline,
-            protocols: vec![
-                Box::new(ArpProtocol),
-                Box::new(NdpProtocol),
-                Box::new(RouterAdvertProtocol),
-                Box::new(DhcpProtocol),
-                Box::new(Icmpv6EchoProtocol),
-            ],
+            protocols: discovery::sweep_protocols(),
             ledger: Ledger::new(retry, target_count),
 
             due: Vec::new(),
@@ -890,7 +945,123 @@ impl LocalScanner {
     /// holds the run open for a reply, so a segment that keeps talking could
     /// otherwise keep extending it — and a lead that arrives after the sweep
     /// would have ended belongs to the next scan.
-    fn absorb_mdns(&mut self, frame: &EthernetPacket) -> bool {
+    /// Reads a switch's announcement of itself, where the frame is one.
+    ///
+    /// Returns whether the frame was an announcement, so the caller can stop
+    /// reading it as something else.
+    ///
+    /// # Two findings, and only one of them is about a host
+    ///
+    /// **Where this machine is plugged in** is recorded unconditionally, as an
+    /// [`Attachment`] on the phase. It is not a claim about a host in the
+    /// report — it is a relation between this machine and somebody else's
+    /// equipment — so the rule that keeps a targeted run targeted does not
+    /// apply to it. A run handed one address still reports one host, and now
+    /// also says which switch port it was run from.
+    ///
+    /// **What the sender is** goes through `note_declaration` like any other
+    /// overheard claim: filed against the announcing hardware address and
+    /// applied only if that machine turns out to be one the scan found by
+    /// asking. A switch usually holds no address on the segment it serves, so
+    /// in the common case the claim is never applied to anything — and that is
+    /// the correct outcome, not a loss. The switch's identity is in the
+    /// attachment, where it belongs.
+    ///
+    /// # What an announcement is not evidence of
+    ///
+    /// That its sender is a switch. Anything on a link can emit one, and
+    /// nothing here authenticates it. What the group address buys is a
+    /// statement about *where* — conforming bridges constrain those addresses
+    /// rather than forwarding them — and never about truthfulness. The role
+    /// this files carries that caveat in its own documentation.
+    fn absorb_announcement(
+        &mut self,
+        frame: &Frame<'_>,
+        source_mac: MacAddr,
+        captured: &CapturedFrame,
+    ) -> bool {
+        let mut attachment = Attachment::new(
+            captured.zone.clone(),
+            AttachmentSource::Lldp,
+            captured.observed_at,
+        );
+        let mut roles: Vec<NetworkRole> = Vec::new();
+
+        if let Some(advertisement) = protocol::lldp::parse(frame) {
+            attachment = attachment.with_device_mac(source_mac.into_core());
+
+            if let Some(name) = advertisement.system_name {
+                attachment = attachment.with_device_name(name);
+            }
+            if let Some(protocol::lldp::Identifier::Text(port)) = advertisement.port_id {
+                attachment = attachment.with_port(port);
+            }
+            if let Some(vlan) = advertisement.port_vlan {
+                attachment = attachment.with_native_vlan(vlan);
+            }
+            if let Some(address) = advertisement.management_address {
+                attachment = attachment.with_management_address(address);
+            }
+            if let Some(capabilities) = advertisement.capabilities {
+                if capabilities.is_bridge() {
+                    roles.push(NetworkRole::Switch);
+                }
+                if capabilities.is_router() {
+                    roles.push(NetworkRole::Router);
+                }
+            }
+        } else if let Some(announcement) = protocol::cdp::parse(frame) {
+            attachment = Attachment::new(
+                captured.zone.clone(),
+                AttachmentSource::Cdp,
+                captured.observed_at,
+            )
+            .with_device_mac(source_mac.into_core());
+
+            if let Some(name) = announcement.device_id {
+                attachment = attachment.with_device_name(name);
+            }
+            if let Some(port) = announcement.port_id {
+                attachment = attachment.with_port(port);
+            }
+            if let Some(vlan) = announcement.native_vlan {
+                attachment = attachment.with_native_vlan(vlan);
+            }
+            if let Some(address) = announcement.address {
+                attachment = attachment.with_management_address(address);
+            }
+            if let Some(capabilities) = announcement.capabilities {
+                if capabilities.is_switch() {
+                    roles.push(NetworkRole::Switch);
+                }
+                if capabilities.is_router() {
+                    roles.push(NetworkRole::Router);
+                }
+            }
+        } else {
+            return false;
+        }
+
+        info!(
+            verbosity = 1,
+            "{} says this machine is on {}{}",
+            self.identity.zone,
+            attachment.device_name().unwrap_or("an unnamed device"),
+            match attachment.port() {
+                Some(port) => format!(" port {port}"),
+                None => String::new(),
+            },
+        );
+
+        self.ctx.record_attachment(attachment);
+        for role in roles {
+            self.note_declaration(source_mac, role);
+        }
+
+        true
+    }
+
+    fn absorb_mdns(&mut self, frame: &Frame<'_>) -> bool {
         let Some(payload) = protocol::ip::udp_payload(frame, protocol::mdns::PORT) else {
             return false;
         };
@@ -978,13 +1149,32 @@ impl LocalScanner {
 
     /// Validates an incoming frame, then handles a discovery reply in two steps:
     /// working out what it means, and recording that in shared scan state.
-    fn process_eth_packet(&mut self, bytes: &[u8], now: Instant) -> anyhow::Result<()> {
-        let eth_frame: EthernetPacket = ethernet::parse(bytes)?;
+    fn process_eth_packet(&mut self, frame: &CapturedFrame, now: Instant) -> anyhow::Result<()> {
+        // Every probe this sweep sends is an Ethernet frame and every reading it
+        // takes starts from an Ethernet header, so a link that prepends
+        // something else carries nothing this can read. `start_capture` refuses
+        // such an interface outright; a synthetic stream is the only way one
+        // reaches here, and reading its bytes as Ethernet would invent a source
+        // address rather than fail.
+        if frame.link != LinkType::Ethernet {
+            self.audit.record_off_target();
+            return Err(FrameRejected::UnreadableLink.into());
+        }
 
-        let source_mac = eth_frame.get_source();
+        let eth_frame: Frame<'_> = ethernet::parse(&frame.bytes)?;
+
+        let source_mac = eth_frame.source();
         if source_mac == self.identity.mac {
             self.audit.record_off_target();
             return Err(FrameRejected::SelfSourcedPacket.into());
+        }
+
+        // Before the address is read, because neither of these frames has one.
+        // LLDP carries no IP header at all and CDP is not even an EtherType
+        // protocol, so `source_address` refuses both — which is correct, and is
+        // why they have to be taken out of the stream first.
+        if self.absorb_announcement(&eth_frame, source_mac, frame) {
+            return Ok(());
         }
 
         let source_addr: IpAddr = protocol::source_address(&eth_frame)?;
@@ -1202,7 +1392,7 @@ impl LocalScanner {
     /// hosts, or traffic forwarded through a router rather than sent directly,
     /// whose Ethernet source is the router itself and not the host the IP packet
     /// originated from.
-    fn interpret_response(&mut self, frame: &EthernetPacket) -> Option<(Reading, StatusProtocol)> {
+    fn interpret_response(&mut self, frame: &Frame<'_>) -> Option<(Reading, StatusProtocol)> {
         for protocol in &self.protocols {
             match protocol.interpret(frame) {
                 Ok(Reading {
@@ -1313,9 +1503,24 @@ impl LocalScanner {
         // below, which runs after the guard is released, as does the deadline
         // bookkeeping.
         let mut is_new_ip = false;
+        let zone = self.identity.zone.clone();
         let is_new_host = self
             .ctx
             .write_host(self.identity.key_for(primary_ip), |host| {
+                // Every frame this scanner reads came off the one link it is
+                // bound to, so a host it credits was observed through that
+                // interface — whichever of its addresses answered first.
+                //
+                // **Set here rather than left to the key.** A host is born with
+                // the zone its *key* carries, and a key carries one only where
+                // the address needs it: a machine whose IPv4 answered before its
+                // link-local was created unscoped, and its link-local was then
+                // reported bare. `fe80::41a:992a:fb73:5c91` names a different
+                // machine on every segment, so which of two addresses replied
+                // first decided whether the record was usable. `set_zone` keeps
+                // the first it is given, so repeating this is free.
+                host.set_zone(zone.clone());
+
                 // Recorded whether we just created the host or the port scanner
                 // created it first, so enrichment order doesn't decide whether a MAC
                 // is recorded. Repeating one already on record refreshes its
@@ -1397,5 +1602,133 @@ impl LocalScanner {
         {
             let _ = tx.send(source_addr);
         }
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::strategy::discovery::tests::{
+        LOCAL_MAC, PEER_MAC, advertisement_body, arp_reply_frame, dhcp_reply_frame,
+        echo_reply_frame, mdns_frame, ndp_frame,
+    };
+    use pnet::datalink::MacAddr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// The sweep's capture narrows in the kernel, so a frame the filter does not
+    /// admit is one no [`DiscoveryProtocol`] is ever offered — and it fails
+    /// silently, because a protocol that is never called looks exactly like one
+    /// that recognised nothing.
+    ///
+    /// Nothing else can catch it. The fake-LAN fixtures inject frames straight
+    /// into the scanner through `EthernetHandle::from_parts`, so they bypass the
+    /// capture entirely and would stay green against a filter that admitted
+    /// nothing at all. This compiles the real expression with `libpcap` and runs
+    /// it against real frames, which needs no interface and no privileges.
+    #[test]
+    fn the_sweep_filter_admits_every_frame_the_sweep_can_read() {
+        let filter = super::sweep_filter();
+        let program = pcap::Capture::dead(pcap::Linktype::ETHERNET)
+            .expect("a dead capture")
+            .compile(&filter, true)
+            .unwrap_or_else(|e| panic!("the sweep filter `{filter}` does not compile: {e}"));
+
+        // The two announcement frames need only their framing: the filter reads
+        // the EtherType and the destination address, and what the sender put
+        // behind them is the reader's business rather than the kernel's.
+        let lldp = ethernet::create_header(
+            PEER_MAC,
+            MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
+            crate::protocols::lldp::ETHERTYPE,
+        );
+        let cdp = {
+            let group = crate::protocols::cdp::GROUP_ADDRESS;
+            let mut bytes = vec![group.0, group.1, group.2, group.3, group.4, group.5];
+            bytes.extend_from_slice(&[
+                PEER_MAC.0, PEER_MAC.1, PEER_MAC.2, PEER_MAC.3, PEER_MAC.4, PEER_MAC.5,
+            ]);
+            // 802.3: a length rather than an EtherType, which is the whole
+            // reason this clause matches the address instead.
+            bytes.extend_from_slice(&[0x00, 0x20]);
+            bytes.resize(60, 0);
+            bytes
+        };
+
+        let readable: [(&str, Vec<u8>); 7] = [
+            ("an ARP frame", arp_reply_frame(Ipv4Addr::new(10, 0, 0, 2))),
+            (
+                "a neighbour advertisement",
+                ndp_frame(&advertisement_body(
+                    Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2),
+                    0,
+                )),
+            ),
+            (
+                "an echo reply",
+                echo_reply_frame(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            ),
+            (
+                "a DHCP server reply",
+                dhcp_reply_frame(Ipv4Addr::new(192, 168, 1, 1), None),
+            ),
+            ("an mDNS response", mdns_frame()),
+            ("an LLDP advertisement", lldp),
+            ("a CDP announcement", cdp),
+        ];
+
+        for (what, frame) in readable {
+            assert!(
+                program.filter(&frame),
+                "the sweep filter rejects {what}, so the sweep would never see one: {filter}"
+            );
+        }
+    }
+
+    /// The other half of the same rule. A filter that admitted everything would
+    /// pass the test above while undoing the reason for having one: the sweep
+    /// would go back to copying the whole segment into this process.
+    #[test]
+    fn the_sweep_filter_rejects_traffic_no_reader_asked_for() {
+        let filter = super::sweep_filter();
+        let program = pcap::Capture::dead(pcap::Linktype::ETHERNET)
+            .expect("a dead capture")
+            .compile(&filter, true)
+            .expect("the sweep filter compiles");
+
+        let ordinary_tcp = {
+            let datagram = crate::protocols::craft::Packet::new()
+                .push(crate::protocols::craft::Ipv4::new(
+                    Ipv4Addr::new(192, 168, 1, 50),
+                    Ipv4Addr::new(192, 168, 1, 60),
+                ))
+                .push(crate::protocols::craft::Udp::new(4444, 8080).with_payload(vec![0u8; 16]))
+                .build()
+                .expect("a test datagram");
+
+            [
+                ethernet::create_header(
+                    PEER_MAC,
+                    LOCAL_MAC,
+                    pnet::packet::ethernet::EtherTypes::Ipv4,
+                ),
+                datagram,
+            ]
+            .concat()
+        };
+
+        assert!(
+            !program.filter(&ordinary_tcp),
+            "the sweep filter admits traffic between two other hosts on ports \
+             nothing here reads, which is the copying it exists to avoid: {filter}"
+        );
     }
 }

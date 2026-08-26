@@ -76,10 +76,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 use pnet::datalink::NetworkInterface;
-use pnet::packet::Packet;
 use pnet::packet::arp::{ArpOperations, ArpPacket};
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use zond_engine::protocols::{arp, ndp};
+use pnet::packet::ethernet::EtherTypes;
+use zond_engine::protocols::ethernet::Frame;
+use zond_engine::protocols::{arp, ethernet, ndp};
 use zond_engine::system::interface::{NetworkInterfaceExtension, get_prioritized_interfaces};
 use zond_engine::system::neighbors;
 use zond_engine::transport::channel;
@@ -259,7 +259,9 @@ async fn main() {
         },
     );
 
-    let mut handle = channel::start_capture(&intf)
+    // What this benchmark reads and nothing else: ARP replies for the IPv4
+    // baseline, and ICMPv6 for the neighbour advertisements it is here to time.
+    let mut handle = channel::start_capture(&intf, "arp or icmp6")
         .unwrap_or_else(|e| fail(&format!("opening {}: {e}", intf.name)));
 
     let mut probes: Vec<Probe> = Vec::with_capacity(targets.len());
@@ -298,9 +300,9 @@ async fn main() {
 
         tokio::select! {
             frame = handle.rx.recv() => {
-                let Some(bytes) = frame else { break };
+                let Some(captured) = frame else { break };
                 let now = Instant::now();
-                let Some(frame) = EthernetPacket::new(&bytes) else { continue };
+                let Ok(frame) = ethernet::parse(&captured.bytes) else { continue };
                 if let Some(sender) = arp_reply_sender(&frame)
                     && let Some(probe) = arp_index.get(&sender).map(|i| &mut arp_probes[*i])
                     && probe.2.is_none() {
@@ -396,8 +398,8 @@ fn left_the_host(outcome: Option<std::io::Result<()>>) -> bool {
 }
 
 /// The sender address of an ARP reply, or `None` for any other frame.
-fn arp_reply_sender(frame: &EthernetPacket) -> Option<Ipv4Addr> {
-    if frame.get_ethertype() != EtherTypes::Arp {
+fn arp_reply_sender(frame: &Frame<'_>) -> Option<Ipv4Addr> {
+    if frame.ethertype() != EtherTypes::Arp {
         return None;
     }
     let arp = ArpPacket::new(frame.payload())?;

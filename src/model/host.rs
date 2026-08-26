@@ -184,6 +184,31 @@ pub enum NetworkRole {
     /// it.
     SnmpAgent,
 
+    /// Switches frames on behalf of the machines attached to it.
+    ///
+    /// Concluded from the device's own announcement — LLDP's bridge capability
+    /// or CDP's switch, transparent-bridge or source-route-bridge bits — and
+    /// only where the device reports the capability as **enabled** rather than
+    /// merely present. A switch with a routing licence nobody configured
+    /// advertises routing as supported and not enabled, and reading the wrong
+    /// half of that field puts a router on every access switch in a building.
+    ///
+    /// **This is testimony rather than observed behaviour**, which is unlike
+    /// [`Router`](Self::Router) and unlike [`DnsServer`](Self::DnsServer), and
+    /// like [`DhcpServer`](Self::DhcpServer): a DHCP server is believed because
+    /// it named itself in a DHCP server's message, and a switch is believed
+    /// because it named itself in the protocol switches announce themselves
+    /// over. Anything on a segment can send either, which is why neither is
+    /// evidence about a *distant* machine — see
+    /// [`crate::protocols::lldp`] for what a group address does and does not
+    /// prove.
+    ///
+    /// Worth a variant despite that, because it is the one role naming
+    /// infrastructure that a scan generally cannot see at all: a switch usually
+    /// presents no open port to the segment it serves, and often holds no
+    /// address on it.
+    Switch,
+
     /// The machine this scan is running from.
     ///
     /// A sweep of your own segment contains you, and the record it produces is
@@ -249,18 +274,20 @@ impl NetworkRole {
             Self::DhcpServer => "DHCP",
             Self::NtpServer => "NTP",
             Self::SnmpAgent => "SNMP",
+            Self::Switch => "switch",
             Self::Origin => "origin",
             Self::Tarpit => "tarpit",
             Self::Truncated => "truncated",
         }
     }
 
-    pub const ALL: [NetworkRole; 8] = [
+    pub const ALL: [NetworkRole; 9] = [
         Self::Router,
         Self::DnsServer,
         Self::DhcpServer,
         Self::NtpServer,
         Self::SnmpAgent,
+        Self::Switch,
         Self::Origin,
         Self::Tarpit,
         Self::Truncated,

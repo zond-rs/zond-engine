@@ -104,8 +104,9 @@ pub use crate::scanner::report::ENGINE_VERSION;
 // apart. Re-exported rather than called through, since these appear in the
 // export's hot paths and a caller should not have to know where they live.
 pub use crate::record::wire::{
-    host_status_name, network_role_name, port_scope_name, port_state_name, protocol_name,
-    scan_kind_name, scan_response_name, scanner_kind_name, status_protocol_name, stop_reason_name,
+    attachment_source_name, host_status_name, network_role_name, port_scope_name, port_state_name,
+    protocol_name, scan_kind_name, scan_response_name, scanner_kind_name, status_protocol_name,
+    stop_reason_name,
 };
 
 /// The wire name of a send mode.
@@ -210,7 +211,7 @@ impl Serialize for ReportDto<'_> {
         use serde::ser::SerializeStruct;
 
         let mut doc = serializer.serialize_struct("Report", HEADER_FIELDS + 1)?;
-        write_header(&mut doc, self.report, self.generated_at)?;
+        write_header(&mut doc, self.report, self.generated_at, self.options)?;
         // Serialized straight from the iterator so the whole host set is never
         // resident at once.
         doc.serialize_field(
@@ -233,19 +234,31 @@ impl Serialize for ReportDto<'_> {
 #[derive(Debug)]
 pub struct ReportHeaderDto<'a> {
     report: &'a ScanReport,
+    options: &'a ExportOptions,
     generated_at: SystemTime,
 }
 
 impl<'a> ReportHeaderDto<'a> {
     /// Describes a report's header, stamped with the current time.
-    pub fn new(report: &'a ScanReport) -> Self {
-        Self::generated_at(report, SystemTime::now())
+    ///
+    /// Takes the same options the hosts are written under, because the header
+    /// is no longer free of anything they mask: a phase carries the switch this
+    /// machine was plugged into, and that names a device and a hardware
+    /// address. A header rendered without the policy would leak, from a
+    /// document whose every host record honoured it.
+    pub fn new(report: &'a ScanReport, options: &'a ExportOptions) -> Self {
+        Self::generated_at(report, options, SystemTime::now())
     }
 
     /// Describes a report's header with an explicit generation time.
-    pub fn generated_at(report: &'a ScanReport, generated_at: SystemTime) -> Self {
+    pub fn generated_at(
+        report: &'a ScanReport,
+        options: &'a ExportOptions,
+        generated_at: SystemTime,
+    ) -> Self {
         Self {
             report,
+            options,
             generated_at,
         }
     }
@@ -256,7 +269,7 @@ impl Serialize for ReportHeaderDto<'_> {
         use serde::ser::SerializeStruct;
 
         let mut doc = serializer.serialize_struct("ReportHeader", HEADER_FIELDS)?;
-        write_header(&mut doc, self.report, self.generated_at)?;
+        write_header(&mut doc, self.report, self.generated_at, self.options)?;
         doc.end()
     }
 }
@@ -286,8 +299,13 @@ fn write_header<S: serde::ser::SerializeStruct>(
     doc: &mut S,
     report: &ScanReport,
     generated_at: SystemTime,
+    options: &ExportOptions,
 ) -> Result<(), S::Error> {
-    let phases: Vec<PhaseDto<'_>> = report.phases().iter().map(PhaseDto::new).collect();
+    let phases: Vec<PhaseDto<'_>> = report
+        .phases()
+        .iter()
+        .map(|phase| PhaseDto::new(phase, options))
+        .collect();
     let elapsed_us = total_elapsed_us(&phases);
 
     doc.serialize_field("schema_version", &SCHEMA_VERSION)?;
@@ -516,6 +534,41 @@ pub struct PhaseDto<'a> {
     /// where the report's own `engine` is the attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<OriginDto<'a>>,
+    /// Which switch ports the machine running this phase was plugged into, as
+    /// the equipment on the far end announced itself.
+    ///
+    /// Empty where nothing announced itself, which is every unmanaged network.
+    /// Never a claim that the machine is attached to nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentDto<'a>>,
+}
+
+/// Where the machine running a phase was plugged in.
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachmentDto<'a> {
+    /// Which of the scanning machine's interfaces the announcement arrived on.
+    pub link: &'a str,
+    /// Which protocol it was read from.
+    pub source: &'a str,
+    /// The hardware address the device identified its chassis with, masked
+    /// under redaction. `null` where it named itself some other way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_mac: Option<String>,
+    /// What the device calls itself, which on managed equipment is its
+    /// hostname. Masked under redaction, on the same terms a host's is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<Cow<'a, str>>,
+    /// What the device calls the port this machine is plugged into.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<&'a str>,
+    /// The VLAN untagged traffic on this port lands in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_vlan: Option<u16>,
+    /// An address the device is managed at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub management_address: Option<String>,
+    /// When the announcement arrived.
+    pub observed_at: String,
 }
 
 /// Which document a phase came from, for a merged report.
@@ -531,8 +584,14 @@ pub struct OriginDto<'a> {
 }
 
 impl<'a> PhaseDto<'a> {
-    /// Renders a recorded phase.
-    pub fn new(phase: &'a ScanPhase) -> Self {
+    /// Renders a recorded phase, applying the redaction policy in `options`.
+    ///
+    /// A phase carried nothing to redact until it began carrying an
+    /// [`attachment`](crate::scanner::report::Attachment), which names a device
+    /// and its hardware address — both of them exactly what the policy exists to
+    /// mask, and neither of them less identifying for describing a switch
+    /// rather than a workstation.
+    pub fn new(phase: &'a ScanPhase, options: &ExportOptions) -> Self {
         Self {
             kind: scan_kind_name(phase.kind()),
             started_at: rfc3339(phase.started_at()),
@@ -551,6 +610,26 @@ impl<'a> PhaseDto<'a> {
                 label: origin.label(),
                 engine_version: origin.engine_version(),
             }),
+            attachments: phase
+                .attachments()
+                .iter()
+                .map(|attachment| AttachmentDto {
+                    link: attachment.link().name(),
+                    source: attachment_source_name(attachment.source()),
+                    device_mac: attachment
+                        .device_mac()
+                        .map(|mac| options.redaction.mac(&mac)),
+                    device_name: attachment
+                        .device_name()
+                        .map(|name| options.redaction.hostname(name)),
+                    port: attachment.port(),
+                    native_vlan: attachment.native_vlan(),
+                    management_address: attachment
+                        .management_address()
+                        .map(|address| address.to_string()),
+                    observed_at: rfc3339(attachment.observed_at()),
+                })
+                .collect(),
         }
     }
 }
@@ -582,6 +661,18 @@ pub struct ScopeDto {
     /// its index is a runtime detail of the machine that scanned, and means
     /// nothing on the machine reading this.
     pub links: Vec<String>,
+    /// The links this phase read traffic from without probing them.
+    ///
+    /// **Never coverage**, which is the whole reason it is not `links`. A sweep
+    /// puts a probe on the segment that every host there is obliged to answer,
+    /// so a host missing from the report was not on it. Listening establishes
+    /// nothing of the kind: a machine that stayed quiet during the window is
+    /// indistinguishable from one that is absent.
+    ///
+    /// Read it to know where a phase was standing, never to conclude that
+    /// anything was or was not there.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub listened: Vec<String>,
     /// Which ports the phase walked, and whether it walked the same ones for
     /// every address.
     ///
@@ -659,6 +750,15 @@ impl ScopeDto {
                     .collect();
                 links.sort();
                 links
+            },
+            listened: {
+                let mut listened: Vec<String> = scope
+                    .listened()
+                    .iter()
+                    .map(|zone| zone.name().to_owned())
+                    .collect();
+                listened.sort();
+                listened
             },
             addresses: scope.addresses().to_string(),
             probes: scope.probes().map(|count| count.to_string()),

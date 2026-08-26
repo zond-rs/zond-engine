@@ -561,6 +561,7 @@ mod tests {
         let scope = TargetScope::from_ip_set(&mut targets, &exclusions);
 
         let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
             kind: ScanKind::Discovery,
             started_at: at,
             elapsed: PROMPT,
@@ -586,6 +587,7 @@ mod tests {
         let mut targets = to_set(&[covered], None, None).expect("a parseable range");
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
         let scope = TargetScope::from_parts(ScopeParts {
+            listened: Vec::new(),
             ranges: scope.ranges().to_vec(),
             links: Vec::new(),
             addresses: scope.addresses(),
@@ -597,6 +599,7 @@ mod tests {
         });
 
         let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: at,
             elapsed: PROMPT,
@@ -619,6 +622,7 @@ mod tests {
         let mut targets = to_set(&[covered], None, None).expect("a parseable range");
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
         let scope = TargetScope::from_parts(ScopeParts {
+            listened: Vec::new(),
             ranges: scope.ranges().to_vec(),
             links: vec![Zone::new(1, link)],
             addresses: scope.addresses(),
@@ -630,6 +634,7 @@ mod tests {
         });
 
         let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
             kind: ScanKind::Discovery,
             started_at: at,
             elapsed: PROMPT,

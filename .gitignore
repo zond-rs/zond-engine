@@ -3,7 +3,9 @@
 *.swp
 .idea/
 
-# Internal working notes: design records, measurement logs and open defects,
-# written for whoever is working on the engine. Not user-facing documentation,
-# and deliberately not shipped.
-/docs/
+# Design records and point-in-time assessments, written for whoever is working
+# on the engine. They are working notes rather than documentation, they argue
+# with themselves as the work lands, and they are nobody's business but this
+# machine's — so they stay out of the repository entirely rather than out of the
+# published crate.
+/audit/

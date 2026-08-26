@@ -64,9 +64,15 @@ discovery. `TcpPortScanner` takes the `TcpScanTechnique` to probe with, and
 `FakeNet::stack` chooses how the virtual hosts answer it — conformant,
 BSD-derived, or one of the stacks that reset every flag probe whatever the port
 state. `LocalScanner` takes an `EthernetHandle` instead of a probe transport,
-because it identifies a neighbour by the Ethernet source MAC that a capture-fed
+because it identifies a neighbour by the Ethernet source MAC that a segment-fed
 transport has already stripped, so it gets `FakeLan` and
 `LocalScanner::with_handle`.
+
+An `EthernetHandle` carries `CapturedFrame`s rather than bare bytes: each frame
+arrives with the link it came off, how it is framed, and when it was seen. A
+fixture building frames by hand wraps them the way `FakeLan::capture` does —
+which is also the reason a fixture and `common::scanner_interface` have to agree
+on which interface they are pretending to be.
 
 ### Tests that are meant to fail
 

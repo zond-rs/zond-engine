@@ -83,13 +83,166 @@
     }
   },
   "$defs": {
-    "timestamp": {
-      "description": "An RFC 3339 instant in UTC, to microsecond precision. Fixed width, so these sort as text in the order they sort in time.",
-      "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "link",
+        "source",
+        "observed_at"
+      ],
+      "properties": {
+        "link": {
+          "description": "Which of the scanning machine's own interfaces the announcement arrived on. A link-scoped finding means nothing without it: two interfaces reach two different segments.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Which protocol the announcement was read from. The two do not cover the same ground - Cisco equipment runs CDP by default and LLDP only when it is enabled - so which one answered is itself a fact about what the network is made of.",
+          "enum": [
+            "lldp",
+            "cdp"
+          ]
+        },
+        "device_mac": {
+          "description": "The hardware address the device identified its chassis with. The field that ties this attachment to a host elsewhere in the same report, where a name is a string two devices may share. Absent where the device named itself some other way.",
+          "type": "string"
+        },
+        "device_name": {
+          "description": "What the device calls itself, which on managed equipment is its configured hostname.",
+          "type": "string"
+        },
+        "port": {
+          "description": "What the device calls the port this machine is plugged into, in its own configuration - `GigabitEthernet1/0/14`. The half of the finding that locates the scanning machine rather than the switch.",
+          "type": "string"
+        },
+        "native_vlan": {
+          "description": "The VLAN untagged traffic on this port lands in, where the device advertised one.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "management_address": {
+          "description": "An address the device is managed at, where it advertised one.",
+          "type": "string"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
     },
-    "duration_us": {
-      "description": "A duration in whole microseconds.",
+    "attempt_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt",
+        "or_later",
+        "count"
+      ],
+      "properties": {
+        "attempt": {
+          "description": "The attempt number, counting from one.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "or_later": {
+          "description": "Whether this entry also absorbs every later attempt. True on the last entry only, so a hand-raised retry budget still has somewhere to land.",
+          "type": "boolean"
+        },
+        "count": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "le_ms",
+        "count"
+      ],
+      "properties": {
+        "le_ms": {
+          "description": "The bucket's inclusive upper bound in milliseconds, or null for the final open-ended bucket.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "count": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "received",
+        "dropped",
+        "if_dropped"
+      ],
+      "properties": {
+        "received": {
+          "$ref": "#/$defs/count"
+        },
+        "dropped": {
+          "description": "Frames discarded because the buffer was full when they arrived.",
+          "$ref": "#/$defs/count"
+        },
+        "if_dropped": {
+          "description": "Frames discarded by the interface or driver before the capture saw them. Not every platform reports this, so a zero is weaker evidence here than in `dropped`.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "certificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "common_name",
+        "sans",
+        "issuer",
+        "validity_start",
+        "validity_end",
+        "pubkey_type",
+        "pubkey_bits",
+        "fingerprint_sha256"
+      ],
+      "properties": {
+        "common_name": {
+          "description": "The subject Common Name, masked under export redaction: an internal CA issues certificates naming people and machines.",
+          "type": "string"
+        },
+        "sans": {
+          "description": "Subject Alternative Names, masked under export redaction for the same reason.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "validity_start": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "validity_end": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "pubkey_type": {
+          "type": "string"
+        },
+        "pubkey_bits": {
+          "$ref": "#/$defs/count"
+        },
+        "fingerprint_sha256": {
+          "description": "The SHA-256 fingerprint of the DER-encoded certificate.",
+          "type": "string"
+        }
+      }
+    },
+    "count": {
       "type": "integer",
       "minimum": 0
     },
@@ -98,132 +251,409 @@
       "type": "string",
       "pattern": "^[0-9]+$"
     },
-    "count": {
+    "discovery": {
+      "description": "How a port's state was established.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "timestamp",
+        "rtt_us",
+        "ttl",
+        "source_ip"
+      ],
+      "properties": {
+        "reason": {
+          "description": "The packet response that decided the state. A strategy-supplied name is prefixed `custom:`.",
+          "anyOf": [
+            {
+              "enum": [
+                "tcp_syn_ack",
+                "tcp_rst",
+                "udp_response",
+                "no_response",
+                "icmp_unreachable",
+                "icmp_prohibited"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^custom:"
+            }
+          ]
+        },
+        "timestamp": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "rtt_us": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/duration_us"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ttl": {
+          "$ref": "#/$defs/ttl"
+        },
+        "source_ip": {
+          "description": "The local interface address the probe was answered on. Relevant on multi-homed hosts, where port states differ by path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "duration_us": {
+      "description": "A duration in whole microseconds.",
       "type": "integer",
       "minimum": 0
+    },
+    "failure": {
+      "description": "A strategy that did not run to completion. The scan continued with whatever strategies remained, so a report carrying failures still carries results - just narrower ones.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scanner",
+        "reason",
+        "at"
+      ],
+      "properties": {
+        "scanner": {
+          "$ref": "#/$defs/scanner_kind"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "hardware": {
+      "description": "Physical hardware identity. The engine records when each address was last seen; those readings are not exported, because the addresses themselves are what identifies the hardware and a consumer comparing two scans has each report's own timestamps to work from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mac",
+        "macs",
+        "vendor"
+      ],
+      "properties": {
+        "mac": {
+          "description": "The most recently observed address, which is the one currently on the network. Masked to its OUI under export redaction.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "macs": {
+          "description": "Every address observed, sorted. More than one means a multi-NIC host or a device rotating a randomized address.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "vendor": {
+          "description": "The vendor resolved from the OUI. Survives redaction, which preserves the OUI, so naming it reveals nothing the masked address does not.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "hop": {
+      "description": "One router between the scanning host and the host this path belongs to.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distance",
+        "address",
+        "rtt_us",
+        "inferred"
+      ],
+      "properties": {
+        "distance": {
+          "description": "How many routers from the scanning host this one sits. The key, not the position: a router that declines to answer leaves a gap, and the entries either side keep the distances they were measured at. Counting array indices to get a distance is wrong on any path containing a silent router.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "address": {
+          "description": "The address the router answered from, or null where nothing answered at this distance. Null is a finding rather than missing data: a router is there, since hops beyond it were reached, and it did not identify itself.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rtt_us": {
+          "description": "Round trip to this router in microseconds, or null. Measured from the scanning host, so it includes every hop in front of this one, and it times a router's error generation rather than its forwarding - a hop slower than the one past it is ordinary.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/duration_us"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inferred": {
+          "description": "Whether this hop was measured on the way to this host, or taken from another host's trace through the same router. The second is an inference: it assumes two paths meeting at one router at one distance agreed before it.",
+          "type": "boolean"
+        }
+      }
+    },
+    "host": {
+      "description": "Everything the scan established about one host. Deliberately not closed here: `zond-lines-v1.schema.json` reuses this definition and adds a `type` field to it, and a definition that closes itself cannot be reused that way. Each use site closes it instead \u2014 see `hosts` in this file.",
+      "type": "object",
+      "required": [
+        "primary_ip",
+        "ips",
+        "hostname",
+        "status",
+        "alive",
+        "reasons",
+        "roles",
+        "os",
+        "hardware",
+        "telemetry",
+        "ports",
+        "first_seen",
+        "last_seen",
+        "zone",
+        "families",
+        "path"
+      ],
+      "properties": {
+        "primary_ip": {
+          "description": "The address the host is keyed by, stable across a merge.",
+          "type": "string",
+          "minLength": 1
+        },
+        "ips": {
+          "description": "Every address known for this host, ascending. Multi-homed and dual-stack hosts have more than one.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "zone": {
+          "description": "The interface primary_ip is valid on, when the host was found at the link layer. Null otherwise. An IPv6 link-local address names a different machine on every segment and cannot be connected to without this, so a record carrying fe80::\u2026 and no zone describes a host nothing can reach.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "families": {
+          "description": "The address families this host answered at, ascending: ipv4, ipv6, or both. Derivable from ips and stated anyway, so a consumer asking how much of a network was seen over IPv6 does not have to parse addresses.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "ipv4",
+              "ipv6"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "hostname": {
+          "description": "The resolved hostname, masked under export redaction.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "unknown",
+            "down",
+            "filtered",
+            "up"
+          ]
+        },
+        "alive": {
+          "description": "Whether the host is confirmed present. True for `up` and `filtered`; carried so a consumer need not know that a filtered host is still a host.",
+          "type": "boolean"
+        },
+        "reasons": {
+          "description": "The evidence behind the status, sorted.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reason"
+          }
+        },
+        "roles": {
+          "description": "What the scan concluded the host is, each from evidence in its own protocol. Sorted, and empty for a host nothing was concluded about.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "router",
+              "dns",
+              "dhcp",
+              "ntp",
+              "snmp",
+              "switch",
+              "origin",
+              "tarpit",
+              "truncated"
+            ]
+          }
+        },
+        "os": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/os"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hardware": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/hardware"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "telemetry": {
+          "$ref": "#/$defs/telemetry"
+        },
+        "ports": {
+          "description": "Discovered ports, ascending by number.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        },
+        "first_seen": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "last_seen": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "path": {
+          "description": "The routers between the scanning host and this one, ascending by distance. Empty when no trace ran - the phase's `traceroute` setting is what distinguishes that from a trace that found nothing.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hop"
+          }
+        }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine_version"
+      ],
+      "properties": {
+        "label": {
+          "description": "What the caller called the document this phase was read from - a path, a record id, whatever the front end named it. Absent where it gave no name; the engine never invents one.",
+          "type": "string"
+        },
+        "engine_version": {
+          "description": "What produced this phase, as that scanner attributed itself. `nmap 7.94` for a phase read out of nmap's XML. Not evidence that a zond engine ran it.",
+          "type": "string"
+        }
+      }
+    },
+    "os": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "family",
+        "device",
+        "generation",
+        "vendor",
+        "kernel",
+        "accuracy",
+        "detail_accuracy",
+        "cpe",
+        "evidence"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device": {
+          "description": "What kind of box this is - \"Printer\", \"Switch\", \"Router\" - or null where nothing named a class. A separate axis from `family` rather than a coarser one: what a machine is and what it runs are independent facts, and a source may establish either without the other.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vendor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kernel": {
+          "description": "The kernel release, or null where nothing read one. Beside `generation` rather than a finer form of it: a distribution release and the kernel it ships are two facts about one machine, and a source that knows one may know nothing of the other. For a Unix host this is what a known-vulnerability lookup keys on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accuracy": {
+          "description": "Confidence in the *family*, as a percentage. The family is the part every source can speak to, so this is what their agreement describes.",
+          "$ref": "#/$defs/percentage"
+        },
+        "detail_accuracy": {
+          "description": "Confidence in everything past the family - the vendor, product, generation and CPE - or null where the finding names none of them. Separate from `accuracy` because the two are usually attested differently: a stack reading and a service banner may agree that a host is Linux while only the banner can say which release, and one figure for both would report the weaker claim at the stronger claim's strength.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/percentage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "description": "What this identification was read off, in one line, or null where the technique recorded nothing. Written for a person rather than for a parser: different techniques render different things here, and the fields to act on are the named ones beside it. It is here so a disputed finding can be diagnosed, and turned into a corpus entry, without re-running the scan.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     },
     "percentage": {
       "type": "integer",
       "minimum": 0,
       "maximum": 100
-    },
-    "ttl": {
-      "type": [
-        "integer",
-        "null"
-      ],
-      "minimum": 0,
-      "maximum": 255
-    },
-    "summary": {
-      "description": "Counts derived from the hosts, so they cannot disagree with the data they describe. Every category is present whether or not anything landed in it.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "hosts_total",
-        "hosts_alive",
-        "hosts_by_status",
-        "ports_total",
-        "ports_open",
-        "ports_by_state",
-        "services_identified",
-        "hosts_by_family"
-      ],
-      "properties": {
-        "hosts_total": {
-          "$ref": "#/$defs/count"
-        },
-        "hosts_alive": {
-          "description": "Hosts confirmed present: up or filtered.",
-          "$ref": "#/$defs/count"
-        },
-        "hosts_by_status": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "up",
-            "filtered",
-            "down",
-            "unknown"
-          ],
-          "properties": {
-            "up": {
-              "$ref": "#/$defs/count"
-            },
-            "filtered": {
-              "$ref": "#/$defs/count"
-            },
-            "down": {
-              "$ref": "#/$defs/count"
-            },
-            "unknown": {
-              "$ref": "#/$defs/count"
-            }
-          }
-        },
-        "ports_total": {
-          "$ref": "#/$defs/count"
-        },
-        "ports_open": {
-          "$ref": "#/$defs/count"
-        },
-        "ports_by_state": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "open",
-            "open_filtered",
-            "closed",
-            "unfiltered",
-            "filtered",
-            "closed_filtered"
-          ],
-          "properties": {
-            "open": {
-              "$ref": "#/$defs/count"
-            },
-            "open_filtered": {
-              "$ref": "#/$defs/count"
-            },
-            "closed": {
-              "$ref": "#/$defs/count"
-            },
-            "unfiltered": {
-              "$ref": "#/$defs/count"
-            },
-            "filtered": {
-              "$ref": "#/$defs/count"
-            },
-            "closed_filtered": {
-              "$ref": "#/$defs/count"
-            }
-          }
-        },
-        "services_identified": {
-          "$ref": "#/$defs/count"
-        },
-        "hosts_by_family": {
-          "description": "Hosts counted by the address families they answered at. A dual-stack host is counted in all three, so these do not partition hosts_total: the question they answer is how much of the network was seen over each family.",
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "ipv4",
-            "ipv6",
-            "dual_stack"
-          ],
-          "properties": {
-            "ipv4": {
-              "$ref": "#/$defs/count"
-            },
-            "ipv6": {
-              "$ref": "#/$defs/count"
-            },
-            "dual_stack": {
-              "$ref": "#/$defs/count"
-            }
-          }
-        }
-      }
     },
     "phase": {
       "description": "One call into the engine.",
@@ -245,7 +675,8 @@
           "description": "Which entry point this phase records.",
           "enum": [
             "discovery",
-            "port_scan"
+            "port_scan",
+            "listen"
           ]
         },
         "started_at": {
@@ -292,261 +723,98 @@
         "origin": {
           "description": "Which document this phase was folded in from, for a report merged out of several. Absent on a phase the engine that wrote this document measured itself, where the report's own `engine` block is the attribution.",
           "$ref": "#/$defs/origin"
+        },
+        "attachments": {
+          "description": "Where the machine running this phase was plugged in, as the equipment on the far end of the cable announced itself over LLDP or CDP. Not a finding about any host in the report - a relation between the scanning machine and somebody else's switch port, which no probe obtains. Absent where nothing announced itself, which is every unmanaged network; never a claim that the machine is attached to nothing. Recorded per phase rather than per report because a merged report holds phases measured from several vantage points, and each ran somewhere different.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attachment"
+          }
         }
       }
     },
-    "origin": {
+    "port": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "engine_version"
+        "port",
+        "protocol",
+        "state",
+        "service",
+        "security",
+        "discovery"
       ],
       "properties": {
-        "label": {
-          "description": "What the caller called the document this phase was read from - a path, a record id, whatever the front end named it. Absent where it gave no name; the engine never invents one.",
-          "type": "string"
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
         },
-        "engine_version": {
-          "description": "What produced this phase, as that scanner attributed itself. `nmap 7.94` for a phase read out of nmap's XML. Not evidence that a zond engine ran it.",
-          "type": "string"
-        }
-      }
-    },
-    "scope": {
-      "description": "What a phase was asked to cover, after overlapping arguments were merged.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "ranges",
-        "links",
-        "addresses",
-        "probes",
-        "ports",
-        "protocols",
-        "excluded",
-        "withheld"
-      ],
-      "properties": {
-        "ranges": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/range"
-          }
+        "protocol": {
+          "$ref": "#/$defs/protocol"
         },
-        "links": {
-          "description": "The links this phase swept whole, by interface name, ascending. `ranges` is what a target set named; a sweep of a local segment also reaches every host on the link, which is ground no range expresses - an all-nodes solicitation is one probe every IPv6 neighbour is required to answer. A consumer checking whether a host was in scope reads both. Empty for a phase that swept no segment.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        "state": {
+          "enum": [
+            "closed_filtered",
+            "filtered",
+            "unfiltered",
+            "closed",
+            "open_filtered",
+            "open"
+          ]
         },
-        "addresses": {
-          "description": "How many distinct addresses were in scope.",
-          "$ref": "#/$defs/count_string"
-        },
-        "probes": {
-          "description": "How many address/port/protocol combinations were in scope. Null on a discovery phase, which has no port dimension, and on a target set too large to count - the phase `kind` tells the two apart.",
+        "service": {
           "oneOf": [
             {
-              "$ref": "#/$defs/count_string"
+              "$ref": "#/$defs/service"
             },
             {
               "type": "null"
             }
           ]
         },
-        "ports": {
-          "description": "Which ports the phase walked, and whether it walked the same ones for every address. Null where the record does not say, which is what a report rebuilt from another tool's output carries. `probes` counts these combinations; this names the ports they were.",
+        "security": {
           "oneOf": [
             {
-              "$ref": "#/$defs/port_scope"
+              "$ref": "#/$defs/security"
             },
             {
               "type": "null"
             }
           ]
         },
-        "protocols": {
-          "description": "Transport protocols in scope, ascending. Empty on a discovery phase, whose probes are chosen by the strategy rather than by the caller.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/protocol"
-          }
-        },
-        "excluded": {
-          "description": "The merged ranges this phase was forbidden to probe, ascending. Empty when no exclusion policy was in force; a policy that was in force and overlapped nothing appears here in full with `withheld` at \"0\". No host in this report falls inside any of these ranges, which is the one claim here a consumer can check for itself.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/range"
-          }
-        },
-        "withheld": {
-          "description": "How many addresses the exclusion policy took out of this phase: the overlap between the policy and what the phase was handed, not the size of the policy. \"0\" from a policy naming ground this phase would never have walked, and \"0\" again from a phase whose targets an earlier phase had already narrowed.",
-          "$ref": "#/$defs/count_string"
+        "discovery": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/discovery"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-    "range": {
-      "description": "One inclusive address range.",
+    "port_scope": {
+      "description": "Which ports a phase walked. Only `every` supports concluding that a particular endpoint of a covered address was probed; under `mixed` a port in the set was walked for at least one address and not necessarily for any given one, though a port absent from it was walked for none.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "family",
-        "start",
-        "end"
+        "kind",
+        "spec"
       ],
       "properties": {
-        "family": {
+        "kind": {
+          "description": "`none` for a phase that walked no ports, `every` where each address was walked for the same set, `mixed` where they differed and `spec` is their union.",
           "enum": [
-            "ipv4",
-            "ipv6"
+            "none",
+            "every",
+            "mixed"
           ]
         },
-        "start": {
-          "type": "string",
-          "minLength": 1
-        },
-        "end": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
-    },
-    "settings": {
-      "description": "The settings that shaped what a phase put on the wire. A deliberate subset of the engine's configuration: what changed the packets and how long the engine waited. Presentation settings are absent, so a quieter terminal never reads as a different scan.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "send_mode",
-        "tcp_technique",
-        "retry",
-        "max_probe_rate",
-        "dns_enabled",
-        "redact",
-        "os_detection",
-        "service_detection",
-        "traceroute"
-      ],
-      "properties": {
-        "send_mode": {
-          "description": "How raw probes were placed on the wire.",
-          "enum": [
-            "auto",
-            "raw_socket",
-            "ethernet"
-          ]
-        },
-        "tcp_technique": {
-          "description": "Which segment each TCP port probe carried, and so what its answers mean. A port reported `closed` by a `syn` scan refused a connection attempt; the same verdict from a `fin`, `null`, `xmas` or `maimon` scan is a reset drawn by a segment that was not one, and those techniques report every port closed against stacks that reset everything. An `ack` scan never reports a port open at all - it maps the filtering in front of the host.",
-          "enum": [
-            "syn",
-            "fin",
-            "null",
-            "xmas",
-            "maimon",
-            "ack"
-          ]
-        },
-        "retry": {
-          "$ref": "#/$defs/retry"
-        },
-        "max_probe_rate": {
-          "description": "The probe-rate ceiling in probes per second, or null if the scanner's own default applied.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "dns_enabled": {
-          "description": "Whether name resolution was permitted to generate traffic.",
-          "type": "boolean"
-        },
-        "redact": {
-          "description": "Whether the caller asked the scan to mask identifying detail. Distinct from export redaction, which is chosen when the report is written and is visible in what this document actually contains.",
-          "type": "boolean"
-        },
-        "os_detection": {
-          "description": "How far the phase went to identify the operating system behind each host. A host reported without one means different things at each level: at `off` nothing looked, and at any other level something looked and did not conclude. The level also bounds how much of the phase's traffic the engine originated for this purpose - `off` and `passive` originate none at all, reading only replies drawn for other reasons, while `active` sends well-formed probes of its own and `aggressive` sends deliberately malformed ones as well.",
-          "enum": [
-            "off",
-            "passive",
-            "active",
-            "aggressive"
-          ]
-        },
-        "service_detection": {
-          "description": "How far the phase went to identify what was listening behind each open port. A port reported with no service means different things at each level: at `off` nothing connected to it, and at any other level something did and could not tell. The level also says what the target would have logged - `off` completes no connection for identification at all, `banner` connects and listens without sending, and `probe` connects and asks.",
-          "enum": [
-            "off",
-            "banner",
-            "probe"
-          ]
-        },
-        "traceroute": {
-          "description": "Whether the phase measured the route to each host that answered. A host with no path is two different findings - a scan that did not look, and a scan that looked and got nothing back - and only this separates them.",
-          "type": "boolean"
-        }
-      }
-    },
-    "retry": {
-      "description": "The retransmission budget a phase ran under.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "effort",
-        "max_attempts",
-        "timeout_scale",
-        "dampen_silent_hosts"
-      ],
-      "properties": {
-        "effort": {
-          "enum": [
-            "single",
-            "fast",
-            "balanced",
-            "thorough"
-          ]
-        },
-        "max_attempts": {
-          "description": "An attempt budget set by the caller, overriding what `effort` implies.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "timeout_scale": {
-          "description": "A multiplier on how long the scan was willing to wait. Null when the caller set none, and when the value set was not a finite number.",
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "dampen_silent_hosts": {
-          "description": "Whether a host that answered nothing could have its budget cut short.",
-          "type": "boolean"
-        }
-      }
-    },
-    "failure": {
-      "description": "A strategy that did not run to completion. The scan continued with whatever strategies remained, so a report carrying failures still carries results - just narrower ones.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "scanner",
-        "reason",
-        "at"
-      ],
-      "properties": {
-        "scanner": {
-          "$ref": "#/$defs/scanner_kind"
-        },
-        "reason": {
+        "spec": {
+          "description": "The ports, written as the specification a scanner takes: comma separated, `start-end` for a run, `u:` prefixing the UDP half. Empty under `none`.",
           "type": "string"
-        },
-        "at": {
-          "$ref": "#/$defs/timestamp"
         }
       }
     },
@@ -714,208 +982,36 @@
         }
       }
     },
-    "attempt_count": {
+    "protocol": {
+      "enum": [
+        "tcp",
+        "udp",
+        "sctp"
+      ]
+    },
+    "range": {
+      "description": "One inclusive address range.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "attempt",
-        "or_later",
-        "count"
+        "family",
+        "start",
+        "end"
       ],
       "properties": {
-        "attempt": {
-          "description": "The attempt number, counting from one.",
-          "type": "integer",
-          "minimum": 1
+        "family": {
+          "enum": [
+            "ipv4",
+            "ipv6"
+          ]
         },
-        "or_later": {
-          "description": "Whether this entry also absorbs every later attempt. True on the last entry only, so a hand-raised retry budget still has somewhere to land.",
-          "type": "boolean"
-        },
-        "count": {
-          "$ref": "#/$defs/count"
-        }
-      }
-    },
-    "bucket": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "le_ms",
-        "count"
-      ],
-      "properties": {
-        "le_ms": {
-          "description": "The bucket's inclusive upper bound in milliseconds, or null for the final open-ended bucket.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "count": {
-          "$ref": "#/$defs/count"
-        }
-      }
-    },
-    "capture": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "received",
-        "dropped",
-        "if_dropped"
-      ],
-      "properties": {
-        "received": {
-          "$ref": "#/$defs/count"
-        },
-        "dropped": {
-          "description": "Frames discarded because the buffer was full when they arrived.",
-          "$ref": "#/$defs/count"
-        },
-        "if_dropped": {
-          "description": "Frames discarded by the interface or driver before the capture saw them. Not every platform reports this, so a zero is weaker evidence here than in `dropped`.",
-          "$ref": "#/$defs/count"
-        }
-      }
-    },
-    "host": {
-      "description": "Everything the scan established about one host. Deliberately not closed here: `zond-lines-v1.schema.json` reuses this definition and adds a `type` field to it, and a definition that closes itself cannot be reused that way. Each use site closes it instead \u2014 see `hosts` in this file.",
-      "type": "object",
-      "required": [
-        "primary_ip",
-        "ips",
-        "hostname",
-        "status",
-        "alive",
-        "reasons",
-        "roles",
-        "os",
-        "hardware",
-        "telemetry",
-        "ports",
-        "first_seen",
-        "last_seen",
-        "zone",
-        "families",
-        "path"
-      ],
-      "properties": {
-        "primary_ip": {
-          "description": "The address the host is keyed by, stable across a merge.",
+        "start": {
           "type": "string",
           "minLength": 1
         },
-        "ips": {
-          "description": "Every address known for this host, ascending. Multi-homed and dual-stack hosts have more than one.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "zone": {
-          "description": "The interface primary_ip is valid on, when the host was found at the link layer. Null otherwise. An IPv6 link-local address names a different machine on every segment and cannot be connected to without this, so a record carrying fe80::\u2026 and no zone describes a host nothing can reach.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "families": {
-          "description": "The address families this host answered at, ascending: ipv4, ipv6, or both. Derivable from ips and stated anyway, so a consumer asking how much of a network was seen over IPv6 does not have to parse addresses.",
-          "type": "array",
-          "items": {
-            "enum": [
-              "ipv4",
-              "ipv6"
-            ]
-          },
-          "uniqueItems": true
-        },
-        "hostname": {
-          "description": "The resolved hostname, masked under export redaction.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "status": {
-          "enum": [
-            "unknown",
-            "down",
-            "filtered",
-            "up"
-          ]
-        },
-        "alive": {
-          "description": "Whether the host is confirmed present. True for `up` and `filtered`; carried so a consumer need not know that a filtered host is still a host.",
-          "type": "boolean"
-        },
-        "reasons": {
-          "description": "The evidence behind the status, sorted.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reason"
-          }
-        },
-        "roles": {
-          "description": "What the scan concluded the host is, each from evidence in its own protocol. Sorted, and empty for a host nothing was concluded about.",
-          "type": "array",
-          "items": {
-            "enum": [
-              "router",
-              "dns",
-              "dhcp",
-              "ntp",
-              "snmp",
-              "origin",
-              "tarpit",
-              "truncated"
-            ]
-          }
-        },
-        "os": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/os"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "hardware": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/hardware"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "telemetry": {
-          "$ref": "#/$defs/telemetry"
-        },
-        "ports": {
-          "description": "Discovered ports, ascending by number.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/port"
-          }
-        },
-        "first_seen": {
-          "$ref": "#/$defs/timestamp"
-        },
-        "last_seen": {
-          "$ref": "#/$defs/timestamp"
-        },
-        "path": {
-          "description": "The routers between the scanning host and this one, ascending by distance. Empty when no trace ran - the phase's `traceroute` setting is what distinguishes that from a trace that found nothing.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/hop"
-          }
+        "end": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -964,39 +1060,206 @@
         }
       }
     },
-    "os": {
+    "retry": {
+      "description": "The retransmission budget a phase ran under.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effort",
+        "max_attempts",
+        "timeout_scale",
+        "dampen_silent_hosts"
+      ],
+      "properties": {
+        "effort": {
+          "enum": [
+            "single",
+            "fast",
+            "balanced",
+            "thorough"
+          ]
+        },
+        "max_attempts": {
+          "description": "An attempt budget set by the caller, overriding what `effort` implies.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "timeout_scale": {
+          "description": "A multiplier on how long the scan was willing to wait. Null when the caller set none, and when the value set was not a finite number.",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dampen_silent_hosts": {
+          "description": "Whether a host that answered nothing could have its budget cut short.",
+          "type": "boolean"
+        }
+      }
+    },
+    "scanner_kind": {
+      "description": "A scanning strategy. Which ones ran is a property of the host and its privileges, not of what the caller asked for.",
+      "enum": [
+        "local",
+        "passive",
+        "routed",
+        "syn_port",
+        "tcp_port",
+        "connect",
+        "connect_udp",
+        "udp_port",
+        "os_echo",
+        "os_series",
+        "os_snmp",
+        "composite"
+      ]
+    },
+    "scope": {
+      "description": "What a phase was asked to cover, after overlapping arguments were merged.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ranges",
+        "links",
+        "addresses",
+        "probes",
+        "ports",
+        "protocols",
+        "excluded",
+        "withheld"
+      ],
+      "properties": {
+        "ranges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/range"
+          }
+        },
+        "links": {
+          "description": "The links this phase swept whole, by interface name, ascending. `ranges` is what a target set named; a sweep of a local segment also reaches every host on the link, which is ground no range expresses - an all-nodes solicitation is one probe every IPv6 neighbour is required to answer. A consumer checking whether a host was in scope reads both. Empty for a phase that swept no segment.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "listened": {
+          "description": "The links this phase read traffic from without probing them. Never coverage, which is the whole reason it is not `links`: a sweep puts a probe on the segment that every host there is obliged to answer, so a host missing from the report was not on it, while a machine that stayed quiet during a listening window is indistinguishable from one that is absent. Read it to know where a phase was standing, never to conclude anything was or was not there.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "addresses": {
+          "description": "How many distinct addresses were in scope.",
+          "$ref": "#/$defs/count_string"
+        },
+        "probes": {
+          "description": "How many address/port/protocol combinations were in scope. Null on a discovery phase, which has no port dimension, and on a target set too large to count - the phase `kind` tells the two apart.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/count_string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ports": {
+          "description": "Which ports the phase walked, and whether it walked the same ones for every address. Null where the record does not say, which is what a report rebuilt from another tool's output carries. `probes` counts these combinations; this names the ports they were.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/port_scope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocols": {
+          "description": "Transport protocols in scope, ascending. Empty on a discovery phase, whose probes are chosen by the strategy rather than by the caller.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/protocol"
+          }
+        },
+        "excluded": {
+          "description": "The merged ranges this phase was forbidden to probe, ascending. Empty when no exclusion policy was in force; a policy that was in force and overlapped nothing appears here in full with `withheld` at \"0\". No host in this report falls inside any of these ranges, which is the one claim here a consumer can check for itself.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/range"
+          }
+        },
+        "withheld": {
+          "description": "How many addresses the exclusion policy took out of this phase: the overlap between the policy and what the phase was handed, not the size of the policy. \"0\" from a policy naming ground this phase would never have walked, and \"0\" again from a phase whose targets an earlier phase had already narrowed.",
+          "$ref": "#/$defs/count_string"
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tls_version",
+        "cipher_suite",
+        "alpn",
+        "certificate"
+      ],
+      "properties": {
+        "tls_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cipher_suite": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alpn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "certificate": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/certificate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "service": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "name",
-        "family",
-        "device",
-        "generation",
+        "confidence",
+        "product",
         "vendor",
-        "kernel",
-        "accuracy",
-        "detail_accuracy",
-        "cpe",
-        "evidence"
+        "version",
+        "extrainfo",
+        "cpe"
       ],
       "properties": {
         "name": {
+          "description": "The high-level protocol name, such as `ssh` or `http`.",
           "type": "string"
         },
-        "family": {
-          "type": [
-            "string",
-            "null"
-          ]
+        "confidence": {
+          "description": "Certainty of this identification. A table lookup by port number scores near zero; a completed protocol handshake scores near 100.",
+          "$ref": "#/$defs/percentage"
         },
-        "device": {
-          "description": "What kind of box this is - \"Printer\", \"Switch\", \"Router\" - or null where nothing named a class. A separate axis from `family` rather than a coarser one: what a machine is and what it runs are independent facts, and a source may establish either without the other.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "generation": {
+        "product": {
           "type": [
             "string",
             "null"
@@ -1008,26 +1271,16 @@
             "null"
           ]
         },
-        "kernel": {
-          "description": "The kernel release, or null where nothing read one. Beside `generation` rather than a finer form of it: a distribution release and the kernel it ships are two facts about one machine, and a source that knows one may know nothing of the other. For a Unix host this is what a known-vulnerability lookup keys on.",
+        "version": {
           "type": [
             "string",
             "null"
           ]
         },
-        "accuracy": {
-          "description": "Confidence in the *family*, as a percentage. The family is the part every source can speak to, so this is what their agreement describes.",
-          "$ref": "#/$defs/percentage"
-        },
-        "detail_accuracy": {
-          "description": "Confidence in everything past the family - the vendor, product, generation and CPE - or null where the finding names none of them. Separate from `accuracy` because the two are usually attested differently: a stack reading and a service banner may agree that a host is Linux while only the banner can say which release, and one figure for both would report the weaker claim at the stronger claim's strength.",
-          "oneOf": [
-            {
-              "$ref": "#/$defs/percentage"
-            },
-            {
-              "type": "null"
-            }
+        "extrainfo": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "cpe": {
@@ -1035,46 +1288,193 @@
           "items": {
             "type": "string"
           }
-        },
-        "evidence": {
-          "description": "What this identification was read off, in one line, or null where the technique recorded nothing. Written for a person rather than for a parser: different techniques render different things here, and the fields to act on are the named ones beside it. It is here so a disputed finding can be diagnosed, and turned into a corpus entry, without re-running the scan.",
-          "type": [
-            "string",
-            "null"
-          ]
         }
       }
     },
-    "hardware": {
-      "description": "Physical hardware identity. The engine records when each address was last seen; those readings are not exported, because the addresses themselves are what identifies the hardware and a consumer comparing two scans has each report's own timestamps to work from.",
+    "settings": {
+      "description": "The settings that shaped what a phase put on the wire. A deliberate subset of the engine's configuration: what changed the packets and how long the engine waited. Presentation settings are absent, so a quieter terminal never reads as a different scan.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "mac",
-        "macs",
-        "vendor"
+        "send_mode",
+        "tcp_technique",
+        "retry",
+        "max_probe_rate",
+        "dns_enabled",
+        "redact",
+        "os_detection",
+        "service_detection",
+        "traceroute"
       ],
       "properties": {
-        "mac": {
-          "description": "The most recently observed address, which is the one currently on the network. Masked to its OUI under export redaction.",
-          "type": [
-            "string",
-            "null"
+        "send_mode": {
+          "description": "How raw probes were placed on the wire.",
+          "enum": [
+            "auto",
+            "raw_socket",
+            "ethernet"
           ]
         },
-        "macs": {
-          "description": "Every address observed, sorted. More than one means a multi-NIC host or a device rotating a randomized address.",
-          "type": "array",
-          "items": {
-            "type": "string"
+        "tcp_technique": {
+          "description": "Which segment each TCP port probe carried, and so what its answers mean. A port reported `closed` by a `syn` scan refused a connection attempt; the same verdict from a `fin`, `null`, `xmas` or `maimon` scan is a reset drawn by a segment that was not one, and those techniques report every port closed against stacks that reset everything. An `ack` scan never reports a port open at all - it maps the filtering in front of the host.",
+          "enum": [
+            "syn",
+            "fin",
+            "null",
+            "xmas",
+            "maimon",
+            "ack"
+          ]
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "max_probe_rate": {
+          "description": "The probe-rate ceiling in probes per second, or null if the scanner's own default applied.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "dns_enabled": {
+          "description": "Whether name resolution was permitted to generate traffic.",
+          "type": "boolean"
+        },
+        "redact": {
+          "description": "Whether the caller asked the scan to mask identifying detail. Distinct from export redaction, which is chosen when the report is written and is visible in what this document actually contains.",
+          "type": "boolean"
+        },
+        "os_detection": {
+          "description": "How far the phase went to identify the operating system behind each host. A host reported without one means different things at each level: at `off` nothing looked, and at any other level something looked and did not conclude. The level also bounds how much of the phase's traffic the engine originated for this purpose - `off` and `passive` originate none at all, reading only replies drawn for other reasons, while `active` sends well-formed probes of its own and `aggressive` sends deliberately malformed ones as well.",
+          "enum": [
+            "off",
+            "passive",
+            "active",
+            "aggressive"
+          ]
+        },
+        "service_detection": {
+          "description": "How far the phase went to identify what was listening behind each open port. A port reported with no service means different things at each level: at `off` nothing connected to it, and at any other level something did and could not tell. The level also says what the target would have logged - `off` completes no connection for identification at all, `banner` connects and listens without sending, and `probe` connects and asks.",
+          "enum": [
+            "off",
+            "banner",
+            "probe"
+          ]
+        },
+        "traceroute": {
+          "description": "Whether the phase measured the route to each host that answered. A host with no path is two different findings - a scan that did not look, and a scan that looked and got nothing back - and only this separates them.",
+          "type": "boolean"
+        }
+      }
+    },
+    "summary": {
+      "description": "Counts derived from the hosts, so they cannot disagree with the data they describe. Every category is present whether or not anything landed in it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hosts_total",
+        "hosts_alive",
+        "hosts_by_status",
+        "ports_total",
+        "ports_open",
+        "ports_by_state",
+        "services_identified",
+        "hosts_by_family"
+      ],
+      "properties": {
+        "hosts_total": {
+          "$ref": "#/$defs/count"
+        },
+        "hosts_alive": {
+          "description": "Hosts confirmed present: up or filtered.",
+          "$ref": "#/$defs/count"
+        },
+        "hosts_by_status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "up",
+            "filtered",
+            "down",
+            "unknown"
+          ],
+          "properties": {
+            "up": {
+              "$ref": "#/$defs/count"
+            },
+            "filtered": {
+              "$ref": "#/$defs/count"
+            },
+            "down": {
+              "$ref": "#/$defs/count"
+            },
+            "unknown": {
+              "$ref": "#/$defs/count"
+            }
           }
         },
-        "vendor": {
-          "description": "The vendor resolved from the OUI. Survives redaction, which preserves the OUI, so naming it reveals nothing the masked address does not.",
-          "type": [
-            "string",
-            "null"
-          ]
+        "ports_total": {
+          "$ref": "#/$defs/count"
+        },
+        "ports_open": {
+          "$ref": "#/$defs/count"
+        },
+        "ports_by_state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "open",
+            "open_filtered",
+            "closed",
+            "unfiltered",
+            "filtered",
+            "closed_filtered"
+          ],
+          "properties": {
+            "open": {
+              "$ref": "#/$defs/count"
+            },
+            "open_filtered": {
+              "$ref": "#/$defs/count"
+            },
+            "closed": {
+              "$ref": "#/$defs/count"
+            },
+            "unfiltered": {
+              "$ref": "#/$defs/count"
+            },
+            "filtered": {
+              "$ref": "#/$defs/count"
+            },
+            "closed_filtered": {
+              "$ref": "#/$defs/count"
+            }
+          }
+        },
+        "services_identified": {
+          "$ref": "#/$defs/count"
+        },
+        "hosts_by_family": {
+          "description": "Hosts counted by the address families they answered at. A dual-stack host is counted in all three, so these do not partition hosts_total: the question they answer is how much of the network was seen over each family.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ipv4",
+            "ipv6",
+            "dual_stack"
+          ],
+          "properties": {
+            "ipv4": {
+              "$ref": "#/$defs/count"
+            },
+            "ipv6": {
+              "$ref": "#/$defs/count"
+            },
+            "dual_stack": {
+              "$ref": "#/$defs/count"
+            }
+          }
         }
       }
     },
@@ -1149,354 +1549,18 @@
         }
       }
     },
-    "port": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "port",
-        "protocol",
-        "state",
-        "service",
-        "security",
-        "discovery"
+    "timestamp": {
+      "description": "An RFC 3339 instant in UTC, to microsecond precision. Fixed width, so these sort as text in the order they sort in time.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    },
+    "ttl": {
+      "type": [
+        "integer",
+        "null"
       ],
-      "properties": {
-        "port": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 65535
-        },
-        "protocol": {
-          "$ref": "#/$defs/protocol"
-        },
-        "state": {
-          "enum": [
-            "closed_filtered",
-            "filtered",
-            "unfiltered",
-            "closed",
-            "open_filtered",
-            "open"
-          ]
-        },
-        "service": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/service"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "security": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/security"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "discovery": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/discovery"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      }
-    },
-    "service": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "confidence",
-        "product",
-        "vendor",
-        "version",
-        "extrainfo",
-        "cpe"
-      ],
-      "properties": {
-        "name": {
-          "description": "The high-level protocol name, such as `ssh` or `http`.",
-          "type": "string"
-        },
-        "confidence": {
-          "description": "Certainty of this identification. A table lookup by port number scores near zero; a completed protocol handshake scores near 100.",
-          "$ref": "#/$defs/percentage"
-        },
-        "product": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "vendor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "version": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "extrainfo": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "cpe": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      }
-    },
-    "security": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "tls_version",
-        "cipher_suite",
-        "alpn",
-        "certificate"
-      ],
-      "properties": {
-        "tls_version": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "cipher_suite": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "alpn": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "certificate": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/certificate"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      }
-    },
-    "certificate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "common_name",
-        "sans",
-        "issuer",
-        "validity_start",
-        "validity_end",
-        "pubkey_type",
-        "pubkey_bits",
-        "fingerprint_sha256"
-      ],
-      "properties": {
-        "common_name": {
-          "description": "The subject Common Name, masked under export redaction: an internal CA issues certificates naming people and machines.",
-          "type": "string"
-        },
-        "sans": {
-          "description": "Subject Alternative Names, masked under export redaction for the same reason.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "issuer": {
-          "type": "string"
-        },
-        "validity_start": {
-          "$ref": "#/$defs/timestamp"
-        },
-        "validity_end": {
-          "$ref": "#/$defs/timestamp"
-        },
-        "pubkey_type": {
-          "type": "string"
-        },
-        "pubkey_bits": {
-          "$ref": "#/$defs/count"
-        },
-        "fingerprint_sha256": {
-          "description": "The SHA-256 fingerprint of the DER-encoded certificate.",
-          "type": "string"
-        }
-      }
-    },
-    "discovery": {
-      "description": "How a port's state was established.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "reason",
-        "timestamp",
-        "rtt_us",
-        "ttl",
-        "source_ip"
-      ],
-      "properties": {
-        "reason": {
-          "description": "The packet response that decided the state. A strategy-supplied name is prefixed `custom:`.",
-          "anyOf": [
-            {
-              "enum": [
-                "tcp_syn_ack",
-                "tcp_rst",
-                "udp_response",
-                "no_response",
-                "icmp_unreachable",
-                "icmp_prohibited"
-              ]
-            },
-            {
-              "type": "string",
-              "pattern": "^custom:"
-            }
-          ]
-        },
-        "timestamp": {
-          "$ref": "#/$defs/timestamp"
-        },
-        "rtt_us": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/duration_us"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "ttl": {
-          "$ref": "#/$defs/ttl"
-        },
-        "source_ip": {
-          "description": "The local interface address the probe was answered on. Relevant on multi-homed hosts, where port states differ by path.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "protocol": {
-      "enum": [
-        "tcp",
-        "udp",
-        "sctp"
-      ]
-    },
-    "scanner_kind": {
-      "description": "A scanning strategy. Which ones ran is a property of the host and its privileges, not of what the caller asked for.",
-      "enum": [
-        "local",
-        "routed",
-        "syn_port",
-        "tcp_port",
-        "connect",
-        "connect_udp",
-        "udp_port",
-        "os_echo",
-        "os_series",
-        "os_snmp",
-        "composite"
-      ]
-    },
-    "hop": {
-      "description": "One router between the scanning host and the host this path belongs to.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "distance",
-        "address",
-        "rtt_us",
-        "inferred"
-      ],
-      "properties": {
-        "distance": {
-          "description": "How many routers from the scanning host this one sits. The key, not the position: a router that declines to answer leaves a gap, and the entries either side keep the distances they were measured at. Counting array indices to get a distance is wrong on any path containing a silent router.",
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 255
-        },
-        "address": {
-          "description": "The address the router answered from, or null where nothing answered at this distance. Null is a finding rather than missing data: a router is there, since hops beyond it were reached, and it did not identify itself.",
-          "oneOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "rtt_us": {
-          "description": "Round trip to this router in microseconds, or null. Measured from the scanning host, so it includes every hop in front of this one, and it times a router's error generation rather than its forwarding - a hop slower than the one past it is ordinary.",
-          "oneOf": [
-            {
-              "$ref": "#/$defs/duration_us"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "inferred": {
-          "description": "Whether this hop was measured on the way to this host, or taken from another host's trace through the same router. The second is an inference: it assumes two paths meeting at one router at one distance agreed before it.",
-          "type": "boolean"
-        }
-      }
-    },
-    "port_scope": {
-      "description": "Which ports a phase walked. Only `every` supports concluding that a particular endpoint of a covered address was probed; under `mixed` a port in the set was walked for at least one address and not necessarily for any given one, though a port absent from it was walked for none.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "spec"
-      ],
-      "properties": {
-        "kind": {
-          "description": "`none` for a phase that walked no ports, `every` where each address was walked for the same set, `mixed` where they differed and `spec` is their union.",
-          "enum": [
-            "none",
-            "every",
-            "mixed"
-          ]
-        },
-        "spec": {
-          "description": "The ports, written as the specification a scanner takes: comma separated, `start-end` for a run, `u:` prefixing the UDP half. Empty under `none`.",
-          "type": "string"
-        }
-      }
+      "minimum": 0,
+      "maximum": 255
     }
   }
 }

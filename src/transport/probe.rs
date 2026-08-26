@@ -39,7 +39,8 @@ use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 
 use crate::config::SendMode;
 use crate::model::capture::CaptureCounts;
-use crate::transport::capture::{self, CaptureGuard, CaptureStream};
+use crate::model::ip::scoped::Zone;
+use crate::transport::capture::{self, CaptureGuard, CaptureOptions, CaptureStream};
 use crate::transport::link::EthernetSender;
 use crate::transport::raw::{self, TransportSenderHandle, TransportType};
 
@@ -544,9 +545,9 @@ impl ProbeTransport {
         }
     }
 
-    /// [`open`](Self::open) against an explicit interface-name list.
-    pub fn open_on(kind: ProbeKind, interfaces: &[String]) -> Result<Self, TransportError> {
-        let (rx, capture) = capture::start(interfaces, &kind.filter())?;
+    /// [`open`](Self::open) against an explicit list of links.
+    pub fn open_on(kind: ProbeKind, links: &[Zone]) -> Result<Self, TransportError> {
+        let (rx, capture) = capture::segments(links, &CaptureOptions::for_replies(kind.filter()))?;
         let tx: Box<dyn ProbeSender> = Box::new(RawIpSender::open(kind)?);
         Ok(Self { tx, rx, capture })
     }
@@ -564,7 +565,10 @@ impl ProbeTransport {
                 "the host has only tunnel or loopback interfaces".to_string(),
             )
         })?;
-        let (rx, capture) = capture::start(&capturable_interfaces(), &kind.filter())?;
+        let (rx, capture) = capture::segments(
+            &capturable_interfaces(),
+            &CaptureOptions::for_replies(kind.filter()),
+        )?;
         Ok(Self {
             tx: Box::new(sender),
             rx,
@@ -580,7 +584,10 @@ impl ProbeTransport {
     /// unnecessary privilege requirement and failure mode (a host that blocks
     /// raw sockets can still resolve hostnames).
     pub fn open_receiver(kind: ProbeKind) -> Result<Self, TransportError> {
-        let (rx, capture) = capture::start(&capturable_interfaces(), &kind.filter())?;
+        let (rx, capture) = capture::segments(
+            &capturable_interfaces(),
+            &CaptureOptions::for_replies(kind.filter()),
+        )?;
         Ok(Self {
             tx: Box::new(NoopSender),
             rx,
@@ -610,11 +617,16 @@ impl ProbeTransport {
 
 /// The interfaces a capture should listen on: every interface that's up.
 /// Loopback is intentionally included so localhost probes are still heard.
-fn capturable_interfaces() -> Vec<String> {
+///
+/// Each is named as a [`Zone`], carrying the index alongside the name. The
+/// index costs nothing to keep here — the interface table was already read to
+/// find the name — and it is what a finding scoped to a link needs, since a
+/// link-local address names a different machine on every one of them.
+fn capturable_interfaces() -> Vec<Zone> {
     datalink::interfaces()
         .into_iter()
         .filter(|iface| iface.is_up())
-        .map(|iface| iface.name)
+        .map(|iface| Zone::new(iface.index, iface.name))
         .collect()
 }
 

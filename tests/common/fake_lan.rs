@@ -38,16 +38,22 @@ use std::time::{Duration, Instant};
 use pnet::datalink::{DataLinkSender, MacAddr, NetworkInterface};
 use pnet::packet::Packet;
 use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::ethernet::EtherTypes;
 use pnet::packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
 use pnet::packet::icmpv6::ndp::{MutableNeighborAdvertPacket, NeighborSolicitPacket};
 use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::udp::{MutableUdpPacket, ipv6_checksum as udp_ipv6_checksum};
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self, Sender};
 
+use zond_engine::model::ip::scoped::Zone;
+use zond_engine::protocols::ethernet::Frame;
 use zond_engine::protocols::{craft, ethernet, ip};
+use zond_engine::transport::capture::CapturedFrame;
 use zond_engine::transport::channel::EthernetHandle;
+use zond_engine::transport::frame::LinkType;
+
+use std::time::SystemTime;
 
 use super::fake_net::{Loss, SplitMix64};
 
@@ -56,6 +62,27 @@ use super::fake_net::{Loss, SplitMix64};
 /// padded, so the simulated replies are too.
 const ARP_LEN: usize = 28;
 const MIN_ETH_FRAME: usize = 60;
+
+/// How many frames this segment may hold for a scanner that has not read them
+/// yet.
+///
+/// The real capture bounds its queue and stalls its reader thread when the
+/// consumer falls behind; a simulated segment has no reader thread to stall, so
+/// it drops instead. Sized well above any fixture — a `/24` where every host
+/// answers is a few hundred frames — so that hitting it means a test built more
+/// traffic than a segment holds rather than that the scanner was briefly busy.
+const FAKE_QUEUE_DEPTH: usize = 4096;
+
+/// The link this segment presents itself as, matching the interface
+/// [`super::scanner_interface`] gives the scanner.
+///
+/// They have to agree: a frame is stamped with the link it came off, and a
+/// fixture whose frames name a different one from the scanner's own interface
+/// would be simulating two segments.
+fn simulated_zone() -> Zone {
+    let intf = super::scanner_interface();
+    Zone::new(intf.index, intf.name)
+}
 
 /// Source port, destination port, length, checksum.
 const UDP_HDR_LEN: usize = 8;
@@ -233,6 +260,9 @@ pub struct FakeLan {
     dhcp: Option<Server>,
     /// The segment's IPv6 router, which answers a router solicitation.
     router: Option<Router>,
+    /// The switch this segment is wired through, which announces itself
+    /// unprompted the way a managed one does.
+    switch: Option<Switch>,
     seed: u64,
     state: Arc<Mutex<State>>,
 }
@@ -253,6 +283,23 @@ struct Server {
 struct Router {
     mac: MacAddr,
     address: Ipv6Addr,
+}
+
+/// The switch the scanner is plugged into.
+///
+/// It answers nothing. A managed switch announces itself on its own timer,
+/// which is what makes the finding unlike everything else on this segment: no
+/// probe draws it, and the fixture emits it the moment the scanner puts
+/// anything on the wire.
+#[derive(Debug, Clone, Copy)]
+struct Switch {
+    mac: MacAddr,
+    /// What the switch calls itself.
+    name: &'static str,
+    /// What it calls the port the scanner is plugged into.
+    port: &'static str,
+    /// The VLAN untagged traffic on that port lands in.
+    native_vlan: u16,
 }
 
 /// The segment's mutable half.
@@ -277,6 +324,7 @@ impl FakeLan {
             announcements: Vec::new(),
             dhcp: None,
             router: None,
+            switch: None,
             seed,
             state: Arc::new(Mutex::new(State {
                 rng: SplitMix64::new(seed),
@@ -316,6 +364,24 @@ impl FakeLan {
     }
 
     /// Puts `host` on the segment at `ip`.
+    /// Wires this segment through a managed switch that announces itself over
+    /// LLDP, naming itself, the port the scanner is on, and that port's VLAN.
+    pub fn wired_through(
+        mut self,
+        mac: MacAddr,
+        name: &'static str,
+        port: &'static str,
+        native_vlan: u16,
+    ) -> Self {
+        self.switch = Some(Switch {
+            mac,
+            name,
+            port,
+            native_vlan,
+        });
+        self
+    }
+
     pub fn host(mut self, ip: IpAddr, host: LanHost) -> Self {
         self.hosts.insert(ip, host);
         self
@@ -356,15 +422,17 @@ impl FakeLan {
     /// An Ethernet handle carrying this segment, ready to hand to
     /// [`LocalScanner::with_handle`].
     pub fn handle(&self) -> EthernetHandle {
-        let (frames, rx) = mpsc::unbounded_channel();
+        let (frames, rx) = mpsc::channel(FAKE_QUEUE_DEPTH);
         let link = FakeSegment {
             hosts: self.hosts.clone(),
             unsolicited: self.unsolicited.clone(),
             announcements: self.announcements.clone(),
             dhcp: self.dhcp,
             router: self.router,
+            switch: self.switch,
             state: Arc::clone(&self.state),
             frames,
+            zone: simulated_zone(),
         };
         EthernetHandle::from_parts(Box::new(link), rx)
     }
@@ -398,13 +466,17 @@ struct FakeSegment {
     hosts: HashMap<IpAddr, LanHost>,
     dhcp: Option<Server>,
     router: Option<Router>,
+    switch: Option<Switch>,
     /// Addresses that advertise themselves once, unprompted, the first time the
     /// scanner sends anything.
     unsolicited: Vec<Ipv6Addr>,
     /// Names announced over mDNS, as `(hostname, address, announcer)`.
     announcements: Vec<(String, Ipv6Addr, MacAddr)>,
     state: Arc<Mutex<State>>,
-    frames: UnboundedSender<Vec<u8>>,
+    frames: Sender<CapturedFrame>,
+    /// The link every frame this segment delivers is stamped with, matching
+    /// the interface [`super::scanner_interface`] hands the scanner.
+    zone: Zone,
 }
 
 impl DataLinkSender for FakeSegment {
@@ -418,14 +490,15 @@ impl DataLinkSender for FakeSegment {
         packet: &[u8],
         _dst: Option<NetworkInterface>,
     ) -> Option<std::io::Result<()>> {
-        let Some(frame) = EthernetPacket::new(packet) else {
+        let Ok(frame) = ethernet::parse(packet) else {
             return Some(Ok(()));
         };
 
         self.emit_unsolicited(&frame);
         self.emit_announcements(&frame);
+        self.emit_switch_announcement();
 
-        match frame.get_ethertype() {
+        match frame.ethertype() {
             EtherTypes::Arp => self.answer_arp(&frame),
             EtherTypes::Ipv4 => self.answer_dhcp(&frame),
             // The two IPv6 probes are told apart by their ICMPv6 type, not by
@@ -472,7 +545,7 @@ impl FakeSegment {
     ///
     /// Every other IPv4 frame reaching here is left alone: this segment carries
     /// whatever the scanner puts on it, and only DHCP has an answer.
-    fn answer_dhcp(&mut self, frame: &EthernetPacket) {
+    fn answer_dhcp(&mut self, frame: &Frame<'_>) {
         let Some(message) = dhcp_message(frame) else {
             return;
         };
@@ -487,7 +560,7 @@ impl FakeSegment {
         let Some(server) = self.dhcp else {
             return;
         };
-        let scanner_mac = frame.get_source();
+        let scanner_mac = frame.source();
         let Ok(scanner_ip) = ip::ipv4_source(frame) else {
             return;
         };
@@ -499,13 +572,13 @@ impl FakeSegment {
 
     /// Answers a router solicitation with an advertisement, if a router was
     /// declared.
-    fn answer_router_solicit(&mut self, frame: &EthernetPacket) {
+    fn answer_router_solicit(&mut self, frame: &Frame<'_>) {
         self.log(LanProbe::RouterSolicit { at: Instant::now() });
 
         let Some(router) = self.router else {
             return;
         };
-        let scanner_mac = frame.get_source();
+        let scanner_mac = frame.source();
 
         if let Some(advert) = router_advertisement(router, scanner_mac) {
             self.deliver(advert, Duration::ZERO);
@@ -513,7 +586,7 @@ impl FakeSegment {
     }
 
     /// Answers an ARP request, if the address it asks about has a host on it.
-    fn answer_arp(&mut self, frame: &EthernetPacket) {
+    fn answer_arp(&mut self, frame: &Frame<'_>) {
         let Some(request) = ArpPacket::new(frame.payload()) else {
             return;
         };
@@ -547,14 +620,14 @@ impl FakeSegment {
 
     /// Emits each declared unsolicited advertisement once, as soon as the
     /// scanner has put a frame on the wire and named an address to send it to.
-    fn emit_unsolicited(&mut self, frame: &EthernetPacket) {
-        if self.unsolicited.is_empty() || frame.get_ethertype() != EtherTypes::Ipv6 {
+    fn emit_unsolicited(&mut self, frame: &Frame<'_>) {
+        if self.unsolicited.is_empty() || frame.ethertype() != EtherTypes::Ipv6 {
             return;
         }
         let Ok(scanner_ip) = ip::ipv6_source(frame) else {
             return;
         };
-        let scanner_mac = frame.get_source();
+        let scanner_mac = frame.source();
 
         for address in std::mem::take(&mut self.unsolicited) {
             let Some(host) = self.hosts.get(&IpAddr::V6(address)).copied() else {
@@ -568,16 +641,29 @@ impl FakeSegment {
         }
     }
 
+    /// Emits the switch's own announcement once, as soon as the scanner has put
+    /// anything on the wire.
+    ///
+    /// Unlike everything else here it answers nothing — a managed switch
+    /// announces itself on a timer, and the scanner's first frame is only the
+    /// moment this fixture has to hang it on.
+    fn emit_switch_announcement(&mut self) {
+        let Some(switch) = self.switch.take() else {
+            return;
+        };
+        self.deliver(lldp_advertisement(switch), Duration::ZERO);
+    }
+
     /// Emits each declared mDNS announcement once, as soon as the scanner has
     /// put a frame on the wire.
-    fn emit_announcements(&mut self, frame: &EthernetPacket) {
-        if self.announcements.is_empty() || frame.get_ethertype() != EtherTypes::Ipv6 {
+    fn emit_announcements(&mut self, frame: &Frame<'_>) {
+        if self.announcements.is_empty() || frame.ethertype() != EtherTypes::Ipv6 {
             return;
         }
         let Ok(scanner_ip) = ip::ipv6_source(frame) else {
             return;
         };
-        let scanner_mac = frame.get_source();
+        let scanner_mac = frame.source();
 
         for (hostname, address, announcer) in std::mem::take(&mut self.announcements) {
             if let Some(message) =
@@ -596,14 +682,14 @@ impl FakeSegment {
     /// of being scanned, which is the property that makes solicitation worth
     /// sending — replying is not optional in the way replying to a multicast
     /// echo is.
-    fn answer_neighbor_solicit(&mut self, frame: &EthernetPacket) {
+    fn answer_neighbor_solicit(&mut self, frame: &Frame<'_>) {
         let Ok(scanner_ip) = ip::ipv6_source(frame) else {
             return;
         };
         let Some(target) = solicited_target(frame) else {
             return;
         };
-        let scanner_mac = frame.get_source();
+        let scanner_mac = frame.source();
 
         self.log(LanProbe::Solicit {
             target,
@@ -628,7 +714,7 @@ impl FakeSegment {
     ///
     /// Unlike ARP this probe is not sent per target: one multicast goes out and
     /// any neighbour may answer, so every declared IPv6 host gets the chance to.
-    fn answer_all_nodes_echo(&mut self, frame: &EthernetPacket) {
+    fn answer_all_nodes_echo(&mut self, frame: &Frame<'_>) {
         let Ok(scanner_ip) = ip::ipv6_source(frame) else {
             return;
         };
@@ -637,7 +723,7 @@ impl FakeSegment {
         let Some((identifier, sequence)) = echo_request_token(frame) else {
             return;
         };
-        let scanner_mac = frame.get_source();
+        let scanner_mac = frame.source();
         self.log(LanProbe::Solicitation { at: Instant::now() });
 
         let v6_hosts: Vec<(Ipv6Addr, LanHost)> = self
@@ -692,8 +778,15 @@ impl FakeSegment {
     /// synchronously from inside the scanner's own send loop and blocking here
     /// would stall the loop the delay is meant to race against.
     fn deliver(&self, frame: Vec<u8>, delay: Duration) {
+        let captured = self.capture(frame);
+
         if delay.is_zero() {
-            let _ = self.frames.send(frame);
+            // `try_send` rather than a blocking or awaited send: this runs
+            // synchronously inside the scanner's own send loop, on the runtime
+            // thread, so waiting for room here would stall the very loop that
+            // drains the queue. The depth is sized so that a full queue means a
+            // test wrote more traffic than any real segment would.
+            let _ = self.frames.try_send(captured);
             return;
         }
 
@@ -702,9 +795,77 @@ impl FakeSegment {
             tokio::time::sleep(delay).await;
             // The receiver is gone once the sweep ends, which is the normal way
             // a reply that arrived too late is discarded.
-            let _ = frames.send(frame);
+            let _ = frames.send(captured).await;
         });
     }
+
+    /// Wraps a built frame as though a capture had lifted it off this segment.
+    fn capture(&self, bytes: Vec<u8>) -> CapturedFrame {
+        CapturedFrame {
+            zone: self.zone.clone(),
+            link: LinkType::Ethernet,
+            bytes,
+            observed_at: SystemTime::now(),
+        }
+    }
+}
+
+/// One LLDP type-length-value record: seven bits of type, nine of length.
+fn lldp_tlv(kind: u8, value: &[u8]) -> Vec<u8> {
+    let length = value.len();
+    let mut bytes = vec![
+        (kind << 1) | u8::try_from(length >> 8).expect("one bit of length"),
+        u8::try_from(length & 0xFF).expect("eight bits of length"),
+    ];
+    bytes.extend_from_slice(value);
+    bytes
+}
+
+/// The advertisement a managed switch sends to the port the scanner is on.
+fn lldp_advertisement(switch: Switch) -> Vec<u8> {
+    const NEAREST_BRIDGE: MacAddr = MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E);
+    // Chassis subtype 4 is a hardware address; port subtype 5 is an interface
+    // name. The two identifiers are numbered by different tables, which is the
+    // detail worth stating in a fixture somebody will copy.
+    const CHASSIS_SUBTYPE_MAC: u8 = 4;
+    const PORT_SUBTYPE_INTERFACE_NAME: u8 = 5;
+
+    let mut chassis = vec![CHASSIS_SUBTYPE_MAC];
+    chassis.extend_from_slice(&[
+        switch.mac.0,
+        switch.mac.1,
+        switch.mac.2,
+        switch.mac.3,
+        switch.mac.4,
+        switch.mac.5,
+    ]);
+
+    let mut port = vec![PORT_SUBTYPE_INTERFACE_NAME];
+    port.extend_from_slice(switch.port.as_bytes());
+
+    // Bridging enabled, routing supported but not enabled — the distinction a
+    // reader has to keep, and one a real access switch actually reports.
+    const BRIDGE: u16 = 1 << 2;
+    const ROUTER: u16 = 1 << 4;
+    let mut capabilities = (BRIDGE | ROUTER).to_be_bytes().to_vec();
+    capabilities.extend_from_slice(&BRIDGE.to_be_bytes());
+
+    let mut vlan = vec![0x00, 0x80, 0xC2, 0x01];
+    vlan.extend_from_slice(&switch.native_vlan.to_be_bytes());
+
+    let mut frame = ethernet::create_header(
+        switch.mac,
+        NEAREST_BRIDGE,
+        zond_engine::protocols::lldp::ETHERTYPE,
+    );
+    frame.extend(lldp_tlv(1, &chassis));
+    frame.extend(lldp_tlv(2, &port));
+    frame.extend(lldp_tlv(3, &120u16.to_be_bytes()));
+    frame.extend(lldp_tlv(5, switch.name.as_bytes()));
+    frame.extend(lldp_tlv(7, &capabilities));
+    frame.extend(lldp_tlv(127, &vlan));
+    frame.extend(lldp_tlv(0, &[]));
+    frame
 }
 
 /// An ARP reply frame from `host_mac`/`host_ip` back to the scanner.
@@ -738,7 +899,7 @@ fn arp_reply(
 }
 
 /// The address a neighbor solicitation asks about.
-fn solicited_target(frame: &EthernetPacket) -> Option<Ipv6Addr> {
+fn solicited_target(frame: &Frame<'_>) -> Option<Ipv6Addr> {
     let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
     Some(NeighborSolicitPacket::new(packet.payload())?.get_target_addr())
 }
@@ -848,7 +1009,7 @@ fn mdns_response(
 
 /// The identifier and sequence number an echo *request* carries, which the
 /// reply has to return unchanged.
-fn echo_request_token(frame: &EthernetPacket) -> Option<(u16, u16)> {
+fn echo_request_token(frame: &Frame<'_>) -> Option<(u16, u16)> {
     let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
     let request = pnet::packet::icmpv6::echo_request::EchoRequestPacket::new(packet.payload())?;
     Some((request.get_identifier(), request.get_sequence_number()))
@@ -905,7 +1066,7 @@ fn icmpv6_echo_reply(
 }
 
 /// The BOOTP message inside `frame`, if it is a DHCP datagram at all.
-fn dhcp_message<'a>(frame: &'a EthernetPacket<'a>) -> Option<Vec<u8>> {
+fn dhcp_message<'a>(frame: &Frame<'a>) -> Option<Vec<u8>> {
     let packet = pnet::packet::ipv4::Ipv4Packet::new(frame.payload())?;
     if packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp {
         return None;

@@ -42,7 +42,7 @@
 use std::net::IpAddr;
 
 use anyhow::Context;
-use pnet::packet::ethernet::{EtherType, EtherTypes};
+use pnet::packet::ethernet::EtherTypes;
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::ipv6::Ipv6Packet;
@@ -96,11 +96,6 @@ impl LinkType {
     }
 }
 
-/// EtherType marking an 802.1Q VLAN tag, after which four more bytes (the tag
-/// plus the real EtherType) precede the payload.
-const ETHERTYPE_VLAN: u16 = 0x8100;
-const VLAN_TAG_LEN: usize = 4;
-
 /// The don't-fragment and more-fragments bits within an IPv4 header's
 /// three-bit flags field, as `pnet` hands it back. The mirror of
 /// [`ipv4_flags`](crate::protocols::craft::ipv4_flags) on the send side, named
@@ -121,20 +116,17 @@ pub fn strip_to_ip(link: LinkType, frame: &[u8]) -> Option<&[u8]> {
     }
 }
 
-/// Walks an Ethernet header, transparently skipping a single 802.1Q VLAN tag,
-/// and returns the payload only if the EtherType marks it as IPv4 or IPv6.
+/// Walks an Ethernet header, transparently skipping any VLAN tags, and returns
+/// the payload only if the EtherType marks it as IPv4 or IPv6.
+///
+/// The tag walk is [`ethernet::parse`]'s rather than a second copy of it. It used
+/// to be a copy here, and the copy understood one tag where the original
+/// understands a stack — which is the ordinary way two implementations of one
+/// rule come to disagree.
 fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
-    let ethertype = u16::from_be_bytes([*frame.get(12)?, *frame.get(13)?]);
-    let (ethertype, payload_offset) = if ethertype == ETHERTYPE_VLAN {
-        let inner =
-            u16::from_be_bytes([*frame.get(ETH_HDR_LEN + 2)?, *frame.get(ETH_HDR_LEN + 3)?]);
-        (inner, ETH_HDR_LEN + VLAN_TAG_LEN)
-    } else {
-        (ethertype, ETH_HDR_LEN)
-    };
-
-    match EtherType(ethertype) {
-        EtherTypes::Ipv4 | EtherTypes::Ipv6 => frame.get(payload_offset..),
+    let parsed = ethernet::parse(frame).ok()?;
+    match parsed.ethertype() {
+        EtherTypes::Ipv4 | EtherTypes::Ipv6 => Some(parsed.payload()),
         _ => None,
     }
 }

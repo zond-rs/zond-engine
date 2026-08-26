@@ -43,6 +43,19 @@
 //! A reader takes the frame or the bytes and nothing else, so its parameter
 //! already says where it is reading from and the name does not have to.
 //!
+//! ## Two of these only read
+//!
+//! [`lldp`] and [`cdp`] carry no builders, and the omission is the point. Every
+//! other protocol here exists so that a scan can *ask* something; those two are
+//! what the equipment on a link says about itself on its own timer, with no
+//! question to put. A switch names itself, names the port this machine is
+//! plugged into, and lists what it is doing, roughly every thirty seconds,
+//! whether or not anybody is listening.
+//!
+//! Emitting one would be a different thing entirely — it would be this engine
+//! claiming to be network equipment, on a segment it was asked to measure — so
+//! the modules read and do not write.
+//!
 //! ## Building a packet usually cannot fail
 //!
 //! Most builders here write a fixed-size header into a buffer they allocate
@@ -60,6 +73,7 @@
 //! credits a host that was never there.
 
 pub mod arp;
+pub mod cdp;
 pub mod craft;
 pub mod dhcp;
 pub mod dns;
@@ -67,6 +81,7 @@ pub mod error;
 pub mod ethernet;
 pub mod icmp;
 pub mod ip;
+pub mod lldp;
 pub mod mdns;
 pub mod ndp;
 pub mod sctp;
@@ -74,7 +89,8 @@ pub mod sizes;
 pub mod tcp;
 pub mod udp;
 
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use crate::protocols::ethernet::Frame;
+use pnet::packet::ethernet::EtherTypes;
 use std::net::IpAddr;
 
 /// The address `frame` was sent from, whichever of the three shapes it is.
@@ -90,8 +106,8 @@ use std::net::IpAddr;
 /// anything else, which under promiscuous capture is the ordinary case rather
 /// than a fault, and [`Truncated`](error::PacketError::Truncated) for a frame
 /// too short to read.
-pub fn source_address(frame: &EthernetPacket) -> error::Result<IpAddr> {
-    match frame.get_ethertype() {
+pub fn source_address(frame: &Frame<'_>) -> error::Result<IpAddr> {
+    match frame.ethertype() {
         EtherTypes::Arp => Ok(IpAddr::V4(arp::sender_address(frame)?)),
         EtherTypes::Ipv4 => Ok(IpAddr::V4(ip::ipv4_source(frame)?)),
         EtherTypes::Ipv6 => Ok(IpAddr::V6(ip::ipv6_source(frame)?)),

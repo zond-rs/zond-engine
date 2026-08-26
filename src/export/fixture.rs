@@ -20,7 +20,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::config::ZondConfig;
 use crate::model::capture::CaptureCounts;
@@ -28,6 +28,7 @@ use crate::model::exclusion::Exclusions;
 use crate::model::host::{
     Hop, Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
 };
+use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::{
@@ -35,7 +36,8 @@ use crate::model::port::{
 };
 use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{
-    BUCKET_BOUNDS_MS, PhaseRecorder, ProbeStats, ScanKind, ScanReport, StopReason, TargetScope,
+    Attachment, AttachmentSource, BUCKET_BOUNDS_MS, PhaseRecorder, ProbeStats, ScanKind,
+    ScanReport, StopReason, TargetScope,
 };
 use crate::scanner::session::{ScanSession, ScannerKind};
 
@@ -217,7 +219,25 @@ pub(crate) fn report() -> ScanReport {
     // A sweep covers the link it ran on as well as the addresses it was handed,
     // so the exported scope carries one — otherwise every test of that field
     // compares an empty list with an empty list.
-    ctx.record_sweep(crate::model::ip::scoped::Zone::new(3, "en0"));
+    ctx.record_sweep(Zone::new(3, "en0"));
+
+    // A managed switch's announcement, so the exported document carries an
+    // attachment and every writer — and the published schema — is held to what
+    // one looks like. Recorded through the context rather than assembled into
+    // the phase directly, so the path a real announcement takes is the path
+    // under test.
+    ctx.record_attachment(
+        Attachment::new(
+            Zone::new(3, "en0"),
+            AttachmentSource::Lldp,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_772_000_000),
+        )
+        .with_device_mac(MacAddr::new(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F))
+        .with_device_name("core-sw-02")
+        .with_port("GigabitEthernet1/0/14")
+        .with_native_vlan(40)
+        .with_management_address(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))),
+    );
 
     for host in [router(), filtered_host(), bare_host()] {
         ctx.store.insert(host.scoped_ip(), host);
@@ -281,6 +301,10 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
     ));
 
     let phase = ScanPhase::from_parts(PhaseParts {
+        // No attachment: these two are a comparison of a network, and where the
+        // machine measuring it was plugged in has nothing to do with what
+        // changed between them.
+        attachments: Vec::new(),
         kind: ScanKind::PortScan,
         started_at: std::time::UNIX_EPOCH + BASELINE_AT + DAY * days as u32,
         elapsed: Duration::from_secs(12),

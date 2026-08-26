@@ -26,9 +26,12 @@ use std::time::Duration;
 use common::fake_lan::{FakeLan, LanHost, LanProbe};
 use common::*;
 use pnet::datalink::MacAddr;
+use zond_engine::config::ZondConfig;
+use zond_engine::model::exclusion::Exclusions;
 use zond_engine::model::host::telemetry::RttSource;
 use zond_engine::model::host::{HostStatus, NetworkRole};
 use zond_engine::model::ip::set::IpSet;
+use zond_engine::scanner::report::{AttachmentSource, PhaseRecorder, ScanKind, TargetScope};
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
@@ -76,6 +79,58 @@ async fn sweep_audited(
         .expect("sweep runs to completion");
 
     (session, ctx)
+}
+
+/// A link-local is meaningless without the interface it was seen on, and which
+/// of a machine's addresses happens to answer first must not decide whether it
+/// has one.
+///
+/// Found on a live segment. A host records the zone its *key* carried, and a key
+/// carries one only where the address needs it — so a machine whose IPv4 replied
+/// before its link-local was created unscoped, and the link-local it advertised
+/// a moment later was then reported bare. Two runs of the same sweep against the
+/// same phone printed `fe80::41a:992a:fb73:5c91%en1` and
+/// `fe80::41a:992a:fb73:5c91`, decided by nothing but which reply arrived first.
+#[tokio::test]
+async fn a_link_local_carries_its_interface_even_when_ipv4_answered_first() {
+    let peer_v6 = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
+
+    // One machine at both addresses, with the IPv6 half held back so the record
+    // is created from the IPv4 reply — the order that used to lose the zone.
+    let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A)).host(
+        peer_v6,
+        LanHost::at(PEER_A).delay(Duration::from_millis(60)),
+    );
+
+    let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
+
+    let host = session
+        .hosts()
+        .snapshot()
+        .into_iter()
+        .find(|host| host.ips().contains(&peer_v6))
+        .expect("the machine answered at its link-local");
+
+    assert_eq!(
+        host.primary_ip(),
+        v4(10),
+        "IPv4 still leads, which is what made the key unscoped"
+    );
+    assert_eq!(
+        host.zone().map(|zone| zone.name().to_owned()),
+        Some("sim0".to_owned()),
+        "the sweep read every one of these frames off one interface, so it knows"
+    );
+
+    let scoped = zond_engine::model::ip::scoped::ScopedIp::scoped(
+        peer_v6,
+        host.zone().expect("a zone").clone(),
+    );
+    assert!(
+        !scoped.is_unusable(),
+        "a link-local a scan reports has to be one the next phase can open a \
+         socket to: {scoped}"
+    );
 }
 
 /// A host that answers ARP is discovered, and its MAC is recorded from the
@@ -1015,6 +1070,69 @@ async fn a_sweep_asks_the_segment_who_configures_it() {
         .get(IpAddr::V4(server))
         .expect("the server answered");
     assert!(host.network_roles().contains(&NetworkRole::DhcpServer));
+}
+
+/// The switch on the far end of the cable, and the port this machine is on.
+///
+/// The one finding in this crate that no probe can obtain: a managed switch
+/// announces itself to each of its ports on its own timer, and the sweep is
+/// listening anyway. It is not a claim about any host in the report — it is
+/// where the *scan* was run from — so it is closed into the phase rather than
+/// written against an address.
+#[tokio::test]
+async fn a_sweep_learns_which_switch_port_it_is_running_from() {
+    let lan = FakeLan::new().wired_through(PEER_B, "core-sw-02", "GigabitEthernet1/0/14", 40);
+
+    let mut targets = IpSet::new();
+    targets.insert(v4(10));
+
+    let recorder = PhaseRecorder::start(
+        ScanKind::Discovery,
+        true,
+        TargetScope::from_ip_set(&mut targets.clone(), &Exclusions::none()),
+        &ZondConfig::default(),
+    );
+
+    let (_session, ctx) = sweep_audited(&lan, &[v4(10)], Scope::Sweep).await;
+    let report = recorder.finish(&ctx);
+
+    let attachment = report.phases()[0]
+        .attachments()
+        .first()
+        .expect("the switch announced itself");
+
+    assert_eq!(attachment.device_name(), Some("core-sw-02"));
+    assert_eq!(attachment.port(), Some("GigabitEthernet1/0/14"));
+    assert_eq!(attachment.native_vlan(), Some(40));
+    assert_eq!(
+        attachment.source(),
+        AttachmentSource::Lldp,
+        "and says which protocol told it"
+    );
+    assert_eq!(
+        attachment.link().name(),
+        "sim0",
+        "a link-scoped finding is worthless without the link it was read on"
+    );
+}
+
+/// An announcement proves where its sender is and says nothing about any
+/// address, so it must not put a host in the report.
+///
+/// A switch generally holds no address on the segment it serves, so the role it
+/// claims has nothing to attach to — and inventing a host for it would be the
+/// same mistake a router advertisement was already guarded against.
+#[tokio::test]
+async fn a_switch_announcing_itself_does_not_become_a_host() {
+    let lan = FakeLan::new().wired_through(PEER_B, "core-sw-02", "Gi1/0/14", 40);
+
+    let session = sweep(&lan, &[v4(10)], Scope::Sweep).await;
+
+    assert_eq!(
+        session.hosts().len(),
+        0,
+        "nothing answered a probe, so nothing is a host"
+    );
 }
 
 /// A relay agent forwards for a server on another segment, so the address the

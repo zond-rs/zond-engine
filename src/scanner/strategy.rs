@@ -174,5 +174,10 @@ pub trait PortScanner: Send {
 
 pub mod composite;
 pub mod connect;
+// The readers two strategies share: a local sweep interprets the replies its
+// probes draw with them, and a listener interprets frames nobody asked for with
+// the same ones. A frame that proves a host is there proves it either way.
+pub mod discovery;
 pub mod local;
+pub mod passive;
 pub mod routed;
