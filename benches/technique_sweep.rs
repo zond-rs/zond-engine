@@ -151,12 +151,7 @@ async fn main() {
                 .collect();
 
             let status = host
-                .and_then(|ip| {
-                    session
-                        .hosts()
-                        .get(&ip)
-                        .map(|h| format!("{:?}", h.status()))
-                })
+                .and_then(|ip| session.hosts().get(ip).map(|h| format!("{:?}", h.status())))
                 .unwrap_or_else(|| "no host".to_string());
 
             print!("{:<8}", technique.name());
@@ -184,6 +179,6 @@ fn state_of(
 ) -> Option<PortState> {
     session
         .hosts()
-        .get(&ip)
+        .get(ip)
         .and_then(|host| host.ports().find(|p| p.number() == port).map(|p| p.state()))
 }

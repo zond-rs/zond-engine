@@ -103,10 +103,12 @@
 //! produced — and reads layered settings from TOML. Each format sits behind a
 //! cargo feature; `export-json` is the only one on by default.
 //!
-//! [`import::report`] reads the other direction of the same documents: not the
+//! `import::report` reads the other direction of the same documents: not the
 //! targets to scan next, but what the scan that produced them found, rebuilt as
 //! a [`ScanReport`]. That is what lets [`diff`] compare an archived file — this
-//! engine's or nmap's — against a scan that just finished.
+//! engine's or nmap's — against a scan that just finished. Unlinked because the
+//! module is there only in a build that can read a report format at all, and a
+//! link into it would not resolve in one that cannot.
 //!
 //! Neither module opens a file or touches standard input. Export writes to a
 //! `Write`, import reads from a `BufRead`, and choosing where the bytes come

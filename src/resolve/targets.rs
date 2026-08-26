@@ -186,7 +186,7 @@ impl DiscoveryTargets {
     /// Only [`segment_sweep`](ZondConfig::segment_sweep) today. It is a method
     /// rather than a field the caller copies across because the copying is the
     /// step that gets skipped, and the same shape already exists on
-    /// [`Settings::apply_to`](crate::import::settings::Settings::apply_to).
+    /// `import::settings::Settings::apply_to`.
     pub fn apply_to(&self, cfg: &mut ZondConfig) {
         cfg.segment_sweep = self.segment_sweep;
     }

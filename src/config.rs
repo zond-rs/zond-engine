@@ -769,7 +769,7 @@ pub struct ZondConfig {
     /// **Narrowing only.** No value here can make a scan send a packet it would
     /// not otherwise have sent, which is what makes it safe to accept from a
     /// settings file when [`segment_sweep`](Self::segment_sweep) is not — see
-    /// [`Settings`](crate::import::Settings), where that asymmetry is the whole
+    /// `import::settings::Settings`, where that asymmetry is the whole
     /// argument for which keys a document is allowed to carry.
     pub exclusions: Exclusions,
 

@@ -25,7 +25,7 @@
 //!
 //! Two directions, kept apart. The readers at this level answer "what should I
 //! scan next", and are narrow on purpose: a report read here becomes a target
-//! list and everything else in the document is skipped. [`report`] answers "what
+//! list and everything else in the document is skipped. `report` answers "what
 //! did this scan find", and builds the whole
 //! [`ScanReport`](crate::scanner::report::ScanReport) — which is what lets
 //! [`diff`](crate::diff) compare a scan another tool performed against one this
@@ -103,8 +103,11 @@ pub(crate) mod xml;
 pub mod settings;
 
 // Reading a document for what a scan *found*, rather than for what to scan
-// next. Gated on nothing of its own: each reader inside carries the feature of
-// the format it reads.
+// next. Each reader inside carries the feature of the format it reads, and the
+// module carries their union: a build that can read no report format has no use
+// for a type naming which one to read, and left it holding a `ReportFormat` with
+// no variants and a `read` whose arguments nothing could reach.
+#[cfg(any(feature = "import-json", feature = "import-nmap"))]
 pub mod report;
 
 use std::fmt;
