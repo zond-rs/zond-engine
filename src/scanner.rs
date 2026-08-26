@@ -704,13 +704,10 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
             Ok(listener) => {
                 let mut listener = listener.detecting_os(cfg.os_detection);
                 if let Until::Elapsed(span) = scope.until {
-                    // Stopped through the same signal a caller would use, so
-                    // there is one way a listening phase ends rather than two.
-                    let handle = ctx.handle.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(span).await;
-                        handle.abort();
-                    });
+                    // The watch ends on its own terms rather than by raising the
+                    // abort signal. That signal means a *caller* asked, and a
+                    // front end reads it to decide whether a run was cut short.
+                    listener = listener.stopping_after(span);
                 }
 
                 if let Err(error) = listener.observe().await {

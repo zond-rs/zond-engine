@@ -49,7 +49,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 
@@ -57,7 +56,7 @@ use crate::config::OsDetection;
 use crate::fingerprint::os;
 use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
-use crate::model::ip::scoped::Zone;
+use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::discovery::{Discovery, ScanResponse};
@@ -342,6 +341,19 @@ pub struct PassiveListener {
     capture: capture::CaptureGuard,
     recording: Recording,
     on_link: OnLink,
+    /// When this listener stops of its own accord, if it was given a span.
+    ///
+    /// Held here rather than expressed by aborting the scan, though aborting
+    /// would have been fewer lines. The abort signal means *a caller asked this
+    /// to stop*, and a front end reads it to decide whether a run was
+    /// interrupted — so a watch that reached the end of the time it was asked
+    /// for and set the same flag would report itself as interrupted, and
+    /// `zond listen --for 10m || alert` would fire an alert every ten minutes.
+    ///
+    /// One signal, one meaning. A watch ending on schedule is not a watch
+    /// somebody stopped.
+    deadline: Option<tokio::time::Instant>,
+
     /// How far this listener may go to name the system behind a host.
     ///
     /// A listener cannot be *active* whatever this says — it sends nothing —
@@ -351,12 +363,17 @@ pub struct PassiveListener {
     /// report containing only what they requested should not find a fingerprint
     /// in it.
     os: OsDetection,
-    /// The address each hardware address was first recorded at, so a claim made
-    /// about a machine can be applied to the host it turns out to be.
+    /// The record each hardware address is kept under: the first address the
+    /// machine was seen at.
+    ///
+    /// Two things depend on it. A device answering at four addresses is one
+    /// record rather than four, and a claim made about a *machine* — a router
+    /// identified only by the frames it forwards — can be applied to the host it
+    /// turns out to be.
     ///
     /// Grows only from frames that produced a finding, which the recording
     /// filter has already narrowed.
-    mac_to_ip: HashMap<MacAddr, IpAddr>,
+    mac_to_ip: HashMap<MacAddr, ScopedIp>,
     /// What a machine said about itself before this listener knew which host it
     /// was.
     ///
@@ -429,6 +446,7 @@ impl PassiveListener {
             recording,
             on_link,
             os: OsDetection::default(),
+            deadline: None,
             mac_to_ip: HashMap::new(),
             declared: HashMap::new(),
             protocols: discovery::sweep_protocols(),
@@ -442,6 +460,16 @@ impl PassiveListener {
     /// anyway.
     pub fn detecting_os(mut self, level: OsDetection) -> Self {
         self.os = level;
+        self
+    }
+
+    /// Stops this listener after `span`, rather than waiting to be told.
+    ///
+    /// The watch ends on its own terms: nothing is aborted, so a caller reading
+    /// the abort signal still sees the truth, which is that nobody interrupted
+    /// anything.
+    pub fn stopping_after(mut self, span: std::time::Duration) -> Self {
+        self.deadline = Some(tokio::time::Instant::now() + span);
         self
     }
 
@@ -494,11 +522,11 @@ impl PassiveListener {
         }
         self.read_forwarding(&frame);
 
-        if self.read_endpoint(&frame, captured.observed_at) {
+        if self.read_endpoint(&frame, captured) {
             return;
         }
-        self.read_client(&frame);
-        self.read_presence(&frame);
+        self.read_client(&frame, &captured.zone);
+        self.read_presence(&frame, &captured.zone);
     }
 
     /// Records where this machine is plugged in, where the frame says so.
@@ -597,7 +625,7 @@ impl PassiveListener {
                 for role in roles.iter().copied() {
                     host.add_network_role(role);
                 }
-                self.record(host);
+                self.record(host, &captured.zone);
                 true
             }
             _ => false,
@@ -646,7 +674,7 @@ impl PassiveListener {
     /// its own that went unanswered. If this ever learns to record a non-open
     /// state, the rule that lets a listen report merge safely into a scanned one
     /// stops holding.
-    fn read_endpoint(&mut self, frame: &Frame<'_>, observed_at: SystemTime) -> bool {
+    fn read_endpoint(&mut self, frame: &Frame<'_>, captured: &CapturedFrame) -> bool {
         let Some(segment) = tcp_segment(frame) else {
             return false;
         };
@@ -690,7 +718,9 @@ impl PassiveListener {
 
         let detail = if served {
             let port = Port::new(parsed.get_source(), Protocol::Tcp, PortState::Open)
-                .with_discovery(Discovery::new(ScanResponse::OverheardSynAck).seen_at(observed_at));
+                .with_discovery(
+                    Discovery::new(ScanResponse::OverheardSynAck).seen_at(captured.observed_at),
+                );
             host.add_port(port);
             "syn-ack overheard, so this endpoint served somebody"
         } else {
@@ -702,7 +732,7 @@ impl PassiveListener {
             StatusReason::new(StatusProtocol::Tcp, detail),
         );
 
-        self.record(host);
+        self.record(host, &captured.zone);
         // After the host exists, since this edits a record rather than making
         // one: a stack reading is never itself evidence that anything is there.
         self.read_stack(frame, source);
@@ -756,10 +786,10 @@ impl PassiveListener {
     /// to — which is the rule a local sweep applies to an overheard router
     /// advertisement, for the same reason.
     fn note_declaration(&mut self, source_mac: MacAddr, role: NetworkRole) {
-        if let Some(ip) = self.mac_to_ip.get(&source_mac).copied() {
-            let mut host = Host::new(ip);
-            host.add_network_role(role);
-            self.merge(host);
+        if let Some(key) = self.mac_to_ip.get(&source_mac).cloned() {
+            self.ctx.update_host(key, |host| {
+                host.add_network_role(role);
+            });
             return;
         }
 
@@ -828,7 +858,7 @@ impl PassiveListener {
     /// from, which is the renewal case and is by far the more common one on a
     /// segment that has been up for any length of time. A discover is heard and
     /// declined, and the device is named later by whatever else it says.
-    fn read_client(&mut self, frame: &Frame<'_>) {
+    fn read_client(&mut self, frame: &Frame<'_>, zone: &Zone) {
         let Some(request) = dhcp::client_request(frame) else {
             return;
         };
@@ -857,7 +887,7 @@ impl PassiveListener {
             ),
         );
 
-        self.record(host);
+        self.record(host, zone);
     }
 
     /// Records that whoever sent this frame is present, where a reader
@@ -867,7 +897,7 @@ impl PassiveListener {
     /// advertisement, an ARP frame or a DHCP server's answer proves its sender
     /// is there, and it proves it whether or not this engine asked the question
     /// that drew it.
-    fn read_presence(&mut self, frame: &Frame<'_>) {
+    fn read_presence(&mut self, frame: &Frame<'_>, zone: &Zone) {
         let Ok(source) = crate::protocols::source_address(frame) else {
             return;
         };
@@ -896,7 +926,7 @@ impl PassiveListener {
             if let Some(role) = reading.declared {
                 host.add_network_role(role);
             }
-            self.record(host);
+            self.record(host, zone);
             return;
         }
     }
@@ -940,20 +970,46 @@ impl PassiveListener {
     /// claim that arrived before its sender was identified is not lost — which
     /// is the common order, since a router forwards constantly and speaks for
     /// itself rarely.
-    fn record(&mut self, host: Host) {
+    fn record(&mut self, mut host: Host, zone: &Zone) {
+        // Every frame this listener reads came off a link it was pointed at, so
+        // a host it records was observed through that interface. A link-local
+        // address is meaningless without it.
+        host.set_zone(zone.clone());
+
         let Some(mac) = host.mac() else {
+            // Nothing to recognise it by again. A host with no hardware address
+            // is one seen from off the link, where the address on the frame
+            // belongs to the last hop rather than to the sender.
             self.merge(host);
             return;
         };
 
-        let address = host.primary_ip();
-        let mut host = host;
         for role in self.declared.remove(&mac).into_iter().flatten() {
             host.add_network_role(role);
         }
 
-        self.mac_to_ip.entry(mac).or_insert(address);
-        self.merge(host);
+        // **The record is keyed by the machine, not by the address.** A device
+        // answers at every address it holds — a v4 address, a global v6 address
+        // or three, a link-local — and each arrives on its own frame. Keyed by
+        // whichever address that frame carried, one machine becomes four
+        // records, which is the failure `Host` is shaped to avoid and which
+        // this had until the first run against a real segment showed a laptop
+        // reported as four hosts and a router as two.
+        //
+        // The first address the machine was seen at keys it, and every later
+        // one joins that record through [`Host::merge`] — which ranks the
+        // addresses rather than taking the newest, so which reply arrived first
+        // decides nothing about how the host is reported.
+        let key = self
+            .mac_to_ip
+            .entry(mac)
+            .or_insert_with(|| host.scoped_ip())
+            .clone();
+
+        self.ctx.write_host(key, |existing| {
+            existing.merge(host);
+            true
+        });
     }
 }
 
@@ -973,6 +1029,12 @@ impl Listener for PassiveListener {
 
         loop {
             if self.ctx.handle.should_stop() {
+                break;
+            }
+            if self
+                .deadline
+                .is_some_and(|at| tokio::time::Instant::now() >= at)
+            {
                 break;
             }
 
@@ -1551,6 +1613,97 @@ mod tests {
             host.status(),
             HostStatus::Up,
             "and the frame still proves its sender is there"
+        );
+    }
+
+    /// A watch that reached the end of the time it was asked for is not a watch
+    /// somebody stopped.
+    ///
+    /// It ends on its own terms, leaving the abort signal alone — because a
+    /// front end reads that signal to decide whether a run was interrupted, and
+    /// a timed watch raising it would make `zond listen --for 10m || alert` fire
+    /// an alert every ten minutes.
+    #[tokio::test]
+    async fn a_watch_that_runs_out_of_time_was_not_interrupted() {
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = tokio::sync::mpsc::channel(16);
+
+        let mut listener = PassiveListener::over(
+            rx,
+            capture::CaptureGuard::noop(),
+            Recording::Everything,
+            OnLink::default(),
+            ctx.clone(),
+        )
+        // Already past when the loop first looks, so the test costs no
+        // wall-clock time and does not depend on a timer firing.
+        .stopping_after(std::time::Duration::ZERO);
+
+        listener.observe().await.expect("the watch runs to its end");
+
+        assert!(
+            !ctx.handle.should_stop(),
+            "nobody asked it to stop, so nothing may say they did"
+        );
+    }
+
+    /// A device answering at four addresses is one device.
+    ///
+    /// Found on the first run against a real segment: this laptop was reported
+    /// as four hosts and the router as two, because each address arrived on its
+    /// own frame and each frame made its own record. `discover` has always keyed
+    /// by the machine; this had been keying by whichever address the frame in
+    /// hand happened to carry.
+    #[test]
+    fn one_machine_answering_at_several_addresses_is_one_host() {
+        use crate::protocols::tcp::flags;
+
+        const MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        let peer = Ipv4Addr::new(10, 0, 0, 9);
+
+        let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
+
+        // The same machine answering at two of its addresses, on two frames —
+        // which is the only way a listener ever sees it, and the shape that
+        // used to produce two records.
+        let first = Ipv4Addr::new(10, 0, 0, 5);
+        let second = Ipv4Addr::new(10, 0, 0, 6);
+
+        listener.read(&captured(tcp_frame_from(
+            MAC,
+            first,
+            443,
+            peer,
+            51234,
+            flags::SYN | flags::ACK,
+        )));
+        listener.read(&captured(tcp_frame_from(
+            MAC,
+            second,
+            22,
+            peer,
+            51235,
+            flags::SYN | flags::ACK,
+        )));
+
+        let hosts = ctx.hosts_snapshot();
+        assert_eq!(hosts.len(), 1, "one machine, one record: {hosts:#?}");
+
+        let host = &hosts[0];
+        assert!(
+            host.ips().contains(&IpAddr::V4(first)) && host.ips().contains(&IpAddr::V4(second)),
+            "both addresses are on it: {:?}",
+            host.ips()
+        );
+        assert_eq!(
+            host.zone().map(|zone| zone.name().to_owned()),
+            Some("sim0".to_owned()),
+            "the link it was heard on, without which a link-local names nothing"
+        );
+        assert_eq!(
+            host.ports().count(),
+            2,
+            "and both endpoints landed on it rather than one being stranded"
         );
     }
 

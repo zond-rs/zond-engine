@@ -436,6 +436,58 @@ impl Entry {
     }
 }
 
+/// Creates the directory journals are kept in, and gives it to the user who
+/// invoked an elevated run.
+///
+/// Call this before [`Journal::create`]. It exists because `create_dir_all`
+/// alone was not enough, and the gap was invisible until somebody ran a scan
+/// that did not need root.
+///
+/// # The defect this closes
+///
+/// Every raw strategy needs root, so the first run on a machine is almost
+/// always under `sudo` — and [`paths::root`](super::paths::root) correctly
+/// resolves the *invoking* user's home, so the journals land where that user
+/// will look for them. What they land in is two directories created by a root
+/// process, and nothing was giving those away. Each scan's own directory was
+/// claimed, and the two above it were not.
+///
+/// The result was silent and total: every later run that did **not** need root
+/// found a directory it could not write to, said `not recording this run:
+/// Permission denied`, and carried on. A listening phase needs no privileges at
+/// all, so it never recorded anything on a machine where a scan had run first.
+///
+/// # It repairs as well as creates
+///
+/// The two directories are claimed whether or not this call created them.
+/// Creating-and-claiming alone would fix new installations and leave every
+/// existing one broken, since the directory is already there — and it is there
+/// precisely because an earlier run made it wrongly. Claiming an already-correct
+/// directory is a `chown` to the owner it already has.
+///
+/// Only the two this crate creates. The state directory above them may predate
+/// this engine by years and belongs to whoever made it.
+///
+/// Best effort, like every other claim here: a directory that cannot be given
+/// away is not worth failing a scan over, and an unprivileged run has no
+/// invoking user to give it to and no need of one.
+pub fn prepare_root(root: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(root)?;
+
+    // The parent only where `root` is this crate's own, which is the one case
+    // where it is known to be a directory this engine created. A caller that
+    // named its own location is telling us where to write, not handing us
+    // everything above it.
+    if super::paths::root().as_deref() == Some(root)
+        && let Some(above) = root.parent()
+    {
+        claim_for_invoking_user(above);
+    }
+    claim_for_invoking_user(root);
+
+    Ok(())
+}
+
 /// Every journal under `root`, newest first.
 ///
 /// A directory that cannot be read, or holds no readable manifest, is skipped
@@ -1976,6 +2028,34 @@ mod tests {
 
         let refused = Journal::reopen(&directory, false).expect_err("privileges differ");
         assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
+    }
+
+    /// The root is created, and creating it is not the half that was missing.
+    ///
+    /// The chown cannot be exercised here — it needs a real elevated process
+    /// with a real invoking user, and it is a no-op without one — so what this
+    /// pins is that the call is the one a caller makes and that it produces a
+    /// directory `Journal::create` can then claim inside.
+    #[test]
+    fn preparing_a_root_creates_the_whole_path_to_it() {
+        let root = scratch("prepare-root")
+            .join("state")
+            .join("zond")
+            .join("journals");
+        assert!(!root.exists());
+
+        prepare_root(&root).expect("the path is created");
+        assert!(root.is_dir());
+
+        // And again on a root that is already there, which is the repair path:
+        // it must not fail for finding its own work.
+        prepare_root(&root).expect("an existing root is not an error");
+
+        let plan = Plan::listen(vec![crate::model::ip::scoped::Zone::new(3, "en0")]);
+        Journal::create(&root, &plan, false, "listening")
+            .expect("a journal is created inside it")
+            .close()
+            .expect("it closes");
     }
 
     /// A watch is never finished, so a journal of one always offers a resume and

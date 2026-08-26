@@ -67,9 +67,11 @@
 //! [`NoHostLookup`](crate::model::parse::target::TargetParseError::NoHostLookup)
 //! rather than covering less than its input said.
 
+mod links;
 mod mdns;
 mod targets;
 
+pub use links::{LinkError, for_listening, for_listening_on};
 pub use targets::{
     DiscoveryTargets, for_discovery, for_discovery_with, for_exclusion, for_exclusion_with,
     resolve_names, to_set, to_target_map,
