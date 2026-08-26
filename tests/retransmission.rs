@@ -244,7 +244,7 @@ async fn a_late_reply_plus_its_retry_resolves_the_port_once() {
 
     assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Open));
 
-    let host = session.hosts().get(&TARGET).expect("host recorded");
+    let host = session.hosts().get(TARGET).expect("host recorded");
     assert_eq!(
         host.ports().filter(|p| p.number() == 80).count(),
         1,
@@ -278,7 +278,7 @@ async fn a_lost_discovery_syn_is_retried_and_the_host_is_still_found() {
         .expect("sweep runs to completion");
 
     assert!(
-        session.hosts().contains(&TARGET),
+        session.hosts().contains(TARGET),
         "a host that answered the second SYN is still a live host"
     );
     assert!(
@@ -334,7 +334,7 @@ async fn a_silent_address_is_probed_a_bounded_number_of_times() {
         .await
         .expect("sweep runs to completion");
 
-    assert!(!session.hosts().contains(&TARGET), "nothing answered");
+    assert!(!session.hosts().contains(TARGET), "nothing answered");
     assert_eq!(
         net.probe_count(TARGET, 443),
         ATTEMPTS,
@@ -363,7 +363,7 @@ async fn a_discovered_host_is_not_probed_again() {
         .await
         .expect("sweep runs to completion");
 
-    assert!(session.hosts().contains(&TARGET));
+    assert!(session.hosts().contains(TARGET));
     assert_eq!(net.probe_count(TARGET, 443), 1);
 }
 
@@ -510,7 +510,7 @@ async fn a_lost_arp_request_is_retried_and_the_host_is_still_discovered() {
         .expect("sweep runs to completion");
 
     assert!(
-        session.hosts().contains(&TARGET),
+        session.hosts().contains(TARGET),
         "a host that answered the second ARP request is still a live host"
     );
     assert!(

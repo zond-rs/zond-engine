@@ -519,7 +519,7 @@ mod tests {
 
         scanner.discover_hosts().await.expect("the phase runs");
 
-        let host = session.hosts().get(&TARGET).expect("the host is recorded");
+        let host = session.hosts().get(TARGET).expect("the host is recorded");
         let found = host
             .os()
             .expect("an echo reply with a Windows hop counter names Windows");
@@ -542,7 +542,7 @@ mod tests {
 
         scanner.discover_hosts().await.expect("the phase runs");
 
-        let host = session.hosts().get(&TARGET).expect("the host is recorded");
+        let host = session.hosts().get(TARGET).expect("the host is recorded");
         assert!(
             host.os().is_none(),
             "an echo reply at 64 hops is not evidence for any family, and saying \
@@ -612,7 +612,7 @@ mod tests {
         // about the address. A reply it did not draw must not even prove it
         // alive.
         assert!(
-            session.hosts().get(&TARGET).is_none(),
+            session.hosts().get(TARGET).is_none(),
             "a foreign identifier resolves nothing, records nothing"
         );
     }

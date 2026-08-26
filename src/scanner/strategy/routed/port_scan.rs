@@ -944,7 +944,7 @@ mod tests {
     fn port_state(session: &ScanSession, port: u16) -> Option<PortState> {
         session
             .hosts()
-            .get(&TARGET)
+            .get(TARGET)
             .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
     }
 
@@ -1085,7 +1085,7 @@ mod tests {
             Instant::now(),
         );
 
-        let host = session.hosts().get(&TARGET).expect("host recorded");
+        let host = session.hosts().get(TARGET).expect("host recorded");
         assert!(host.status().is_up());
     }
 
@@ -1138,7 +1138,7 @@ mod tests {
 
         scanner.resolve_remaining();
 
-        let host = session.hosts().get(&TARGET).expect("the port was recorded");
+        let host = session.hosts().get(TARGET).expect("the port was recorded");
         assert!(!host.status().is_up());
     }
 
@@ -1247,7 +1247,7 @@ mod tests {
         );
         scanner.handle_reply(&error, Instant::now());
 
-        let host = session.hosts().get(&TARGET).expect("host recorded");
+        let host = session.hosts().get(TARGET).expect("host recorded");
         assert_eq!(host.status(), HostStatus::Filtered);
     }
 
@@ -1265,7 +1265,7 @@ mod tests {
         );
         scanner.handle_reply(&error, Instant::now());
 
-        let host = session.hosts().get(&TARGET).expect("host recorded");
+        let host = session.hosts().get(TARGET).expect("host recorded");
         assert!(host.status().is_up());
     }
 
@@ -1287,7 +1287,7 @@ mod tests {
         assert_eq!(port_state(&session, 80), None);
         assert!(scanner.core.ledger.contains(&(TARGET, 80)));
         assert_eq!(
-            session.hosts().get(&TARGET).map(|host| host.status()),
+            session.hosts().get(TARGET).map(|host| host.status()),
             Some(HostStatus::Down)
         );
     }
@@ -1476,7 +1476,7 @@ mod tests {
             Instant::now(),
         );
 
-        let host = session.hosts().get(&TARGET).expect("host recorded");
+        let host = session.hosts().get(TARGET).expect("host recorded");
         assert_eq!(host.ports().filter(|p| p.number() == 80).count(), 1);
     }
 

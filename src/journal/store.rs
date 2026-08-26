@@ -1329,7 +1329,7 @@ mod tests {
 
         let root = scratch("folded");
         let map = plan("192.0.2.1", "80");
-        let ip = "192.0.2.1".parse().expect("an address");
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
 
         let directory = {
             let mut journal = begin(&root, &map);
@@ -1522,7 +1522,7 @@ mod tests {
         let ticker = spawn_checkpoints(journal, ctx.progress());
 
         // What the liveness pass found.
-        let ip = "192.0.2.1".parse().expect("an address");
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
         ctx.update_host(ip, |host| {
             host.set_status(HostStatus::Up);
             host.record_evidence(

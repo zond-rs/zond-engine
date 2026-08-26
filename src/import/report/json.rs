@@ -84,8 +84,8 @@ use crate::model::technique::TcpScanTechnique;
 use crate::record::wire;
 use crate::record::{
     CaptureRecord, CertificateRecord, DiscoveryRecord, FailureRecord, HardwareRecord, HopRecord,
-    HostRecord, OsRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord,
-    ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord, StatusReasonRecord,
+    HostRecord, OriginRecord, OsRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord,
+    RangeRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord, StatusReasonRecord,
     TelemetryRecord, WindowRecord,
 };
 use crate::scanner::report::{ScanPhase, ScanReport};
@@ -337,6 +337,15 @@ struct PhaseDto {
     failures: Vec<FailureDto>,
     probe_stats: Vec<ProbeStatsDto>,
     unroutable: Vec<String>,
+    origin: Option<OriginDto>,
+}
+
+/// Which document a phase came from, for a report merged out of several.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct OriginDto {
+    label: Option<String>,
+    engine_version: String,
 }
 
 impl PhaseDto {
@@ -365,6 +374,10 @@ impl PhaseDto {
                 .into_iter()
                 .map(ProbeStatsDto::record)
                 .collect::<Result<_, _>>()?,
+            origin: self.origin.map(|origin| OriginRecord {
+                label: origin.label,
+                engine_version: origin.engine_version,
+            }),
         })
     }
 }

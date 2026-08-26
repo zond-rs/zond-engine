@@ -495,14 +495,20 @@ pub struct DiffSummary {
 
 /// The moment a report is judged to have happened.
 ///
-/// A phase records when it started, and a report with phases is placed by its
-/// earliest. One without them — a foreign scanner's output, or a scan that ended
+/// A report's findings are as of when it stopped looking, so a report with
+/// phases is placed by [`finished_at`](ScanReport::finished_at) rather than by
+/// when its first phase began. For an ordinary scan the two differ by the scan's
+/// own duration, which no certificate threshold can notice. For a report merged
+/// out of several they differ by however long the sources span, and taking the
+/// earliest would judge tonight's certificates against last quarter.
+///
+/// A report without phases — a foreign scanner's output, or a scan that ended
 /// before it wrote a phase down — is placed by the latest time any of its hosts
 /// was seen, which is the only other thing in the record that is a time the scan
 /// happened rather than the time it is being read.
-fn clock_of(report: &ScanReport) -> SystemTime {
+pub(crate) fn clock_of(report: &ScanReport) -> SystemTime {
     if !report.phases().is_empty() {
-        return report.started_at();
+        return report.finished_at();
     }
 
     report
@@ -554,6 +560,15 @@ mod tests {
         host
     }
 
+    /// How long the phases these helpers build ran for.
+    ///
+    /// Zero, so that the moment a report is placed at is the `at` each helper
+    /// was given. A report is placed by when it *finished* looking, and a
+    /// duration would put its clock somewhere no test named — which the
+    /// certificate tests below would then read as a threshold crossed a second
+    /// early. How long a scan took is not what any of them is about.
+    const PROMPT: Duration = Duration::ZERO;
+
     /// A report that says nothing about what it covered, which is what a foreign
     /// scanner's output reads as.
     fn unscoped(hosts: Vec<Host>) -> ScanReport {
@@ -573,13 +588,14 @@ mod tests {
         let phase = ScanPhase::from_parts(PhaseParts {
             kind: ScanKind::Discovery,
             started_at: at,
-            elapsed: Duration::from_secs(1),
+            elapsed: PROMPT,
             privileged: true,
             targets: scope,
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
+            origin: None,
         });
 
         ScanReport::recorded("test", vec![phase], hosts)
@@ -608,13 +624,14 @@ mod tests {
         let phase = ScanPhase::from_parts(PhaseParts {
             kind: ScanKind::PortScan,
             started_at: at,
-            elapsed: Duration::from_secs(1),
+            elapsed: PROMPT,
             privileged: true,
             targets: scope,
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
+            origin: None,
         });
 
         ScanReport::recorded("test", vec![phase], hosts)
@@ -640,13 +657,14 @@ mod tests {
         let phase = ScanPhase::from_parts(PhaseParts {
             kind: ScanKind::Discovery,
             started_at: at,
-            elapsed: Duration::from_secs(1),
+            elapsed: PROMPT,
             privileged: true,
             targets: scope,
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
+            origin: None,
         });
 
         ScanReport::recorded("test", vec![phase], hosts)

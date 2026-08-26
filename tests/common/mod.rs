@@ -186,13 +186,13 @@ impl Outcome {
 
     /// The recorded host at `ip`, if the scan found one.
     pub fn host(&self, ip: IpAddr) -> Option<Host> {
-        self.store.get(&ip)
+        self.store.get(ip)
     }
 
     /// The state recorded for `ip:port`, if any port entry exists.
     pub fn port_state(&self, ip: IpAddr, port: u16) -> Option<PortState> {
         self.store
-            .get(&ip)
+            .get(ip)
             .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
     }
 
@@ -200,7 +200,7 @@ impl Outcome {
     pub fn saw_host_update(&self, ip: IpAddr) -> bool {
         self.events
             .iter()
-            .any(|e| matches!(e, ScanEvent::HostUpdated(got) if *got == ip))
+            .any(|e| matches!(e, ScanEvent::HostUpdated(got) if got.addr() == ip))
     }
 }
 
@@ -285,6 +285,22 @@ pub fn scanner_interface() -> NetworkInterface {
     }
 }
 
+/// A link-local address as the store keys it, on the simulated segment.
+///
+/// `fe80::AA` names a different machine on every segment, so the store keys a
+/// link-local host by the address *and* the interface it was read on — a bare
+/// one names no host and finds none. A sweep over
+/// [`scanner_interface`] records its neighbours on `sim0`, so this is how a test
+/// asks for one back.
+///
+/// Every other address is its own whole key and needs nothing from this.
+pub fn on_segment(ip: IpAddr) -> zond_engine::model::ip::scoped::ScopedIp {
+    zond_engine::model::ip::scoped::ScopedIp::scoped(
+        ip,
+        zond_engine::model::ip::scoped::Zone::new(scanner_interface().index, "sim0"),
+    )
+}
+
 /// A source resolver over [`scanner_interface`], as the routed scanners expect.
 pub fn scanner_resolver() -> SourceResolver {
     SourceResolver::from_interfaces(&[scanner_interface()])
@@ -335,7 +351,7 @@ pub fn udp(ip: IpAddr, port: u16) -> Target {
 pub fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortState> {
     session
         .hosts()
-        .get(&ip)
+        .get(ip)
         .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
 }
 
@@ -344,13 +360,16 @@ pub fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortSt
 /// [`HostStatus::Unknown`] was probed and stayed silent, which is a different
 /// outcome from never having been probed.
 pub fn host_status(session: &ScanSession, ip: IpAddr) -> Option<HostStatus> {
-    session.hosts().get(&ip).map(|host| host.status())
+    session.hosts().get(ip).map(|host| host.status())
 }
 
 /// Every protocol name recorded as evidence for `ip`'s status, sorted so a test
 /// can assert on them without depending on set iteration order.
-pub fn status_protocols(session: &ScanSession, ip: IpAddr) -> Vec<String> {
-    let Some(host) = session.hosts().get(&ip) else {
+pub fn status_protocols(
+    session: &ScanSession,
+    ip: impl Into<zond_engine::model::ip::scoped::ScopedIp>,
+) -> Vec<String> {
+    let Some(host) = session.hosts().get(ip) else {
         return Vec::new();
     };
     let mut names: Vec<String> = host

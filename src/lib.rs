@@ -56,8 +56,8 @@
 //!
 //! // Hosts arrive as they are found.
 //! while let Some(event) = session.events().recv().await {
-//!     if let ScanEvent::HostUpdated(ip) = event
-//!         && let Some(host) = session.hosts().get(&ip)
+//!     if let ScanEvent::HostUpdated(address) = event
+//!         && let Some(host) = session.hosts().get(&address)
 //!     {
 //!         println!("{host}");
 //!     }
@@ -126,6 +126,22 @@
 //! whether it covered that target at all, so a narrowed scan does not read as a
 //! network that emptied out.
 //!
+//! # What several scans add up to
+//!
+//! [`merge`] folds any number of [`ScanReport`]s into one. A `/16` scanned in
+//! eight chunks, one range seen from inside the perimeter and from outside, or a
+//! year of archived nmap files against tonight's run: sources go in and one
+//! report comes out, holding every phase each of them walked.
+//!
+//! Its rule is that a later source overrides only where it made a claim, so a
+//! host missing from tonight's scan is not a host that went away and an endpoint
+//! nothing listed is not a port that closed. Where two sources genuinely
+//! disagree the newer one wins, which is what lets a merged report say a port
+//! closed rather than accumulating towards a network that reads as wide open.
+//!
+//! A merge is closed over `ScanReport`, so the result exports through every
+//! writer, compares through [`diff`], and merges again.
+//!
 //! # Layout
 //!
 //! The names most consumers need are re-exported here at the root. The modules
@@ -171,6 +187,10 @@
 //!   because it reads the report the scanner leaves behind, and below the file
 //!   formats because it compares reports rather than documents: where either
 //!   report came from is not its business.
+//! - [`merge`] — several scans as one report. Above [`diff`] rather than beside
+//!   it, because it folds hosts under the same [`HostIdentity`](diff::HostIdentity)
+//!   a comparison pairs them by, and deciding which record is which host is one
+//!   argument that both of them make.
 //! - [`format`](mod@crate::format) — what a reader and a writer of the same document have to agree
 //!   on, and nothing else. It sits below both so that reading a format never
 //!   requires compiling the code that writes it.
@@ -188,6 +208,7 @@ pub mod fingerprint;
 pub mod format;
 pub mod import;
 pub mod journal;
+pub mod merge;
 pub mod model;
 pub mod protocols;
 pub mod record;

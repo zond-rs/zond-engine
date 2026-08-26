@@ -612,6 +612,7 @@ impl Run {
             failures: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
+            origin: None,
         });
 
         ScanReport::recorded(self.attribution(), vec![phase], self.hosts)

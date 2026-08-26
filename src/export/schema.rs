@@ -498,6 +498,25 @@ pub struct PhaseDto<'a> {
     /// no strategy in this phase carries instrumentation, which is not the same
     /// as a scanner that measured zero.
     pub probe_stats: Vec<ProbeStatsDto>,
+    /// Which document this phase was folded in from, for a report merged out of
+    /// several.
+    ///
+    /// `null` on a phase the engine that wrote this document measured itself,
+    /// where the report's own `engine` is the attribution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<OriginDto<'a>>,
+}
+
+/// Which document a phase came from, for a merged report.
+#[derive(Debug, Clone, Serialize)]
+pub struct OriginDto<'a> {
+    /// What the caller called the document it was read from. `null` where it
+    /// gave no name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<&'a str>,
+    /// What produced the phase, as that scanner attributed itself. `nmap 7.94`
+    /// for a phase read out of nmap's XML, and no evidence this engine ran it.
+    pub engine_version: &'a str,
 }
 
 impl<'a> PhaseDto<'a> {
@@ -517,6 +536,10 @@ impl<'a> PhaseDto<'a> {
                 .map(std::string::ToString::to_string)
                 .collect(),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
+            origin: phase.origin().map(|origin| OriginDto {
+                label: origin.label(),
+                engine_version: origin.engine_version(),
+            }),
         }
     }
 }

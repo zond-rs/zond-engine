@@ -342,7 +342,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     pub fn seed_timing(&mut self) {
         for host in self.ctx.store.iter() {
             if let Some(rtt) = host.value().median_rtt() {
-                self.ledger.seed_host_rtt(*host.key(), rtt);
+                self.ledger.seed_host_rtt(host.key().addr(), rtt);
             }
         }
     }

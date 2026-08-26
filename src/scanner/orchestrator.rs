@@ -527,8 +527,9 @@ pub(super) async fn run_active_os_series(
     let targets: Vec<strategy::routed::SeriesTarget> = ctx
         .host_addresses()
         .into_iter()
-        .filter_map(|ip| {
-            ctx.read_host(&ip, |host| {
+        .filter_map(|key| {
+            let key = key.clone();
+            ctx.read_host(&key, |host| {
                 if !host.status().is_up() {
                     return None;
                 }
@@ -540,7 +541,7 @@ pub(super) async fn run_active_os_series(
                 if settled && !thorough {
                     return None;
                 }
-                strategy::routed::SeriesTarget::for_host(ip, host)
+                strategy::routed::SeriesTarget::for_host(key.clone(), host)
             })
             .flatten()
         })
@@ -647,9 +648,14 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::OsSnmp,
-        |found: Option<(IpAddr, Port, Vec<os::OsEvidence>)>, _audit| {
-            if let Some((ip, port, evidence)) = found {
-                ctx.update_host(ip, |host| {
+        |found: Option<(
+            crate::model::ip::scoped::ScopedIp,
+            Port,
+            Vec<os::OsEvidence>,
+        )>,
+         _audit| {
+            if let Some((key, port, evidence)) = found {
+                ctx.update_host(key, |host| {
                     host.add_port(port);
                     if os::identify(host, evidence) {
                         named += 1;
@@ -685,7 +691,11 @@ const SNMP_PORT: u16 = 161;
 /// describing this host's routing rather than anything about the target.
 async fn ask_for_kernel(
     target: crate::model::ip::scoped::ScopedIp,
-) -> Option<(IpAddr, Port, Vec<os::OsEvidence>)> {
+) -> Option<(
+    crate::model::ip::scoped::ScopedIp,
+    Port,
+    Vec<os::OsEvidence>,
+)> {
     let addr = target.to_socket_addr(SNMP_PORT)?;
 
     let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);
@@ -694,7 +704,10 @@ async fn ask_for_kernel(
     // Recorded with what found it, so a report can tell this port from one the
     // port scan established — and never has to imply it was asked for.
     let port = port.with_discovery(PortDiscovery::new(ScanResponse::UdpResponse));
-    Some((target.addr(), port, evidence))
+    // The key, not the address: an SNMP agent on a link-local neighbour is
+    // reachable here — `to_socket_addr` put the scope id on the socket — and
+    // writing the answer back bare would fork the host's record.
+    Some((target, port, evidence))
 }
 
 /// Runs the active operating-system echo probe, where the caller asked for it
@@ -737,10 +750,11 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
     let mut alive: Vec<IpAddr> = ctx
         .host_addresses()
         .into_iter()
-        .filter(|ip| {
-            ctx.read_host(ip, |host| host.status().is_up())
+        .filter(|key| {
+            ctx.read_host(key, |host| host.status().is_up())
                 .unwrap_or(false)
         })
+        .filter_map(routable)
         .collect();
     alive.sort_unstable();
     alive.dedup();
@@ -768,12 +782,13 @@ pub(super) async fn run_active_os_probe(
     let mut unnamed: Vec<IpAddr> = ctx
         .host_addresses()
         .into_iter()
-        .filter(|ip| {
-            ctx.read_host(ip, |host| {
+        .filter(|key| {
+            ctx.read_host(key, |host| {
                 host.status().is_up() && host.os().is_none_or(|os| os.accuracy() < 85)
             })
             .unwrap_or(false)
         })
+        .filter_map(routable)
         .collect();
     unnamed.sort_unstable();
     unnamed.dedup();
@@ -960,6 +975,32 @@ pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
 
 /// Pushes one address into `set` as a range of itself.
 ///
+/// The address a raw routed probe can be aimed at, or `None` for a host it
+/// cannot reach.
+///
+/// **This is where the store's key becomes a bare address, and the one place a
+/// key may be narrowed to one.** The strategies below it — the trace, the echo
+/// probe — reach a host over the routing table and reason in addresses from end
+/// to end: a socket takes one, a reply carries one, and a hop table is keyed by
+/// one. Handing them a `ScopedIp` would key their reply matching on something no
+/// reply carries.
+///
+/// So they are given what they can use, and a host whose address is meaningless
+/// without an interface is not given at all. `fe80::1` cannot be routed — the
+/// kernel needs a scope id and a raw routed probe has nowhere to put one, which
+/// is the same refusal [`ScopedIp::to_socket_addr`] makes rather than attempting
+/// a send that fails for a reason having nothing to do with the target. Those
+/// hosts are the local scanner's, which reaches them at the link layer and
+/// already holds them under the interface they were read on.
+///
+/// It also keeps the store honest. A routed strategy writes its finding back
+/// under the address it probed, and an address that is not the whole key would
+/// land in a second entry — one host in the report becoming two, each holding
+/// half of what was found.
+fn routable(key: crate::model::ip::scoped::ScopedIp) -> Option<IpAddr> {
+    (!crate::model::ip::scoped::ScopedIp::needs_zone(&key.addr())).then(|| key.addr())
+}
+
 /// The zone is kept only for the addresses that cannot be reached without one:
 /// `fe80::1` names a different machine on every segment.
 fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
@@ -1299,7 +1340,7 @@ mod tests {
         run_passive_os_identification(&ctx, OsDetection::Passive);
 
         let named = ctx
-            .read_host(&ip, |host| host.os().map(ToString::to_string))
+            .read_host(ip, |host| host.os().map(ToString::to_string))
             .expect("the host is in the store");
         assert!(
             named.as_deref().is_some_and(|os| os.contains("macOS")),
@@ -1323,7 +1364,7 @@ mod tests {
         run_passive_os_identification(&ctx, OsDetection::Off);
 
         let named = ctx
-            .read_host(&ip, |host| host.os().is_some())
+            .read_host(ip, |host| host.os().is_some())
             .expect("the host is in the store");
         assert!(!named);
     }
@@ -1371,7 +1412,7 @@ mod tests {
 
         assert!(ctx.take_failures().is_empty(), "declining is not failing");
         assert!(
-            ctx.read_host(&known, |host| host
+            ctx.read_host(known, |host| host
                 .os()
                 .and_then(|os| os.kernel().map(ToOwned::to_owned)))
                 .flatten()
@@ -1460,7 +1501,7 @@ mod tests {
              should have been opened"
         );
         assert!(
-            ctx.read_host(&ip, |host| host.os().is_none())
+            ctx.read_host(ip, |host| host.os().is_none())
                 .expect("the host is in the store"),
             "and nothing may be concluded from probes that were never sent"
         );
@@ -1509,7 +1550,7 @@ mod tests {
         run_passive_os_identification(&ctx, OsDetection::Passive);
 
         let named = ctx
-            .read_host(&ip, |host| host.os().is_some())
+            .read_host(ip, |host| host.os().is_some())
             .expect("the host is in the store");
         assert!(!named);
     }
@@ -1519,7 +1560,7 @@ mod tests {
     fn store_holding(hosts: Vec<Host>) -> (ScanSession, ScanContext) {
         let (session, ctx) = ScanSession::new();
         for host in hosts {
-            ctx.store.insert(host.primary_ip(), host);
+            ctx.store.insert(host.scoped_ip(), host);
         }
         (session, ctx)
     }

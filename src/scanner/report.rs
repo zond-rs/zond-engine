@@ -61,6 +61,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RetryConfig;
@@ -69,7 +70,7 @@ use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
 use crate::model::host::{Host, HostStatus};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
-use crate::model::ip::scoped::Zone;
+use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::IpSet;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::model::target::{TargetMap, TargetSet};
@@ -935,6 +936,55 @@ impl ProbeStats {
     }
 }
 
+/// Which document a phase came from, for a report folded out of several.
+///
+/// A report merged from an archived nmap file, last night's journal and a scan
+/// that just finished holds all of their phases, and each phase's scope, timing
+/// and settings describe one of the three. This says which. Without it a merged
+/// report states what it covered and cannot say on whose word.
+///
+/// `None` on a phase this process measured, which needs no attribution: it is
+/// the report's own.
+///
+/// **The label is the caller's.** The engine opens no files and has no word for
+/// one, so whoever read the document passes the name it used for it — a path, a
+/// record id, a bucket key. [`merge`](crate::merge) is the only thing that
+/// writes an `Origin`, and it takes the version from the source report's own
+/// attribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    label: Option<Arc<str>>,
+    engine_version: Arc<str>,
+}
+
+impl Origin {
+    /// An origin attributing a phase to `engine_version`, unnamed.
+    pub fn new(engine_version: impl Into<Arc<str>>) -> Self {
+        Self {
+            label: None,
+            engine_version: engine_version.into(),
+        }
+    }
+
+    /// Names the document the phase was read from.
+    pub fn with_label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// What the caller called the document, if it said.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// What produced the phase, as that scanner attributed itself. `nmap 7.94`
+    /// for a report read out of nmap's XML, and no evidence this crate ran
+    /// anything.
+    pub fn engine_version(&self) -> &str {
+        &self.engine_version
+    }
+}
+
 /// Everything a [`ScanPhase`] holds, for rebuilding one that was recorded.
 ///
 /// Mirrors the phase field for field, deliberately and without a default: a
@@ -961,6 +1011,8 @@ pub struct PhaseParts {
     pub unroutable: Vec<IpAddr>,
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
+    /// Which document the phase came from, for one folded in from elsewhere.
+    pub origin: Option<Origin>,
 }
 
 impl ScanPhase {
@@ -981,7 +1033,16 @@ impl ScanPhase {
             failures: parts.failures,
             unroutable: parts.unroutable,
             probes: parts.probes,
+            origin: parts.origin,
         }
+    }
+
+    /// Attributes this phase to the document it was read from.
+    ///
+    /// Used by [`merge`](crate::merge) as it folds a source in, which is the one
+    /// place that knows both the document's name and what produced it.
+    pub fn attribute(&mut self, origin: Origin) {
+        self.origin = Some(origin);
     }
 }
 
@@ -1004,9 +1065,17 @@ pub struct ScanPhase {
     /// address on trust is advice that cannot work.
     unroutable: Vec<IpAddr>,
     probes: Vec<ProbeStats>,
+    /// Which document this phase was folded in from, for a merged report.
+    origin: Option<Origin>,
 }
 
 impl ScanPhase {
+    /// Which document this phase came from, for one folded into a merged report
+    /// from elsewhere. `None` for a phase this process measured.
+    pub fn origin(&self) -> Option<&Origin> {
+        self.origin.as_ref()
+    }
+
     /// Which entry point this phase records.
     pub fn kind(&self) -> ScanKind {
         self.kind
@@ -1171,6 +1240,9 @@ impl PhaseRecorder {
             failures: ctx.take_failures(),
             unroutable: ctx.take_unroutable(),
             probes: ctx.take_probe_stats(),
+            // This process measured it, so it needs no attribution: the
+            // report's own is the phase's.
+            origin: None,
         };
 
         let hosts = ctx.store.iter().map(|entry| entry.value().clone());
@@ -1242,25 +1314,39 @@ pub struct ScanReport {
     /// it is only reading.
     engine_version: Cow<'static, str>,
     phases: Vec<ScanPhase>,
-    hosts: BTreeMap<IpAddr, Host>,
+    /// Keyed by [`ScopedIp`] rather than by the bare address.
+    ///
+    /// A host is keyed by the address it is reported under, and for an IPv6
+    /// link-local that address is not an identity on its own: `fe80::1` names a
+    /// different machine on every segment, and a scanner watching two of them
+    /// finds two hosts under one number. Keyed by the bare `IpAddr` the second
+    /// silently replaced the first, so a report could hold fewer hosts than were
+    /// found and say nothing about it.
+    ///
+    /// [`ScopedIp::scoped`] drops the zone from every address that does not need
+    /// one, so this is the ordinary bare address for every host but that case,
+    /// and the map still orders by address — the zone only breaks ties between
+    /// identically-numbered link-locals. Iteration order is unchanged for every
+    /// report that does not contain one.
+    ///
+    /// This is the same distinction [`pairing`](crate::diff::pairing) draws when
+    /// it decides which records are one host, so a fold that correctly separates
+    /// two link-locals now has somewhere to put them both.
+    hosts: BTreeMap<ScopedIp, Host>,
 }
 
 impl ScanReport {
     /// Builds a single-phase report over the hosts a scan produced.
     ///
-    /// Hosts are keyed by their primary IP, which is the same key the live store
-    /// uses, so a host that gained addresses during the scan appears once rather
-    /// than once per address.
+    /// Hosts are keyed by the address they are reported under, carrying the
+    /// interface where that address needs one, so a host that gained addresses
+    /// during the scan appears once rather than once per address and two
+    /// link-locals on different segments stay two hosts.
     pub fn new(phase: ScanPhase, hosts: impl IntoIterator<Item = Host>) -> Self {
-        let hosts = hosts
-            .into_iter()
-            .map(|host| (host.primary_ip(), host))
-            .collect();
-
         Self {
             engine_version: Cow::Borrowed(ENGINE_VERSION),
             phases: vec![phase],
-            hosts,
+            hosts: index(hosts),
         }
     }
 
@@ -1299,15 +1385,10 @@ impl ScanReport {
         phases: Vec<ScanPhase>,
         hosts: impl IntoIterator<Item = Host>,
     ) -> Self {
-        let hosts = hosts
-            .into_iter()
-            .map(|host| (host.primary_ip(), host))
-            .collect();
-
         Self {
             engine_version,
             phases,
-            hosts,
+            hosts: index(hosts),
         }
     }
 
@@ -1336,9 +1417,37 @@ impl ScanReport {
         self.hosts.len()
     }
 
-    /// Looks up a host by its primary IP.
+    /// Looks up a host by the address it is reported under.
+    ///
+    /// Where a report holds two link-locals at the same number on different
+    /// segments this answers with the first, since a bare address cannot say
+    /// which was meant. [`host_scoped`](Self::host_scoped) is the lookup that
+    /// can.
     pub fn host(&self, ip: &IpAddr) -> Option<&Host> {
+        self.hosts
+            .range(ScopedIp::unscoped(*ip)..)
+            .next()
+            .filter(|(key, _)| key.addr() == *ip)
+            .map(|(_, host)| host)
+    }
+
+    /// Looks up a host by the address it is reported under, together with the
+    /// interface that address is valid on.
+    ///
+    /// The exact lookup, and the one to use for a link-local: `fe80::1%en0` and
+    /// `fe80::1%en1` are two hosts and this is what tells them apart.
+    pub fn host_scoped(&self, ip: &ScopedIp) -> Option<&Host> {
         self.hosts.get(ip)
+    }
+
+    /// Takes this report's phases, consuming it.
+    ///
+    /// For a caller assembling a new report out of several, which needs the
+    /// phases themselves rather than a copy of each. The hosts are read through
+    /// [`hosts`](Self::hosts) before this is called, since folding them is what
+    /// the new report is for.
+    pub fn into_phases(self) -> Vec<ScanPhase> {
+        self.phases
     }
 
     /// When the earliest phase began.
@@ -1347,6 +1456,26 @@ impl ScanReport {
             .iter()
             .map(ScanPhase::started_at)
             .min()
+            .unwrap_or_else(SystemTime::now)
+    }
+
+    /// When the latest phase stopped looking.
+    ///
+    /// The moment this report's findings are *as of*, which is what anything
+    /// judging them against a clock wants — a certificate's remaining validity,
+    /// how stale a record is, which of two reports is the later word. A phase's
+    /// end is its own `started_at + elapsed`, since `elapsed` is measured
+    /// monotonically over that one phase; the report-wide
+    /// [`elapsed`](Self::elapsed) is a sum and cannot be added to a start.
+    ///
+    /// Distinct from [`started_at`](Self::started_at), which answers when the
+    /// job began. The two differ by a scan's duration for an ordinary report and
+    /// by however long the sources span for a merged one.
+    pub fn finished_at(&self) -> SystemTime {
+        self.phases
+            .iter()
+            .map(|phase| phase.started_at() + phase.elapsed())
+            .max()
             .unwrap_or_else(SystemTime::now)
     }
 
@@ -1504,15 +1633,37 @@ impl ScanReport {
     pub fn merge(&mut self, other: ScanReport) {
         self.phases.extend(other.phases);
 
-        for (ip, host) in other.hosts {
-            match self.hosts.get_mut(&ip) {
+        for (key, host) in other.hosts {
+            match self.hosts.get_mut(&key) {
                 Some(existing) => existing.merge(host),
                 None => {
-                    self.hosts.insert(ip, host);
+                    self.hosts.insert(key, host);
                 }
             }
         }
     }
+}
+
+/// Keys hosts by the address each is reported under.
+///
+/// Folds rather than replaces where two records key the same, which is what a
+/// caller means by handing over two records of one host: the live store already
+/// folds them, and a caller assembling a report by hand should not lose a
+/// finding for having done it in two pieces. Replacing was the previous
+/// behaviour and it discarded whichever record arrived first, silently.
+fn index(hosts: impl IntoIterator<Item = Host>) -> BTreeMap<ScopedIp, Host> {
+    let mut indexed: BTreeMap<ScopedIp, Host> = BTreeMap::new();
+
+    for host in hosts {
+        match indexed.get_mut(&host.scoped_ip()) {
+            Some(existing) => existing.merge(host),
+            None => {
+                indexed.insert(host.scoped_ip(), host);
+            }
+        }
+    }
+
+    indexed
 }
 
 // ╔════════════════════════════════════════════╗
@@ -1602,6 +1753,7 @@ mod tests {
             failures: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
+            origin: None,
         }
     }
 

@@ -34,6 +34,7 @@
 //! a link-local address includes the zone the record was found on. Without that
 //! two hosts on two interfaces would share a token and be folded into one.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -180,6 +181,94 @@ pub(crate) fn components(
         )
     });
     components
+}
+
+/// Groups records from any number of sources into one entry per host.
+///
+/// The N-way form of the question [`components`] answers for two. Records are
+/// given flattened, in whatever order the caller wants them folded, and come
+/// back as groups of indices into that list: ascending within a group, and the
+/// groups ascending by their lowest index, so the same input always groups the
+/// same way.
+///
+/// **Not the same question as [`components`], and deliberately not the same
+/// code.** A comparison asks which of tonight's records *continues* which of
+/// last night's, which is a relation between two sides: two baseline records
+/// that share an address stay two records, and `HostDelta::is_regrouped` reports
+/// that the scans disagreed. This asks which records *are* one host, which is an
+/// equivalence over all of them at once, and two records sharing an address are
+/// one host whichever documents they came from. Sharing an implementation would
+/// force one of the two to answer the other's question.
+///
+/// The tokens, the identity policy and the link-local zone rule are shared, and
+/// those are the parts that carry the argument.
+pub(crate) fn groups(records: &[&Host], identity: HostIdentity) -> Vec<Vec<usize>> {
+    let mut sets = DisjointSet::new(records.len());
+    let mut first_holder: HashMap<Token, usize> = HashMap::new();
+
+    for (i, host) in records.iter().enumerate() {
+        for token in tokens(host, identity) {
+            match first_holder.entry(token) {
+                Entry::Occupied(held) => sets.union(*held.get(), i),
+                Entry::Vacant(slot) => {
+                    slot.insert(i);
+                }
+            }
+        }
+    }
+
+    // Keyed by root, then flattened in first-appearance order, which is the
+    // order the roots were minted in and therefore ascending by lowest member.
+    let mut grouped: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut order: Vec<usize> = Vec::new();
+    for i in 0..records.len() {
+        let root = sets.find(i);
+        grouped.entry(root).or_insert_with(|| {
+            order.push(root);
+            Vec::new()
+        });
+        grouped.get_mut(&root).expect("just inserted").push(i);
+    }
+
+    order
+        .into_iter()
+        .map(|root| grouped.remove(&root).expect("a root that was recorded"))
+        .collect()
+}
+
+/// Union-find over record indices, by size with path compression.
+struct DisjointSet {
+    parent: Vec<usize>,
+    size: Vec<usize>,
+}
+
+impl DisjointSet {
+    fn new(len: usize) -> Self {
+        Self {
+            parent: (0..len).collect(),
+            size: vec![1; len],
+        }
+    }
+
+    fn find(&mut self, mut i: usize) -> usize {
+        while self.parent[i] != i {
+            self.parent[i] = self.parent[self.parent[i]];
+            i = self.parent[i];
+        }
+        i
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let (mut a, mut b) = (self.find(a), self.find(b));
+        if a == b {
+            return;
+        }
+        if self.size[a] < self.size[b] {
+            std::mem::swap(&mut a, &mut b);
+        }
+        self.parent[b] = a;
+        self.size[a] += self.size[b];
+    }
 }
 
 /// The tokens a record is linked by under `identity`.

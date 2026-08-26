@@ -122,7 +122,7 @@ async fn a_cut_short_scan_gives_verdicts_it_has_not_earned() {
 
     let host = session
         .hosts()
-        .get(&TARGET)
+        .get(TARGET)
         .expect("an aborted scan still files the ports it was given");
 
     let with_a_verdict = host.ports().count();

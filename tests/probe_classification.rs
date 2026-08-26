@@ -162,7 +162,7 @@ async fn a_slow_reply_is_still_matched_to_its_probe() {
 async fn a_duplicated_reply_records_the_port_once() {
     let (session, _net) = syn_scan(&[(80, Policy::open().duplicated())]).await;
 
-    let host = session.hosts().get(&TARGET).expect("host recorded");
+    let host = session.hosts().get(TARGET).expect("host recorded");
     assert_eq!(
         host.ports().filter(|p| p.number() == 80).count(),
         1,
@@ -220,7 +220,7 @@ async fn established_traffic_does_not_discover_a_host() {
         .expect("sweep runs to completion");
 
     assert!(
-        !session.hosts().contains(&TARGET_V6),
+        !session.hosts().contains(TARGET_V6),
         "an ACK from an established connection is not evidence of discovery"
     );
 }
@@ -621,7 +621,7 @@ async fn icmpv6_errors_are_classified_by_their_own_code_numbers() {
 async fn a_duplicated_udp_reply_records_the_port_once() {
     let (session, _net) = udp_scan(TARGET, &[(53, Policy::open().duplicated())]).await;
 
-    let host = session.hosts().get(&TARGET).expect("host recorded");
+    let host = session.hosts().get(TARGET).expect("host recorded");
     assert_eq!(host.ports().filter(|p| p.number() == 53).count(), 1);
 }
 
@@ -714,7 +714,7 @@ async fn a_host_already_in_the_store_is_still_credited_to_this_sweep() {
         StopReason::AllResponded,
         "its only target answered, so the sweep had nothing left to wait for"
     );
-    assert!(session.hosts().contains(&TARGET));
+    assert!(session.hosts().contains(TARGET));
 }
 
 // ── Operating system identification ──────────────────────────────────────────
@@ -738,7 +738,7 @@ async fn a_host_already_in_the_store_is_still_credited_to_this_sweep() {
 async fn a_scan_names_the_operating_system_behind_an_open_port() {
     let (session, _net) = syn_scan(&[(80, Policy::open())]).await;
 
-    let host = session.hosts().get(&TARGET).expect("the host was recorded");
+    let host = session.hosts().get(TARGET).expect("the host was recorded");
     let os = host
         .os()
         .expect("an open port's reply carries a stack signature");
@@ -771,7 +771,7 @@ async fn a_scan_names_the_operating_system_behind_an_open_port() {
 async fn a_scan_names_no_operating_system_from_a_closed_port_alone() {
     let (session, _net) = syn_scan(&[(80, Policy::closed())]).await;
 
-    let host = session.hosts().get(&TARGET).expect("the host was recorded");
+    let host = session.hosts().get(TARGET).expect("the host was recorded");
     assert!(
         host.ports().any(|port| port.state() == PortState::Closed),
         "the port itself still resolves"
@@ -833,7 +833,7 @@ async fn an_open_port_whose_first_answer_was_lost_is_still_found() {
 #[tokio::test]
 async fn the_report_distinguishes_a_challenge_from_a_handshake() {
     let (session, _net) = syn_scan(&[(80, Policy::open().drop_first_reply(1))]).await;
-    let host = session.hosts().get(&TARGET).expect("host recorded");
+    let host = session.hosts().get(TARGET).expect("host recorded");
 
     assert!(
         host.reasons().iter().any(|reason| reason

@@ -279,6 +279,27 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "origin": {
+          "description": "Which document this phase was folded in from, for a report merged out of several. Absent on a phase the engine that wrote this document measured itself, where the report's own `engine` block is the attribution.",
+          "$ref": "#/$defs/origin"
+        }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine_version"
+      ],
+      "properties": {
+        "label": {
+          "description": "What the caller called the document this phase was read from - a path, a record id, whatever the front end named it. Absent where it gave no name; the engine never invents one.",
+          "type": "string"
+        },
+        "engine_version": {
+          "description": "What produced this phase, as that scanner attributed itself. `nmap 7.94` for a phase read out of nmap's XML. Not evidence that a zond engine ran it.",
+          "type": "string"
         }
       }
     },

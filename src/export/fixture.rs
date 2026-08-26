@@ -216,7 +216,7 @@ pub(crate) fn report() -> ScanReport {
     ctx.record_sweep(crate::model::ip::scoped::Zone::new(3, "en0"));
 
     for host in [router(), filtered_host(), bare_host()] {
-        ctx.store.insert(host.primary_ip(), host);
+        ctx.store.insert(host.scoped_ip(), host);
     }
 
     recorder.finish(&ctx)
@@ -286,6 +286,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         failures: Vec::new(),
         unroutable: Vec::new(),
         probes: Vec::new(),
+        origin: None,
     });
 
     ScanReport::recorded(crate::scanner::report::ENGINE_VERSION, vec![phase], hosts)
@@ -507,7 +508,10 @@ pub(crate) fn hostile() -> ScanReport {
 
     ctx.record_failure(ScannerKind::Local, HOSTILE.to_string());
     ctx.record_probe_stats(probe_stats());
-    ctx.store.insert(ip(3), hostile_host());
+    ctx.store.insert(
+        crate::model::ip::scoped::ScopedIp::unscoped(ip(3)),
+        hostile_host(),
+    );
 
     recorder.finish(&ctx)
 }

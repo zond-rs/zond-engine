@@ -28,8 +28,6 @@
 //! runs on them needs a real conversation with the service. Splitting the two lets
 //! each use the transport that suits it.
 
-use std::net::IpAddr;
-
 use tokio::net::TcpStream;
 
 use crate::model::ip::scoped::ScopedIp;
@@ -133,7 +131,7 @@ async fn fingerprint_one(
     port_number: u16,
     protocol: Protocol,
     detection: ServiceDetection,
-) -> Option<(IpAddr, Port, Vec<os::OsEvidence>)> {
+) -> Option<(ScopedIp, Port, Vec<os::OsEvidence>)> {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
             verbosity = 1,
@@ -141,7 +139,6 @@ async fn fingerprint_one(
         );
         return None;
     };
-    let ip = target.addr();
 
     // Seed the same baseline the connect scanner uses, then let the engine
     // refine it over the live exchange.
@@ -161,7 +158,9 @@ async fn fingerprint_one(
         Protocol::Udp => crate::fingerprint::fingerprint_udp_detailed(addr, port).await?,
     };
 
-    Some((ip, port, about_the_host))
+    // The key, not the address: this is what the finding is written back
+    // under, and a link-local written back bare would fork the host's record.
+    Some((target, port, about_the_host))
 }
 
 /// Folds a freshly fingerprinted port back into its host and announces the
@@ -171,8 +170,8 @@ async fn fingerprint_one(
 /// `about_the_host` is what the service said about the *machine*, which is a
 /// different finding filed in a different place: the service belongs to the port,
 /// the operating system to the host.
-fn write_back(ctx: &ScanContext, ip: IpAddr, port: Port, about_the_host: Vec<os::OsEvidence>) {
-    ctx.update_host(ip, |host| {
+fn write_back(ctx: &ScanContext, key: ScopedIp, port: Port, about_the_host: Vec<os::OsEvidence>) {
+    ctx.update_host(key, |host| {
         host.add_port(port);
 
         if about_the_host.is_empty() {
@@ -200,6 +199,7 @@ mod tests {
     use super::*;
     use crate::model::host::Host;
     use crate::scanner::session::ScanSession;
+    use std::net::IpAddr;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
@@ -225,7 +225,7 @@ mod tests {
 
         detect(&ctx, ServiceDetection::default()).await;
 
-        let host = session.hosts().get(&ip).unwrap();
+        let host = session.hosts().get(ip).unwrap();
         let port = host
             .ports()
             .find(|p| p.number() == addr.port())
@@ -273,7 +273,7 @@ mod tests {
 
         detect(&ctx, ServiceDetection::default()).await; // must return promptly without connecting anywhere
 
-        let host = session.hosts().get(&ip).unwrap();
+        let host = session.hosts().get(ip).unwrap();
         let port = host.ports().find(|p| p.number() == 9).unwrap();
         // Untouched: no service was attached by the phase.
         assert!(port.service().is_none());

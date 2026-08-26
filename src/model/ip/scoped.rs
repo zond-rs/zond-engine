@@ -222,6 +222,25 @@ impl From<IpAddr> for ScopedIp {
     }
 }
 
+/// So that an address held by reference reaches anything taking
+/// `impl Into<ScopedIp>` without the caller spelling the conversion.
+///
+/// The address the engine keys a host under is a `ScopedIp`, and the great
+/// majority of them need no zone — every IPv4 address, and every IPv6 address
+/// but a link-local. A caller holding one of those holds the whole key already,
+/// and this is what lets it pass the key it has.
+impl From<&IpAddr> for ScopedIp {
+    fn from(addr: &IpAddr) -> Self {
+        Self::unscoped(*addr)
+    }
+}
+
+impl From<&ScopedIp> for ScopedIp {
+    fn from(scoped: &ScopedIp) -> Self {
+        scoped.clone()
+    }
+}
+
 impl fmt::Display for ScopedIp {
     /// `fe80::1%en0` for a scoped address, the bare address otherwise. This is
     /// the notation every operating system's tooling accepts and the one a

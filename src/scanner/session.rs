@@ -33,6 +33,35 @@
 //! get wrong, and would make the version of a third-party concurrency crate
 //! part of this crate's semver.
 //!
+//! ## What a host is keyed by
+//!
+//! By the address it is reported under, carrying the interface that address was
+//! read on where it needs one — a [`ScopedIp`]. For every IPv4 address and every
+//! routable IPv6 one that is the bare address and nothing more, because a
+//! machine reachable at a global address is the same machine through whichever
+//! interface answered it.
+//!
+//! **An IPv6 link-local is the exception, and it is why the key exists.**
+//! `fe80::1` names a different machine on every segment, so a host watching two
+//! of them finds two neighbours under one number. Keyed by the bare address the
+//! second write landed on the first's entry, and one machine's hardware address,
+//! roles and round trips were folded into another machine's record.
+//!
+//! Three rules follow, and between them they are the whole of it:
+//!
+//! - **A host takes its link from its key.** [`ScanContext::write_host`] records
+//!   the zone when it creates a host, so no scanner has to remember to.
+//! - **A key read from the store writes back to the store.**
+//!   [`ScanContext::host_addresses`] hands out keys, and a strategy that reads a
+//!   host and writes a finding back carries the key rather than rebuilding one
+//!   from the address it probed. A bare address written back would land in a
+//!   second entry, and one host would become two, each holding half of what was
+//!   found.
+//! - **A bare link-local finds nothing.** [`HostStore::get`] answers `None` for
+//!   one, because it is a question with more than one answer. Consumers get the
+//!   whole key from [`ScanEvent::HostUpdated`], which is the path that matters:
+//!   the event exists to be handed straight back to the store.
+//!
 //! ## Why a failure is written down twice
 //!
 //! Once to the event stream, for a consumer watching, and once to a log the
@@ -51,7 +80,7 @@ use crate::info;
 use crate::journal::settle::{Outcome, Settled, Settlements};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::Host;
-use crate::model::ip::scoped::Zone;
+use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::Positions;
 use crate::model::technique::TcpScanTechnique;
 use crate::scanner::handle::ScanHandle;
@@ -161,7 +190,7 @@ pub enum ScanEvent {
     /// [`ScanSession::hosts`], which is a single lookup and always up to date —
     /// where a host copied into an event is stale the moment the next probe
     /// answers.
-    HostUpdated(IpAddr),
+    HostUpdated(ScopedIp),
 
     /// A scanning strategy failed to start or terminated abnormally. The scan
     /// continues with whatever strategies remain, so results may be incomplete
@@ -191,11 +220,11 @@ pub enum ScanEvent {
 /// third-party concurrency crate part of this crate's semver.
 #[derive(Debug, Clone, Default)]
 pub struct HostStore {
-    inner: Arc<DashMap<IpAddr, Host>>,
+    inner: Arc<DashMap<ScopedIp, Host>>,
 }
 
 impl HostStore {
-    fn new(inner: Arc<DashMap<IpAddr, Host>>) -> Self {
+    fn new(inner: Arc<DashMap<ScopedIp, Host>>) -> Self {
         Self { inner }
     }
 
@@ -205,8 +234,16 @@ impl HostStore {
     /// several addresses is whichever one it was first credited to. To look a
     /// host up by any of its addresses, search
     /// [`snapshot`](Self::snapshot) on [`Host::ips`].
-    pub fn get(&self, ip: &IpAddr) -> Option<Host> {
-        self.inner.get(ip).map(|entry| entry.value().clone())
+    ///
+    /// **An IPv6 link-local needs the interface it was read on.** `fe80::1`
+    /// names a different machine on every segment, so a bare one names no host
+    /// here and answers `None`; pass the [`ScopedIp`] the event carried. Every
+    /// other address is its own whole key, and a plain [`IpAddr`] is accepted
+    /// for exactly that reason.
+    pub fn get(&self, ip: impl Into<ScopedIp>) -> Option<Host> {
+        self.inner
+            .get(&ip.into())
+            .map(|entry| entry.value().clone())
     }
 
     /// Reads the host at `ip` without cloning it, if there is one.
@@ -223,16 +260,16 @@ impl HostStore {
     /// `read` runs under the store's own guard. It must not touch the store
     /// again — that deadlocks — and it should not block, since a scanner writing
     /// to the same host waits behind it.
-    pub fn read<R>(&self, ip: &IpAddr, read: impl FnOnce(&Host) -> R) -> Option<R> {
-        self.inner.get(ip).map(|entry| read(entry.value()))
+    pub fn read<R>(&self, ip: impl Into<ScopedIp>, read: impl FnOnce(&Host) -> R) -> Option<R> {
+        self.inner.get(&ip.into()).map(|entry| read(entry.value()))
     }
 
     /// Whether anything has been recorded at `ip`.
     ///
     /// Cheaper than [`get`](Self::get) when the host itself is not wanted, since
     /// nothing is cloned.
-    pub fn contains(&self, ip: &IpAddr) -> bool {
-        self.inner.contains_key(ip)
+    pub fn contains(&self, ip: impl Into<ScopedIp>) -> bool {
+        self.inner.contains_key(&ip.into())
     }
 
     /// How many hosts have been recorded.
@@ -257,7 +294,7 @@ impl HostStore {
             .iter()
             .map(|entry| entry.value().clone())
             .collect();
-        hosts.sort_by_key(Host::primary_ip);
+        hosts.sort_by_cached_key(Host::scoped_ip);
         hosts
     }
 
@@ -268,8 +305,8 @@ impl HostStore {
     /// change. This exists for the tests that need a store already holding a
     /// particular host, standing in for the scanner that would have written it.
     #[cfg(test)]
-    pub(crate) fn insert(&self, ip: IpAddr, host: Host) {
-        self.inner.insert(ip, host);
+    pub(crate) fn insert(&self, ip: impl Into<ScopedIp>, host: Host) {
+        self.inner.insert(ip.into(), host);
     }
 }
 
@@ -456,7 +493,7 @@ impl SweptLinks {
 /// See [`ScanContext::progress`] for why this exists rather than a context.
 #[derive(Debug, Clone)]
 pub struct ScanProgress {
-    store: Arc<DashMap<IpAddr, Host>>,
+    store: Arc<DashMap<ScopedIp, Host>>,
     changed: Arc<ChangedHosts>,
     settlements: Arc<Settlements>,
     failures: Arc<FailureLog>,
@@ -473,7 +510,7 @@ impl ScanProgress {
         self.changed
             .drain()
             .into_iter()
-            .filter_map(|ip| self.store.get(&ip).map(|host| host.clone()))
+            .filter_map(|key| self.store.get(&key).map(|host| host.clone()))
             .collect()
     }
 
@@ -501,16 +538,16 @@ impl ScanProgress {
 /// The hosts whose findings a journal has yet to record.
 #[derive(Debug, Default)]
 pub(crate) struct ChangedHosts {
-    entries: Mutex<std::collections::BTreeSet<IpAddr>>,
+    entries: Mutex<std::collections::BTreeSet<ScopedIp>>,
 }
 
 impl ChangedHosts {
-    fn insert(&self, ip: IpAddr) {
+    fn insert(&self, ip: ScopedIp) {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         entries.insert(ip);
     }
 
-    fn drain(&self) -> Vec<IpAddr> {
+    fn drain(&self) -> Vec<ScopedIp> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *entries).into_iter().collect()
     }
@@ -558,7 +595,7 @@ impl FailureLog {
 #[derive(Clone)]
 pub struct ScanContext {
     pub(crate) handle: ScanHandle,
-    pub(crate) store: Arc<DashMap<IpAddr, Host>>,
+    pub(crate) store: Arc<DashMap<ScopedIp, Host>>,
     pub(crate) events_tx: mpsc::UnboundedSender<ScanEvent>,
     pub(crate) failures: Arc<FailureLog>,
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
@@ -642,7 +679,14 @@ impl ScanContext {
     /// no excluded address appears in the report, and a reader can confirm that
     /// against the ranges the report already records — which is a better
     /// guarantee than a number this engine reports about itself.
-    pub fn write_host(&self, ip: IpAddr, edit: impl FnOnce(&mut Host) -> bool) -> bool {
+    pub fn write_host(
+        &self,
+        key: impl Into<ScopedIp>,
+        edit: impl FnOnce(&mut Host) -> bool,
+    ) -> bool {
+        let key = key.into();
+        let ip = key.addr();
+
         if self.exclusions.excludes(&ip) {
             // Ordinary on a sweep, which cannot address its all-nodes echo away
             // from an excluded neighbour, and worth a line either way: it is the
@@ -656,9 +700,19 @@ impl ScanContext {
         }
 
         let mut is_new = false;
-        let mut host = self.store.entry(ip).or_insert_with(|| {
+        let mut host = self.store.entry(key.clone()).or_insert_with(|| {
             is_new = true;
-            Host::new(ip)
+            let mut host = Host::new(ip);
+            // The key carries the interface where the address needs one, so the
+            // host is born knowing which link it is on rather than waiting for a
+            // scanner to remember to say. `Host::set_zone` keeps the first zone
+            // it is given, which is the right rule only if the first one is
+            // right — and the key is the one thing here that cannot be wrong
+            // about it, since it is what the host was looked up by.
+            if let Some(zone) = key.zone() {
+                host.set_zone(zone.clone());
+            }
+            host
         });
         let announce = edit(&mut host);
         drop(host);
@@ -675,10 +729,10 @@ impl ScanContext {
         // and that probe had just added an `icmp_echo` reason and a round trip
         // to it. Sharing the boolean silently dropped both from every recorded
         // scan.
-        self.changed.insert(ip);
+        self.changed.insert(key.clone());
 
         if announce || is_new {
-            let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
+            let _ = self.events_tx.send(ScanEvent::HostUpdated(key));
         }
         is_new
     }
@@ -692,8 +746,12 @@ impl ScanContext {
     ///
     /// `read` must not touch this context again. The guard it runs under is the
     /// store's own, and reaching back into the store from inside it deadlocks.
-    pub fn read_host<R>(&self, ip: &IpAddr, read: impl FnOnce(&Host) -> R) -> Option<R> {
-        self.store.get(ip).map(|entry| read(entry.value()))
+    pub fn read_host<R>(
+        &self,
+        ip: impl Into<ScopedIp>,
+        read: impl FnOnce(&Host) -> R,
+    ) -> Option<R> {
+        self.store.get(&ip.into()).map(|entry| read(entry.value()))
     }
 
     /// Every address a host is currently recorded under.
@@ -702,8 +760,8 @@ impl ScanContext {
     /// [`write_host`](Self::write_host) takes the store's own lock, and holding
     /// an iterator over the map while calling it would deadlock against
     /// whichever shard the iterator is on.
-    pub fn host_addresses(&self) -> Vec<IpAddr> {
-        self.store.iter().map(|entry| *entry.key()).collect()
+    pub fn host_addresses(&self) -> Vec<ScopedIp> {
+        self.store.iter().map(|entry| entry.key().clone()).collect()
     }
 
     /// The single place a strategy failure enters the record.
@@ -849,14 +907,14 @@ impl ScanContext {
     /// with nothing new in it.
     pub fn restore_hosts(&self, hosts: &[Host]) {
         for host in hosts {
-            let ip = host.primary_ip();
-            match self.store.get_mut(&ip) {
+            let key = host.scoped_ip();
+            match self.store.get_mut(&key) {
                 Some(mut existing) => existing.merge(host.clone()),
                 None => {
-                    self.store.insert(ip, host.clone());
+                    self.store.insert(key.clone(), host.clone());
                 }
             }
-            let _ = self.events_tx.send(ScanEvent::HostUpdated(ip));
+            let _ = self.events_tx.send(ScanEvent::HostUpdated(key));
         }
     }
 
@@ -931,7 +989,7 @@ impl ScanContext {
     /// the change. The convenience form of [`write_host`](Self::write_host) for
     /// the paths that always record a finding worth emitting - a port state, a
     /// merged host. Returns `true` if this call created the host.
-    pub fn update_host(&self, ip: IpAddr, update: impl FnOnce(&mut Host)) -> bool {
+    pub fn update_host(&self, ip: impl Into<ScopedIp>, update: impl FnOnce(&mut Host)) -> bool {
         self.write_host(ip, |host| {
             update(host);
             true
@@ -1067,7 +1125,7 @@ mod tests {
         assert!(ctx.write_host(allowed, |_| true));
 
         assert_eq!(ctx.store.len(), 1);
-        assert!(!ctx.store.contains_key(&excluded));
+        assert!(!ctx.store.contains_key(&ScopedIp::unscoped(excluded)));
 
         // Exactly one announcement, for the address that was allowed to answer.
         let ScanEvent::HostUpdated(announced) =
@@ -1075,8 +1133,95 @@ mod tests {
         else {
             panic!("expected a host update");
         };
-        assert_eq!(announced, allowed);
+        assert_eq!(announced, ScopedIp::unscoped(allowed));
         assert!(session.events().try_recv().is_none());
+    }
+
+    /// The store's key, at the one address family where a bare address is not
+    /// one. `fe80::1` names a different machine on every segment, so a host
+    /// watching two of them finds two neighbours under one number.
+    ///
+    /// Keyed by the bare address the second write landed on the first's entry,
+    /// and one machine's hardware address, roles and round trips were folded
+    /// into another machine's record — under the wrong interface, since
+    /// `Host::set_zone` keeps the first zone it is given.
+    #[test]
+    fn two_link_locals_on_different_segments_are_two_hosts() {
+        let shared: IpAddr = "fe80::1".parse().expect("literal");
+        let (_session, ctx) = ScanSession::new();
+
+        ctx.write_host(ScopedIp::scoped(shared, Zone::new(1, "en0")), |host| {
+            host.set_status(HostStatus::Up);
+            true
+        });
+        ctx.write_host(ScopedIp::scoped(shared, Zone::new(2, "en1")), |host| {
+            host.set_status(HostStatus::Up);
+            true
+        });
+
+        assert_eq!(ctx.store.len(), 2, "two segments, two machines");
+
+        // And each knows its own link, taken from the key it was created under
+        // rather than from whichever scanner remembered to say.
+        let mut zones: Vec<String> = ctx
+            .store
+            .iter()
+            .filter_map(|entry| entry.value().zone().map(|zone| zone.name().to_owned()))
+            .collect();
+        zones.sort();
+        assert_eq!(zones, ["en0", "en1"]);
+    }
+
+    /// A global address is the same machine through whichever interface answered
+    /// it, so the zone is dropped from the key and two sightings are one host.
+    ///
+    /// The other half of the rule above: a key that carried the interface for
+    /// *every* address would split every dual-homed host in two.
+    #[test]
+    fn one_global_address_seen_on_two_interfaces_is_one_host() {
+        let global: IpAddr = "2001:db8::1".parse().expect("literal");
+        let (_session, ctx) = ScanSession::new();
+
+        ctx.write_host(ScopedIp::scoped(global, Zone::new(1, "en0")), |_| true);
+        ctx.write_host(ScopedIp::scoped(global, Zone::new(2, "en1")), |_| true);
+
+        assert_eq!(ctx.store.len(), 1, "one address, one machine");
+    }
+
+    /// The round trip every phase after discovery depends on: a strategy reads
+    /// the addresses the store holds, decides something about one, and writes it
+    /// back. Written back under anything but the key it was read by, the finding
+    /// lands in a second entry and one host becomes two, each holding half of
+    /// what was found.
+    #[test]
+    fn a_finding_written_back_under_a_key_from_the_store_lands_on_the_same_host() {
+        let shared: IpAddr = "fe80::1".parse().expect("literal");
+        let (_session, ctx) = ScanSession::new();
+
+        ctx.write_host(ScopedIp::scoped(shared, Zone::new(1, "en0")), |host| {
+            host.set_status(HostStatus::Up);
+            true
+        });
+
+        for key in ctx.host_addresses() {
+            ctx.write_host(key, |host| {
+                host.add_reason(StatusReason::new(StatusProtocol::IcmpEcho, "echo answered"));
+                true
+            });
+        }
+
+        assert_eq!(ctx.store.len(), 1, "the same host, enriched");
+        assert_eq!(
+            ctx.store
+                .iter()
+                .next()
+                .expect("the host")
+                .value()
+                .reasons()
+                .len(),
+            1,
+            "and the finding reached it"
+        );
     }
 
     #[test]

@@ -67,7 +67,7 @@ async fn wide_syn_scan(policy: Policy) -> Vec<PortState> {
 
     let host = session
         .hosts()
-        .get(&TARGET)
+        .get(TARGET)
         .expect("the target answered and so is on record");
 
     ports
@@ -163,7 +163,7 @@ async fn a_host_that_talks_and_drops_is_recognised_as_being_outrun() {
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
     run_port_scanner(&mut scanner, targets).await;
 
-    let host = session.hosts().get(&TARGET).expect("the host answered");
+    let host = session.hosts().get(TARGET).expect("the host answered");
     assert_eq!(
         host.ports().count(),
         ports.len(),

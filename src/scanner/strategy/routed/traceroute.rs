@@ -1135,7 +1135,7 @@ mod tests {
         tracer.run(vec![target]).await;
 
         let path = ctx
-            .read_host(&target, |host| host.path().clone())
+            .read_host(target, |host| host.path().clone())
             .expect("the target was recorded");
 
         let seen: Vec<(u8, Option<IpAddr>)> = path
@@ -1167,7 +1167,7 @@ mod tests {
 
         tracer.run(vec![target]).await;
 
-        ctx.read_host(&target, |host| {
+        ctx.read_host(target, |host| {
             host.path()
                 .hops()
                 .iter()

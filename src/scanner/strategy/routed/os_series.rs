@@ -115,6 +115,7 @@ use crate::config::SendMode;
 use crate::fingerprint::os::{self, SeriesClasses, SeriesSample, StackObservation, StackReply};
 use crate::model::capture::IpObservation;
 use crate::model::host::Host;
+use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
@@ -198,10 +199,15 @@ const RECV_TICK: Duration = Duration::from_millis(5);
 /// scanner revisits ports whose state is settled and asks a different question
 /// about them, and probing a port nobody established anything about would be a
 /// port scan wearing another name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesTarget {
-    /// The host to follow.
-    pub address: IpAddr,
+    /// The host to follow, as the store keys it.
+    ///
+    /// The key rather than a bare address, because this is both what the probe
+    /// is aimed at — through [`addr`](crate::model::ip::scoped::ScopedIp::addr) —
+    /// and what the reading is written back under. A link-local host written
+    /// back under a bare address would fork its record into a second entry.
+    pub address: ScopedIp,
     /// A port that answered with a SYN+ACK: where the sequence generator and
     /// the peer's clock are readable.
     pub open: Option<u16>,
@@ -220,7 +226,7 @@ impl SeriesTarget {
     /// machine is one record under several addresses, and the one to probe is
     /// the one the caller looked it up by — probing its primary instead would
     /// silently ask a different question over a different protocol.
-    pub fn for_host(address: IpAddr, host: &Host) -> Option<Self> {
+    pub fn for_host(address: ScopedIp, host: &Host) -> Option<Self> {
         let tcp = || host.ports().filter(|port| port.protocol() == Protocol::Tcp);
         // Lowest-numbered of each, so two runs against one host follow the same
         // ports and their readings are comparable.
@@ -337,8 +343,8 @@ impl OsSeriesScanner {
     ) -> Self {
         // Sorted so a run is reproducible and two runs over one network follow
         // the same hosts in the same windows.
-        targets.sort_unstable_by_key(|target| target.address);
-        targets.dedup_by_key(|target| target.address);
+        targets.sort_unstable_by(|a, b| a.address.cmp(&b.address));
+        targets.dedup_by(|a, b| a.address == b.address);
 
         let batches: VecDeque<Vec<SeriesTarget>> = targets
             .chunks(BATCH)
@@ -380,12 +386,12 @@ impl OsSeriesScanner {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
 
         for target in batch {
-            let Some(source) = self.resolver.resolve(target.address) else {
+            let Some(source) = self.resolver.resolve(target.address.addr()) else {
                 continue;
             };
             for port in target.ports() {
                 tick.tick().await;
-                self.send_one(source, target.address, source_port, port);
+                self.send_one(source, target.address.addr(), source_port, port);
                 self.file_queued();
             }
         }
@@ -552,7 +558,7 @@ impl OsSeriesScanner {
     /// sources agreeing with each other.
     fn conclude(&mut self, batch: &[SeriesTarget]) {
         for target in batch {
-            let Some(collected) = self.collected.remove(&target.address) else {
+            let Some(collected) = self.collected.remove(&target.address.addr()) else {
                 continue;
             };
             let readings: Vec<(StackReply, SeriesClasses)> =
@@ -583,7 +589,7 @@ impl OsSeriesScanner {
                 verdict.family
             );
             self.named += 1;
-            self.ctx.update_host(target.address, |host| {
+            self.ctx.update_host(&target.address, |host| {
                 os::identify(host, [verdict.as_evidence()]);
             });
         }
@@ -847,7 +853,7 @@ mod tests {
 
     fn both_ports() -> SeriesTarget {
         SeriesTarget {
-            address: TARGET,
+            address: ScopedIp::unscoped(TARGET),
             open: Some(OPEN),
             closed: Some(CLOSED),
         }
@@ -866,7 +872,8 @@ mod tests {
         host.add_port(Port::new(139, Protocol::Tcp, PortState::Closed));
         host.add_port(Port::new(81, Protocol::Tcp, PortState::Closed));
 
-        let target = SeriesTarget::for_host(TARGET, &host).expect("both kinds of answer");
+        let target = SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &host)
+            .expect("both kinds of answer");
         assert_eq!(target.open, Some(22));
         assert_eq!(target.closed, Some(81));
     }
@@ -880,17 +887,17 @@ mod tests {
         use crate::model::port::Port;
 
         let mut nothing = Host::new(TARGET);
-        assert!(SeriesTarget::for_host(TARGET, &nothing).is_none());
+        assert!(SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &nothing).is_none());
 
         // A filtered port is silence with a name on it, not an answer: nothing
         // came back, so there is no reply to ask for a second one of.
         nothing.add_port(Port::new(80, Protocol::Tcp, PortState::Filtered));
-        assert!(SeriesTarget::for_host(TARGET, &nothing).is_none());
+        assert!(SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &nothing).is_none());
 
         // Nor does a UDP finding help: this scanner sends TCP.
         let mut udp = Host::new(TARGET);
         udp.add_port(Port::new(53, Protocol::Udp, PortState::Open));
-        assert!(SeriesTarget::for_host(TARGET, &udp).is_none());
+        assert!(SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &udp).is_none());
     }
 
     /// The whole path this scanner exists for, end to end: probes go out, the
@@ -903,7 +910,7 @@ mod tests {
 
         scanner.discover_hosts().await.expect("the phase runs");
 
-        let host = session.hosts().get(&TARGET).expect("the host is recorded");
+        let host = session.hosts().get(TARGET).expect("the host is recorded");
         let found = host.os().expect("a Linux-shaped series names Linux");
         assert_eq!(found.family(), Some("Linux"));
     }
@@ -918,7 +925,7 @@ mod tests {
 
         scanner.discover_hosts().await.expect("the phase runs");
 
-        let host = session.hosts().get(&TARGET).expect("the host is recorded");
+        let host = session.hosts().get(TARGET).expect("the host is recorded");
         let evidence = host
             .os()
             .and_then(|os| os.evidence().map(str::to_owned))
@@ -948,7 +955,7 @@ mod tests {
 
         let evidence = session
             .hosts()
-            .get(&TARGET)
+            .get(TARGET)
             .and_then(|host| host.os().and_then(|os| os.evidence().map(str::to_owned)))
             .expect("a finding with its evidence");
 
@@ -968,7 +975,7 @@ mod tests {
     async fn a_host_with_only_an_open_port_is_still_read() {
         let (session, ctx) = ScanSession::new();
         let target = SeriesTarget {
-            address: TARGET,
+            address: ScopedIp::unscoped(TARGET),
             open: Some(OPEN),
             closed: None,
         };
@@ -976,7 +983,7 @@ mod tests {
 
         scanner.discover_hosts().await.expect("the phase runs");
 
-        let host = session.hosts().get(&TARGET).expect("the host is recorded");
+        let host = session.hosts().get(TARGET).expect("the host is recorded");
         assert_eq!(host.os().and_then(|os| os.family()), Some("Linux"));
     }
 
@@ -996,7 +1003,7 @@ mod tests {
 
         let samples = 4;
         let target = SeriesTarget {
-            address: TARGET,
+            address: ScopedIp::unscoped(TARGET),
             open: Some(OPEN),
             closed: None,
         };
@@ -1063,7 +1070,7 @@ mod tests {
         scanner.discover_hosts().await.expect("the phase runs");
 
         assert!(
-            session.hosts().get(&TARGET).is_none(),
+            session.hosts().get(TARGET).is_none(),
             "a segment answering no probe of ours records nothing whatsoever"
         );
     }

@@ -25,6 +25,19 @@
   the first packet and again at every finding — so a segment sweep cannot report
   a neighbour it was forbidden to look at. The report carries the excluded ranges
   and what they cost, which is what makes it evidence that a scope was kept to.
+* **Comparing two scans:** what appeared, what went away, and what changed about
+  what stayed — paired by address across scans that keyed the same machine
+  differently, and read against what each scan says it walked, so a narrowed scan
+  does not read as a network that emptied out.
+* **Folding several scans into one:** a `/16` scanned in eight chunks, one range
+  seen from inside the perimeter and from outside, or a year of archived nmap
+  files against tonight's run. A later source overrides only where it made a
+  claim, so a host missing from tonight's scan is not a host that went away and an
+  endpoint nothing listed is not a port that closed. Each phase of the result says
+  which document it came from.
+* **Resume and replay:** a scan is journalled as it runs, so one that was
+  interrupted continues from where it stopped and one that finished can be read
+  back without the network.
 * **Reports in and out:** export a finished scan as JSON, JSONL, CSV, a
   self-contained HTML page, or nmap-compatible XML; read targets back from a list,
   CSV, this engine's own JSON, or an nmap XML file somebody else produced.
@@ -69,8 +82,8 @@ let (mut session, task) = discover(targets.into_ips(), &cfg).await?;
 
 // Hosts arrive as they are found, rather than all at the end.
 while let Some(event) = session.events().recv().await {
-    if let ScanEvent::HostUpdated(ip) = event
-        && let Some(host) = session.hosts().get(&ip)
+    if let ScanEvent::HostUpdated(address) = event
+        && let Some(host) = session.hosts().get(&address)
     {
         println!("{host}");
     }
@@ -86,15 +99,27 @@ it is worth.
 
 ## Modules
 
-* `core`: the domain model (hosts, ports, IP sets, targets), scan configuration,
-  the live session and the finished report.
+* `model`: the domain model — hosts, ports, IP sets, targets, and the addresses
+  and exclusions they are expressed in. `config` is the scan configuration beside
+  it.
 * `scanner`: the two entry points — `discover` for which hosts are alive, `scan`
-  for which of their ports are open — and the strategies behind them.
-* `fingerprinting`: service identification over an open port.
-* `export` / `import`: reports out, targets and settings in.
+  for which of their ports are open — the strategies behind them, the live
+  session and the finished report.
+* `fingerprint`: service and operating-system identification over an open port.
+* `diff`: what changed between two scans, whoever ran them, judged by what each
+  says it walked.
+* `merge`: any number of scans folded into one report — a `/16` scanned in
+  chunks, two vantage points on one range, a year of archived nmap files against
+  tonight's run.
+* `journal`: a scan written down as it runs, so one that stopped can be resumed
+  and one that finished can be replayed.
+* `export` / `import`: reports out, targets and settings in. `format` is what a
+  reader and a writer of the same document have to agree on; `record` is the
+  model as data, and the one place the wire vocabulary lives.
 * `protocols`: protocol parsers and packet crafting (TCP, UDP, ICMP, ARP, NDP,
   DNS, mDNS).
-* `network`: raw send and capture transports, beneath the protocol layer.
+* `transport`: raw send and capture transports, beneath the protocol layer.
+  `resolve` turns names into addresses above it.
 * `system`: interfaces, routing and privilege checks — the only place the engine
   asks the host about itself.
 

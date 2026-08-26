@@ -72,7 +72,7 @@ use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{
-    PhaseParts, PortScope, ProbeStats, ProbeStatsParts, ScanKind, ScanPhase, ScanSettings,
+    Origin, PhaseParts, PortScope, ProbeStats, ProbeStatsParts, ScanKind, ScanPhase, ScanSettings,
     ScannerFailure, ScopeParts, StopReason, TargetScope,
 };
 use crate::scanner::session::ScannerKind;
@@ -849,6 +849,38 @@ pub struct PhaseRecord {
     /// What each strategy recorded about its own run.
     #[serde(default)]
     pub probes: Vec<ProbeStatsRecord>,
+    /// Which document this sitting was folded in from, for a merged report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<OriginRecord>,
+}
+
+/// Which document a sitting came from, as a file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OriginRecord {
+    /// What the caller called the document it was read from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// What produced it, as that scanner attributed itself.
+    pub engine_version: String,
+}
+
+impl From<&Origin> for OriginRecord {
+    fn from(origin: &Origin) -> Self {
+        Self {
+            label: origin.label().map(str::to_owned),
+            engine_version: origin.engine_version().to_owned(),
+        }
+    }
+}
+
+impl From<&OriginRecord> for Origin {
+    fn from(record: &OriginRecord) -> Self {
+        let origin = Origin::new(record.engine_version.as_str());
+        match &record.label {
+            Some(label) => origin.with_label(label.as_str()),
+            None => origin,
+        }
+    }
 }
 
 impl From<&ScanPhase> for PhaseRecord {
@@ -867,6 +899,7 @@ impl From<&ScanPhase> for PhaseRecord {
                 .iter()
                 .map(ProbeStatsRecord::from)
                 .collect(),
+            origin: phase.origin().map(OriginRecord::from),
         }
     }
 }
@@ -885,6 +918,7 @@ impl From<&PhaseRecord> for ScanPhase {
             failures: record.failures.iter().map(ScannerFailure::from).collect(),
             unroutable: record.unroutable.clone(),
             probes: record.probes.iter().map(ProbeStats::from).collect(),
+            origin: record.origin.as_ref().map(Origin::from),
         })
     }
 }

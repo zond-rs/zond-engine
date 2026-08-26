@@ -692,26 +692,28 @@ pub async fn resolve_hosts_async(ctx: &ScanContext) {
         }
     }
 
-    for ip in ips_to_resolve {
+    for key in ips_to_resolve {
         let resolver = resolver.clone();
 
         set.spawn(async move {
             use hickory_resolver::proto::rr::RData;
 
-            if let Ok(lookup) = resolver.reverse_lookup(ip).await
+            // The query takes the address; the key comes back with the answer,
+            // so the write below lands on the entry that was read.
+            if let Ok(lookup) = resolver.reverse_lookup(key.addr()).await
                 && let Some(name) = lookup.answers().iter().find_map(|r| match &r.data {
                     RData::PTR(ptr) => Some(ptr.to_string()),
                     _ => None,
                 })
             {
-                return (ip, Some(name));
+                return (key, Some(name));
             }
-            (ip, None)
+            (key, None)
         });
     }
 
-    while let Some(Ok((ip, Some(name)))) = set.join_next().await {
-        ctx.write_host(ip, |host| {
+    while let Some(Ok((key, Some(name)))) = set.join_next().await {
+        ctx.write_host(key, |host| {
             host.set_hostname(Some(name.trim_end_matches('.').to_string()));
             true
         });
@@ -834,7 +836,7 @@ mod tests {
         assert!(
             session
                 .hosts()
-                .get(&server)
+                .get(server)
                 .expect("the server is a scanned host")
                 .network_roles()
                 .contains(&NetworkRole::DnsServer),
@@ -843,7 +845,7 @@ mod tests {
         assert!(
             session
                 .hosts()
-                .get(&responder)
+                .get(responder)
                 .expect("the responder is a scanned host")
                 .network_roles()
                 .is_empty(),
@@ -877,14 +879,14 @@ mod tests {
         let hosts = session.hosts();
         assert!(
             hosts
-                .get(&asked)
+                .get(asked)
                 .expect("scanned")
                 .network_roles()
                 .contains(&NetworkRole::DnsServer)
         );
         assert!(
             hosts
-                .get(&stranger)
+                .get(stranger)
                 .expect("scanned")
                 .network_roles()
                 .is_empty(),
@@ -910,12 +912,12 @@ mod tests {
         assert_eq!(
             session
                 .hosts()
-                .get(&ip)
+                .get(ip)
                 .and_then(|h| h.hostname().map(String::from)),
             Some("printer.local".to_string())
         );
         assert!(
-            matches!(session.events().try_recv(), Some(ScanEvent::HostUpdated(at)) if at == ip),
+            matches!(session.events().try_recv(), Some(ScanEvent::HostUpdated(at)) if at.addr() == ip),
             "the name reached the store without reaching the stream"
         );
     }
@@ -935,7 +937,7 @@ mod tests {
         assert!(
             session
                 .hosts()
-                .get(&ip)
+                .get(ip)
                 .and_then(|h| h.hostname().map(String::from))
                 .is_none()
         );

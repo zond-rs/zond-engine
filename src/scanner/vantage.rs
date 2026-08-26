@@ -397,7 +397,7 @@ mod tests {
         let hosts = session.hosts();
         assert!(
             hosts
-                .get(&router)
+                .get(router)
                 .expect("the router was scanned")
                 .network_roles()
                 .contains(&NetworkRole::Router),
@@ -405,7 +405,7 @@ mod tests {
         );
         assert!(
             !hosts
-                .get(&target)
+                .get(target)
                 .expect("the target was scanned")
                 .network_roles()
                 .contains(&NetworkRole::Router),

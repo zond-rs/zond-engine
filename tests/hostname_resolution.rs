@@ -191,7 +191,7 @@ async fn resolve(
 
 fn hostname(store: &HostStore, address: &str) -> Option<String> {
     store
-        .get(&ip(address))
+        .get(ip(address))
         .and_then(|host| host.hostname().map(str::to_string))
 }
 

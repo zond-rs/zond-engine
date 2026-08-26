@@ -213,6 +213,22 @@ struct SourceIdentity {
 }
 
 impl SourceIdentity {
+    /// How the store keys a neighbour this scanner found.
+    ///
+    /// **The interface belongs in the key, not only on the record.** Every
+    /// address here was read off one segment, and a link-local one is valid on
+    /// that segment alone: `fe80::1` on `en0` and `fe80::1` on `en1` are two
+    /// machines. Keyed by the bare address they were one entry, and the second
+    /// sweep to find one folded its neighbour's hardware address, roles and
+    /// round trips into the first's record.
+    ///
+    /// [`ScopedIp::scoped`] drops the zone from every address that does not need
+    /// one, so this is the plain address for an IPv4 neighbour and for a global
+    /// IPv6 one — which is right, since a machine reachable at a global address
+    /// is the same machine through whichever interface it answered.
+    fn key_for(&self, addr: std::net::IpAddr) -> crate::model::ip::scoped::ScopedIp {
+        crate::model::ip::scoped::ScopedIp::scoped(addr, self.zone.clone())
+    }
     /// Picks the addresses this scanner will present as its own when probing
     /// `ip_set` from `intf`.
     ///
@@ -1221,7 +1237,7 @@ impl LocalScanner {
     /// asking before there is anything for the claim to attach to.
     fn note_declaration(&mut self, source_mac: MacAddr, role: NetworkRole) -> bool {
         if let Some(ip) = self.mac_to_ip.get(&source_mac).copied() {
-            self.ctx.write_host(ip, |host| {
+            self.ctx.write_host(self.identity.key_for(ip), |host| {
                 host.add_network_role(role);
                 true
             });
@@ -1297,47 +1313,48 @@ impl LocalScanner {
         // below, which runs after the guard is released, as does the deadline
         // bookkeeping.
         let mut is_new_ip = false;
-        let is_new_host = self.ctx.write_host(primary_ip, |host| {
-            // Recorded whether we just created the host or the port scanner
-            // created it first, so enrichment order doesn't decide whether a MAC
-            // is recorded. Repeating one already on record refreshes its
-            // last-seen time, which is what `HardwareInfo` keeps them for.
-            host.record_mac(source_mac.into_core());
-            host.set_zone(self.identity.zone.clone());
+        let is_new_host = self
+            .ctx
+            .write_host(self.identity.key_for(primary_ip), |host| {
+                // Recorded whether we just created the host or the port scanner
+                // created it first, so enrichment order doesn't decide whether a MAC
+                // is recorded. Repeating one already on record refreshes its
+                // last-seen time, which is what `HardwareInfo` keeps them for.
+                host.record_mac(source_mac.into_core());
 
-            // The protocol name is the whole of the evidence here - a reply came
-            // off the segment carrying this host's own MAC - so there is nothing
-            // a details string would add that `arp` or `ndp` does not already
-            // say.
-            let was_up = host.status().is_up();
-            host.record_evidence(HostStatus::Up, StatusReason::basic(protocol.clone()));
+                // The protocol name is the whole of the evidence here - a reply came
+                // off the segment carrying this host's own MAC - so there is nothing
+                // a details string would add that `arp` or `ndp` does not already
+                // say.
+                let was_up = host.status().is_up();
+                host.record_evidence(HostStatus::Up, StatusReason::basic(protocol.clone()));
 
-            let mut changed = rtt.is_some() || !was_up;
-            for role in held.into_iter().flatten() {
-                changed |= host.add_network_role(role);
-            }
-            if let Some(role) = declared {
-                // A watcher told about this host before its sender said what it
-                // is has to hear the correction, so a role it did not carry is
-                // news in the same way a status change is. Repeating one is not:
-                // a router advertises on a timer.
-                changed |= host.add_network_role(role);
-            }
-            match rtt {
-                Some((rtt, RttSource::Direct)) => host.add_rtt(rtt),
-                Some((rtt, RttSource::SegmentWide)) => host.add_segment_wide_rtt(rtt),
-                None => {}
-            }
+                let mut changed = rtt.is_some() || !was_up;
+                for role in held.into_iter().flatten() {
+                    changed |= host.add_network_role(role);
+                }
+                if let Some(role) = declared {
+                    // A watcher told about this host before its sender said what it
+                    // is has to hear the correction, so a role it did not carry is
+                    // news in the same way a status change is. Repeating one is not:
+                    // a router advertises on a timer.
+                    changed |= host.add_network_role(role);
+                }
+                match rtt {
+                    Some((rtt, RttSource::Direct)) => host.add_rtt(rtt),
+                    Some((rtt, RttSource::SegmentWide)) => host.add_segment_wide_rtt(rtt),
+                    None => {}
+                }
 
-            is_new_ip = !host.ips().contains(&source_addr);
-            // The rule for which address names a dual-stack host lives on the
-            // host, not here: this scanner is one of several that learn a new
-            // address for one, and a rule spread across their receive loops is
-            // one each of them can disagree about.
-            changed |= host.consider_primary_ip(source_addr) || is_new_ip;
+                is_new_ip = !host.ips().contains(&source_addr);
+                // The rule for which address names a dual-stack host lives on the
+                // host, not here: this scanner is one of several that learn a new
+                // address for one, and a rule spread across their receive loops is
+                // one each of them can disagree about.
+                changed |= host.consider_primary_ip(source_addr) || is_new_ip;
 
-            changed
-        });
+                changed
+            });
 
         if is_new_host {
             self.deadline.mark_activity();

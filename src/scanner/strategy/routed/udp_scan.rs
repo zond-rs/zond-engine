@@ -718,13 +718,13 @@ mod tests {
     }
 
     fn host_status(session: &ScanSession, ip: IpAddr) -> Option<HostStatus> {
-        session.hosts().get(&ip).map(|host| host.status())
+        session.hosts().get(ip).map(|host| host.status())
     }
 
     fn port_state(session: &ScanSession, ip: IpAddr, port: u16) -> Option<PortState> {
         session
             .hosts()
-            .get(&ip)
+            .get(ip)
             .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
     }
 
@@ -824,7 +824,7 @@ mod tests {
         scanner.handle_reply(&udp_reply_saying(53, SCAN_SRC_PORT, answer), Instant::now());
 
         assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Open));
-        let host = session.hosts().get(&TARGET).expect("the host answered");
+        let host = session.hosts().get(TARGET).expect("the host answered");
         assert!(
             host.network_roles().contains(&NetworkRole::DnsServer),
             "the reply parsed as DNS, which a bound socket cannot fake"
@@ -844,7 +844,7 @@ mod tests {
         );
 
         assert_eq!(port_state(&session, TARGET, 53), Some(PortState::Open));
-        let host = session.hosts().get(&TARGET).expect("the host answered");
+        let host = session.hosts().get(TARGET).expect("the host answered");
         assert!(host.network_roles().is_empty());
     }
 
@@ -1066,7 +1066,7 @@ mod tests {
         assert!(
             session
                 .hosts()
-                .get(&TARGET)
+                .get(TARGET)
                 .expect("the port verdict created the host")
                 .reasons()
                 .is_empty(),
