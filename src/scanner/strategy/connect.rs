@@ -29,6 +29,7 @@ use crate::error;
 use crate::journal::settle::{Outcome, Settled};
 use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
+use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::{Port, PortSet, PortState, Protocol};
 use crate::model::target::PlannedTarget;
 use crate::scanner::audit::ProbeAudit;
@@ -314,6 +315,27 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
     });
 }
 
+/// A port in `state`, carrying the packet that settled it where one did.
+///
+/// This scanner never sees a segment — the kernel does the handshake and hands
+/// back an outcome — but the outcome names the packet exactly: a completed
+/// connection is a SYN/ACK, a refusal is the RST the kernel translated into it,
+/// and a timeout is silence. Recorded so an unprivileged report can say what its
+/// verdicts rest on, which is the one thing separating a port a firewall dropped
+/// from a port nothing was listening on.
+///
+/// `None` where no packet is implied: a local failure — no route, no socket
+/// left — is this host giving up, and crediting the target with a silence it was
+/// never asked for would be evidence of the wrong thing.
+fn settled(number: u16, state: PortState, reason: Option<ScanResponse>) -> Port {
+    let port = crate::fingerprint::baseline_port(number, Protocol::Tcp, state);
+
+    match reason {
+        Some(reason) => port.with_discovery(Discovery::new(reason)),
+        None => port,
+    }
+}
+
 /// Probes a single [`Target`] over a full TCP connect handshake and classifies
 /// its port. Returns `Some(..)` for a non-closed port and `None` for a closed
 /// port or a target this strategy doesn't handle.
@@ -336,8 +358,7 @@ async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> Pro
 
     match timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(socket_addr)).await {
         Ok(Ok(stream)) => {
-            let port =
-                crate::fingerprint::baseline_port(target.port, Protocol::Tcp, PortState::Open);
+            let port = settled(target.port, PortState::Open, Some(ScanResponse::TcpSynAck));
             let port = crate::fingerprint::fingerprint_tcp(stream, port, detection).await;
             Some(Probed {
                 ip: target.ip,
@@ -366,10 +387,10 @@ async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> Pro
                 // diffing two scans would read as a change in the network.
                 ErrorKind::ConnectionRefused => Some(Probed {
                     ip: target.ip,
-                    port: Some(crate::fingerprint::baseline_port(
+                    port: Some(settled(
                         target.port,
-                        Protocol::Tcp,
                         PortState::Closed,
+                        Some(ScanResponse::TcpRst),
                     )),
                     answered: true,
                     outcome: Outcome::Answered { position },
@@ -380,13 +401,13 @@ async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> Pro
                 // filtered and the host has proved nothing.
                 // A local failure — no route, no socket left — says nothing
                 // about the target, and the next sitting may well get further.
+                // No evidence recorded: nothing was sent and nothing answered,
+                // so there is no packet to name. A port carrying `no reply`
+                // here would credit the target with a silence it was never
+                // asked for.
                 _ => Some(Probed {
                     ip: target.ip,
-                    port: Some(crate::fingerprint::baseline_port(
-                        target.port,
-                        Protocol::Tcp,
-                        PortState::Filtered,
-                    )),
+                    port: Some(settled(target.port, PortState::Filtered, None)),
                     answered: false,
                     outcome: Outcome::Unroutable,
                     role: None,
@@ -398,10 +419,10 @@ async fn port_prober(planned: PlannedTarget, detection: ServiceDetection) -> Pro
         // it — the whole budget, spent.
         Err(_) => Some(Probed {
             ip: target.ip,
-            port: Some(crate::fingerprint::baseline_port(
+            port: Some(settled(
                 target.port,
-                Protocol::Tcp,
                 PortState::Filtered,
+                Some(ScanResponse::NoResponse),
             )),
             answered: false,
             outcome: Outcome::Exhausted { position },

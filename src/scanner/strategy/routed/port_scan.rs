@@ -44,7 +44,7 @@
 //! [`icmp_error`](super::icmp_error).
 
 use std::net::IpAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pnet::packet::ip::IpNextHeaderProtocols;
@@ -58,6 +58,7 @@ use crate::error;
 use crate::fingerprint::os;
 use crate::journal::settle::Outcome;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::PlannedTarget;
 use crate::model::technique::{TcpReply, TcpScanTechnique};
@@ -429,8 +430,9 @@ impl TcpPortScanner {
             return;
         };
 
+        let rtt = resolution.rtt;
         self.core.record_answer(&resolution);
-        self.record_port_drawn_by(key.0, key.1, state, sender, drawn_by);
+        self.record_port_drawn_by(key.0, key.1, state, sender, drawn_by, rtt);
         // The target spoke: the only outcome that settles positively.
         self.settle(Outcome::Answered {
             position: resolution.payload,
@@ -534,7 +536,7 @@ impl RawPortScan for TcpPortScanner {
         // The shared loop reaches a verdict from a spent budget rather than from
         // a packet, so it has no reply to name. Everything a reply *did* draw
         // goes through the fuller form below.
-        self.record_port_drawn_by(ip, port_num, state, sender, None);
+        self.record_port_drawn_by(ip, port_num, state, sender, None, None);
     }
 }
 
@@ -553,8 +555,25 @@ impl TcpPortScanner {
         state: PortState,
         sender: Option<IpAddr>,
         drawn_by: Option<TcpReply>,
+        rtt: Option<Duration>,
     ) {
         let port = crate::fingerprint::baseline_port(port_num, Protocol::Tcp, state);
+
+        // The packet that settled it, written down rather than merely acted on.
+        // The classification below already knows which reply arrived — it is
+        // what decides the verdict — and until this was recorded a reader had
+        // the word `filtered` and no way to learn whether a firewall said so or
+        // nothing came back. The two are different findings.
+        let port = match port_evidence(state, drawn_by, sender, ip) {
+            Some(reason) => {
+                let mut discovery = PortDiscovery::new(reason);
+                if let Some(rtt) = rtt {
+                    discovery = discovery.with_rtt(rtt);
+                }
+                port.with_discovery(discovery)
+            }
+            None => port,
+        };
         let evidence = match (state, sender) {
             // Both routes to an open port, told apart. A handshake is the peer
             // accepting the connection; a challenge ACK is the peer saying it is
@@ -604,6 +623,39 @@ impl TcpPortScanner {
                 host.record_evidence(status, reason);
             }
         });
+    }
+}
+
+/// Which packet settled a port, in the vocabulary a report records.
+///
+/// The port-level mirror of the host evidence above, and drawn from the same
+/// two facts: the verdict, and the reply that produced it. Kept apart because
+/// they answer different questions — that one says why the *host* is believed
+/// alive, this says why the *port* is in the state it is.
+///
+/// `None` where nothing arrived. A port nothing answered has no packet to name,
+/// and `NoResponse` is recorded by the sweep that gives up on it rather than
+/// here, where every call is on the back of a reply.
+fn port_evidence(
+    state: PortState,
+    drawn_by: Option<TcpReply>,
+    sender: Option<IpAddr>,
+    target: IpAddr,
+) -> Option<ScanResponse> {
+    match (state, drawn_by, sender) {
+        // A challenge ACK is a listener saying it is already half-open, which
+        // only a listener can be. Same segment family as a handshake, and the
+        // report records both as the SYN/ACK path they are.
+        (PortState::Open, _, _) => Some(ScanResponse::TcpSynAck),
+        (PortState::Closed | PortState::Unfiltered, _, _) => Some(ScanResponse::TcpRst),
+        // An unreachable from the target is the target's own policy; one from
+        // the path is somebody else's. Both are prohibitions, and which address
+        // sent it is kept on the host's evidence rather than restated here.
+        (PortState::Filtered, _, Some(from)) => Some(match from == target {
+            true => ScanResponse::IcmpProhibited,
+            false => ScanResponse::IcmpUnreachable,
+        }),
+        _ => None,
     }
 }
 
