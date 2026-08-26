@@ -43,6 +43,18 @@ use std::{
 pub enum ScanResponse {
     /// Received a TCP SYN/ACK (Port is Open).
     TcpSynAck,
+    /// A TCP SYN/ACK from this endpoint to **somebody else**, read off the wire
+    /// without anything having been sent to it.
+    ///
+    /// It establishes the same thing [`TcpSynAck`](Self::TcpSynAck) does — a
+    /// listener accepted a connection — and it is in one respect the stronger
+    /// evidence, because what it accepted was a real client rather than a knock.
+    /// Kept apart because it answers a narrower question: the endpoint served
+    /// *that* peer over *that* path, and nothing here says it would answer this
+    /// machine. A scan and a listener disagreeing about one port is a finding
+    /// rather than a contradiction, and a reader can only see it if the two are
+    /// named apart.
+    OverheardSynAck,
     /// Received a TCP RST (Port is Closed or Blocked).
     TcpRst,
     /// Received a valid protocol response to a UDP payload.

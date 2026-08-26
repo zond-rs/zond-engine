@@ -470,7 +470,7 @@ fn transaction_id(mac: &MacAddr) -> u32 {
 // ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::protocols::ethernet;
     use pnet::packet::Packet as _;
@@ -643,6 +643,32 @@ mod tests {
     /// A client's request, built the way a real one arrives: broadcast from
     /// port 68, `chaddr` naming the machine, and the options it volunteers.
     fn request_frame(kind: u8, options: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        request_frame_from(Ipv4Addr::UNSPECIFIED, kind, options)
+    }
+
+    /// A client renewing its lease: a `DHCPREQUEST` sent from the address it
+    /// already holds, naming itself. The common shape on a segment that has
+    /// been up for any length of time, and the one a listener can attribute.
+    pub(crate) fn renewal_frame(from: Ipv4Addr, hostname: &str) -> Vec<u8> {
+        request_frame_from(
+            from,
+            DHCPREQUEST,
+            &[(OPT_HOSTNAME, hostname.as_bytes().to_vec())],
+        )
+    }
+
+    /// A client with no address yet, which names itself from `0.0.0.0`.
+    pub(crate) fn discover_frame(hostname: &str) -> Vec<u8> {
+        request_frame_from(
+            Ipv4Addr::UNSPECIFIED,
+            DHCPDISCOVER,
+            &[(OPT_HOSTNAME, hostname.as_bytes().to_vec())],
+        )
+    }
+
+    /// The shared builder, taking the address the client sends from — which is
+    /// the whole of the difference between a discover and a renewal.
+    fn request_frame_from(from: Ipv4Addr, kind: u8, options: &[(u8, Vec<u8>)]) -> Vec<u8> {
         const CLIENT_MAC: MacAddr = MacAddr(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33);
 
         let mut message = vec![0u8; BOOTP_FIXED_LEN];
@@ -668,7 +694,7 @@ mod tests {
         message.push(OPT_END);
 
         let datagram = Packet::new()
-            .push(Ipv4::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST))
+            .push(Ipv4::new(from, Ipv4Addr::BROADCAST))
             .push(Udp::new(CLIENT_PORT, SERVER_PORT).with_payload(message))
             .build()
             .expect("a test datagram");

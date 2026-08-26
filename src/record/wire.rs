@@ -180,6 +180,7 @@ pub fn status_protocol(name: &str) -> Option<StatusProtocol> {
 pub fn scan_response_name(response: &ScanResponse) -> Cow<'_, str> {
     match response {
         ScanResponse::TcpSynAck => Cow::Borrowed("tcp_syn_ack"),
+        ScanResponse::OverheardSynAck => Cow::Borrowed("overheard_syn_ack"),
         ScanResponse::TcpRst => Cow::Borrowed("tcp_rst"),
         ScanResponse::UdpResponse => Cow::Borrowed("udp_response"),
         ScanResponse::NoResponse => Cow::Borrowed("no_response"),
@@ -198,6 +199,7 @@ pub fn scan_response(name: &str) -> Option<ScanResponse> {
 
     Some(match name {
         "tcp_syn_ack" => ScanResponse::TcpSynAck,
+        "overheard_syn_ack" => ScanResponse::OverheardSynAck,
         "tcp_rst" => ScanResponse::TcpRst,
         "udp_response" => ScanResponse::UdpResponse,
         "no_response" => ScanResponse::NoResponse,
@@ -472,6 +474,7 @@ mod tests {
 
         for value in [
             ScanResponse::TcpSynAck,
+            ScanResponse::OverheardSynAck,
             ScanResponse::TcpRst,
             ScanResponse::UdpResponse,
             ScanResponse::NoResponse,

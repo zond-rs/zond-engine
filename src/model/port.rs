@@ -126,6 +126,17 @@ pub enum PortState {
 
     /// Something is listening and accepted the connection attempt. Only a SYN
     /// draws the SYN+ACK that establishes this.
+    ///
+    /// **The SYN need not have been ours.** A listener reading a segment off the
+    /// wire sees the same handshake completed for somebody else, which
+    /// establishes the same thing — and in one respect more, since what was
+    /// accepted was a real client rather than a knock. What it does *not*
+    /// establish is that this machine could reach the endpoint: the peer and the
+    /// path were somebody else's.
+    ///
+    /// [`Discovery::reason`](discovery::Discovery::reason) is what tells the two
+    /// apart, and it is worth reading before acting on an open port from a
+    /// merged report.
     Open,
 }
 

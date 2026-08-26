@@ -405,6 +405,15 @@ impl Entry {
     /// finished as far as anything here can tell, which is the answer that keeps
     /// a retention sweep from deleting it.
     pub fn is_complete(&self) -> bool {
+        // A watch is never finished. It enumerated nothing, so its total is
+        // zero, and read by the arithmetic below every listen journal would be
+        // complete the moment it was created — which would offer no resume and
+        // let a retention sweep take it. What is true instead is that another
+        // sitting can always be appended.
+        if self.kind() == ScanKind::Listen {
+            return false;
+        }
+
         self.settled()
             .is_some_and(|settled| settled >= self.manifest.total_targets)
     }
@@ -1569,6 +1578,7 @@ mod tests {
         Entry {
             directory: PathBuf::from(id),
             manifest: Manifest {
+                links: Vec::new(),
                 journal_version: crate::journal::JOURNAL_VERSION,
                 id: id.to_string(),
                 engine_version: "0.0.0".to_string(),
@@ -1966,5 +1976,31 @@ mod tests {
 
         let refused = Journal::reopen(&directory, false).expect_err("privileges differ");
         assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
+    }
+
+    /// A watch is never finished, so a journal of one always offers a resume and
+    /// a retention sweep never takes it as done.
+    ///
+    /// Read by the arithmetic the other two phases use it would be complete the
+    /// moment it was created: it enumerated nothing, so its total is zero, and
+    /// zero settled is not fewer than zero.
+    #[test]
+    fn a_watch_is_never_complete_however_long_it_ran() {
+        use crate::model::ip::scoped::Zone;
+
+        let root = scratch("watch-never-complete");
+        let plan = Plan::listen(vec![Zone::new(3, "en0")]);
+        let journal =
+            Journal::create(&root, &plan, true, "listening on en0").expect("a journal is created");
+        journal.close().expect("it closes");
+
+        let entries = list(&root).expect("the root lists");
+        let entry = entries.first().expect("the watch is there");
+
+        assert_eq!(entry.kind(), ScanKind::Listen);
+        assert!(
+            !entry.is_complete(),
+            "another sitting can always be appended to a watch"
+        );
     }
 }

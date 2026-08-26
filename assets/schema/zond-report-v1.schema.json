@@ -264,11 +264,12 @@
       ],
       "properties": {
         "reason": {
-          "description": "The packet response that decided the state. A strategy-supplied name is prefixed `custom:`.",
+          "description": "The packet response that decided the state. A strategy-supplied name is prefixed `custom:`. `overheard_syn_ack` is the one value no probe of this engine's produced: the endpoint was seen accepting somebody else's connection, which establishes a listener without saying that this machine could reach it.",
           "anyOf": [
             {
               "enum": [
                 "tcp_syn_ack",
+                "overheard_syn_ack",
                 "tcp_rst",
                 "udp_response",
                 "no_response",

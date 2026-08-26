@@ -72,6 +72,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::model::exclusion::Exclusions;
+use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::model::target::TargetMap;
 use crate::model::technique::TcpScanTechnique;
@@ -116,6 +117,12 @@ enum Resolved {
         targets: TargetMap,
         technique: TcpScanTechnique,
     },
+    /// What these links carry.
+    ///
+    /// The one plan that enumerates nothing. A listener is pointed at a link
+    /// rather than at targets, so there is no set to walk, no position to
+    /// settle, and no total to reach — see [`Plan::listen`].
+    Listen { links: Vec<Zone> },
 }
 
 impl Plan {
@@ -140,11 +147,55 @@ impl Plan {
         Self(Resolved::PortScan { targets, technique })
     }
 
+    /// A watch of `links`.
+    ///
+    /// # The plan that counts nothing
+    ///
+    /// The other two enumerate: a sweep walks addresses and a port scan walks
+    /// addresses paired with ports, and everything the journal does — the
+    /// cursor, the watermark, the total — is arithmetic over that enumeration.
+    /// A listener has none. It was pointed at a link, the link carries what it
+    /// carries, and there is no set of things that could be finished.
+    ///
+    /// So a listen journal has no cursor, and **resuming one appends a sitting
+    /// rather than skipping settled work**. There is nothing settled to skip.
+    /// What the journal buys is the other half of what it buys the other two:
+    /// the findings survive a listener that stopped, and the report describes
+    /// the whole watch rather than its last sitting.
+    ///
+    /// # Why the exclusion policy is not applied here
+    ///
+    /// Because it has nothing to apply to. The other constructors narrow a set
+    /// before it is numbered, since the policy decides the enumeration; a
+    /// listener cannot narrow what a link carries and enforces its scope where
+    /// findings are recorded instead. The policy is still in force — it is
+    /// applied at the store, as it is for every phase — and it is simply not
+    /// part of *this* plan's identity.
+    ///
+    /// # What identifies the job
+    ///
+    /// The links, by name. Not the recording scope: with nothing enumerated
+    /// there is nothing a changed scope could renumber, and a sitting that
+    /// recorded more or less than the last is still a sitting of the same watch
+    /// from the same place. What each sitting covered is on its own phase.
+    pub fn listen(links: Vec<Zone>) -> Self {
+        Self(Resolved::Listen { links })
+    }
+
     /// Which phase this plan belongs to.
     pub fn kind(&self) -> ScanKind {
         match self.0 {
             Resolved::Discovery { .. } => ScanKind::Discovery,
             Resolved::PortScan { .. } => ScanKind::PortScan,
+            Resolved::Listen { .. } => ScanKind::Listen,
+        }
+    }
+
+    /// The links a watch reads, or `None` for a phase that walks targets.
+    pub fn links(&self) -> Option<&[Zone]> {
+        match &self.0 {
+            Resolved::Listen { links } => Some(links),
+            _ => None,
         }
     }
 
@@ -154,6 +205,9 @@ impl Plan {
         match &self.0 {
             Resolved::Discovery { addresses, .. } => addresses.len(),
             Resolved::PortScan { targets, .. } => targets.gross_targets().unwrap_or_default(),
+            // Not "none were found": there is no unit a watch could be counted
+            // in. See `Plan::listen`.
+            Resolved::Listen { .. } => 0,
         }
     }
 
@@ -162,7 +216,7 @@ impl Plan {
     pub fn addresses(&self) -> Option<&IpSet> {
         match &self.0 {
             Resolved::Discovery { addresses, .. } => Some(addresses),
-            Resolved::PortScan { .. } => None,
+            Resolved::PortScan { .. } | Resolved::Listen { .. } => None,
         }
     }
 
@@ -171,7 +225,7 @@ impl Plan {
     pub fn targets(&self) -> Option<&TargetMap> {
         match &self.0 {
             Resolved::PortScan { targets, .. } => Some(targets),
-            Resolved::Discovery { .. } => None,
+            Resolved::Discovery { .. } | Resolved::Listen { .. } => None,
         }
     }
 
@@ -180,7 +234,7 @@ impl Plan {
     pub fn technique(&self) -> Option<TcpScanTechnique> {
         match &self.0 {
             Resolved::PortScan { technique, .. } => Some(*technique),
-            Resolved::Discovery { .. } => None,
+            Resolved::Discovery { .. } | Resolved::Listen { .. } => None,
         }
     }
 
@@ -195,6 +249,10 @@ impl Plan {
         match &self.0 {
             Resolved::Discovery { addresses, .. } => PlanRecord::from(addresses),
             Resolved::PortScan { targets, .. } => PlanRecord::from(targets),
+            // A watch names links rather than targets, and those are recorded on
+            // the manifest beside the technique and the sweep flag — the other
+            // two fields that belong to one phase and not the others.
+            Resolved::Listen { .. } => PlanRecord::default(),
         }
     }
 }
@@ -233,6 +291,16 @@ impl PlanFingerprint {
             Resolved::Discovery { addresses, sweep } => {
                 sweep.hash(&mut hasher);
                 hash_addresses(addresses, &mut hasher);
+            }
+            Resolved::Listen { links } => {
+                // By name, and not by index. An interface's number is a fact
+                // about a running kernel and changes across a reboot; the name
+                // is what a person meant by the link and what two sittings of
+                // one watch agree on.
+                links.len().hash(&mut hasher);
+                for link in links {
+                    link.name().hash(&mut hasher);
+                }
             }
             Resolved::PortScan { targets, technique } => {
                 technique.hash(&mut hasher);
@@ -328,6 +396,14 @@ pub struct Manifest {
     /// is targeted by construction.
     #[serde(default)]
     pub sweep: bool,
+    /// The links a watch reads, by name. Part of the plan for the reason the
+    /// technique and the sweep flag are: it is what the job *is*.
+    ///
+    /// By name and not by index, because an index is a fact about a running
+    /// kernel and does not survive a reboot, where the name is what a person
+    /// meant by the link. Empty for the two phases that walk targets.
+    #[serde(default)]
+    pub links: Vec<String>,
     /// Whether the scan held the privileges its raw strategies need.
     ///
     /// Recorded because a resume must run under the same answer. The connect
@@ -365,6 +441,12 @@ impl Manifest {
                 .map(|technique| technique.name().to_owned())
                 .unwrap_or_default(),
             sweep: plan.sweeps_the_segment(),
+            links: plan
+                .links()
+                .unwrap_or_default()
+                .iter()
+                .map(|link| link.name().to_owned())
+                .collect(),
             privileged,
             total_targets: plan.total_targets(),
             summary: summary.into(),
@@ -395,6 +477,18 @@ impl Manifest {
             ScanKind::Discovery => Resolved::Discovery {
                 addresses: self.targets.addresses(),
                 sweep: self.sweep,
+            },
+            // Unresolved zones, deliberately. The recorded plan is what *names*
+            // the job and what a fingerprint is taken over, and a name is the
+            // whole of that. A caller running the watch supplies links it looked
+            // up against this machine, since an index read from a file was true
+            // of some other boot.
+            ScanKind::Listen => Resolved::Listen {
+                links: self
+                    .links
+                    .iter()
+                    .map(|name| Zone::unresolved(name.as_str()))
+                    .collect(),
             },
             _ => Resolved::PortScan {
                 targets: TargetMap::from(&self.targets),
@@ -768,5 +862,80 @@ mod tests {
         let message = refused.to_string();
         assert!(message.contains("differently arranged"), "{message}");
         assert!(!message.contains("then,"), "{message}");
+    }
+
+    /// A watch names links; a sweep and a port scan name targets. The phase is
+    /// hashed first, so no two of the three can ever agree — which is what keeps
+    /// a journal of one from being continued as another.
+    #[test]
+    fn a_watch_never_shares_a_fingerprint_with_a_phase_that_walks_targets() {
+        let listen = Plan::listen(vec![Zone::unresolved("en0")]);
+        let mut ips = IpSet::new();
+        ips.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+
+        assert_ne!(
+            PlanFingerprint::of(&listen, true),
+            PlanFingerprint::of(&sweeping(&ips, true), true),
+        );
+        assert_eq!(listen.kind(), ScanKind::Listen);
+        assert_eq!(
+            listen.total_targets(),
+            0,
+            "not `none were found`: there is no unit a watch is counted in"
+        );
+    }
+
+    /// The links are what the job is, so a watch of a different link is a
+    /// different job and may not be appended to this one's record.
+    #[test]
+    fn a_watch_of_another_link_is_another_job() {
+        let one = Plan::listen(vec![Zone::unresolved("en0")]);
+        let other = Plan::listen(vec![Zone::unresolved("en1")]);
+        let both = Plan::listen(vec![Zone::unresolved("en0"), Zone::unresolved("en1")]);
+
+        assert_ne!(
+            PlanFingerprint::of(&one, true),
+            PlanFingerprint::of(&other, true),
+        );
+        assert_ne!(
+            PlanFingerprint::of(&one, true),
+            PlanFingerprint::of(&both, true),
+        );
+    }
+
+    /// By name and not by index. An interface's number is a fact about a running
+    /// kernel; a watch resumed after a reboot is the same watch.
+    #[test]
+    fn a_link_is_the_same_link_whatever_number_the_kernel_gave_it_today() {
+        let before = Plan::listen(vec![Zone::new(3, "en0")]);
+        let after = Plan::listen(vec![Zone::new(11, "en0")]);
+
+        assert_eq!(
+            PlanFingerprint::of(&before, true),
+            PlanFingerprint::of(&after, true),
+        );
+    }
+
+    /// The recorded plan has to survive the round trip through a manifest, or a
+    /// caller with nothing but a journal id cannot say what it was watching.
+    #[test]
+    fn a_watch_reads_back_as_the_links_it_was_written_with() {
+        let plan = Plan::listen(vec![Zone::new(3, "en0"), Zone::new(4, "en1")]);
+        let manifest = Manifest::new("id", &plan, true, "listening");
+
+        let recorded = manifest.recorded();
+        assert_eq!(recorded.kind(), ScanKind::Listen);
+        assert_eq!(
+            recorded
+                .links()
+                .expect("a watch names links")
+                .iter()
+                .map(|link| link.name().to_owned())
+                .collect::<Vec<_>>(),
+            vec!["en0".to_owned(), "en1".to_owned()],
+        );
+        manifest
+            .covers(&plan, true)
+            .expect("the plan it was written against still covers it");
     }
 }

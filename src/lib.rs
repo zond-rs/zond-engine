@@ -256,7 +256,7 @@ pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession}
 pub use crate::scanner::strategy::StrategyError;
 pub use crate::scanner::{ListenScope, ScanError, ScanTask, Until, discover, listen, scan};
 #[cfg(feature = "journal-format")]
-pub use crate::scanner::{discover_with_journal, scan_with_journal};
+pub use crate::scanner::{discover_with_journal, listen_with_journal, scan_with_journal};
 
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
 // from anywhere in the crate. They are deliberately not part of the public API;

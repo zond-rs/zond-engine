@@ -531,13 +531,33 @@ pub enum Until {
 }
 
 impl ListenScope {
-    /// Listens on `links`, recording whatever is heard, until stopped.
+    /// Listens on `links` until stopped, recording the machines attached to
+    /// them.
+    ///
+    /// The default narrowing is deliberate and is the difference between an
+    /// inventory and a transcript. A link carrying traffic to anywhere else
+    /// carries evidence about everywhere else: on a mirror port, every server a
+    /// laptop opens a connection to is a real host, really up, with a really
+    /// open port — and on a busy uplink that is most of what an unnarrowed
+    /// report would contain. [`recording_everything`](Self::recording_everything)
+    /// is how a caller asks for it anyway.
     pub fn on(links: Vec<crate::model::ip::scoped::Zone>) -> Self {
         Self {
             links,
-            recording: strategy::passive::Recording::Everything,
+            recording: strategy::passive::Recording::Attached,
             until: Until::Stopped,
         }
+    }
+
+    /// Records every machine heard, wherever it lives.
+    ///
+    /// For the question a listener answers that a scan cannot: which machines
+    /// elsewhere this network depends on, and what they answer. It is the wider
+    /// reading of the same traffic rather than more of it — nothing extra is
+    /// captured, and what changes is only what is allowed to reach the report.
+    pub fn recording_everything(mut self) -> Self {
+        self.recording = strategy::passive::Recording::Everything;
+        self
     }
 
     /// Records findings only about `addresses`.
@@ -616,6 +636,54 @@ pub async fn listen(
     Ok((session, ScanTask::new(handle)))
 }
 
+/// [`listen`], writing down what it hears, so that a watch cut short keeps what
+/// it found.
+///
+/// **Journalling is the caller's choice, never this crate's**, on the same terms
+/// as [`scan_with_journal`]: hand this a journal and the watch is recorded, call
+/// [`listen`] and nothing touches a disk.
+///
+/// # Resuming a watch appends a sitting
+///
+/// This is the whole of how it differs from the other two, and it follows from
+/// what a listener is. A sweep and a port scan enumerate — the journal's cursor,
+/// watermark and total are arithmetic over that enumeration, and continuing one
+/// means *skipping what is settled*. A listener enumerates nothing: it was
+/// pointed at a link, the link carries what it carries, and there is no set of
+/// things that could be finished.
+///
+/// So there is no cursor and nothing to skip. What resuming buys is the other
+/// half of what a journal buys the other two: the findings of every earlier
+/// sitting are restored before this one starts, and the report describes the
+/// whole watch rather than its last few minutes. A listener left running for a
+/// week across three restarts produces one record of the week.
+///
+/// [`Plan::listen`](crate::journal::manifest::Plan::listen) has the rest of the
+/// argument, including why the links alone identify the job.
+#[cfg(feature = "journal-format")]
+pub async fn listen_with_journal(
+    scope: ListenScope,
+    cfg: &ZondConfig,
+    journal: crate::journal::Journal,
+) -> Result<(ScanSession, ScanTask), ScanError> {
+    let recorded = journal.manifest().recorded();
+    if recorded.kind() != ScanKind::Listen {
+        return Err(ScanError::WrongPhase);
+    }
+
+    let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
+
+    // Before the watch starts, so a caller reading the session sees every
+    // earlier sitting's hosts immediately and the report describes the job.
+    ctx.restore_hosts(journal.restored());
+    let earlier = journal.earlier_phases().to_vec();
+
+    let ticker = crate::journal::store::spawn_checkpoints(journal, ctx.progress());
+    let handle = spawn_listen(scope, cfg, ctx);
+
+    Ok((session, ScanTask::journalling(handle, ticker, earlier)))
+}
+
 /// Runs a listening phase against an existing context.
 fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinHandle<ScanReport> {
     let cfg = cfg.clone();
@@ -633,7 +701,8 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         );
 
         match strategy::passive::PassiveListener::open(&scope.links, scope.recording, ctx.clone()) {
-            Ok(mut listener) => {
+            Ok(listener) => {
+                let mut listener = listener.detecting_os(cfg.os_detection);
                 if let Until::Elapsed(span) = scope.until {
                     // Stopped through the same signal a caller would use, so
                     // there is one way a listening phase ends rather than two.
