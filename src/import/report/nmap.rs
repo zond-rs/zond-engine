@@ -460,7 +460,6 @@ struct Run {
     started: Option<SystemTime>,
     elapsed: Option<Duration>,
     technique: Option<TcpScanTechnique>,
-    privileged: bool,
     probes: Option<u128>,
     /// The port set every `<scaninfo>` between them named.
     ports: Option<PortSet>,
@@ -526,8 +525,11 @@ impl Run {
 
     /// Records that a raw probe was sent, and which one where this engine has a
     /// word for it.
+    ///
+    /// The technique and nothing else. That nmap sent raw probes says nmap was
+    /// privileged, which is a fact about nmap's run: see the phase's own
+    /// `privileged`, which stays `None` for exactly that reason.
     fn raw(&mut self, technique: Option<TcpScanTechnique>) {
-        self.privileged = true;
         if let Some(technique) = technique {
             self.technique.get_or_insert(technique);
         }
@@ -606,7 +608,13 @@ impl Run {
             kind,
             started_at: self.started.unwrap_or(SystemTime::UNIX_EPOCH),
             elapsed: self.elapsed.unwrap_or_default(),
-            privileged: self.privileged,
+            // Not this engine's question to answer. Whether *these* strategies
+            // held the sockets they need is not something a scan another
+            // program ran says anything about, and answering `false` claimed a
+            // sweep nmap performed over ARP as root had none — which put this
+            // engine's advice about running as root under findings that plainly
+            // contradicted it.
+            privileged: None,
             targets,
             settings: self.settings(),
             failures: Vec::new(),

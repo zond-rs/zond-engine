@@ -40,6 +40,8 @@
 //!   past this build's is refused rather than read approximately.
 //! - **`engine.name` is required and checked.** It is how a report is told apart
 //!   from any other JSON that happens to have a `hosts` key.
+//! - **`produced_by` is optional**, because documents written before it existed
+//!   carried the same value in `engine.version`. That is what it falls back to.
 //!
 //! ## What the document cannot give back
 //!
@@ -138,6 +140,11 @@ fn malformed(error: &serde_json::Error) -> ImportError {
 struct Document {
     schema_version: u32,
     engine: EngineDto,
+    /// What produced the findings, as that scanner attributed itself.
+    ///
+    /// Absent from a document written before this had a field of its own, where
+    /// `engine.version` carried it. See [`Document::into_report`].
+    produced_by: Option<String>,
     phases: Vec<PhaseDto>,
     hosts: Vec<Host>,
 }
@@ -167,11 +174,14 @@ impl Document {
             .collect::<Result<_, _>>()
             .map_err(refuse)?;
 
-        Ok(ScanReport::recorded(
-            self.engine.version,
-            phases,
-            self.hosts,
-        ))
+        // `produced_by` where the document has one. A document written before
+        // that field existed put the same value in `engine.version`, which is
+        // why the fallback is exactly right rather than merely close: back then
+        // that field *was* the attribution, which is the thing this release
+        // stopped it from being.
+        let produced_by = self.produced_by.unwrap_or(self.engine.version);
+
+        Ok(ScanReport::recorded(produced_by, phases, self.hosts))
     }
 }
 
@@ -202,6 +212,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
         let mut schema_version = None;
         let mut engine = None;
+        let mut produced_by = None;
         let mut phases = Vec::new();
         let mut hosts = Vec::new();
 
@@ -209,6 +220,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             match key.as_str() {
                 "schema_version" => schema_version = Some(map.next_value()?),
                 "engine" => engine = Some(map.next_value()?),
+                "produced_by" => produced_by = Some(map.next_value()?),
                 "phases" => phases = map.next_value()?,
                 // The one array worth streaming: every other key is a handful
                 // of values whatever the size of the scan.
@@ -227,6 +239,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             schema_version: schema_version
                 .ok_or_else(|| de::Error::missing_field("schema_version"))?,
             engine: engine.ok_or_else(|| de::Error::missing_field("engine"))?,
+            produced_by,
             phases,
             hosts,
         })
@@ -331,7 +344,7 @@ struct PhaseDto {
     kind: String,
     started_at: String,
     elapsed_us: u64,
-    privileged: bool,
+    privileged: Option<bool>,
     targets: ScopeDto,
     settings: SettingsDto,
     failures: Vec<FailureDto>,
@@ -1213,6 +1226,49 @@ mod tests {
 
         let error = read(&document).expect_err("refused");
         assert!(error.to_string().contains("schema version"), "{error}");
+    }
+
+    /// A foreign scanner's attribution survives the round trip, and does not
+    /// land on this engine's name on the way.
+    ///
+    /// The failure: `engine.version` carried the attribution, so a report read
+    /// out of nmap's XML exported as `engine: {name: zond-engine, version: nmap
+    /// 7.94}`. Through the nmap *writer*, whose `scanner="zond"` is fixed the
+    /// same way, the pair collapsed further — `zond 0.13.0` came back as the
+    /// version of the next document exported from it.
+    #[test]
+    fn what_produced_the_findings_round_trips_apart_from_who_wrote_the_file() {
+        let foreign = ScanReport::recorded(
+            "nmap 7.94",
+            crate::export::fixture::report().phases().to_vec(),
+            Vec::new(),
+        );
+
+        let restored = read(&write(&foreign)).expect("its own document reads back");
+        assert_eq!(restored.engine_version(), "nmap 7.94");
+    }
+
+    /// A document written before `produced_by` existed still reads, because back
+    /// then `engine.version` was the attribution — which is exactly what the
+    /// fallback takes it for.
+    #[test]
+    fn a_document_written_before_produced_by_falls_back_to_the_engine_version() {
+        let document = write(&crate::export::fixture::report());
+        let mut parsed: serde_json::Value =
+            serde_json::from_str(&document).expect("its own output parses");
+
+        let attribution = parsed["produced_by"].take();
+        parsed
+            .as_object_mut()
+            .expect("an object")
+            .remove("produced_by");
+        parsed["engine"]["version"] = attribution.clone();
+
+        let restored = read(&parsed.to_string()).expect("an older document still reads");
+        assert_eq!(
+            restored.engine_version(),
+            attribution.as_str().expect("a string")
+        );
     }
 
     #[test]

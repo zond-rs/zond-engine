@@ -847,8 +847,9 @@ pub struct PhaseRecord {
     pub started_at: SystemTime,
     /// How long it ran.
     pub elapsed: Duration,
-    /// Whether it held the privileges its raw strategies need.
-    pub privileged: bool,
+    /// Whether it held the privileges its raw strategies need, or absent where
+    /// this engine did not measure the phase and cannot say.
+    pub privileged: Option<bool>,
     /// What it covered, and what it was forbidden.
     pub targets: ScopeRecord,
     /// The settings it ran under.

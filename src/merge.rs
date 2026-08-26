@@ -772,7 +772,7 @@ mod tests {
             kind: ScanKind::PortScan,
             started_at: at,
             elapsed: Duration::from_secs(60),
-            privileged: true,
+            privileged: Some(true),
             targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),

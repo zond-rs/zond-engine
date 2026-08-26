@@ -73,7 +73,7 @@ pub struct DiffDto<'a> {
     pub schema_version: u32,
     /// Which build wrote the document — not which produced either scan, for
     /// which see `baseline` and `current`.
-    pub engine: EngineDto<'static>,
+    pub engine: EngineDto,
     /// When the comparison was taken.
     pub generated_at: String,
     /// The earlier scan.

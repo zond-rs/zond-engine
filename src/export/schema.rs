@@ -87,6 +87,7 @@ use crate::scanner::report::{
 // ever reads. Re-exported so this module still reads as the whole description of
 // the document.
 pub use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
+pub use crate::scanner::report::ENGINE_VERSION;
 
 // ---------------------------------------------------------------------------
 // Enum names
@@ -278,7 +279,7 @@ pub fn total_elapsed_us(phases: &[PhaseDto<'_>]) -> u64 {
 }
 
 /// How many fields [`write_header`] emits.
-const HEADER_FIELDS: usize = 8;
+const HEADER_FIELDS: usize = 9;
 
 /// Emits the fields every rendering of a report starts with.
 fn write_header<S: serde::ser::SerializeStruct>(
@@ -294,9 +295,10 @@ fn write_header<S: serde::ser::SerializeStruct>(
         "engine",
         &EngineDto {
             name: ENGINE_NAME,
-            version: report.engine_version(),
+            version: ENGINE_VERSION,
         },
     )?;
+    doc.serialize_field("produced_by", report.engine_version())?;
     doc.serialize_field("generated_at", &rfc3339(generated_at))?;
     doc.serialize_field("started_at", &rfc3339(report.started_at()))?;
     doc.serialize_field("elapsed_us", &elapsed_us)?;
@@ -323,16 +325,22 @@ impl Serialize for HostsDto<'_> {
     }
 }
 
-/// Which build produced a report.
+/// Which build wrote a document.
+///
+/// **This build, both halves.** A `version` beside a name is that name's
+/// version, and the name here is fixed: writing somebody else's version next to
+/// it produced `zond-engine` paired with `nmap 7.94`, which named no build that
+/// ever existed. What produced the *findings* is `produced_by`, which is a
+/// different question and now has a different field.
 #[derive(Debug, Clone, Serialize)]
-pub struct EngineDto<'a> {
+pub struct EngineDto {
     /// Always [`ENGINE_NAME`]. Present so a document carrying a report can be
-    /// told apart from one carrying something else.
+    /// told apart from one carrying something else, and checked on the way back
+    /// in.
     pub name: &'static str,
-    /// The version of the engine that produced the report. Borrowed from the
-    /// report rather than taken from this build, since a report read back out
-    /// of a journal carries the version that actually ran it.
-    pub version: &'a str,
+    /// Always [`ENGINE_VERSION`]: the crate version of the build that wrote the
+    /// document.
+    pub version: &'static str,
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +482,10 @@ pub struct PhaseDto<'a> {
     /// Whether the engine held the privileges its raw strategies need. An
     /// unprivileged phase reached its targets over plain TCP connect attempts,
     /// which see less.
-    pub privileged: bool,
+    ///
+    /// `null` on a phase this engine did not measure, where the question is
+    /// about strategies that never ran.
+    pub privileged: Option<bool>,
     /// What the phase was asked to cover.
     pub targets: ScopeDto,
     /// The settings that shaped the packets it sent.

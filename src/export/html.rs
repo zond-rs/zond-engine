@@ -226,7 +226,7 @@ impl Exporter for HtmlExporter {
         let phases: Vec<PhaseDto<'_>> = report.phases().iter().map(PhaseDto::new).collect();
         let elapsed_us = total_elapsed_us(&phases);
 
-        write_head(out, &self.title(&started_at), report)?;
+        write_head(out, &self.title(&started_at))?;
         write_masthead(out, self.heading(), report, &started_at, elapsed_us)?;
         write_notices(out, report, &phases, &self.options)?;
         write_tiles(out, &summary, &phases)?;
@@ -244,8 +244,26 @@ impl Exporter for HtmlExporter {
 // The document
 // ---------------------------------------------------------------------------
 
+/// What produced the findings, where that is not the build that wrote the page.
+///
+/// The two used to be printed as one — this engine's name beside the report's
+/// own attribution — which read as `zond-engine nmap 7.94` on a page exported
+/// from an imported scan. They are separate facts and the page has room to say
+/// both, so it does, and says nothing extra for the ordinary case where the
+/// engine that scanned is the engine that wrote.
+fn findings_from(report: &ScanReport) -> String {
+    if report.engine_version() == crate::scanner::report::ENGINE_VERSION {
+        return String::new();
+    }
+
+    format!(" · findings from {}", Text(report.engine_version()))
+}
+
 /// The head, the stylesheet, and everything down to the open page container.
-fn write_head(out: &mut dyn Write, title: &str, report: &ScanReport) -> Result<(), ExportError> {
+///
+/// Takes no report: a `generator` is what wrote the page, which is this build
+/// whoever the findings came from. Who *that* was is in the colophon.
+fn write_head(out: &mut dyn Write, title: &str) -> Result<(), ExportError> {
     writeln!(
         out,
         r#"<!doctype html>
@@ -263,7 +281,7 @@ fn write_head(out: &mut dyn Write, title: &str, report: &ScanReport) -> Result<(
 <input type="checkbox" id="zond-theme" class="theme-switch" aria-label="Use the other colour scheme">
 <div class="sheet">"#,
         engine = ENGINE_NAME,
-        version = report.engine_version(),
+        version = crate::scanner::report::ENGINE_VERSION,
         title = Plain(title),
         style = STYLE,
     )?;
@@ -318,7 +336,14 @@ fn write_notices(
     phases: &[PhaseDto<'_>],
     options: &ExportOptions,
 ) -> Result<(), ExportError> {
-    let unprivileged = phases.iter().filter(|phase| !phase.privileged).count();
+    // Only phases this engine measured and found unprivileged. A phase it did
+    // not measure has no answer to give, and counting `None` as unprivileged
+    // put this engine's advice about raw sockets under another scanner's
+    // findings.
+    let unprivileged = phases
+        .iter()
+        .filter(|phase| phase.privileged == Some(false))
+        .count();
 
     if !report.is_partial() && unprivileged == 0 && !options.redaction.is_active() {
         return Ok(());
@@ -906,10 +931,12 @@ fn write_scan_detail(out: &mut dyn Write, phases: &[PhaseDto<'_>]) -> Result<(),
 }
 
 fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportError> {
-    let privilege = if phase.privileged {
-        "privileged"
-    } else {
-        "unprivileged"
+    let privilege = match phase.privileged {
+        Some(true) => "privileged",
+        Some(false) => "unprivileged",
+        // Three states, because a phase read out of another scanner's document
+        // is not a phase that ran unprivileged.
+        None => "privilege not recorded",
     };
 
     writeln!(
@@ -1204,11 +1231,12 @@ fn write_colophon(
     writeln!(
         out,
         r#"<footer class="colophon">
-<div>{engine} {version} · schema {schema} · generated {generated}</div>
+<div>{engine} {version}{findings} · schema {schema} · generated {generated}</div>
 <div>self-contained: no scripts, no external requests</div>
 </footer>"#,
         engine = ENGINE_NAME,
-        version = report.engine_version(),
+        version = crate::scanner::report::ENGINE_VERSION,
+        findings = findings_from(report),
         schema = SCHEMA_VERSION,
         generated = Text(generated_at),
     )?;

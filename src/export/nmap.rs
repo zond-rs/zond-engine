@@ -146,7 +146,12 @@ impl Exporter for NmapXmlExporter {
             ),
             started,
             Attr(&time_string(report.started_at())),
-            Attr(report.engine_version()),
+            // This build's, because the attribute beside it says `scanner="zond"`.
+            // Writing the report's own attribution here put a foreign scanner's
+            // version on zond's name, and reading the file back turned the pair
+            // into one string: `zond 0.13.0` became the *version* of the next
+            // document exported from it.
+            Attr(crate::scanner::report::ENGINE_VERSION),
             XML_OUTPUT_VERSION,
         )?;
 
@@ -271,7 +276,11 @@ fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
     if protocol == Protocol::Udp {
         return "udp";
     }
-    if !phase.privileged() {
+    // Only where the phase is known to have been unprivileged. A phase this
+    // engine did not measure keeps whatever technique its own document named,
+    // since calling it `connect` would describe a probe on no better evidence
+    // than that this engine was not there to see it.
+    if phase.privileged() == Some(false) {
         return "connect";
     }
 

@@ -284,7 +284,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         kind: ScanKind::PortScan,
         started_at: std::time::UNIX_EPOCH + BASELINE_AT + DAY * days as u32,
         elapsed: Duration::from_secs(12),
-        privileged: true,
+        privileged: Some(true),
         targets: TargetScope::from_target_map(&mut targets, &Exclusions::none()),
         settings: ScanSettings::from(&ZondConfig::default()),
         failures: Vec::new(),

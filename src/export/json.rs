@@ -153,6 +153,29 @@ mod tests {
         export(&JsonExporter::new(ExportOptions::new()), report)
     }
 
+    /// The two halves of `engine` name the same build, whoever produced the
+    /// findings.
+    ///
+    /// They did not. `name` was fixed at this engine's and `version` was the
+    /// report's own attribution, so exporting a report read out of nmap's XML
+    /// wrote `zond-engine` paired with `nmap 7.94` — a build that never existed.
+    /// What produced the findings is a different question and `produced_by` is
+    /// where it is answered.
+    #[test]
+    fn the_engine_object_names_the_build_that_wrote_the_document() {
+        let foreign =
+            ScanReport::recorded("nmap 7.94", fixture::report().phases().to_vec(), Vec::new());
+        let document = exported(&foreign);
+
+        assert_eq!(document["engine"]["name"], "zond-engine");
+        assert_eq!(
+            document["engine"]["version"],
+            crate::scanner::report::ENGINE_VERSION,
+            "the version beside a fixed name has to be that name's"
+        );
+        assert_eq!(document["produced_by"], "nmap 7.94");
+    }
+
     /// The header is the part a consumer reads before it decides whether it can
     /// read the rest, so every field in it has to be there.
     #[test]
@@ -164,6 +187,10 @@ mod tests {
         assert_eq!(
             document["engine"]["version"],
             crate::scanner::report::ENGINE_VERSION
+        );
+        assert_eq!(
+            document["produced_by"],
+            crate::export::fixture::report().engine_version()
         );
         assert!(
             document["generated_at"]

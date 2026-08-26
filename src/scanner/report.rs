@@ -999,8 +999,9 @@ pub struct PhaseParts {
     pub started_at: SystemTime,
     /// How long it ran.
     pub elapsed: Duration,
-    /// Whether it held the privileges its raw strategies need.
-    pub privileged: bool,
+    /// Whether it held the privileges its raw strategies need, or `None` where
+    /// this engine did not measure the phase and cannot say.
+    pub privileged: Option<bool>,
     /// What it was asked to cover, and what it was forbidden.
     pub targets: TargetScope,
     /// The settings it ran under.
@@ -1052,7 +1053,7 @@ pub struct ScanPhase {
     kind: ScanKind,
     started_at: SystemTime,
     elapsed: Duration,
-    privileged: bool,
+    privileged: Option<bool>,
     targets: TargetScope,
     settings: ScanSettings,
     failures: Vec<ScannerFailure>,
@@ -1094,7 +1095,14 @@ impl ScanPhase {
     /// Whether the engine held the privileges its raw strategies need. An
     /// unprivileged phase reached its targets over plain TCP connect attempts,
     /// which see less and are more visible to the target.
-    pub fn privileged(&self) -> bool {
+    ///
+    /// **`None` for a phase this engine did not measure.** The question is about
+    /// *these* strategies and the sockets *they* need, and a scan another
+    /// program ran answers it about its own. Recording `false` there said an
+    /// nmap sweep performed over ARP as root had no raw sockets — a claim about
+    /// this engine that no document supports, printed under findings that
+    /// plainly contradicted it.
+    pub fn privileged(&self) -> Option<bool> {
         self.privileged
     }
 
@@ -1234,7 +1242,8 @@ impl PhaseRecorder {
             // wall-clock readings: a clock correction during a long sweep would
             // otherwise report a duration that never elapsed.
             elapsed: self.started.elapsed(),
-            privileged: self.privileged,
+            // Always known here: this is the engine recording its own run.
+            privileged: Some(self.privileged),
             targets,
             settings: self.settings,
             failures: ctx.take_failures(),
@@ -1796,7 +1805,7 @@ mod tests {
             kind,
             started_at: SystemTime::UNIX_EPOCH,
             elapsed: Duration::from_millis(500),
-            privileged: true,
+            privileged: Some(true),
             targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),

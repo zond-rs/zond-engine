@@ -8,6 +8,7 @@
   "required": [
     "schema_version",
     "engine",
+    "produced_by",
     "generated_at",
     "started_at",
     "elapsed_us",
@@ -22,7 +23,7 @@
       "const": 1
     },
     "engine": {
-      "description": "Which build produced the report.",
+      "description": "Which build wrote the document. Not which produced the findings, for which see produced_by.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -34,11 +35,16 @@
           "const": "zond-engine"
         },
         "version": {
-          "description": "The engine's crate version.",
+          "description": "The crate version of the build that wrote the document. Always this engine's own, to match the name beside it.",
           "type": "string",
           "minLength": 1
         }
       }
+    },
+    "produced_by": {
+      "description": "The scanner whose findings these are, as it attributed itself: 'nmap 7.94' for a report read out of nmap's XML, and a bare crate version for one this engine measured. Differs from engine.version whenever the findings came from elsewhere, or from an older build of this engine by way of a journal.",
+      "type": "string",
+      "minLength": 1
     },
     "generated_at": {
       "description": "When this document was written. The only field that moves between two exports of the same report.",
@@ -250,8 +256,11 @@
           "$ref": "#/$defs/duration_us"
         },
         "privileged": {
-          "description": "Whether the engine held the privileges its raw strategies need. An unprivileged phase reached its targets over plain TCP connect attempts, which see less and are more visible to the target.",
-          "type": "boolean"
+          "description": "Whether the engine held the privileges its raw strategies need. An unprivileged phase reached its targets over plain TCP connect attempts, which see less and are more visible to the target. Null on a phase this engine did not measure, where the question is about strategies that never ran.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "targets": {
           "$ref": "#/$defs/scope"
