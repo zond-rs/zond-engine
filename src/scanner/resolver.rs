@@ -332,6 +332,13 @@ impl HostnameResolver {
         self.dns_map.remove(&response.id);
 
         match response.hostname {
+            // A name that is the address written again is declined here rather
+            // than filtered later: recorded, it would keep the mDNS answer below
+            // from ever being asked for. See `restates`.
+            Some(hostname) if restates(&hostname, ip) => info!(
+                verbosity = 2,
+                "{from} named {ip} after itself ({hostname}), so it has no name"
+            ),
             Some(hostname) => {
                 info!(
                     incoming,
@@ -386,6 +393,10 @@ impl HostnameResolver {
         let (Some(ip), Some(hostname)) = (response.subject, response.hostname) else {
             return;
         };
+
+        if restates(&hostname, ip) {
+            return;
+        }
 
         if self.hostname_map.insert(ip, hostname.clone()).is_none() {
             info!(verbosity = 1, "overheard {ip} named {hostname}");
@@ -713,11 +724,75 @@ pub async fn resolve_hosts_async(ctx: &ScanContext) {
     }
 
     while let Some(Ok((key, Some(name)))) = set.join_next().await {
+        let name = name.trim_end_matches('.').to_string();
+        if restates(&name, key.addr()) {
+            info!(
+                verbosity = 2,
+                "{} was named after itself ({name}), so it has no name",
+                key.addr()
+            );
+            continue;
+        }
+
         ctx.write_host(key, |host| {
-            host.set_hostname(Some(name.trim_end_matches('.').to_string()));
+            host.set_hostname(Some(name));
             true
         });
     }
+}
+
+/// Whether `name` is `ip` written out as a label rather than a name for it.
+///
+/// A resolver that answers a reverse lookup for every address in a range,
+/// whether or not anything is there, does it by writing the address into the
+/// label: `192.168.0.26` comes back as `192-168-0-26.lan`. Consumer routers do
+/// this by default, and cloud providers do it deliberately.
+///
+/// **That is not a name, and accepting it costs more than an empty column.** It
+/// carries nothing the address does not already carry, and it fills the one slot
+/// a real name would take — this engine prefers a unicast answer to an mDNS one,
+/// so a synthesised PTR does not merely sit beside the machine's actual name, it
+/// keeps the scan from ever recording it.
+///
+/// **The test is decidable, not a guess about shape.** An address cannot appear
+/// literally in a label, since its own separator is the label separator, so a
+/// resolver writing one has to substitute: a dot becomes a dash or an underscore
+/// and a colon becomes a dash. Each substitution is undone and the result read
+/// back as an address, then compared against the very address the answer was
+/// about. A machine genuinely called `10-4-good-buddy` is not an address and
+/// keeps its name; one called `192-168-0-26` while answering at some other
+/// address keeps its name too, because there the name says something the address
+/// does not.
+fn restates(name: &str, ip: IpAddr) -> bool {
+    address_written_as_a_label(name) == Some(ip)
+}
+
+/// The address a label spells, where it spells one.
+fn address_written_as_a_label(name: &str) -> Option<IpAddr> {
+    let label = name.split('.').next()?;
+
+    // A dot for IPv4 and a colon for IPv6, each in the two spellings a label is
+    // allowed to carry. `fe80--1` is `fe80::1` under the second, which is the
+    // same substitution applied twice and needs no special case.
+    let substituted = [
+        label.replace('-', "."),
+        label.replace('_', "."),
+        label.replace('-', ":"),
+    ];
+
+    if let Some(ip) = substituted
+        .iter()
+        .find_map(|spelling| spelling.parse().ok())
+    {
+        return Some(ip);
+    }
+
+    // The other shape: the address as leading labels of its own, `192.168.0.26`
+    // in front of the domain rather than inside one label. Rarer, because it
+    // needs the resolver to hand out a name four labels deep, and produced by
+    // enough of them to be worth reading.
+    let labels: Vec<&str> = name.split('.').collect();
+    (2..=labels.len()).find_map(|take| labels[..take].join(".").parse().ok())
 }
 
 /// Whether it is worth sending a PTR query for `ip`.
@@ -749,6 +824,118 @@ mod tests {
     use crate::scanner::session::{ScanEvent, ScanSession};
     use crate::transport::probe::{Emission, ProbeSender, SendError};
     use std::net::Ipv4Addr;
+
+    // -----------------------------------------------------------------------
+    // A name that is the address written again
+    // -----------------------------------------------------------------------
+
+    fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    /// Every spelling a resolver reaches for when it has to put an address in a
+    /// label, and the address it was answering about.
+    #[test]
+    fn an_address_written_into_a_label_is_recognised_as_one() {
+        let subject = v4(192, 168, 0, 26);
+
+        for name in [
+            "192-168-0-26.lan",
+            "192-168-0-26.fritz.box",
+            "192_168_0_26.lan",
+            "192.168.0.26.lan",
+            "192-168-0-26",
+        ] {
+            assert!(
+                restates(name, subject),
+                "{name} was not read as its address"
+            );
+        }
+    }
+
+    /// IPv6, where the substitution is the same one applied to a colon.
+    #[test]
+    fn an_ipv6_address_written_into_a_label_is_recognised_too() {
+        let subject: IpAddr = "2001:db8::1".parse().expect("an address");
+        assert!(restates("2001-db8--1.lan", subject));
+
+        let link_local: IpAddr = "fe80::1".parse().expect("an address");
+        assert!(restates("fe80--1.example", link_local));
+    }
+
+    /// A name that is a name keeps it, dashes and all.
+    ///
+    /// The failure this guards against is a filter that reads shape rather than
+    /// meaning: plenty of real names carry digits and dashes, and a rule about
+    /// how a name *looks* would take them.
+    #[test]
+    fn a_real_name_is_not_mistaken_for_an_address() {
+        let subject = v4(192, 168, 0, 26);
+
+        for name in [
+            "epson928262.lan",
+            "10-4-good-buddy.lan",
+            "kabelbox.local",
+            "MacBook-Pro.local",
+            "host-1.example",
+            "192-168-0.lan",
+        ] {
+            assert!(!restates(name, subject), "{name} was taken for an address");
+        }
+    }
+
+    /// An address that is not *this* address is a name, whatever it looks like.
+    ///
+    /// The test compares against the address the answer was about rather than
+    /// asking whether the label is an address at all. A host at one address
+    /// named after another is saying something the address does not, and this
+    /// engine has no business deciding it is wrong.
+    #[test]
+    fn a_label_naming_some_other_address_is_left_alone() {
+        assert!(!restates("10-0-0-1.lan", v4(192, 168, 0, 26)));
+    }
+
+    /// The point of the whole exercise: a synthesised name never reaches the
+    /// map, so the mDNS answer that would otherwise have been passed over is
+    /// still the one the host ends up with.
+    ///
+    /// Through the wire format rather than past it, because the guard is only
+    /// worth anything where a real answer arrives.
+    #[tokio::test]
+    async fn a_synthesised_name_overheard_is_never_recorded() {
+        let mut resolver = resolver_asking(vec![
+            "127.0.0.1:53".parse().expect("a valid socket address"),
+        ]);
+        let ip = v4(192, 168, 0, 26);
+
+        resolver.absorb_sniffed_dns(&overheard(ip, "192-168-0-26.lan"));
+        assert!(
+            !resolver.hostname_map.contains_key(&ip),
+            "the address written again was recorded as a name"
+        );
+
+        resolver.absorb_sniffed_dns(&overheard(ip, "epson928262.lan"));
+        assert_eq!(
+            resolver.hostname_map.get(&ip).map(String::as_str),
+            Some("epson928262.lan"),
+            "a real name overheard for the same address was refused too"
+        );
+    }
+
+    /// A PTR response for `ip` naming it `name`, as it would arrive off the
+    /// wire.
+    fn overheard(ip: IpAddr, name: &str) -> Vec<u8> {
+        let IpAddr::V4(v4) = ip else {
+            unreachable!("this helper writes in-addr.arpa questions")
+        };
+        let octets = v4.octets();
+        let question = format!(
+            "{}.{}.{}.{}.in-addr.arpa",
+            octets[3], octets[2], octets[1], octets[0]
+        );
+
+        crate::protocols::dns::tests::ptr_response(1, &question, Some(name))
+    }
 
     struct Silent;
     impl ProbeSender for Silent {

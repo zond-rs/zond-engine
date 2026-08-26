@@ -212,7 +212,7 @@ pub fn create_ptr_packet(ip_addr: &IpAddr, id: u16) -> Result<Vec<u8>> {
 // ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn ip(s: &str) -> IpAddr {
@@ -349,7 +349,7 @@ mod tests {
 
     /// Builds a PTR response by hand: `dns_parser`'s builder only writes
     /// queries, and these tests need answers to read back.
-    fn ptr_response(id: u16, question: &str, answer: Option<&str>) -> Vec<u8> {
+    pub(crate) fn ptr_response(id: u16, question: &str, answer: Option<&str>) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&id.to_be_bytes());
         bytes.extend_from_slice(&0x8180u16.to_be_bytes()); // response, recursion available
