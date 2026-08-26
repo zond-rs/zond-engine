@@ -52,7 +52,9 @@ use tokio::sync::mpsc;
 use crate::config::ProbeTuning;
 use crate::error;
 use crate::journal::settle::Outcome;
+use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
+use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
 use crate::model::port::{PortState, Protocol};
 use crate::model::target::PlannedTarget;
 use crate::protocols::sizes::UDP_HDR_LEN;
@@ -305,6 +307,7 @@ impl UdpPortScanner {
         target: ProbeTarget,
         state: PortState,
         sender: IpAddr,
+        ttl: Option<u8>,
         now: Instant,
     ) {
         let Some(resolution) = self.core.ledger.resolve(&target, None, now) else {
@@ -315,8 +318,9 @@ impl UdpPortScanner {
             return;
         };
 
+        let rtt = resolution.rtt;
         self.core.record_answer(&resolution);
-        self.record_port(target.0, target.1, state, Some(sender));
+        self.record_port_answered_by(target.0, target.1, state, Some(sender), ttl, rtt);
         // The target spoke: the only outcome that settles positively.
         self.settle(Outcome::Answered {
             position: resolution.payload,
@@ -466,7 +470,17 @@ impl RawPortScan for UdpPortScanner {
 
         match classified {
             Some((target, Verdict::Port(state))) => {
-                self.resolve_probe(target, state, reply.source, now)
+                self.resolve_probe(
+                    target,
+                    state,
+                    reply.source,
+                    // The header this reply arrived under, read here because
+                    // there is no second chance to read it: whether the datagram
+                    // came from the target or from something refusing on its
+                    // behalf, the hop counter is the cheapest evidence of which.
+                    reply.observation.map(IpObservation::remaining_hops),
+                    now,
+                )
             }
             // Named a host but resolved no probe. Counted as seen rather than
             // off-target: it came from an address this scan asked about.
@@ -507,7 +521,48 @@ impl RawPortScan for UdpPortScanner {
     /// - **Nothing answered.** `OpenFiltered` from exhaustion records nothing.
     ///   Silence is not evidence about a host.
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState, sender: Option<IpAddr>) {
+        // Nothing answered, so there is no header to read and no round trip to
+        // credit. The fuller form below is for the paths that had a reply.
+        self.record_port_answered_by(ip, port_num, state, sender, None, None);
+    }
+}
+
+impl UdpPortScanner {
+    /// [`record_port`](RawPortScan::record_port), also carrying what the reply
+    /// that produced the verdict was measured to be.
+    ///
+    /// Kept off the shared trait for the reason the TCP scanner keeps its own:
+    /// the trait is the machinery both protocols share, and what a reply carried
+    /// is read from a header only one of them was holding.
+    fn record_port_answered_by(
+        &mut self,
+        ip: IpAddr,
+        port_num: u16,
+        state: PortState,
+        sender: Option<IpAddr>,
+        ttl: Option<u8>,
+        rtt: Option<Duration>,
+    ) {
         let port = crate::fingerprint::baseline_port(port_num, Protocol::Udp, state);
+
+        // The packet that settled it, written down beside the host evidence
+        // drawn from the same two facts. Without it a UDP port carried a verdict
+        // and no account of it, which for this protocol is the worst case of
+        // all: almost every silence here is `open|filtered`, and a reader has no
+        // way to tell a refusal that arrived from one that never came.
+        let port = match port_evidence(state, sender, ip) {
+            Some(reason) => {
+                let mut discovery = PortDiscovery::new(reason);
+                if let Some(rtt) = rtt {
+                    discovery = discovery.with_rtt(rtt);
+                }
+                if let Some(ttl) = ttl {
+                    discovery = discovery.with_ttl(ttl);
+                }
+                port.with_discovery(discovery)
+            }
+            None => port,
+        };
         let evidence = match (state, sender) {
             (PortState::Open, _) => Some((
                 HostStatus::Up,
@@ -544,6 +599,31 @@ impl RawPortScan for UdpPortScanner {
                 host.record_evidence(status, reason);
             }
         });
+    }
+}
+
+/// Which packet settled a UDP port, in the vocabulary a report records.
+///
+/// The port-level mirror of the host evidence recorded beside it, drawn from the
+/// same two facts. A closed UDP port is only ever known by the unreachable that
+/// says so — nothing else refuses a datagram — so the two verdicts a reply can
+/// produce here are both ICMP, and which one turns on who sent it.
+///
+/// `None` where nothing arrived. `OpenFiltered` from exhaustion is the ordinary
+/// outcome of a UDP scan and has no packet to name: recording `no reply` for it
+/// would dress the protocol's normal silence as a finding.
+fn port_evidence(state: PortState, sender: Option<IpAddr>, target: IpAddr) -> Option<ScanResponse> {
+    match (state, sender) {
+        (PortState::Open, _) => Some(ScanResponse::UdpResponse),
+        // A port unreachable is the refusal that means nothing is listening.
+        (PortState::Closed, _) => Some(ScanResponse::IcmpUnreachable),
+        // A prohibition from the host is its own policy; from anywhere else it
+        // is somebody in the path refusing on its behalf.
+        (PortState::Filtered, Some(from)) => Some(match from == target {
+            true => ScanResponse::IcmpProhibited,
+            false => ScanResponse::IcmpUnreachable,
+        }),
+        _ => None,
     }
 }
 
@@ -726,6 +806,71 @@ mod tests {
             .hosts()
             .get(ip)
             .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
+    }
+
+    /// A UDP port that answered records what answered it, and the hop counter
+    /// the reply arrived under.
+    ///
+    /// This protocol needs the account more than TCP does: almost every silence
+    /// here is `open|filtered`, so a reader with only the verdict cannot tell a
+    /// refusal that arrived from one that never came.
+    #[test]
+    fn an_answered_udp_port_records_the_datagram_that_settled_it() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+
+        let mut reply = udp_reply(53, SCAN_SRC_PORT);
+        reply.observation = Some(IpObservation::V4(crate::model::capture::Ipv4Observation {
+            ttl: 58,
+            identification: 0,
+            dont_fragment: true,
+            more_fragments: false,
+            dscp: 0,
+            ecn: 0,
+        }));
+        scanner.handle_reply(&reply, Instant::now());
+
+        let discovery = session
+            .hosts()
+            .get(TARGET)
+            .and_then(|host| {
+                host.ports()
+                    .find(|port| port.number() == 53)
+                    .and_then(|port| port.discovery().cloned())
+            })
+            .expect("the port carries its evidence");
+
+        assert_eq!(discovery.reason(), &ScanResponse::UdpResponse);
+        assert_eq!(discovery.ttl(), Some(58));
+    }
+
+    /// The protocol's ordinary outcome is silence, and silence gets no packet.
+    ///
+    /// `OpenFiltered` from exhaustion is what most of a UDP scan comes back as.
+    /// Recording `no reply` against every one of them would dress the normal
+    /// case as a finding.
+    #[test]
+    fn an_unanswered_udp_port_records_no_evidence() {
+        let (mut scanner, session) = scanner_with_mock();
+        probe(&mut scanner, TARGET, 53);
+
+        scanner.record_port(TARGET, 53, PortState::OpenFiltered, None);
+
+        assert_eq!(
+            port_state(&session, TARGET, 53),
+            Some(PortState::OpenFiltered)
+        );
+        assert!(
+            session
+                .hosts()
+                .get(TARGET)
+                .and_then(|host| host
+                    .ports()
+                    .find(|port| port.number() == 53)
+                    .and_then(|port| port.discovery().cloned()))
+                .is_none(),
+            "a silence was dressed up as a packet"
+        );
     }
 
     /// A reply as the capture layer would deliver it: bytes plus the protocol

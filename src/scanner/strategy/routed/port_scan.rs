@@ -57,6 +57,7 @@ use crate::config::ServiceDetection;
 use crate::error;
 use crate::fingerprint::os;
 use crate::journal::settle::Outcome;
+use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::discovery::{Discovery as PortDiscovery, ScanResponse};
 use crate::model::port::{PortState, Protocol};
@@ -303,7 +304,20 @@ impl TcpPortScanner {
             nonce: tcp::echoed_nonce(self.technique, &tcp_packet),
         };
         let key = (ip, tcp_packet.get_source());
-        self.resolve_probe(key, Some(token), state, None, Some(reply), now);
+        self.resolve_probe(
+            key,
+            Some(token),
+            state,
+            Answer {
+                drawn_by: Some(reply),
+                sender: None,
+                // The header this function already had in hand, for the reason
+                // the hop counter is kept at all: it costs nothing to read and
+                // there is no second chance to read it.
+                ttl: captured.observation.map(IpObservation::remaining_hops),
+            },
+            now,
+        );
 
         self.identify_stack(ip, state, captured);
     }
@@ -398,8 +412,15 @@ impl TcpPortScanner {
                     key,
                     token,
                     PortState::Filtered,
-                    Some(reply.source),
-                    None,
+                    Answer {
+                        drawn_by: None,
+                        sender: Some(reply.source),
+                        // The error's own hop counter, which is the distance to
+                        // whatever refused the probe rather than to the target.
+                        // That is the useful reading: a refusal from nearer than
+                        // the host is a middlebox answering on its behalf.
+                        ttl: reply.observation.map(IpObservation::remaining_hops),
+                    },
                     now,
                 );
             }
@@ -418,8 +439,7 @@ impl TcpPortScanner {
         key: ProbeTarget,
         token: Option<TcpToken>,
         state: PortState,
-        sender: Option<IpAddr>,
-        drawn_by: Option<TcpReply>,
+        answer: Answer,
         now: Instant,
     ) {
         let Some(resolution) = self.core.ledger.resolve(&key, token, now) else {
@@ -432,7 +452,7 @@ impl TcpPortScanner {
 
         let rtt = resolution.rtt;
         self.core.record_answer(&resolution);
-        self.record_port_drawn_by(key.0, key.1, state, sender, drawn_by, rtt);
+        self.record_port_answered_by(key.0, key.1, state, answer, rtt);
         // The target spoke: the only outcome that settles positively.
         self.settle(Outcome::Answered {
             position: resolution.payload,
@@ -536,27 +556,39 @@ impl RawPortScan for TcpPortScanner {
         // The shared loop reaches a verdict from a spent budget rather than from
         // a packet, so it has no reply to name. Everything a reply *did* draw
         // goes through the fuller form below.
-        self.record_port_drawn_by(ip, port_num, state, sender, None, None);
+        self.record_port_answered_by(
+            ip,
+            port_num,
+            state,
+            Answer {
+                sender,
+                ..Answer::default()
+            },
+            None,
+        );
     }
 }
 
 impl TcpPortScanner {
-    /// [`record_port`](RawPortScan::record_port), also saying which reply
-    /// produced the verdict.
+    /// [`record_port`](RawPortScan::record_port), also saying what the reply
+    /// that produced the verdict was and what it carried.
     ///
     /// Kept off the shared trait because it is a TCP concept: the UDP scanner
     /// implements the same trait and has no notion of a segment's flags, and
     /// widening the shared signature to carry one would put a protocol's
     /// vocabulary into the machinery both protocols share.
-    fn record_port_drawn_by(
+    fn record_port_answered_by(
         &mut self,
         ip: IpAddr,
         port_num: u16,
         state: PortState,
-        sender: Option<IpAddr>,
-        drawn_by: Option<TcpReply>,
+        answer: Answer,
         rtt: Option<Duration>,
     ) {
+        let Answer {
+            drawn_by, sender, ..
+        } = answer;
+
         let port = crate::fingerprint::baseline_port(port_num, Protocol::Tcp, state);
 
         // The packet that settled it, written down rather than merely acted on.
@@ -569,6 +601,9 @@ impl TcpPortScanner {
                 let mut discovery = PortDiscovery::new(reason);
                 if let Some(rtt) = rtt {
                     discovery = discovery.with_rtt(rtt);
+                }
+                if let Some(ttl) = answer.ttl {
+                    discovery = discovery.with_ttl(ttl);
                 }
                 port.with_discovery(discovery)
             }
@@ -624,6 +659,28 @@ impl TcpPortScanner {
             }
         });
     }
+}
+
+/// What the reply that settled a port was, past the verdict it produced.
+///
+/// Three facts that arrive together, travel together and are read together, so
+/// they are one value rather than three parameters threaded side by side. Every
+/// one of them is `None` for a port nothing answered, which is the case the
+/// sweep settles on its own schedule.
+#[derive(Debug, Clone, Copy, Default)]
+struct Answer {
+    /// Which segment produced the verdict, where a TCP reply did.
+    drawn_by: Option<TcpReply>,
+    /// Who sent it, where that was not the target itself.
+    sender: Option<IpAddr>,
+    /// The hop counter as it arrived: an IPv4 TTL or an IPv6 hop limit.
+    ///
+    /// **Not the value the sender wrote.** Every router on the path decrements
+    /// it, so what is recorded is the initial value less the distance — which is
+    /// what makes it worth keeping per port: a reply whose count disagrees with
+    /// the host's other replies did not come from where the others did. See
+    /// [`IpObservation::remaining_hops`](crate::model::capture::IpObservation::remaining_hops).
+    ttl: Option<u8>,
 }
 
 /// Which packet settled a port, in the vocabulary a report records.
@@ -998,6 +1055,110 @@ mod tests {
             .hosts()
             .get(TARGET)
             .and_then(|h| h.ports().find(|p| p.number() == port).map(|p| p.state()))
+    }
+
+    /// The packet that settled a port is written down, with the hop counter the
+    /// header carried.
+    ///
+    /// The scanner always knew which reply arrived — it is what decides the
+    /// verdict — and for a long while acted on it and threw it away. A reader
+    /// then had the word `open` and no account of it, and no way at all to tell
+    /// a `filtered` a firewall produced from a `filtered` nothing answered.
+    #[test]
+    fn an_answered_port_records_the_packet_that_settled_it() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        let token = probe(&mut scanner, &sent, 80);
+
+        let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
+        scanner.handle_tcp_reply(&captured_with_ttl(reply, 58), Instant::now());
+
+        let discovery = port_discovery(&session, 80).expect("the port carries its evidence");
+        assert_eq!(discovery.reason(), &ScanResponse::TcpSynAck);
+        assert_eq!(
+            discovery.ttl(),
+            Some(58),
+            "the hop counter the reply arrived under was not kept"
+        );
+    }
+
+    /// A reset is recorded as the reset it was, not as the absence of a reply.
+    #[test]
+    fn a_refused_port_records_the_reset_rather_than_a_silence() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        let token = probe(&mut scanner, &sent, 81);
+
+        let reply = tcp_segment(&scanner, 81, token, RST | ACK);
+        scanner.handle_tcp_reply(&captured_with_ttl(reply, 64), Instant::now());
+
+        let discovery = port_discovery(&session, 81).expect("the port carries its evidence");
+        assert_eq!(discovery.reason(), &ScanResponse::TcpRst);
+        assert_eq!(discovery.ttl(), Some(64));
+    }
+
+    /// A synthetic reply has no header to read, and nothing is invented for it.
+    ///
+    /// The hop counter is the one field here that can only come off a wire, and
+    /// a default stamped in its place would be a measurement nobody took.
+    #[test]
+    fn a_reply_with_no_header_behind_it_claims_no_hop_counter() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        let token = probe(&mut scanner, &sent, 80);
+
+        let reply = tcp_segment(&scanner, 80, token, SYN | ACK);
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            Instant::now(),
+        );
+
+        let discovery = port_discovery(&session, 80).expect("the port carries its evidence");
+        assert_eq!(discovery.reason(), &ScanResponse::TcpSynAck);
+        assert_eq!(discovery.ttl(), None);
+    }
+
+    /// A port nothing answered has no packet to name.
+    #[test]
+    fn an_unanswered_port_records_no_evidence() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        probe(&mut scanner, &sent, 80);
+
+        scanner.record_port(TARGET, 80, PortState::Filtered, None);
+
+        assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
+        assert!(
+            port_discovery(&session, 80).is_none(),
+            "a silence was dressed up as a packet"
+        );
+    }
+
+    /// A TCP reply carrying `bytes`, as it would have arrived under a header
+    /// whose hop counter reads `ttl`.
+    fn captured_with_ttl(bytes: Vec<u8>, ttl: u8) -> CapturedSegment {
+        CapturedSegment {
+            source: TARGET,
+            protocol: IpNextHeaderProtocols::Tcp,
+            bytes,
+            observation: Some(IpObservation::V4(crate::model::capture::Ipv4Observation {
+                ttl,
+                identification: 0,
+                dont_fragment: true,
+                more_fragments: false,
+                dscp: 0,
+                ecn: 0,
+            })),
+            source_mac: None,
+        }
+    }
+
+    /// The evidence recorded against one of the target's ports.
+    fn port_discovery(
+        session: &ScanSession,
+        port: u16,
+    ) -> Option<crate::model::port::discovery::Discovery> {
+        session
+            .hosts()
+            .get(TARGET)?
+            .ports()
+            .find_map(|probed| (probed.number() == port).then(|| probed.discovery().cloned()))?
     }
 
     #[test]
