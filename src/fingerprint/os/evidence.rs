@@ -32,6 +32,15 @@
 //!
 //! [noisy-OR]: https://en.wikipedia.org/wiki/Noisy-or_model
 //!
+//! ## Two axes, because they are two questions
+//!
+//! What a machine *runs* and what it *is* are independent, and a source may know
+//! either without the other. A hop counter says infrastructure and never a
+//! vendor; an SNMP agent names a printer down to its firmware and never its
+//! kernel. So the family is one axis, the device class another, and a source
+//! with nothing to say on either simply says nothing there — see
+//! [`OsEvidence::family`].
+//!
 //! ## Disagreement lowers the answer rather than picking a winner
 //!
 //! When sources name different families, the leader is reduced by whatever the
@@ -68,8 +77,23 @@ pub const MAX_FUSED_ACCURACY: u8 = 95;
 pub struct OsEvidence {
     /// What produced it.
     pub source: OsSource,
-    /// The broad family. The one part every source can supply.
-    pub family: String,
+    /// The broad family, where this source can name one.
+    ///
+    /// **`None` is an abstention, not an unknown.** [`resolve`] settles the
+    /// family by vote and every other field by agreement, so a source with
+    /// nothing to say at that level has to be able to say nothing: forced to
+    /// supply a family it would have to invent one, and an invented family votes
+    /// against the real ones. A rule reading `Brother NC-8700w` off an SNMP agent
+    /// knows the make, the model and the firmware of a box and genuinely does not
+    /// know what it runs.
+    pub family: Option<String>,
+    /// What kind of box this is — `Printer`, `Switch`, `Router` — where a source
+    /// says.
+    ///
+    /// A second axis rather than a coarser family: what a machine *is* and what
+    /// it *runs* are independent, and the corpus answers them separately. A Linux
+    /// print server is both, and neither answer contradicts the other.
+    pub device: Option<String>,
     /// The vendor, where the source knew one.
     pub vendor: Option<String>,
     /// The product, where the source knew one.
@@ -95,23 +119,34 @@ pub struct OsEvidence {
 
 /// Folds every source's opinion into one answer, or none.
 ///
-/// Returns `None` when there is nothing to go on, or when the sources disagree
-/// badly enough that what survives falls below
-/// [`MIN_REPORTABLE_ACCURACY`].
+/// Returns `None` when there is nothing to go on, when the sources disagree
+/// badly enough that what survives falls below [`MIN_REPORTABLE_ACCURACY`], or
+/// when what survives says nothing about the software.
+///
+/// # Abstention is not dissent
+///
+/// Only the sources that [name a family](OsEvidence::family) vote on it. The
+/// rest fold their finer parts into whichever family wins and never count
+/// against it — which is the difference between a second opinion and a second
+/// question. A hop counter of 255 says *network device*; an SNMP agent saying
+/// `Brother NC-8700w` says which one. Scored as rival families those two
+/// readings annihilated each other and the host was reported as nothing, on real
+/// hardware, with both answers sitting in the record.
+///
+/// Where nobody names a family the abstentions are the whole answer, and it is
+/// reported without one.
 pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
-    if evidence.is_empty() {
-        return None;
-    }
-
-    // Grouped by family, because that is the level every source can speak to.
-    // A `BTreeMap` so two runs over the same evidence resolve the same way: with
-    // scores this close together, iteration order would otherwise decide ties.
+    // Grouped by family, because that is the level a source that has one can
+    // speak to. A `BTreeMap` so two runs over the same evidence resolve the same
+    // way: with scores this close together, iteration order would otherwise
+    // decide ties.
     let mut by_family: BTreeMap<&str, Vec<&OsEvidence>> = BTreeMap::new();
+    let mut abstained: Vec<&OsEvidence> = Vec::new();
     for item in &evidence {
-        by_family
-            .entry(item.family.as_str())
-            .or_default()
-            .push(item);
+        match item.family.as_deref() {
+            Some(family) => by_family.entry(family).or_default().push(item),
+            None => abstained.push(item),
+        }
     }
 
     let mut scored: Vec<(&str, f32, Vec<&OsEvidence>)> = by_family
@@ -129,16 +164,44 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
             .then(a.0.cmp(b.0))
     });
 
-    let (family, score, items) = scored.first()?;
-    // Everything naming a different family, combined, is what the leader has to
+    // Everything naming a *different* family, combined, is what the leader has to
     // survive. One dissenting source is a doubt; several agreeing with each other
     // against the leader is close to a refutation.
-    let against = combine(scored.iter().skip(1).map(|(_, score, _)| *score));
-    let survived = score * (1.0 - against);
+    let mut answer = scored.first().map(|(family, score, items)| {
+        let against = combine(scored.iter().skip(1).map(|(_, score, _)| *score));
+        (
+            Some(*family),
+            score * (1.0 - against),
+            against,
+            items.clone(),
+        )
+    });
 
-    let accuracy = (survived * 100.0)
-        .round()
-        .clamp(0.0, f32::from(MAX_FUSED_ACCURACY)) as u8;
+    // A family that cannot clear the floor is not an answer, but it is also not
+    // the only thing on the table. What abstained never competed for it, was
+    // never reduced by the dissent that sank it, and can still be worth
+    // reporting on its own — an agent naming a make and model outright while two
+    // stack rules argue about what class of box it is. Dropping the whole
+    // verdict there would discard the best-attested thing the scan learned
+    // because of a quarrel it took no part in.
+    if answer
+        .as_ref()
+        .is_none_or(|(_, survived, ..)| percent(*survived) < MIN_REPORTABLE_ACCURACY)
+        && !abstained.is_empty()
+    {
+        let alone = combine(abstained.iter().map(|item| item.confidence));
+        if answer
+            .as_ref()
+            .is_none_or(|(_, survived, ..)| alone > *survived)
+        {
+            answer = Some((None, alone, 0.0, Vec::new()));
+        }
+    }
+
+    let (family, survived, against, mut items) = answer?;
+    items.extend_from_slice(&abstained);
+
+    let accuracy = percent(survived);
     if accuracy < MIN_REPORTABLE_ACCURACY {
         return None;
     }
@@ -173,13 +236,21 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     lines.sort_unstable();
     lines.dedup();
 
-    let (vendor, product, version, kernel, cpe) = (
+    let (vendor, product, version, kernel, cpe, device) = (
         agreed(|item| &item.vendor),
         agreed(|item| &item.product),
         agreed(|item| &item.version),
         agreed(|item| &item.kernel),
         agreed(|item| &item.cpe),
+        agreed(|item| &item.device),
     );
+
+    // A device class alone is not an answer to this question. It says what the
+    // box is, and something that knows only that has identified no software to
+    // report — the class rides along on a verdict, it does not make one.
+    if family.is_none() && vendor.is_none() && product.is_none() {
+        return None;
+    }
 
     // What the finer parts are worth, as distinct from the family.
     //
@@ -197,7 +268,8 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         || product.is_some()
         || version.is_some()
         || kernel.is_some()
-        || cpe.is_some();
+        || cpe.is_some()
+        || device.is_some();
     let detail_accuracy = refined.then(|| {
         let stated = items
             .iter()
@@ -207,16 +279,16 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
                     || item.version.is_some()
                     || item.kernel.is_some()
                     || item.cpe.is_some()
+                    || item.device.is_some()
             })
             .map(|item| item.confidence);
 
-        ((combine(stated) * (1.0 - against)) * 100.0)
-            .round()
-            .clamp(0.0, f32::from(MAX_FUSED_ACCURACY)) as u8
+        percent(combine(stated) * (1.0 - against))
     });
 
     Some(OsVerdict {
-        family: (*family).to_string(),
+        family: family.map(ToOwned::to_owned),
+        device,
         vendor,
         product,
         version,
@@ -227,6 +299,14 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         source: strongest.source,
         evidence: lines.join(" | "),
     })
+}
+
+/// A combined probability on the `0..=100` scale a report states, never above
+/// what any amount of agreement is allowed to claim.
+fn percent(probability: f32) -> u8 {
+    (probability * 100.0)
+        .round()
+        .clamp(0.0, f32::from(MAX_FUSED_ACCURACY)) as u8
 }
 
 /// Combines independent probabilities for one hypothesis: the chance that *at
@@ -255,10 +335,29 @@ fn combine(confidences: impl Iterator<Item = f32>) -> f32 {
 mod tests {
     use super::*;
 
+    /// The Brother print server this behaviour was found on, as its agent
+    /// answered on 2026-08-26: a make, a model and a firmware, and not one word
+    /// about an operating system.
+    fn a_named_appliance() -> OsEvidence {
+        OsEvidence {
+            source: OsSource::SnmpAgent,
+            family: None,
+            device: Some("Printer".to_string()),
+            vendor: Some("Brother".to_string()),
+            product: Some("NC-8700w".to_string()),
+            version: Some("ZL".to_string()),
+            kernel: None,
+            cpe: None,
+            confidence: 0.56,
+            evidence: "snmp agent names NC-8700w".to_string(),
+        }
+    }
+
     fn evidence(family: &str, confidence: f32, source: OsSource) -> OsEvidence {
         OsEvidence {
             source,
-            family: family.to_string(),
+            family: Some(family.to_string()),
+            device: None,
             vendor: None,
             product: None,
             version: None,
@@ -320,7 +419,7 @@ mod tests {
         ])
         .expect("the leader survives one dissenter");
 
-        assert_eq!(contested.family, "Linux");
+        assert_eq!(contested.family.as_deref(), Some("Linux"));
         assert!(
             contested.accuracy < uncontested,
             "a contested verdict must not score what an uncontested one does"
@@ -361,7 +460,7 @@ mod tests {
         let vague = evidence("Linux", 0.30, OsSource::HardwareVendor);
 
         let resolved = resolve(vec![precise, vague]).expect("named");
-        assert_eq!(resolved.family, "Linux");
+        assert_eq!(resolved.family.as_deref(), Some("Linux"));
         assert_eq!(
             resolved.product.as_deref(),
             Some("Ubuntu"),
@@ -381,7 +480,7 @@ mod tests {
         banner.product = Some("Debian".to_string());
 
         let resolved = resolve(vec![stack, banner]).expect("the family is agreed");
-        assert_eq!(resolved.family, "Linux");
+        assert_eq!(resolved.family.as_deref(), Some("Linux"));
         assert_eq!(resolved.product, None);
     }
 
@@ -404,5 +503,72 @@ mod tests {
     #[test]
     fn nothing_in_names_nothing_out() {
         assert!(resolve(Vec::new()).is_none());
+    }
+
+    /// The finding this file was rewritten for.
+    ///
+    /// A hop counter of 255 says *network device*; an SNMP agent says *Brother
+    /// NC-8700w*. Those are answers to two questions and the second is by far
+    /// the better one, but scored as rival families they cancelled: 0.4 reduced
+    /// by 0.385 left 25, under the floor, and a printer that had answered ARP,
+    /// ICMP, TCP and SNMP was reported as unidentified.
+    #[test]
+    fn a_source_that_names_no_family_does_not_argue_with_one_that_does() {
+        let stack = evidence("Network device", 0.4, OsSource::TcpStack);
+        let resolved = resolve(vec![stack.clone(), a_named_appliance()]).expect("named");
+
+        assert_eq!(resolved.family.as_deref(), Some("Network device"));
+        assert_eq!(
+            resolved.accuracy,
+            percent(0.4),
+            "unreduced: nothing dissented"
+        );
+        assert_eq!(resolved.vendor.as_deref(), Some("Brother"));
+        assert_eq!(resolved.product.as_deref(), Some("NC-8700w"));
+        assert_eq!(resolved.device.as_deref(), Some("Printer"));
+    }
+
+    /// And the abstention carries the answer where nothing else can name a
+    /// family at all — a device on a segment whose stack said nothing.
+    #[test]
+    fn an_abstention_alone_is_still_an_answer() {
+        let resolved = resolve(vec![a_named_appliance()]).expect("named");
+
+        assert_eq!(resolved.family, None);
+        assert_eq!(resolved.product.as_deref(), Some("NC-8700w"));
+        assert_eq!(resolved.accuracy, percent(0.56));
+    }
+
+    /// A family that cannot clear the floor takes only itself down. What
+    /// abstained never entered the quarrel and is not reduced by it.
+    #[test]
+    fn a_family_too_contested_to_report_does_not_take_the_rest_with_it() {
+        let one = evidence("Linux", 0.5, OsSource::TcpStack);
+        let other = evidence("Windows", 0.5, OsSource::HardwareVendor);
+        assert!(
+            resolve(vec![one.clone(), other.clone()]).is_none(),
+            "two sources this far apart name nothing between them"
+        );
+
+        let resolved = resolve(vec![one, other, a_named_appliance()]).expect("named");
+        assert_eq!(
+            resolved.family, None,
+            "the contested family is still refused"
+        );
+        assert_eq!(resolved.product.as_deref(), Some("NC-8700w"));
+    }
+
+    /// A class of box is not an operating system. Something that knows only what
+    /// the hardware is has identified no software, and a verdict is about
+    /// software.
+    #[test]
+    fn a_device_class_on_its_own_is_not_a_verdict() {
+        let class_only = OsEvidence {
+            vendor: None,
+            product: None,
+            version: None,
+            ..a_named_appliance()
+        };
+        assert!(resolve(vec![class_only]).is_none());
     }
 }

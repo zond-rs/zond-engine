@@ -95,7 +95,23 @@ pub fn identify(host: &mut Host, observed: impl IntoIterator<Item = OsEvidence>)
     // caller happens to be holding: see the note below on why that distinction
     // is the whole point.
     let evidence: Vec<OsEvidence> = host.os_evidence().cloned().collect();
+    let had_evidence = !evidence.is_empty();
     let Some(resolved) = resolve(evidence) else {
+        // A verdict this host's own evidence no longer supports has to go with
+        // it. Evidence only accumulates, so the answer can move either way as it
+        // does — a second source may contradict the first hard enough to leave
+        // nothing reportable — and leaving the earlier verdict standing reported
+        // a conclusion nothing on record reached. Measured, on one device
+        // answering over two addresses: identical evidence sets, and the one
+        // that had been named first kept a stale answer the other correctly
+        // declined to give.
+        //
+        // Only where this host has evidence at all. A fingerprint carried in
+        // from a report or a merge rests on somebody else's, and `resolve`
+        // saying nothing about an empty set is not a finding about it.
+        if had_evidence {
+            host.clear_os();
+        }
         return false;
     };
 
@@ -128,7 +144,8 @@ mod tests {
     fn observed(family: &str, confidence: f32) -> OsEvidence {
         OsEvidence {
             source: OsSource::TcpStack,
-            family: family.to_owned(),
+            family: Some(family.to_owned()),
+            device: None,
             vendor: None,
             product: None,
             version: None,
@@ -174,6 +191,41 @@ mod tests {
         let os = host.os().expect("a fingerprint");
         assert_eq!(os.name(), "macOS");
         assert!(os.accuracy() >= 40, "below the reporting floor: {os}");
+    }
+
+    /// Evidence only accumulates, so an answer can move either way as it does —
+    /// and when it moves to *nothing*, the answer on record has to go with it.
+    ///
+    /// Found on one device answering over two addresses: identical evidence,
+    /// and the address that had been named first kept a verdict the other
+    /// correctly declined to give, so one printer contradicted itself inside one
+    /// report.
+    #[test]
+    fn a_verdict_the_evidence_no_longer_supports_is_withdrawn() {
+        let mut host = host();
+        assert!(identify(&mut host, [observed("Linux", 0.5)]));
+        assert!(host.os().is_some());
+
+        // A second source, as strong and naming something else. Neither survives.
+        let mut contradiction = observed("Windows", 0.5);
+        contradiction.source = OsSource::HardwareVendor;
+        assert!(!identify(&mut host, [contradiction]));
+        assert!(
+            host.os().is_none(),
+            "the earlier verdict rested on evidence that no longer resolves"
+        );
+    }
+
+    /// A fingerprint carried in from a report or a merge rests on evidence this
+    /// host never held, and `resolve` saying nothing about an empty set is not a
+    /// finding about it.
+    #[test]
+    fn a_verdict_with_no_evidence_behind_it_is_left_alone() {
+        let mut host = host();
+        host.set_os(crate::model::host::OsFingerprint::new("Linux", 90));
+
+        assert!(!identify(&mut host, []));
+        assert_eq!(host.os().map(|os| os.name()), Some("Linux"));
     }
 
     /// Declining is the point rather than a shortfall. A randomised hardware
@@ -229,7 +281,8 @@ mod tests {
     fn a_banner_arriving_after_a_stack_reading_adds_its_release() {
         let banner = OsEvidence {
             source: OsSource::ServiceBanner,
-            family: "Linux".to_owned(),
+            family: Some("Linux".to_owned()),
+            device: None,
             vendor: Some("Debian".to_owned()),
             product: None,
             version: Some("12.0".to_owned()),
@@ -275,7 +328,8 @@ mod tests {
     fn a_board_maker_does_not_contradict_the_publisher_of_the_system() {
         let banner = OsEvidence {
             source: OsSource::ServiceBanner,
-            family: "Linux".to_owned(),
+            family: Some("Linux".to_owned()),
+            device: None,
             vendor: Some("Debian".to_owned()),
             product: Some("Linux".to_owned()),
             version: Some("12.0".to_owned()),

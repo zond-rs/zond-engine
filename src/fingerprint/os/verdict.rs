@@ -90,9 +90,9 @@ const PUBLISHED_ACCURACY: f32 = 50.0;
 
 /// Which evidence produced a verdict.
 ///
-/// One variant today. It exists so that phase 5's sources arrive as variants
-/// rather than as a rewrite, and so a report can say *why* a host was named
-/// rather than only what it was named.
+/// A report says *why* a host was named and not only what it was named, and the
+/// variants are ordered by nothing: what each is worth is decided where the
+/// evidence is made, not here.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OsSource {
@@ -102,22 +102,38 @@ pub enum OsSource {
     HardwareVendor,
     /// Text a service volunteered about the system it runs on.
     ServiceBanner,
+    /// A management agent answering for the machine itself — `sysDescr` out of
+    /// SNMP.
+    ///
+    /// Held apart from [`ServiceBanner`](Self::ServiceBanner) because it is worth
+    /// more, and the reason is not that SNMP is trustworthy. A banner is a string
+    /// a daemon was *compiled* with, so a container reports its base image and a
+    /// proxy reports itself. `sysDescr` on a Unix host is `uname -a` rendered at
+    /// the moment of asking: the running kernel, from the machine, now. On an
+    /// appliance it is the firmware build the box is actually executing. See
+    /// [`ceiling`](super::ceiling).
+    SnmpAgent,
     /// The host's own name, where it is one an operating system generates by
     /// default.
     ///
     /// The only source that reaches a host whose firewall drops every probe —
     /// a stock Windows desktop still announces `DESKTOP-` over mDNS — which is
-    /// why it exists despite being the weakest of the four.
+    /// why it exists despite being the weakest of them.
     Hostname,
 }
 
 /// What the rules concluded about one observation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OsVerdict {
-    /// The identity, most specific part first in the sense that `family` is
-    /// always present and the rest are filled in only where a rule supported
-    /// them.
-    pub family: String,
+    /// The broad family, where anything could name one.
+    ///
+    /// `None` where every source abstained — a host identified down to its make
+    /// and model by an agent that never said what it runs. See
+    /// [`OsEvidence::family`](super::OsEvidence::family).
+    pub family: Option<String>,
+    /// What kind of box this is, where a source said: `Printer`, `Switch`,
+    /// `Router`. Orthogonal to the family, never a substitute for it.
+    pub device: Option<String>,
     /// The vendor, where a rule named one.
     pub vendor: Option<String>,
     /// The product, where a rule named one.
@@ -170,6 +186,7 @@ impl OsVerdict {
         super::evidence::OsEvidence {
             source: self.source,
             family: self.family.clone(),
+            device: self.device.clone(),
             vendor: self.vendor.clone(),
             product: self.product.clone(),
             version: self.version.clone(),
@@ -180,16 +197,11 @@ impl OsVerdict {
         }
     }
 
-    /// Projects onto the model's [`OsFingerprint`].
+    /// The label a reader sees: the most specific thing the rules supported.
     ///
-    /// The name is the most specific thing the rules supported: a product where
-    /// one was named, the family otherwise. `OsFingerprint` ranks findings from
-    /// different techniques by accuracy and fills gaps on a tie, so what is
-    /// handed over here needs to be honest about how much it knows rather than
-    /// as specific as possible.
-    pub fn to_fingerprint(&self) -> OsFingerprint {
-        // The most specific label that says something the family does not.
-        //
+    /// Infallible, because [`resolve`](super::resolve) declines rather than
+    /// return a verdict that names nothing.
+    pub fn label(&self) -> String {
         // A corpus that sets `product` to the family name is *declining* to name
         // a product, and for a Linux distribution it puts the distribution in
         // `vendor` — 993 shipped rules are written that way, which is why a host
@@ -201,14 +213,42 @@ impl OsVerdict {
         // rather than the publisher of an operating system — Ubiquiti, AXIS,
         // Crestron — and seventeen rules pair `Microsoft` with `Windows`, which
         // this would otherwise render as `Microsoft 10`. Those keep the family.
-        let name = match (&self.product, &self.vendor) {
-            (Some(product), Some(vendor)) if product == &self.family => vendor.clone(),
+        match (&self.product, &self.vendor) {
+            (Some(product), Some(vendor)) if Some(product.as_str()) == self.family.as_deref() => {
+                vendor.clone()
+            }
+            // A device class means the product is a model number, and a model
+            // number without its maker names nothing a reader can look up:
+            // `NC-8700w` is a string, `Brother NC-8700w` is a printer.
+            (Some(product), Some(vendor))
+                if self.device.is_some() && !product.starts_with(vendor.as_str()) =>
+            {
+                format!("{vendor} {product}")
+            }
             (Some(product), _) => product.clone(),
-            _ => self.family.clone(),
-        };
-        let mut fingerprint = OsFingerprint::new(name, self.accuracy)
-            .with_family(&*self.family)
-            .with_evidence(&*self.evidence);
+            (None, vendor) => self
+                .family
+                .clone()
+                .or_else(|| vendor.clone())
+                .unwrap_or_else(|| self.device.clone().unwrap_or_default()),
+        }
+    }
+
+    /// Projects onto the model's [`OsFingerprint`].
+    ///
+    /// `OsFingerprint` ranks findings from different techniques by accuracy and
+    /// fills gaps on a tie, so what is handed over here needs to be honest about
+    /// how much it knows rather than as specific as possible.
+    pub fn to_fingerprint(&self) -> OsFingerprint {
+        let mut fingerprint =
+            OsFingerprint::new(self.label(), self.accuracy).with_evidence(&*self.evidence);
+
+        if let Some(family) = &self.family {
+            fingerprint = fingerprint.with_family(&**family);
+        }
+        if let Some(device) = &self.device {
+            fingerprint = fingerprint.with_device(&**device);
+        }
 
         if let Some(vendor) = &self.vendor {
             fingerprint = fingerprint.with_vendor(&**vendor);
@@ -366,7 +406,11 @@ fn score(matched: Vec<&OsDefinition>, evidence: String) -> Option<OsVerdict> {
     );
 
     Some(OsVerdict {
-        family: first.os.family.clone(),
+        family: Some(first.os.family.clone()),
+        // A reply's shape says nothing about what kind of box sent it. The
+        // classes that would be worth reading — printer, switch, camera — are
+        // read off text, by rules that can name them.
+        device: None,
         // A rule is one source, and it asserts its whole identity at once: the
         // release it names is worth exactly what the rule is worth. The two
         // figures only come apart once *several* sources are folded together,
@@ -476,7 +520,7 @@ mod tests {
         )
         .expect("a labelled Linux host is identified");
 
-        assert_eq!(verdict.family, "Linux");
+        assert_eq!(verdict.family.as_deref(), Some("Linux"));
         assert_eq!(verdict.source, OsSource::TcpStack);
 
         let fingerprint = verdict.to_fingerprint();
@@ -544,7 +588,7 @@ mod tests {
                 &segment(flags::SYN | flags::ACK, window, &DEBIAN_BOOKWORM),
             )
             .unwrap_or_else(|| panic!("a Linux handshake advertising {window} names nothing"));
-            assert_eq!(verdict.family, "Linux");
+            assert_eq!(verdict.family.as_deref(), Some("Linux"));
         }
     }
 
@@ -558,7 +602,8 @@ mod tests {
     #[test]
     fn a_distribution_is_named_by_its_distribution() {
         let verdict = OsVerdict {
-            family: "Linux".to_owned(),
+            family: Some("Linux".to_owned()),
+            device: None,
             vendor: Some("Debian".to_owned()),
             product: Some("Linux".to_owned()),
             version: Some("12".to_owned()),
@@ -581,6 +626,61 @@ mod tests {
         );
     }
 
+    /// A device class means the product is a model number, and a model number
+    /// without its maker names nothing anybody can look up. `NC-8700w` is a
+    /// string; `Brother NC-8700w` is a printer.
+    #[test]
+    fn a_model_number_is_labelled_with_the_maker_that_built_it() {
+        let verdict = OsVerdict {
+            family: Some("Network device".to_owned()),
+            device: Some("Printer".to_owned()),
+            vendor: Some("Brother".to_owned()),
+            product: Some("NC-8700w".to_owned()),
+            version: Some("ZL".to_owned()),
+            kernel: None,
+            cpe: None,
+            accuracy: 40,
+            detail_accuracy: Some(56),
+            source: OsSource::SnmpAgent,
+            evidence: "snmp agent names NC-8700w".to_owned(),
+        };
+
+        let fingerprint = verdict.to_fingerprint();
+        assert_eq!(fingerprint.name(), "Brother NC-8700w");
+        assert_eq!(fingerprint.device(), Some("Printer"));
+        assert_eq!(fingerprint.family(), Some("Network device"));
+
+        // And not twice, where the corpus already wrote the maker into the model.
+        let spelled_out = OsVerdict {
+            product: Some("Brother HL-1660e".to_owned()),
+            ..verdict
+        };
+        assert_eq!(spelled_out.label(), "Brother HL-1660e");
+    }
+
+    /// A verdict with no family at all — an agent that named a box outright and
+    /// never said what it runs — still labels itself off what it did establish.
+    #[test]
+    fn a_verdict_without_a_family_is_still_named() {
+        let verdict = OsVerdict {
+            family: None,
+            device: Some("Printer".to_owned()),
+            vendor: Some("Brother".to_owned()),
+            product: Some("NC-8700w".to_owned()),
+            version: Some("ZL".to_owned()),
+            kernel: None,
+            cpe: None,
+            accuracy: 56,
+            detail_accuracy: Some(56),
+            source: OsSource::SnmpAgent,
+            evidence: "snmp agent names NC-8700w".to_owned(),
+        };
+
+        let fingerprint = verdict.to_fingerprint();
+        assert_eq!(fingerprint.name(), "Brother NC-8700w");
+        assert_eq!(fingerprint.family(), None);
+    }
+
     /// And the case that rule must not break. A rule naming no product leaves
     /// `vendor` meaning whoever made the *machine* as often as whoever published
     /// the system — so `Microsoft` + `Windows`, of which the corpus holds
@@ -588,7 +688,8 @@ mod tests {
     #[test]
     fn a_vendor_without_a_product_does_not_replace_the_family() {
         let verdict = OsVerdict {
-            family: "Windows".to_owned(),
+            family: Some("Windows".to_owned()),
+            device: None,
             vendor: Some("Microsoft".to_owned()),
             product: None,
             version: Some("10".to_owned()),
@@ -721,7 +822,7 @@ mod second_family {
         )
         .expect("a labelled Mac is identified");
 
-        assert_eq!(observed.family, "macOS");
+        assert_eq!(observed.family.as_deref(), Some("macOS"));
         assert_eq!(observed.vendor.as_deref(), Some("Apple"));
 
         // Confirmed against hardware, so it scores as a measured rule rather
@@ -855,7 +956,7 @@ mod series_backed {
 
         let verdict = classify_series(&db, &[(reply, hashed())])
             .expect("the same rule matches once the series is known");
-        assert_eq!(verdict.family, "Linux");
+        assert_eq!(verdict.family.as_deref(), Some("Linux"));
         assert_eq!(verdict.version.as_deref(), Some("6.x"));
     }
 
@@ -897,7 +998,7 @@ mod series_backed {
 
         let verdict =
             classify_series(&db, &[(reply, hashed())]).expect("a host both rules describe");
-        assert_eq!(verdict.family, "Linux");
+        assert_eq!(verdict.family.as_deref(), Some("Linux"));
         assert_eq!(
             verdict.version.as_deref(),
             Some("6.x"),
@@ -926,7 +1027,7 @@ mod series_backed {
         ]);
 
         let verdict = classify_series(&db, &[(syn_ack(), hashed())]).expect("the family is agreed");
-        assert_eq!(verdict.family, "Linux");
+        assert_eq!(verdict.family.as_deref(), Some("Linux"));
         assert!(
             verdict.version.is_none(),
             "a contradiction about the release is not a release"

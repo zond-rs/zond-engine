@@ -54,6 +54,10 @@ fn router() -> Host {
 
     let mut os = OsFingerprint::new("Linux", 95)
         .with_family("Unix-like")
+        // Both axes populated at once, which is the case a consumer has to
+        // handle and the one a fixture is most likely to leave out: a Linux
+        // print server is what it runs *and* what it is.
+        .with_device("Printer")
         .with_generation("5.15.0")
         // Shaped like what the stack fingerprinter renders, so the full-report
         // document exercises a populated evidence line rather than a null.
@@ -445,6 +449,7 @@ fn hostile_host() -> Host {
 
     let mut os = OsFingerprint::new(HOSTILE, 90)
         .with_family(HOSTILE)
+        .with_device(HOSTILE)
         .with_generation(HOSTILE)
         // Every string a report carries has to survive being written into JSON,
         // CSV, HTML and XML, and this one is no different for being meant for a

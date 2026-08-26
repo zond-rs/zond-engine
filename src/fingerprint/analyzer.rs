@@ -143,9 +143,13 @@ impl Analyzer for BannerRegexAnalyzer {
         let port_signatures = db.signatures_for_port(ctx.port);
         db.warm(port_signatures);
 
+        let attested_by = super::extract::attested_by(ctx.port, ctx.protocol);
+
         let mut evidence = Vec::new();
         for response in &responses.banners {
-            if let Some((found, port_confirmed)) = banner_evidence(db, port_signatures, response) {
+            if let Some((found, port_confirmed)) =
+                banner_evidence(db, port_signatures, response, attested_by)
+            {
                 evidence.push(stamp(found, ctx, port_confirmed));
             }
         }
@@ -171,13 +175,18 @@ impl Analyzer for BannerRegexAnalyzer {
 /// reinstate exactly the shadowing this function exists to prevent: the whole
 /// line matches a loose rule naming a family, and the field matches the rule
 /// naming the release.
-fn best_match(db: &SignatureDb, indices: &[usize], texts: &[&str]) -> Option<Evidence> {
+fn best_match(
+    db: &SignatureDb,
+    indices: &[usize],
+    texts: &[&str],
+    attested_by: super::os::OsSource,
+) -> Option<Evidence> {
     let matched: Vec<super::matcher::Match> = texts
         .iter()
         .flat_map(|text| {
             indices
                 .iter()
-                .filter_map(move |&idx| db.signature(idx).identify(text))
+                .filter_map(move |&idx| db.signature(idx).identify(text, attested_by))
         })
         .collect();
 
@@ -250,11 +259,12 @@ fn banner_evidence(
     db: &SignatureDb,
     port_signatures: &[usize],
     banner: &str,
+    attested_by: super::os::OsSource,
 ) -> Option<(Evidence, bool)> {
     let texts = super::extract::texts(banner);
 
     // Matched against the signatures registered for this port: port-confirmed.
-    let mut found = best_match(db, port_signatures, &texts);
+    let mut found = best_match(db, port_signatures, &texts, attested_by);
     let mut port_confirmed = found.is_some();
 
     // The global set — narrowed by the prefilter to a small candidate list,
@@ -283,7 +293,7 @@ fn banner_evidence(
         candidates.dedup();
 
         db.warm(&candidates);
-        if let Some(global) = best_match(db, &candidates, &texts) {
+        if let Some(global) = best_match(db, &candidates, &texts, attested_by) {
             match found.as_mut() {
                 // The port-confirmed service stands; only the reading about the
                 // machine is taken from the wider set.
@@ -305,11 +315,13 @@ fn banner_evidence(
 pub(crate) fn os_from_banner(
     db: &SignatureDb,
     port: u16,
+    protocol: Protocol,
     banner: &str,
 ) -> Option<super::os::OsEvidence> {
     let port_signatures = db.signatures_for_port(port);
     db.warm(port_signatures);
-    banner_evidence(db, port_signatures, banner).and_then(|(found, _)| found.os)
+    let attested_by = super::extract::attested_by(port, protocol);
+    banner_evidence(db, port_signatures, banner, attested_by).and_then(|(found, _)| found.os)
 }
 
 /// Marks `evidence` with the tunnel its response was read through (so a banner

@@ -49,6 +49,16 @@ pub struct OsFingerprint {
     /// The broad family, such as `"Unix-like"` or `"Windows NT"`.
     family: Option<Arc<str>>,
 
+    /// What kind of box this is, such as `"Printer"` or `"Switch"`.
+    ///
+    /// **A second axis, not a coarser name.** What a machine runs and what it is
+    /// are separate facts, and a source often knows one without the other: a hop
+    /// counter says infrastructure and never a vendor, an SNMP agent names a
+    /// printer's firmware and never its kernel. Held apart, the two corroborate;
+    /// folded into one field they contradicted, and a Brother print server that
+    /// had answered ARP, ICMP, TCP and SNMP was reported as unidentified.
+    device: Option<Arc<str>>,
+
     /// The version or generation, such as `"5.15.0"` or `"11"`.
     generation: Option<Arc<str>>,
 
@@ -128,6 +138,7 @@ impl OsFingerprint {
         Self {
             name: name.into(),
             family: None,
+            device: None,
             generation: None,
             vendor: None,
             accuracy: accuracy.min(100),
@@ -151,6 +162,18 @@ impl OsFingerprint {
     /// The version or generation, if one was identified.
     pub fn generation(&self) -> Option<&str> {
         self.generation.as_deref()
+    }
+
+    /// What kind of box this is, if anything named a class.
+    pub fn device(&self) -> Option<&str> {
+        self.device.as_deref()
+    }
+
+    /// Builder method to set the device class.
+    #[must_use]
+    pub fn with_device(mut self, device: impl Into<Arc<str>>) -> Self {
+        self.device = Some(device.into());
+        self
     }
 
     /// The vendor, if one was identified.
@@ -254,6 +277,7 @@ impl OsFingerprint {
         let OsFingerprint {
             name,
             family,
+            device,
             generation,
             vendor,
             accuracy,
@@ -267,6 +291,10 @@ impl OsFingerprint {
             self.name = name;
             self.accuracy = accuracy;
             self.family = family.or(self.family.take());
+            // Kept across a losing merge, unlike the name: what the box *is* does
+            // not stop being true because a stronger technique named what it
+            // runs. The two answers are about different things.
+            self.device = device.or(self.device.take());
             self.generation = generation.or(self.generation.take());
             self.vendor = vendor.or(self.vendor.take());
             self.kernel = kernel.or(self.kernel.take());
@@ -297,6 +325,7 @@ impl OsFingerprint {
                 self.evidence.take().or(evidence)
             };
             self.family = self.family.take().or(family);
+            self.device = self.device.take().or(device);
             self.generation = self.generation.take().or(generation);
             self.vendor = self.vendor.take().or(vendor);
             self.kernel = self.kernel.take().or(kernel);

@@ -290,6 +290,7 @@ impl SignatureDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fingerprint::os::OsSource;
     use crate::fingerprint::signature::{MatchRule, Probe, ServiceSignature};
 
     fn def(name: &str, ports: Vec<u16>, patterns: &[&str]) -> ServiceDefinition {
@@ -349,10 +350,10 @@ mod tests {
     #[test]
     fn signatures_identify_through_the_index() {
         let db = db();
-        let hit = db
-            .signatures_for_port(80)
-            .iter()
-            .find_map(|&i| db.signature(i).identify("HTTP/1.1 200 OK"));
+        let hit = db.signatures_for_port(80).iter().find_map(|&i| {
+            db.signature(i)
+                .identify("HTTP/1.1 200 OK", OsSource::ServiceBanner)
+        });
         assert_eq!(
             hit.and_then(|m| m.evidence.service),
             Some("http".to_string())

@@ -791,6 +791,7 @@ impl ReasonDto {
 struct OsDto {
     name: String,
     family: Option<String>,
+    device: Option<String>,
     generation: Option<String>,
     vendor: Option<String>,
     kernel: Option<String>,
@@ -806,6 +807,7 @@ impl OsDto {
             name: self.name,
             accuracy: self.accuracy,
             family: self.family,
+            device: self.device,
             generation: self.generation,
             vendor: self.vendor,
             kernel: self.kernel,

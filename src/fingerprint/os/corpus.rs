@@ -455,12 +455,12 @@ fn an_echo_reply_alone_can_name_a_family() {
     let windows = echo_reply(128);
     let verdict = super::verdict::classify(RuleDb::global(), &windows)
         .expect("an echo reply with a Windows hop counter names Windows");
-    assert_eq!(verdict.family, "Windows");
+    assert_eq!(verdict.family.as_deref(), Some("Windows"));
 
     let device = echo_reply(255);
     let verdict = super::verdict::classify(RuleDb::global(), &device)
         .expect("an echo reply with an infrastructure hop counter names one");
-    assert_eq!(verdict.family, "Network device");
+    assert_eq!(verdict.family.as_deref(), Some("Network device"));
 }
 
 /// A ping from a Unix-alike is deliberately **not** named, and this test is the

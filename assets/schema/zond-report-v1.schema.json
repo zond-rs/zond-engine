@@ -961,6 +961,7 @@
       "required": [
         "name",
         "family",
+        "device",
         "generation",
         "vendor",
         "kernel",
@@ -974,6 +975,13 @@
           "type": "string"
         },
         "family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device": {
+          "description": "What kind of box this is - \"Printer\", \"Switch\", \"Router\" - or null where nothing named a class. A separate axis from `family` rather than a coarser one: what a machine is and what it runs are independent facts, and a source may establish either without the other.",
           "type": [
             "string",
             "null"

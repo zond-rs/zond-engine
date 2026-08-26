@@ -589,6 +589,15 @@ pub(super) async fn run_active_os_series(
 /// kernel version is the single most actionable thing a scan can learn about a
 /// Unix host, because it is what a known-vulnerability lookup keys on.
 ///
+/// # What comes back from a box that has no kernel to name
+///
+/// An appliance answers with its own identity instead — `Brother NC-8700w,
+/// Firmware Ver.ZL` — and that is not a failed probe. It is a make, a model, a
+/// firmware and a device class off one datagram, on a host the rest of the scan
+/// could only place as *something with an initial hop count of 255*. The phase
+/// is named for the kernel because that is what justifies it; it is worth
+/// running for either answer.
+///
 /// # Why it does not simply add a port to the scan
 ///
 /// Because a detection *level* and a port *list* are different dials, and

@@ -111,6 +111,16 @@ pub struct OsMetadata {
     pub kernel: Option<String>,
     /// A Common Platform Enumeration identifier.
     pub cpe23: Option<String>,
+    /// What kind of box the rule says this is — `Printer`, `Switch`, `Router`.
+    ///
+    /// Read from `os.device`, falling back to `hw.device`, which is the same
+    /// class written under the hardware namespace by rules that describe a
+    /// device rather than the software on it.
+    ///
+    /// **Its presence changes how the rest of the rule reads.** A rule stating a
+    /// class is describing hardware, so its `product` is a model number and its
+    /// `vendor` is a manufacturer — see [`evidence_from`].
+    pub device: Option<String>,
     /// How sure the corpus itself says this rule is, `0.0..=1.0`.
     ///
     /// The imported rules carry their own hedging on 353 entries, and honouring
@@ -134,6 +144,7 @@ impl OsMetadata {
             version: get("os.version"),
             kernel: get("os.kernel"),
             cpe23: get("os.cpe23"),
+            device: get("os.device").or_else(|| get("hw.device")),
             certainty: get("os.certainty").and_then(|v| v.parse().ok()),
         };
 
@@ -156,6 +167,7 @@ impl OsMetadata {
         let product = fill(self.product.as_deref(), captures);
         let version = fill(self.version.as_deref(), captures);
         let kernel = fill(self.kernel.as_deref(), captures);
+        let device = fill(self.device.as_deref(), captures);
 
         let siblings = [
             ("os.vendor", vendor.as_deref()),
@@ -174,6 +186,7 @@ impl OsMetadata {
             version,
             kernel,
             cpe23,
+            device,
             certainty: self.certainty,
         }
     }
@@ -218,18 +231,37 @@ fn fill_siblings(template: &str, siblings: &[(&str, Option<&str>)]) -> Option<St
     (!out.trim().is_empty()).then(|| out.trim().to_string())
 }
 
-/// What a matched service rule contributes to identifying the host.
+/// What a matched service rule contributes to identifying the host, read as
+/// `source` attests it.
 ///
-/// `None` when the rule resolved to nothing usable. The confidence is modest and
-/// deliberately so: a banner says what the *service* was built against, which is
-/// usually but not always what the machine runs — a container image reports its
-/// own base distribution, not the host's kernel, and a proxy reports itself.
-pub fn evidence_from(metadata: &OsMetadata, captures: &[String]) -> Option<OsEvidence> {
+/// `None` when the rule resolved to nothing usable.
+///
+/// # The family, and when a product may stand in for one
+///
+/// Most imported rules name no `os.family`, and for the ones describing an
+/// operating system the `os.product` is the family in all but name — `Linux`,
+/// `AIX`, `Windows Server 2008 R2` — so it is read as one. 362 rules depend on
+/// that.
+///
+/// **A rule that names a [device class](OsMetadata::device) is the exception,
+/// and it is not a small one.** There the product is a model number and reading
+/// it as a family puts `NC-8700w` on the ballot [`resolve`](super::resolve)
+/// settles by vote, where it can only run against real families. Measured, on a
+/// Brother print server: `NC-8700w` at 0.385 against `Network device` at 0.4
+/// left 25%, under the floor, and a host that had answered three separate
+/// probes was reported as unidentified. Those 389 rules state no family, keep
+/// their model in `product` and their class in `device`, and abstain.
+pub fn evidence_from(
+    metadata: &OsMetadata,
+    captures: &[String],
+    source: OsSource,
+) -> Option<OsEvidence> {
     let resolved = metadata.resolve(captures);
-    let family = resolved
-        .family
-        .clone()
-        .or_else(|| resolved.product.clone())?;
+    let family = match (&resolved.family, &resolved.device) {
+        (Some(family), _) => Some(family.clone()),
+        (None, Some(_)) => None,
+        (None, None) => Some(resolved.product.clone()?),
+    };
 
     // The corpus's own hedging where it gave any. Absent means the rule asserted
     // its attribution without qualification, which is the ordinary case — only
@@ -246,28 +278,45 @@ pub fn evidence_from(metadata: &OsMetadata, captures: &[String]) -> Option<OsEvi
         return None;
     }
 
-    // Scaled below what a stack reading is worth: the stack is the machine
-    // answering for itself, where a banner is software describing what it was
-    // compiled against.
-    let confidence = certainty * BANNER_CEILING;
+    let confidence = certainty * ceiling(source);
 
     let described = resolved
         .product
         .clone()
         .or_else(|| resolved.family.clone())
-        .unwrap_or_else(|| family.clone());
+        .or_else(|| family.clone())
+        .or_else(|| resolved.vendor.clone())
+        .or_else(|| resolved.device.clone())?;
+
+    let read = match source {
+        OsSource::SnmpAgent => "snmp agent names",
+        _ => "service banner names",
+    };
 
     Some(OsEvidence {
-        source: OsSource::ServiceBanner,
+        source,
         family,
+        device: resolved.device,
         vendor: resolved.vendor,
         product: resolved.product,
         version: resolved.version,
         kernel: resolved.kernel,
         cpe: resolved.cpe23,
         confidence,
-        evidence: format!("service banner names {described}"),
+        evidence: format!("{read} {described}"),
     })
+}
+
+/// The most a rule matched against `source`'s text may be worth, before the
+/// corpus's own certainty scales it.
+///
+/// One number per kind of text, because the kinds are not equally close to the
+/// machine. See [`BANNER_CEILING`] and [`AGENT_CEILING`].
+pub fn ceiling(source: OsSource) -> f32 {
+    match source {
+        OsSource::SnmpAgent => AGENT_CEILING,
+        _ => BANNER_CEILING,
+    }
 }
 
 /// The most a banner is worth, before the corpus's own certainty scales it.
@@ -287,7 +336,24 @@ pub fn evidence_from(metadata: &OsMetadata, captures: &[String]) -> Option<OsEvi
 /// So one banner names a host at around 55, which reports but does not reach the
 /// threshold that stops further probing; a banner agreeing with a stack reading
 /// reaches the low eighties, which is the point of having both.
-const BANNER_CEILING: f32 = 0.55;
+pub const BANNER_CEILING: f32 = 0.55;
+
+/// The most a management agent's own description of its machine is worth.
+///
+/// Above [`BANNER_CEILING`] for the reason that ceiling exists: a banner is a
+/// string a daemon carries from its build, and the gap between the build and the
+/// running machine is what holds the number down. `sysDescr` has no such gap. On
+/// a Unix host net-snmp renders it from `uname -a` when the question is asked —
+/// the kernel that is executing, at the moment of asking — and on an appliance it
+/// is the firmware build reporting itself. The agent is part of the machine, not
+/// software running on it.
+///
+/// Below the 85 that
+/// [`OsFingerprint::is_highly_confident`](crate::model::host::OsFingerprint::is_highly_confident)
+/// reads, so one agent still does not settle a host on its own. Reaching that
+/// takes a second independent source, which is the rule everywhere else here and
+/// there is no case for exempting this one.
+pub const AGENT_CEILING: f32 = 0.8;
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -398,6 +464,73 @@ mod tests {
         assert!(OsMetadata::from_map(&map).is_none());
     }
 
+    /// 362 rules name an operating system in `os.product` and no family at all —
+    /// `Linux`, `AIX`, `FreeBSD` — and reading the product as the family is what
+    /// makes them work.
+    #[test]
+    fn a_product_stands_in_for_a_family_nobody_stated() {
+        let rule = metadata(&[("os.vendor", "Ubuntu"), ("os.product", "Linux")]);
+        let found = evidence_from(&rule, &[], OsSource::ServiceBanner).expect("names a system");
+
+        assert_eq!(found.family.as_deref(), Some("Linux"));
+    }
+
+    /// Except where a device class says the product is a model number. 389 rules
+    /// are written that way, and reading `NC-8700w` as a family is what set a
+    /// printer's model against the class of box a hop counter had established.
+    #[test]
+    fn a_model_number_never_stands_in_for_a_family() {
+        let rule = metadata(&[
+            ("os.vendor", "Brother"),
+            ("os.product", "NC-8700w"),
+            ("os.device", "Printer"),
+        ]);
+        let found = evidence_from(&rule, &[], OsSource::SnmpAgent).expect("names a system");
+
+        assert_eq!(found.family, None);
+        assert_eq!(found.product.as_deref(), Some("NC-8700w"));
+        assert_eq!(found.device.as_deref(), Some("Printer"));
+    }
+
+    /// The corpus writes the same class under two namespaces. Both are the same
+    /// fact about the same box.
+    #[test]
+    fn a_class_written_under_the_hardware_namespace_is_the_same_class() {
+        let rule = metadata(&[("os.product", "Linux"), ("hw.device", "IP Camera")]);
+        assert_eq!(rule.device.as_deref(), Some("IP Camera"));
+    }
+
+    /// A class can be captured out of the text like anything else, and a
+    /// template that resolves to nothing is dropped rather than emitted raw.
+    #[test]
+    fn a_captured_device_class_resolves_against_the_match() {
+        let rule = metadata(&[("os.product", "VRP"), ("os.device", "{capture:2}")]);
+
+        let captures = ["".to_string(), "".to_string(), "Switch".to_string()];
+        assert_eq!(rule.resolve(&captures).device.as_deref(), Some("Switch"));
+        assert_eq!(rule.resolve(&[]).device, None);
+    }
+
+    /// What an agent says is worth more than what a daemon was compiled with,
+    /// and the gap is the whole reason the two are separate sources.
+    #[test]
+    fn an_agent_outweighs_a_banner_saying_the_same_thing() {
+        let rule = metadata(&[("os.family", "Linux"), ("os.kernel", "6.1.0")]);
+
+        let by_agent = evidence_from(&rule, &[], OsSource::SnmpAgent).expect("names a system");
+        let by_banner = evidence_from(&rule, &[], OsSource::ServiceBanner).expect("names a system");
+
+        assert!(
+            by_agent.confidence > by_banner.confidence,
+            "an agent rendering `uname -a` on demand is closer to the machine \
+             than a string a daemon carried from its build"
+        );
+        assert!(
+            by_agent.confidence < 0.85,
+            "and still not enough to settle a host on its own"
+        );
+    }
+
     /// The corpus hedges on 353 of its own rules and honouring that is free.
     /// A rule marked uncertain must not be worth what a confident one is.
     #[test]
@@ -409,8 +542,9 @@ mod tests {
             ("os.certainty", "0.5"),
         ]);
 
-        let confident = evidence_from(&confident, &[]).expect("names a system");
-        let hedged = evidence_from(&hedged, &[]).expect("names a system");
+        let confident =
+            evidence_from(&confident, &[], OsSource::ServiceBanner).expect("names a system");
+        let hedged = evidence_from(&hedged, &[], OsSource::ServiceBanner).expect("names a system");
 
         assert!(
             hedged.confidence < confident.confidence,
@@ -429,7 +563,7 @@ mod tests {
             ("os.product", "Ubuntu"),
             ("os.certainty", "0.0"),
         ]);
-        assert!(evidence_from(&worthless, &[]).is_none());
+        assert!(evidence_from(&worthless, &[], OsSource::ServiceBanner).is_none());
     }
 
     /// A banner names a host on its own — `OpenSSH_9.6p1 Debian` really does say
@@ -439,7 +573,7 @@ mod tests {
     #[test]
     fn a_banner_alone_names_a_host_but_does_not_settle_it() {
         let rule = metadata(&[("os.family", "Linux"), ("os.product", "Ubuntu")]);
-        let evidence = evidence_from(&rule, &[]).expect("names a system");
+        let evidence = evidence_from(&rule, &[], OsSource::ServiceBanner).expect("names a system");
         assert!(evidence.confidence <= BANNER_CEILING);
 
         let alone = super::super::resolve(vec![evidence]).expect("a banner names a host");
@@ -461,11 +595,13 @@ mod tests {
         let banner = evidence_from(
             &metadata(&[("os.family", "Linux"), ("os.product", "Ubuntu")]),
             &[],
+            OsSource::ServiceBanner,
         )
         .expect("names a system");
 
         let stack = OsVerdict {
-            family: "Linux".to_string(),
+            family: Some("Linux".to_string()),
+            device: None,
             vendor: None,
             product: None,
             version: None,
@@ -483,13 +619,14 @@ mod tests {
             together.accuracy > 65,
             "two independent sources agreeing must beat the better one alone"
         );
-        assert_eq!(together.family, "Linux");
+        assert_eq!(together.family.as_deref(), Some("Linux"));
     }
 }
 
 #[cfg(test)]
 mod against_the_shipped_corpus {
     use crate::fingerprint::SignatureDb;
+    use crate::model::port::Protocol;
 
     /// A banner naming a release must yield that release.
     ///
@@ -510,11 +647,12 @@ mod against_the_shipped_corpus {
         let debian_12 = crate::fingerprint::analyzer::os_from_banner(
             db,
             22,
+            Protocol::Tcp,
             "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10",
         )
         .expect("a Debian OpenSSH banner names an operating system");
 
-        assert_eq!(debian_12.family, "Linux");
+        assert_eq!(debian_12.family.as_deref(), Some("Linux"));
         assert_eq!(
             debian_12.version.as_deref(),
             Some("12"),
@@ -531,10 +669,11 @@ mod against_the_shipped_corpus {
         let debian_13 = crate::fingerprint::analyzer::os_from_banner(
             db,
             22,
+            Protocol::Tcp,
             "SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4",
         )
         .expect("a Debian OpenSSH banner names an operating system");
-        assert_eq!(debian_13.family, "Linux");
+        assert_eq!(debian_13.family.as_deref(), Some("Linux"));
         assert_eq!(
             debian_13.version.as_deref(),
             Some("13"),
@@ -546,6 +685,7 @@ mod against_the_shipped_corpus {
         let backported = crate::fingerprint::analyzer::os_from_banner(
             db,
             22,
+            Protocol::Tcp,
             "SSH-2.0-OpenSSH_9.7p1 Debian-1~bpo12+1",
         )
         .expect("a backport names one too");
@@ -555,8 +695,12 @@ mod against_the_shipped_corpus {
         // release, because there is none in it to name. Declining is right:
         // guessing a release from an OpenSSH version would attribute Debian's
         // packaging to every distribution that ships the same upstream.
-        let stripped =
-            crate::fingerprint::analyzer::os_from_banner(db, 22, "SSH-2.0-OpenSSH_10.0p2");
+        let stripped = crate::fingerprint::analyzer::os_from_banner(
+            db,
+            22,
+            Protocol::Tcp,
+            "SSH-2.0-OpenSSH_10.0p2",
+        );
         assert!(
             stripped.is_none_or(|os| os.version.is_none()),
             "a stripped banner carries no release and must not invent one"
@@ -579,9 +723,7 @@ mod against_the_shipped_corpus {
     fn arch_is_named_by_its_kernel_because_nothing_else_names_it() {
         let db = SignatureDb::global();
 
-        let found = crate::fingerprint::analyzer::os_from_banner(
-            db,
-            161,
+        let found = crate::fingerprint::analyzer::os_from_banner(db, 161, Protocol::Udp,
             "Linux host 6.12.1-arch1-1 #1 SMP PREEMPT_DYNAMIC Fri, 22 Nov 2024 12:00:00 +0000 x86_64",
         )
         .expect("an Arch kernel names Arch");
@@ -597,11 +739,70 @@ mod against_the_shipped_corpus {
         // And the banner it actually presents on port 22 names nothing, which is
         // the honest answer rather than a gap to be papered over: a bare
         // `OpenSSH_10.0p2` is Arch, Fedora, Gentoo or a source build alike.
-        let by_ssh = crate::fingerprint::analyzer::os_from_banner(db, 22, "SSH-2.0-OpenSSH_10.0p2");
+        let by_ssh = crate::fingerprint::analyzer::os_from_banner(
+            db,
+            22,
+            Protocol::Tcp,
+            "SSH-2.0-OpenSSH_10.0p2",
+        );
         assert!(
             by_ssh.is_none_or(|os| os.vendor.is_none()),
             "an unmarked upstream banner must not be attributed to any distribution"
         );
+    }
+
+    /// A `sysDescr` that names hardware and no operating system.
+    ///
+    /// Read off a Brother NC-8700w print server on 2026-08-26, exactly as its
+    /// agent answered. The rule for it carries a vendor, a model, a firmware and
+    /// a device class — and no family, because the box never said what it runs.
+    ///
+    /// Every field here was on the wire and none of it reached a report: the
+    /// model was read as the *family*, put on the ballot against the `Network
+    /// device` a hop counter of 255 had already established, and the two
+    /// annihilated. What this asserts is that the reading survives to be
+    /// reported, with the model under `product` where it belongs and the class
+    /// on its own axis.
+    #[test]
+    fn an_agent_that_names_only_hardware_names_hardware() {
+        let db = SignatureDb::global();
+
+        let found = crate::fingerprint::analyzer::os_from_banner(
+            db,
+            161,
+            Protocol::Udp,
+            "Brother NC-8700w, Firmware Ver.ZL  ,MID 8CE-823,FID 2",
+        )
+        .expect("a shipped rule reads this exact string");
+
+        assert_eq!(found.vendor.as_deref(), Some("Brother"));
+        assert_eq!(found.product.as_deref(), Some("NC-8700w"));
+        assert_eq!(found.version.as_deref(), Some("ZL"));
+        assert_eq!(found.device.as_deref(), Some("Printer"));
+        assert_eq!(
+            found.family, None,
+            "a model number is not a family, and reading it as one is what put \
+             `NC-8700w` on a ballot against `Network device`"
+        );
+    }
+
+    /// The kernel an agent reads out is the point of asking, and it survives the
+    /// whole path from datagram to evidence.
+    #[test]
+    fn an_agent_that_names_a_kernel_names_a_kernel() {
+        let db = SignatureDb::global();
+
+        let found = crate::fingerprint::analyzer::os_from_banner(
+            db,
+            161,
+            Protocol::Udp,
+            "Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) aarch64",
+        )
+        .expect("the kernel rule reads this");
+
+        assert_eq!(found.family.as_deref(), Some("Linux"));
+        assert_eq!(found.kernel.as_deref(), Some("6.1.0"));
+        assert_eq!(found.source, super::super::OsSource::SnmpAgent);
     }
 
     /// Releases nobody has a machine for.
@@ -619,10 +820,10 @@ mod against_the_shipped_corpus {
             ("SSH-2.0-OpenSSH_7.9p1 Debian-10+deb10u2", "10"),
             ("SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u3", "11"),
         ] {
-            let found = crate::fingerprint::analyzer::os_from_banner(db, 22, banner)
+            let found = crate::fingerprint::analyzer::os_from_banner(db, 22, Protocol::Tcp, banner)
                 .unwrap_or_else(|| panic!("{banner} names nothing"));
 
-            assert_eq!(found.family, "Linux");
+            assert_eq!(found.family.as_deref(), Some("Linux"));
             assert_eq!(found.vendor.as_deref(), Some("Debian"));
             assert_eq!(
                 found.version.as_deref(),
@@ -648,10 +849,10 @@ mod against_the_shipped_corpus {
         let db = SignatureDb::global();
         let sys_descr = "Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) aarch64";
 
-        let found = crate::fingerprint::analyzer::os_from_banner(db, 161, sys_descr)
+        let found = crate::fingerprint::analyzer::os_from_banner(db, 161, Protocol::Udp, sys_descr)
             .expect("a uname string names an operating system");
 
-        assert_eq!(found.family, "Linux");
+        assert_eq!(found.family.as_deref(), Some("Linux"));
         assert_eq!(
             found.kernel.as_deref(),
             Some("6.1.0"),
@@ -698,10 +899,14 @@ mod against_the_shipped_corpus {
         for (port, banner) in cases {
             // The port-linked set first, then the global one, exactly as the
             // matcher does.
-            let found = crate::fingerprint::analyzer::os_from_banner(db, port, banner);
+            let found =
+                crate::fingerprint::analyzer::os_from_banner(db, port, Protocol::Tcp, banner);
 
             if let Some(os) = found {
-                assert!(!os.family.is_empty(), "a named family is not an empty one");
+                assert!(
+                    os.family.as_deref().is_none_or(|family| !family.is_empty()),
+                    "a named family is not an empty one"
+                );
                 assert!(os.confidence > 0.0);
                 named += 1;
             }

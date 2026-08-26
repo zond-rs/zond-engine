@@ -85,6 +85,22 @@ pub(crate) fn reads(port: u16, protocol: Protocol) -> bool {
     }
 }
 
+/// What kind of text a reply from `port` over `protocol` is, for weighing what a
+/// rule matched against it says about the *host*.
+///
+/// Almost everything a scan reads is a banner: a string a daemon carries from
+/// its own build, which is why [`ceiling`](super::os::ceiling) holds it below a
+/// stack reading. SNMP is the exception this exists for — `sysDescr` is the
+/// machine's management agent describing the machine — and it is keyed on the
+/// same port [`from_datagram`] decodes, so the decoder and the weight put on
+/// what it decodes cannot drift apart.
+pub(crate) fn attested_by(port: u16, protocol: Protocol) -> super::os::OsSource {
+    match (protocol, port) {
+        (Protocol::Udp, 161) => super::os::OsSource::SnmpAgent,
+        _ => super::os::OsSource::ServiceBanner,
+    }
+}
+
 /// The UDP ports [`from_datagram`] has a decoder for.
 ///
 /// Stated rather than derived, because a decoder cannot be asked whether it

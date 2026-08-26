@@ -25,7 +25,7 @@
 
 use std::sync::OnceLock;
 
-use crate::fingerprint::os::OsMetadata;
+use crate::fingerprint::os::{OsMetadata, OsSource};
 use crate::fingerprint::signature::{MAX_COMPILED_REGEX_BYTES, MatchRule};
 use crate::warn;
 
@@ -111,7 +111,12 @@ impl Signature {
     /// Matches `response`, returning the [`Evidence`] it yields paired with a
     /// [`MatchQuality`] for ranking it against other signatures that match the
     /// same response. `None` if the pattern does not match.
-    pub fn identify(&self, response: &str) -> Option<Match> {
+    ///
+    /// `attested_by` says what kind of text this is — a daemon's banner, a
+    /// management agent's own description of its machine — and decides what a
+    /// match is worth as evidence *about the host*. It does not touch the service
+    /// reading, which is the same match either way.
+    pub fn identify(&self, response: &str, attested_by: OsSource) -> Option<Match> {
         // Capture groups are collected only for a signature whose operating-system
         // metadata has templates to fill from them. Most have neither, and this
         // runs against every candidate signature for every banner.
@@ -152,7 +157,11 @@ impl Signature {
             evidence,
             quality: MatchQuality { confidence, detail },
             os: self.os.as_deref().and_then(|metadata| {
-                super::os::banner_evidence(metadata, matched.captures.as_deref().unwrap_or(&[]))
+                super::os::banner_evidence(
+                    metadata,
+                    matched.captures.as_deref().unwrap_or(&[]),
+                    attested_by,
+                )
             }),
         })
     }
@@ -223,7 +232,7 @@ mod tests {
             &rule(r"^SSH-[\d.]+-OpenSSH_([\w.]+)", Some(1), Some("OpenSSH")),
         );
         let ev = sig
-            .identify("SSH-2.0-OpenSSH_9.6p1 Debian")
+            .identify("SSH-2.0-OpenSSH_9.6p1 Debian", OsSource::ServiceBanner)
             .expect("should match")
             .evidence;
         assert_eq!(ev.service.as_deref(), Some("ssh"));
@@ -242,7 +251,7 @@ mod tests {
     fn bare_match_is_probable_and_names_no_product() {
         let sig = Signature::new("http", &rule("^HTTP/1.1", None, None));
         let ev = sig
-            .identify("HTTP/1.1 200 OK")
+            .identify("HTTP/1.1 200 OK", OsSource::ServiceBanner)
             .expect("should match")
             .evidence;
 
@@ -264,15 +273,24 @@ mod tests {
         nginx_rule.vendor = Some("NGINX".to_string());
         let nginx = Signature::new("http", &nginx_rule);
 
-        let generic_q = generic.identify(response).expect("generic matches").quality;
-        let nginx_q = nginx.identify(response).expect("nginx matches").quality;
+        let generic_q = generic
+            .identify(response, OsSource::ServiceBanner)
+            .expect("generic matches")
+            .quality;
+        let nginx_q = nginx
+            .identify(response, OsSource::ServiceBanner)
+            .expect("nginx matches")
+            .quality;
         assert!(nginx_q > generic_q, "specific match must outrank generic");
     }
 
     #[test]
     fn no_match_returns_none() {
         let sig = Signature::new("http", &rule("^HTTP/1.1", None, None));
-        assert!(sig.identify("SSH-2.0-OpenSSH_9.6").is_none());
+        assert!(
+            sig.identify("SSH-2.0-OpenSSH_9.6", OsSource::ServiceBanner)
+                .is_none()
+        );
     }
 
     #[test]
@@ -281,8 +299,14 @@ mod tests {
         // only identifies at all because of the backtracking fallback. It used
         // to be rejected outright at build time.
         let sig = Signature::new("dup", &rule(r"^(\w+) \1$", None, None));
-        assert!(sig.identify("token token").is_some());
-        assert!(sig.identify("token other").is_none());
+        assert!(
+            sig.identify("token token", OsSource::ServiceBanner)
+                .is_some()
+        );
+        assert!(
+            sig.identify("token other", OsSource::ServiceBanner)
+                .is_none()
+        );
     }
 
     #[test]
@@ -290,6 +314,6 @@ mod tests {
         // A genuine syntax error that neither engine can compile: identification
         // yields nothing rather than panicking.
         let sig = Signature::new("x", &rule("(", None, None));
-        assert!(sig.identify("aa").is_none());
+        assert!(sig.identify("aa", OsSource::ServiceBanner).is_none());
     }
 }

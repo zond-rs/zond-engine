@@ -442,7 +442,10 @@ fn os_from(header: &str) -> Option<crate::fingerprint::os::OsEvidence> {
     db.prefilter()
         .candidates(header)
         .into_iter()
-        .filter_map(|index| db.signature(index).identify(header))
+        .filter_map(|index| {
+            db.signature(index)
+                .identify(header, crate::fingerprint::os::OsSource::ServiceBanner)
+        })
         .filter_map(|matched| matched.os)
         .max_by(|a, b| {
             a.confidence
@@ -1036,7 +1039,7 @@ mod os_from_headers {
             .find_map(|e| e.os.as_ref())
             .expect("the Server value reaches the operating-system rules");
 
-        assert_eq!(os.family, "Windows");
+        assert_eq!(os.family.as_deref(), Some("Windows"));
         assert_eq!(
             os.product.as_deref(),
             Some("Windows Server 2003"),
@@ -1059,7 +1062,10 @@ mod os_from_headers {
             .prefilter()
             .candidates(response)
             .into_iter()
-            .filter_map(|index| db.signature(index).identify(response))
+            .filter_map(|index| {
+                db.signature(index)
+                    .identify(response, crate::fingerprint::os::OsSource::ServiceBanner)
+            })
             .find_map(|matched| matched.os);
 
         assert!(

@@ -293,8 +293,8 @@ impl ScanDiff {
         let current_scope = ScopeIndex::of(current);
 
         let clocks = Clocks {
-            baseline: clock_of(baseline),
-            current: options.as_of.unwrap_or_else(|| clock_of(current)),
+            baseline: baseline.observed_at(),
+            current: options.as_of.unwrap_or_else(|| current.observed_at()),
             expiry_threshold: options.expiry_threshold,
         };
 
@@ -491,31 +491,6 @@ pub struct DiffSummary {
     pub certificates_expiring: usize,
     /// Endpoints whose certificate has lapsed since the baseline ran.
     pub certificates_expired: usize,
-}
-
-/// The moment a report is judged to have happened.
-///
-/// A report's findings are as of when it stopped looking, so a report with
-/// phases is placed by [`finished_at`](ScanReport::finished_at) rather than by
-/// when its first phase began. For an ordinary scan the two differ by the scan's
-/// own duration, which no certificate threshold can notice. For a report merged
-/// out of several they differ by however long the sources span, and taking the
-/// earliest would judge tonight's certificates against last quarter.
-///
-/// A report without phases — a foreign scanner's output, or a scan that ended
-/// before it wrote a phase down — is placed by the latest time any of its hosts
-/// was seen, which is the only other thing in the record that is a time the scan
-/// happened rather than the time it is being read.
-pub(crate) fn clock_of(report: &ScanReport) -> SystemTime {
-    if !report.phases().is_empty() {
-        return report.finished_at();
-    }
-
-    report
-        .hosts()
-        .map(Host::last_seen)
-        .max()
-        .unwrap_or_else(SystemTime::now)
 }
 
 /// One side of a component as a single host: the record itself where there is

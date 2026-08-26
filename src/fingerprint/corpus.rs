@@ -70,7 +70,7 @@ fn every_signature_matches_its_example() {
         .filter_map(|(signature, example)| {
             let example = example.as_deref()?;
             signature
-                .identify(example)
+                .identify(example, crate::fingerprint::os::OsSource::ServiceBanner)
                 .is_none()
                 .then(|| format!("example={example:?} pattern={:?}", signature.pattern()))
         })
@@ -107,7 +107,10 @@ fn prefilter_never_drops_a_matching_signature() {
             let Some(example) = example.as_deref() else {
                 return false;
             };
-            if signature.identify(example).is_none() {
+            if signature
+                .identify(example, crate::fingerprint::os::OsSource::ServiceBanner)
+                .is_none()
+            {
                 return false; // example doesn't match anyway (known baseline)
             }
             !prefilter.candidates(example).contains(idx)

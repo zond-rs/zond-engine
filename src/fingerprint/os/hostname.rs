@@ -209,7 +209,8 @@ pub fn evidence_from(hostname: Option<&str>) -> Option<OsEvidence> {
 
     Some(OsEvidence {
         source: OsSource::Hostname,
-        family: (*family).to_string(),
+        family: Some((*family).to_string()),
+        device: None,
         vendor: None,
         product: None,
         version: None,
@@ -234,7 +235,7 @@ mod tests {
     use super::*;
 
     fn family_of(hostname: Option<&str>) -> Option<String> {
-        evidence_from(hostname).map(|evidence| evidence.family)
+        evidence_from(hostname).and_then(|evidence| evidence.family)
     }
 
     /// The case this whole source exists for: the stock Windows desktop that

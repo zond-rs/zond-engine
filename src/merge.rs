@@ -236,7 +236,7 @@ impl Merge {
         // both the sort below and every record in it want the answer.
         let mut sources: Vec<(SystemTime, Source)> = sources
             .into_iter()
-            .map(|source| (crate::diff::clock_of(&source.report), source))
+            .map(|source| (source.report.observed_at(), source))
             .collect();
 
         // Stable, so two sources that stopped at the same instant stay in the
@@ -630,8 +630,9 @@ fn same_service(newest: &Service, older: &Service) -> bool {
 /// The same shape as [`fold_service`], one field list along. The verdict —
 /// name, family, generation, vendor and the accuracy behind it — comes from the
 /// newest account that named a system. An older account naming the same system
-/// contributes the kernel, the detail accuracy and the evidence line where the
-/// newer one carried none, and every account contributes CPEs.
+/// contributes the kernel, the device class, the detail accuracy and the
+/// evidence line where the newer one carried none, and every account contributes
+/// CPEs.
 ///
 /// Identity here is name, family, generation and vendor.
 /// [`diff::host`](crate::diff::host) has a `same_system` of its own that also
@@ -655,6 +656,9 @@ fn fold_os(accounts: &[&Host]) -> Option<OsFingerprint> {
     if let Some(kernel) = newest.kernel() {
         folded = folded.with_kernel(kernel);
     }
+    if let Some(device) = newest.device() {
+        folded = folded.with_device(device);
+    }
     if let Some(accuracy) = newest.detail_accuracy() {
         folded = folded.with_detail_accuracy(accuracy);
     }
@@ -673,6 +677,11 @@ fn fold_os(accounts: &[&Host]) -> Option<OsFingerprint> {
             && let Some(kernel) = older.kernel()
         {
             folded = folded.with_kernel(kernel);
+        }
+        if folded.device().is_none()
+            && let Some(device) = older.device()
+        {
+            folded = folded.with_device(device);
         }
         if folded.detail_accuracy().is_none()
             && let Some(accuracy) = older.detail_accuracy()
@@ -773,6 +782,48 @@ mod tests {
         });
 
         ScanReport::recorded(engine, vec![phase], hosts)
+    }
+
+    /// A folded report can be told from a measured one, which is what anything
+    /// reading a report as an account of one job has to know.
+    ///
+    /// `elapsed` is a sum over the phases, so a merged report's is the working
+    /// time of every source added together — a real quantity, and not a length
+    /// of time anything took. A caller presenting it as a duration would
+    /// describe a scan that never ran, and this is the flag that stops it.
+    #[test]
+    fn a_folded_report_says_it_was_folded_and_a_measured_one_does_not() {
+        let one = report("0.13.0", day(1), vec![host(1)]);
+        let two = report("0.13.0", day(2), vec![host(2)]);
+
+        assert!(!one.is_merged(), "a report of one scan was not folded");
+
+        let folded = merged(vec![one, two]);
+        assert!(folded.is_merged());
+
+        // And the two numbers it has to keep apart: two minutes of scanning a
+        // day apart is a day and two minutes of span, not two minutes.
+        assert_eq!(folded.elapsed(), Duration::from_secs(120));
+        assert_eq!(
+            folded
+                .finished_at()
+                .duration_since(folded.started_at())
+                .expect("a report ends after it begins"),
+            DAY + Duration::from_secs(60)
+        );
+    }
+
+    /// Folding a merged report keeps it merged: the origins its own sources were
+    /// given are left alone, so nothing about it reverts to reading as one job.
+    #[test]
+    fn folding_a_folded_report_leaves_it_folded() {
+        let once = merged(vec![
+            report("0.13.0", day(1), vec![host(1)]),
+            report("0.13.0", day(2), vec![host(2)]),
+        ]);
+
+        let twice = merged(vec![once, report("0.13.0", day(3), vec![host(3)])]);
+        assert!(twice.is_merged());
     }
 
     /// Folds `sources` under the defaults, oldest first however they are given.
@@ -991,7 +1042,8 @@ mod tests {
         fn read(release: &str) -> OsEvidence {
             OsEvidence {
                 source: OsSource::TcpStack,
-                family: "Linux".to_owned(),
+                family: Some("Linux".to_owned()),
+                device: None,
                 vendor: None,
                 product: None,
                 version: Some(release.to_owned()),

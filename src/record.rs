@@ -257,6 +257,9 @@ pub struct OsRecord {
     pub name: String,
     /// How sure the identification is, out of a hundred.
     pub accuracy: u8,
+    /// What kind of box it is, such as `Printer`.
+    #[serde(default)]
+    pub device: Option<String>,
     /// The broad family, such as `Linux`.
     #[serde(default)]
     pub family: Option<String>,
@@ -286,6 +289,7 @@ impl From<&OsFingerprint> for OsRecord {
             name: os.name().to_owned(),
             accuracy: os.accuracy(),
             family: os.family().map(str::to_owned),
+            device: os.device().map(str::to_owned),
             generation: os.generation().map(str::to_owned),
             vendor: os.vendor().map(str::to_owned),
             kernel: os.kernel().map(str::to_owned),
@@ -301,6 +305,9 @@ impl From<&OsRecord> for OsFingerprint {
         let mut os = OsFingerprint::new(record.name.clone(), record.accuracy);
         if let Some(family) = &record.family {
             os = os.with_family(family.clone());
+        }
+        if let Some(device) = &record.device {
+            os = os.with_device(device.clone());
         }
         if let Some(generation) = &record.generation {
             os = os.with_generation(generation.clone());
@@ -329,8 +336,12 @@ impl From<&OsRecord> for OsFingerprint {
 pub struct OsEvidenceRecord {
     /// Which source said so, by wire name.
     pub source: String,
-    /// The family it named.
-    pub family: String,
+    /// The family it named, where it could name one.
+    #[serde(default)]
+    pub family: Option<String>,
+    /// The device class it named, where it named one.
+    #[serde(default)]
+    pub device: Option<String>,
     /// The vendor, where it named one.
     #[serde(default)]
     pub vendor: Option<String>,
@@ -357,6 +368,7 @@ impl From<&OsEvidence> for OsEvidenceRecord {
         Self {
             source: wire::os_source_name(evidence.source).to_owned(),
             family: evidence.family.clone(),
+            device: evidence.device.clone(),
             vendor: evidence.vendor.clone(),
             product: evidence.product.clone(),
             version: evidence.version.clone(),
@@ -375,6 +387,7 @@ impl From<&OsEvidenceRecord> for OsEvidence {
             // reading this build cannot place is worth.
             source: wire::os_source(&record.source).unwrap_or(OsSource::Hostname),
             family: record.family.clone(),
+            device: record.device.clone(),
             vendor: record.vendor.clone(),
             product: record.product.clone(),
             version: record.version.clone(),
@@ -1549,7 +1562,8 @@ mod tests {
 
         host.record_os_evidence(OsEvidence {
             source: OsSource::TcpStack,
-            family: "Linux".to_string(),
+            family: Some("Linux".to_string()),
+            device: None,
             vendor: Some("Canonical".to_string()),
             product: Some("Ubuntu".to_string()),
             version: Some("22.04".to_string()),
@@ -1560,7 +1574,8 @@ mod tests {
         });
         host.record_os_evidence(OsEvidence {
             source: OsSource::ServiceBanner,
-            family: "Linux".to_string(),
+            family: Some("Linux".to_string()),
+            device: None,
             vendor: None,
             product: None,
             version: None,

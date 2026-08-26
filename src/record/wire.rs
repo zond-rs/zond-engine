@@ -211,6 +211,7 @@ pub fn os_source_name(source: OsSource) -> &'static str {
         OsSource::TcpStack => "tcp_stack",
         OsSource::HardwareVendor => "hardware_vendor",
         OsSource::ServiceBanner => "service_banner",
+        OsSource::SnmpAgent => "snmp_agent",
         OsSource::Hostname => "hostname",
     }
 }
@@ -221,6 +222,7 @@ pub fn os_source(name: &str) -> Option<OsSource> {
         "tcp_stack" => OsSource::TcpStack,
         "hardware_vendor" => OsSource::HardwareVendor,
         "service_banner" => OsSource::ServiceBanner,
+        "snmp_agent" => OsSource::SnmpAgent,
         "hostname" => OsSource::Hostname,
         _ => return None,
     })

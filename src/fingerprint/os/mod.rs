@@ -67,6 +67,20 @@
 //! the two sources a host carries about itself, resolves the combination and
 //! merges the result. Every scanner in this crate goes through it.
 //!
+//! ## Two axes: what it runs, and what it is
+//!
+//! A verdict answers two questions, and a source may answer either without the
+//! other. [`OsEvidence::family`] is what the machine *runs*, [`OsEvidence::device`]
+//! is what it *is* — printer, switch, camera — and neither stands in for the
+//! other. A hop counter of 255 reaches the first and never the second; an SNMP
+//! agent reading `Brother NC-8700w` reaches the second and genuinely does not
+//! know the first.
+//!
+//! [`resolve`] settles the family by vote and everything else by agreement, so a
+//! source with nothing to say about the family says nothing there rather than
+//! being made to guess. That distinction is load-bearing: read as a family, a
+//! model number runs against the real families on the ballot and both lose.
+//!
 //! ## One reply, or several
 //!
 //! The two entry points differ in what evidence they have, not in how they
@@ -132,7 +146,9 @@ pub use series::{
 pub use signature::{
     Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,
 };
-pub use text::{OsMetadata, evidence_from as banner_evidence};
+pub use text::{
+    AGENT_CEILING, BANNER_CEILING, OsMetadata, ceiling, evidence_from as banner_evidence,
+};
 pub use verdict::{
     MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict, classify,
     classify_echo_reply, classify_reply, classify_series,

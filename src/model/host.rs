@@ -296,6 +296,7 @@ type OsClaim = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 /// The most distinct operating-system claims one host retains.
@@ -750,7 +751,8 @@ impl Host {
     pub fn record_os_evidence(&mut self, evidence: OsEvidence) -> bool {
         let claim: OsClaim = (
             evidence.source,
-            evidence.family.clone().into(),
+            evidence.family.clone(),
+            evidence.device.clone(),
             evidence.vendor.clone(),
             evidence.product.clone(),
             evidence.version.clone(),
@@ -787,6 +789,17 @@ impl Host {
 
     pub fn set_os(&mut self, os: OsFingerprint) {
         self.os = Some(Box::new(os));
+        self.last_seen = SystemTime::now();
+    }
+
+    /// Withdraws this host's operating-system fingerprint.
+    ///
+    /// For a caller that has re-resolved the evidence and found it no longer
+    /// supports what is on record. Nothing else should reach for this: a scan
+    /// that discards a finding it cannot currently reproduce would lose every
+    /// answer a later phase happens not to re-derive.
+    pub fn clear_os(&mut self) {
+        self.os = None;
         self.last_seen = SystemTime::now();
     }
 

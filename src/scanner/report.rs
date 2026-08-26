@@ -1407,6 +1407,26 @@ impl ScanReport {
         &self.phases
     }
 
+    /// Whether this report was folded out of documents rather than measured by
+    /// one run.
+    ///
+    /// True when any phase carries an [`Origin`], which is what
+    /// [`merge`](crate::merge) stamps on every phase it folds in and what
+    /// nothing else writes.
+    ///
+    /// The distinction matters to anything that reads a report as an account of
+    /// a single job, and to one thing in particular:
+    /// [`elapsed`](Self::elapsed) is a sum over the phases, so for a merged
+    /// report it is the working time of several scanners across arbitrary
+    /// moments. That is a real quantity and it is not a length of time anything
+    /// took, so presenting it as a duration would describe a scan that never
+    /// ran. The span such a report draws on is
+    /// [`finished_at`](Self::finished_at) less
+    /// [`started_at`](Self::started_at) instead.
+    pub fn is_merged(&self) -> bool {
+        self.phases.iter().any(|phase| phase.origin().is_some())
+    }
+
     /// Every host recorded, ordered by primary IP.
     pub fn hosts(&self) -> impl Iterator<Item = &Host> {
         self.hosts.values()
@@ -1475,6 +1495,35 @@ impl ScanReport {
         self.phases
             .iter()
             .map(|phase| phase.started_at() + phase.elapsed())
+            .max()
+            .unwrap_or_else(SystemTime::now)
+    }
+
+    /// The moment this report is judged to have happened.
+    ///
+    /// A report's findings are as of when it stopped looking, so a report with
+    /// phases is placed by [`finished_at`](Self::finished_at) rather than by
+    /// when its first phase began. For an ordinary scan the two differ by the
+    /// scan's own duration, which no certificate threshold can notice. For a
+    /// report merged out of several they differ by however long the sources
+    /// span, and taking the earliest would judge tonight's certificates against
+    /// last quarter.
+    ///
+    /// A report without phases — a foreign scanner's output, or a scan that
+    /// ended before it wrote a phase down — is placed by the latest time any of
+    /// its hosts was seen, which is the only other thing in the record that is a
+    /// time the scan happened rather than the time it is being read.
+    ///
+    /// This is the clock [`merge`](crate::merge) folds sources by and
+    /// [`diff`](crate::diff) places its two sides by, and it is public so that a
+    /// caller can order documents the way those will before handing them over.
+    pub fn observed_at(&self) -> SystemTime {
+        if !self.phases.is_empty() {
+            return self.finished_at();
+        }
+
+        self.hosts()
+            .map(Host::last_seen)
             .max()
             .unwrap_or_else(SystemTime::now)
     }

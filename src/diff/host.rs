@@ -311,6 +311,7 @@ fn same_system(before: Option<&OsFingerprint>, after: Option<&OsFingerprint>) ->
         (Some(before), Some(after)) => {
             before.name() == after.name()
                 && before.family() == after.family()
+                && before.device() == after.device()
                 && before.generation() == after.generation()
                 && before.vendor() == after.vendor()
                 && before.kernel() == after.kernel()

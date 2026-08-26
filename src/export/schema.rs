@@ -1221,6 +1221,13 @@ pub struct OsDto<'a> {
     /// figure for both would report the weaker claim at the stronger claim's
     /// strength.
     pub detail_accuracy: Option<u8>,
+    /// What kind of box this is — `"Printer"`, `"Switch"` — or `null` where
+    /// nothing named a class.
+    ///
+    /// A separate axis from `family`, not a coarser one: what a machine is and
+    /// what it runs are independent, and a host may have either answered without
+    /// the other. Both may be `null` on a finding that named only a product.
+    pub device: Option<&'a str>,
 }
 
 impl<'a> OsDto<'a> {
@@ -1236,6 +1243,7 @@ impl<'a> OsDto<'a> {
             evidence: os.evidence(),
             kernel: os.kernel(),
             detail_accuracy: os.detail_accuracy(),
+            device: os.device(),
         }
     }
 }

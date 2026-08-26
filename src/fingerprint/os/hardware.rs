@@ -116,7 +116,10 @@ pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
 
     Some(OsEvidence {
         source: OsSource::HardwareVendor,
-        family: (*family).to_string(),
+        family: Some((*family).to_string()),
+        // An address block says who made the silicon, never what was built
+        // around it: the same adapter ships in a switch and in a laptop.
+        device: None,
         // **Not the registered company**, though that is exactly what this field
         // used to carry and it reads like the obvious value for it.
         //

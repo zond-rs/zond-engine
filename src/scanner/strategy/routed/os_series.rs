@@ -586,7 +586,7 @@ impl OsSeriesScanner {
                 verbosity = 2,
                 "series probe named {} as {}",
                 target.address,
-                verdict.family
+                verdict.label()
             );
             self.named += 1;
             self.ctx.update_host(&target.address, |host| {
