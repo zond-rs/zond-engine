@@ -194,7 +194,7 @@ impl ProbeSender for EthernetSender {
 
             let dst_mac = self.next_hop_mac(&route)?;
             let frame = frame::build_ethernet_frame(
-                route.src_mac,
+                spoofed_source_mac(route.src_mac, emission.source_mac),
                 dst_mac,
                 src,
                 dst,
@@ -212,6 +212,23 @@ impl ProbeSender for EthernetSender {
             Ok(())
         })()
         .map_err(SendError::from_io)
+    }
+}
+
+/// The source hardware address a frame should carry: the caller's spoofed one
+/// when set, otherwise the sending interface's own.
+///
+/// The evasion profile speaks [`model::MacAddr`](crate::model::mac::MacAddr) and
+/// the frame builder speaks pnet's, so this is the one place they meet.
+fn spoofed_source_mac(interface: MacAddr, spoofed: Option<crate::model::mac::MacAddr>) -> MacAddr {
+    match spoofed {
+        Some(mac) => {
+            let octets: [u8; 6] = mac.into();
+            MacAddr::new(
+                octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
+            )
+        }
+        None => interface,
     }
 }
 
@@ -273,6 +290,24 @@ mod tests {
         let ip = Ipv4Addr::new(192, 168, 1, 200);
         let mac = MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
         assert_eq!(parse_arp_reply(&arp_reply(ip, mac), ip), Some(mac));
+    }
+
+    #[test]
+    fn a_spoofed_source_mac_replaces_the_interface_and_converts_faithfully() {
+        let interface = MacAddr::new(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
+
+        // No spoof: the interface's own address is used.
+        assert_eq!(spoofed_source_mac(interface, None), interface);
+
+        // Spoofed: the caller's address is used, octet for octet across the
+        // model/pnet boundary. A mutant that dropped the octets or kept the
+        // interface's address would send an unspoofed frame while the scan
+        // reported a spoof.
+        let spoofed = crate::model::mac::MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
+        assert_eq!(
+            spoofed_source_mac(interface, Some(spoofed)),
+            MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01)
+        );
     }
 
     #[test]

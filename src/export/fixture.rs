@@ -217,7 +217,8 @@ pub(crate) fn report() -> ScanReport {
         .with_source_port(53)
         .with_ttl(40)
         .with_padding(24)
-        .with_bad_tcp_checksum(true);
+        .with_bad_tcp_checksum(true)
+        .with_spoof_mac(MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01));
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,

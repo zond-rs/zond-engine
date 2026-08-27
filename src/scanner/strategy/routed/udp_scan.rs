@@ -207,7 +207,7 @@ impl UdpPortScanner {
             ProbeKind::UdpProbe {
                 reply_port: src_port,
             },
-            tuning.send_mode,
+            tuning.evasion.effective_send_mode(tuning.send_mode),
         )?;
 
         Ok(Self::build(

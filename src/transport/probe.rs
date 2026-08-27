@@ -39,6 +39,7 @@ use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use crate::config::SendMode;
 use crate::model::capture::CaptureCounts;
 use crate::model::ip::scoped::Zone;
+use crate::model::mac::MacAddr;
 use crate::transport::capture::{self, CaptureGuard, CaptureOptions, CaptureStream};
 use crate::transport::link::EthernetSender;
 use crate::transport::raw::{self, TransportSenderHandle, TransportType};
@@ -318,6 +319,11 @@ pub struct Emission {
     /// How many hops the probe may cross before a router discards it and
     /// reports having done so.
     pub hop_limit: u8,
+    /// The hardware address the frame claims to come from, or `None` for the
+    /// sending interface's own. Only a self-built Ethernet frame can carry it,
+    /// so an emission with this set cannot be sent over a raw socket — see
+    /// [`requires_link_layer`](Self::requires_link_layer).
+    pub source_mac: Option<MacAddr>,
 }
 
 impl Emission {
@@ -326,6 +332,7 @@ impl Emission {
     pub const fn routed() -> Self {
         Self {
             hop_limit: crate::protocols::ip::HOP_LIMIT_ROUTED,
+            source_mac: None,
         }
     }
 
@@ -338,6 +345,7 @@ impl Emission {
     pub const fn at_hop(hops: u8) -> Self {
         Self {
             hop_limit: if hops == 0 { 1 } else { hops },
+            source_mac: None,
         }
     }
 
@@ -348,6 +356,24 @@ impl Emission {
     pub const fn with_hop_limit(mut self, hop_limit: u8) -> Self {
         self.hop_limit = hop_limit;
         self
+    }
+
+    /// The same emission sent from a spoofed hardware address. Only a self-built
+    /// Ethernet frame can carry it; see
+    /// [`requires_link_layer`](Self::requires_link_layer).
+    #[must_use]
+    pub const fn with_source_mac(mut self, source_mac: MacAddr) -> Self {
+        self.source_mac = Some(source_mac);
+        self
+    }
+
+    /// Whether this emission can only leave as a self-built Ethernet frame,
+    /// because it sets a field a raw socket cannot place. A spoofed source
+    /// hardware address today; fragmentation and a spoofed source address will
+    /// answer here too as they land.
+    #[must_use]
+    pub const fn requires_link_layer(&self) -> bool {
+        self.source_mac.is_some()
     }
 }
 
@@ -468,6 +494,15 @@ impl ProbeSender for RawIpSender {
         dst: IpAddr,
         emission: Emission,
     ) -> Result<(), SendError> {
+        // The kernel builds the IP header and the frame around it here, so a
+        // field only a self-built frame can carry — a spoofed hardware address —
+        // cannot be honoured. Refused with the reason rather than sent without
+        // it, so a scan that reports it spoofed did.
+        if emission.requires_link_layer() {
+            return Err(SendError::Unsupported(
+                "this emission sets a field only a self-built Ethernet frame can carry",
+            ));
+        }
         self.handle
             .send_to(RawSegment(segment), dst, emission.hop_limit)
             .map(|_| ())

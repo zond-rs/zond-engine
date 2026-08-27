@@ -1393,6 +1393,10 @@
             "bad_tcp_checksum": {
               "description": "Whether TCP probes carried a deliberately wrong checksum. A conformant host drops such a segment, so a reply to one implicates an inline middlebox that answered without checking rather than the host itself.",
               "type": "boolean"
+            },
+            "spoof_mac": {
+              "description": "The hardware address every frame claimed to come from, replacing the sending interface's own. Meaningful only on the local segment - a router rewrites it at the first hop - and used for NAC and MAC-filtering tests.",
+              "type": "string"
             }
           }
         }

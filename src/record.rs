@@ -1296,6 +1296,9 @@ pub struct EvasionSettingsRecord {
     /// Whether TCP probes carried a deliberately wrong checksum.
     #[serde(default, skip_serializing_if = "is_false")]
     pub bad_tcp_checksum: bool,
+    /// The hardware address every frame claimed to come from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spoof_mac: Option<String>,
 }
 
 /// Omits a `false` boolean, so a recorded technique appears only when it was
@@ -1324,6 +1327,7 @@ impl From<&ScanSettings> for SettingsRecord {
                 ttl: e.ttl,
                 padding: e.padding,
                 bad_tcp_checksum: e.bad_tcp_checksum,
+                spoof_mac: e.spoof_mac.map(|mac| mac.to_string()),
             }),
         }
     }
@@ -1351,6 +1355,7 @@ impl From<&SettingsRecord> for ScanSettings {
                 ttl: e.ttl,
                 padding: e.padding,
                 bad_tcp_checksum: e.bad_tcp_checksum,
+                spoof_mac: e.spoof_mac.as_ref().and_then(|s| s.parse().ok()),
             }),
         }
     }

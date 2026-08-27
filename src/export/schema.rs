@@ -868,6 +868,9 @@ pub struct EvasionDto {
     /// Whether TCP probes carried a deliberately wrong checksum.
     #[serde(skip_serializing_if = "is_false")]
     pub bad_tcp_checksum: bool,
+    /// The hardware address every frame claimed to come from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spoof_mac: Option<String>,
 }
 
 /// Omits a `false` boolean from the document, so a field appears only for a
@@ -885,6 +888,7 @@ impl EvasionDto {
             ttl: record.ttl,
             padding: record.padding,
             bad_tcp_checksum: record.bad_tcp_checksum,
+            spoof_mac: record.spoof_mac.map(|mac| mac.to_string()),
         }
     }
 }

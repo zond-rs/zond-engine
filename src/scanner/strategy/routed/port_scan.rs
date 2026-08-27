@@ -159,7 +159,7 @@ impl TcpPortScanner {
                 reply_port: src_port,
                 icmp_errors: technique.reads_icmp_errors(),
             },
-            tuning.send_mode,
+            tuning.evasion.effective_send_mode(tuning.send_mode),
         )?;
 
         Ok(Self::build(

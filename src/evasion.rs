@@ -18,6 +18,8 @@
 //! packets on the wire, byte for byte, as a scan configured without it — so
 //! evasion is never something a scan does by accident.
 
+use crate::config::SendMode;
+use crate::model::mac::MacAddr;
 use crate::transport::probe::Emission;
 
 /// What a scan changes about the packets it sends, over the engine's defaults.
@@ -85,6 +87,18 @@ pub struct EvasionProfile {
     /// and a UDP scan is simply unaffected. `false` sends the checksum a host
     /// will accept.
     pub bad_tcp_checksum: bool,
+
+    /// The hardware address every frame claims to come from, replacing the
+    /// sending interface's own.
+    ///
+    /// For NAC and MAC-filtering tests on the local segment. It is meaningful
+    /// only there — a router rewrites the source hardware address at the first
+    /// hop — and only over a self-built Ethernet frame, so setting it makes a
+    /// scan open the link-layer send path (see
+    /// [`effective_send_mode`](Self::effective_send_mode)); a destination the
+    /// Ethernet path cannot reach, such as loopback, is refused. `None` uses the
+    /// interface's own address.
+    pub spoof_mac: Option<MacAddr>,
 }
 
 impl EvasionProfile {
@@ -92,6 +106,31 @@ impl EvasionProfile {
     #[must_use]
     pub fn is_active(&self) -> bool {
         *self != Self::default()
+    }
+
+    /// Whether this profile can only be honoured over a self-built Ethernet
+    /// frame, because it sets a field the raw-socket path cannot place — a
+    /// spoofed hardware address today, fragmentation and a spoofed source
+    /// address as those land.
+    #[must_use]
+    pub fn requires_link_layer(&self) -> bool {
+        self.spoof_mac.is_some()
+    }
+
+    /// The send mode a scan should actually open, given the one it asked for.
+    ///
+    /// A framing technique can only leave as a self-built Ethernet frame, so
+    /// [`SendMode::Auto`] resolves to [`SendMode::Ethernet`] when this profile
+    /// sets one. Every explicit choice is left as the caller made it: a raw
+    /// socket that cannot carry the technique is refused per probe rather than
+    /// silently overridden.
+    #[must_use]
+    pub fn effective_send_mode(&self, requested: SendMode) -> SendMode {
+        if self.requires_link_layer() && matches!(requested, SendMode::Auto) {
+            SendMode::Ethernet
+        } else {
+            requested
+        }
     }
 
     /// The source port a probe should leave from: the [`source_port`] override
@@ -105,14 +144,17 @@ impl EvasionProfile {
     }
 
     /// The [`Emission`] an ordinary probe should carry: the routed default, with
-    /// the hop limit replaced when [`ttl`](Self::ttl) is set. Path measurement
-    /// chooses its own hop limit and does not use this.
+    /// the hop limit replaced when [`ttl`](Self::ttl) is set and the source
+    /// hardware address replaced when [`spoof_mac`](Self::spoof_mac) is. Path
+    /// measurement chooses its own hop limit and does not use this.
     #[must_use]
     pub fn emission(&self) -> Emission {
-        match self.ttl {
+        let mut emission = match self.ttl {
             Some(hop_limit) => Emission::routed().with_hop_limit(hop_limit),
             None => Emission::routed(),
-        }
+        };
+        emission.source_mac = self.spoof_mac;
+        emission
     }
 
     /// The [`SegmentShaping`] every probe should carry — the
@@ -153,6 +195,14 @@ impl EvasionProfile {
     #[must_use]
     pub fn with_bad_tcp_checksum(mut self, corrupt: bool) -> Self {
         self.bad_tcp_checksum = corrupt;
+        self
+    }
+
+    /// Sets the [hardware address](Self::spoof_mac) every frame claims to come
+    /// from.
+    #[must_use]
+    pub fn with_spoof_mac(mut self, mac: MacAddr) -> Self {
+        self.spoof_mac = Some(mac);
         self
     }
 }
@@ -204,19 +254,27 @@ mod tests {
                 .with_bad_tcp_checksum(true)
                 .is_active()
         );
+        assert!(
+            EvasionProfile::default()
+                .with_spoof_mac(MacAddr::new(2, 0, 0, 0, 0, 1))
+                .is_active()
+        );
     }
 
     #[test]
     fn a_builder_records_exactly_what_it_was_given() {
+        let mac = MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
         let profile = EvasionProfile::default()
             .with_source_port(53)
             .with_ttl(32)
             .with_padding(16)
-            .with_bad_tcp_checksum(true);
+            .with_bad_tcp_checksum(true)
+            .with_spoof_mac(mac);
         assert_eq!(profile.source_port, Some(53));
         assert_eq!(profile.ttl, Some(32));
         assert_eq!(profile.padding, Some(16));
         assert!(profile.bad_tcp_checksum);
+        assert_eq!(profile.spoof_mac, Some(mac));
     }
 
     #[test]
@@ -244,6 +302,46 @@ mod tests {
         assert_eq!(
             EvasionProfile::default().with_ttl(7).emission().hop_limit,
             7
+        );
+    }
+
+    #[test]
+    fn emission_carries_the_spoofed_hardware_address() {
+        // The spoofed address has to reach the emission the send path reads, and
+        // it makes that emission one only a self-built frame can carry. A mutant
+        // that left `source_mac` off the emission would send every frame from the
+        // interface's own address while the scan still claimed to have spoofed.
+        let mac = MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
+        let emission = EvasionProfile::default().with_spoof_mac(mac).emission();
+        assert_eq!(emission.source_mac, Some(mac));
+        assert!(emission.requires_link_layer());
+
+        assert_eq!(EvasionProfile::default().emission().source_mac, None);
+        assert!(!EvasionProfile::default().emission().requires_link_layer());
+    }
+
+    #[test]
+    fn auto_becomes_ethernet_only_when_a_framing_technique_is_set() {
+        let plain = EvasionProfile::default();
+        let framing = EvasionProfile::default().with_spoof_mac(MacAddr::new(2, 0, 0, 0, 0, 1));
+
+        // A framing technique forces Auto onto the link layer, or the raw sender
+        // it would otherwise pick refuses every probe.
+        assert_eq!(
+            framing.effective_send_mode(SendMode::Auto),
+            SendMode::Ethernet
+        );
+        // Nothing else is touched: an ordinary scan keeps Auto, and an explicit
+        // choice is left as the caller made it even when it cannot carry the
+        // technique — refused per probe, not silently overridden.
+        assert_eq!(plain.effective_send_mode(SendMode::Auto), SendMode::Auto);
+        assert_eq!(
+            framing.effective_send_mode(SendMode::RawSocket),
+            SendMode::RawSocket
+        );
+        assert_eq!(
+            plain.effective_send_mode(SendMode::Ethernet),
+            SendMode::Ethernet
         );
     }
 

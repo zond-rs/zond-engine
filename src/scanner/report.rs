@@ -524,6 +524,9 @@ pub struct EvasionRecord {
     pub padding: Option<u16>,
     /// Whether TCP probes carried a deliberately wrong checksum.
     pub bad_tcp_checksum: bool,
+    /// The hardware address every frame claimed to come from, or `None` if the
+    /// scan used the interface's own.
+    pub spoof_mac: Option<MacAddr>,
 }
 
 impl EvasionRecord {
@@ -536,6 +539,7 @@ impl EvasionRecord {
             ttl: profile.ttl,
             padding: profile.padding,
             bad_tcp_checksum: profile.bad_tcp_checksum,
+            spoof_mac: profile.spoof_mac,
         })
     }
 }
