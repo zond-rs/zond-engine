@@ -116,6 +116,9 @@ pub struct HostRecord {
     /// Roles inferred from where it sits or what it runs, by wire name.
     #[serde(default)]
     pub network_roles: Vec<String>,
+    /// What the filter in front of the host was shown to be doing, by wire name.
+    #[serde(default)]
+    pub filtering: Vec<String>,
     /// When it was first seen.
     pub first_seen: SystemTime,
     /// When it was last seen.
@@ -158,6 +161,15 @@ impl From<&Host> for HostRecord {
                     .collect();
                 roles.sort();
                 roles
+            },
+            filtering: {
+                let mut filtering: Vec<_> = host
+                    .filtering()
+                    .iter()
+                    .map(|f| wire::filtering_name(*f).to_owned())
+                    .collect();
+                filtering.sort();
+                filtering
             },
             first_seen: host.first_seen(),
             last_seen: host.last_seen(),
@@ -205,6 +217,9 @@ impl From<&HostRecord> for Host {
             .filter_map(|r| wire::network_role(r))
         {
             host.add_network_role(role);
+        }
+        for filtering in record.filtering.iter().filter_map(|f| wire::filtering(f)) {
+            host.add_filtering(filtering);
         }
         for port in &record.ports {
             host.add_port(port.into());
@@ -1273,6 +1288,9 @@ pub struct SettingsRecord {
     pub service_detection: String,
     /// Whether it traced the path to each host.
     pub traceroute: bool,
+    /// Whether it characterised the filter in front of each host.
+    #[serde(default)]
+    pub characterise: bool,
     /// What the sitting changed about the packets it sent, omitted when it
     /// changed nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1328,6 +1346,7 @@ impl From<&ScanSettings> for SettingsRecord {
             os_detection: settings.os_detection.name().to_owned(),
             service_detection: settings.service_detection.name().to_owned(),
             traceroute: settings.traceroute,
+            characterise: settings.characterise,
             evasion: settings.evasion.as_ref().map(|e| EvasionSettingsRecord {
                 source_port: e.source_port,
                 ttl: e.ttl,
@@ -1358,6 +1377,7 @@ impl From<&SettingsRecord> for ScanSettings {
             os_detection: record.os_detection.parse().unwrap_or_default(),
             service_detection: record.service_detection.parse().unwrap_or_default(),
             traceroute: record.traceroute,
+            characterise: record.characterise,
             evasion: record.evasion.as_ref().map(|e| EvasionRecord {
                 source_port: e.source_port,
                 ttl: e.ttl,

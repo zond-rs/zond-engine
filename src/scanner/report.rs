@@ -606,6 +606,15 @@ pub struct ScanSettings {
     /// separates them.
     pub traceroute: bool,
 
+    /// Whether the phase characterised the filter in front of each host that
+    /// answered.
+    ///
+    /// Recorded for the same reason as [`traceroute`](Self::traceroute): a host
+    /// with no filtering finding is two things — a scan that did not look, and
+    /// one that looked and the filter showed nothing — and only this tells them
+    /// apart.
+    pub characterise: bool,
+
     /// What the scan changed about the packets it sent, or `None` if it changed
     /// nothing. A filtered port found with a probe from a trusted source port is
     /// a different fact than the same port found with an ordinary probe; see
@@ -625,6 +634,7 @@ impl From<&ZondConfig> for ScanSettings {
             os_detection: cfg.os_detection,
             service_detection: cfg.service_detection,
             traceroute: cfg.traceroute,
+            characterise: cfg.characterise,
             evasion: EvasionRecord::from_profile(&cfg.evasion),
         }
     }

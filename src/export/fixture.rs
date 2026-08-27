@@ -27,7 +27,7 @@ use crate::evasion::EvasionProfile;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
 use crate::model::host::{
-    Hop, Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
+    Filtering, Hop, Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
 };
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
@@ -91,6 +91,11 @@ fn router() -> Host {
     host.add_port(https_port());
     host.add_port(ssh_port());
     host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+
+    // A middlebox answered a bad-checksum probe for this host, so the exported
+    // document carries a filtering finding and the schema is held to what one
+    // looks like.
+    host.add_filtering(Filtering::InlineMiddlebox);
 
     host
 }

@@ -35,7 +35,7 @@
 use std::borrow::Cow;
 
 use crate::fingerprint::os::OsSource;
-use crate::model::host::{HostStatus, NetworkRole, StatusProtocol};
+use crate::model::host::{Filtering, HostStatus, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::scanner::report::{AttachmentSource, PortScope, ScanKind, StopReason};
@@ -135,6 +135,21 @@ pub fn network_role(name: &str) -> Option<NetworkRole> {
         "origin" => NetworkRole::Origin,
         "tarpit" => NetworkRole::Tarpit,
         "truncated" => NetworkRole::Truncated,
+        _ => return None,
+    })
+}
+
+/// A filtering conclusion the scan drew about the path to a host.
+pub fn filtering_name(filtering: Filtering) -> &'static str {
+    match filtering {
+        Filtering::InlineMiddlebox => "inline_middlebox",
+    }
+}
+
+/// [`filtering_name`] read back.
+pub fn filtering(name: &str) -> Option<Filtering> {
+    Some(match name {
+        "inline_middlebox" => Filtering::InlineMiddlebox,
         _ => return None,
     })
 }

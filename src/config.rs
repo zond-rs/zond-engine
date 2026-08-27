@@ -762,6 +762,22 @@ pub struct ZondConfig {
     /// which would read as a network with no routers in it.
     pub traceroute: bool,
 
+    /// Whether to characterise the filter in front of each host that answered.
+    ///
+    /// Off by default, and off for the same reason a traceroute is: it costs a
+    /// handful of extra probes per live host and answers a different question
+    /// from the one a port scan was asked — what the filtering *between* the
+    /// scanner and a host is doing, rather than what the host runs. A firewall
+    /// tester wants it; an inventory scan does not.
+    ///
+    /// A pass of its own, run after the ports are known and only against hosts
+    /// that answered, sending deliberately-shaped diagnostic probes whose results
+    /// it reads as [`Filtering`](crate::model::host::Filtering) conclusions. It
+    /// does not touch the port verdicts — a bad-checksum probe, the one it sends
+    /// today, would report every port filtered if it were the setting a scan ran
+    /// under, which is exactly why it is a separate pass and not a scan option.
+    pub characterise: bool,
+
     /// Addresses this scan may not probe, whatever else it was asked to cover.
     ///
     /// Empty by default. Everything else in this struct decides *how* a scan is

@@ -294,6 +294,42 @@ impl NetworkRole {
     ];
 }
 
+/// What the filter in front of a host was shown to be doing.
+///
+/// A conclusion about the *path to* a host rather than the host itself, which is
+/// what keeps it a separate claim from [`NetworkRole`]: a filter sits between the
+/// scanner and the machine, and saying a host "is" a middlebox the way it "is" a
+/// name server would be a different, usually wrong claim. Like a role, every
+/// member is a proven, confidence-free fact — held in a set, where there is
+/// nowhere to record a maybe — drawn from what a deliberately-shaped probe
+/// demonstrated, never from a port number.
+///
+/// Positive claims only. A probe that drew no reply, or was dropped like an
+/// ordinary one, proves nothing; the absence of a filter is not something a scan
+/// can establish, so it is never recorded.
+#[non_exhaustive]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub enum Filtering {
+    /// An inline device answered on the host's behalf.
+    ///
+    /// Proven by a reply to a probe carrying a deliberately wrong TCP checksum.
+    /// A conformant host drops such a segment unread, so a reply to one was not
+    /// the host's — it was sent by something in the path that answered without
+    /// validating: a firewall, an intrusion-prevention system, a transparent
+    /// proxy, a load balancer. One reply is the whole proof, which is why this
+    /// is the one filtering conclusion a single probe settles.
+    InlineMiddlebox,
+}
+
+impl Filtering {
+    /// Every conclusion this build knows, in the order they are reported.
+    ///
+    /// The array's length is the compile-time check that a conclusion added to
+    /// the enum was added here too: a set is rendered through this order, and a
+    /// member missing from it would be silently dropped from every report.
+    pub const ALL: [Filtering; 1] = [Self::InlineMiddlebox];
+}
+
 /// A single machine, and what a scan established about it.
 ///
 /// Identity first: the addresses it answers at, its name and its hardware. Then
@@ -427,6 +463,9 @@ pub struct Host {
     /// Inferred roles based on network location or discovered services.
     network_roles: HashSet<NetworkRole>,
 
+    /// What the filter in front of this host was shown to be doing, if anything.
+    filtering: HashSet<Filtering>,
+
     /// The timestamp of the first discovery event for this host.
     first_seen: SystemTime,
 
@@ -509,6 +548,7 @@ impl Host {
             telemetry: HostTelemetry::default(),
             path: NetworkPath::new(),
             network_roles: HashSet::new(),
+            filtering: HashSet::new(),
             first_seen: now,
             last_seen: now,
             ports: BTreeMap::new(),
@@ -610,6 +650,11 @@ impl Host {
     /// Returns inferred roles based on network location or discovered services.
     pub fn network_roles(&self) -> &HashSet<NetworkRole> {
         &self.network_roles
+    }
+
+    /// What the filter in front of this host was shown to be doing.
+    pub fn filtering(&self) -> &HashSet<Filtering> {
+        &self.filtering
     }
 
     /// Returns the timestamp of the first discovery event.
@@ -915,6 +960,18 @@ impl Host {
     /// news. Bumps `last_seen` either way: the host was heard from.
     pub fn add_network_role(&mut self, role: NetworkRole) -> bool {
         let is_new = self.network_roles.insert(role);
+        self.last_seen = SystemTime::now();
+        is_new
+    }
+
+    /// Records a filtering conclusion drawn about the path to this host,
+    /// returning whether it is one not already held.
+    ///
+    /// Bumps `last_seen`, as [`add_network_role`](Self::add_network_role) does
+    /// and for the same reason: the host was heard from, whatever the evidence
+    /// re-established.
+    pub fn add_filtering(&mut self, filtering: Filtering) -> bool {
+        let is_new = self.filtering.insert(filtering);
         self.last_seen = SystemTime::now();
         is_new
     }

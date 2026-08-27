@@ -104,9 +104,9 @@ pub use crate::scanner::report::ENGINE_VERSION;
 // apart. Re-exported rather than called through, since these appear in the
 // export's hot paths and a caller should not have to know where they live.
 pub use crate::record::wire::{
-    attachment_source_name, host_status_name, network_role_name, port_scope_name, port_state_name,
-    protocol_name, scan_kind_name, scan_response_name, scanner_kind_name, status_protocol_name,
-    stop_reason_name,
+    attachment_source_name, filtering_name, host_status_name, network_role_name, port_scope_name,
+    port_state_name, protocol_name, scan_kind_name, scan_response_name, scanner_kind_name,
+    status_protocol_name, stop_reason_name,
 };
 
 /// The wire name of a send mode.
@@ -845,6 +845,9 @@ pub struct SettingsDto {
     pub service_detection: &'static str,
     /// Whether the phase measured the route to each host that answered.
     pub traceroute: bool,
+    /// Whether the phase characterised the filter in front of each host that
+    /// answered.
+    pub characterise: bool,
     /// What the scan changed about the packets it sent, omitted when it changed
     /// nothing. See [`EvasionDto`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -914,6 +917,7 @@ impl SettingsDto {
             os_detection: settings.os_detection.name(),
             service_detection: settings.service_detection.name(),
             traceroute: settings.traceroute,
+            characterise: settings.characterise,
             evasion: settings.evasion.as_ref().map(EvasionDto::new),
         }
     }
@@ -1202,6 +1206,8 @@ pub struct HostDto<'a> {
     pub reasons: Vec<ReasonDto<'a>>,
     /// Inferred roles, sorted.
     pub roles: Vec<&'static str>,
+    /// What the filter in front of the host was shown to be doing, sorted.
+    pub filtering: Vec<&'static str>,
     /// The identified operating system.
     pub os: Option<OsDto<'a>>,
     /// Physical hardware identity, masked under redaction.
@@ -1249,6 +1255,14 @@ impl<'a> HostDto<'a> {
             .collect();
         roles.sort_unstable();
 
+        let mut filtering: Vec<&'static str> = host
+            .filtering()
+            .iter()
+            .copied()
+            .map(filtering_name)
+            .collect();
+        filtering.sort_unstable();
+
         Self {
             primary_ip: host.primary_ip().to_string(),
             ips: host.ips().iter().map(IpAddr::to_string).collect(),
@@ -1259,6 +1273,7 @@ impl<'a> HostDto<'a> {
             alive: host.is_alive(),
             reasons,
             roles,
+            filtering,
             os: host.os().map(OsDto::new),
             hardware: host
                 .hardware()

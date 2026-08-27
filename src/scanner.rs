@@ -452,6 +452,7 @@ fn spawn_discovery(
         // A sweep knows no ports, so every trace here is made of echoes. A port
         // scan traces better, having somewhere to aim.
         orchestrator::run_traceroute(&ctx, &cfg).await;
+        orchestrator::run_characterise(&ctx, &cfg).await;
         // Last, and after every strategy that could add an address: what this
         // machine's own interfaces and routes say about what was found.
         vantage::attribute(&ctx);
@@ -884,6 +885,7 @@ fn spawn_scan(
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning()).await;
         // Last: the ports are what decide a trace's shape.
         orchestrator::run_traceroute(&ctx, &cfg).await;
+        orchestrator::run_characterise(&ctx, &cfg).await;
         vantage::attribute(&ctx);
         let report = recorder.finish(&ctx);
 

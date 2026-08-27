@@ -516,6 +516,7 @@ struct SettingsDto {
     os_detection: String,
     service_detection: String,
     traceroute: bool,
+    characterise: bool,
     /// What the scan changed about its packets, absent when it changed nothing.
     /// Deserialized straight into the journal's own record: the fields are plain
     /// scalars with nothing to validate, unlike the named enums above.
@@ -563,6 +564,7 @@ impl SettingsDto {
             os_detection: self.os_detection,
             service_detection: self.service_detection,
             traceroute: self.traceroute,
+            characterise: self.characterise,
             evasion: self.evasion,
         })
     }
@@ -726,6 +728,7 @@ struct HostDto {
     status: String,
     reasons: Vec<ReasonDto>,
     roles: Vec<String>,
+    filtering: Vec<String>,
     os: Option<OsDto>,
     hardware: Option<HardwareDto>,
     telemetry: TelemetryDto,
@@ -744,6 +747,13 @@ impl HostDto {
         )?;
         for role in &self.roles {
             known(wire::network_role(role), "a network role", role)?;
+        }
+        for filtering in &self.filtering {
+            known(
+                wire::filtering(filtering),
+                "a filtering conclusion",
+                filtering,
+            )?;
         }
 
         let first_seen = timestamp(&self.first_seen)?;
@@ -780,6 +790,7 @@ impl HostDto {
                 .map(HopDto::record)
                 .collect::<Result<_, _>>()?,
             network_roles: self.roles,
+            filtering: self.filtering,
             first_seen,
             last_seen,
             ports: self

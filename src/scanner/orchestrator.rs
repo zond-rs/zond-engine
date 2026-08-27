@@ -776,6 +776,44 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
     strategy::routed::traceroute::trace(ctx, alive).await;
 }
 
+/// Characterises the filter in front of each host that answered, if asked.
+///
+/// A sibling of [`run_traceroute`]: it runs last, only against hosts that
+/// answered, and does nothing unless
+/// [`characterise`](crate::config::ZondConfig::characterise) was set. It sends a
+/// bad-checksum probe to one open TCP port of each such host and marks a
+/// middlebox on those that answer one — a reply no conformant host could have
+/// sent. A host with no open TCP port is skipped: there is nowhere to aim a
+/// probe whose whole point is that a listener would answer it.
+pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
+    if !cfg.characterise {
+        return;
+    }
+
+    let mut targets: Vec<(IpAddr, u16)> = Vec::new();
+    for key in ctx.host_addresses() {
+        let open_port = ctx.read_host(&key, |host| {
+            if !host.status().is_up() {
+                return None;
+            }
+            host.ports()
+                .find(|port| port.protocol() == Protocol::Tcp && port.state() == PortState::Open)
+                .map(|port| port.number())
+        });
+        if let (Some(Some(port)), Some(address)) = (open_port, routable(key)) {
+            targets.push((address, port));
+        }
+    }
+    targets.sort_unstable();
+    targets.dedup();
+
+    if targets.is_empty() {
+        return;
+    }
+
+    strategy::routed::characterise::characterise(ctx, targets).await;
+}
+
 pub(super) async fn run_active_os_probe(
     ctx: &ScanContext,
     os_detection: crate::config::OsDetection,

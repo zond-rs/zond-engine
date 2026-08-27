@@ -17,6 +17,7 @@
 //!
 //! This scanner requires root privileges to open the raw sockets involved.
 
+pub mod characterise;
 mod icmp_error;
 mod os_echo;
 mod os_series;

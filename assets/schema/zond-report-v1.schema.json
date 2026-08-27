@@ -424,6 +424,7 @@
         "alive",
         "reasons",
         "roles",
+        "filtering",
         "os",
         "hardware",
         "telemetry",
@@ -505,6 +506,15 @@
               "origin",
               "tarpit",
               "truncated"
+            ]
+          }
+        },
+        "filtering": {
+          "description": "What the scan showed the filter in front of the host to be doing, each from a deliberately-shaped probe. Sorted, and empty for a host whose path was not characterised or showed nothing. An inline middlebox is proven by a reply to a probe carrying a deliberately wrong TCP checksum, which a conformant host drops.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "inline_middlebox"
             ]
           }
         },
@@ -1305,7 +1315,8 @@
         "redact",
         "os_detection",
         "service_detection",
-        "traceroute"
+        "traceroute",
+        "characterise"
       ],
       "properties": {
         "send_mode": {
@@ -1365,6 +1376,10 @@
         },
         "traceroute": {
           "description": "Whether the phase measured the route to each host that answered. A host with no path is two different findings - a scan that did not look, and a scan that looked and got nothing back - and only this separates them.",
+          "type": "boolean"
+        },
+        "characterise": {
+          "description": "Whether the phase characterised the filter in front of each host that answered. A host with no filtering finding is two different things - a scan that did not look, and one that looked and the filter showed nothing - and only this separates them.",
           "type": "boolean"
         },
         "evasion": {
