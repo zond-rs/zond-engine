@@ -1427,6 +1427,10 @@
               "items": {
                 "type": "string"
               }
+            },
+            "flags": {
+              "description": "The TCP flags every port probe carried in place of the scan technique's own, named and joined with '|' (e.g. 'fin|psh|urg'). An arbitrary combination has no defined open/closed meaning, so a port probed with one is read only as reachable (something answered) or silent, for the diagnostic worth of a combination a filter or stack has no settled answer to.",
+              "type": "string"
             }
           }
         }

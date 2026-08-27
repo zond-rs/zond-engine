@@ -114,6 +114,12 @@ pub struct TcpPortScanner {
     /// for the life of the scan: a report that mixed techniques could not say
     /// which one produced a given verdict.
     technique: TcpScanTechnique,
+    /// An arbitrary TCP flag byte to send in place of the technique's own, from
+    /// [`EvasionProfile::flags`](crate::evasion::EvasionProfile::flags), or
+    /// `None` to send the technique's. When set, every probe carries it and the
+    /// verdict softens to reachable-or-silent, because an arbitrary combination
+    /// has no open/closed meaning to read. See [`effective_flags`](Self::effective_flags).
+    flags_override: Option<u8>,
     /// Everything a raw port scan carries and does regardless of protocol: the
     /// transport, the ledger, the deadline, the pacing and the stop conditions.
     /// What stays in this file is what a *TCP* probe is and what its answers
@@ -155,10 +161,14 @@ impl TcpPortScanner {
         let emission = tuning.evasion.emission();
         let shaping = tuning.evasion.segment_shaping();
         let decoys = tuning.evasion.decoys.clone();
+        let flags_override = tuning.evasion.flags;
         let transport = ProbeTransport::open_with(
             ProbeKind::TcpProbe {
                 reply_port: src_port,
-                icmp_errors: technique.reads_icmp_errors(),
+                // An arbitrary flag combination reads its verdict off ICMP the
+                // way a flag-probe technique does — silence upgrades to filtered
+                // when an error names the filter — so it asks for errors too.
+                icmp_errors: technique.reads_icmp_errors() || flags_override.is_some(),
             },
             tuning.evasion.effective_send_mode(tuning.send_mode),
         )?;
@@ -167,6 +177,7 @@ impl TcpPortScanner {
             resolver,
             ctx,
             technique,
+            flags_override,
             transport,
             target_count,
             src_port,
@@ -207,6 +218,7 @@ impl TcpPortScanner {
             resolver,
             ctx,
             technique,
+            None,
             transport,
             target_count,
             rand::random_range(50_000..u16::MAX),
@@ -225,10 +237,12 @@ impl TcpPortScanner {
     /// scan's own deadline is derived from it, so it has to be settled before
     /// anything is built rather than patched in afterwards.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn build(
         resolver: SourceResolver,
         ctx: ScanContext,
         technique: TcpScanTechnique,
+        flags_override: Option<u8>,
         transport: ProbeTransport,
         target_count: usize,
         src_port: u16,
@@ -254,6 +268,7 @@ impl TcpPortScanner {
 
         let mut scanner = Self {
             technique,
+            flags_override,
             os_detection,
             service_detection,
             core: RawProbeScan {
@@ -306,11 +321,19 @@ impl TcpPortScanner {
             self.core.audit.record_off_target();
             return;
         };
-        // A segment this technique's probe could not have provoked - a SYN+ACK
-        // answering an ACK scan, say - is somebody else's traffic on this
-        // scan's port, and resolves nothing.
-        let Some(state) = self.technique.verdict(reply) else {
-            return;
+        // An arbitrary flag combination has no open/closed meaning to read, so
+        // any reply this scan's own probe drew proves only that the port is
+        // reachable. A named technique reads its defined verdict instead, and a
+        // segment it could not have provoked — a SYN+ACK answering an ACK scan,
+        // say — is somebody else's traffic on this scan's port and resolves
+        // nothing.
+        let state = if self.arbitrary_flags() {
+            PortState::Unfiltered
+        } else {
+            match self.technique.verdict(reply) {
+                Some(state) => state,
+                None => return,
+            }
         };
 
         // Which attempt the segment claims to be answering. The ledger checks it
@@ -319,8 +342,8 @@ impl TcpPortScanner {
         // recognized - and names which attempt it answered, so the round trip it
         // yields is the real one.
         let token = TcpToken {
-            nonce: tcp::echoed_nonce(
-                self.technique,
+            nonce: tcp::echoed_nonce_with_flags(
+                self.effective_flags(),
                 &tcp_packet,
                 self.core.shaping.padding.unwrap_or(0),
             ),
@@ -415,7 +438,8 @@ impl TcpPortScanner {
         }
 
         let key = (error.quoted.destination, quoted.destination);
-        let token = tcp::quoted_nonce(self.technique, &quoted).map(|nonce| TcpToken { nonce });
+        let token =
+            tcp::quoted_nonce_with_flags(self.effective_flags(), &quoted).map(|nonce| TcpToken { nonce });
 
         match error.reason {
             // Nobody could reach the address at all, so the message carries no
@@ -493,6 +517,21 @@ impl TcpPortScanner {
             _ => StatusProtocol::Tcp,
         }
     }
+
+    /// The TCP flag byte every probe carries: the arbitrary override when a
+    /// profile set one, otherwise the technique's own combination.
+    fn effective_flags(&self) -> u8 {
+        self.flags_override
+            .unwrap_or_else(|| tcp::probe_flags(self.technique))
+    }
+
+    /// Whether this scan sends an arbitrary flag combination, so a reply says
+    /// only that the port is reachable and silence means open-filtered — the
+    /// softer reading an arbitrary combination licenses, in place of the
+    /// technique's defined open/closed verdict.
+    const fn arbitrary_flags(&self) -> bool {
+        self.flags_override.is_some()
+    }
 }
 
 impl RawPortScan for TcpPortScanner {
@@ -514,7 +553,14 @@ impl RawPortScan for TcpPortScanner {
     /// two probes any live stack would have answered, an open port or a
     /// firewall for the four an open port is required to ignore.
     fn silence_means(&self) -> PortState {
-        self.technique.silence_means()
+        if self.arbitrary_flags() {
+            // Silence to an arbitrary combination is either a drop or an open
+            // port that ignored it, the open-filtered of the flag-probe family —
+            // never the plain filtered a SYN's silence would earn.
+            PortState::OpenFiltered
+        } else {
+            self.technique.silence_means()
+        }
     }
 
     /// "unanswered" rather than either verdict, because which one silence
@@ -767,9 +813,11 @@ const fn rst_evidence(technique: TcpScanTechnique) -> &'static str {
 /// reached the wire can say why in its report rather than only in a log line. A
 /// probe that was never sent and a probe nobody answered are indistinguishable
 /// in a port count and could hardly be more different in what they mean.
+#[allow(clippy::too_many_arguments)]
 fn send_tcp_probe(
     sender: &dyn ProbeSender,
     technique: TcpScanTechnique,
+    flags: u8,
     src_port: u16,
     src_addr: IpAddr,
     dst_addr: IpAddr,
@@ -781,8 +829,8 @@ fn send_tcp_probe(
 ) -> Option<TcpToken> {
     let nonce: u32 = rand::random();
 
-    let packet = match tcp::create_probe_shaped(
-        technique,
+    let packet = match tcp::create_probe_with_flags(
+        flags,
         &src_addr,
         &dst_addr,
         src_port,
@@ -808,8 +856,8 @@ fn send_tcp_probe(
         .iter()
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
         .filter_map(|&decoy| {
-            tcp::create_probe_shaped(
-                technique,
+            tcp::create_probe_with_flags(
+                flags,
                 &decoy,
                 &dst_addr,
                 rand::random_range(50_000..u16::MAX),
@@ -930,6 +978,7 @@ impl TcpPortScanner {
         let token = send_tcp_probe(
             self.core.transport.tx.as_ref(),
             self.technique,
+            self.effective_flags(),
             self.core.src_port,
             src_addr,
             ip,
@@ -978,6 +1027,7 @@ mod tests {
 
     const SYN: u8 = 1 << 1;
     const RST: u8 = 1 << 2;
+    const PSH: u8 = 1 << 3;
     const ACK: u8 = 1 << 4;
     const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
     /// This host's address on [`on_link_interface`], which its probes leave from.
@@ -1251,6 +1301,38 @@ mod tests {
         );
 
         assert_eq!(port_state(&session, 81), Some(PortState::Closed));
+    }
+
+    /// An arbitrary flag override softens the verdict to reachable-or-silent,
+    /// where the underlying technique would read open or closed.
+    ///
+    /// SYN+PSH is span-one like a SYN, so the harness's own echo rule still
+    /// applies and the answer resolves. A version that read the override's reply
+    /// through the technique's verdict would call this reset closed, and one that
+    /// left silence to the technique would call it plain filtered — both untrue
+    /// of a combination that carries no open/closed meaning.
+    #[test]
+    fn an_arbitrary_flag_combination_reads_reachable_not_open_or_closed() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Syn);
+        scanner.flags_override = Some(SYN | PSH);
+
+        let token = probe(&mut scanner, &sent, 80);
+        let reply = tcp_segment(&scanner, 80, token, RST | ACK);
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            Instant::now(),
+        );
+
+        assert_eq!(
+            port_state(&session, 80),
+            Some(PortState::Unfiltered),
+            "a reply to an arbitrary combination proves only reachability"
+        );
+        assert_eq!(
+            scanner.silence_means(),
+            PortState::OpenFiltered,
+            "and its silence is open-filtered, not a SYN's plain filtered"
+        );
     }
 
     #[test]

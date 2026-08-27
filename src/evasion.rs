@@ -127,6 +127,23 @@ pub struct EvasionProfile {
     /// own address family are used against it. Empty sends probes from this host
     /// alone.
     pub decoys: Vec<IpAddr>,
+
+    /// The exact TCP flag byte every port probe carries, replacing the
+    /// combination the scan technique would otherwise send, or `None` to send
+    /// the technique's own.
+    ///
+    /// The six named techniques are a curated menu — each a flag combination
+    /// with a defined open/closed meaning. This opens the whole space instead,
+    /// for the diagnostic worth of a combination a filter or a stack has no
+    /// settled answer to. The cost is exactly that: an arbitrary combination
+    /// carries no such meaning, so a port probed with one is read only as
+    /// *reachable* (something answered) or *silent*, never open or closed. The
+    /// bits are those of [`crate::protocols::tcp::flags`].
+    ///
+    /// This shapes the TCP port scan alone. Host discovery, the OS-detection
+    /// probes and the firewall-characterisation pass each send a segment whose
+    /// exact shape is the measurement, so none of them takes an overriding flag.
+    pub flags: Option<u8>,
 }
 
 impl EvasionProfile {
@@ -263,6 +280,13 @@ impl EvasionProfile {
     #[must_use]
     pub fn with_decoys(mut self, decoys: Vec<IpAddr>) -> Self {
         self.decoys = decoys;
+        self
+    }
+
+    /// Sets the exact [TCP flag byte](Self::flags) every port probe carries.
+    #[must_use]
+    pub fn with_flags(mut self, flags: u8) -> Self {
+        self.flags = Some(flags);
         self
     }
 }

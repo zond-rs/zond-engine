@@ -1323,6 +1323,10 @@ pub struct EvasionSettingsRecord {
     /// The addresses probes were also sent from as decoys.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decoys: Vec<String>,
+    /// The TCP flags every port probe carried in place of the technique's own,
+    /// named (e.g. `fin|psh|urg`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flags: Option<String>,
 }
 
 /// Omits a `false` boolean, so a recorded technique appears only when it was
@@ -1355,6 +1359,7 @@ impl From<&ScanSettings> for SettingsRecord {
                 spoof_mac: e.spoof_mac.map(|mac| mac.to_string()),
                 fragment: e.fragment,
                 decoys: e.decoys.iter().map(|ip| ip.to_string()).collect(),
+                flags: e.flags.map(wire::tcp_flags_name),
             }),
         }
     }
@@ -1386,6 +1391,7 @@ impl From<&SettingsRecord> for ScanSettings {
                 spoof_mac: e.spoof_mac.as_ref().and_then(|s| s.parse().ok()),
                 fragment: e.fragment,
                 decoys: e.decoys.iter().filter_map(|s| s.parse().ok()).collect(),
+                flags: e.flags.as_deref().map(wire::tcp_flags),
             }),
         }
     }

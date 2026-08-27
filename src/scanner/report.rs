@@ -533,6 +533,10 @@ pub struct EvasionRecord {
     /// The addresses probes were also sent from as decoys, or empty if the scan
     /// sent from this host alone.
     pub decoys: Vec<IpAddr>,
+    /// The exact TCP flag byte every port probe carried in place of the
+    /// technique's own, or `None` if the scan sent the technique's. The bits are
+    /// those of [`crate::protocols::tcp::flags`].
+    pub flags: Option<u8>,
 }
 
 impl EvasionRecord {
@@ -548,6 +552,7 @@ impl EvasionRecord {
             spoof_mac: profile.spoof_mac,
             fragment: profile.fragment,
             decoys: profile.decoys.clone(),
+            flags: profile.flags,
         })
     }
 }

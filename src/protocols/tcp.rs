@@ -196,8 +196,36 @@ pub fn create_probe_shaped(
     padding: Option<u16>,
     bad_checksum: bool,
 ) -> Result<Vec<u8>> {
-    let flags = probe_flags(technique);
+    create_probe_with_flags(
+        probe_flags(technique),
+        src_addr,
+        dst_addr,
+        src_port,
+        dst_port,
+        nonce,
+        padding,
+        bad_checksum,
+    )
+}
 
+/// [`create_probe_shaped`] over an explicit TCP flag byte rather than a
+/// technique's own, for the evasion path that sends an arbitrary combination
+/// (see [`EvasionProfile::flags`](crate::evasion::EvasionProfile::flags)).
+///
+/// Everything the shape of the probe turns on — which field carries the nonce,
+/// whether the SYN options belong — follows from the flags, so any combination
+/// is crafted and its reply read back consistently.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_probe_with_flags(
+    flags: u8,
+    src_addr: &IpAddr,
+    dst_addr: &IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    nonce: u32,
+    padding: Option<u16>,
+    bad_checksum: bool,
+) -> Result<Vec<u8>> {
     let mut segment = craft::Tcp::new(src_port, dst_port).with_flags(flags);
     segment.window = PROBE_WINDOW;
 
@@ -268,7 +296,15 @@ fn syn_options(mss: u16) -> Vec<u8> {
 /// place for a SYN+ACK. Without this a padded scan reads every closed port as
 /// filtered, because its reset never matches the nonce that was sent.
 pub fn echoed_nonce(technique: TcpScanTechnique, reply: &TcpPacket, padding: u16) -> u32 {
-    match nonce_field(probe_flags(technique)) {
+    echoed_nonce_with_flags(probe_flags(technique), reply, padding)
+}
+
+/// [`echoed_nonce`] over an explicit TCP flag byte rather than a technique's
+/// own, for the arbitrary-flags evasion path. The span a reply's acknowledgement
+/// is advanced by is the sequence space the sent flags occupy, so it follows
+/// from the flags alone.
+pub(crate) fn echoed_nonce_with_flags(flags: u8, reply: &TcpPacket, padding: u16) -> u32 {
+    match nonce_field(flags) {
         NonceField::Sequence { span } => {
             let acked_padding = if reply.get_flags() & flags::RST != 0 {
                 u32::from(padding)
@@ -332,7 +368,13 @@ pub fn quoted_probe(quoted: &[u8]) -> Option<QuotedProbe> {
 /// twelve, and a caller that gets `None` should fall back to resolving the probe
 /// without claiming to know which attempt.
 pub fn quoted_nonce(technique: TcpScanTechnique, quoted: &QuotedProbe) -> Option<u32> {
-    match nonce_field(probe_flags(technique)) {
+    quoted_nonce_with_flags(probe_flags(technique), quoted)
+}
+
+/// [`quoted_nonce`] over an explicit TCP flag byte rather than a technique's
+/// own, for the arbitrary-flags evasion path.
+pub(crate) fn quoted_nonce_with_flags(flags: u8, quoted: &QuotedProbe) -> Option<u32> {
+    match nonce_field(flags) {
         NonceField::Sequence { .. } => Some(quoted.sequence),
         NonceField::Acknowledgement => quoted.acknowledgement,
     }
@@ -554,6 +596,28 @@ mod tests {
                 "{technique} could not recognize its own answer"
             );
         }
+    }
+
+    /// The evasion path sends a flag combination the technique menu has no name
+    /// for, and reads its own answer back off it.
+    ///
+    /// SYN+FIN is a combination filters and stacks disagree about — the point of
+    /// the knob. The crafted segment carries exactly it, and a conformant reset
+    /// acking that combination's own sequence span yields the nonce: a version
+    /// that ignored the flags would send the wrong segment, and one that read the
+    /// span off a technique instead of the sent flags would reject the answer.
+    #[test]
+    fn an_arbitrary_flag_combination_is_sent_and_read_back() {
+        const MASK: u8 = flags::SYN | flags::FIN;
+
+        let sent = create_probe_with_flags(MASK, &SRC, &DST, 50_000, 80, NONCE, None, false)
+            .expect("probe builds");
+        let parsed = TcpPacket::new(&sent).unwrap();
+        assert_eq!(parsed.get_flags(), MASK, "the segment carries the chosen flags");
+
+        let rst = conformant_rst(&sent);
+        let reply = TcpPacket::new(&rst).unwrap();
+        assert_eq!(echoed_nonce_with_flags(MASK, &reply, 0), NONCE);
     }
 
     /// A reply to somebody else's probe must not be readable as one of ours.

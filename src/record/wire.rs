@@ -38,6 +38,7 @@ use crate::fingerprint::os::OsSource;
 use crate::model::host::{Filtering, HostStatus, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
+use crate::protocols::tcp;
 use crate::scanner::report::{AttachmentSource, PortScope, ScanKind, StopReason};
 use crate::scanner::session::ScannerKind;
 
@@ -155,6 +156,43 @@ pub fn filtering(name: &str) -> Option<Filtering> {
         "stateful_filter" => Filtering::StatefulFilter,
         "port_trusting_acl" => Filtering::PortTrustingAcl,
         _ => return None,
+    })
+}
+
+/// The TCP flags set in `byte`, named and joined with `|`, so an arbitrary
+/// evasion flag combination reads back in a report as `fin|psh|urg` rather than
+/// a bare number. Ordered from the high header bit down; the empty combination
+/// (a flagless probe) renders as the empty string.
+pub fn tcp_flags_name(byte: u8) -> String {
+    [
+        (tcp::flags::URG, "urg"),
+        (tcp::flags::ACK, "ack"),
+        (tcp::flags::PSH, "psh"),
+        (tcp::flags::RST, "rst"),
+        (tcp::flags::SYN, "syn"),
+        (tcp::flags::FIN, "fin"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| byte & bit != 0)
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>()
+    .join("|")
+}
+
+/// [`tcp_flags_name`] read back. A name this version does not know contributes
+/// nothing, so a record written by a newer engine reads back as the flags this
+/// one understands rather than failing.
+pub fn tcp_flags(name: &str) -> u8 {
+    name.split('|').fold(0, |mask, part| {
+        mask | match part.trim() {
+            "fin" => tcp::flags::FIN,
+            "syn" => tcp::flags::SYN,
+            "rst" => tcp::flags::RST,
+            "psh" => tcp::flags::PSH,
+            "ack" => tcp::flags::ACK,
+            "urg" => tcp::flags::URG,
+            _ => 0,
+        }
     })
 }
 

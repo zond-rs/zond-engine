@@ -106,7 +106,7 @@ pub use crate::scanner::report::ENGINE_VERSION;
 pub use crate::record::wire::{
     attachment_source_name, filtering_name, host_status_name, network_role_name, port_scope_name,
     port_state_name, protocol_name, scan_kind_name, scan_response_name, scanner_kind_name,
-    status_protocol_name, stop_reason_name,
+    status_protocol_name, stop_reason_name, tcp_flags_name,
 };
 
 /// The wire name of a send mode.
@@ -880,6 +880,10 @@ pub struct EvasionDto {
     /// The addresses probes were also sent from as decoys.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub decoys: Vec<String>,
+    /// The TCP flags every port probe carried in place of the technique's own,
+    /// named (e.g. `fin|psh|urg`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flags: Option<String>,
 }
 
 /// Omits a `false` boolean from the document, so a field appears only for a
@@ -900,6 +904,7 @@ impl EvasionDto {
             spoof_mac: record.spoof_mac.map(|mac| mac.to_string()),
             fragment: record.fragment,
             decoys: record.decoys.iter().map(|ip| ip.to_string()).collect(),
+            flags: record.flags.map(tcp_flags_name),
         }
     }
 }

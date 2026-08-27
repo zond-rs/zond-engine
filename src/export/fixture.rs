@@ -24,6 +24,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::config::ZondConfig;
 use crate::evasion::EvasionProfile;
+use crate::protocols::tcp::flags;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
 use crate::model::host::{
@@ -229,7 +230,8 @@ pub(crate) fn report() -> ScanReport {
         .with_decoys(vec![
             "192.0.2.61".parse().expect("a valid decoy address"),
             "192.0.2.62".parse().expect("a valid decoy address"),
-        ]);
+        ])
+        .with_flags(flags::SYN | flags::FIN);
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
