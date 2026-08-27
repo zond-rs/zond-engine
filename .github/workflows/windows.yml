@@ -51,6 +51,7 @@ on:
       - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "clippy.toml"
       - ".github/workflows/windows.yml"
   pull_request:
     branches: ["main", "feat/main"]
@@ -60,6 +61,7 @@ on:
       - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "clippy.toml"
       - ".github/workflows/windows.yml"
   workflow_dispatch:
 

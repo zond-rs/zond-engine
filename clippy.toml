@@ -1,0 +1,13 @@
+# The toolchain this crate promises to compile on.
+#
+# Without it clippy assumes whatever it was built against and suggests APIs
+# accordingly — so a lint fixed by taking its advice can compile on the
+# developer's machine and fail the MSRV job, which builds on the exact version
+# `Cargo.toml` names. That is not hypothetical: `chunks_exact_to_as_chunks`
+# arrived in clippy 1.98 recommending `slice::as_chunks`, and whether that is
+# available at all is precisely the question this line answers.
+#
+# **Keep in step with `rust-version` in `Cargo.toml`.** Two numbers for one
+# promise is how they drift; there is no way to have cargo derive this one, so it
+# is written down beside a note saying why.
+msrv = "1.93"

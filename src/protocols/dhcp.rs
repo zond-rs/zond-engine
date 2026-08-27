@@ -404,9 +404,16 @@ fn client_hardware_address(frame: &Frame<'_>) -> Option<Option<MacAddr>> {
 /// length is not a multiple of four is malformed, and the addresses before the
 /// remainder are still what the server said.
 fn addresses(bytes: &[u8]) -> impl Iterator<Item = Ipv4Addr> + '_ {
+    // `.0` is the whole four-byte groups and `.1` is the remainder, which is
+    // dropped — the behaviour the doc comment above describes, and the same one
+    // `chunks_exact` gave. Taking the chunks as arrays rather than as slices is
+    // what lets the address be built from one value instead of four indexes,
+    // each of which the compiler would otherwise have to prove is in bounds.
     bytes
-        .chunks_exact(4)
-        .map(|chunk| Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&group| Ipv4Addr::from(group))
 }
 
 /// An option's value as text, trimming a trailing NUL.
