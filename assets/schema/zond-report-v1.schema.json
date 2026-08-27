@@ -1397,6 +1397,12 @@
             "spoof_mac": {
               "description": "The hardware address every frame claimed to come from, replacing the sending interface's own. Meaningful only on the local segment - a router rewrites it at the first hop - and used for NAC and MAC-filtering tests.",
               "type": "string"
+            },
+            "fragment": {
+              "description": "The largest each IP fragment a probe was split into, in bytes. Splitting the packet so a stateless filter or cheap IDS keyed on a whole TCP header never sees one. IPv4 only.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
             }
           }
         }

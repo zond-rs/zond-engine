@@ -324,6 +324,11 @@ pub struct Emission {
     /// so an emission with this set cannot be sent over a raw socket — see
     /// [`requires_link_layer`](Self::requires_link_layer).
     pub source_mac: Option<MacAddr>,
+    /// The largest each IP fragment this probe is split into may be, in bytes,
+    /// or `None` to send it whole. Only a self-built Ethernet frame carries
+    /// fragments this engine chose, and only for IPv4 — see
+    /// [`requires_link_layer`](Self::requires_link_layer).
+    pub fragment: Option<u16>,
 }
 
 impl Emission {
@@ -333,6 +338,7 @@ impl Emission {
         Self {
             hop_limit: crate::protocols::ip::HOP_LIMIT_ROUTED,
             source_mac: None,
+            fragment: None,
         }
     }
 
@@ -346,6 +352,7 @@ impl Emission {
         Self {
             hop_limit: if hops == 0 { 1 } else { hops },
             source_mac: None,
+            fragment: None,
         }
     }
 
@@ -367,13 +374,21 @@ impl Emission {
         self
     }
 
+    /// The same emission split into IP fragments no larger than `mtu` bytes.
+    /// Only a self-built Ethernet frame can carry the fragments, and only for
+    /// IPv4; see [`requires_link_layer`](Self::requires_link_layer).
+    #[must_use]
+    pub const fn with_fragment(mut self, mtu: u16) -> Self {
+        self.fragment = Some(mtu);
+        self
+    }
+
     /// Whether this emission can only leave as a self-built Ethernet frame,
-    /// because it sets a field a raw socket cannot place. A spoofed source
-    /// hardware address today; fragmentation and a spoofed source address will
-    /// answer here too as they land.
+    /// because it sets a field a raw socket cannot place: a spoofed source
+    /// hardware address, or fragments this engine chose rather than the kernel.
     #[must_use]
     pub const fn requires_link_layer(&self) -> bool {
-        self.source_mac.is_some()
+        self.source_mac.is_some() || self.fragment.is_some()
     }
 }
 

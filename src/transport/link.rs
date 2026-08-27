@@ -193,22 +193,43 @@ impl ProbeSender for EthernetSender {
                 .with_context(|| format!("no Ethernet route to {dst}"))?;
 
             let dst_mac = self.next_hop_mac(&route)?;
-            let frame = frame::build_ethernet_frame(
-                spoofed_source_mac(route.src_mac, emission.source_mac),
-                dst_mac,
-                src,
-                dst,
-                self.protocols.for_destination(dst),
-                segment,
-                emission.hop_limit,
-            )?;
+            let src_mac = spoofed_source_mac(route.src_mac, emission.source_mac);
+            let protocol = self.protocols.for_destination(dst);
+
+            // One frame, or several if the caller asked to fragment. A packet
+            // that already fits the requested MTU comes back as a single frame,
+            // so the fragmenting path is not a second code path for the ordinary
+            // case.
+            let frames = match emission.fragment {
+                Some(mtu) => frame::build_fragmented_ethernet_frames(
+                    src_mac,
+                    dst_mac,
+                    src,
+                    dst,
+                    protocol,
+                    segment,
+                    emission.hop_limit,
+                    mtu,
+                )?,
+                None => vec![frame::build_ethernet_frame(
+                    src_mac,
+                    dst_mac,
+                    src,
+                    dst,
+                    protocol,
+                    segment,
+                    emission.hop_limit,
+                )?],
+            };
 
             let mut channels = self.channels.lock().unwrap();
             let channel = self.channel_for(&mut channels, &route.interface)?;
-            channel
-                .channel
-                .send_frame(&frame)
-                .map_err(|reason| anyhow::anyhow!("sending frame: {reason}"))?;
+            for frame in &frames {
+                channel
+                    .channel
+                    .send_frame(frame)
+                    .map_err(|reason| anyhow::anyhow!("sending frame: {reason}"))?;
+            }
             Ok(())
         })()
         .map_err(SendError::from_io)

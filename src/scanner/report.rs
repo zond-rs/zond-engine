@@ -527,6 +527,9 @@ pub struct EvasionRecord {
     /// The hardware address every frame claimed to come from, or `None` if the
     /// scan used the interface's own.
     pub spoof_mac: Option<MacAddr>,
+    /// The largest each IP fragment a probe was split into, in bytes, or `None`
+    /// if the scan sent probes whole.
+    pub fragment: Option<u16>,
 }
 
 impl EvasionRecord {
@@ -540,6 +543,7 @@ impl EvasionRecord {
             padding: profile.padding,
             bad_tcp_checksum: profile.bad_tcp_checksum,
             spoof_mac: profile.spoof_mac,
+            fragment: profile.fragment,
         })
     }
 }

@@ -99,6 +99,16 @@ pub struct EvasionProfile {
     /// Ethernet path cannot reach, such as loopback, is refused. `None` uses the
     /// interface's own address.
     pub spoof_mac: Option<MacAddr>,
+
+    /// The largest each IP fragment a probe is split into may be, in bytes, or
+    /// `None` to send probes whole.
+    ///
+    /// Splits the IP packet so a stateless filter or cheap IDS keyed on a whole
+    /// TCP header never sees one. IPv4 only, and only over a self-built Ethernet
+    /// frame, so setting it opens the link-layer send path (see
+    /// [`effective_send_mode`](Self::effective_send_mode)). An IPv6 destination,
+    /// or a value too small to carry a header and a fragment, is refused.
+    pub fragment: Option<u16>,
 }
 
 impl EvasionProfile {
@@ -109,12 +119,12 @@ impl EvasionProfile {
     }
 
     /// Whether this profile can only be honoured over a self-built Ethernet
-    /// frame, because it sets a field the raw-socket path cannot place — a
-    /// spoofed hardware address today, fragmentation and a spoofed source
-    /// address as those land.
+    /// frame, because it sets a field the raw-socket path cannot place: a
+    /// spoofed hardware address, or fragments this engine chose rather than the
+    /// kernel. A spoofed source address will join them.
     #[must_use]
     pub fn requires_link_layer(&self) -> bool {
-        self.spoof_mac.is_some()
+        self.spoof_mac.is_some() || self.fragment.is_some()
     }
 
     /// The send mode a scan should actually open, given the one it asked for.
@@ -143,10 +153,11 @@ impl EvasionProfile {
         self.source_port.unwrap_or(default)
     }
 
-    /// The [`Emission`] an ordinary probe should carry: the routed default, with
-    /// the hop limit replaced when [`ttl`](Self::ttl) is set and the source
-    /// hardware address replaced when [`spoof_mac`](Self::spoof_mac) is. Path
-    /// measurement chooses its own hop limit and does not use this.
+    /// The [`Emission`] an ordinary probe should carry: the routed default, plus
+    /// the hop limit from [`ttl`](Self::ttl), the source hardware address from
+    /// [`spoof_mac`](Self::spoof_mac), and the fragment size from
+    /// [`fragment`](Self::fragment), each when it is set. Path measurement
+    /// chooses its own hop limit and does not use this.
     #[must_use]
     pub fn emission(&self) -> Emission {
         let mut emission = match self.ttl {
@@ -154,6 +165,7 @@ impl EvasionProfile {
             None => Emission::routed(),
         };
         emission.source_mac = self.spoof_mac;
+        emission.fragment = self.fragment;
         emission
     }
 
@@ -203,6 +215,14 @@ impl EvasionProfile {
     #[must_use]
     pub fn with_spoof_mac(mut self, mac: MacAddr) -> Self {
         self.spoof_mac = Some(mac);
+        self
+    }
+
+    /// Sets the largest each [IP fragment](Self::fragment) a probe is split into
+    /// may be, in bytes.
+    #[must_use]
+    pub fn with_fragment(mut self, mtu: u16) -> Self {
+        self.fragment = Some(mtu);
         self
     }
 }
@@ -259,6 +279,7 @@ mod tests {
                 .with_spoof_mac(MacAddr::new(2, 0, 0, 0, 0, 1))
                 .is_active()
         );
+        assert!(EvasionProfile::default().with_fragment(28).is_active());
     }
 
     #[test]
@@ -269,12 +290,14 @@ mod tests {
             .with_ttl(32)
             .with_padding(16)
             .with_bad_tcp_checksum(true)
-            .with_spoof_mac(mac);
+            .with_spoof_mac(mac)
+            .with_fragment(28);
         assert_eq!(profile.source_port, Some(53));
         assert_eq!(profile.ttl, Some(32));
         assert_eq!(profile.padding, Some(16));
         assert!(profile.bad_tcp_checksum);
         assert_eq!(profile.spoof_mac, Some(mac));
+        assert_eq!(profile.fragment, Some(28));
     }
 
     #[test]
@@ -316,7 +339,14 @@ mod tests {
         assert_eq!(emission.source_mac, Some(mac));
         assert!(emission.requires_link_layer());
 
+        // A fragment size is the other framing field: it reaches the emission
+        // and it too forces the link layer.
+        let emission = EvasionProfile::default().with_fragment(28).emission();
+        assert_eq!(emission.fragment, Some(28));
+        assert!(emission.requires_link_layer());
+
         assert_eq!(EvasionProfile::default().emission().source_mac, None);
+        assert_eq!(EvasionProfile::default().emission().fragment, None);
         assert!(!EvasionProfile::default().emission().requires_link_layer());
     }
 
@@ -341,6 +371,15 @@ mod tests {
         );
         assert_eq!(
             plain.effective_send_mode(SendMode::Ethernet),
+            SendMode::Ethernet
+        );
+
+        // Fragmentation is a framing technique too, so it forces Auto onto the
+        // link layer the same way a spoofed MAC does.
+        assert_eq!(
+            EvasionProfile::default()
+                .with_fragment(28)
+                .effective_send_mode(SendMode::Auto),
             SendMode::Ethernet
         );
     }
