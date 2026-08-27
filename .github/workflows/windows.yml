@@ -1,0 +1,155 @@
+# Windows, as far up as the engine currently gets.
+#
+# A workflow of its own rather than a third entry in `test.yml`'s matrix, because
+# it is not asking that matrix's question. `test.yml` runs the suite on the
+# platforms the crate *claims*; this one is platform bring-up, and its scope is
+# expected to grow as each tier lands. Keeping them apart means `test.yml` stays
+# a statement about what is supported, and this file stays a statement about how
+# far along the port is.
+#
+# The plan it is measured against is `audit/2026-08-27-windows-support.md`, whose
+# tiers are named below. Today this covers Tier 0 and Tier 1.
+#
+# ## What this deliberately does not do, and why
+#
+# **It does not run the test suite.** The unit tests link against `wpcap` and
+# therefore need the Npcap *runtime* — a kernel driver — not just the SDK, and
+# `pcap::Capture::dead` in the listener's filter test calls into it. The
+# integration tests in `tests/` need more than that: every Tier 1 test targets
+# loopback, which on Windows exists only if Npcap's loopback adapter was
+# installed as a separate component.
+#
+# **And neither would tell the truth yet.** `pnet_datalink` reports `flags: 0`
+# for every Windows interface, so `is_up()` is false everywhere and each of this
+# engine's entry points returns an empty network without erroring — see §5 of the
+# audit. A green suite on top of that would be a suite asserting that a machine
+# has no network, which is worse than no suite. Running tests here is Tier 2's
+# to switch on, once the interface layer no longer lies.
+#
+# So what is here is the thing that is both honest and useful today: it compiles,
+# it lints, and it links. That is the whole of what stops Windows silently
+# breaking again while nobody is looking at it — which is how it broke in the
+# first place, with two errors that had been sitting in the tree unnoticed
+# because no compiler had ever been pointed at them.
+name: Windows
+
+# `feat/main` alongside `main`, which the other two workflows do not do. This one
+# is bring-up rather than a gate: what it is for is finding out that Windows
+# broke, and the branch the work happens on is where that is worth knowing
+# first. A regression that only surfaces when a feature branch merges is one
+# somebody has to bisect for.
+#
+# `workflow_dispatch` because a platform job is also the kind of thing you want
+# to re-run against an unchanged tree — after an Npcap release, or a toolchain
+# bump — where none of the paths below has moved.
+on:
+  push:
+    branches: ["main", "feat/main"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows.yml"
+  pull_request:
+    branches: ["main", "feat/main"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+jobs:
+  compile:
+    name: Compiles and lints
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # **No Npcap, and none is needed.** `pcap`'s build script probes for the
+      # runtime only to read its version, and returns the newest it knows when
+      # the library will not load rather than failing (`build.rs`, `get_libpcap_version`).
+      # Nothing is linked by `cargo check`, so this job depends on nothing but a
+      # toolchain — which is what makes it the one that cannot flake, and the one
+      # worth gating a merge on.
+      #
+      # `--all-features` for the reason `test.yml` gives: most of this crate's
+      # public surface is behind a feature, and a check of the default set leaves
+      # the export and import paths uncompiled. It is also where two of the four
+      # Windows-only lints below were hiding.
+      - name: Check
+        run: cargo check --lib --all-features
+
+      # `--all-targets` so the tests and benches are linted too: they are the
+      # part most likely to reach for something Unix-only, and they compile for
+      # this platform even though they are not run here.
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  link:
+    name: Links against Npcap
+    runs-on: windows-latest
+
+    # The compile job is the cheap one and the one that will fail first. There is
+    # no point downloading an SDK to discover a type error.
+    needs: compile
+
+    env:
+      # Bump deliberately, and check https://npcap.com/#download for what is
+      # current — the SDK is versioned separately from the installer, and old
+      # zips are not kept forever.
+      NPCAP_SDK_VERSION: "1.13"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # The SDK is the import libraries and headers. It is *not* the driver:
+      # `Packet.lib` and `wpcap.lib` are all a link needs, because Windows
+      # resolves an import library's DLL when the process starts rather than when
+      # it is linked. That is the whole reason this job can prove linkage on a
+      # runner with no Npcap installed.
+      - name: Fetch the Npcap SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = "$env:RUNNER_TEMP\npcap-sdk.zip"
+          Invoke-WebRequest `
+            -Uri "https://npcap.com/dist/npcap-sdk-$env:NPCAP_SDK_VERSION.zip" `
+            -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\npcap-sdk" -Force
+          # Surfaced so a failure here reads as "the SDK moved" rather than as a
+          # linker error three steps later.
+          $lib = "$env:RUNNER_TEMP\npcap-sdk\Lib\x64"
+          if (-not (Test-Path "$lib\Packet.lib")) {
+            throw "Packet.lib is not at $lib; the SDK layout has changed"
+          }
+          "LIBPCAP_LIBDIR=$lib" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # `--no-run` is the point of this job. Building the test binary links it,
+      # which is what exercises `Packet.lib`, `wpcap.lib` and the `iphlpapi`
+      # `#[link]` in `pnet_datalink` — every native dependency this crate has on
+      # Windows, and the class of failure `cargo check` cannot see. Running it is
+      # what needs the driver, and is Tier 2's business.
+      - name: Link the test binary
+        run: cargo test --lib --all-features --no-run

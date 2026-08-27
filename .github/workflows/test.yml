@@ -12,9 +12,18 @@
 # instead is check, on every change, that the crate *could* be published: see the
 # packaging job.
 #
-# Windows is not in the matrix. The crate says it is unsupported and it is; a
-# runner for it would be permanently red and would teach everyone to ignore a
-# failing job, which is worse than not having one.
+# Windows is not in the matrix, and the reason has narrowed rather than gone
+# away. It was "the crate says it is unsupported and it is; a runner for it would
+# be permanently red and would teach everyone to ignore a failing job, which is
+# worse than not having one." As of 2026-08-27 the crate compiles, lints and
+# links for Windows, and `windows.yml` holds that ground on every change.
+#
+# What still cannot run is the suite, and the reason is upstream: `pnet_datalink`
+# reports no interface flags on Windows, so every entry point finds an empty
+# network and says so without erroring. Until that is fixed the tests here would
+# pass by asserting nothing, which is the failure the paragraph above was written
+# against. This matrix gains Windows when `audit/2026-08-27-windows-support.md`
+# reaches Tier 2, and not before.
 name: Test
 
 on:
