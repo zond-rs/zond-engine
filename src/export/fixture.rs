@@ -219,7 +219,11 @@ pub(crate) fn report() -> ScanReport {
         .with_padding(24)
         .with_bad_tcp_checksum(true)
         .with_spoof_mac(MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01))
-        .with_fragment(28);
+        .with_fragment(28)
+        .with_decoys(vec![
+            "192.0.2.61".parse().expect("a valid decoy address"),
+            "192.0.2.62".parse().expect("a valid decoy address"),
+        ]);
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,

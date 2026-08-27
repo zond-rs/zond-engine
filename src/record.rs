@@ -1302,6 +1302,9 @@ pub struct EvasionSettingsRecord {
     /// The largest each IP fragment a probe was split into, in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fragment: Option<u16>,
+    /// The addresses probes were also sent from as decoys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decoys: Vec<String>,
 }
 
 /// Omits a `false` boolean, so a recorded technique appears only when it was
@@ -1325,13 +1328,14 @@ impl From<&ScanSettings> for SettingsRecord {
             os_detection: settings.os_detection.name().to_owned(),
             service_detection: settings.service_detection.name().to_owned(),
             traceroute: settings.traceroute,
-            evasion: settings.evasion.map(|e| EvasionSettingsRecord {
+            evasion: settings.evasion.as_ref().map(|e| EvasionSettingsRecord {
                 source_port: e.source_port,
                 ttl: e.ttl,
                 padding: e.padding,
                 bad_tcp_checksum: e.bad_tcp_checksum,
                 spoof_mac: e.spoof_mac.map(|mac| mac.to_string()),
                 fragment: e.fragment,
+                decoys: e.decoys.iter().map(|ip| ip.to_string()).collect(),
             }),
         }
     }
@@ -1361,6 +1365,7 @@ impl From<&SettingsRecord> for ScanSettings {
                 bad_tcp_checksum: e.bad_tcp_checksum,
                 spoof_mac: e.spoof_mac.as_ref().and_then(|s| s.parse().ok()),
                 fragment: e.fragment,
+                decoys: e.decoys.iter().filter_map(|s| s.parse().ok()).collect(),
             }),
         }
     }

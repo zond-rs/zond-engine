@@ -203,6 +203,7 @@ impl UdpPortScanner {
             .source_port_or(rand::random_range(50_000..u16::MAX));
         let emission = tuning.evasion.emission();
         let shaping = tuning.evasion.segment_shaping();
+        let decoys = tuning.evasion.decoys.clone();
         let transport = ProbeTransport::open_with(
             ProbeKind::UdpProbe {
                 reply_port: src_port,
@@ -218,6 +219,7 @@ impl UdpPortScanner {
             src_port,
             emission,
             shaping,
+            decoys,
             RETRY_POLICY.configured(tuning.retry),
             tuning
                 .max_probe_rate
@@ -250,6 +252,7 @@ impl UdpPortScanner {
             src_port,
             Emission::routed(),
             SegmentShaping::default(),
+            Vec::new(),
             RETRY_POLICY,
             super::UDP_PORT_RATE_PER_SEC,
         )
@@ -267,6 +270,7 @@ impl UdpPortScanner {
         src_port: u16,
         emission: Emission,
         shaping: SegmentShaping,
+        decoys: Vec<IpAddr>,
         retry: RetryPolicy,
         rate_per_sec: u32,
     ) -> Self {
@@ -293,6 +297,7 @@ impl UdpPortScanner {
                 src_port,
                 emission,
                 shaping,
+                decoys,
                 send_failure: None,
                 audit: ProbeAudit::new(),
                 window: CongestionWindow::new(WindowLimits::fixed(MAX_IN_FLIGHT)),
@@ -703,6 +708,7 @@ impl UdpPortScanner {
             port,
             self.core.emission,
             self.core.shaping,
+            &self.core.decoys,
             &mut self.core.send_failure,
         );
         self.core.record_send(sent.is_some(), first_attempt);

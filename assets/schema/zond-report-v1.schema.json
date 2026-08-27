@@ -1403,6 +1403,13 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 65535
+            },
+            "decoys": {
+              "description": "The addresses probes were also sent from as decoys, so an observer sees several apparent scanners and cannot tell which source is the real one. A decoy elicits no finding of its own - it is noise on the wire.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           }
         }

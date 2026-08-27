@@ -123,6 +123,10 @@ pub struct RawProbeScan<T> {
     /// padding and, on the TCP paths, the bad-checksum choice. See
     /// [`SegmentShaping`](crate::evasion::SegmentShaping).
     pub shaping: SegmentShaping,
+    /// The decoy source addresses every probe in this scan is copied from, or
+    /// empty. Resolved once from the scan's
+    /// [`EvasionProfile`](crate::evasion::EvasionProfile).
+    pub decoys: Vec<IpAddr>,
     /// Why the first probe that could not be sent failed, if any did.
     ///
     /// The *first*, and the send path keeps it that way by only recording when
@@ -813,6 +817,7 @@ mod tests {
             src_port: 54_321,
             emission: Emission::routed(),
             shaping: SegmentShaping::default(),
+            decoys: Vec::new(),
             send_failure: None,
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),

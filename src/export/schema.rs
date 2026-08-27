@@ -874,6 +874,9 @@ pub struct EvasionDto {
     /// The largest each IP fragment a probe was split into, in bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fragment: Option<u16>,
+    /// The addresses probes were also sent from as decoys.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decoys: Vec<String>,
 }
 
 /// Omits a `false` boolean from the document, so a field appears only for a
@@ -893,6 +896,7 @@ impl EvasionDto {
             bad_tcp_checksum: record.bad_tcp_checksum,
             spoof_mac: record.spoof_mac.map(|mac| mac.to_string()),
             fragment: record.fragment,
+            decoys: record.decoys.iter().map(|ip| ip.to_string()).collect(),
         }
     }
 }

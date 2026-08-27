@@ -324,6 +324,46 @@ pub struct SynToken {
     pub src_port: u16,
 }
 
+/// Sends the real probe among its already-built decoy probes, in random order,
+/// and returns the real probe's send outcome.
+///
+/// The randomisation is of the wire order, so an observer cannot pick the real
+/// source out of the decoys by position. A decoy is sent and forgotten —
+/// nothing about it is recorded — which is what keeps a decoy's reply from ever
+/// resolving a port. With no decoys this is one ordinary send.
+pub(super) fn emit_among_decoys(
+    sender: &dyn ProbeSender,
+    dst: IpAddr,
+    emission: Emission,
+    real_src: IpAddr,
+    real_packet: &[u8],
+    decoy_packets: &[(IpAddr, Vec<u8>)],
+) -> Result<(), SendError> {
+    if decoy_packets.is_empty() {
+        return sender.send(real_packet, real_src, dst, emission);
+    }
+
+    use rand::seq::SliceRandom;
+
+    // The real probe is flagged rather than found by address, so a caller that
+    // lists its own address among the decoys still gets its real send back.
+    let mut probes: Vec<(IpAddr, &[u8], bool)> = Vec::with_capacity(1 + decoy_packets.len());
+    probes.push((real_src, real_packet, true));
+    for (src, packet) in decoy_packets {
+        probes.push((*src, packet.as_slice(), false));
+    }
+    probes.shuffle(&mut rand::rng());
+
+    let mut real_result = None;
+    for (src, packet, is_real) in &probes {
+        let result = sender.send(packet, *src, dst, emission);
+        if *is_real {
+            real_result = Some(result);
+        }
+    }
+    real_result.expect("the real probe is always among those sent")
+}
+
 /// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port` through
 /// `sender` and logs the outcome. On success it returns the [`SynToken`] the
 /// packet went out carrying, so the caller can record it and recognize a later
@@ -341,6 +381,7 @@ fn send_syn(
     src_port_override: Option<u16>,
     emission: Emission,
     shaping: SegmentShaping,
+    decoys: &[IpAddr],
     faults: &mut SendFaults,
 ) -> Option<SynToken> {
     // A caller who pinned a source port gets that port; otherwise a fresh
@@ -369,7 +410,36 @@ fn send_syn(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr, emission) {
+    // A decoy from each address of the target's own family, built with its own
+    // port and sequence so it is a probe in its own right, and the same shaping
+    // so no decoy is the odd one out carrying a different-looking checksum.
+    let decoy_packets: Vec<(IpAddr, Vec<u8>)> = decoys
+        .iter()
+        .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
+        .filter_map(|&decoy| {
+            protocol::tcp::create_probe_shaped(
+                TcpScanTechnique::Syn,
+                &decoy,
+                &dst_addr,
+                rand::random_range(50_000..u16::MAX),
+                dst_port,
+                rand::random_range(0..=u32::MAX),
+                shaping.padding,
+                shaping.bad_tcp_checksum,
+            )
+            .ok()
+            .map(|packet| (decoy, packet))
+        })
+        .collect();
+
+    match emit_among_decoys(
+        sender,
+        dst_addr,
+        emission,
+        src_addr,
+        &packet,
+        &decoy_packets,
+    ) {
         Ok(_) => {
             success!(verbosity = 2, "sent SYN probe to {dst_addr}:{dst_port}");
             Some(SynToken {
@@ -434,6 +504,7 @@ fn send_udp(
     dst_port: u16,
     emission: Emission,
     shaping: SegmentShaping,
+    decoys: &[IpAddr],
     reason: &mut Option<String>,
 ) -> Option<()> {
     // What makes an open port answer at all: UDP has no handshake, so the
@@ -458,7 +529,34 @@ fn send_udp(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr, emission) {
+    // A decoy datagram from each address of the target's own family, from its
+    // own source port so its reply falls outside this scan's capture filter, and
+    // the same payload so it asks the same question the real probe does.
+    let decoy_packets: Vec<(IpAddr, Vec<u8>)> = decoys
+        .iter()
+        .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
+        .filter_map(|&decoy| {
+            crate::protocols::udp::create_packet_shaped(
+                &decoy,
+                &dst_addr,
+                rand::random_range(50_000..u16::MAX),
+                dst_port,
+                payload::for_port(dst_port).to_vec(),
+                shaping.padding,
+            )
+            .ok()
+            .map(|packet| (decoy, packet))
+        })
+        .collect();
+
+    match emit_among_decoys(
+        sender,
+        dst_addr,
+        emission,
+        src_addr,
+        &packet,
+        &decoy_packets,
+    ) {
         Ok(_) => {
             success!(verbosity = 2, "sent UDP probe to {dst_addr}:{dst_port}");
             Some(())
@@ -533,6 +631,8 @@ pub struct RoutedScanner {
     /// The segment-level shaping every SYN carries: payload padding, and a bad
     /// TCP checksum when the sweep asked for one.
     shaping: SegmentShaping,
+    /// The decoy source addresses every SYN is copied from, or empty.
+    decoys: Vec<IpAddr>,
     /// Governs how long this sweep keeps running, adapting to observed
     /// round-trip times.
     deadline: AdaptiveDeadline,
@@ -797,6 +897,7 @@ impl RoutedScanner {
             tuning.evasion.source_port,
             tuning.evasion.emission(),
             tuning.evasion.segment_shaping(),
+            tuning.evasion.decoys.clone(),
             RETRY_POLICY.configured(tuning.retry),
             tuning.max_probe_rate.unwrap_or(PROBE_RATE_PER_SEC).max(1),
         ))
@@ -829,6 +930,7 @@ impl RoutedScanner {
             None,
             Emission::routed(),
             SegmentShaping::default(),
+            Vec::new(),
             RETRY_POLICY,
             PROBE_RATE_PER_SEC,
         )
@@ -846,6 +948,7 @@ impl RoutedScanner {
         src_port: Option<u16>,
         emission: Emission,
         shaping: SegmentShaping,
+        decoys: Vec<IpAddr>,
         retry: RetryPolicy,
         rate_per_sec: u32,
     ) -> Self {
@@ -881,6 +984,7 @@ impl RoutedScanner {
             src_port,
             emission,
             shaping,
+            decoys,
             deadline: AdaptiveDeadline::new(deadline_config, target_count),
             dns_tx,
             ledger: ProbeLedger::new(retry, target_count),
@@ -1067,6 +1171,7 @@ impl RoutedScanner {
             self.src_port,
             self.emission,
             self.shaping,
+            &self.decoys,
             &mut self.faults,
         );
         self.audit.record_send(token.is_some());
@@ -1089,6 +1194,83 @@ impl RoutedScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
+
+    /// A sender that refuses one chosen source and accepts every other, so a
+    /// test can tell whose send outcome came back.
+    struct RefusesOneSource(IpAddr);
+    impl ProbeSender for RefusesOneSource {
+        fn send(
+            &self,
+            _segment: &[u8],
+            src: IpAddr,
+            _dst: IpAddr,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
+            if src == self.0 {
+                Err(SendError::Unsupported("refused for the test"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn emit_among_decoys_sends_every_probe_and_reports_the_real_ones_outcome() {
+        use crate::transport::probe::MockSender;
+
+        let real = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let real_packet = vec![0xAAu8, 0xBB];
+        let decoys = vec![
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), vec![1u8, 1]),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)), vec![2u8, 2]),
+        ];
+
+        // Every probe reaches the wire — the real one and both decoys — and the
+        // real source appears exactly once.
+        let mock = MockSender::default();
+        assert!(
+            emit_among_decoys(&mock, dst, Emission::routed(), real, &real_packet, &decoys).is_ok()
+        );
+        let sent = mock.sent.lock().unwrap();
+        assert_eq!(sent.len(), 3, "the real probe and both decoys are all sent");
+        assert_eq!(sent.iter().filter(|(_, src, _)| *src == real).count(), 1);
+        drop(sent);
+
+        // With no decoys it is a single ordinary send.
+        let mock = MockSender::default();
+        emit_among_decoys(&mock, dst, Emission::routed(), real, &real_packet, &[]).unwrap();
+        assert_eq!(mock.sent.lock().unwrap().len(), 1);
+
+        // The outcome returned is the real probe's own, never a decoy's — which
+        // is what lets a caller keep a token only when *its* probe was sent, the
+        // root of the invariant that a decoy resolves no port.
+        let refusing_the_real = RefusesOneSource(real);
+        assert!(
+            emit_among_decoys(
+                &refusing_the_real,
+                dst,
+                Emission::routed(),
+                real,
+                &real_packet,
+                &decoys
+            )
+            .is_err()
+        );
+        let refusing_a_decoy = RefusesOneSource(decoys[0].0);
+        assert!(
+            emit_among_decoys(
+                &refusing_a_decoy,
+                dst,
+                Emission::routed(),
+                real,
+                &real_packet,
+                &decoys
+            )
+            .is_ok()
+        );
+    }
 
     /// The two kinds of send failure are kept apart, and each keeps only its
     /// first.

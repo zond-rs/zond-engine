@@ -154,6 +154,7 @@ impl TcpPortScanner {
             .source_port_or(rand::random_range(50_000..u16::MAX));
         let emission = tuning.evasion.emission();
         let shaping = tuning.evasion.segment_shaping();
+        let decoys = tuning.evasion.decoys.clone();
         let transport = ProbeTransport::open_with(
             ProbeKind::TcpProbe {
                 reply_port: src_port,
@@ -171,6 +172,7 @@ impl TcpPortScanner {
             src_port,
             emission,
             shaping,
+            decoys,
             PORT_RETRY_POLICY.configured(tuning.retry),
             tuning.os_detection,
             tuning.service_detection,
@@ -210,6 +212,7 @@ impl TcpPortScanner {
             rand::random_range(50_000..u16::MAX),
             Emission::routed(),
             SegmentShaping::default(),
+            Vec::new(),
             PORT_RETRY_POLICY,
             OsDetection::default(),
             ServiceDetection::default(),
@@ -231,6 +234,7 @@ impl TcpPortScanner {
         src_port: u16,
         emission: Emission,
         shaping: SegmentShaping,
+        decoys: Vec<IpAddr>,
         retry: RetryPolicy,
         os_detection: OsDetection,
         service_detection: ServiceDetection,
@@ -262,6 +266,7 @@ impl TcpPortScanner {
                 src_port,
                 emission,
                 shaping,
+                decoys,
                 send_failure: None,
                 audit: ProbeAudit::new(),
                 window: CongestionWindow::new(super::TCP_PORT_WINDOW),
@@ -771,6 +776,7 @@ fn send_tcp_probe(
     dst_port: u16,
     emission: Emission,
     shaping: SegmentShaping,
+    decoys: &[IpAddr],
     reason: &mut Option<String>,
 ) -> Option<TcpToken> {
     let nonce: u32 = rand::random();
@@ -795,7 +801,36 @@ fn send_tcp_probe(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr, emission) {
+    // A decoy from each address of the target's own family: its own port and
+    // nonce, the same technique and shaping, so it is an equal-looking probe and
+    // none of them is the odd one out.
+    let decoy_packets: Vec<(IpAddr, Vec<u8>)> = decoys
+        .iter()
+        .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
+        .filter_map(|&decoy| {
+            tcp::create_probe_shaped(
+                technique,
+                &decoy,
+                &dst_addr,
+                rand::random_range(50_000..u16::MAX),
+                dst_port,
+                rand::random(),
+                shaping.padding,
+                shaping.bad_tcp_checksum,
+            )
+            .ok()
+            .map(|packet| (decoy, packet))
+        })
+        .collect();
+
+    match super::emit_among_decoys(
+        sender,
+        dst_addr,
+        emission,
+        src_addr,
+        &packet,
+        &decoy_packets,
+    ) {
         Ok(()) => {
             success!(
                 verbosity = 2,
@@ -901,6 +936,7 @@ impl TcpPortScanner {
             port,
             self.core.emission,
             self.core.shaping,
+            &self.core.decoys,
             &mut self.core.send_failure,
         );
         self.core.record_send(token.is_some(), first_attempt);

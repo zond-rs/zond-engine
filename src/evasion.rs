@@ -18,6 +18,8 @@
 //! packets on the wire, byte for byte, as a scan configured without it — so
 //! evasion is never something a scan does by accident.
 
+use std::net::IpAddr;
+
 use crate::config::SendMode;
 use crate::model::mac::MacAddr;
 use crate::transport::probe::Emission;
@@ -109,6 +111,22 @@ pub struct EvasionProfile {
     /// [`effective_send_mode`](Self::effective_send_mode)). An IPv6 destination,
     /// or a value too small to carry a header and a fragment, is refused.
     pub fragment: Option<u16>,
+
+    /// Source addresses to send a copy of every probe from, alongside the real
+    /// one, so an observer sees several apparent scanners and cannot tell which
+    /// is real.
+    ///
+    /// Each real probe goes out among its decoys in random order. A decoy is
+    /// built from its own address with its own checksum, so it is not the odd
+    /// one out that carries a wrong one, and it is never recorded — a decoy's
+    /// reply can never resolve a port. Spoofing a source address needs a
+    /// self-built Ethernet frame, so setting this opens the link-layer path (see
+    /// [`effective_send_mode`](Self::effective_send_mode)); and egress filtering
+    /// drops spoofed-source packets before they leave a well-run network, so
+    /// decoys are most effective on the local segment. Only decoys of a target's
+    /// own address family are used against it. Empty sends probes from this host
+    /// alone.
+    pub decoys: Vec<IpAddr>,
 }
 
 impl EvasionProfile {
@@ -120,11 +138,11 @@ impl EvasionProfile {
 
     /// Whether this profile can only be honoured over a self-built Ethernet
     /// frame, because it sets a field the raw-socket path cannot place: a
-    /// spoofed hardware address, or fragments this engine chose rather than the
-    /// kernel. A spoofed source address will join them.
+    /// spoofed hardware address, fragments this engine chose rather than the
+    /// kernel, or decoys sent from spoofed source addresses.
     #[must_use]
     pub fn requires_link_layer(&self) -> bool {
-        self.spoof_mac.is_some() || self.fragment.is_some()
+        self.spoof_mac.is_some() || self.fragment.is_some() || !self.decoys.is_empty()
     }
 
     /// The send mode a scan should actually open, given the one it asked for.
@@ -225,6 +243,14 @@ impl EvasionProfile {
         self.fragment = Some(mtu);
         self
     }
+
+    /// Sets the [decoy](Self::decoys) source addresses every probe is copied
+    /// from.
+    #[must_use]
+    pub fn with_decoys(mut self, decoys: Vec<IpAddr>) -> Self {
+        self.decoys = decoys;
+        self
+    }
 }
 
 /// The segment-level evasion a scan applies to every probe: the choices that
@@ -280,6 +306,11 @@ mod tests {
                 .is_active()
         );
         assert!(EvasionProfile::default().with_fragment(28).is_active());
+        assert!(
+            EvasionProfile::default()
+                .with_decoys(vec!["10.0.0.9".parse().unwrap()])
+                .is_active()
+        );
     }
 
     #[test]
@@ -291,13 +322,15 @@ mod tests {
             .with_padding(16)
             .with_bad_tcp_checksum(true)
             .with_spoof_mac(mac)
-            .with_fragment(28);
+            .with_fragment(28)
+            .with_decoys(vec!["10.0.0.9".parse().unwrap()]);
         assert_eq!(profile.source_port, Some(53));
         assert_eq!(profile.ttl, Some(32));
         assert_eq!(profile.padding, Some(16));
         assert!(profile.bad_tcp_checksum);
         assert_eq!(profile.spoof_mac, Some(mac));
         assert_eq!(profile.fragment, Some(28));
+        assert_eq!(profile.decoys, vec!["10.0.0.9".parse::<IpAddr>().unwrap()]);
     }
 
     #[test]
@@ -379,6 +412,15 @@ mod tests {
         assert_eq!(
             EvasionProfile::default()
                 .with_fragment(28)
+                .effective_send_mode(SendMode::Auto),
+            SendMode::Ethernet
+        );
+
+        // Decoys spoof a source address, which only a self-built frame carries,
+        // so they force the link layer as well.
+        assert_eq!(
+            EvasionProfile::default()
+                .with_decoys(vec!["10.0.0.9".parse().unwrap()])
                 .effective_send_mode(SendMode::Auto),
             SendMode::Ethernet
         );

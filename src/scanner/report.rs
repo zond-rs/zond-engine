@@ -511,7 +511,7 @@ fn ip_set_ranges(ips: &IpSet) -> Vec<IpRange> {
 /// `None`. A port's state under a probe from source port 53 is a different fact
 /// than the same state under an ordinary probe, and this is where a reader tells
 /// the two apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvasionRecord {
     /// The source port every probe left from, or `None` if the scan did not pin
     /// one.
@@ -530,6 +530,9 @@ pub struct EvasionRecord {
     /// The largest each IP fragment a probe was split into, in bytes, or `None`
     /// if the scan sent probes whole.
     pub fragment: Option<u16>,
+    /// The addresses probes were also sent from as decoys, or empty if the scan
+    /// sent from this host alone.
+    pub decoys: Vec<IpAddr>,
 }
 
 impl EvasionRecord {
@@ -544,6 +547,7 @@ impl EvasionRecord {
             bad_tcp_checksum: profile.bad_tcp_checksum,
             spoof_mac: profile.spoof_mac,
             fragment: profile.fragment,
+            decoys: profile.decoys.clone(),
         })
     }
 }
@@ -560,7 +564,7 @@ impl EvasionRecord {
 /// Keeping this separate from [`ZondConfig`] also means the two can evolve
 /// independently: a new interface knob does not silently become part of every
 /// exported report.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScanSettings {
     /// How raw probes were placed on the wire.
     pub send_mode: SendMode,
