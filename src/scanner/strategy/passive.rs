@@ -46,11 +46,26 @@
 //! third address is read for what the *sender* is and never for what the address
 //! it names is, which is the same reasoning `local`'s `note_declaration` already
 //! applies to an overheard router advertisement.
+//!
+//! ## What it costs to run for a week
+//!
+//! The other two phases are bounded by their own enumeration: a sweep of a
+//! `/16` records at most sixty-five thousand hosts because that is how many it
+//! asked about. This one asked about nothing and stops when somebody stops it,
+//! so what it holds grows with the *traffic* rather than with a plan — and on
+//! [`Recording::Everything`] over a link that carries traffic to anywhere else,
+//! that is most of the internet.
+//!
+//! Three things are bounded rather than left to the network to size, each named
+//! by a constant at the top of this file: `MAX_RECORDED_HOSTS` is the machines a
+//! watch will record, `MAX_DECLARING_MACS` the claims it will hold against
+//! machines it has not identified, and `LISTEN_QUEUE_DEPTH` the frames waiting
+//! to be read. Each reports itself when it bites, because a limit that is silent
+//! is indistinguishable from a quiet network — which is the same reason the drop
+//! counter is read at the end of every run.
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-
-use async_trait::async_trait;
 
 use crate::config::OsDetection;
 use crate::fingerprint::os;
@@ -111,6 +126,29 @@ const LISTEN_QUEUE_DEPTH: usize = 4096;
 /// segment full of strangers would otherwise set the size of this map. A link
 /// with more than this many distinct speakers is one where the surplus is noise.
 const MAX_DECLARING_MACS: usize = 4096;
+
+/// How many machines a watch will record before it stops taking new ones.
+///
+/// **The one phase with no end of its own needs a ceiling somewhere.** The other
+/// two are bounded by their own enumeration: a sweep of a `/16` records at most
+/// sixty-five thousand hosts because that is how many it asked about. A listener
+/// asked about nothing, runs until somebody stops it, and records whatever
+/// arrives — so on [`Recording::Everything`] over a transit link the report
+/// grows with the *traffic*, and a watch left up for a week is a watch that runs
+/// the machine out of memory.
+///
+/// A `/16` of machines, which is far more than any single segment carries, so
+/// the default [`Recording::Attached`] scope will not reach it on a real link.
+/// What reaches it is the wide scope on a busy uplink, which is exactly the case
+/// this exists for.
+///
+/// **Reaching it stops new records and never touches the ones already made.**
+/// Evicting would be this phase lowering a claim, which §2 of this module
+/// forbids — a host dropped to make room is indistinguishable in the report from
+/// a host that was never heard. Refusing is visible instead: it is reported as a
+/// failure, so the report says the inventory is short and the run's exit status
+/// says so too.
+const MAX_RECORDED_HOSTS: usize = 65_536;
 
 /// How often a listener looks at the abort signal while nothing is arriving.
 ///
@@ -306,10 +344,104 @@ pub enum Recording {
     Only(IpSet),
 }
 
-/// A strategy that reads a link and concludes from it, having sent nothing.
+/// What the equipment on the far end of this machine's cable says about itself,
+/// whichever protocol it said it in.
 ///
-/// The third trait beside [`HostScanner`](super::HostScanner) and
-/// [`PortScanner`](super::PortScanner), and the shape differs from both because
+/// LLDP and CDP answer the same four questions in different words — what the
+/// device calls itself, which of its ports this frame left by, which VLAN that
+/// port places untagged traffic in, and an address the device is managed at —
+/// and a listener does exactly the same thing with all four answers. Reading
+/// both into one shape here is what keeps [`read_announcement`] from being one
+/// routine written twice, which is what it was.
+///
+/// [`read_announcement`]: PassiveListener::read_announcement
+struct Announced<'a> {
+    /// Which protocol carried it. The one field that survives *because* the two
+    /// differ: an attachment records whose word it is on.
+    source: AttachmentSource,
+    /// What the device calls itself, which on managed equipment is its hostname.
+    device_name: Option<&'a str>,
+    /// What the device calls the port this frame left by — which is the port
+    /// this machine is plugged into, and the finding no probe can obtain.
+    port: Option<&'a str>,
+    /// The VLAN this port places untagged traffic in.
+    native_vlan: Option<u16>,
+    /// An address the device is managed at, where it advertised one.
+    management_address: Option<IpAddr>,
+    /// What the device says it is **doing**, never merely what it supports.
+    ///
+    /// Both capability words distinguish the two, and reading the wrong one
+    /// would put a router on every access switch with an unused routing
+    /// licence. The predicates called below are the enabled ones.
+    roles: Vec<NetworkRole>,
+}
+
+impl<'a> Announced<'a> {
+    /// Reads `frame` as whichever of the two announcements it is, or `None`
+    /// where it is neither.
+    ///
+    /// LLDP first, because it is the standard one and the one a mixed estate
+    /// runs; CDP is reached only where that found nothing, so a device speaking
+    /// both is read once and under one source.
+    fn read(frame: &Frame<'a>) -> Option<Self> {
+        if let Some(advertisement) = lldp::parse(frame) {
+            let mut roles = Vec::new();
+            if let Some(capabilities) = advertisement.capabilities {
+                if capabilities.is_bridge() {
+                    roles.push(NetworkRole::Switch);
+                }
+                if capabilities.is_router() {
+                    roles.push(NetworkRole::Router);
+                }
+            }
+
+            return Some(Self {
+                source: AttachmentSource::Lldp,
+                device_name: advertisement.system_name,
+                // Only the text spelling. A chassis-shaped port identifier — a
+                // MAC, an address — names the port in a vocabulary nobody can
+                // read back to a patch panel, which is what this is read for.
+                port: match advertisement.port_id {
+                    Some(lldp::Identifier::Text(port)) => Some(port),
+                    _ => None,
+                },
+                native_vlan: advertisement.port_vlan,
+                management_address: advertisement.management_address,
+                roles,
+            });
+        }
+
+        let announcement = cdp::parse(frame)?;
+
+        let mut roles = Vec::new();
+        if let Some(capabilities) = announcement.capabilities {
+            // `is_switch` where LLDP says `is_bridge`: each protocol's own word
+            // for the same behaviour, and the reason this normalising step
+            // exists rather than one of them being renamed to match the other.
+            if capabilities.is_switch() {
+                roles.push(NetworkRole::Switch);
+            }
+            if capabilities.is_router() {
+                roles.push(NetworkRole::Router);
+            }
+        }
+
+        Some(Self {
+            source: AttachmentSource::Cdp,
+            device_name: announcement.device_id,
+            port: announcement.port_id,
+            native_vlan: announcement.native_vlan,
+            management_address: announcement.address,
+            roles,
+        })
+    }
+}
+
+/// Reads one or more links and records what their traffic proves, having sent
+/// nothing.
+///
+/// The third strategy beside [`HostScanner`](super::HostScanner) and
+/// [`PortScanner`](super::PortScanner), and its shape differs from both because
 /// what it does differs from both. A `HostScanner` owns targets and finishes
 /// when it has asked about all of them; a `PortScanner` is fed targets and
 /// finishes when the stream ends. A listener owns no targets, enumerates
@@ -317,22 +449,8 @@ pub enum Recording {
 /// to, and not before.
 ///
 /// Findings go to the [`ScanContext`] it was built with, as they do for the
-/// other two: a strategy writes what it found and returns only whether the
+/// other two: a strategy writes what it found, and returns only whether the
 /// attempt itself got to the end.
-#[async_trait]
-pub trait Listener: Send {
-    /// Identifies the strategy, so a failure can be attributed to it.
-    fn kind(&self) -> ScannerKind;
-
-    /// Reads until the abort signal is raised or the capture ends.
-    ///
-    /// Returns `Ok` when the run reached its end, including an end forced by
-    /// [`ScanHandle::abort`], and `Err` only when the strategy could not do its
-    /// job at all.
-    async fn observe(&mut self) -> Result<(), StrategyError>;
-}
-
-/// Reads one or more links and records what their traffic proves.
 pub struct PassiveListener {
     ctx: ScanContext,
     frames: FrameStream,
@@ -371,17 +489,35 @@ pub struct PassiveListener {
     /// identified only by the frames it forwards — can be applied to the host it
     /// turns out to be.
     ///
-    /// Grows only from frames that produced a finding, which the recording
+    /// **Seeded from whatever the store already holds**, which is what makes a
+    /// resumed watch add to its earlier sittings instead of starting a second
+    /// record per machine — see [`paired_with_known_hosts`]. Beyond that it
+    /// grows only from frames that produced a finding, which the recording
     /// filter has already narrowed.
+    ///
+    /// [`paired_with_known_hosts`]: PassiveListener::paired_with_known_hosts
     mac_to_ip: HashMap<MacAddr, ScopedIp>,
     /// What a machine said about itself before this listener knew which host it
     /// was.
     ///
-    /// Bounded, unlike [`mac_to_ip`](Self::mac_to_ip), and for the reason the
-    /// local sweep's equivalent is: this grows from traffic nobody solicited, so
-    /// a segment full of strangers decides how large it gets unless something
-    /// else does.
+    /// Bounded for the reason the local sweep's equivalent is: this grows from
+    /// traffic nobody solicited, so a segment full of strangers decides how
+    /// large it gets unless something else does.
     declared: HashMap<MacAddr, HashSet<NetworkRole>>,
+    /// How many records this watch is holding, counted as it creates them.
+    ///
+    /// Counted rather than asked of the store per frame: [`ScanContext::write_host`]
+    /// already reports whether a write created a record, so the exact figure is
+    /// free where reading the map's length on every finding would not be.
+    ///
+    /// Starts at whatever the store already holds, so a resumed watch's earlier
+    /// sittings count towards the ceiling they contributed to.
+    ///
+    /// [`ScanContext::write_host`]: crate::scanner::session::ScanContext::write_host
+    held: usize,
+    /// Whether the ceiling has been reported, so that it is said once rather
+    /// than on every frame after it bites.
+    said_full: bool,
     /// The readers, which are the same ones a local sweep interprets its
     /// replies with. A frame that proves a host is there proves it whether or
     /// not this engine asked.
@@ -427,19 +563,49 @@ impl PassiveListener {
         Ok(Self::over(frames, capture, recording, on_link, ctx))
     }
 
-    /// Builds a listener over an already-open frame stream.
+    /// Builds a listener over a caller-supplied frame stream, opening no capture.
     ///
-    /// The seam a test drives a listener through: push frames onto the sending
-    /// half and they arrive as though captured, with no interface and no
-    /// privileges involved.
-    pub fn over(
+    /// The listening twin of
+    /// [`EthernetHandle::from_parts`](crate::transport::channel::EthernetHandle::from_parts):
+    /// whatever is pushed onto the sending half of `frames` arrives as though it
+    /// had been captured off `on_link`, with no interface, no capture and no
+    /// privileges involved. That is what lets a listener be driven against a
+    /// synthetic segment from outside this crate.
+    ///
+    /// There is no sending half to supply, unlike the other two seams. A
+    /// listener never transmits, so a fake segment aimed at one only has to
+    /// speak.
+    ///
+    /// Requires the `test-support` feature outside this crate.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_parts(
+        frames: FrameStream,
+        on_link: OnLink,
+        recording: Recording,
+        ctx: ScanContext,
+    ) -> Self {
+        Self::over(
+            frames,
+            capture::CaptureGuard::noop(),
+            recording,
+            on_link,
+            ctx,
+        )
+    }
+
+    /// Builds a listener over an already-open frame stream and the guard keeping
+    /// its capture alive.
+    fn over(
         frames: FrameStream,
         capture: capture::CaptureGuard,
         recording: Recording,
         on_link: OnLink,
         ctx: ScanContext,
     ) -> Self {
+        let mac_to_ip = Self::paired_with_known_hosts(&ctx);
+
         Self {
+            held: ctx.host_count(),
             ctx,
             frames,
             capture,
@@ -447,10 +613,50 @@ impl PassiveListener {
             on_link,
             os: OsDetection::default(),
             deadline: None,
-            mac_to_ip: HashMap::new(),
+            mac_to_ip,
             declared: HashMap::new(),
+            said_full: false,
             protocols: discovery::sweep_protocols(),
         }
+    }
+
+    /// The hardware address of every machine the store already knows, paired
+    /// with the record it is kept under.
+    ///
+    /// **This is what makes a resumed watch one watch.** A sitting keys each
+    /// machine by the first address it hears that machine at, and which address
+    /// that is depends only on which frame happened to arrive first. Starting a
+    /// second sitting with an empty pairing means the same laptop, restored
+    /// under `10.0.0.5` and heard tonight from `fe80::…`, gets a second record
+    /// — and a watch resumed three times reports one machine as four.
+    ///
+    /// Which is the failure [`record`](Self::record) was shaped to avoid within
+    /// a sitting. Seeding here extends the same rule across them: the pairing
+    /// begins as whatever the earlier sittings concluded rather than as nothing.
+    ///
+    /// Empty for a watch that was not resumed, since the store is.
+    fn paired_with_known_hosts(ctx: &ScanContext) -> HashMap<MacAddr, ScopedIp> {
+        let mut pairs = HashMap::new();
+
+        // Sorted, because the store is a sharded map and hands its keys back in
+        // no particular order. Two records under one hardware address is a
+        // machine some earlier sitting split, and which of them tonight's
+        // sighting rejoins should not depend on how a hash landed.
+        let mut keys = ctx.host_addresses();
+        keys.sort_unstable();
+
+        for key in keys {
+            let Some(Some(mac)) = ctx.read_host(key.clone(), Host::mac) else {
+                // No hardware address is no way to recognise it again — the
+                // same reason `record` merges such a host by address alone.
+                continue;
+            };
+            // The lowest address wins, which is arbitrary and only has to be
+            // decidable: what matters is that the split stops growing.
+            pairs.entry(mac).or_insert(key);
+        }
+
+        pairs
     }
 
     /// Reads the system behind each host at `level`, or at none.
@@ -540,69 +746,29 @@ impl PassiveListener {
     fn read_announcement(&mut self, frame: &Frame<'_>, captured: &CapturedFrame) -> bool {
         let source = frame.source().into_core();
 
-        let (attachment, roles) = if let Some(advertisement) = lldp::parse(frame) {
-            let mut attachment = Attachment::new(
-                captured.zone.clone(),
-                AttachmentSource::Lldp,
-                captured.observed_at,
-            )
-            .with_device_mac(source);
-            if let Some(name) = advertisement.system_name {
-                attachment = attachment.with_device_name(name);
-            }
-            if let Some(lldp::Identifier::Text(port)) = advertisement.port_id {
-                attachment = attachment.with_port(port);
-            }
-            if let Some(vlan) = advertisement.port_vlan {
-                attachment = attachment.with_native_vlan(vlan);
-            }
-            if let Some(address) = advertisement.management_address {
-                attachment = attachment.with_management_address(address);
-            }
-
-            let mut roles = Vec::new();
-            if let Some(capabilities) = advertisement.capabilities {
-                if capabilities.is_bridge() {
-                    roles.push(NetworkRole::Switch);
-                }
-                if capabilities.is_router() {
-                    roles.push(NetworkRole::Router);
-                }
-            }
-            (attachment, roles)
-        } else if let Some(announcement) = cdp::parse(frame) {
-            let mut attachment = Attachment::new(
-                captured.zone.clone(),
-                AttachmentSource::Cdp,
-                captured.observed_at,
-            )
-            .with_device_mac(source);
-            if let Some(name) = announcement.device_id {
-                attachment = attachment.with_device_name(name);
-            }
-            if let Some(port) = announcement.port_id {
-                attachment = attachment.with_port(port);
-            }
-            if let Some(vlan) = announcement.native_vlan {
-                attachment = attachment.with_native_vlan(vlan);
-            }
-            if let Some(address) = announcement.address {
-                attachment = attachment.with_management_address(address);
-            }
-
-            let mut roles = Vec::new();
-            if let Some(capabilities) = announcement.capabilities {
-                if capabilities.is_switch() {
-                    roles.push(NetworkRole::Switch);
-                }
-                if capabilities.is_router() {
-                    roles.push(NetworkRole::Router);
-                }
-            }
-            (attachment, roles)
-        } else {
+        let Some(announced) = Announced::read(frame) else {
             return false;
         };
+
+        let mut attachment = Attachment::new(
+            captured.zone.clone(),
+            announced.source,
+            captured.observed_at,
+        )
+        .with_device_mac(source);
+        if let Some(name) = announced.device_name {
+            attachment = attachment.with_device_name(name);
+        }
+        if let Some(port) = announced.port {
+            attachment = attachment.with_port(port);
+        }
+        if let Some(vlan) = announced.native_vlan {
+            attachment = attachment.with_native_vlan(vlan);
+        }
+        if let Some(address) = announced.management_address {
+            attachment = attachment.with_management_address(address);
+        }
+        let roles = announced.roles;
 
         info!(
             verbosity = 1,
@@ -946,17 +1112,59 @@ impl PassiveListener {
         }
     }
 
-    /// Folds a finding into the store, promoting rather than replacing.
+    /// Folds a finding into the store under `key`, promoting rather than
+    /// replacing.
+    ///
+    /// **Every finding this listener records passes through here**, which is
+    /// what lets the ceiling be one branch rather than a rule each reader has to
+    /// remember.
     ///
     /// [`Host::merge`] is what keeps a listener from ever lowering a claim: it
     /// promotes status and accumulates addresses, hardware addresses and roles,
     /// and where two findings are equally good the one already recorded wins.
-    fn merge(&self, host: Host) {
-        let key = host.scoped_ip();
-        self.ctx.write_host(key, |existing| {
+    fn store(&mut self, key: ScopedIp, host: Host) {
+        // At the ceiling a record that already exists still takes everything
+        // this frame proves — the phase goes on raising claims about what it is
+        // holding. What it stops doing is starting new ones.
+        if self.held >= MAX_RECORDED_HOSTS && !self.ctx.holds_host(&key) {
+            self.report_full();
+            return;
+        }
+
+        // Counted from the store's own answer rather than from having called it.
+        // An address the scan's exclusions forbid is dropped inside `write_host`
+        // and creates nothing, and a ceiling counting those would come down
+        // early on a run that had excluded a range.
+        if self.ctx.write_host(key, |existing| {
             existing.merge(host);
             true
-        });
+        }) {
+            self.held += 1;
+        }
+    }
+
+    /// Says once that this watch has stopped taking new machines.
+    ///
+    /// Through [`record_failure`] rather than a bare log line, so it reaches the
+    /// report and not only the terminal: a watch that hit its ceiling produced a
+    /// short inventory, and a reader coming to that report a month later has no
+    /// other way to know it. It is what makes the run exit as a partial one.
+    ///
+    /// [`record_failure`]: crate::scanner::session::ScanContext::record_failure
+    fn report_full(&mut self) {
+        if std::mem::replace(&mut self.said_full, true) {
+            return;
+        }
+
+        self.ctx.record_failure(
+            ScannerKind::Passive,
+            format!(
+                "this watch is holding the {MAX_RECORDED_HOSTS} machines it will hold, \
+                 so the ones heard from here on are not being recorded; a link \
+                 carrying traffic to anywhere else carries evidence about everywhere \
+                 else, which is what the default recording scope leaves out"
+            ),
+        );
     }
 
     /// Folds a finding into the store, and remembers which machine it was about.
@@ -980,7 +1188,8 @@ impl PassiveListener {
             // Nothing to recognise it by again. A host with no hardware address
             // is one seen from off the link, where the address on the frame
             // belongs to the last hop rather than to the sender.
-            self.merge(host);
+            let key = host.scoped_ip();
+            self.store(key, host);
             return;
         };
 
@@ -999,27 +1208,44 @@ impl PassiveListener {
         // The first address the machine was seen at keys it, and every later
         // one joins that record through [`Host::merge`] — which ranks the
         // addresses rather than taking the newest, so which reply arrived first
-        // decides nothing about how the host is reported.
-        let key = self
-            .mac_to_ip
-            .entry(mac)
-            .or_insert_with(|| host.scoped_ip())
-            .clone();
+        // decides nothing about how the host is reported. A resumed watch
+        // begins with the earlier sittings' pairings already in hand, so "the
+        // first address" spans the whole watch rather than this sitting of it.
+        let known = self.mac_to_ip.get(&mac).cloned();
+        let key = known.clone().unwrap_or_else(|| host.scoped_ip());
 
-        self.ctx.write_host(key, |existing| {
-            existing.merge(host);
-            true
-        });
+        self.store(key.clone(), host);
+
+        // Filed for a machine that had no record, and only once the store
+        // actually holds one under this key.
+        //
+        // **Two things can decline the write**, and a pairing that survived
+        // either would name a record nothing is kept under: every later sighting
+        // of the machine would be routed to that key and dropped, and
+        // `note_declaration` would write through it — which is the one path into
+        // the store that does not come back through [`store`](Self::store).
+        //
+        // The ceiling is one. The scan's exclusions are the other, and they
+        // matter more here than the count does: a machine holding an excluded
+        // address alongside an ordinary one would otherwise be keyed by
+        // whichever arrived first, and a frame from the address nobody excluded
+        // would be thrown away because the machine had once spoken from the
+        // address somebody did.
+        //
+        // Asked once per machine rather than once per frame, since a machine
+        // already paired takes neither branch.
+        if known.is_none() && self.ctx.holds_host(&key) {
+            self.mac_to_ip.insert(mac, key);
+        }
     }
-}
 
-#[async_trait]
-impl Listener for PassiveListener {
-    fn kind(&self) -> ScannerKind {
-        ScannerKind::Passive
-    }
-
-    async fn observe(&mut self) -> Result<(), StrategyError> {
+    /// Reads until the abort signal is raised, the span runs out, or the capture
+    /// ends.
+    ///
+    /// Returns `Ok` when the run reached its end, including an end forced by
+    /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort), and
+    /// `Err` only where the strategy could not do its job at all.
+    pub async fn observe(&mut self) -> Result<(), StrategyError> {
         // A listener has no schedule of its own, so the abort flag is checked on
         // a ticker rather than between units of work: there may be no next frame
         // for hours, and a run that only noticed the signal when something
@@ -1739,5 +1965,330 @@ mod tests {
             Some("already-known"),
             "a listener added to the record and took nothing off it"
         );
+    }
+
+    /// A machine restored from an earlier sitting is the same machine tonight.
+    ///
+    /// A sitting keys each machine by the first address it hears it at, and
+    /// which address that is depends only on which frame happened to arrive
+    /// first. So a second sitting starting with an empty pairing re-keys every
+    /// machine it hears — and the laptop restored under `10.0.0.5` and heard
+    /// tonight from `10.0.0.6` becomes a second record, with a third waiting
+    /// for the next restart.
+    ///
+    /// Which is `one_machine_answering_at_several_addresses_is_one_host` again,
+    /// reintroduced across sittings by the one feature that exists to prevent
+    /// it: the whole argument for resuming a watch is that a listener left up
+    /// for a week across three restarts produces one record of the week.
+    #[test]
+    fn a_machine_restored_from_an_earlier_sitting_is_not_recorded_twice() {
+        use crate::protocols::tcp::flags;
+
+        const MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        let peer = Ipv4Addr::new(10, 0, 0, 9);
+        let first = Ipv4Addr::new(10, 0, 0, 5);
+        let second = Ipv4Addr::new(10, 0, 0, 6);
+
+        // What an earlier sitting wrote down, restored into the store before
+        // this one starts — which is what `listen_with_journal` does, and the
+        // reason the pairing has to be read from the store rather than begun
+        // empty.
+        let (_session, ctx) = ScanSession::new();
+        let mut earlier = Host::new(IpAddr::V4(first));
+        earlier.record_mac(MAC.into_core());
+        earlier.set_zone(zone());
+        earlier.record_evidence(
+            HostStatus::Up,
+            StatusReason::new(StatusProtocol::Tcp, "heard last night"),
+        );
+        ctx.restore_hosts(&[earlier]);
+        assert_eq!(ctx.host_count(), 1, "the sitting starts with one machine");
+
+        let (_tx, rx) = tokio::sync::mpsc::channel(16);
+        let mut ranges = IpSet::new();
+        ranges.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+        let mut listener = PassiveListener::over(
+            rx,
+            capture::CaptureGuard::noop(),
+            Recording::Everything,
+            OnLink::of(ranges),
+            ctx.clone(),
+        );
+
+        // Tonight the same machine is heard first at its *other* address, which
+        // is the ordinary case: a device answers at everything it holds and
+        // nothing decides which frame arrives first.
+        listener.read(&captured(tcp_frame_from(
+            MAC,
+            second,
+            22,
+            peer,
+            51235,
+            flags::SYN | flags::ACK,
+        )));
+
+        let hosts = ctx.hosts_snapshot();
+        assert_eq!(
+            hosts.len(),
+            1,
+            "one machine across two sittings, not one per sitting: {hosts:#?}"
+        );
+
+        let host = &hosts[0];
+        assert!(
+            host.ips().contains(&IpAddr::V4(first)) && host.ips().contains(&IpAddr::V4(second)),
+            "tonight's address joined the record rather than opening one: {:?}",
+            host.ips()
+        );
+    }
+
+    /// A host with no hardware address cannot be paired, and seeding must not
+    /// invent one for it.
+    ///
+    /// The restored store holds both kinds: machines on the link, which carry a
+    /// MAC, and hosts heard from off it through a router, which deliberately do
+    /// not — see `read_endpoint`. Reading a MAC off the second kind is the
+    /// mistake this guards, and it would be the same one the endpoint reader
+    /// refuses: crediting a router's hardware to a machine somewhere else.
+    #[test]
+    fn seeding_the_pairing_skips_a_restored_host_with_no_hardware_address() {
+        let (_session, ctx) = ScanSession::new();
+
+        let mut off_link = Host::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)));
+        off_link.record_evidence(
+            HostStatus::Up,
+            StatusReason::new(StatusProtocol::Tcp, "heard through a router"),
+        );
+        ctx.restore_hosts(&[off_link]);
+
+        assert!(
+            PassiveListener::paired_with_known_hosts(&ctx).is_empty(),
+            "a host with no hardware address pairs with nothing"
+        );
+    }
+
+    /// An address the scan excluded does not take the machine's other addresses
+    /// down with it.
+    ///
+    /// The exclusion policy is enforced inside the store, so a write naming an
+    /// excluded address creates nothing. The pairing has to notice: filed anyway,
+    /// it would key the machine by an address nothing is kept under, and every
+    /// later frame from the machine — including from the address nobody
+    /// excluded — would be routed to that key and dropped. A machine would then
+    /// disappear from the report for having once spoken from an address somebody
+    /// asked to leave alone.
+    #[test]
+    fn a_machine_that_spoke_from_an_excluded_address_is_still_recorded_at_its_others() {
+        use crate::model::exclusion::Exclusions;
+        use crate::protocols::tcp::flags;
+
+        const MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        let excluded = Ipv4Addr::new(10, 0, 0, 5);
+        let ordinary = Ipv4Addr::new(10, 0, 0, 6);
+        let peer = Ipv4Addr::new(10, 0, 0, 9);
+
+        let mut forbidden = IpSet::new();
+        forbidden.insert(IpAddr::V4(excluded));
+        let (_session, ctx) = ScanSession::with_exclusions(Exclusions::new(forbidden));
+
+        let (_tx, rx) = tokio::sync::mpsc::channel(16);
+        let mut ranges = IpSet::new();
+        ranges.insert_range("10.0.0.0/24".parse().expect("a valid range"));
+        let mut listener = PassiveListener::over(
+            rx,
+            capture::CaptureGuard::noop(),
+            Recording::Everything,
+            OnLink::of(ranges),
+            ctx.clone(),
+        );
+
+        // The excluded address first, so it is the one that would have keyed the
+        // machine.
+        listener.read(&captured(tcp_frame_from(
+            MAC,
+            excluded,
+            443,
+            peer,
+            51234,
+            flags::SYN | flags::ACK,
+        )));
+        assert_eq!(
+            ctx.host_count(),
+            0,
+            "the excluded address is not recorded, which is the policy working"
+        );
+
+        listener.read(&captured(tcp_frame_from(
+            MAC,
+            ordinary,
+            22,
+            peer,
+            51235,
+            flags::SYN | flags::ACK,
+        )));
+
+        let hosts = ctx.hosts_snapshot();
+        assert_eq!(
+            hosts.len(),
+            1,
+            "the machine's other address is its own host"
+        );
+        assert_eq!(hosts[0].primary_ip(), IpAddr::V4(ordinary));
+        assert!(
+            !hosts[0].ips().contains(&IpAddr::V4(excluded)),
+            "and the excluded address did not ride in on the merge: {:?}",
+            hosts[0].ips()
+        );
+    }
+
+    /// The one phase with no end of its own needs a ceiling, and reaching it
+    /// stops new records without touching the ones already made.
+    ///
+    /// Evicting instead would be this phase lowering a claim: a host dropped to
+    /// make room reads in the report exactly like a host that was never heard,
+    /// and there would be nothing to say which. So the refusal is the visible
+    /// half — it is reported as a failure, which is what makes the run's own
+    /// exit status say the inventory came up short.
+    #[test]
+    fn a_watch_at_its_ceiling_stops_taking_machines_and_keeps_enriching_the_ones_it_has() {
+        use crate::protocols::tcp::flags;
+
+        const HELD_MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const STRANGER_MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xBB);
+
+        let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
+        let peer = Ipv4Addr::new(10, 0, 0, 9);
+        let known = Ipv4Addr::new(10, 0, 0, 5);
+
+        // One machine on record, then already full — without standing up
+        // sixty-five thousand hosts to get there. What is under test is the
+        // branch, not the arithmetic that reaches it.
+        listener.read(&captured(tcp_frame_from(
+            HELD_MAC,
+            known,
+            22,
+            peer,
+            51234,
+            flags::SYN | flags::ACK,
+        )));
+        assert_eq!(ctx.host_count(), 1);
+        listener.held = MAX_RECORDED_HOSTS;
+
+        // A machine it has never heard of, which needs a record of its own.
+        listener.read(&captured(tcp_frame_from(
+            STRANGER_MAC,
+            Ipv4Addr::new(10, 0, 0, 200),
+            22,
+            peer,
+            51235,
+            flags::SYN | flags::ACK,
+        )));
+        assert_eq!(
+            ctx.host_count(),
+            1,
+            "a machine heard at the ceiling is not recorded"
+        );
+
+        // And the one it already holds, now serving on a second port.
+        listener.read(&captured(tcp_frame_from(
+            HELD_MAC,
+            known,
+            443,
+            peer,
+            51236,
+            flags::SYN | flags::ACK,
+        )));
+
+        let host = ctx.hosts_snapshot().remove(0);
+        let mut open: Vec<u16> = host.ports().map(Port::number).collect();
+        open.sort_unstable();
+        assert_eq!(
+            open,
+            vec![22, 443],
+            "a record already held goes on taking what it is told"
+        );
+
+        let failures = ctx.failures_snapshot();
+        assert_eq!(
+            failures.len(),
+            1,
+            "the ceiling is reported once, not once per frame: {failures:#?}"
+        );
+    }
+
+    /// LLDP and CDP say the same four things in different words, and a listener
+    /// does the same thing with all four — so they are read through one
+    /// normalising step rather than two routines that happen to agree.
+    ///
+    /// A field mismapped there is silent in a way most parsing mistakes are
+    /// not: the attachment still records, just with no port on it, or with the
+    /// management address in place of a VLAN. Nothing errors and the line in
+    /// the terminal still appears.
+    #[test]
+    fn both_announcement_protocols_land_in_the_same_four_fields() {
+        use crate::protocols::{cdp, lldp};
+
+        for (spoken, frame, source, device_mac) in [
+            (
+                "LLDP",
+                lldp::tests::switch_announcement(),
+                AttachmentSource::Lldp,
+                lldp::tests::SWITCH_MAC,
+            ),
+            (
+                "CDP",
+                cdp::tests::switch_announcement(),
+                AttachmentSource::Cdp,
+                cdp::tests::SWITCH_MAC,
+            ),
+        ] {
+            let (mut listener, ctx) = listening(Recording::Everything);
+            listener.read(&captured(frame));
+
+            let attachments = ctx.take_attachments();
+            assert_eq!(attachments.len(), 1, "{spoken}: one frame, one attachment");
+            let attachment = &attachments[0];
+
+            assert_eq!(attachment.source(), source, "{spoken}: whose word it is");
+            assert_eq!(
+                attachment.device_mac(),
+                Some(device_mac.into_core()),
+                "{spoken}: the machine that sent it"
+            );
+            assert_eq!(
+                attachment.device_name(),
+                Some("core-sw-02"),
+                "{spoken}: what the device calls itself"
+            );
+            assert_eq!(
+                attachment.port(),
+                Some("GigabitEthernet1/0/14"),
+                "{spoken}: the port this machine is plugged into"
+            );
+            assert_eq!(
+                attachment.native_vlan(),
+                Some(40),
+                "{spoken}: the VLAN untagged traffic lands in"
+            );
+            assert_eq!(
+                attachment.management_address(),
+                Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))),
+                "{spoken}: where the device is managed"
+            );
+
+            // Both frames advertise bridging *and* routing as enabled, which is
+            // where the two protocols' vocabularies differ: LLDP calls it a
+            // bridge and CDP calls it a switch.
+            let host = ctx
+                .hosts_snapshot()
+                .into_iter()
+                .find(|host| host.primary_ip() == IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)))
+                .unwrap_or_else(|| panic!("{spoken}: the device named an address of its own"));
+            let roles = host.network_roles();
+            assert!(
+                roles.contains(&NetworkRole::Switch) && roles.contains(&NetworkRole::Router),
+                "{spoken}: both enabled capabilities reached the host: {roles:?}"
+            );
+        }
     }
 }

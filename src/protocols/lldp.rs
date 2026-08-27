@@ -475,11 +475,11 @@ fn text(value: &[u8]) -> Option<&str> {
 // ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::protocols::ethernet;
 
-    const SWITCH_MAC: MacAddr = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
+    pub(crate) const SWITCH_MAC: MacAddr = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
     const NEAREST_BRIDGE: MacAddr = MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E);
 
     /// One TLV: seven bits of type and nine of length, packed across two bytes.
@@ -545,6 +545,36 @@ mod tests {
         let mut value = supported.to_be_bytes().to_vec();
         value.extend_from_slice(&enabled.to_be_bytes());
         tlv(TLV_CAPABILITIES, &value)
+    }
+
+    /// A complete advertisement from a managed switch that is also routing:
+    /// named `core-sw-02`, on port `GigabitEthernet1/0/14`, untagged traffic in
+    /// VLAN 40, managed at `10.0.0.2`.
+    ///
+    /// Shared with the listener's tests, which read this protocol and CDP
+    /// through one normalising step and need a frame of each carrying the same
+    /// four facts. Deliberately the same four values as
+    /// [`cdp::tests::switch_announcement`](crate::protocols::cdp::tests::switch_announcement),
+    /// so a test can assert the two arrive identically rather than assert twice.
+    pub(crate) fn switch_announcement() -> Vec<u8> {
+        frame_of(&[
+            chassis_mac(SWITCH_MAC),
+            port_named("GigabitEthernet1/0/14"),
+            tlv(TLV_TTL, &120u16.to_be_bytes()),
+            tlv(TLV_SYSTEM_NAME, b"core-sw-02"),
+            capability_tlv(
+                Capabilities::BRIDGE | Capabilities::ROUTER,
+                Capabilities::BRIDGE | Capabilities::ROUTER,
+            ),
+            tlv(
+                TLV_ORGANIZATIONALLY_SPECIFIC,
+                &[0x00, 0x80, 0xC2, SUBTYPE_PORT_VLAN, 0x00, 0x28],
+            ),
+            tlv(
+                TLV_MANAGEMENT_ADDRESS,
+                &[5, AFN_IPV4, 10, 0, 0, 2, 0x03, 0, 0, 0, 1, 0],
+            ),
+        ])
     }
 
     /// The whole walk, over the advertisement a managed switch actually sends.

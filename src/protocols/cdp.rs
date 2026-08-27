@@ -328,11 +328,11 @@ fn text(value: &[u8]) -> Option<&str> {
 // ╚════════════════════════════════════════════╝
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::protocols::ethernet;
 
-    const SWITCH_MAC: MacAddr = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
+    pub(crate) const SWITCH_MAC: MacAddr = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
 
     /// One record: two bytes of type, two of length, then the value — where the
     /// length **includes** those four bytes.
@@ -395,6 +395,31 @@ mod tests {
         value.extend_from_slice(&4u16.to_be_bytes());
         value.extend_from_slice(&address.octets());
         record(RECORD_ADDRESSES, &value)
+    }
+
+    /// A complete announcement from a Cisco switch that is also routing: named
+    /// `core-sw-02`, on port `GigabitEthernet1/0/14`, untagged traffic in VLAN
+    /// 40, reachable at `10.0.0.2`.
+    ///
+    /// The same four facts as
+    /// [`lldp::tests::switch_announcement`](crate::protocols::lldp::tests::switch_announcement),
+    /// deliberately, so the listener's tests can assert that both protocols
+    /// arrive at one shape rather than assert twice against two.
+    ///
+    /// The device name is the bare one rather than the fully-qualified name a
+    /// Cisco box usually sends, because what is under test there is that the
+    /// field is carried across — not what the vendor puts in it.
+    pub(crate) fn switch_announcement() -> Vec<u8> {
+        frame_of(&[
+            record(RECORD_DEVICE_ID, b"core-sw-02"),
+            record(RECORD_PORT_ID, b"GigabitEthernet1/0/14"),
+            record(
+                RECORD_CAPABILITIES,
+                &(Capabilities::SWITCH | Capabilities::ROUTER).to_be_bytes(),
+            ),
+            record(RECORD_NATIVE_VLAN, &40u16.to_be_bytes()),
+            ipv4_address_record(Ipv4Addr::new(10, 0, 0, 2)),
+        ])
     }
 
     /// The whole walk, over what a Cisco access switch actually sends.

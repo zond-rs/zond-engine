@@ -56,7 +56,7 @@
 //! whenever a position's meaning moves — which is the only property required of
 //! it.
 //!
-//! ## Privilege is part of the plan
+//! ## Privilege is part of the plan, for the plans that probe
 //!
 //! A scan begun privileged and resumed unprivileged is not the same scan
 //! continued. The connect fallback can only complete handshakes, so it answers a
@@ -65,6 +65,15 @@
 //! this argument about not quietly substituting one for the other. Folding it
 //! into the fingerprint means the refusal happens up front, rather than the
 //! second sitting silently filling the first one's gaps with weaker evidence.
+//!
+//! **A watch has no such pair, so it is deliberately not covered.** A listener
+//! sends nothing and has no fallback to be silently substituted: it either
+//! opened a capture or did nothing at all, and it enumerated nothing either way,
+//! so there is no position a privilege change could give a second meaning to.
+//! Covering it refused a resume across `sudo` — an ordinary thing to do on a
+//! machine that captures through `access_bpf` or `cap_net_raw` — and refused it
+//! by reporting that recorded positions would name different targets, of which
+//! such a journal has none.
 
 use std::hash::{Hash, Hasher};
 use std::time::SystemTime;
@@ -271,7 +280,9 @@ impl PlanFingerprint {
     ///
     /// `privileged` is whether the scan holds the privileges its raw strategies
     /// need, not whether it asked for them: what matters is which question the
-    /// probes actually answered.
+    /// probes actually answered. **It is read for the two enumerating phases
+    /// and ignored for a watch**, which sends no probe and so has no second
+    /// question a privilege change could switch it to; see the `Listen` arm.
     ///
     /// The hash walks each unit's canonical ranges and ports rather than its
     /// targets, so this is cheap on a plan of any size. Feeding each field's
@@ -285,14 +296,30 @@ impl PlanFingerprint {
         // can never agree. They count different things, and a position from one
         // read against the other names a target nobody probed.
         wire::scan_kind_name(plan.kind()).hash(&mut hasher);
-        privileged.hash(&mut hasher);
 
         match &plan.0 {
             Resolved::Discovery { addresses, sweep } => {
+                // Privilege belongs to the enumerating phases and to them only.
+                // A raw SYN and a connect attempt ask different questions of the
+                // same port, so a journal half of each would be counting two
+                // things — which is what this bit refuses.
+                privileged.hash(&mut hasher);
                 sweep.hash(&mut hasher);
                 hash_addresses(addresses, &mut hasher);
             }
             Resolved::Listen { links } => {
+                // **And a watch has no such pair to tell apart**, so privilege
+                // is deliberately not hashed here. A listener has one way of
+                // working and no fallback: it either opened a capture or it did
+                // nothing at all, and either way it enumerated nothing and left
+                // no position for a privilege change to invalidate.
+                //
+                // Hashing it refused a resume across `sudo`, which is a thing
+                // people do — a machine that captures through `access_bpf` or
+                // `cap_net_raw` records one sitting unprivileged and the next
+                // one under `sudo` — and refused it with a message about
+                // recorded positions this journal does not have.
+                //
                 // By name, and not by index. An interface's number is a fact
                 // about a running kernel and changes across a reboot; the name
                 // is what a person meant by the link and what two sittings of
@@ -303,6 +330,7 @@ impl PlanFingerprint {
                 }
             }
             Resolved::PortScan { targets, technique } => {
+                privileged.hash(&mut hasher);
                 technique.hash(&mut hasher);
                 targets.units.len().hash(&mut hasher);
 
@@ -900,6 +928,45 @@ mod tests {
         assert_ne!(
             PlanFingerprint::of(&one, true),
             PlanFingerprint::of(&both, true),
+        );
+    }
+
+    /// A watch is the same watch whether or not this sitting is root, and the
+    /// phases that probe still are not.
+    ///
+    /// The distinction is what the bit is *for*. A port scan begun with raw
+    /// sockets and resumed without them fell back to completing handshakes,
+    /// which answers a different question — so the second sitting would fill the
+    /// first's gaps with weaker evidence and report success. A listener has no
+    /// second way of working to fall back to: it opened a capture or it did
+    /// nothing, and it enumerated nothing either way.
+    ///
+    /// Both halves are asserted together because the risk runs in both
+    /// directions. Covering a watch refused a resume across `sudo` — ordinary on
+    /// a machine that captures through `access_bpf` or `cap_net_raw` — and
+    /// uncovering a port scan is the silent-wrong-coverage failure this whole
+    /// module exists to prevent.
+    #[test]
+    fn privilege_decides_a_probing_plan_and_says_nothing_about_a_watch() {
+        let watch = Plan::listen(vec![Zone::unresolved("en0")]);
+        assert_eq!(
+            PlanFingerprint::of(&watch, false),
+            PlanFingerprint::of(&watch, true),
+            "a watch under sudo is the same watch"
+        );
+
+        let ips = addresses("192.0.2.0/30");
+        assert_ne!(
+            PlanFingerprint::of(&sweeping(&ips, false), false),
+            PlanFingerprint::of(&sweeping(&ips, false), true),
+            "a sweep's probes are not the same probes"
+        );
+
+        let map = plan(&[("192.0.2.1-192.0.2.10", "80,443")]);
+        assert_ne!(
+            PlanFingerprint::of(&ports(&map), false),
+            PlanFingerprint::of(&ports(&map), true),
+            "and neither are a port scan's"
         );
     }
 

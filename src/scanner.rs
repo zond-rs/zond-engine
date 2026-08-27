@@ -120,7 +120,6 @@ use crate::scanner::orchestrator::{
 };
 use crate::scanner::report::{PhaseRecorder, ScanKind, ScanPhase, ScanReport, TargetScope};
 use crate::scanner::session::{ScanContext, ScanSession, ScannerKind};
-use crate::scanner::strategy::passive::Listener as _;
 use strategy::local::Scope;
 
 // What running a scan produces: a `ScanSession` to watch it, a `ScanHandle` to
@@ -689,18 +688,31 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
     let cfg = cfg.clone();
 
     tokio::spawn(async move {
-        // Privilege is `Some(true)`: a capture cannot be opened without it, so
-        // a listener that got this far holds it. There is no unprivileged
-        // fallback here and there cannot be one — reading a link is the whole
-        // capability, where a scan can degrade to connect attempts.
+        // **Opened before the phase is opened, because opening it is the
+        // question the phase's privilege field asks.** A listener holds what it
+        // needs exactly when a capture came up, and that is not the same as
+        // running as root: `pcap` reads a link for a user in the `access_bpf`
+        // group on macOS and for a binary with `cap_net_raw` on Linux, both
+        // being how anybody who is not root captures anything. Asking the
+        // operating system for an effective uid instead would report those runs
+        // as unprivileged while they listened perfectly well, and — worse — a
+        // run that opened nothing as privileged.
+        //
+        // There is no fallback to record either way. Reading a link is the whole
+        // capability here, where a scan can degrade to connect attempts.
+        let opened =
+            strategy::passive::PassiveListener::open(&scope.links, scope.recording, ctx.clone());
+
+        // After the open, so the phase's clock covers the listening rather than
+        // the setting up, and with the open's own answer in hand.
         let recorder = PhaseRecorder::start(
             ScanKind::Listen,
-            true,
+            opened.is_ok(),
             TargetScope::listening_on(scope.links.clone(), &cfg.exclusions),
             &cfg,
         );
 
-        match strategy::passive::PassiveListener::open(&scope.links, scope.recording, ctx.clone()) {
+        match opened {
             Ok(listener) => {
                 let mut listener = listener.detecting_os(cfg.os_detection);
                 if let Until::Elapsed(span) = scope.until {

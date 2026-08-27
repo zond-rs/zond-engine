@@ -45,7 +45,8 @@ Harnesses: `common/fake_net.rs` simulates a Layer 4 network, `common/fake_lan.rs
 simulates an Ethernet segment, and the fixtures at the bottom of `common/mod.rs`
 stand up the host they are probed from.
 
-Files: `probe_classification.rs`, `lan_discovery.rs`, `retransmission.rs`.
+Files: `probe_classification.rs`, `lan_discovery.rs`, `retransmission.rs`,
+`listening.rs`.
 
 This is where the behaviour that actually distinguishes a scanner gets tested:
 what it does when probes are lost, answered late, answered twice, answered by a
@@ -73,6 +74,20 @@ arrives with the link it came off, how it is framed, and when it was seen. A
 fixture building frames by hand wraps them the way `FakeLan::capture` does —
 which is also the reason a fixture and `common::scanner_interface` have to agree
 on which interface they are pretending to be.
+
+`listening.rs` needs no harness at all, because a listener has no probes to
+answer. `PassiveListener::from_parts` takes the receiving half of a frame stream
+and nothing else — there is no sending half to supply, a listener never
+transmits — so a test pushes the frames it wants read and closes the channel,
+which the loop reads as the capture having ended. That is what makes those tests
+finish without a timer, an abort, or a deadline to wait out.
+
+They cover what only a whole run can show and the unit tests beside the strategy
+cannot: that the seam works from outside the crate, and that a watch resumed from
+a journal on disk goes on being one watch. That second one is not hypothetical —
+a listener keys each machine by the first address it hears it at, so a sitting
+that begins knowing nothing re-keys every machine it hears, and a watch resumed
+three times reported one laptop as four.
 
 ### Tests that are meant to fail
 

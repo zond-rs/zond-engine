@@ -794,6 +794,19 @@ impl ScanContext {
         self.store.get(&ip.into()).map(|entry| read(entry.value()))
     }
 
+    /// Whether anything is recorded under `ip`.
+    ///
+    /// Cheaper than [`read_host`](Self::read_host) when the host itself is not
+    /// wanted: nothing is cloned and no closure runs. The read counterpart of
+    /// [`HostStore::contains`].
+    ///
+    /// **A question about the key, not about the machine.** A host is reachable
+    /// at every address it holds and is recorded under one of them, so this
+    /// answers "is there a record here" and never "is this machine known".
+    pub fn holds_host(&self, ip: &ScopedIp) -> bool {
+        self.store.contains_key(ip)
+    }
+
     /// Every address a host is currently recorded under.
     ///
     /// A snapshot, so a caller may write to the store while walking it.
