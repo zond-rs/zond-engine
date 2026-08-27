@@ -33,18 +33,20 @@
 # because no compiler had ever been pointed at them.
 name: Windows
 
-# `feat/main` alongside `main`, which the other two workflows do not do. This one
-# is bring-up rather than a gate: what it is for is finding out that Windows
-# broke, and the branch the work happens on is where that is worth knowing
-# first. A regression that only surfaces when a feature branch merges is one
-# somebody has to bisect for.
+# `main` only, matching the other two workflows.
+#
+# Which is not the same as only finding out at merge: `pull_request` fires on
+# anything *targeting* main, so a branch gets this run before it lands, which is
+# where a Windows regression is still cheap to fix. What the narrower trigger
+# gives up is the run on every intermediate commit of a long-lived branch, and
+# for a job on a paid-by-the-minute runner that is the right thing to give up.
 #
 # `workflow_dispatch` because a platform job is also the kind of thing you want
 # to re-run against an unchanged tree — after an Npcap release, or a toolchain
 # bump — where none of the paths below has moved.
 on:
   push:
-    branches: ["main", "feat/main"]
+    branches: ["main"]
     paths:
       - "src/**"
       - "tests/**"
@@ -54,7 +56,7 @@ on:
       - "clippy.toml"
       - ".github/workflows/windows.yml"
   pull_request:
-    branches: ["main", "feat/main"]
+    branches: ["main"]
     paths:
       - "src/**"
       - "tests/**"
