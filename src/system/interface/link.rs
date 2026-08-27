@@ -138,6 +138,7 @@ pub struct Link {
     broadcast: bool,
     point_to_point: bool,
     physical: bool,
+    default_route: bool,
 }
 
 impl Link {
@@ -158,6 +159,7 @@ impl Link {
             broadcast: false,
             point_to_point: false,
             physical: false,
+            default_route: false,
         }
     }
 
@@ -202,6 +204,13 @@ impl Link {
     #[must_use]
     pub fn physical(mut self, physical: bool) -> Self {
         self.physical = physical;
+        self
+    }
+
+    /// Whether this machine's default route leaves by it.
+    #[must_use]
+    pub fn carrying_the_default_route(mut self, carries: bool) -> Self {
+        self.default_route = carries;
         self
     }
 
@@ -296,6 +305,19 @@ impl Link {
         self.point_to_point
     }
 
+    /// Whether this machine's default route leaves by this link.
+    ///
+    /// **The closest thing there is to "which network am I on".** It is a fact
+    /// about the routing table rather than a guess about the hardware, which is
+    /// what makes it answerable the same way on every platform — and what makes
+    /// it right where hardware guesses are wrong. macOS presents `awdl0`
+    /// (AirDrop) and `llw0` as ordinary broadcast Ethernet with real hardware
+    /// behind them, indistinguishable from a wired port by any other field;
+    /// neither carries a route anywhere.
+    pub fn carries_default_route(&self) -> bool {
+        self.default_route
+    }
+
     /// Whether it is a physical link that is not wireless.
     ///
     /// The one to prefer when there is a choice: a wired segment answers faster
@@ -380,6 +402,7 @@ impl Link {
             broadcast: interface.is_broadcast(),
             point_to_point: interface.is_point_to_point(),
             physical: interface.is_physical(),
+            default_route: interface.default,
             name: interface.name,
             index: interface.index,
         }

@@ -156,20 +156,47 @@ fn is_viable_lan_interface(link: &Link) -> Result<(), ViabilityError> {
     Ok(())
 }
 
-/// The best of the viable links: a wired one where there is one, and otherwise
-/// whichever came first.
+/// The best of the viable links.
 ///
-/// **The `is_physical` seam is gone.** It existed because the old interface type
-/// could not say whether it was hardware — the answer came from a per-platform
-/// function that shelled out on macOS — so a test had to inject one or be at the
-/// mercy of whatever the machine had plugged in. A `Link` carries the answer, so
-/// a test builds a link that is not physical and the seam has nothing left to do.
+/// **The one the default route leaves by, before anything else.** That is what
+/// `lan` means to somebody who types it — the network this machine is actually
+/// on — and it is a fact about the routing table rather than a guess about the
+/// hardware, which is why it is answerable the same way on every platform.
+///
+/// The guess is what this used to do, and macOS is where it broke. `awdl0`
+/// (AirDrop) and `llw0` present as ordinary broadcast Ethernet with real
+/// hardware behind them: physical, up, a MAC, indistinguishable from a wired
+/// port by every field an interface table exposes. So "prefer a wired link"
+/// picked `awdl0`, which has no IPv4 at all, over the Wi-Fi carrying the whole
+/// `/24` — and `zond discover lan` answered *"awdl0 has no private IPv4 network
+/// to sweep"* on a machine plainly on a network.
+///
+/// **Neither does having an address make a link the LAN.** Falling back to "the
+/// first one with a private IPv4" would pick `bridge100` on this same laptop,
+/// which is the virtualisation bridge on `192.168.64.1/24` — a real private
+/// network with nothing on it but virtual machines.
+///
+/// The remaining order is for the case where no link claims the default route
+/// at all, which is a machine with no route off itself: prefer one that could
+/// be swept, then a wired one, then whatever there is.
 fn select_best_lan_interface(links: Vec<Link>) -> Option<Link> {
+    if let Some(routed) = links.iter().find(|link| link.carries_default_route()) {
+        return Some(routed.clone());
+    }
+
     links
         .iter()
-        .find(|link| link.is_wired())
+        .find(|link| link.is_wired() && has_private_ipv4(link))
+        .or_else(|| links.iter().find(|link| has_private_ipv4(link)))
+        .or_else(|| links.iter().find(|link| link.is_wired()))
         .or_else(|| links.first())
         .cloned()
+}
+
+/// Whether a link holds an address on a private network, which is the one a LAN
+/// sweep walks.
+fn has_private_ipv4(link: &Link) -> bool {
+    link.ipv4().any(|(address, _)| address.is_private())
 }
 
 // ╔════════════════════════════════════════════╗
@@ -281,6 +308,87 @@ mod tests {
         let held = link.ipv4.expect("the link has a private IPv4 network");
         assert_eq!(held.address(), IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
         assert_eq!(held.prefix(), 24);
+    }
+
+    /// The default route decides, and a link that merely looks like hardware
+    /// does not.
+    ///
+    /// Found by running `zond discover lan` on a real Mac, which answered
+    /// *"awdl0 has no private IPv4 network to sweep"* while sitting on a `/24`.
+    /// `awdl0` is AirDrop: macOS presents it as broadcast Ethernet, physical, up,
+    /// with a MAC — every field a wired port has — so "prefer a wired link" chose
+    /// it over the Wi-Fi that had the actual network.
+    #[test]
+    fn the_link_carrying_the_default_route_is_the_lan() {
+        let wifi = mock_interface(true, true, true, false, false, true)
+            .of_kind(LinkKind::Wireless)
+            .carrying_the_default_route(true);
+        // No IPv4 at all, and indistinguishable from a wired port otherwise.
+        let airdrop = Link::new("awdl0", 17)
+            .up(true)
+            .physical(true)
+            .addressing(true, false)
+            .of_kind(LinkKind::Wired)
+            .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 6))
+            .with_addresses(vec![LinkAddress::new(
+                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+                64,
+            )]);
+
+        let chosen =
+            select_best_lan_interface(vec![airdrop, wifi]).expect("one of them is the LAN");
+
+        assert_eq!(
+            chosen.name(),
+            "test0",
+            "the wired-looking link with no network won over the one carrying the route"
+        );
+    }
+
+    /// Nor does a private network of its own make a link the LAN.
+    ///
+    /// The same laptop carries `bridge100` on `192.168.64.1/24`, which is the
+    /// virtualisation bridge: a real private network with nothing on it but
+    /// virtual machines. Falling back to "the first link with a private IPv4"
+    /// would sweep that and report the host's own VMs as the network.
+    #[test]
+    fn a_virtualisation_bridge_does_not_outrank_the_default_route() {
+        let wifi = mock_interface(true, true, true, false, false, true)
+            .of_kind(LinkKind::Wireless)
+            .carrying_the_default_route(true);
+        let bridge = Link::new("bridge100", 20)
+            .up(true)
+            .physical(true)
+            .addressing(true, false)
+            .of_kind(LinkKind::Wired)
+            .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 7))
+            .with_addresses(vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 64, 1)),
+                24,
+            )]);
+
+        let chosen = select_best_lan_interface(vec![bridge, wifi]).expect("one of them is the LAN");
+
+        assert_eq!(chosen.name(), "test0");
+    }
+
+    /// With no default route anywhere, a link that could be swept beats one that
+    /// could not — which is the ordering that would have made the reported bug
+    /// harmless even without the rule above.
+    #[test]
+    fn with_no_route_a_sweepable_link_beats_one_with_nothing_to_sweep() {
+        let addressed = mock_interface(true, true, true, false, false, true);
+        let bare = Link::new("awdl0", 17)
+            .up(true)
+            .physical(true)
+            .addressing(true, false)
+            .of_kind(LinkKind::Wired)
+            .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 6));
+
+        let chosen =
+            select_best_lan_interface(vec![bare, addressed]).expect("one of them is picked");
+
+        assert_eq!(chosen.name(), "test0");
     }
 
     #[test]
