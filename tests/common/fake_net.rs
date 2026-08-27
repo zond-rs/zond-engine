@@ -51,14 +51,14 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pnet::packet::icmp::destination_unreachable::{
+use pnet_packet::icmp::destination_unreachable::{
     DestinationUnreachablePacket, IcmpCodes, MutableDestinationUnreachablePacket,
 };
-use pnet::packet::icmp::{IcmpCode, IcmpTypes};
-use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
-use pnet::packet::udp::UdpPacket;
+use pnet_packet::icmp::{IcmpCode, IcmpTypes};
+use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::tcp::{MutableTcpPacket, TcpPacket};
+use pnet_packet::udp::UdpPacket;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use zond_engine::model::capture::{IpObservation, Ipv4Observation};
@@ -952,10 +952,10 @@ impl FakeLink {
 
             let checksum = match (target, scanner) {
                 (IpAddr::V4(s), IpAddr::V4(d)) => {
-                    pnet::packet::tcp::ipv4_checksum(&tcp.to_immutable(), &s, &d)
+                    pnet_packet::tcp::ipv4_checksum(&tcp.to_immutable(), &s, &d)
                 }
                 (IpAddr::V6(s), IpAddr::V6(d)) => {
-                    pnet::packet::tcp::ipv6_checksum(&tcp.to_immutable(), &s, &d)
+                    pnet_packet::tcp::ipv6_checksum(&tcp.to_immutable(), &s, &d)
                 }
                 _ => return None,
             };

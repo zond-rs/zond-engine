@@ -51,7 +51,7 @@
 //! should predicate on, and [`window`](StackObservation::window) is kept beside
 //! it because a value nobody can reconstruct is a value nobody can dispute.
 
-use pnet::packet::tcp::TcpPacket;
+use pnet_packet::tcp::TcpPacket;
 
 use crate::model::capture::IpObservation;
 
@@ -283,7 +283,7 @@ impl StackObservation {
     /// is not an IP packet carrying a TCP segment this can read.
     pub fn from_ip_packet(packet: &[u8]) -> Option<Self> {
         let parsed = crate::transport::frame::parse_ip_segment(packet)?;
-        if parsed.protocol != pnet::packet::ip::IpNextHeaderProtocols::Tcp {
+        if parsed.protocol != pnet_packet::ip::IpNextHeaderProtocols::Tcp {
             return None;
         }
         Self::from_tcp(parsed.observation, parsed.payload)

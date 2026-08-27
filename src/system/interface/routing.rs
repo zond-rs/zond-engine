@@ -9,10 +9,10 @@
 use crate::model::ip::range::IpRange::{V4, V6};
 use crate::model::ip::range::Ipv6Range;
 use crate::model::ip::set::IpSet;
+use crate::system::interface::Link;
 use crate::system::interface::source::{
     ProbeSockets, plausible_source, probe_route_source, viable_interfaces,
 };
-use pnet::datalink::NetworkInterface;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -63,7 +63,7 @@ pub struct RoutedTargets {
     /// Targets that share an interface's Layer-2 segment, grouped by that
     /// interface. Reachable directly, so they get an ARP/NDP discovery
     /// strategy bound to the interface.
-    pub local: HashMap<NetworkInterface, IpSet>,
+    pub local: HashMap<Link, IpSet>,
     /// Targets reached through a gateway, each already paired with the source
     /// address to probe it from. Handled by a single raw TCP SYN scanner.
     pub routed: Vec<RoutedTarget>,
@@ -110,13 +110,10 @@ enum Classification {
     Unmapped,
 }
 
-pub(crate) fn map_ips_to_interfaces_with(
-    ip_set: IpSet,
-    interfaces: Vec<NetworkInterface>,
-) -> RoutedTargets {
+pub(crate) fn map_ips_to_interfaces_with(ip_set: IpSet, interfaces: Vec<Link>) -> RoutedTargets {
     let owned_ips: HashSet<IpAddr> = interfaces
         .iter()
-        .flat_map(|iface| iface.ips.iter().map(|ip_net| ip_net.ip()))
+        .flat_map(|link| link.addresses().iter().map(|held| held.address()))
         .collect();
 
     let mut local: HashMap<usize, IpSet> = HashMap::new();
@@ -150,7 +147,7 @@ pub(crate) fn map_ips_to_interfaces_with(
         // user's own statement about which segment they meant, and it outranks
         // any prefix match.
         if let Some(zone) = range.zone() {
-            match interfaces.iter().position(|iface| iface.index == zone) {
+            match interfaces.iter().position(|link| link.index() == zone) {
                 Some(idx) => local.entry(idx).or_default().insert_range(V6(*range)),
                 None => ambiguous.push(*range),
             }
@@ -229,26 +226,22 @@ pub fn is_enumerable(range: &Ipv6Range) -> bool {
 
 /// Finds the first interface whose subnet fully contains the inclusive range
 /// `[start, end]`, meaning the whole range is on that interface's segment.
-fn owning_interface(interfaces: &[NetworkInterface], start: IpAddr, end: IpAddr) -> Option<usize> {
-    interfaces.iter().position(|iface| {
-        iface
-            .ips
+fn owning_interface(links: &[Link], start: IpAddr, end: IpAddr) -> Option<usize> {
+    links.iter().position(|link| {
+        link.addresses()
             .iter()
-            .any(|net| net.contains(start) && net.contains(end))
+            .any(|held| held.contains(&start) && held.contains(&end))
     })
 }
 
 /// Finds the first interface whose subnet contains `target`, matching only
 /// within the same address family.
-fn find_local_index(interfaces: &[NetworkInterface], target: IpAddr) -> Option<usize> {
-    interfaces.iter().position(|iface| {
-        iface.ips.iter().any(|ip_net| match (target, ip_net.ip()) {
-            (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_)) => {
-                ip_net.contains(target)
-            }
-            _ => false,
-        })
-    })
+fn find_local_index(links: &[Link], target: IpAddr) -> Option<usize> {
+    // The family check `LinkAddress::contains` already makes: a range of one
+    // family never contains an address of the other.
+    links
+        .iter()
+        .position(|link| link.addresses().iter().any(|held| held.contains(&target)))
 }
 
 // ╔════════════════════════════════════════════╗
@@ -264,23 +257,16 @@ fn find_local_index(interfaces: &[NetworkInterface], target: IpAddr) -> Option<u
 mod tests {
     use super::*;
     use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
-    use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    fn mock_interface(ip: IpAddr, prefix: u8) -> NetworkInterface {
-        let net = match ip {
-            IpAddr::V4(v4) => IpNetwork::V4(Ipv4Network::new(v4, prefix).unwrap()),
-            IpAddr::V6(v6) => IpNetwork::V6(Ipv6Network::new(v6, prefix).unwrap()),
-        };
+    fn mock_named(name: &str, index: u32, ip: IpAddr, prefix: u8) -> Link {
+        Link::new(name, index)
+            .with_addresses(vec![crate::system::interface::LinkAddress::new(ip, prefix)])
+    }
 
-        NetworkInterface {
-            name: "test0".to_string(),
-            description: "".to_string(),
-            index: 0,
-            mac: None,
-            ips: vec![net],
-            flags: 0,
-        }
+    fn mock_interface(ip: IpAddr, prefix: u8) -> Link {
+        Link::new("test0", 0)
+            .with_addresses(vec![crate::system::interface::LinkAddress::new(ip, prefix)])
     }
 
     #[test]
@@ -413,11 +399,18 @@ mod tests {
     #[test]
     fn a_link_local_target_goes_to_the_interface_it_names() {
         let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
-        let mut first = mock_interface(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 64);
-        first.index = 3;
-        let mut second = mock_interface(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2)), 64);
-        second.index = 9;
-        second.name = "en9".to_string();
+        let first = mock_named(
+            "en3",
+            3,
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            64,
+        );
+        let second = mock_named(
+            "en9",
+            9,
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2)),
+            64,
+        );
 
         let mut set = IpSet::new();
         set.insert_range(IpRange::V6(
@@ -429,7 +422,7 @@ mod tests {
         assert!(result.ambiguous.is_empty());
         assert_eq!(result.local.len(), 1);
         let (intf, ips) = result.local.into_iter().next().unwrap();
-        assert_eq!(intf.name, "en9", "the second interface was the one named");
+        assert_eq!(intf.name(), "en9", "the second interface was the one named");
         assert_eq!(ips.len(), 1);
     }
 

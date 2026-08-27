@@ -35,7 +35,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet::datalink::MacAddr;
+use pnet_base::MacAddr;
 
 use crate::protocols::ethernet::Frame;
 
@@ -553,7 +553,7 @@ pub(crate) mod tests {
         let bytes = ethernet::create_header(
             SWITCH_MAC,
             GROUP_ADDRESS,
-            pnet::packet::ethernet::EtherTypes::Ipv4,
+            pnet_packet::ethernet::EtherTypes::Ipv4,
         );
         let frame = ethernet::parse(&bytes).expect("an Ethernet frame");
 

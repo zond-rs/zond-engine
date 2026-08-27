@@ -124,7 +124,26 @@ test-support = []
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.91"
-pnet = "0.35.0"
+# The three parts of `pnet` this crate uses, named individually rather than
+# through the `pnet` facade.
+#
+# The facade pulls `pnet_datalink` in with everything else, and that is the crate
+# whose Windows backend reports `flags: 0` for every interface — the defect that
+# made `is_up()` false on that platform and every entry point here find an empty
+# network. Nothing reads it any more: interfaces come from `netdev` through
+# `system::interface::Link`, and frames go out through `pcap`, which was already
+# open on the same link to receive them.
+#
+# Naming the parts drops `pnet_datalink` and `ipnetwork` from the tree, and it
+# stops the next defect in a part this crate does not use from being this crate's
+# problem. `pnet_packet` is what the facade was ever wanted for: it parses and
+# builds packets, touches no platform, and is the best thing in the family.
+pnet_packet = "0.35.0"
+pnet_base = "0.35.0"
+# Raw Layer-4 sockets, used only by `transport::raw`. The one piece still to move
+# — `socket2` is already here and would do it — and not urgent, because Windows
+# blocks raw TCP sends outright and `SendMode::Auto` picks Ethernet there.
+pnet_transport = "0.35.0"
 pcap = "2.2.0"
 libc = "0.2"
 netdev = "0.38.0"

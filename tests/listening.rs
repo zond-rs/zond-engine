@@ -30,8 +30,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use pnet::datalink::MacAddr;
-use pnet::packet::ethernet::EtherTypes;
+use pnet_base::MacAddr;
+use pnet_packet::ethernet::EtherTypes;
 use tokio::sync::mpsc;
 
 use zond_engine::journal::manifest::Plan;

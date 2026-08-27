@@ -109,7 +109,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::IpNextHeaderProtocols;
 
 use crate::config::SendMode;
 use crate::fingerprint::os::{self, SeriesClasses, SeriesSample, StackObservation, StackReply};

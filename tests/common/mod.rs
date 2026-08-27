@@ -34,8 +34,7 @@ pub mod fake_net;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet::datalink::{MacAddr, NetworkInterface};
-use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
+use pnet_base::MacAddr;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -49,7 +48,8 @@ use zond_engine::scanner::report::ScanReport;
 use zond_engine::scanner::session::{HostStore, ScanEvent, ScanSession};
 use zond_engine::scanner::strategy::PortScanner;
 use zond_engine::scanner::{self, ScanTask};
-use zond_engine::system::interface::SourceResolver;
+use zond_engine::system::interface::{Link, LinkAddress, LinkKind, SourceResolver};
+use zond_engine::transport::mac::IntoCoreMac;
 
 /// The loopback address every portable test targets.
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -265,24 +265,21 @@ pub const TARGET_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0
 /// and because the two paths want different ones: local discovery sends from the
 /// link-local, while the routed scanners resolve a source by longest matching
 /// prefix and so need a subnet the v6 targets actually sit in.
-pub fn scanner_interface() -> NetworkInterface {
-    let ips = vec![
-        IpNetwork::V4(Ipv4Network::new(SCANNER_V4, 24).expect("valid v4 prefix")),
-        IpNetwork::V6(Ipv6Network::new(SCANNER_LINK_LOCAL, 64).expect("valid v6 prefix")),
-        IpNetwork::V6(Ipv6Network::new(SCANNER_V6, 64).expect("valid v6 prefix")),
-    ];
-
-    NetworkInterface {
-        name: "sim0".to_string(),
-        description: String::new(),
-        // Non-zero: a scope id of zero is what "no interface" means to the
-        // kernel, so a fixture using it could not tell a recorded zone from a
-        // missing one.
-        index: 7,
-        mac: Some(SCANNER_MAC),
-        ips,
-        flags: 0,
-    }
+pub fn scanner_interface() -> Link {
+    // Non-zero index: a scope id of zero is what "no interface" means to the
+    // kernel, so a fixture using it could not tell a recorded zone from a
+    // missing one.
+    Link::new("sim0", 7)
+        .of_kind(LinkKind::Wired)
+        .up(true)
+        .physical(true)
+        .addressing(true, false)
+        .with_mac(SCANNER_MAC.into_core())
+        .with_addresses(vec![
+            LinkAddress::new(IpAddr::V4(SCANNER_V4), 24),
+            LinkAddress::new(IpAddr::V6(SCANNER_LINK_LOCAL), 64),
+            LinkAddress::new(IpAddr::V6(SCANNER_V6), 64),
+        ])
 }
 
 /// A link-local address as the store keys it, on the simulated segment.
@@ -295,15 +292,12 @@ pub fn scanner_interface() -> NetworkInterface {
 ///
 /// Every other address is its own whole key and needs nothing from this.
 pub fn on_segment(ip: IpAddr) -> zond_engine::model::ip::scoped::ScopedIp {
-    zond_engine::model::ip::scoped::ScopedIp::scoped(
-        ip,
-        zond_engine::model::ip::scoped::Zone::new(scanner_interface().index, "sim0"),
-    )
+    zond_engine::model::ip::scoped::ScopedIp::scoped(ip, scanner_interface().zone())
 }
 
 /// A source resolver over [`scanner_interface`], as the routed scanners expect.
 pub fn scanner_resolver() -> SourceResolver {
-    SourceResolver::from_interfaces(&[scanner_interface()])
+    SourceResolver::from_links(&[scanner_interface()])
 }
 
 /// Feeds `targets` to `scanner` and drives it to completion.

@@ -40,10 +40,10 @@
 //! assumes: it is parsed with the same bounds-checked path as a captured packet
 //! ([`frame::parse_ip_segment`]), and eight bytes is all a caller may count on.
 
-use pnet::packet::icmp::destination_unreachable::{DestinationUnreachablePacket, IcmpCodes};
-use pnet::packet::icmp::{IcmpCode, IcmpPacket, IcmpTypes};
-use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types};
-use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet_packet::icmp::destination_unreachable::{DestinationUnreachablePacket, IcmpCodes};
+use pnet_packet::icmp::{IcmpCode, IcmpPacket, IcmpTypes};
+use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types};
+use pnet_packet::ip::IpNextHeaderProtocols;
 
 use crate::transport::capture::CapturedSegment;
 use crate::transport::frame::{self, IpSegment};
@@ -267,8 +267,8 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    use pnet::packet::icmp::destination_unreachable::MutableDestinationUnreachablePacket;
-    use pnet::packet::icmpv6::MutableIcmpv6Packet;
+    use pnet_packet::icmp::destination_unreachable::MutableDestinationUnreachablePacket;
+    use pnet_packet::icmpv6::MutableIcmpv6Packet;
 
     use crate::protocols::{ip, udp};
 

@@ -35,13 +35,13 @@ use crate::protocols::craft;
 use crate::protocols::error::{PacketError, Result};
 use crate::protocols::ethernet::Frame;
 use crate::protocols::sizes::{IP_V4_HDR_LEN, IP_V6_HDR_LEN, UDP_HDR_LEN};
-use pnet::packet::Packet;
-use pnet::packet::ethernet::EtherTypes;
-use pnet::packet::icmpv6::echo_reply::EchoReplyPacket;
-use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Type, Icmpv6Types};
-use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
-use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::ipv6::Ipv6Packet;
+use pnet_packet::Packet;
+use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::icmpv6::echo_reply::EchoReplyPacket;
+use pnet_packet::icmpv6::{Icmpv6Packet, Icmpv6Type, Icmpv6Types};
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use pnet_packet::ipv4::Ipv4Packet;
+use pnet_packet::ipv6::Ipv6Packet;
 
 const WORD_LEN: usize = 4;
 
@@ -259,7 +259,7 @@ pub fn ipv4_source(frame: &Frame<'_>) -> Result<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::ip::IpNextHeaderProtocols;
+    use pnet_packet::ip::IpNextHeaderProtocols;
 
     const V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 

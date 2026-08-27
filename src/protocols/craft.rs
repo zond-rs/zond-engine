@@ -89,16 +89,16 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet::datalink::MacAddr;
-use pnet::packet::arp::{ArpHardwareTypes, ArpOperation, MutableArpPacket};
-use pnet::packet::ethernet::{EtherType, EtherTypes, MutableEthernetPacket};
-use pnet::packet::icmp::IcmpPacket;
-use pnet::packet::icmpv6::Icmpv6Packet;
-use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
-use pnet::packet::ipv4::{MutableIpv4Packet, checksum as ipv4_checksum};
-use pnet::packet::ipv6::MutableIpv6Packet;
-use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
-use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
+use pnet_base::MacAddr;
+use pnet_packet::arp::{ArpHardwareTypes, ArpOperation, MutableArpPacket};
+use pnet_packet::ethernet::{EtherType, EtherTypes, MutableEthernetPacket};
+use pnet_packet::icmp::IcmpPacket;
+use pnet_packet::icmpv6::Icmpv6Packet;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use pnet_packet::ipv4::{MutableIpv4Packet, checksum as ipv4_checksum};
+use pnet_packet::ipv6::MutableIpv6Packet;
+use pnet_packet::tcp::{MutableTcpPacket, TcpPacket};
+use pnet_packet::udp::{MutableUdpPacket, UdpPacket};
 
 use crate::protocols::error::{PacketError, Result};
 use crate::protocols::sizes::{
@@ -706,7 +706,7 @@ impl Icmpv4 {
         );
         let sum = self.checksum.resolve(|| {
             let message = IcmpPacket::new(&bytes).expect("just written");
-            pnet::packet::icmp::checksum(&message)
+            pnet_packet::icmp::checksum(&message)
         });
         bytes[2..4].copy_from_slice(&sum.to_be_bytes());
         bytes
@@ -795,7 +795,7 @@ impl Icmpv6 {
                 match addresses {
                     None => 0,
                     Some((IpAddr::V6(src), IpAddr::V6(dst))) => {
-                        pnet::packet::icmpv6::checksum(&message, &src, &dst)
+                        pnet_packet::icmpv6::checksum(&message, &src, &dst)
                     }
                     Some((src, dst)) => return Err(PacketError::FamilyMismatch { src, dst }),
                 }
@@ -1220,8 +1220,8 @@ fn write_tcp(
             let segment = TcpPacket::new(&bytes).expect("just written");
             transport_checksum(
                 addresses,
-                |src, dst| pnet::packet::tcp::ipv4_checksum(&segment, src, dst),
-                |src, dst| pnet::packet::tcp::ipv6_checksum(&segment, src, dst),
+                |src, dst| pnet_packet::tcp::ipv4_checksum(&segment, src, dst),
+                |src, dst| pnet_packet::tcp::ipv6_checksum(&segment, src, dst),
             )?
         }
     };
@@ -1263,8 +1263,8 @@ fn write_udp(
             let datagram = UdpPacket::new(&bytes).expect("just written");
             let computed = transport_checksum(
                 addresses,
-                |src, dst| pnet::packet::udp::ipv4_checksum(&datagram, src, dst),
-                |src, dst| pnet::packet::udp::ipv6_checksum(&datagram, src, dst),
+                |src, dst| pnet_packet::udp::ipv4_checksum(&datagram, src, dst),
+                |src, dst| pnet_packet::udp::ipv6_checksum(&datagram, src, dst),
             )?;
             // Zero in this field means "not computed" (RFC 768), so a genuine
             // result of zero is sent as its ones-complement equivalent.
@@ -1366,9 +1366,9 @@ pub(crate) fn crc32c(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::Packet as _;
-    use pnet::packet::ipv4::Ipv4Packet;
-    use pnet::packet::ipv6::Ipv6Packet;
+    use pnet_packet::Packet as _;
+    use pnet_packet::ipv4::Ipv4Packet;
+    use pnet_packet::ipv6::Ipv6Packet;
 
     const V4_SRC: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
     const V4_DST: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 9);

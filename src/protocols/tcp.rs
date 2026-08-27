@@ -39,7 +39,7 @@
 
 use std::net::IpAddr;
 
-use pnet::packet::tcp::TcpPacket;
+use pnet_packet::tcp::TcpPacket;
 
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols::craft;
@@ -339,8 +339,8 @@ pub fn classify_probe_response(packet: &TcpPacket) -> Option<TcpReply> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::Packet;
-    use pnet::packet::tcp::MutableTcpPacket;
+    use pnet_packet::Packet;
+    use pnet_packet::tcp::MutableTcpPacket;
     use std::net::Ipv4Addr;
 
     const SRC: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));

@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use crate::protocols::ethernet::Frame;
 use async_trait::async_trait;
-use pnet::datalink::{MacAddr, NetworkInterface};
+use pnet_base::MacAddr;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Interval;
 
@@ -51,11 +51,12 @@ use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::report::{Attachment, AttachmentSource, StopReason};
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{HostScanner, StrategyError};
-use crate::system::interface::NetworkInterfaceExtension;
+use crate::system::interface::Link;
 use crate::transport::capture::CapturedFrame;
 use crate::transport::channel::{self, EthernetHandle};
 use crate::transport::frame::LinkType;
 use crate::transport::mac::IntoCoreMac;
+use crate::transport::mac::IntoPnetMac;
 use crate::{error, info};
 
 use crate::scanner::strategy::discovery::{self, DiscoveryProtocol, ProtocolMatch, Reading};
@@ -295,38 +296,43 @@ impl SourceIdentity {
     /// scanned and otherwise falls back to the interface's first non-loopback
     /// address. For IPv6, it uses the interface's link-local address when it has
     /// one, since that is what the ICMPv6 all-nodes probe is sent from.
-    fn resolve(intf: &NetworkInterface, ip_set: &IpSet) -> Result<Self, StrategyError> {
-        let mac = intf.mac.ok_or_else(|| StrategyError::Interface {
-            interface: intf.name.clone(),
+    fn resolve(link: &Link, ip_set: &IpSet) -> Result<Self, StrategyError> {
+        let mac = link.mac().ok_or_else(|| StrategyError::Interface {
+            interface: link.name().to_owned(),
             reason: "it has no MAC address, and every probe here is an Ethernet frame",
         })?;
 
         let mut ipv4 = None;
-        for net in intf.get_ipv4_nets() {
-            if ipv4.is_none() && !net.ip().is_loopback() {
-                ipv4 = Some(net.ip());
+        for held in link.addresses() {
+            let IpAddr::V4(address) = held.address() else {
+                continue;
+            };
+            if ipv4.is_none() && !address.is_loopback() {
+                ipv4 = Some(address);
             }
+            // An address on the same segment as the targets beats one that
+            // merely exists: a probe sourced from the wrong subnet is answered
+            // to somewhere this scanner is not listening.
             if ip_set
                 .v4()
                 .iter()
-                .any(|range| net.contains(range.start_addr()))
+                .any(|range| held.contains(&IpAddr::V4(range.start_addr())))
             {
-                ipv4 = Some(net.ip());
+                ipv4 = Some(address);
                 break;
             }
         }
 
-        let link_local_ipv6 = intf
-            .get_ipv6_nets()
-            .into_iter()
-            .find(|net| net.ip().is_unicast_link_local())
-            .map(|net| net.ip());
+        let link_local_ipv6 = link
+            .ipv6()
+            .map(|(address, _)| address)
+            .find(Ipv6Addr::is_unicast_link_local);
 
         Ok(Self {
-            mac,
+            mac: mac.into_pnet(),
             ipv4,
             link_local_ipv6,
-            zone: Zone::new(intf.index, intf.name.clone()),
+            zone: link.zone(),
         })
     }
 }
@@ -613,16 +619,16 @@ impl HostScanner for LocalScanner {
 
 impl LocalScanner {
     pub fn new(
-        intf: NetworkInterface,
+        link: Link,
         ip_set: IpSet,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
         scope: Scope,
         retry: RetryConfig,
     ) -> Result<Self, StrategyError> {
-        let eth_handle: EthernetHandle = channel::start_capture(&intf, &sweep_filter())?;
+        let eth_handle: EthernetHandle = channel::start_capture(&link, &sweep_filter())?;
         Self::build(
-            intf,
+            link,
             ip_set,
             ctx,
             dns_tx,
@@ -646,14 +652,14 @@ impl LocalScanner {
     /// hand-built [`NetworkInterface`], it is also the seam that lets ARP and
     /// NDP discovery be driven against a simulated segment with no privileges.
     pub fn with_handle(
-        intf: NetworkInterface,
+        link: Link,
         ip_set: IpSet,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
         scope: Scope,
         eth_handle: EthernetHandle,
     ) -> Result<Self, StrategyError> {
-        Self::build(intf, ip_set, ctx, dns_tx, scope, eth_handle, RETRY_POLICY)
+        Self::build(link, ip_set, ctx, dns_tx, scope, eth_handle, RETRY_POLICY)
     }
 
     /// The common constructor, taking the retry schedule as an argument because
@@ -661,7 +667,7 @@ impl LocalScanner {
     /// before anything is built.
     #[allow(clippy::too_many_arguments)]
     fn build(
-        intf: NetworkInterface,
+        link: Link,
         ip_set: IpSet,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
@@ -669,7 +675,7 @@ impl LocalScanner {
         eth_handle: EthernetHandle,
         retry: RetryPolicy,
     ) -> Result<Self, StrategyError> {
-        let identity = SourceIdentity::resolve(&intf, &ip_set)?;
+        let identity = SourceIdentity::resolve(&link, &ip_set)?;
 
         let target_count = ip_set.len() as usize;
         // The sweep has to outlive the schedule it commits each probe to, or
@@ -717,23 +723,23 @@ impl LocalScanner {
     /// `sends_attempted` described the retries and nothing else while reading
     /// like a total.
     ///
-    /// [`DataLinkSender::send_to`] returns `Option<io::Result<()>>` and both
-    /// halves mean the frame never left — `None` when the channel had no buffer
-    /// to write into, `Some(Err(..))` when the write itself failed. Reading only
-    /// whether the *packet built* leaves `sends_failed` making a claim about
-    /// this code where a caller reads it as a claim about the link.
+    /// [`FrameSink::send_frame`] reports whether the frame left, and an error is
+    /// the only way it did not. The predecessor returned `Option<io::Result<()>>`
+    /// with two shapes of failure — no buffer to write into, and a write that
+    /// failed — and both meant the same thing to every caller, which is why this
+    /// says it once. Reading only whether the *packet built* would leave
+    /// `sends_failed` making a claim about this code where a caller reads it as
+    /// a claim about the link.
     fn emit(&mut self, packet: &[u8], what: &str) -> bool {
-        match self.eth_handle.tx.send_to(packet, None) {
-            Some(Ok(())) => {
+        match self.eth_handle.tx.send_frame(packet) {
+            Ok(()) => {
                 self.audit.record_send(true);
                 true
             }
-            outcome => {
+            Err(reason) => {
                 self.audit.record_send(false);
-                self.send_failure.get_or_insert_with(|| match outcome {
-                    Some(Err(e)) => format!("{what}: {e}"),
-                    _ => format!("{what}: the link-layer channel accepted no frame"),
-                });
+                self.send_failure
+                    .get_or_insert_with(|| format!("{what}: {reason}"));
                 false
             }
         }
@@ -1621,7 +1627,7 @@ mod tests {
         LOCAL_MAC, PEER_MAC, advertisement_body, arp_reply_frame, dhcp_reply_frame,
         echo_reply_frame, mdns_frame, ndp_frame,
     };
-    use pnet::datalink::MacAddr;
+    use pnet_base::MacAddr;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     /// The sweep's capture narrows in the kernel, so a frame the filter does not
@@ -1718,7 +1724,7 @@ mod tests {
                 ethernet::create_header(
                     PEER_MAC,
                     LOCAL_MAC,
-                    pnet::packet::ethernet::EtherTypes::Ipv4,
+                    pnet_packet::ethernet::EtherTypes::Ipv4,
                 ),
                 datagram,
             ]

@@ -70,7 +70,6 @@ use std::net::IpAddr;
 use crate::config::OsDetection;
 use crate::fingerprint::os;
 use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
-use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
@@ -165,13 +164,13 @@ const ABORT_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 /// safe direction: it declines a frame it cannot read rather than reading an
 /// option header as a port number.
 fn tcp_segment<'a>(frame: &Frame<'a>) -> Option<&'a [u8]> {
-    use pnet::packet::ethernet::EtherTypes;
-    use pnet::packet::ip::IpNextHeaderProtocols;
+    use pnet_packet::ethernet::EtherTypes;
+    use pnet_packet::ip::IpNextHeaderProtocols;
 
     let packet = frame.payload();
     let (header_len, next) = match frame.ethertype() {
         EtherTypes::Ipv4 => {
-            let ipv4 = pnet::packet::ipv4::Ipv4Packet::new(packet)?;
+            let ipv4 = pnet_packet::ipv4::Ipv4Packet::new(packet)?;
             (
                 usize::from(ipv4.get_header_length()) * 4,
                 ipv4.get_next_level_protocol(),
@@ -179,7 +178,7 @@ fn tcp_segment<'a>(frame: &Frame<'a>) -> Option<&'a [u8]> {
         }
         EtherTypes::Ipv6 => (
             crate::protocols::sizes::IP_V6_HDR_LEN,
-            pnet::packet::ipv6::Ipv6Packet::new(packet)?.get_next_header(),
+            pnet_packet::ipv6::Ipv6Packet::new(packet)?.get_next_header(),
         ),
         _ => return None,
     };
@@ -208,25 +207,15 @@ impl OnLink {
     pub fn of_links(links: &[Zone]) -> Self {
         let mut ranges = IpSet::new();
 
-        for interface in pnet::datalink::interfaces() {
-            if !links.iter().any(|link| link.name() == interface.name) {
+        for interface in crate::system::interface::interfaces() {
+            if !links.iter().any(|link| link.name() == interface.name()) {
                 continue;
             }
-            for network in &interface.ips {
-                let range = match (network.network(), network.broadcast()) {
-                    (IpAddr::V4(start), IpAddr::V4(end)) => {
-                        Ipv4Range::new(start, end).map(IpRange::V4)
-                    }
-                    (IpAddr::V6(start), IpAddr::V6(end)) => {
-                        Ipv6Range::new(start, end).map(IpRange::V6)
-                    }
-                    // A network cannot span two families; the pair is only a
-                    // pair because the library reports both ends separately.
-                    _ => continue,
-                };
-                if let Ok(range) = range {
-                    ranges.insert_range(range);
-                }
+            // The prefix already names the range, both ends included, so there
+            // is no pair of addresses here to reconcile — and no way for the two
+            // halves to disagree about which family they are.
+            for held in interface.addresses() {
+                ranges.insert_range(held.network());
             }
         }
 
@@ -1368,7 +1357,7 @@ mod tests {
 
         let lldp = crate::protocols::ethernet::create_header(
             PEER_MAC,
-            pnet::datalink::MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
+            pnet_base::MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
             lldp::ETHERTYPE,
         );
 
@@ -1401,7 +1390,7 @@ mod tests {
                         crate::protocols::ethernet::create_header(
                             PEER_MAC,
                             PEER_MAC,
-                            pnet::packet::ethernet::EtherTypes::Ipv4,
+                            pnet_packet::ethernet::EtherTypes::Ipv4,
                         ),
                         datagram,
                     ]
@@ -1490,7 +1479,7 @@ mod tests {
     /// The same, from a stated hardware address — which is the half of a frame
     /// the forwarding proof reads.
     fn tcp_frame_from(
-        mac: pnet::datalink::MacAddr,
+        mac: pnet_base::MacAddr,
         from: Ipv4Addr,
         sport: u16,
         to: Ipv4Addr,
@@ -1507,7 +1496,7 @@ mod tests {
             crate::protocols::ethernet::create_header(
                 mac,
                 PEER_MAC,
-                pnet::packet::ethernet::EtherTypes::Ipv4,
+                pnet_packet::ethernet::EtherTypes::Ipv4,
             ),
             datagram,
         ]
@@ -1643,7 +1632,7 @@ mod tests {
     fn a_machine_that_forwards_somebody_elses_packet_is_a_router() {
         use crate::protocols::tcp::flags;
 
-        const ROUTER_MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const ROUTER_MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
         let router = Ipv4Addr::new(10, 0, 0, 1);
         let elsewhere = Ipv4Addr::new(93, 184, 216, 34);
         let local = Ipv4Addr::new(10, 0, 0, 9);
@@ -1804,7 +1793,7 @@ mod tests {
             let mut bytes = crate::protocols::ethernet::create_header(
                 PEER_MAC,
                 PEER_MAC,
-                pnet::packet::ethernet::EtherTypes::Ipv4,
+                pnet_packet::ethernet::EtherTypes::Ipv4,
             );
             bytes.extend_from_slice(&[
                 0x45, 0x00, 0x00, 0x3c, 0xbe, 0xef, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0x0a, 0x00,
@@ -1884,7 +1873,7 @@ mod tests {
     fn one_machine_answering_at_several_addresses_is_one_host() {
         use crate::protocols::tcp::flags;
 
-        const MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
         let peer = Ipv4Addr::new(10, 0, 0, 9);
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
@@ -1984,7 +1973,7 @@ mod tests {
     fn a_machine_restored_from_an_earlier_sitting_is_not_recorded_twice() {
         use crate::protocols::tcp::flags;
 
-        const MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
         let peer = Ipv4Addr::new(10, 0, 0, 9);
         let first = Ipv4Addr::new(10, 0, 0, 5);
         let second = Ipv4Addr::new(10, 0, 0, 6);
@@ -2082,7 +2071,7 @@ mod tests {
         use crate::model::exclusion::Exclusions;
         use crate::protocols::tcp::flags;
 
-        const MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
         let excluded = Ipv4Addr::new(10, 0, 0, 5);
         let ordinary = Ipv4Addr::new(10, 0, 0, 6);
         let peer = Ipv4Addr::new(10, 0, 0, 9);
@@ -2153,8 +2142,8 @@ mod tests {
     fn a_watch_at_its_ceiling_stops_taking_machines_and_keeps_enriching_the_ones_it_has() {
         use crate::protocols::tcp::flags;
 
-        const HELD_MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xAA);
-        const STRANGER_MAC: pnet::datalink::MacAddr = pnet::datalink::MacAddr(2, 0, 0, 0, 0, 0xBB);
+        const HELD_MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xAA);
+        const STRANGER_MAC: pnet_base::MacAddr = pnet_base::MacAddr(2, 0, 0, 0, 0, 0xBB);
 
         let (mut listener, ctx) = listening_on_a_known_link(Recording::Everything);
         let peer = Ipv4Addr::new(10, 0, 0, 9);

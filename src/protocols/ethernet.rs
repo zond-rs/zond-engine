@@ -32,8 +32,8 @@
 //! stay readable for anything that wants them — which on a trunk is a finding in
 //! its own right.
 
-use pnet::datalink::MacAddr;
-use pnet::packet::ethernet::EtherType;
+use pnet_base::MacAddr;
+use pnet_packet::ethernet::EtherType;
 
 use crate::protocols::craft;
 use crate::protocols::error::{PacketError, Result};
@@ -290,7 +290,7 @@ pub fn parse(frame_bytes: &'_ [u8]) -> Result<Frame<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::ethernet::EtherTypes;
+    use pnet_packet::ethernet::EtherTypes;
 
     const DST: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 1);
     const SRC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 2);

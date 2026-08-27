@@ -64,7 +64,7 @@ use crate::protocols::{
 use crate::scanner::session::ScanContext;
 use crate::{error, info, model::ip, warn};
 use anyhow::Context;
-use pnet::packet::{Packet, udp::UdpPacket};
+use pnet_packet::{Packet, udp::UdpPacket};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedReceiver;

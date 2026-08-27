@@ -20,8 +20,8 @@ use crate::protocols::craft::{Arp, Ethernet, Packet};
 use crate::protocols::error::{PacketError, Result};
 use crate::protocols::ethernet::Frame;
 use crate::protocols::sizes::{ARP_LEN, MIN_ETH_FRAME_NO_FCS};
-use pnet::datalink::MacAddr;
-use pnet::packet::arp::ArpPacket;
+use pnet_base::MacAddr;
+use pnet_packet::arp::ArpPacket;
 use std::net::Ipv4Addr;
 
 /// Builds the broadcast ARP request a sweep sends, asking who holds
@@ -104,10 +104,10 @@ pub fn sender_address(eth_packet: &Frame<'_>) -> Result<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::arp::ArpHardwareTypes;
-    use pnet::packet::arp::{ArpOperations, ArpPacket, MutableArpPacket};
-    use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
-    use pnet::util::MacAddr;
+    use pnet_base::MacAddr;
+    use pnet_packet::arp::ArpHardwareTypes;
+    use pnet_packet::arp::{ArpOperations, ArpPacket, MutableArpPacket};
+    use pnet_packet::ethernet::{EtherTypes, MutableEthernetPacket};
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
 
@@ -254,7 +254,7 @@ mod tests {
 
         MutableEthernetPacket::new(&mut buffer)
             .expect("a frame")
-            .set_ethertype(pnet::packet::ethernet::EtherType(0x88cc));
+            .set_ethertype(pnet_packet::ethernet::EtherType(0x88cc));
         let parsed = super::super::ethernet::parse(&buffer).expect("a frame");
         assert!(matches!(
             crate::protocols::source_address(&parsed),

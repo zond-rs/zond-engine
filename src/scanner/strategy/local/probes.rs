@@ -26,7 +26,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet::datalink::MacAddr;
+use pnet_base::MacAddr;
 
 use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::set::IpSet;

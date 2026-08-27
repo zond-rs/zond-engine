@@ -54,7 +54,6 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use pnet::datalink::NetworkInterface;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{ProbeTuning, ZondConfig};
@@ -70,6 +69,7 @@ use crate::scanner::strategy::connect::{
 use crate::scanner::strategy::local::{LocalScanner, Scope};
 use crate::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
+use crate::system::interface::Link;
 use crate::system::interface::{self, RoutedTarget};
 use crate::system::neighbors;
 use crate::{info, warn};
@@ -178,7 +178,7 @@ pub enum DiscoveryStep {
     /// nobody named.
     Local {
         /// The interface to sweep from.
-        interface: Box<NetworkInterface>,
+        interface: Box<Link>,
         /// The addresses on its segment. May be empty for a
         /// [`Scope::Sweep`], whose most important probe is addressed to nobody.
         targets: IpSet,
@@ -579,20 +579,21 @@ impl PortScanPlan {
 /// Matching by name rather than by value: `map_ips_to_interfaces` and this both
 /// read the platform's interface list, but a `NetworkInterface` compares on
 /// every field, and being wrong here means scanning one link twice.
-fn include_swept_link(local: &mut HashMap<NetworkInterface, IpSet>) {
+fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
     let Ok(Some(link)) = interface::get_lan_link() else {
         return;
     };
 
-    if local.keys().any(|intf| intf.name == link.interface.name) {
+    if local.keys().any(|intf| intf.name() == link.link.name()) {
         return;
     }
 
     info!(
         verbosity = 1,
-        "sweeping {} for IPv6 neighbours; it has no IPv4 range to walk", link.interface.name
+        "sweeping {} for IPv6 neighbours; it has no IPv4 range to walk",
+        link.link.name()
     );
-    local.insert(link.interface, IpSet::new());
+    local.insert(link.link, IpSet::new());
 }
 
 /// Adds the addresses in this host's IPv6 neighbour table to the targets of
@@ -619,7 +620,7 @@ fn include_swept_link(local: &mut HashMap<NetworkInterface, IpSet>) {
 /// Nothing seeded here is treated as a discovered host. Every entry is an
 /// address that answered *once*, from a table that goes stale, so each becomes a
 /// probe like any other and earns its place in the report by answering now.
-fn seed_from_neighbor_table(local: &mut HashMap<NetworkInterface, IpSet>) {
+fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>) {
     let table = neighbors::ipv6_neighbors();
     if !table.is_empty() {
         seed_from_neighbor_table_with(local, &table);
@@ -628,10 +629,7 @@ fn seed_from_neighbor_table(local: &mut HashMap<NetworkInterface, IpSet>) {
 
 /// [`seed_from_neighbor_table`] against an explicit table, so the exclusions can
 /// be tested without a host that happens to have the right neighbours.
-fn seed_from_neighbor_table_with(
-    local: &mut HashMap<NetworkInterface, IpSet>,
-    table: &[neighbors::Neighbor],
-) {
+fn seed_from_neighbor_table_with(local: &mut HashMap<Link, IpSet>, table: &[neighbors::Neighbor]) {
     for (intf, targets) in local.iter_mut() {
         let mut seeded = 0usize;
         for addr in candidates_for(intf, table) {
@@ -640,7 +638,7 @@ fn seed_from_neighbor_table_with(
             // without one, and is dropped for the rest for the reason
             // `ScopedIp` drops it: the same global address through two
             // interfaces is one address, not two.
-            let zone = addr.is_unicast_link_local().then_some(intf.index);
+            let zone = addr.is_unicast_link_local().then_some(intf.index());
             if let Ok(range) = Ipv6Range::scoped(addr, addr, zone) {
                 targets.insert_range(IpRange::V6(range));
                 seeded += 1;
@@ -652,19 +650,20 @@ fn seed_from_neighbor_table_with(
             info!(
                 verbosity = 1,
                 "took {seeded} IPv6 address(es) from the neighbour table as candidates on {}",
-                intf.name
+                intf.name()
             );
         }
     }
 }
 
 /// The neighbour-table addresses worth probing on `intf`, in table order.
-fn candidates_for(intf: &NetworkInterface, table: &[neighbors::Neighbor]) -> Vec<IpAddr> {
-    let own: std::collections::HashSet<IpAddr> = intf.ips.iter().map(|net| net.ip()).collect();
+fn candidates_for(link: &Link, table: &[neighbors::Neighbor]) -> Vec<IpAddr> {
+    let own: std::collections::HashSet<IpAddr> =
+        link.addresses().iter().map(|held| held.address()).collect();
 
     table
         .iter()
-        .filter(|entry| entry.interface_index == intf.index)
+        .filter(|entry| entry.interface_index == link.index())
         .filter(|entry| !own.contains(&entry.ip))
         .filter(|entry| match entry.ip {
             IpAddr::V6(addr) => !addr.is_loopback() && !addr.is_unspecified(),
@@ -691,26 +690,13 @@ mod tests {
         addr.parse().unwrap()
     }
 
-    fn interface_with(
-        index: u32,
-        name: &str,
-        own: Vec<IpAddr>,
-    ) -> pnet::datalink::NetworkInterface {
-        use pnet::ipnetwork::{IpNetwork, Ipv6Network};
-        pnet::datalink::NetworkInterface {
-            name: name.to_string(),
-            description: String::new(),
-            index,
-            mac: None,
-            ips: own
-                .into_iter()
-                .map(|ip| match ip {
-                    IpAddr::V6(v6) => IpNetwork::V6(Ipv6Network::new(v6, 64).unwrap()),
-                    IpAddr::V4(_) => unreachable!("test uses v6 only"),
-                })
+    fn interface_with(index: u32, name: &str, own: Vec<IpAddr>) -> Link {
+        use crate::system::interface::LinkAddress;
+        Link::new(name, index).with_addresses(
+            own.into_iter()
+                .map(|ip| LinkAddress::new(ip, if ip.is_ipv4() { 24 } else { 64 }))
                 .collect(),
-            flags: 0,
-        }
+        )
     }
 
     fn entry(ip: &str, index: u32) -> neighbors::Neighbor {
@@ -836,7 +822,7 @@ mod tests {
         for technique in TcpScanTechnique::ALL {
             let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let scanner = TcpPortScanner::with_transport(
-                interface::SourceResolver::from_interfaces(&[]),
+                interface::SourceResolver::from_links(&[]),
                 ctx.clone(),
                 technique,
                 ProbeTransport::from_parts(Box::new(Unsendable), rx),

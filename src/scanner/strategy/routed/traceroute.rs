@@ -74,8 +74,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::tcp::TcpPacket;
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::tcp::TcpPacket;
 
 use crate::model::host::path::Hop;
 use crate::model::port::{PortState, Protocol};
@@ -978,7 +978,7 @@ mod tests {
     /// arrived, which is what every TCP stack does and what the trace reads to
     /// tell one of its own probes from another.
     fn syn_ack_to(probe: &[u8]) -> Vec<u8> {
-        use pnet::packet::tcp::{MutableTcpPacket, TcpFlags};
+        use pnet_packet::tcp::{MutableTcpPacket, TcpFlags};
 
         let sent = TcpPacket::new(probe).expect("the probe is a TCP segment");
 
@@ -1003,7 +1003,7 @@ mod tests {
         /// counter is what says how far away the target is.
         fn observed(
             source: IpAddr,
-            protocol: pnet::packet::ip::IpNextHeaderProtocol,
+            protocol: pnet_packet::ip::IpNextHeaderProtocol,
             bytes: Vec<u8>,
             ttl: u8,
         ) -> CapturedSegment {
@@ -1073,7 +1073,7 @@ mod tests {
             };
 
             let mut bytes = vec![0u8; 8];
-            bytes[0] = pnet::packet::icmp::IcmpTypes::TimeExceeded.0;
+            bytes[0] = pnet_packet::icmp::IcmpTypes::TimeExceeded.0;
             bytes.extend_from_slice(&quoted);
 
             let _ = self.replies.send(Network::observed(

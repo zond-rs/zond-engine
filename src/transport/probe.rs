@@ -33,9 +33,8 @@
 
 use std::net::IpAddr;
 
-use pnet::datalink;
-use pnet::packet::Packet;
-use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use pnet_packet::Packet;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 
 use crate::config::SendMode;
 use crate::model::capture::CaptureCounts;
@@ -623,10 +622,10 @@ impl ProbeTransport {
 /// find the name — and it is what a finding scoped to a link needs, since a
 /// link-local address names a different machine on every one of them.
 fn capturable_interfaces() -> Vec<Zone> {
-    datalink::interfaces()
+    crate::system::interface::interfaces()
         .into_iter()
-        .filter(|iface| iface.is_up())
-        .map(|iface| Zone::new(iface.index, iface.name))
+        .filter(crate::system::interface::Link::is_up)
+        .map(|link| link.zone())
         .collect()
 }
 
@@ -693,7 +692,7 @@ mod tests {
         // A reply pushed onto the capture stream is observed on rx unchanged.
         let reply = CapturedSegment::synthetic(
             dst,
-            pnet::packet::ip::IpNextHeaderProtocols::Udp,
+            pnet_packet::ip::IpNextHeaderProtocols::Udp,
             vec![1, 2, 3],
         );
         reply_tx.send(reply.clone()).unwrap();
@@ -799,10 +798,10 @@ mod tests {
 mod filter_conformance {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Types, MutableIcmpv6Packet};
-    use pnet::packet::ip::IpNextHeaderProtocols;
-    use pnet::packet::tcp::MutableTcpPacket;
-    use pnet::util::MacAddr;
+    use pnet_base::MacAddr;
+    use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Types, MutableIcmpv6Packet};
+    use pnet_packet::ip::IpNextHeaderProtocols;
+    use pnet_packet::tcp::MutableTcpPacket;
 
     use super::ProbeKind;
     use crate::protocols::udp;
@@ -880,7 +879,7 @@ mod filter_conformance {
     fn frame(
         src: IpAddr,
         dst: IpAddr,
-        protocol: pnet::packet::ip::IpNextHeaderProtocol,
+        protocol: pnet_packet::ip::IpNextHeaderProtocol,
         segment: &[u8],
     ) -> Vec<u8> {
         build_ethernet_frame(

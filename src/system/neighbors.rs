@@ -43,7 +43,7 @@
 
 use std::net::IpAddr;
 
-use pnet::util::MacAddr;
+use pnet_base::MacAddr;
 
 /// One entry from the host's neighbour cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +92,7 @@ mod platform {
         AF_INET6, AF_LINK, CTL_NET, NET_RT_FLAGS, PF_ROUTE, RTA_DST, RTA_GATEWAY, RTF_LLINFO,
         c_int, c_void, rt_msghdr, size_t, sockaddr, sockaddr_dl, sockaddr_in6,
     };
-    use pnet::util::MacAddr;
+    use pnet_base::MacAddr;
 
     use super::Neighbor;
     use crate::warn;

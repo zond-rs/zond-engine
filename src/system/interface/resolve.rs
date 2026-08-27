@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::{info, warn};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use crate::model::{
     ip::{
@@ -24,10 +24,10 @@ use crate::system::interface;
 /// The engine's answer to [`ZoneResolverFn`](crate::model::parse::ip::ZoneResolverFn):
 /// the parser knows the syntax and this knows the host.
 pub fn resolve_zone(name: &str) -> Option<u32> {
-    pnet::datalink::interfaces()
+    crate::system::interface::interfaces()
         .into_iter()
-        .find(|iface| iface.name == name)
-        .map(|iface| iface.index)
+        .find(|link| link.name() == name)
+        .map(|link| link.index())
 }
 
 pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
@@ -59,7 +59,7 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
         return Err(IpParseError::LanError(format!(
             "{} has no private IPv4 network to sweep{}. Give an explicit range, \
              or an IPv6 target on this link.",
-            link.interface.name,
+            link.link.name(),
             match link.link_local() {
                 Some(addr) => format!(" (its addressing is IPv6: {addr})"),
                 None => String::new(),
@@ -67,8 +67,20 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
         )));
     };
 
-    let start_u32 = u32::from(net.network()).saturating_add(1);
-    let end_u32 = u32::from(net.broadcast()).saturating_sub(1);
+    // The network's own ends, from the prefix rather than from arithmetic
+    // repeated here: `LinkAddress::network` is what knows how a prefix becomes a
+    // range, and it is the same code the on-link tests use.
+    let network = net.network();
+    let (IpAddr::V4(first), IpAddr::V4(last)) = (network.start_addr(), network.end_addr()) else {
+        return Err(IpParseError::LanError(
+            "the LAN link's IPv4 network is not IPv4".into(),
+        ));
+    };
+
+    // Neither end is a host: the first names the network and the last is the
+    // broadcast, and a sweep spends a probe on each for nothing.
+    let start_u32 = u32::from(first).saturating_add(1);
+    let end_u32 = u32::from(last).saturating_sub(1);
 
     if start_u32 <= end_u32 {
         let range = Ipv4Range::new(Ipv4Addr::from(start_u32), Ipv4Addr::from(end_u32)).map_err(
@@ -87,7 +99,7 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
         set.insert_range(IpRange::V4(range));
     } else {
         warn!("small subnet; scanning full network range");
-        let range = Ipv4Range::new(net.network(), net.broadcast()).unwrap();
+        let range = Ipv4Range::new(first, last).expect("a network's own ends are ordered");
         set.insert_range(IpRange::V4(range));
     }
 

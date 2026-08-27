@@ -795,7 +795,7 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let core = RawProbeScan {
-            resolver: SourceResolver::from_interfaces(&[]),
+            resolver: SourceResolver::from_links(&[]),
             ctx,
             transport: ProbeTransport::from_parts(Box::new(NullSender), rx),
             deadline: AdaptiveDeadline::new(super::super::DEADLINE_CONFIG, 8),

@@ -152,7 +152,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::IpNextHeaderProtocols;
 use tokio::time::timeout;
 
 use zond_engine::fingerprint::os::StackObservation;

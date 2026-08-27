@@ -90,7 +90,7 @@ pub mod tcp;
 pub mod udp;
 
 use crate::protocols::ethernet::Frame;
-use pnet::packet::ethernet::EtherTypes;
+use pnet_packet::ethernet::EtherTypes;
 use std::net::IpAddr;
 
 /// The address `frame` was sent from, whichever of the three shapes it is.

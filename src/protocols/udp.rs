@@ -65,12 +65,12 @@ pub fn create_packet(
 mod tests {
     use super::*;
     use crate::protocols::sizes::UDP_HDR_LEN;
-    use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
+    use pnet_packet::udp::{MutableUdpPacket, UdpPacket};
 
     /// The value RFC 768 substitutes for a computed checksum of zero, since
     /// zero in that field means "not computed".
     const CHECKSUM_NONE_SUBSTITUTE: u16 = 0xFFFF;
-    use pnet::packet::Packet;
+    use pnet_packet::Packet;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     const V4_SRC: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
@@ -85,8 +85,8 @@ mod tests {
         MutableUdpPacket::new(&mut zeroed).unwrap().set_checksum(0);
         let zeroed = UdpPacket::new(&zeroed).unwrap();
         match (src, dst) {
-            (IpAddr::V4(s), IpAddr::V4(d)) => pnet::packet::udp::ipv4_checksum(&zeroed, s, d),
-            (IpAddr::V6(s), IpAddr::V6(d)) => pnet::packet::udp::ipv6_checksum(&zeroed, s, d),
+            (IpAddr::V4(s), IpAddr::V4(d)) => pnet_packet::udp::ipv4_checksum(&zeroed, s, d),
+            (IpAddr::V6(s), IpAddr::V6(d)) => pnet_packet::udp::ipv6_checksum(&zeroed, s, d),
             _ => unreachable!("mismatched families in test fixture"),
         }
     }

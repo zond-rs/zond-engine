@@ -33,11 +33,9 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use pnet::{
-    packet::{Packet, ip::IpNextHeaderProtocols},
-    transport::{
-        self, TransportChannelType, TransportProtocol, TransportReceiver, TransportSender,
-    },
+use pnet_packet::{Packet, ip::IpNextHeaderProtocols};
+use pnet_transport::{
+    self as transport, TransportChannelType, TransportProtocol, TransportReceiver, TransportSender,
 };
 
 const TRANSPORT_BUFFER_SIZE: usize = 4096;

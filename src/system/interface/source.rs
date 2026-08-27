@@ -27,72 +27,60 @@
 //!   is a single lookup rather than a fresh kernel probe each time.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
+use std::net::{IpAddr, UdpSocket};
 
-use pnet::datalink::{self, NetworkInterface};
-use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
+use crate::system::interface::{Link, LinkAddress};
 
-/// The interfaces usable as a probe source: up, not loopback, and holding at
-/// least one assigned address. Centralizes a filter that source selection,
-/// interface prioritization, and target routing would otherwise each repeat.
-pub(crate) fn viable_interfaces() -> Vec<NetworkInterface> {
-    datalink::interfaces()
+/// The links usable as a probe source: up, not loopback, and holding at least
+/// one assigned address. Centralizes a filter that source selection, interface
+/// prioritization, and target routing would otherwise each repeat.
+pub(crate) fn viable_interfaces() -> Vec<Link> {
+    crate::system::interface::interfaces()
         .into_iter()
-        .filter(|i| i.is_up() && !i.is_loopback() && !i.ips.is_empty())
+        .filter(|link| link.is_up() && !link.is_loopback() && !link.addresses().is_empty())
         .collect()
 }
 
-/// The host's on-link subnets paired with the local address to source from
-/// when a destination falls inside one, ordered most-specific-first so the
-/// longest matching prefix wins. A destination on the same segment is reached
-/// directly, so its source is simply this host's address on that segment - no
-/// kernel round-trip required.
+/// The host's own addresses, ordered most-specific-first so that the longest
+/// matching prefix wins.
+///
+/// A destination on the same segment is reached directly, so its source is
+/// simply this host's address on that segment — no kernel round-trip required.
+///
+/// One list rather than one per family, because a [`LinkAddress`] already knows
+/// which family it is and declines a target of the other. Sorting the two
+/// together is harmless for the same reason: the order only has to hold *within*
+/// a family, and a v6 `/64` sitting between two v4 prefixes is never a candidate
+/// for a v4 target to begin with.
 pub struct OnLinkTable {
-    v4: Vec<(Ipv4Network, Ipv4Addr)>,
-    v6: Vec<(Ipv6Network, Ipv6Addr)>,
+    held: Vec<LinkAddress>,
 }
 
 impl OnLinkTable {
-    /// Builds the table from every address assigned to `interfaces`.
-    pub fn from_interfaces(interfaces: &[NetworkInterface]) -> Self {
-        let mut v4: Vec<(Ipv4Network, Ipv4Addr)> = Vec::new();
-        let mut v6: Vec<(Ipv6Network, Ipv6Addr)> = Vec::new();
+    /// Builds the table from every address assigned to `links`.
+    pub fn from_links(links: &[Link]) -> Self {
+        let mut held: Vec<LinkAddress> = links
+            .iter()
+            .flat_map(|link| link.addresses().iter().copied())
+            .collect();
 
-        for iface in interfaces {
-            for net in &iface.ips {
-                match net {
-                    IpNetwork::V4(n) => v4.push((*n, n.ip())),
-                    IpNetwork::V6(n) => v6.push((*n, n.ip())),
-                }
-            }
-        }
+        held.sort_by_key(|address| std::cmp::Reverse(address.prefix()));
 
-        v4.sort_by_key(|(net, _)| std::cmp::Reverse(net.prefix()));
-        v6.sort_by_key(|(net, _)| std::cmp::Reverse(net.prefix()));
-
-        Self { v4, v6 }
+        Self { held }
     }
 
-    /// Returns the source address for `target` if it sits on one of the
-    /// host's own subnets, or `None` if it has to be routed off-link.
+    /// Returns the source address for `target` if it sits on one of the host's
+    /// own subnets, or `None` if it has to be routed off-link.
     pub fn source_for(&self, target: IpAddr) -> Option<IpAddr> {
-        match target {
-            IpAddr::V4(t) => self
-                .v4
-                .iter()
-                .find(|(net, _)| net.contains(t))
-                .map(|(_, src)| IpAddr::V4(*src)),
-            IpAddr::V6(t) => self
-                .v6
-                .iter()
-                .find(|(net, _)| net.contains(t))
-                .map(|(_, src)| IpAddr::V6(*src)),
-        }
+        self.held
+            .iter()
+            .find(|held| held.contains(&target))
+            .map(LinkAddress::address)
     }
 
     /// Whether the host has any assigned address to source from at all.
     pub fn is_empty(&self) -> bool {
-        self.v4.is_empty() && self.v6.is_empty()
+        self.held.is_empty()
     }
 }
 
@@ -125,7 +113,7 @@ pub struct ProbeSockets {
 /// whatever the routing table says: a global destination needs a global source,
 /// and a link-local destination needs the link-local address of the interface it
 /// is on.
-pub(crate) fn plausible_source(interfaces: &[NetworkInterface], target: IpAddr) -> Option<IpAddr> {
+pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr> {
     let IpAddr::V6(target_v6) = target else {
         // IPv4 has no equivalent failure worth second-guessing: there is one
         // scope, and a kernel that cannot route a v4 address is describing a
@@ -134,13 +122,10 @@ pub(crate) fn plausible_source(interfaces: &[NetworkInterface], target: IpAddr) 
     };
 
     let wants_link_local = target_v6.is_unicast_link_local();
-    interfaces
+    links
         .iter()
-        .flat_map(|iface| iface.ips.iter())
-        .filter_map(|net| match net.ip() {
-            IpAddr::V6(addr) => Some(addr),
-            IpAddr::V4(_) => None,
-        })
+        .flat_map(|link| link.ipv6())
+        .map(|(addr, _)| addr)
         .find(|addr| addr.is_unicast_link_local() == wants_link_local && !addr.is_loopback())
         .map(IpAddr::V6)
 }
@@ -190,22 +175,22 @@ pub struct SourceResolver {
     /// [`OnLinkTable`] cannot answer for it: that table matches a destination
     /// against a prefix, and the case this exists for is a destination on no
     /// prefix this host holds.
-    interfaces: Vec<NetworkInterface>,
+    links: Vec<Link>,
 }
 
 impl SourceResolver {
     /// Builds a resolver from the host's current viable interfaces.
     pub fn from_system() -> Self {
-        Self::from_interfaces(&viable_interfaces())
+        Self::from_links(&viable_interfaces())
     }
 
-    /// Builds a resolver from an explicit interface list (used in tests).
-    pub fn from_interfaces(interfaces: &[NetworkInterface]) -> Self {
+    /// Builds a resolver from an explicit list of links (used in tests).
+    pub fn from_links(links: &[Link]) -> Self {
         Self {
-            onlink: OnLinkTable::from_interfaces(interfaces),
+            onlink: OnLinkTable::from_links(links),
             sockets: ProbeSockets::default(),
             cache: HashMap::new(),
-            interfaces: interfaces.to_vec(),
+            links: links.to_vec(),
         }
     }
 
@@ -230,7 +215,7 @@ impl SourceResolver {
             .onlink
             .source_for(target)
             .or_else(|| probe_route_source(target, &mut self.sockets))
-            .or_else(|| plausible_source(&self.interfaces, target));
+            .or_else(|| plausible_source(&self.links, target));
 
         self.cache.insert(target, source);
         source
@@ -251,25 +236,18 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    fn mock_interface(nets: Vec<IpNetwork>) -> NetworkInterface {
-        NetworkInterface {
-            name: "test0".to_string(),
-            description: "".to_string(),
-            index: 0,
-            mac: None,
-            ips: nets,
-            flags: 0,
-        }
+    fn mock_interface(nets: Vec<LinkAddress>) -> Link {
+        Link::new("test0", 0).with_addresses(nets)
     }
 
-    fn v4net(a: u8, b: u8, c: u8, d: u8, prefix: u8) -> IpNetwork {
-        IpNetwork::V4(Ipv4Network::new(Ipv4Addr::new(a, b, c, d), prefix).unwrap())
+    fn v4net(a: u8, b: u8, c: u8, d: u8, prefix: u8) -> LinkAddress {
+        LinkAddress::new(IpAddr::V4(Ipv4Addr::new(a, b, c, d)), prefix)
     }
 
     #[test]
     fn on_link_target_uses_that_subnet_source() {
         let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
-        let table = OnLinkTable::from_interfaces(&[intf]);
+        let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
             table.source_for(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200))),
@@ -280,7 +258,7 @@ mod tests {
     #[test]
     fn off_link_target_has_no_on_link_source() {
         let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
-        let table = OnLinkTable::from_interfaces(&[intf]);
+        let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
             table.source_for(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
@@ -291,7 +269,7 @@ mod tests {
     #[test]
     fn longest_prefix_wins() {
         let intf = mock_interface(vec![v4net(10, 0, 0, 1, 8), v4net(10, 1, 2, 3, 24)]);
-        let table = OnLinkTable::from_interfaces(&[intf]);
+        let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
             table.source_for(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 200))),
@@ -301,11 +279,9 @@ mod tests {
 
     #[test]
     fn v6_and_v4_are_kept_separate() {
-        let v6 = IpNetwork::V6(
-            Ipv6Network::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64).unwrap(),
-        );
+        let v6 = v6net(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64);
         let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24), v6]);
-        let table = OnLinkTable::from_interfaces(&[intf]);
+        let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
             table.source_for(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 99))),
@@ -320,7 +296,7 @@ mod tests {
     #[test]
     fn resolver_caches_and_reports_sources() {
         let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24)]);
-        let mut resolver = SourceResolver::from_interfaces(&[intf]);
+        let mut resolver = SourceResolver::from_links(&[intf]);
 
         assert!(resolver.has_sources());
         let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
@@ -336,12 +312,12 @@ mod tests {
 
     #[test]
     fn empty_host_has_no_sources() {
-        let resolver = SourceResolver::from_interfaces(&[]);
+        let resolver = SourceResolver::from_links(&[]);
         assert!(!resolver.has_sources());
     }
 
-    fn v6net(addr: Ipv6Addr, prefix: u8) -> IpNetwork {
-        IpNetwork::V6(Ipv6Network::new(addr, prefix).unwrap())
+    fn v6net(addr: Ipv6Addr, prefix: u8) -> LinkAddress {
+        LinkAddress::new(IpAddr::V6(addr), prefix)
     }
 
     /// The §1.6 case: the kernel refuses to route an off-link IPv6 target - a

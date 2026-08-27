@@ -186,9 +186,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::tcp::TcpPacket;
-use pnet::util::MacAddr;
+use pnet_base::MacAddr;
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::tcp::TcpPacket;
 use tokio::time::timeout;
 
 use zond_engine::model::capture::IpObservation;

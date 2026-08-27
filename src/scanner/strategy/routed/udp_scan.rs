@@ -45,8 +45,8 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::udp::UdpPacket;
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::udp::UdpPacket;
 use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
@@ -716,12 +716,11 @@ mod tests {
     use crate::model::target::Target;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
-    use pnet::packet::icmp::destination_unreachable::{
+    use pnet_packet::icmp::destination_unreachable::{
         DestinationUnreachablePacket, IcmpCodes, MutableDestinationUnreachablePacket,
     };
-    use pnet::packet::icmp::{IcmpCode, IcmpTypes};
-    use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
+    use pnet_packet::icmp::{IcmpCode, IcmpTypes};
+    use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
 
     use crate::scanner::strategy::routed::icmp_error::{
         ICMPV6_ADMIN_PROHIBITED, ICMPV6_INGRESS_EGRESS_POLICY, ICMPV6_NO_ROUTE,
@@ -743,20 +742,15 @@ mod tests {
     /// The fixed source port the scanner under test probes from.
     const SCAN_SRC_PORT: u16 = 54_321;
 
-    fn on_link_interface() -> pnet::datalink::NetworkInterface {
-        pnet::datalink::NetworkInterface {
-            name: "test0".to_string(),
-            description: String::new(),
-            index: 0,
-            mac: None,
-            ips: vec![
-                IpNetwork::V4(Ipv4Network::new(Ipv4Addr::new(192, 168, 1, 50), 24).unwrap()),
-                IpNetwork::V6(
-                    Ipv6Network::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 50), 64).unwrap(),
-                ),
-            ],
-            flags: 0,
-        }
+    fn on_link_interface() -> crate::system::interface::Link {
+        use crate::system::interface::{Link, LinkAddress};
+        Link::new("test0", 0).with_addresses(vec![
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)), 24),
+            LinkAddress::new(
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 50)),
+                64,
+            ),
+        ])
     }
 
     /// [`scanner_with_mock`] plus the probe log, for the tests that assert on
@@ -767,7 +761,7 @@ mod tests {
         let sender = MockSender::default();
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
-        let resolver = SourceResolver::from_interfaces(&[on_link_interface()]);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
 
         let scanner = UdpPortScanner::with_transport(resolver, ctx, transport, 8, SCAN_SRC_PORT);
         (scanner, session, sent)
@@ -780,7 +774,7 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
         let transport = ProbeTransport::from_parts(Box::new(MockSender::default()), reply_rx);
-        let resolver = SourceResolver::from_interfaces(&[on_link_interface()]);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
 
         let scanner = UdpPortScanner::with_transport(resolver, ctx, transport, 8, SCAN_SRC_PORT);
         (scanner, session)
@@ -877,7 +871,7 @@ mod tests {
     /// the IP header said they are.
     fn captured(
         source: IpAddr,
-        protocol: pnet::packet::ip::IpNextHeaderProtocol,
+        protocol: pnet_packet::ip::IpNextHeaderProtocol,
         bytes: Vec<u8>,
     ) -> CapturedSegment {
         CapturedSegment::synthetic(source, protocol, bytes)
@@ -1406,9 +1400,9 @@ mod tests {
         use crate::transport::capture;
         use std::time::Duration;
 
-        let loopback = pnet::datalink::interfaces()
+        let loopback = crate::system::interface::interfaces()
             .into_iter()
-            .find(|iface| iface.is_loopback() && iface.is_up())
+            .find(|link| link.is_loopback() && link.is_up())
             .expect("a loopback interface to capture on");
 
         // Stands in for the scan's fixed source port: replies and errors are
@@ -1423,7 +1417,7 @@ mod tests {
         drop(reserved);
 
         let filter = format!("icmp or icmp6 or (udp and dst port {src_port})");
-        let link = crate::model::ip::scoped::Zone::new(loopback.index, loopback.name);
+        let link = loopback.zone();
         let (mut rx, _capture) =
             capture::segments(&[link], &capture::CaptureOptions::for_replies(filter)).unwrap();
         // The capture threads open their devices asynchronously; a probe sent
@@ -1465,9 +1459,9 @@ mod tests {
         use crate::transport::capture;
         use std::time::Duration;
 
-        let loopback = pnet::datalink::interfaces()
+        let loopback = crate::system::interface::interfaces()
             .into_iter()
-            .find(|iface| iface.is_loopback() && iface.is_up())
+            .find(|link| link.is_loopback() && link.is_up())
             .expect("a loopback interface to capture on");
 
         let socket = tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
@@ -1484,7 +1478,7 @@ mod tests {
         });
 
         let filter = format!("icmp or icmp6 or (udp and dst port {src_port})");
-        let link = crate::model::ip::scoped::Zone::new(loopback.index, loopback.name);
+        let link = loopback.zone();
         let (mut rx, _capture) =
             capture::segments(&[link], &capture::CaptureOptions::for_replies(filter)).unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1650,7 +1644,7 @@ mod tests {
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
         let mut scanner = UdpPortScanner::with_transport(
-            SourceResolver::from_interfaces(&[on_link_interface()]),
+            SourceResolver::from_links(&[on_link_interface()]),
             ctx,
             transport,
             8,

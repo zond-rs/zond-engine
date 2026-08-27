@@ -75,14 +75,14 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
-use pnet::datalink::NetworkInterface;
-use pnet::packet::arp::{ArpOperations, ArpPacket};
-use pnet::packet::ethernet::EtherTypes;
+use pnet_packet::arp::{ArpOperations, ArpPacket};
+use pnet_packet::ethernet::EtherTypes;
 use zond_engine::protocols::ethernet::Frame;
 use zond_engine::protocols::{arp, ethernet, ndp};
-use zond_engine::system::interface::{NetworkInterfaceExtension, get_prioritized_interfaces};
+use zond_engine::system::interface::{Link, get_prioritized_interfaces};
 use zond_engine::system::neighbors;
 use zond_engine::transport::channel;
+use zond_engine::transport::mac::IntoPnetMac;
 
 /// How long to listen after the last solicitation goes out.
 ///
@@ -146,14 +146,13 @@ fn flags<T: std::str::FromStr>(args: &[String], name: &str) -> Vec<T> {
 
 /// The interface to probe from: the one named, or the best-ranked one that has
 /// a link-local address to solicit from.
-fn choose_interface(name: Option<String>) -> NetworkInterface {
-    let interfaces = get_prioritized_interfaces(usize::MAX)
-        .unwrap_or_else(|e| fail(&format!("interfaces: {e}")));
+fn choose_interface(name: Option<String>) -> Link {
+    let interfaces = get_prioritized_interfaces(usize::MAX);
 
     match name {
         Some(name) => interfaces
             .into_iter()
-            .find(|intf| intf.name == name)
+            .find(|intf| intf.name() == name)
             .unwrap_or_else(|| fail(&format!("no interface named `{name}`"))),
         None => interfaces
             .into_iter()
@@ -164,20 +163,13 @@ fn choose_interface(name: Option<String>) -> NetworkInterface {
 
 /// The IPv4 address the flood's requests claim to come from, and the /24 they
 /// ask about.
-fn ipv4_of(intf: &NetworkInterface) -> Option<Ipv4Addr> {
-    intf.ips
-        .iter()
-        .filter_map(|net| match net.ip() {
-            IpAddr::V4(v4) if !v4.is_loopback() => Some(v4),
-            _ => None,
-        })
-        .next()
+fn ipv4_of(intf: &Link) -> Option<Ipv4Addr> {
+    intf.ipv4().map(|(v4, _)| v4).find(|v4| !v4.is_loopback())
 }
 
-fn link_local_of(intf: &NetworkInterface) -> Option<Ipv6Addr> {
-    intf.get_ipv6_nets()
-        .into_iter()
-        .map(|net| net.ip())
+fn link_local_of(intf: &Link) -> Option<Ipv6Addr> {
+    intf.ipv6()
+        .map(|(v6, _)| v6)
         .find(Ipv6Addr::is_unicast_link_local)
 }
 
@@ -186,7 +178,7 @@ fn link_local_of(intf: &NetworkInterface) -> Option<Ipv6Addr> {
 /// Deduplicated, because the neighbour table may hold one address against more
 /// than one entry and asking twice would forfeit the attribution this whole
 /// measurement depends on.
-fn targets(intf: &NetworkInterface, explicit: Vec<Ipv6Addr>) -> Vec<Ipv6Addr> {
+fn targets(intf: &Link, explicit: Vec<Ipv6Addr>) -> Vec<Ipv6Addr> {
     if !explicit.is_empty() {
         return explicit;
     }
@@ -196,7 +188,7 @@ fn targets(intf: &NetworkInterface, explicit: Vec<Ipv6Addr>) -> Vec<Ipv6Addr> {
         let IpAddr::V6(address) = neighbor.ip else {
             continue;
         };
-        if neighbor.interface_index == intf.index && !seen.contains(&address) {
+        if neighbor.interface_index == intf.index() && !seen.contains(&address) {
             seen.push(address);
         }
     }
@@ -222,32 +214,36 @@ async fn main() {
 
     let intf = choose_interface(flag(&args, "--interface"));
     let Some(source) = link_local_of(&intf) else {
-        fail(&format!("{} has no link-local IPv6 address", intf.name));
+        fail(&format!("{} has no link-local IPv6 address", intf.name()));
     };
-    let Some(mac) = intf.mac else {
-        fail(&format!("{} has no mac address", intf.name));
+    let Some(mac) = intf.mac() else {
+        fail(&format!("{} has no mac address", intf.name()));
     };
 
     let targets = targets(&intf, flags(&args, "--target"));
     if targets.is_empty() {
         fail(&format!(
             "no IPv6 neighbours known on {} - pass --target to name one",
-            intf.name
+            intf.name()
         ));
     }
 
     // Resolved before the run so a flood that cannot be sent is an error rather
     // than an arm that silently ran without the load it was named for.
     let flood_source = flood.map(|_| {
-        ipv4_of(&intf)
-            .unwrap_or_else(|| fail(&format!("{} has no IPv4 address to flood from", intf.name)))
+        ipv4_of(&intf).unwrap_or_else(|| {
+            fail(&format!(
+                "{} has no IPv4 address to flood from",
+                intf.name()
+            ))
+        })
     });
 
     println!(
         "\nndp_pace: {} targets on {} ({source}), one solicitation each, {} ms apart, \
          listening {} ms after the last{}\n",
         targets.len(),
-        intf.name,
+        intf.name(),
         interval.as_millis(),
         window.as_millis(),
         match (flood, flood_source) {
@@ -262,7 +258,7 @@ async fn main() {
     // What this benchmark reads and nothing else: ARP replies for the IPv4
     // baseline, and ICMPv6 for the neighbour advertisements it is here to time.
     let mut handle = channel::start_capture(&intf, "arp or icmp6")
-        .unwrap_or_else(|e| fail(&format!("opening {}: {e}", intf.name)));
+        .unwrap_or_else(|e| fail(&format!("opening {}: {e}", intf.name())));
 
     let mut probes: Vec<Probe> = Vec::with_capacity(targets.len());
     let mut index_of: HashMap<Ipv6Addr, usize> = HashMap::with_capacity(targets.len());
@@ -327,7 +323,7 @@ async fn main() {
                     continue;
                 };
 
-                let packet = ndp::create_neighbor_solicitation(&mac, &source, target);
+                let packet = ndp::create_neighbor_solicitation(&mac.into_pnet(), &source, target);
                 let now = Instant::now();
 
                 // Recorded only if the frame actually left. A probe the channel
@@ -336,7 +332,7 @@ async fn main() {
                 // which is the one direction this instrument must not err in,
                 // since it would make every arm look worse the busier the link
                 // was.
-                if !left_the_host(handle.tx.send_to(&packet, None)) {
+                if !left_the_host(handle.tx.send_frame(&packet)) {
                     unasked.push(target);
                     continue;
                 }
@@ -357,12 +353,12 @@ async fn main() {
                 if target == from {
                     continue;
                 }
-                let packet = arp::create_request(&mac, &from, target);
+                let packet = arp::create_request(&mac.into_pnet(), &from, target);
                 let now = Instant::now();
 
                 // Same rule as the solicitation above: a request that never
                 // left is not one the segment declined to answer.
-                if !left_the_host(handle.tx.send_to(&packet, None)) {
+                if !left_the_host(handle.tx.send_frame(&packet)) {
                     continue;
                 }
 
@@ -379,19 +375,14 @@ async fn main() {
 
 /// Whether a frame handed to the channel actually reached the wire.
 ///
-/// `send_to` reports `None` when the channel had no buffer to write into and
-/// `Some(Err(..))` when the write itself failed, and both mean the frame never
-/// left. Reading only whether the packet *built* is how a measurement comes to
-/// count probes that were never sent.
-fn left_the_host(outcome: Option<std::io::Result<()>>) -> bool {
+/// `send_frame` reports an error when the frame never left, and reading only
+/// whether the packet *built* is how a measurement comes to count probes that
+/// were never sent.
+fn left_the_host(outcome: Result<(), String>) -> bool {
     match outcome {
-        Some(Ok(())) => true,
-        Some(Err(e)) => {
-            eprintln!("ndp_pace: a frame could not be sent: {e}");
-            false
-        }
-        None => {
-            eprintln!("ndp_pace: the link-layer channel accepted no frame");
+        Ok(()) => true,
+        Err(reason) => {
+            eprintln!("ndp_pace: a frame could not be sent: {reason}");
             false
         }
     }

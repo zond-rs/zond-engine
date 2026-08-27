@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use common::fake_lan::{FakeLan, LanHost, LanProbe};
 use common::*;
-use pnet::datalink::MacAddr;
+use pnet_base::MacAddr;
 use zond_engine::config::ZondConfig;
 use zond_engine::model::exclusion::Exclusions;
 use zond_engine::model::host::telemetry::RttSource;
@@ -986,7 +986,7 @@ async fn a_segment_sweep_records_the_link_it_covered() {
         1,
         "a sweep covers the link it was run on: {links:?}"
     );
-    assert_eq!(links[0].name(), scanner_interface().name);
+    assert_eq!(links[0].name(), scanner_interface().name());
 }
 
 /// A targeted run sends no all-nodes solicitation, so it covers the addresses it

@@ -25,7 +25,7 @@
 //! found in a table the kernel already holds, or not found — and making the call
 //! `async` to match its sibling would promise a wait that never happens.
 
-use pnet::datalink::NetworkInterface;
+use crate::system::interface::Link;
 
 use crate::model::ip::scoped::Zone;
 use crate::model::parse::ip::Keyword;
@@ -108,7 +108,7 @@ pub enum LinkError {
 /// # }
 /// ```
 pub fn for_listening<S: AsRef<str>>(exprs: &[S]) -> Result<Vec<Zone>, LinkError> {
-    for_listening_on(exprs, &pnet::datalink::interfaces())
+    for_listening_on(exprs, &crate::system::interface::interfaces())
 }
 
 /// [`for_listening`], against an interface table supplied rather than read.
@@ -119,13 +119,13 @@ pub fn for_listening<S: AsRef<str>>(exprs: &[S]) -> Result<Vec<Zone>, LinkError>
 /// [`for_discovery_with`](super::for_discovery_with) exists for.
 pub fn for_listening_on<S: AsRef<str>>(
     exprs: &[S],
-    interfaces: &[NetworkInterface],
+    interfaces: &[Link],
 ) -> Result<Vec<Zone>, LinkError> {
     if exprs.is_empty() {
         let links: Vec<Zone> = interfaces
             .iter()
-            .filter(|interface| interface.is_up())
-            .map(zone_of)
+            .filter(|link| link.is_up())
+            .map(Link::zone)
             .collect();
 
         return if links.is_empty() {
@@ -151,18 +151,18 @@ pub fn for_listening_on<S: AsRef<str>>(
             interface::get_lan_link()
                 .ok()
                 .flatten()
-                .map(|lan| zone_of(&lan.interface))
+                .map(|lan| lan.link.zone())
                 .ok_or(LinkError::NoLan)?
         } else {
             interfaces
                 .iter()
-                .find(|interface| interface.name == name)
-                .map(zone_of)
+                .find(|link| link.name() == name)
+                .map(Link::zone)
                 .ok_or_else(|| LinkError::Unknown {
                     expression: written.to_owned(),
                     available: interfaces
                         .iter()
-                        .map(|interface| interface.name.clone())
+                        .map(|link| link.name().to_owned())
                         .collect(),
                 })?
         };
@@ -177,12 +177,6 @@ pub fn for_listening_on<S: AsRef<str>>(
     Ok(links)
 }
 
-/// The zone naming `interface`, carrying the index a link-local address needs to
-/// be usable.
-fn zone_of(interface: &NetworkInterface) -> Zone {
-    Zone::new(interface.index, interface.name.clone())
-}
-
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -195,23 +189,21 @@ fn zone_of(interface: &NetworkInterface) -> Zone {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::datalink::NetworkInterface;
+    use crate::system::interface::Link;
 
     /// An interface table that exists nowhere, so the behaviour under test is
     /// this function's rather than the machine's.
-    fn table() -> Vec<NetworkInterface> {
-        let up = |name: &str, index: u32, flags: u32| NetworkInterface {
-            name: name.to_owned(),
-            description: String::new(),
-            index,
-            mac: None,
-            ips: Vec::new(),
-            flags,
-        };
+    fn table() -> Vec<Link> {
+        let up = |name: &str, index: u32, up: bool| Link::new(name, index).up(up);
 
-        // `IFF_UP` is bit zero on every platform this engine runs on, which is
-        // what `is_up` reads.
-        vec![up("en0", 4, 1), up("en1", 5, 1), up("awdl0", 9, 0)]
+        // A link says whether it is up rather than carrying a flags word the
+        // reader has to know the bit positions of — which is the whole of what
+        // was wrong on Windows, where nobody filled that word in.
+        vec![
+            up("en0", 4, true),
+            up("en1", 5, true),
+            up("awdl0", 9, false),
+        ]
     }
 
     #[test]

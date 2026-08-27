@@ -35,14 +35,13 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use pnet::datalink::{self, Config, DataLinkReceiver, DataLinkSender, NetworkInterface};
-use pnet::packet::Packet;
-use pnet::packet::arp::{ArpOperations, ArpPacket};
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use pnet::util::MacAddr;
+use pnet_base::MacAddr;
+use pnet_packet::Packet;
+use pnet_packet::arp::{ArpOperations, ArpPacket};
+use pnet_packet::ethernet::{EtherTypes, EthernetPacket};
 
 use crate::protocols::arp;
-use crate::transport::channel::open_eth_channel;
+use crate::transport::capture::{self, FrameSink};
 use crate::transport::frame;
 use crate::transport::neighbor::{LinkRoute, NeighborResolver};
 use crate::transport::probe::{Emission, IpProtocols, ProbeSender, SendError};
@@ -57,8 +56,7 @@ const CHANNEL_READ_TIMEOUT: Duration = Duration::from_millis(50);
 /// The open link-layer channel for one interface, plus the source MAC to
 /// stamp on frames leaving it.
 struct InterfaceChannel {
-    tx: Box<dyn DataLinkSender>,
-    rx: Box<dyn DataLinkReceiver>,
+    channel: capture::FrameChannel,
 }
 
 /// A Layer-2 send backend. Interfaces' channels are opened lazily on first
@@ -142,14 +140,13 @@ impl EthernetSender {
 
         let request = arp::create_request(&src_mac, &src_ip, target);
         channel
-            .tx
-            .send_to(&request, None)
-            .context("no ARP send result")?
-            .context("sending ARP request")?;
+            .channel
+            .send_frame(&request)
+            .map_err(|reason| anyhow::anyhow!("sending ARP request: {reason}"))?;
 
         let deadline = Instant::now() + ARP_TIMEOUT;
         while Instant::now() < deadline {
-            let Ok(frame) = channel.rx.next() else {
+            let Some(frame) = channel.channel.next_frame() else {
                 continue; // read timeout; keep waiting until the deadline
             };
             if let Some(mac) = parse_arp_reply(frame, target) {
@@ -166,14 +163,10 @@ impl EthernetSender {
         interface: &str,
     ) -> anyhow::Result<&'a mut InterfaceChannel> {
         if !channels.contains_key(interface) {
-            let intf = find_interface(interface)
-                .with_context(|| format!("interface {interface} not found"))?;
-            let cfg = Config {
-                read_timeout: Some(CHANNEL_READ_TIMEOUT),
-                ..Default::default()
-            };
-            let (tx, rx) = open_eth_channel(&intf, datalink::channel, cfg)?;
-            channels.insert(interface.to_string(), InterfaceChannel { tx, rx });
+            // ARP alone: this channel exists to resolve a next hop, and every
+            // other frame on the segment is somebody else's business.
+            let channel = capture::FrameChannel::open(interface, "arp", CHANNEL_READ_TIMEOUT)?;
+            channels.insert(interface.to_string(), InterfaceChannel { channel });
         }
         Ok(channels.get_mut(interface).unwrap())
     }
@@ -213,19 +206,13 @@ impl ProbeSender for EthernetSender {
             let mut channels = self.channels.lock().unwrap();
             let channel = self.channel_for(&mut channels, &route.interface)?;
             channel
-                .tx
-                .send_to(&frame, None)
-                .context("no frame send result")?
-                .context("sending frame")?;
+                .channel
+                .send_frame(&frame)
+                .map_err(|reason| anyhow::anyhow!("sending frame: {reason}"))?;
             Ok(())
         })()
         .map_err(SendError::from_io)
     }
-}
-
-/// Finds the `pnet` interface with the given name.
-fn find_interface(name: &str) -> Option<NetworkInterface> {
-    datalink::interfaces().into_iter().find(|i| i.name == name)
 }
 
 /// Parses an Ethernet frame as an ARP reply from `target`, returning the
@@ -255,8 +242,8 @@ fn parse_arp_reply(frame: &[u8], target: Ipv4Addr) -> Option<MacAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, MutableArpPacket};
-    use pnet::packet::ethernet::MutableEthernetPacket;
+    use pnet_packet::arp::{ArpHardwareTypes, ArpOperations, MutableArpPacket};
+    use pnet_packet::ethernet::MutableEthernetPacket;
 
     /// Builds an Ethernet-framed ARP reply from `sender_ip`/`sender_mac`.
     fn arp_reply(sender_ip: Ipv4Addr, sender_mac: MacAddr) -> Vec<u8> {

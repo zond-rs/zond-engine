@@ -34,8 +34,8 @@
 use crate::protocols::craft::{Ethernet, Icmpv4, Icmpv6, Ipv4, Ipv6, Packet};
 use crate::protocols::error::Result;
 use crate::protocols::ip;
-use pnet::datalink::MacAddr;
-use pnet::packet::ethernet::EtherTypes;
+use pnet_base::MacAddr;
+use pnet_packet::ethernet::EtherTypes;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// The code an OS-fingerprinting echo request carries.
@@ -318,11 +318,11 @@ pub fn create_echo_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::Packet as _;
-    use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
-    use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Types};
-    use pnet::packet::ipv4::Ipv4Packet;
-    use pnet::packet::ipv6::Ipv6Packet;
+    use pnet_packet::Packet as _;
+    use pnet_packet::icmp::{IcmpPacket, IcmpTypes};
+    use pnet_packet::icmpv6::{Icmpv6Packet, Icmpv6Types};
+    use pnet_packet::ipv4::Ipv4Packet;
+    use pnet_packet::ipv6::Ipv6Packet;
 
     const SRC_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 1);
     const DST_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 2);
@@ -377,7 +377,7 @@ mod tests {
         let ip = Ipv4Packet::new(eth.payload()).expect("an IPv4 header");
         assert_eq!(
             ip.get_next_level_protocol(),
-            pnet::packet::ip::IpNextHeaderProtocols::Icmp
+            pnet_packet::ip::IpNextHeaderProtocols::Icmp
         );
         assert_eq!(ip.get_total_length() as usize, eth.payload().len());
         assert_ne!(ip.get_checksum(), 0);

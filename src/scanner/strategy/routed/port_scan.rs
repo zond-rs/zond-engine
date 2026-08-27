@@ -47,8 +47,8 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::tcp::TcpPacket;
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
 use crate::config::OsDetection;
@@ -901,12 +901,11 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
-    use pnet::ipnetwork::{IpNetwork, Ipv4Network};
-    use pnet::packet::icmp::destination_unreachable::{
+    use pnet_packet::icmp::destination_unreachable::{
         DestinationUnreachablePacket, IcmpCodes, MutableDestinationUnreachablePacket,
     };
-    use pnet::packet::icmp::{IcmpCode, IcmpTypes};
-    use pnet::packet::tcp::MutableTcpPacket;
+    use pnet_packet::icmp::{IcmpCode, IcmpTypes};
+    use pnet_packet::tcp::MutableTcpPacket;
 
     use crate::protocols::ip;
     use crate::scanner::session::ScanSession;
@@ -925,17 +924,16 @@ mod tests {
 
     /// An interface whose /24 contains [`TARGET`], so source resolution
     /// answers on-link without a kernel route probe.
-    fn on_link_interface() -> pnet::datalink::NetworkInterface {
-        pnet::datalink::NetworkInterface {
-            name: "test0".to_string(),
-            description: String::new(),
-            index: 0,
-            mac: None,
-            ips: vec![IpNetwork::V4(
-                Ipv4Network::new(Ipv4Addr::new(192, 168, 1, 50), 24).unwrap(),
-            )],
-            flags: 0,
-        }
+    fn on_link_interface() -> crate::system::interface::Link {
+        use crate::system::interface::{Link, LinkAddress};
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        Link::new("test0", 0).with_addresses(vec![
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)), 24),
+            LinkAddress::new(
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 50)),
+                64,
+            ),
+        ])
     }
 
     /// Builds a bare 20-byte TCP segment as a captured reply arrives, once the
@@ -1005,7 +1003,7 @@ mod tests {
         let sender = MockSender::default();
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
-        let resolver = SourceResolver::from_interfaces(&[on_link_interface()]);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
         let scanner = TcpPortScanner::with_transport(resolver, ctx, technique, transport, 8);
         (scanner, session, sent)
     }

@@ -39,12 +39,12 @@
 //! being ignored by the network card of almost every other neighbour — the
 //! filtering happens in hardware rather than in a stack.
 
-use pnet::datalink::MacAddr;
-use pnet::packet::Packet as _;
-use pnet::packet::ethernet::EtherTypes;
-use pnet::packet::icmpv6::Icmpv6Types;
-use pnet::packet::icmpv6::ndp::NeighborAdvertPacket;
-use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet_base::MacAddr;
+use pnet_packet::Packet as _;
+use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::icmpv6::Icmpv6Types;
+use pnet_packet::icmpv6::ndp::NeighborAdvertPacket;
+use pnet_packet::ip::IpNextHeaderProtocols;
 use std::net::Ipv6Addr;
 
 use crate::protocols::craft::{Ethernet, Field, Icmpv6, Ipv6, Packet};
@@ -261,12 +261,12 @@ pub fn is_router_advertisement(frame: &Frame<'_>) -> bool {
 }
 
 /// The IPv6 packet inside `frame`, if it carries ICMPv6.
-fn icmpv6<'a>(frame: &Frame<'a>) -> Option<pnet::packet::ipv6::Ipv6Packet<'a>> {
+fn icmpv6<'a>(frame: &Frame<'a>) -> Option<pnet_packet::ipv6::Ipv6Packet<'a>> {
     if frame.ethertype() != EtherTypes::Ipv6 {
         return None;
     }
 
-    let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
+    let packet = pnet_packet::ipv6::Ipv6Packet::new(frame.payload())?;
     (packet.get_next_header() == IpNextHeaderProtocols::Icmpv6).then_some(packet)
 }
 
@@ -284,12 +284,12 @@ mod tests {
     use super::*;
     use crate::protocols::ethernet;
     use crate::protocols::sizes::ETH_HDR_LEN;
-    use pnet::packet::icmpv6::Icmpv6Type;
-    use pnet::packet::icmpv6::ndp::NdpOptionTypes;
-    use pnet::packet::icmpv6::ndp::{
+    use pnet_packet::icmpv6::Icmpv6Type;
+    use pnet_packet::icmpv6::ndp::NdpOptionTypes;
+    use pnet_packet::icmpv6::ndp::{
         MutableNeighborAdvertPacket, NeighborSolicitPacket, RouterSolicitPacket,
     };
-    use pnet::packet::ipv6::Ipv6Packet;
+    use pnet_packet::ipv6::Ipv6Packet;
 
     const SRC_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0x01);
 

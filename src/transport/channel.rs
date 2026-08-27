@@ -26,14 +26,10 @@
 //! All three are properties of the receive side alone, and all three were already
 //! solved one module over.
 
-use pnet::datalink::{self, Channel, Config, DataLinkReceiver, DataLinkSender, NetworkInterface};
-use std::time::Duration;
+use crate::system::interface::Link;
 
 use crate::model::capture::CaptureCounts;
-use crate::model::ip::scoped::Zone;
-use crate::transport::capture::{self, CaptureGuard, CaptureOptions, FrameStream};
-
-const READ_TIMEOUT_MS: u64 = 50;
+use crate::transport::capture::{self, CaptureGuard, CaptureOptions, FrameSink, FrameStream};
 
 /// How many frames may wait for the consumer at once.
 ///
@@ -54,7 +50,7 @@ const QUEUE_DEPTH: usize = 1024;
 /// Local discovery needs the whole frame: it identifies a neighbour by the
 /// Ethernet source MAC, and reads ARP, which has no Layer-4 segment to strip to.
 pub struct EthernetHandle {
-    pub tx: Box<dyn DataLinkSender>,
+    pub tx: Box<dyn FrameSink>,
     pub rx: FrameStream,
     /// Keeps the capture thread alive for this handle's lifetime, and holds the
     /// counters it publishes.
@@ -89,7 +85,7 @@ impl EthernetHandle {
     ///
     /// Requires the `test-support` feature outside this crate.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn from_parts(tx: Box<dyn DataLinkSender>, rx: FrameStream) -> Self {
+    pub fn from_parts(tx: Box<dyn FrameSink>, rx: FrameStream) -> Self {
         Self {
             tx,
             rx,
@@ -153,61 +149,29 @@ pub enum ChannelError {
 /// nothing about ARP, neighbour discovery or DHCP; a filter written here would
 /// be a scanner's knowledge kept one layer below the scanner, and would go stale
 /// the first time a reader was added without anybody thinking to look down here.
-pub fn start_capture(
-    intf: &NetworkInterface,
-    filter: &str,
-) -> Result<EthernetHandle, ChannelError> {
-    let cfg = Config {
-        read_timeout: Some(Duration::from_millis(READ_TIMEOUT_MS)),
-        // The capture opened below is the receive path, and it is the one that
-        // decides whether the interface runs promiscuously. Asking for it here
-        // as well would leave two owners of one setting and no way to tell which
-        // of them a running interface reflects.
-        promiscuous: false,
-        ..Default::default()
-    };
+pub fn start_capture(link: &Link, filter: &str) -> Result<EthernetHandle, ChannelError> {
+    // Two handles on the one library, rather than one handle each on two. See
+    // `FrameSender`: this used to open a `pnet` channel for the sending half and
+    // discard its receiver, leaving a kernel buffer nothing drained.
+    let tx = capture::FrameSender::open(link.name()).map_err(|source| ChannelError::NoCapture {
+        interface: link.name().to_owned(),
+        source,
+    })?;
 
-    // The receiving half of this channel is dropped: it is the path this module
-    // used to read frames through, and the capture below replaced it. `pnet`
-    // offers no send-only channel, so what it costs is one small kernel buffer
-    // per interface that nothing drains.
-    let (tx, _unused) = open_eth_channel(intf, datalink::channel, cfg)?;
-
-    let zone = Zone::new(intf.index, intf.name.clone());
+    let zone = link.zone();
     let (rx, capture) = capture::frames(
         std::slice::from_ref(&zone),
         &CaptureOptions::for_link_traffic(filter),
         QUEUE_DEPTH,
     )
     .map_err(|source| ChannelError::NoCapture {
-        interface: intf.name.clone(),
+        interface: link.name().to_owned(),
         source,
     })?;
 
-    Ok(EthernetHandle { tx, rx, capture })
-}
-
-/// The two halves of an open link-layer channel: somewhere to put frames, and
-/// the frames arriving.
-pub type EthernetChannel = (Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>);
-
-pub fn open_eth_channel<F>(
-    intf: &NetworkInterface,
-    channel_opener: F,
-    cfg: Config,
-) -> Result<EthernetChannel, ChannelError>
-where
-    F: FnOnce(&NetworkInterface, Config) -> std::io::Result<datalink::Channel>,
-{
-    let ch: Channel = channel_opener(intf, cfg).map_err(|source| ChannelError::Open {
-        interface: intf.name.clone(),
-        source,
-    })?;
-
-    match ch {
-        Channel::Ethernet(tx, rx) => Ok((tx, rx)),
-        _ => Err(ChannelError::NotEthernet {
-            interface: intf.name.clone(),
-        }),
-    }
+    Ok(EthernetHandle {
+        tx: Box::new(tx),
+        rx,
+        capture,
+    })
 }

@@ -35,21 +35,21 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pnet::datalink::{DataLinkSender, MacAddr, NetworkInterface};
-use pnet::packet::Packet;
-use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
-use pnet::packet::ethernet::EtherTypes;
-use pnet::packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
-use pnet::packet::icmpv6::ndp::{MutableNeighborAdvertPacket, NeighborSolicitPacket};
-use pnet::packet::icmpv6::{Icmpv6Code, Icmpv6Types};
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::udp::{MutableUdpPacket, ipv6_checksum as udp_ipv6_checksum};
+use pnet_base::MacAddr;
+use pnet_packet::Packet;
+use pnet_packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
+use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
+use pnet_packet::icmpv6::ndp::{MutableNeighborAdvertPacket, NeighborSolicitPacket};
+use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Types};
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::udp::{MutableUdpPacket, ipv6_checksum as udp_ipv6_checksum};
 use tokio::sync::mpsc::{self, Sender};
 
 use zond_engine::model::ip::scoped::Zone;
 use zond_engine::protocols::ethernet::Frame;
 use zond_engine::protocols::{craft, ethernet, ip};
-use zond_engine::transport::capture::CapturedFrame;
+use zond_engine::transport::capture::{CapturedFrame, FrameSink};
 use zond_engine::transport::channel::EthernetHandle;
 use zond_engine::transport::frame::LinkType;
 
@@ -81,7 +81,7 @@ const FAKE_QUEUE_DEPTH: usize = 4096;
 /// would be simulating two segments.
 fn simulated_zone() -> Zone {
     let intf = super::scanner_interface();
-    Zone::new(intf.index, intf.name)
+    intf.zone()
 }
 
 /// Source port, destination port, length, checksum.
@@ -479,19 +479,15 @@ struct FakeSegment {
     zone: Zone,
 }
 
-impl DataLinkSender for FakeSegment {
+impl FrameSink for FakeSegment {
     /// Carries one frame onto the simulated segment.
     ///
     /// Always reports success. A frame that no host answers is indistinguishable
     /// from one that was lost, which is the whole point: reporting a send error
     /// would hand the scanner a signal a real segment never gives it.
-    fn send_to(
-        &mut self,
-        packet: &[u8],
-        _dst: Option<NetworkInterface>,
-    ) -> Option<std::io::Result<()>> {
+    fn send_frame(&mut self, packet: &[u8]) -> Result<(), String> {
         let Ok(frame) = ethernet::parse(packet) else {
-            return Some(Ok(()));
+            return Ok(());
         };
 
         self.emit_unsolicited(&frame);
@@ -515,27 +511,7 @@ impl DataLinkSender for FakeSegment {
             _ => {}
         }
 
-        Some(Ok(()))
-    }
-
-    /// Builds `num_packets` frames in place and sends each one.
-    ///
-    /// `LocalScanner` does not use this path, but the trait requires it and a
-    /// silent no-op would turn a future caller's probes into an unexplained
-    /// silence. Routing it through [`send_to`](Self::send_to) keeps one
-    /// behaviour for both.
-    fn build_and_send(
-        &mut self,
-        num_packets: usize,
-        packet_size: usize,
-        func: &mut dyn FnMut(&mut [u8]),
-    ) -> Option<std::io::Result<()>> {
-        for _ in 0..num_packets {
-            let mut buffer = vec![0u8; packet_size];
-            func(&mut buffer);
-            self.send_to(&buffer, None)?.ok()?;
-        }
-        Some(Ok(()))
+        Ok(())
     }
 }
 
@@ -900,7 +876,7 @@ fn arp_reply(
 
 /// The address a neighbor solicitation asks about.
 fn solicited_target(frame: &Frame<'_>) -> Option<Ipv6Addr> {
-    let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
+    let packet = pnet_packet::ipv6::Ipv6Packet::new(frame.payload())?;
     Some(NeighborSolicitPacket::new(packet.payload())?.get_target_addr())
 }
 
@@ -1010,8 +986,8 @@ fn mdns_response(
 /// The identifier and sequence number an echo *request* carries, which the
 /// reply has to return unchanged.
 fn echo_request_token(frame: &Frame<'_>) -> Option<(u16, u16)> {
-    let packet = pnet::packet::ipv6::Ipv6Packet::new(frame.payload())?;
-    let request = pnet::packet::icmpv6::echo_request::EchoRequestPacket::new(packet.payload())?;
+    let packet = pnet_packet::ipv6::Ipv6Packet::new(frame.payload())?;
+    let request = pnet_packet::icmpv6::echo_request::EchoRequestPacket::new(packet.payload())?;
     Some((request.get_identifier(), request.get_sequence_number()))
 }
 
@@ -1067,12 +1043,12 @@ fn icmpv6_echo_reply(
 
 /// The BOOTP message inside `frame`, if it is a DHCP datagram at all.
 fn dhcp_message<'a>(frame: &Frame<'a>) -> Option<Vec<u8>> {
-    let packet = pnet::packet::ipv4::Ipv4Packet::new(frame.payload())?;
+    let packet = pnet_packet::ipv4::Ipv4Packet::new(frame.payload())?;
     if packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp {
         return None;
     }
 
-    let datagram = pnet::packet::udp::UdpPacket::new(packet.payload())?;
+    let datagram = pnet_packet::udp::UdpPacket::new(packet.payload())?;
     (datagram.get_destination() == DHCP_SERVER_PORT).then(|| datagram.payload().to_vec())
 }
 

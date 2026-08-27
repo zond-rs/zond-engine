@@ -38,7 +38,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pcap::{Active, Capture, Device};
-use pnet::packet::ip::IpNextHeaderProtocol;
+use pnet_packet::ip::IpNextHeaderProtocol;
 #[cfg(not(windows))]
 use std::os::unix::io::AsRawFd;
 use tokio::sync::mpsc;
@@ -47,7 +47,7 @@ use crate::model::capture::{CaptureCounts, IpObservation};
 use crate::model::ip::scoped::Zone;
 use crate::transport::frame::{self, LinkType};
 use crate::{error, info, warn};
-use pnet::util::MacAddr;
+use pnet_base::MacAddr;
 
 /// Largest capture a scan's receive path ever needs: a reply is a bare TCP/UDP
 /// segment, but snapping generously costs nothing against a filter this narrow
@@ -432,6 +432,17 @@ pub enum CaptureError {
          (opening a capture needs root)"
     )]
     NoInterface,
+    /// One named link could not be opened for sending. Unlike `NoInterface`
+    /// this names the link, because a caller asked for that one in particular
+    /// and there is nothing else to fall back to.
+    #[error("{interface} could not be opened to send on: {source}")]
+    Open {
+        /// The link that refused.
+        interface: String,
+        /// What `libpcap` said.
+        #[source]
+        source: pcap::Error,
+    },
 }
 
 /// Opens a filtered capture on each named link and starts reading, parsing
@@ -787,6 +798,136 @@ fn wait_readable(fd: std::os::unix::io::RawFd) {
     // SAFETY: `poll_fd` is a single initialized `pollfd` and the count says so;
     // `poll` reads it and writes only `revents`.
     unsafe { libc::poll(&mut poll_fd, 1, READ_TIMEOUT_MS) };
+}
+
+/// A handle for putting whole frames on a link.
+///
+/// **The send half of the same library the receive half already uses.** It was
+/// `pnet_datalink`'s, which meant two libraries open on one interface for one
+/// scan: a `pnet` channel whose receiver was discarded, and a `pcap` capture
+/// that replaced it. The discarded receiver was a kernel buffer nothing drained,
+/// and the comment saying so was in the code for as long as the arrangement was.
+///
+/// A separate handle from the reading one, because a capture cannot be read and
+/// written through the same borrow while a reader thread is parked in
+/// `next_packet`. What it is not is a separate *library*.
+pub struct FrameSender {
+    capture: Capture<Active>,
+}
+
+impl FrameSender {
+    /// Opens a send-only handle on `link`.
+    ///
+    /// The filter is one that cannot match. This handle exists to write, and a
+    /// capture with no filter at all would fill a kernel buffer nobody reads —
+    /// which is the defect the arrangement this replaces was documented as
+    /// having. `less 0` asks for frames shorter than nothing.
+    pub fn open(link: &str) -> Result<Self, CaptureError> {
+        let mut capture = Capture::from_device(Device::from(link))
+            .and_then(|inactive| inactive.snaplen(1).timeout(1).open())
+            .map_err(|source| CaptureError::Open {
+                interface: link.to_owned(),
+                source,
+            })?;
+
+        capture
+            .filter("less 0", true)
+            .map_err(|source| CaptureError::Open {
+                interface: link.to_owned(),
+                source,
+            })?;
+
+        Ok(Self { capture })
+    }
+}
+
+impl FrameSink for FrameSender {
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        self.capture.sendpacket(frame).map_err(|e| e.to_string())
+    }
+}
+
+/// Somewhere to put a frame.
+///
+/// A trait rather than the concrete sender for one reason: it is the seam a test
+/// drives a scanner through, the way [`FrameStream`] is on the receive side. A
+/// fake segment implements this, observes what a scanner emits, and answers on
+/// the stream — with no interface and no privileges involved.
+pub trait FrameSink: Send {
+    /// Puts `frame` on the wire whole, link header included.
+    ///
+    /// The error is a string because there is nothing a caller can do with it
+    /// but report it, and the two libraries that have ever implemented this
+    /// disagree about everything else. What matters at the call site is that a
+    /// failure means the frame did not leave.
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), String>;
+}
+
+/// One link, opened for both directions and driven by a single thread.
+///
+/// The shape a request-and-wait exchange wants: put a frame on the wire, then
+/// read until the answer arrives or the deadline passes. Both halves borrow the
+/// same handle mutably, which is exactly why this is one type and not a pair —
+/// and why it is not what [`frames`] gives a scanner, whose reader lives on its
+/// own thread and cannot share a borrow with anybody.
+///
+/// The filter is the caller's, for the reason it always is here: what a frame is
+/// worth is decided by whoever reads it.
+pub struct FrameChannel {
+    capture: Capture<Active>,
+}
+
+impl FrameChannel {
+    /// Opens `link` for sending and receiving, admitting what `filter` admits.
+    ///
+    /// `read_timeout` bounds how long [`next_frame`](Self::next_frame) waits, so
+    /// a caller with a deadline can honour it rather than parking until a frame
+    /// happens to arrive.
+    pub fn open(
+        link: &str,
+        filter: &str,
+        read_timeout: std::time::Duration,
+    ) -> Result<Self, CaptureError> {
+        let millis = i32::try_from(read_timeout.as_millis()).unwrap_or(i32::MAX);
+        let mut capture = Capture::from_device(Device::from(link))
+            .and_then(|inactive| {
+                inactive
+                    .immediate_mode(true)
+                    .snaplen(saturating_i32(REPLY_SNAP_LEN))
+                    .timeout(millis)
+                    .open()
+            })
+            .map_err(|source| CaptureError::Open {
+                interface: link.to_owned(),
+                source,
+            })?;
+
+        capture
+            .filter(filter, true)
+            .map_err(|source| CaptureError::Open {
+                interface: link.to_owned(),
+                source,
+            })?;
+
+        Ok(Self { capture })
+    }
+
+    /// The next frame the filter admitted, or `None` on a read timeout.
+    ///
+    /// `None` is not the end of anything — it means nothing arrived inside the
+    /// timeout, and a caller with a deadline left should ask again.
+    pub fn next_frame(&mut self) -> Option<&[u8]> {
+        match self.capture.next_packet() {
+            Ok(packet) => Some(packet.data),
+            Err(_) => None,
+        }
+    }
+}
+
+impl FrameSink for FrameChannel {
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        self.capture.sendpacket(frame).map_err(|e| e.to_string())
+    }
 }
 
 // ╔════════════════════════════════════════════╗

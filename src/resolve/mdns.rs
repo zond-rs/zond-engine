@@ -223,15 +223,10 @@ fn open_group_socket(interface: Ipv4Addr) -> Result<UdpSocket> {
 /// interface with no IPv4 address is not here, because it cannot reach the v4
 /// group.
 fn multicast_interfaces() -> Vec<Ipv4Addr> {
-    pnet::datalink::interfaces()
+    crate::system::interface::interfaces()
         .into_iter()
-        .filter(|interface| interface.is_up() && !interface.is_loopback())
-        .filter_map(|interface| {
-            interface.ips.iter().find_map(|net| match net.ip() {
-                IpAddr::V4(v4) if !v4.is_loopback() => Some(v4),
-                _ => None,
-            })
-        })
+        .filter(|link| link.is_up() && !link.is_loopback())
+        .filter_map(|link| link.ipv4().map(|(v4, _)| v4).find(|v4| !v4.is_loopback()))
         .collect()
 }
 

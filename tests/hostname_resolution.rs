@@ -18,7 +18,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
-use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ip::IpNextHeaderProtocols;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 

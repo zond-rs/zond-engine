@@ -31,8 +31,8 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use pnet::ipnetwork::{Ipv4Network, Ipv6Network};
-use pnet::util::MacAddr;
+use crate::system::interface::LinkAddress;
+use pnet_base::MacAddr;
 
 /// A resolved link-layer path to a destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +62,8 @@ pub struct LinkRoute {
 struct InterfaceInfo {
     name: String,
     mac: MacAddr,
-    v4: Vec<Ipv4Network>,
-    v6: Vec<Ipv6Network>,
+    v4: Vec<LinkAddress>,
+    v6: Vec<LinkAddress>,
     gateway_v4: Option<(Ipv4Addr, MacAddr)>,
     gateway_v6: Option<(Ipv6Addr, MacAddr)>,
 }
@@ -119,16 +119,16 @@ impl NeighborResolver {
     fn resolve_on_link(&self, dst: IpAddr) -> Option<LinkRoute> {
         for iface in &self.interfaces {
             let src_ip = match dst {
-                IpAddr::V4(d) => iface
+                IpAddr::V4(_) => iface
                     .v4
                     .iter()
-                    .find(|net| net.contains(d))
-                    .map(|net| IpAddr::V4(net.ip())),
-                IpAddr::V6(d) => iface
+                    .find(|held| held.contains(&dst))
+                    .map(LinkAddress::address),
+                IpAddr::V6(_) => iface
                     .v6
                     .iter()
-                    .find(|net| net.contains(d))
-                    .map(|net| IpAddr::V6(net.ip())),
+                    .find(|held| held.contains(&dst))
+                    .map(LinkAddress::address),
             };
 
             if let Some(src_ip) = src_ip {
@@ -154,8 +154,8 @@ impl NeighborResolver {
             let (next_hop, gw_mac, src_ip) = match dst {
                 IpAddr::V4(_) => {
                     let (gw_ip, mac) = iface.gateway_v4?;
-                    let src = iface.v4.first()?.ip();
-                    (IpAddr::V4(gw_ip), mac, IpAddr::V4(src))
+                    let src = iface.v4.first()?.address();
+                    (IpAddr::V4(gw_ip), mac, src)
                 }
                 IpAddr::V6(_) => {
                     let (gw_ip, mac) = iface.gateway_v6?;
@@ -194,7 +194,10 @@ fn routable_v6_source(iface: &InterfaceInfo) -> Option<Ipv6Addr> {
     iface
         .v6
         .iter()
-        .map(|net| net.ip())
+        .filter_map(|held| match held.address() {
+            IpAddr::V6(v6) => Some(v6),
+            IpAddr::V4(_) => None,
+        })
         .find(|addr| !addr.is_unicast_link_local() && !addr.is_unique_local())
 }
 
@@ -210,12 +213,12 @@ fn interface_info(iface: netdev::Interface) -> Option<InterfaceInfo> {
     let v4 = iface
         .ipv4
         .iter()
-        .filter_map(|net| Ipv4Network::new(net.addr(), net.prefix_len()).ok())
+        .map(|net| LinkAddress::new(IpAddr::V4(net.addr()), net.prefix_len()))
         .collect();
     let v6 = iface
         .ipv6
         .iter()
-        .filter_map(|net| Ipv6Network::new(net.addr(), net.prefix_len()).ok())
+        .map(|net| LinkAddress::new(IpAddr::V6(net.addr()), net.prefix_len()))
         .collect();
 
     let (gateway_v4, gateway_v6) = match iface.gateway {
@@ -264,7 +267,10 @@ mod tests {
         InterfaceInfo {
             name: "en0".to_string(),
             mac: IFACE_MAC,
-            v4: vec![Ipv4Network::new(Ipv4Addr::new(192, 168, 1, 50), 24).unwrap()],
+            v4: vec![LinkAddress::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)),
+                24,
+            )],
             v6: vec![],
             gateway_v4: Some((Ipv4Addr::new(192, 168, 1, 1), GW_MAC)),
             gateway_v6: None,
@@ -318,7 +324,7 @@ mod tests {
         let gatewayless = InterfaceInfo {
             name: "en1".to_string(),
             mac: MacAddr(0x02, 0, 0, 0, 0, 0x02),
-            v4: vec![Ipv4Network::new(Ipv4Addr::new(10, 0, 0, 2), 24).unwrap()],
+            v4: vec![LinkAddress::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 24)],
             v6: vec![],
             gateway_v4: None,
             gateway_v6: None,
@@ -360,9 +366,9 @@ mod tests {
             v4: vec![],
             // Link-local first, as an interface commonly reports it.
             v6: vec![
-                Ipv6Network::new(link_local, 64).unwrap(),
-                Ipv6Network::new(unique_local, 64).unwrap(),
-                Ipv6Network::new(global, 64).unwrap(),
+                LinkAddress::new(IpAddr::V6(link_local), 64),
+                LinkAddress::new(IpAddr::V6(unique_local), 64),
+                LinkAddress::new(IpAddr::V6(global), 64),
             ],
             gateway_v4: None,
             gateway_v6: Some((Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), GW_MAC)),
@@ -387,7 +393,10 @@ mod tests {
             name: "en0".to_string(),
             mac: IFACE_MAC,
             v4: vec![],
-            v6: vec![Ipv6Network::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50), 64).unwrap()],
+            v6: vec![LinkAddress::new(
+                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50)),
+                64,
+            )],
             gateway_v4: None,
             gateway_v6: Some((Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), GW_MAC)),
         };

@@ -46,7 +46,7 @@ use crate::system::interface::RoutedTarget;
 use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport, SendError};
 use crate::{error, info, success};
 use async_trait::async_trait;
-use pnet::packet::tcp::TcpPacket;
+use pnet_packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::scanner::audit::ProbeAudit;

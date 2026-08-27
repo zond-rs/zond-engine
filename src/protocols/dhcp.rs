@@ -39,11 +39,11 @@
 //! segment, the frame comes from the relay. The caller compares the two — see
 //! [`ServerReply::server`].
 
-use pnet::datalink::MacAddr;
-use pnet::packet::ethernet::EtherTypes;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::udp::UdpPacket;
+use pnet_base::MacAddr;
+use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ipv4::Ipv4Packet;
+use pnet_packet::udp::UdpPacket;
 use std::net::Ipv4Addr;
 
 use crate::protocols::craft::{Ethernet, Ipv4, Packet, Udp};
@@ -480,7 +480,7 @@ fn transaction_id(mac: &MacAddr) -> u32 {
 pub(crate) mod tests {
     use super::*;
     use crate::protocols::ethernet;
-    use pnet::packet::Packet as _;
+    use pnet_packet::Packet as _;
 
     const SRC_MAC: MacAddr = MacAddr(0x02, 0x00, 0x11, 0x22, 0x33, 0x44);
     const SERVER_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);

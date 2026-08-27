@@ -9,9 +9,9 @@
 //! Extensions for MAC address conversions between pnet and the core domain model.
 
 use crate::model::mac::MacAddr as CoreMacAddr;
-use pnet::util::MacAddr as PnetMacAddr;
+use pnet_base::MacAddr as PnetMacAddr;
 
-/// An extension trait to seamlessly convert from `pnet::util::MacAddr` to the
+/// An extension trait to seamlessly convert from `pnet_base::MacAddr` to the
 /// native `crate::model::mac::MacAddr`.
 pub trait IntoCoreMac {
     fn into_core(self) -> CoreMacAddr;
@@ -21,5 +21,24 @@ impl IntoCoreMac for PnetMacAddr {
     #[inline]
     fn into_core(self) -> CoreMacAddr {
         CoreMacAddr::new(self.0, self.1, self.2, self.3, self.4, self.5)
+    }
+}
+
+/// The reverse: a model address as the packet builders want one.
+///
+/// Needed because the two vocabularies meet in both directions now. An address
+/// read off an interface arrives as the model's, and every frame this crate
+/// emits is built by `pnet::packet`, which wants its own. Written as a trait
+/// rather than a `From` impl for the same reason [`IntoCoreMac`] is one: neither
+/// type is this crate's to add inherent conversions to.
+pub trait IntoPnetMac {
+    fn into_pnet(self) -> PnetMacAddr;
+}
+
+impl IntoPnetMac for CoreMacAddr {
+    #[inline]
+    fn into_pnet(self) -> PnetMacAddr {
+        let [a, b, c, d, e, f] = self.octets();
+        PnetMacAddr::new(a, b, c, d, e, f)
     }
 }

@@ -20,16 +20,15 @@
 //! file layout underneath, and the layout is where this module still moves: how
 //! a source address is chosen is an implementation detail that has changed twice
 //! and will again, while `SourceResolver` is the answer either way.
-mod ext;
 mod lan;
-mod os;
+mod link;
 mod resolve;
 mod routing;
 mod source;
 mod utils;
 
-pub use ext::NetworkInterfaceExtension;
 pub use lan::{LanLink, ViabilityError, get_lan_link, get_lan_network};
+pub use link::{Link, LinkAddress, LinkKind, interfaces};
 pub use resolve::{resolve_keyword, resolve_zone};
 pub use routing::{
     MAX_ENUMERABLE_ADDRESSES, RoutedTarget, RoutedTargets, is_enumerable, map_ips_to_interfaces,

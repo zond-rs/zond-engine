@@ -42,11 +42,11 @@
 use std::net::IpAddr;
 
 use anyhow::Context;
-use pnet::packet::ethernet::EtherTypes;
-use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
-use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::ipv6::Ipv6Packet;
-use pnet::util::MacAddr;
+use pnet_base::MacAddr;
+use pnet_packet::ethernet::EtherTypes;
+use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use pnet_packet::ipv4::Ipv4Packet;
+use pnet_packet::ipv6::Ipv6Packet;
 
 use crate::model::capture::{IpObservation, Ipv4Observation, Ipv6Observation};
 use crate::protocols::ethernet;
@@ -392,7 +392,7 @@ pub fn build_ethernet_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::ip::IpNextHeaderProtocols;
+    use pnet_packet::ip::IpNextHeaderProtocols;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     const TCP: IpNextHeaderProtocol = IpNextHeaderProtocols::Tcp;

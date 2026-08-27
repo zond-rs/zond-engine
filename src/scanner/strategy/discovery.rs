@@ -17,7 +17,7 @@
 
 use std::net::IpAddr;
 
-use pnet::packet::ethernet::EtherTypes;
+use pnet_packet::ethernet::EtherTypes;
 
 use crate::protocols::ethernet::Frame;
 
@@ -456,10 +456,10 @@ pub(crate) mod tests {
     }
     use super::*;
     use crate::protocols::{arp, ethernet, ip as ip_protocol};
-    use pnet::datalink::MacAddr;
-    use pnet::packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
-    use pnet::packet::icmpv6::{Icmpv6Types, MutableIcmpv6Packet};
-    use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+    use pnet_base::MacAddr;
+    use pnet_packet::icmpv6::echo_reply::{Icmpv6Codes, MutableEchoReplyPacket};
+    use pnet_packet::icmpv6::{Icmpv6Types, MutableIcmpv6Packet};
+    use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     pub(crate) const LOCAL_MAC: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
@@ -478,11 +478,8 @@ pub(crate) mod tests {
         body: &[u8],
     ) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
-        let eth_header = ethernet::create_header(
-            PEER_MAC,
-            LOCAL_MAC,
-            pnet::packet::ethernet::EtherTypes::Ipv6,
-        );
+        let eth_header =
+            ethernet::create_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv6);
         let ip_header = ip_protocol::create_ipv6_header(
             source,
             destination,
@@ -644,11 +641,8 @@ pub(crate) mod tests {
     /// traffic that must arrive with a hop limit of 255 to be believed.
     pub(crate) fn ndp_frame(body: &[u8]) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
-        let eth_header = ethernet::create_header(
-            PEER_MAC,
-            LOCAL_MAC,
-            pnet::packet::ethernet::EtherTypes::Ipv6,
-        );
+        let eth_header =
+            ethernet::create_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv6);
         let ip_header = ip_protocol::create_ipv6_header(
             source,
             Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1),
@@ -665,7 +659,7 @@ pub(crate) mod tests {
     pub(crate) fn advertisement_body(target: Ipv6Addr, flags: u8) -> Vec<u8> {
         let mut body = vec![0u8; 24];
         {
-            let mut advert = pnet::packet::icmpv6::ndp::MutableNeighborAdvertPacket::new(&mut body)
+            let mut advert = pnet_packet::icmpv6::ndp::MutableNeighborAdvertPacket::new(&mut body)
                 .expect("advertisement buffer");
             advert.set_icmpv6_type(Icmpv6Types::NeighborAdvert);
             advert.set_target_addr(target);
@@ -792,11 +786,7 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            ethernet::create_header(
-                PEER_MAC,
-                LOCAL_MAC,
-                pnet::packet::ethernet::EtherTypes::Ipv4,
-            ),
+            ethernet::create_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv4),
             datagram,
         ]
         .concat()
@@ -821,11 +811,7 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            ethernet::create_header(
-                PEER_MAC,
-                LOCAL_MAC,
-                pnet::packet::ethernet::EtherTypes::Ipv4,
-            ),
+            ethernet::create_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv4),
             datagram,
         ]
         .concat()
