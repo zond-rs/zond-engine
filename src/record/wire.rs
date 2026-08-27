@@ -143,6 +143,8 @@ pub fn network_role(name: &str) -> Option<NetworkRole> {
 pub fn filtering_name(filtering: Filtering) -> &'static str {
     match filtering {
         Filtering::InlineMiddlebox => "inline_middlebox",
+        Filtering::StatefulFilter => "stateful_filter",
+        Filtering::PortTrustingAcl => "port_trusting_acl",
     }
 }
 
@@ -150,6 +152,8 @@ pub fn filtering_name(filtering: Filtering) -> &'static str {
 pub fn filtering(name: &str) -> Option<Filtering> {
     Some(match name {
         "inline_middlebox" => Filtering::InlineMiddlebox,
+        "stateful_filter" => Filtering::StatefulFilter,
+        "port_trusting_acl" => Filtering::PortTrustingAcl,
         _ => return None,
     })
 }

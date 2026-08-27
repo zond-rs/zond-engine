@@ -319,6 +319,26 @@ pub enum Filtering {
     /// proxy, a load balancer. One reply is the whole proof, which is why this
     /// is the one filtering conclusion a single probe settles.
     InlineMiddlebox,
+
+    /// A stateful filter: it passes a bare ACK but drops a SYN.
+    ///
+    /// Proven by an ACK probe reaching the stack — a RST, which is
+    /// [`PortState::Unfiltered`](crate::model::port::PortState::Unfiltered) — for
+    /// a port the scan found filtered to a SYN. A filter that lets an ACK through
+    /// and refuses a SYN is keeping connection state and opening no new
+    /// connections. Comparative: the SYN's fate is the port state the scan
+    /// already recorded, and only the ACK is sent here.
+    StatefulFilter,
+
+    /// A filter that trusts a source port.
+    ///
+    /// Proven by a SYN from a port such as 53, 20 or 88 reaching a port the scan
+    /// found filtered to a SYN from an ephemeral one. The filter is honouring an
+    /// ACL written to let "returning" traffic back in — a door a chosen source
+    /// port holds open. Comparative in the same way as
+    /// [`StatefulFilter`](Self::StatefulFilter), and against the same recorded
+    /// port state.
+    PortTrustingAcl,
 }
 
 impl Filtering {
@@ -327,7 +347,11 @@ impl Filtering {
     /// The array's length is the compile-time check that a conclusion added to
     /// the enum was added here too: a set is rendered through this order, and a
     /// member missing from it would be silently dropped from every report.
-    pub const ALL: [Filtering; 1] = [Self::InlineMiddlebox];
+    pub const ALL: [Filtering; 3] = [
+        Self::InlineMiddlebox,
+        Self::StatefulFilter,
+        Self::PortTrustingAcl,
+    ];
 }
 
 /// A single machine, and what a scan established about it.

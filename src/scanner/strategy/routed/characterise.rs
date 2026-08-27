@@ -9,18 +9,24 @@
 //! # Characterising the filter in front of a host
 //!
 //! A diagnostic pass, run after the ports are known and only against hosts that
-//! answered. It sends a probe carrying a deliberately wrong TCP checksum to one
-//! open port of each host: a conformant host drops such a segment unread, so a
-//! reply to it was sent by something inline that answered without validating —
-//! a firewall, an IPS, a transparent proxy — and the host is marked
-//! [`Filtering::InlineMiddlebox`].
+//! answered. It sends a few deliberately-shaped probes to a host's ports and
+//! reads what the filter in front of it let through, as
+//! [`Filtering`](crate::model::host::Filtering) conclusions:
 //!
-//! Silence proves nothing, since most hosts drop the probe correctly, so only
-//! the positive is recorded. Correlation is by the nonce the reply echoes,
-//! exactly as a port scan's is: a reply that echoes no nonce we sent is somebody
-//! else's traffic and records nothing, and a middlebox that answers without
-//! acknowledging the probe is missed rather than guessed at — the safe direction
-//! for a claim made only when it is proven.
+//! - **An inline middlebox**, from a reply to a bad-checksum probe to an *open*
+//!   port. A conformant host drops the corrupt segment unread, so a reply was
+//!   sent by something inline that answered without validating. One probe.
+//! - **A stateful filter**, from an ACK probe reaching a *filtered* port — a
+//!   reset, which is unfiltered — where the scan's plain SYN did not.
+//! - **A port-trusting ACL**, from a SYN out of a trusted source port reaching a
+//!   *filtered* port where an ordinary SYN did not.
+//!
+//! The comparative two read the plain SYN's fate off the port state the scan
+//! already recorded, so only the alternative shape is sent here. Every one is a
+//! positive claim: silence proves nothing and records nothing. Correlation is by
+//! the nonce a reply echoes, so a segment we never provoked names no host — and
+//! a filter that answers without acknowledging the probe is missed rather than
+//! guessed at, the safe direction for a claim made only when it is proven.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -37,13 +43,30 @@ use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{error, info};
 
 /// How long to listen for replies once the last diagnostic probe has left. A
-/// middlebox answers as promptly as any host; this is the tail for a slow path,
-/// not a retry schedule, because the pass sends each probe once.
+/// filter answers as promptly as any host; this is the tail for a slow path, not
+/// a retry schedule, because the pass sends each probe once.
 const REPLY_WINDOW: Duration = Duration::from_secs(2);
 
-/// Sends a bad-checksum probe to one open port of each `(host, port)` target and
-/// records [`Filtering::InlineMiddlebox`] on every host that answered one.
-pub async fn characterise(ctx: &ScanContext, targets: Vec<(IpAddr, u16)>) {
+/// The source port a port-trusting ACL is most likely to hold a door open for:
+/// a rule that lets "returning DNS" back in lets anything from port 53 in.
+const TRUSTED_SOURCE_PORT: u16 = 53;
+
+/// One host and the ports the pass aims its diagnostic probes at.
+pub struct Target {
+    /// The host to characterise.
+    pub host: IpAddr,
+    /// An open TCP port, for the bad-checksum middlebox probe. `None` skips it —
+    /// a probe whose whole point is that a listener answers has nowhere to land.
+    pub open_port: Option<u16>,
+    /// A port the scan found filtered, for the comparative probes: each tests
+    /// whether a differently-shaped probe reaches where a plain SYN did not.
+    /// `None` skips them — an unfiltered port shows no filter doing anything.
+    pub filtered_port: Option<u16>,
+}
+
+/// Sends each host's diagnostic probes and records what the filter in front of
+/// it demonstrably did.
+pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
     if targets.is_empty() {
         return;
     }
@@ -66,45 +89,80 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<(IpAddr, u16)>) {
         targets.len()
     );
 
-    // One bad-checksum SYN per host, remembering which nonce belongs to which
-    // host so a reply can be tied back to it and to no other.
-    let mut awaiting: HashMap<u32, IpAddr> = HashMap::with_capacity(targets.len());
-    for (host, port) in &targets {
-        let Some(source) = resolver.resolve(*host) else {
+    // Each probe carries a nonce that maps back to the host and the conclusion a
+    // reply to it would prove. A reply that echoes no nonce here is somebody
+    // else's traffic and settles nothing.
+    let mut awaiting: HashMap<u32, (IpAddr, Filtering)> = HashMap::new();
+    for target in &targets {
+        let Some(source) = resolver.resolve(target.host) else {
             continue;
         };
-        let nonce: u32 = rand::random();
-        let src_port: u16 = rand::random_range(50_000..u16::MAX);
-        let packet = match tcp::create_probe_shaped(
-            TcpScanTechnique::Syn,
-            &source,
-            host,
-            src_port,
-            *port,
-            nonce,
-            None,
-            true,
-        ) {
-            Ok(packet) => packet,
-            Err(e) => {
-                error!(
-                    verbosity = 2,
-                    "cannot build a bad-checksum probe for {host}: {e}"
-                );
-                continue;
-            }
-        };
-        if transport
-            .tx
-            .send(&packet, source, *host, Emission::routed())
-            .is_ok()
-        {
-            awaiting.insert(nonce, *host);
+
+        if let Some(port) = target.open_port {
+            let nonce: u32 = rand::random();
+            let src_port: u16 = rand::random_range(50_000..u16::MAX);
+            send_diagnostic(
+                &transport,
+                &mut awaiting,
+                source,
+                target.host,
+                nonce,
+                tcp::create_probe_shaped(
+                    TcpScanTechnique::Syn,
+                    &source,
+                    &target.host,
+                    src_port,
+                    port,
+                    nonce,
+                    None,
+                    true,
+                ),
+                Filtering::InlineMiddlebox,
+            );
+        }
+
+        if let Some(port) = target.filtered_port {
+            let nonce: u32 = rand::random();
+            let src_port: u16 = rand::random_range(50_000..u16::MAX);
+            send_diagnostic(
+                &transport,
+                &mut awaiting,
+                source,
+                target.host,
+                nonce,
+                tcp::create_probe(
+                    TcpScanTechnique::Ack,
+                    &source,
+                    &target.host,
+                    src_port,
+                    port,
+                    nonce,
+                ),
+                Filtering::StatefulFilter,
+            );
+
+            let nonce: u32 = rand::random();
+            send_diagnostic(
+                &transport,
+                &mut awaiting,
+                source,
+                target.host,
+                nonce,
+                tcp::create_probe(
+                    TcpScanTechnique::Syn,
+                    &source,
+                    &target.host,
+                    TRUSTED_SOURCE_PORT,
+                    port,
+                    nonce,
+                ),
+                Filtering::PortTrustingAcl,
+            );
         }
     }
 
-    // A reply to any of them is proof of a middlebox: the host itself dropped
-    // the corrupt segment, so whatever answered was not the host.
+    // Listen until the window closes or the scan is stopped, folding each reply
+    // that names a probe into its host's findings.
     let deadline = Instant::now() + REPLY_WINDOW;
     loop {
         if ctx.handle.should_stop() {
@@ -116,9 +174,9 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<(IpAddr, u16)>) {
         }
         match tokio::time::timeout(remaining, transport.rx.recv()).await {
             Ok(Some(reply)) => {
-                if let Some(host) = middlebox_host(&reply.bytes, &awaiting) {
+                if let Some((host, conclusion)) = matched_conclusion(&reply.bytes, &awaiting) {
                     ctx.update_host(host, |host| {
-                        host.add_filtering(Filtering::InlineMiddlebox);
+                        host.add_filtering(conclusion);
                     });
                 }
             }
@@ -129,15 +187,56 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<(IpAddr, u16)>) {
     }
 }
 
-/// The host a reply implicates, if it echoes the nonce of a probe we sent.
+/// Builds `packet`, sends it from `source` to `host`, and — if it reached the
+/// wire — files its `nonce` under the `conclusion` a reply to it would prove.
+fn send_diagnostic(
+    transport: &ProbeTransport,
+    awaiting: &mut HashMap<u32, (IpAddr, Filtering)>,
+    source: IpAddr,
+    host: IpAddr,
+    nonce: u32,
+    packet: crate::protocols::error::Result<Vec<u8>>,
+    conclusion: Filtering,
+) {
+    let packet = match packet {
+        Ok(packet) => packet,
+        Err(e) => {
+            error!(
+                verbosity = 2,
+                "cannot build a diagnostic probe for {host}: {e}"
+            );
+            return;
+        }
+    };
+    if transport
+        .tx
+        .send(&packet, source, host, Emission::routed())
+        .is_ok()
+    {
+        awaiting.insert(nonce, (host, conclusion));
+    }
+}
+
+/// The host and conclusion a reply implicates, if it echoes the nonce of a probe
+/// we sent.
 ///
-/// A reply whose echoed nonce is not one we are awaiting is somebody else's
-/// traffic on a promiscuous capture, and names no host — which is what keeps the
-/// pass from crediting a middlebox to a segment it never provoked.
-fn middlebox_host(reply: &[u8], awaiting: &HashMap<u32, IpAddr>) -> Option<IpAddr> {
+/// A nonce comes back in the acknowledgement field of a reply to a SYN and the
+/// sequence field of a reply to an ACK, so both readings are tried; a random
+/// 32-bit nonce collides with neither by accident. A reply matching nothing here
+/// is somebody else's traffic on a promiscuous capture and names no host, which
+/// is what keeps the pass from crediting a conclusion to a segment it never
+/// provoked.
+fn matched_conclusion(
+    reply: &[u8],
+    awaiting: &HashMap<u32, (IpAddr, Filtering)>,
+) -> Option<(IpAddr, Filtering)> {
     let tcp = TcpPacket::new(reply)?;
-    let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp, 0);
-    awaiting.get(&nonce).copied()
+    let as_syn = tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp, 0);
+    let as_ack = tcp::echoed_nonce(TcpScanTechnique::Ack, &tcp, 0);
+    awaiting
+        .get(&as_syn)
+        .or_else(|| awaiting.get(&as_ack))
+        .copied()
 }
 
 // ╔════════════════════════════════════════════╗
@@ -155,38 +254,58 @@ mod tests {
     use crate::protocols::craft;
     use std::net::Ipv4Addr;
 
+    const HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+
     /// A conformant SYN+ACK reply to a SYN that carried `nonce` in its sequence
     /// number: it acknowledges `nonce + 1`, the one octet the SYN occupied.
     fn syn_ack_echoing(nonce: u32) -> Vec<u8> {
         let mut segment = craft::Tcp::new(80, 50_000).with_flags(tcp::flags::SYN | tcp::flags::ACK);
         segment.acknowledgement = nonce.wrapping_add(1);
-        let host = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
         segment
-            .to_bytes(Some((host, host)))
+            .to_bytes(Some((HOST, HOST)))
+            .expect("a segment builds")
+    }
+
+    /// A conformant RST reply to an ACK that carried `nonce` in its
+    /// acknowledgement field: RFC 793 §3.4 takes the reset's sequence number
+    /// from that field, so it comes back as the reply's sequence number.
+    fn rst_echoing_ack(nonce: u32) -> Vec<u8> {
+        let mut segment = craft::Tcp::new(80, 50_000).with_flags(tcp::flags::RST);
+        segment.sequence = nonce;
+        segment
+            .to_bytes(Some((HOST, HOST)))
             .expect("a segment builds")
     }
 
     #[test]
-    fn a_reply_echoing_our_nonce_names_its_host_and_a_stray_names_none() {
-        let host = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
-        let nonce = 0xDEAD_BEEF;
-        let awaiting = HashMap::from([(nonce, host)]);
+    fn a_reply_names_the_host_and_conclusion_of_the_probe_it_answers() {
+        let syn_nonce = 0xDEAD_BEEF;
+        let ack_nonce = 0x0BAD_F00D;
+        let awaiting = HashMap::from([
+            (syn_nonce, (HOST, Filtering::PortTrustingAcl)),
+            (ack_nonce, (HOST, Filtering::StatefulFilter)),
+        ]);
 
-        // The reply to our own probe names the host behind the middlebox.
+        // A SYN reply is read through the acknowledgement field, an ACK reply
+        // through the sequence field, and each names the conclusion its own
+        // probe was sent to prove.
         assert_eq!(
-            middlebox_host(&syn_ack_echoing(nonce), &awaiting),
-            Some(host)
+            matched_conclusion(&syn_ack_echoing(syn_nonce), &awaiting),
+            Some((HOST, Filtering::PortTrustingAcl))
+        );
+        assert_eq!(
+            matched_conclusion(&rst_echoing_ack(ack_nonce), &awaiting),
+            Some((HOST, Filtering::StatefulFilter))
         );
 
-        // A reply echoing a nonce we never sent is somebody else's traffic and
-        // names no host — a mutant that credited it would report a middlebox in
-        // front of a host that answered nothing of ours.
+        // A reply echoing a nonce we never sent settles nothing — a mutant that
+        // credited it would report a filter in front of a host that answered
+        // nothing of ours.
         assert_eq!(
-            middlebox_host(&syn_ack_echoing(nonce ^ 0x1234), &awaiting),
+            matched_conclusion(&syn_ack_echoing(0x1234_5678), &awaiting),
             None
         );
-
         // Bytes too short to be a TCP header name no host rather than panicking.
-        assert_eq!(middlebox_host(&[0u8; 4], &awaiting), None);
+        assert_eq!(matched_conclusion(&[0u8; 4], &awaiting), None);
     }
 }

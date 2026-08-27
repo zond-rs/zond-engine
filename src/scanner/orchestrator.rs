@@ -790,22 +790,35 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
         return;
     }
 
-    let mut targets: Vec<(IpAddr, u16)> = Vec::new();
+    let mut targets: Vec<strategy::routed::characterise::Target> = Vec::new();
     for key in ctx.host_addresses() {
-        let open_port = ctx.read_host(&key, |host| {
-            if !host.status().is_up() {
-                return None;
-            }
-            host.ports()
-                .find(|port| port.protocol() == Protocol::Tcp && port.state() == PortState::Open)
-                .map(|port| port.number())
+        // One open port to send the middlebox probe at, and one the scan found
+        // filtered to aim the comparative probes at — a filter is doing
+        // something at a filtered port, and nothing at an unfiltered one.
+        let ports = ctx.read_host(&key, |host| {
+            host.status().is_up().then(|| {
+                let tcp = |state| {
+                    host.ports()
+                        .find(|port| port.protocol() == Protocol::Tcp && port.state() == state)
+                        .map(|port| port.number())
+                };
+                (tcp(PortState::Open), tcp(PortState::Filtered))
+            })
         });
-        if let (Some(Some(port)), Some(address)) = (open_port, routable(key)) {
-            targets.push((address, port));
+        let Some(Some((open_port, filtered_port))) = ports else {
+            continue;
+        };
+        if open_port.is_none() && filtered_port.is_none() {
+            continue;
+        }
+        if let Some(host) = routable(key) {
+            targets.push(strategy::routed::characterise::Target {
+                host,
+                open_port,
+                filtered_port,
+            });
         }
     }
-    targets.sort_unstable();
-    targets.dedup();
 
     if targets.is_empty() {
         return;

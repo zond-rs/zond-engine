@@ -92,10 +92,11 @@ fn router() -> Host {
     host.add_port(ssh_port());
     host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
 
-    // A middlebox answered a bad-checksum probe for this host, so the exported
-    // document carries a filtering finding and the schema is held to what one
-    // looks like.
+    // The characterise pass drew every filtering conclusion for this host, so
+    // the exported document carries them and the schema is held to each.
     host.add_filtering(Filtering::InlineMiddlebox);
+    host.add_filtering(Filtering::StatefulFilter);
+    host.add_filtering(Filtering::PortTrustingAcl);
 
     host
 }
