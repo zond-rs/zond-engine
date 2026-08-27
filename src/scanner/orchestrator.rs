@@ -40,6 +40,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::config::{OsDetection, ProbeTuning, ServiceDetection, ZondConfig};
+use crate::evasion::EvasionProfile;
 use crate::fingerprint::os;
 use crate::journal::cursor::Checkpoint;
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
@@ -297,6 +298,7 @@ pub(super) fn build_port_scanner(
                 technique,
                 &intended,
                 tuning.service_detection,
+                &tuning.evasion,
             ),
             ctx.clone(),
         )),
@@ -338,6 +340,7 @@ pub(super) fn ensure_coverage(
     technique: TcpScanTechnique,
     intended: &[Protocol],
     detection: ServiceDetection,
+    evasion: &EvasionProfile,
 ) -> Vec<Box<dyn PortScanner>> {
     let covered: Vec<Protocol> = scanners
         .iter()
@@ -352,6 +355,7 @@ pub(super) fn ensure_coverage(
                 ctx.clone(),
                 pacing::limits::CONNECT_CONCURRENCY,
                 detection,
+                evasion,
             )));
         } else {
             let refusal = plan::Refusal::technique_needs_raw_sockets(technique);
@@ -363,6 +367,7 @@ pub(super) fn ensure_coverage(
         scanners.push(Box::new(strategy::connect::ConnectUdpPortScanner::new(
             ctx.clone(),
             pacing::limits::CONNECT_CONCURRENCY,
+            evasion,
         )));
     }
 
@@ -558,7 +563,7 @@ pub(super) async fn run_active_os_series(
     };
     info!("following {} host(s) over {samples} samples", targets.len());
 
-    match strategy::routed::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning.send_mode) {
+    match strategy::routed::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning) {
         Ok(mut scanner) => {
             if let Err(e) = scanner.discover_hosts().await {
                 ctx.record_failure(ScannerKind::OsSeries, e.to_string());
@@ -1198,6 +1203,7 @@ mod tests {
             TcpScanTechnique::Syn,
             BOTH,
             ServiceDetection::default(),
+            &EvasionProfile::default(),
         )
         .iter()
         .flat_map(|scanner| scanner.supported_protocols())
@@ -1308,6 +1314,7 @@ mod tests {
             TcpScanTechnique::Fin,
             BOTH,
             ServiceDetection::default(),
+            &EvasionProfile::default(),
         );
         let protocols: Vec<Protocol> = scanners
             .iter()
@@ -1354,6 +1361,7 @@ mod tests {
             TcpScanTechnique::Syn,
             BOTH,
             ServiceDetection::default(),
+            &EvasionProfile::default(),
         );
         // Two scanners in, two scanners out: nothing was added beside them.
         assert_eq!(scanners.len(), 2);
@@ -1372,6 +1380,7 @@ mod tests {
             TcpScanTechnique::Fin,
             &[Protocol::Udp],
             ServiceDetection::default(),
+            &EvasionProfile::default(),
         );
 
         let protocols: Vec<Protocol> = scanners

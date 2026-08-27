@@ -178,13 +178,27 @@ impl EvasionProfile {
     /// chooses its own hop limit and does not use this.
     #[must_use]
     pub fn emission(&self) -> Emission {
-        let mut emission = match self.ttl {
-            Some(hop_limit) => Emission::routed().with_hop_limit(hop_limit),
-            None => Emission::routed(),
-        };
+        let mut emission = self.hop_limited_emission();
         emission.source_mac = self.spoof_mac;
         emission.fragment = self.fragment;
         emission
+    }
+
+    /// The emission for a probe that should carry the chosen hop limit but must
+    /// not be reshaped in any other way.
+    ///
+    /// This is what an OS-detection or path-measurement probe takes from the
+    /// profile. Such a probe should expire at the same distance as every other —
+    /// so it honours the hop limit — but its answer *is* the measurement, and a
+    /// framing technique would change that answer: a fragmented or spoofed probe
+    /// would have the engine reading its own evasion back instead of the host.
+    /// So the framing state a full [`emission`](Self::emission) carries — the
+    /// spoofed hardware address and the fragmentation — is deliberately left off.
+    pub fn hop_limited_emission(&self) -> Emission {
+        match self.ttl {
+            Some(hop_limit) => Emission::routed().with_hop_limit(hop_limit),
+            None => Emission::routed(),
+        }
     }
 
     /// The [`SegmentShaping`] every probe should carry — the
@@ -381,6 +395,33 @@ mod tests {
         assert_eq!(EvasionProfile::default().emission().source_mac, None);
         assert_eq!(EvasionProfile::default().emission().fragment, None);
         assert!(!EvasionProfile::default().emission().requires_link_layer());
+    }
+
+    #[test]
+    fn a_hop_limited_emission_carries_the_hop_limit_but_never_reshapes() {
+        // What an OS-detection or path-measurement probe takes from the profile:
+        // the hop limit, so it expires like every other probe — and only that. A
+        // mutant that reused the full `emission` here would fragment or spoof the
+        // very probe whose reply is the measurement, and the engine would read
+        // its own evasion back instead of the host.
+        assert_eq!(
+            EvasionProfile::default().hop_limited_emission(),
+            Emission::routed(),
+        );
+
+        let profile = EvasionProfile::default()
+            .with_ttl(7)
+            .with_spoof_mac(MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01))
+            .with_fragment(28);
+        let emission = profile.hop_limited_emission();
+
+        assert_eq!(emission.hop_limit, 7, "the chosen hop limit is carried");
+        assert_eq!(emission.source_mac, None, "no spoofed address reshapes it");
+        assert_eq!(emission.fragment, None, "no fragmentation reshapes it");
+        assert!(
+            !emission.requires_link_layer(),
+            "so a measurement probe stays on whatever path its phase opened"
+        );
     }
 
     #[test]

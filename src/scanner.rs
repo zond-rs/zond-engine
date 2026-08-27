@@ -482,7 +482,7 @@ async fn run_discovery(
         finish_enrichment(Some(enrichment), caps, ctx).await;
     } else {
         let targets = orchestrator::walkable(targets, ctx);
-        if let Err(error) = strategy::connect::discover(targets, ctx.clone()).await {
+        if let Err(error) = strategy::connect::discover(targets, ctx.clone(), &cfg.evasion).await {
             ctx.record_failure(ScannerKind::Connect, error.to_string());
         }
         finish_enrichment(None, caps, ctx).await;

@@ -101,6 +101,11 @@ const QUIET_FLOOR: Duration = Duration::from_secs(1);
 pub struct OsEchoScanner {
     ctx: ScanContext,
     transport: ProbeTransport,
+    /// The IP-header state every echo carries. An evasion profile contributes
+    /// only its hop limit: an echo has no port to pin, and reshaping it would
+    /// change the very reply this scanner reads a stack's shape from. See
+    /// [`EvasionProfile::hop_limited_emission`](crate::evasion::EvasionProfile::hop_limited_emission).
+    emission: Emission,
     resolver: SourceResolver,
     /// The identifier every request carries, and the only thing separating this
     /// scan's replies from every other ping on the host.
@@ -139,7 +144,13 @@ impl OsEchoScanner {
         let identifier = rand::random();
         let transport =
             ProbeTransport::open_with(ProbeKind::IcmpEcho { identifier }, tuning.send_mode)?;
-        Ok(Self::with_identifier(ctx, targets, transport, identifier))
+        Ok(Self::with_identifier(
+            ctx,
+            targets,
+            transport,
+            identifier,
+            tuning.evasion.hop_limited_emission(),
+        ))
     }
 
     /// Builds the scanner around a transport the caller opened, which is the
@@ -151,7 +162,7 @@ impl OsEchoScanner {
         targets: Vec<IpAddr>,
         transport: ProbeTransport,
     ) -> Self {
-        Self::with_identifier(ctx, targets, transport, rand::random())
+        Self::with_identifier(ctx, targets, transport, rand::random(), Emission::routed())
     }
 
     fn with_identifier(
@@ -159,12 +170,14 @@ impl OsEchoScanner {
         targets: Vec<IpAddr>,
         transport: ProbeTransport,
         identifier: u16,
+        emission: Emission,
     ) -> Self {
         let send_duration = SEND_TICK.saturating_mul(targets.len() as u32);
         let target_count = targets.len();
         Self {
             ctx,
             transport,
+            emission,
             resolver: SourceResolver::from_system(),
             identifier,
             next_sequence: 0,
@@ -236,7 +249,7 @@ impl OsEchoScanner {
         let sent = match self
             .transport
             .tx
-            .send(&message, source, target, Emission::routed())
+            .send(&message, source, target, self.emission)
         {
             Ok(()) => {
                 success!(verbosity = 2, "sent OS echo probe to {target}");

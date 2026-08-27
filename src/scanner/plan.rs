@@ -253,7 +253,9 @@ impl DiscoveryStep {
             Self::Routed { targets } => {
                 Ok(Box::new(RoutedScanner::new(targets, ctx, dns_tx, tuning)?))
             }
-            Self::Connect { targets } => Ok(Box::new(ConnectScanner::new(targets, ctx))),
+            Self::Connect { targets } => {
+                Ok(Box::new(ConnectScanner::new(targets, ctx, &tuning.evasion)))
+            }
         }
     }
 }
@@ -452,10 +454,12 @@ impl PortScanStep {
                 ctx,
                 limits::CONNECT_CONCURRENCY,
                 tuning.service_detection,
+                &tuning.evasion,
             ))),
             Self::ConnectUdp => Ok(Box::new(ConnectUdpPortScanner::new(
                 ctx,
                 limits::CONNECT_CONCURRENCY,
+                &tuning.evasion,
             ))),
         }
     }

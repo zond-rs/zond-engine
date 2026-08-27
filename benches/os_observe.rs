@@ -695,7 +695,7 @@ async fn run_pass(
         // Without the check, any TCP segment reaching the capture is read as an
         // answer, and a busy host produces a table of other people's
         // connections.
-        let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment);
+        let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment, 0);
         let Some(&(address, port)) = sent.get(&nonce) else {
             continue;
         };

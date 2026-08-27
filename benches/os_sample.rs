@@ -691,7 +691,7 @@ fn file(reply: CapturedSegment, sent: &SentMap, readings: &mut Readings) {
         // A reply is one of ours only if it echoes back a nonce we sent. Without
         // the check, every TCP segment reaching a filter this wide is read as an
         // answer, and a busy host produces a table of other people's connections.
-        let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment);
+        let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment, 0);
         let Some(&Sent {
             address,
             port,

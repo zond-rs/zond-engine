@@ -111,7 +111,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use pnet_packet::ip::IpNextHeaderProtocols;
 
-use crate::config::SendMode;
+use crate::config::ProbeTuning;
 use crate::fingerprint::os::{self, SeriesClasses, SeriesSample, StackObservation, StackReply};
 use crate::model::capture::IpObservation;
 use crate::model::host::Host;
@@ -300,6 +300,12 @@ impl Track {
 pub struct OsSeriesScanner {
     ctx: ScanContext,
     transport: ProbeTransport,
+    /// The IP-header state every sample carries. Only the hop limit is taken
+    /// from an evasion profile: a sample's answer is the measurement, so it must
+    /// not be reshaped, and its source port is deliberately varied per sample
+    /// (see [`send_one`](Self::send_one)) rather than pinned. See
+    /// [`EvasionProfile::hop_limited_emission`](crate::evasion::EvasionProfile::hop_limited_emission).
+    emission: Emission,
     resolver: SourceResolver,
     /// Hosts to follow, already cut into windows one sweep can fit inside.
     batches: VecDeque<Vec<SeriesTarget>>,
@@ -327,10 +333,16 @@ impl OsSeriesScanner {
         ctx: ScanContext,
         targets: Vec<SeriesTarget>,
         samples: usize,
-        send_mode: SendMode,
+        tuning: ProbeTuning,
     ) -> Result<Self, StrategyError> {
-        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, send_mode)?;
-        Ok(Self::with_transport(ctx, targets, samples, transport))
+        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, tuning.send_mode)?;
+        Ok(Self::with_transport(
+            ctx,
+            targets,
+            samples,
+            transport,
+            tuning.evasion.hop_limited_emission(),
+        ))
     }
 
     /// Builds the scanner around a transport the caller opened, which is the
@@ -340,6 +352,7 @@ impl OsSeriesScanner {
         mut targets: Vec<SeriesTarget>,
         samples: usize,
         transport: ProbeTransport,
+        emission: Emission,
     ) -> Self {
         // Sorted so a run is reproducible and two runs over one network follow
         // the same hosts in the same windows.
@@ -354,6 +367,7 @@ impl OsSeriesScanner {
         Self {
             ctx,
             transport,
+            emission,
             resolver: SourceResolver::from_system(),
             batches,
             // Two is the floor below which none of the three questions has an
@@ -427,7 +441,7 @@ impl OsSeriesScanner {
         match self
             .transport
             .tx
-            .send(&segment, source, address, Emission::routed())
+            .send(&segment, source, address, self.emission)
         {
             Ok(()) => {
                 // Recorded after a successful send, which is the point of
@@ -851,7 +865,7 @@ mod tests {
             refuses,
         };
         let transport = ProbeTransport::from_parts(Box::new(link), rx as CaptureStream);
-        OsSeriesScanner::with_transport(ctx.clone(), vec![target], samples, transport)
+        OsSeriesScanner::with_transport(ctx.clone(), vec![target], samples, transport, Emission::routed())
     }
 
     fn both_ports() -> SeriesTarget {
@@ -1011,7 +1025,7 @@ mod tests {
             closed: None,
         };
         let mut scanner =
-            OsSeriesScanner::with_transport(ctx.clone(), vec![target], samples, transport);
+            OsSeriesScanner::with_transport(ctx.clone(), vec![target], samples, transport, Emission::routed());
         scanner.discover_hosts().await.expect("the phase runs");
 
         let sent = recorded.lock().expect("the record is readable").clone();
@@ -1052,7 +1066,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         let transport = ProbeTransport::from_parts(Box::new(Silent), rx as CaptureStream);
         let mut scanner =
-            OsSeriesScanner::with_transport(ctx.clone(), vec![both_ports()], 2, transport);
+            OsSeriesScanner::with_transport(ctx.clone(), vec![both_ports()], 2, transport, Emission::routed());
 
         // A perfectly Linux-shaped handshake answer, acknowledging a sequence
         // number nothing here ever sent.
