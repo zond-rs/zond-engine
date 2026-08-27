@@ -56,31 +56,39 @@ pub fn user() -> Option<PathBuf> {
 }
 
 /// Where this user's settings *directory* would be.
+///
+/// `%APPDATA%` is the roaming one, deliberately: settings are what a person
+/// chose and should follow them between machines on a domain, unlike the journal
+/// in `%LOCALAPPDATA%`, which is a record of what one machine did.
+///
+/// Written as two whole functions rather than one with two `cfg` blocks in it,
+/// for the reason `journal::paths::state_root` gives: the block form needs a
+/// `return` that becomes the function's last expression on the platform where
+/// the other block does not exist, and that is a lint nobody sees until somebody
+/// lints for that platform.
+#[cfg(windows)]
 pub fn user_directory() -> Option<PathBuf> {
-    #[cfg(windows)]
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join(DIRECTORY))
+}
+
+#[cfg(not(windows))]
+pub fn user_directory() -> Option<PathBuf> {
+    // Only an absolute value counts, as the specification requires. A relative
+    // one would put the file wherever the process was started.
+    if let Some(configured) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
     {
-        return std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .map(|path| path.join(DIRECTORY));
+        return Some(configured.join(DIRECTORY));
     }
 
-    #[cfg(not(windows))]
-    {
-        // Only an absolute value counts, as the specification requires. A
-        // relative one would put the file wherever the process was started.
-        if let Some(configured) = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-        {
-            return Some(configured.join(DIRECTORY));
-        }
-
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .map(|home| home.join(".config").join(DIRECTORY))
-    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|home| home.join(".config").join(DIRECTORY))
 }
 
 /// Where a host-wide settings file would be.
@@ -88,19 +96,17 @@ pub fn user_directory() -> Option<PathBuf> {
 /// Read before the user's, so an administrator can set a floor that a user then
 /// adjusts. `None` on a platform with no such location named in the
 /// environment.
+#[cfg(windows)]
 pub fn system() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        return std::env::var_os("PROGRAMDATA")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .map(|path| path.join(DIRECTORY).join(FILE_NAME));
-    }
+    std::env::var_os("PROGRAMDATA")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join(DIRECTORY).join(FILE_NAME))
+}
 
-    #[cfg(not(windows))]
-    {
-        Some(PathBuf::from("/etc").join(DIRECTORY).join(FILE_NAME))
-    }
+#[cfg(not(windows))]
+pub fn system() -> Option<PathBuf> {
+    Some(PathBuf::from("/etc").join(DIRECTORY).join(FILE_NAME))
 }
 
 /// Every settings file that may apply, in the order they layer.

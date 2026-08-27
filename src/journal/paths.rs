@@ -128,35 +128,39 @@ pub fn scan(id: &str) -> Option<PathBuf> {
 ///
 /// Split out from [`root`] so the platform rules and the `sudo` rule are one
 /// expression each rather than one nested expression.
+/// No `sudo` equivalent to work around: an elevated process on Windows keeps the
+/// invoking user's profile, so `%LOCALAPPDATA%` already points where the Unix
+/// arm has to go looking to arrive.
+///
+/// Two whole functions rather than one with two `cfg` blocks inside it. The
+/// block form needs a `return` in the first arm to skip the second, and on the
+/// platform where the second does not exist that `return` is the last expression
+/// of the function — which is a clippy warning nobody sees until the day
+/// somebody lints for that platform.
+#[cfg(windows)]
 fn state_root() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        // No `sudo` equivalent: an elevated process on Windows keeps the
-        // invoking user's profile, so `%LOCALAPPDATA%` already points where the
-        // Unix branch has to work to arrive.
-        return std::env::var_os("LOCALAPPDATA")
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+#[cfg(not(windows))]
+fn state_root() -> Option<PathBuf> {
+    // Only an absolute value counts, as the specification requires. A relative
+    // one would put the journal wherever the process was started, which for a
+    // tool run with `sudo` from an arbitrary shell is not a location anybody
+    // chose.
+    let absolute = |name| {
+        std::env::var_os(name)
             .map(PathBuf::from)
-            .filter(|path| path.is_absolute());
-    }
+            .filter(|path: &PathBuf| path.is_absolute())
+    };
 
-    #[cfg(not(windows))]
-    {
-        // Only an absolute value counts, as the specification requires. A
-        // relative one would put the journal wherever the process was started,
-        // which for a tool run with `sudo` from an arbitrary shell is not a
-        // location anybody chose.
-        let absolute = |name| {
-            std::env::var_os(name)
-                .map(PathBuf::from)
-                .filter(|path: &PathBuf| path.is_absolute())
-        };
-
-        choose(
-            absolute("XDG_STATE_HOME"),
-            invoking_user().map(|user| user.home),
-            absolute("HOME"),
-        )
-    }
+    choose(
+        absolute("XDG_STATE_HOME"),
+        invoking_user().map(|user| user.home),
+        absolute("HOME"),
+    )
 }
 
 /// Picks the state root from the three places it can come from.

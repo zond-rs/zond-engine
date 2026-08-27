@@ -150,7 +150,7 @@ mod windows_impl {
     // Thread-local cache prevents the N+1 FFI performance trap when iterating,
     // but the 2-second TTL ensures we still support hot-plugged devices across scans.
     thread_local! {
-        static INTERFACE_CACHE: RefCell<Option<(Instant, WindowsInterfaceInfo)>> = RefCell::new(None);
+        static INTERFACE_CACHE: RefCell<Option<(Instant, WindowsInterfaceInfo)>> = const { RefCell::new(None) };
     }
 
     fn fetch_windows_interface_info() -> WindowsInterfaceInfo {

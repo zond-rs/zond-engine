@@ -145,7 +145,6 @@ tracing = "0.1.44"
 tokio = { version = "1.53.0", features = ["full"] }
 hickory-resolver = { version = "0.26.1", features = ["tokio"] }
 dashmap = "6.1.0"
-windows-sys = { version = "0.61.2", features = ["Win32_NetworkManagement_IpHelper", "Win32_Foundation", "Win32_Networking_WinSock", "Win32_NetworkManagement_Ndis", "Win32_Security", "Win32_System_Threading"] }
 mac_oui = { version = "0.4.11", features = ["with-db"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", optional = true }
@@ -165,6 +164,35 @@ x509-parser = "0.18.1"
 # no new supply chain, where hand-rolling the digest would put a cryptographic
 # primitive in this repository for one call site.
 ring = "0.17"
+
+# Declared per-target rather than unconditionally, as the CLI already declares
+# its own `rustix`. It compiles to nothing off Windows either way, so this buys
+# no build time; what it buys is that the manifest says which platform the
+# dependency is for, and a feature added for one call site cannot be mistaken
+# for something every build needs.
+#
+# One feature per subsystem this crate actually calls into. `windows-sys` gates
+# every module behind one, so a missing feature is not a smaller build — it is
+# `cannot find X in Y` on a platform nobody compiled for. That is precisely how
+# `Win32_System_SystemInformation` came to be missing while `journal::lock` was
+# already calling `GetTickCount64`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    # Interface and neighbour tables.
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    # SYSTEMTIME, HANDLE, and the handle-closing this crate does after a token.
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    # Elevation, via the process token.
+    "Win32_Security",
+    "Win32_System_Threading",
+    # `GetTickCount64`, which is how a journal lock recognises a reboot.
+    "Win32_System_SystemInformation",
+    # `SystemTimeToTzSpecificLocalTime`, which is how a local time gets an
+    # offset on a platform with no `tm_gmtoff`.
+    "Win32_System_Time",
+] }
 
 [dev-dependencies]
 # A JSON Schema validator, used only to hold the exported document to

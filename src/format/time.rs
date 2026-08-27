@@ -82,13 +82,14 @@ pub fn rfc3339(time: SystemTime) -> String {
     let (secs, nanos) = epoch_parts(time);
     let secs = secs.clamp(MIN_SECS, MAX_SECS);
 
-    let days = secs.div_euclid(SECS_PER_DAY);
-    let time_of_day = secs.rem_euclid(SECS_PER_DAY);
-
-    let (year, month, day) = civil_from_days(days);
-    let hour = time_of_day / 3_600;
-    let minute = (time_of_day % 3_600) / 60;
-    let second = time_of_day % 60;
+    let Civil {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+    } = civil_parts(secs);
 
     format!(
         "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z",
@@ -116,51 +117,169 @@ pub fn rfc3339(time: SystemTime) -> String {
 /// is, which is a container with no zone database rather than anything a user
 /// did wrong.
 pub fn local(time: SystemTime) -> String {
-    let Some(broken) = local_parts(time) else {
+    let (secs, _) = epoch_parts(time);
+    let secs = secs.clamp(MIN_SECS, MAX_SECS);
+
+    let Some(offset) = local_offset(secs) else {
         return rfc3339(time);
     };
 
-    let (offset_hours, offset_minutes) = (
-        broken.tm_gmtoff.abs() / 3_600,
-        (broken.tm_gmtoff.abs() % 3_600) / 60,
-    );
+    rendered(secs, offset)
+}
+
+/// [`local`]'s arithmetic, given an offset rather than asking for one.
+///
+/// **Split from the lookup so that it can be tested at all.** Which offset this
+/// machine is on is a fact about wherever the machine is, so a test that goes
+/// through [`local_offset`] can only check the reading against the offset
+/// printed beside it — and that holds just as well when both have the wrong
+/// sign. It is worse than that in CI, which runs in UTC, where the offset is
+/// zero and every such assertion passes without testing anything.
+///
+/// `offset` is seconds **east** of UTC, the sense `tm_gmtoff` uses: positive is
+/// ahead of UTC, so it is added to reach the local reading and subtracted to get
+/// back.
+fn rendered(secs: i64, offset: i64) -> String {
+    // The offset applied to the instant, and the calendar read off the result.
+    // This is the whole of what a local rendering is: the same moment, counted
+    // from a different zero.
+    let Civil {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+    } = civil_parts(secs.saturating_add(offset));
 
     format!(
-        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} {sign}{offset_hours:02}{offset_minutes:02}",
-        year = broken.tm_year + 1_900,
-        month = broken.tm_mon + 1,
-        day = broken.tm_mday,
-        hour = broken.tm_hour,
-        minute = broken.tm_min,
-        second = broken.tm_sec,
-        sign = if broken.tm_gmtoff < 0 { '-' } else { '+' },
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} {sign}{hours:02}{minutes:02}",
+        sign = if offset < 0 { '-' } else { '+' },
+        hours = offset.abs() / 3_600,
+        minutes = (offset.abs() % 3_600) / 60,
     )
 }
 
-/// The moment as the C library breaks it down for this machine's timezone.
+/// How far ahead of UTC this machine's own clock reads at `secs`, in seconds.
 ///
-/// `localtime_r` rather than `localtime`: the reentrant form writes into a
-/// caller-supplied `tm` instead of a shared static, which is the difference
-/// between a scan that can format a time from any task and one that cannot.
+/// **Asked per instant rather than once**, because the answer moves: a scan run
+/// in January and a report of it read in July are the same machine and two
+/// offsets, and a summer reading applied to a winter timestamp is an hour of
+/// silent error in the one field a reader uses to line this scan up against a
+/// firewall log.
 ///
-/// `None` for a time the platform will not convert — outside what its `time_t`
-/// holds, or a machine with no zone database at all.
-fn local_parts(time: SystemTime) -> Option<libc::tm> {
-    let (secs, _) = epoch_parts(time);
-    let secs = libc::time_t::try_from(secs).ok()?;
+/// `None` where the platform will not say — a container with no zone database,
+/// or an instant outside what its own time type holds. [`local`] falls back to
+/// [`rfc3339`], which needs nothing from the platform at all.
+#[cfg(unix)]
+fn local_offset(secs: i64) -> Option<i64> {
+    let when = libc::time_t::try_from(secs).ok()?;
 
     // SAFETY: `localtime_r` fills `broken` or returns null, and is passed one
     // valid pointer to each. The `tm` is zeroed first so that a partial write
     // cannot leave it reading uninitialised memory.
+    //
+    // `localtime_r` rather than `localtime`: the reentrant form writes into a
+    // caller-supplied `tm` instead of a shared static, which is the difference
+    // between a scan that can format a time from any task and one that cannot.
     let broken = unsafe {
         let mut broken: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&secs, &mut broken).is_null() {
+        if libc::localtime_r(&when, &mut broken).is_null() {
             return None;
         }
         broken
     };
 
-    Some(broken)
+    Some(broken.tm_gmtoff)
+}
+
+/// [`local_offset`] where there is no `tm_gmtoff` to read.
+///
+/// Windows states a zone as a rule rather than as an offset, so the offset is
+/// recovered by converting and differencing: the same instant expressed in both
+/// zones, subtracted. `SystemTimeToTzSpecificLocalTime` applies the daylight
+/// rule for the date it is handed, which is what makes this per-instant rather
+/// than a single reading of the current bias.
+///
+/// A null `TIME_ZONE_INFORMATION` means the machine's current zone, which is the
+/// question being asked.
+#[cfg(windows)]
+fn local_offset(secs: i64) -> Option<i64> {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
+
+    let utc = civil_parts(secs);
+    let universal = SYSTEMTIME {
+        wYear: u16::try_from(utc.year).ok()?,
+        wMonth: u16::try_from(utc.month).ok()?,
+        // Ignored on input, and not worth computing to be discarded.
+        wDayOfWeek: 0,
+        wDay: u16::try_from(utc.day).ok()?,
+        wHour: u16::try_from(utc.hour).ok()?,
+        wMinute: u16::try_from(utc.minute).ok()?,
+        wSecond: u16::try_from(utc.second).ok()?,
+        wMilliseconds: 0,
+    };
+
+    // SAFETY: both pointers are to live, fully initialised locals of the right
+    // type, and the null first argument is the documented way to name this
+    // machine's own time zone.
+    let mut local = unsafe { std::mem::zeroed::<SYSTEMTIME>() };
+    if unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &universal, &mut local) } == 0 {
+        return None;
+    }
+
+    let days = days_from_civil(
+        i64::from(local.wYear),
+        u32::from(local.wMonth),
+        u32::from(local.wDay),
+    )?;
+    let converted = days * SECS_PER_DAY
+        + i64::from(local.wHour) * 3_600
+        + i64::from(local.wMinute) * 60
+        + i64::from(local.wSecond);
+
+    Some(converted - secs)
+}
+
+/// [`local_offset`] on a platform this crate cannot ask.
+///
+/// Nothing is guessed. `local` renders UTC instead, which is correct rather than
+/// approximate — an offset invented here would be a timestamp that cannot be
+/// correlated and does not say so.
+#[cfg(not(any(unix, windows)))]
+fn local_offset(_secs: i64) -> Option<i64> {
+    None
+}
+
+/// A moment as a calendar reads it.
+///
+/// Shared by [`rfc3339`] and [`local`], which differ in the zero they count from
+/// and in nothing else. Held as a struct rather than returned as six values in a
+/// row, where a transposed pair would compile and be wrong for a century.
+struct Civil {
+    year: i64,
+    month: u32,
+    day: u32,
+    hour: i64,
+    minute: i64,
+    second: i64,
+}
+
+/// Breaks `secs` since the epoch into the fields a calendar shows.
+fn civil_parts(secs: i64) -> Civil {
+    let days = secs.div_euclid(SECS_PER_DAY);
+    let time_of_day = secs.rem_euclid(SECS_PER_DAY);
+    let (year, month, day) = civil_from_days(days);
+
+    Civil {
+        year,
+        month,
+        day,
+        hour: time_of_day / 3_600,
+        minute: (time_of_day % 3_600) / 60,
+        second: time_of_day % 60,
+    }
 }
 
 /// Reads an RFC 3339 timestamp in UTC back as the moment it names.
@@ -372,6 +491,133 @@ mod tests {
 
         // The same instant either way, whatever this machine's zone is.
         assert_eq!(&rfc3339(moment)[..4], &shown[..4]);
+    }
+
+    /// A positive offset reads *ahead* of UTC, and a negative one behind.
+    ///
+    /// **The sign is the whole of what this guards, and nothing that goes
+    /// through the platform can.** A test that renders through `local_offset`
+    /// and checks the reading against the offset printed beside it passes just
+    /// as happily when both are inverted — and in CI, which runs in UTC, the
+    /// offset is zero and there is nothing to invert at all. So the offset is
+    /// handed in here, and the expected string is written out by hand.
+    ///
+    /// Getting this backwards puts every banner two, five, or eleven hours off
+    /// in the field whose entire purpose is lining this scan up against somebody
+    /// else's log — and it would look completely plausible.
+    #[test]
+    fn a_positive_offset_reads_ahead_of_utc_and_a_negative_one_behind() {
+        // 2026-02-02T02:40:00Z, the instant the `rfc3339` doctest uses.
+        const AT: i64 = 1_770_000_000;
+
+        assert_eq!(rendered(AT, 0), "2026-02-02 02:40:00 +0000", "UTC itself");
+        assert_eq!(
+            rendered(AT, 2 * 3_600),
+            "2026-02-02 04:40:00 +0200",
+            "east of UTC reads later in the day"
+        );
+        assert_eq!(
+            rendered(AT, -5 * 3_600),
+            "2026-02-01 21:40:00 -0500",
+            "west of UTC reads earlier, and back over midnight"
+        );
+    }
+
+    /// An offset that is not a whole number of hours is carried in the minutes.
+    ///
+    /// India is `+0530` and Chatham Island is `+1245`. Dividing an offset by
+    /// 3,600 and printing the remainder as though it were minutes is the obvious
+    /// way to write this and is wrong for both of them; so is dropping the
+    /// remainder, which is the same bug rendered as silence.
+    #[test]
+    fn an_offset_of_half_an_hour_is_not_rounded_away() {
+        const AT: i64 = 1_770_000_000;
+
+        assert_eq!(rendered(AT, 5 * 3_600 + 1_800), "2026-02-02 08:10:00 +0530");
+        assert_eq!(
+            rendered(AT, 12 * 3_600 + 2_700),
+            "2026-02-02 15:25:00 +1245"
+        );
+        assert_eq!(
+            rendered(AT, -(3 * 3_600 + 1_800)),
+            "2026-02-01 23:10:00 -0330",
+            "Newfoundland, where the sign and the remainder are both in play"
+        );
+    }
+
+    /// The offset is applied to the instant, not to the calendar it was read
+    /// off — so it carries across a month, a year and a leap day.
+    #[test]
+    fn an_offset_carries_across_every_boundary_it_meets() {
+        // 2025-01-01T00:30:00Z, half an hour into a new year.
+        assert_eq!(
+            rendered(1_735_691_400, -3_600),
+            "2024-12-31 23:30:00 -0100",
+            "back over a year boundary"
+        );
+
+        // 2024-03-01T00:30:00Z, the day after a leap day.
+        assert_eq!(
+            rendered(1_709_253_000, -3_600),
+            "2024-02-29 23:30:00 -0100",
+            "back onto a leap day that only exists in some years"
+        );
+    }
+
+    /// Whatever this machine's zone is, the offset it prints puts the reading
+    /// back at the instant it renders.
+    ///
+    /// The weaker companion to the three above: it cannot see a sign convention,
+    /// but it is the only one that exercises the real platform lookup, and it is
+    /// what would notice `local` forgetting to apply the offset it just asked
+    /// for on a machine that is not in UTC.
+    #[test]
+    fn the_platforms_own_offset_recovers_the_instant() {
+        // The epoch, a leap day, a winter and a summer instant, and a date past
+        // the 2038 boundary a 32-bit `time_t` stops at.
+        for secs in [
+            0_i64,
+            951_782_400,
+            1_770_000_000,
+            1_752_000_000,
+            4_102_444_800,
+        ] {
+            let moment = UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).expect("positive"));
+            let shown = local(moment);
+
+            // A platform that will not say what its zone is renders UTC instead,
+            // which `local` documents and which is not what this is testing.
+            if shown.ends_with('Z') {
+                continue;
+            }
+
+            let field = |range: std::ops::Range<usize>| -> i64 {
+                shown[range].parse().unwrap_or_else(|_| panic!("{shown}"))
+            };
+
+            let days = days_from_civil(
+                field(0..4),
+                u32::try_from(field(5..7)).expect("a month"),
+                u32::try_from(field(8..10)).expect("a day"),
+            )
+            .unwrap_or_else(|| panic!("not a date: {shown}"));
+
+            let reading =
+                days * SECS_PER_DAY + field(11..13) * 3_600 + field(14..16) * 60 + field(17..19);
+
+            let magnitude = field(21..23) * 3_600 + field(23..25) * 60;
+            let offset = if shown.as_bytes()[20] == b'-' {
+                -magnitude
+            } else {
+                magnitude
+            };
+
+            assert_eq!(
+                reading - offset,
+                secs,
+                "the offset does not put `{shown}` back at the instant it renders"
+            );
+        }
     }
 
     /// Records keep their precision; a line somebody reads does not need it.
