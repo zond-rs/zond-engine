@@ -66,6 +66,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RetryConfig;
 use crate::config::{OsDetection, SendMode, ServiceDetection, ZondConfig};
+use crate::evasion::EvasionProfile;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
 use crate::model::host::{Host, HostStatus};
@@ -502,6 +503,43 @@ fn ip_set_ranges(ips: &IpSet) -> Vec<IpRange> {
     v4.chain(v6).collect()
 }
 
+/// What a scan changed about the packets it sent, to read a finding against.
+///
+/// Each field holds the value the scan used for one evasion technique, or `None`
+/// where it left the default alone: a scan that pinned a source port but not the
+/// hop limit has [`source_port`](Self::source_port) set and [`ttl`](Self::ttl)
+/// `None`. A port's state under a probe from source port 53 is a different fact
+/// than the same state under an ordinary probe, and this is where a reader tells
+/// the two apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvasionRecord {
+    /// The source port every probe left from, or `None` if the scan did not pin
+    /// one.
+    pub source_port: Option<u16>,
+    /// The hop limit (IPv4 TTL / IPv6 hop limit) every ordinary probe carried,
+    /// or `None` if the scan kept the default.
+    pub ttl: Option<u8>,
+    /// The number of random bytes appended to each probe's payload, or `None` if
+    /// the scan padded nothing.
+    pub padding: Option<u16>,
+    /// Whether TCP probes carried a deliberately wrong checksum.
+    pub bad_tcp_checksum: bool,
+}
+
+impl EvasionRecord {
+    /// The record of what an [`EvasionProfile`] changed, or `None` if it changed
+    /// nothing.
+    #[must_use]
+    pub fn from_profile(profile: &EvasionProfile) -> Option<Self> {
+        profile.is_active().then(|| Self {
+            source_port: profile.source_port,
+            ttl: profile.ttl,
+            padding: profile.padding,
+            bad_tcp_checksum: profile.bad_tcp_checksum,
+        })
+    }
+}
+
 /// The settings that shaped what a phase did.
 ///
 /// A deliberate subset of [`ZondConfig`]: the fields here are the ones that
@@ -555,6 +593,12 @@ pub struct ScanSettings {
     /// that did not look, and a scan that looked and got nothing back. Only this
     /// separates them.
     pub traceroute: bool,
+
+    /// What the scan changed about the packets it sent, or `None` if it changed
+    /// nothing. A filtered port found with a probe from a trusted source port is
+    /// a different fact than the same port found with an ordinary probe; see
+    /// [`EvasionRecord`].
+    pub evasion: Option<EvasionRecord>,
 }
 
 impl From<&ZondConfig> for ScanSettings {
@@ -569,6 +613,7 @@ impl From<&ZondConfig> for ScanSettings {
             os_detection: cfg.os_detection,
             service_detection: cfg.service_detection,
             traceroute: cfg.traceroute,
+            evasion: EvasionRecord::from_profile(&cfg.evasion),
         }
     }
 }

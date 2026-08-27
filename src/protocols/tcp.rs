@@ -170,6 +170,32 @@ pub fn create_probe(
     dst_port: u16,
     nonce: u32,
 ) -> Result<Vec<u8>> {
+    create_probe_shaped(
+        technique, src_addr, dst_addr, src_port, dst_port, nonce, None, false,
+    )
+}
+
+/// [`create_probe`] with the segment-level evasion an
+/// [`EvasionProfile`](crate::evasion::EvasionProfile) applies: `padding` random
+/// bytes appended to the payload, and a deliberately wrong checksum when
+/// `bad_checksum` is set. With `None` and `false` it is `create_probe` exactly,
+/// so an ordinary scan's probe is byte-for-byte unchanged.
+///
+/// The padding is appended before the checksum is computed, so the checksum a
+/// conformant host verifies covers it; a corrupt checksum is the correct one
+/// perturbed (see [`craft::Tcp::corrupt_checksum`]) rather than an arbitrary
+/// wrong number a middlebox might read as valid by chance.
+#[allow(clippy::too_many_arguments)]
+pub fn create_probe_shaped(
+    technique: TcpScanTechnique,
+    src_addr: &IpAddr,
+    dst_addr: &IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    nonce: u32,
+    padding: Option<u16>,
+    bad_checksum: bool,
+) -> Result<Vec<u8>> {
     let flags = probe_flags(technique);
 
     let mut segment = craft::Tcp::new(src_port, dst_port).with_flags(flags);
@@ -193,11 +219,21 @@ pub fn create_probe(
         segment.options = syn_options(PROBE_MSS);
     }
 
+    // Padding rides on the payload, set before the checksum below so the sum a
+    // host verifies covers it.
+    if let Some(len) = padding {
+        segment.payload = craft::random_padding(len);
+    }
+
     // The checksum covers a pseudo-header built from both addresses, which is
     // why they are parameters. Written through `craft` rather than by hand, so
     // this probe and a hand-crafted segment cannot come to disagree about what
     // a TCP header is.
-    segment.to_bytes(Some((*src_addr, *dst_addr)))
+    let addresses = (*src_addr, *dst_addr);
+    if bad_checksum {
+        segment.checksum = craft::Field::Exact(segment.corrupt_checksum(Some(addresses))?);
+    }
+    segment.to_bytes(Some(addresses))
 }
 
 /// The maximum-segment-size option, as the four bytes a TCP header carries it
@@ -224,9 +260,26 @@ fn syn_options(mss: u16) -> Vec<u8> {
 /// attempt that was answered, and anything else is a stray, a duplicate, or a
 /// forgery, none of which may resolve a port. Arithmetic wraps, because sequence
 /// space does.
-pub fn echoed_nonce(technique: TcpScanTechnique, reply: &TcpPacket) -> u32 {
+///
+/// `padding` is how many payload bytes the probe carried (`0` for an unpadded
+/// scan). A reset from a closed port acknowledges the whole segment it rejected,
+/// padding included, while a SYN+ACK from an open port acknowledges only the
+/// SYN; so the padding is subtracted from a reset's acknowledgement and left in
+/// place for a SYN+ACK. Without this a padded scan reads every closed port as
+/// filtered, because its reset never matches the nonce that was sent.
+pub fn echoed_nonce(technique: TcpScanTechnique, reply: &TcpPacket, padding: u16) -> u32 {
     match nonce_field(probe_flags(technique)) {
-        NonceField::Sequence { span } => reply.get_acknowledgement().wrapping_sub(span),
+        NonceField::Sequence { span } => {
+            let acked_padding = if reply.get_flags() & flags::RST != 0 {
+                u32::from(padding)
+            } else {
+                0
+            };
+            reply
+                .get_acknowledgement()
+                .wrapping_sub(span)
+                .wrapping_sub(acked_padding)
+        }
         NonceField::Acknowledgement => reply.get_sequence(),
     }
 }
@@ -496,7 +549,7 @@ mod tests {
             let reply = TcpPacket::new(&rst).unwrap();
 
             assert_eq!(
-                echoed_nonce(technique, &reply),
+                echoed_nonce(technique, &reply, 0),
                 NONCE,
                 "{technique} could not recognize its own answer"
             );
@@ -520,7 +573,147 @@ mod tests {
 
         let reply_bytes = conformant_rst(&theirs);
         let reply = TcpPacket::new(&reply_bytes).unwrap();
-        assert_ne!(echoed_nonce(TcpScanTechnique::Fin, &reply), NONCE);
+        assert_ne!(echoed_nonce(TcpScanTechnique::Fin, &reply, 0), NONCE);
+    }
+
+    /// A padded probe still recognises its own answer — and this is the one
+    /// place the two kinds of answer must be treated differently. A closed
+    /// port's reset acknowledges the padding bytes along with the control span,
+    /// so the nonce comes back only if that padding is subtracted; an open
+    /// port's SYN+ACK acknowledges the SYN alone and never the data on it, so
+    /// the same padding must *not* be subtracted there. A rule that ignored the
+    /// padding would report every padded closed port as filtered; one that
+    /// subtracted it from a SYN+ACK would drop every padded open port.
+    #[test]
+    fn a_padded_probe_reads_its_nonce_back_from_either_answer() {
+        const PADDING: u16 = 24;
+
+        let padded = create_probe_shaped(
+            TcpScanTechnique::Syn,
+            &SRC,
+            &DST,
+            50_000,
+            80,
+            NONCE,
+            Some(PADDING),
+            false,
+        )
+        .expect("a padded probe builds");
+
+        // Closed: the reset acknowledges the SYN and the padding.
+        let rst = conformant_rst(&padded);
+        let reply = TcpPacket::new(&rst).unwrap();
+        assert_eq!(
+            echoed_nonce(TcpScanTechnique::Syn, &reply, PADDING),
+            NONCE,
+            "a closed port's reset acks the padding, which has to be subtracted back"
+        );
+
+        // Open: the SYN+ACK acknowledges the SYN only.
+        let sent = TcpPacket::new(&padded).unwrap();
+        let mut buffer = vec![0u8; TCP_HDR_LEN];
+        let mut syn_ack = MutableTcpPacket::new(&mut buffer).unwrap();
+        syn_ack.set_source(sent.get_destination());
+        syn_ack.set_destination(sent.get_source());
+        syn_ack.set_data_offset((TCP_HDR_LEN / WORD_IN_BYTES) as u8);
+        syn_ack.set_flags(flags::SYN | flags::ACK);
+        syn_ack.set_sequence(0x5555_5555);
+        syn_ack.set_acknowledgement(sent.get_sequence().wrapping_add(1));
+        let reply = syn_ack.to_immutable();
+        assert_eq!(
+            echoed_nonce(TcpScanTechnique::Syn, &reply, PADDING),
+            NONCE,
+            "an open port's SYN+ACK acks only the SYN, so padding must be left in place"
+        );
+    }
+
+    /// A shaped probe with no shaping is the ordinary probe, byte for byte — the
+    /// inert-default guarantee at the point a scan builds its packet.
+    ///
+    /// Only the deterministic techniques can be compared byte for byte: a SYN
+    /// carries a random timestamp in its options, and an ACK or Maimon probe a
+    /// random sequence number, so two separate builds of those differ for
+    /// reasons that have nothing to do with shaping.
+    #[test]
+    fn an_unshaped_probe_is_the_ordinary_probe() {
+        for technique in [
+            TcpScanTechnique::Fin,
+            TcpScanTechnique::Null,
+            TcpScanTechnique::Xmas,
+        ] {
+            let plain = create_probe(technique, &SRC, &DST, 50_000, 80, NONCE).unwrap();
+            let shaped =
+                create_probe_shaped(technique, &SRC, &DST, 50_000, 80, NONCE, None, false).unwrap();
+            assert_eq!(
+                plain, shaped,
+                "{technique} shaped with nothing must not differ"
+            );
+        }
+    }
+
+    /// Padding lands on the payload and the checksum covers it: a padded probe
+    /// is exactly `len` bytes longer, those bytes verify under the checksum, and
+    /// nothing else about the segment moves.
+    #[test]
+    fn padding_lengthens_the_probe_and_the_checksum_covers_it() {
+        const LEN: u16 = 20;
+        let bare = create_probe(TcpScanTechnique::Fin, &SRC, &DST, 50_000, 80, NONCE).unwrap();
+        let padded = create_probe_shaped(
+            TcpScanTechnique::Fin,
+            &SRC,
+            &DST,
+            50_000,
+            80,
+            NONCE,
+            Some(LEN),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(padded.len(), bare.len() + usize::from(LEN));
+        let segment = TcpPacket::new(&padded).unwrap();
+        assert_eq!(segment.payload().len(), usize::from(LEN));
+        let (IpAddr::V4(src), IpAddr::V4(dst)) = (SRC, DST) else {
+            unreachable!("the fixtures are IPv4")
+        };
+        assert_eq!(
+            pnet_packet::tcp::ipv4_checksum(&segment, &src, &dst),
+            segment.get_checksum(),
+            "a well-formed padded probe carries a checksum that covers its padding"
+        );
+    }
+
+    /// A bad-checksum probe carries a checksum the host will reject: it differs
+    /// from the one the segment should carry and is never zero, the encoding a
+    /// host reads as valid.
+    #[test]
+    fn a_bad_checksum_probe_carries_a_checksum_the_host_rejects() {
+        let bad = create_probe_shaped(
+            TcpScanTechnique::Syn,
+            &SRC,
+            &DST,
+            50_000,
+            80,
+            NONCE,
+            None,
+            true,
+        )
+        .unwrap();
+        let segment = TcpPacket::new(&bad).unwrap();
+        let (IpAddr::V4(src), IpAddr::V4(dst)) = (SRC, DST) else {
+            unreachable!("the fixtures are IPv4")
+        };
+        let correct = pnet_packet::tcp::ipv4_checksum(&segment, &src, &dst);
+        assert_ne!(
+            segment.get_checksum(),
+            correct,
+            "the checksum must be wrong"
+        );
+        assert_ne!(
+            segment.get_checksum(),
+            0,
+            "zero is a checksum a host accepts"
+        );
     }
 
     /// A NULL probe occupies no sequence space and a FIN probe occupies one

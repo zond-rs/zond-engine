@@ -9,6 +9,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::evasion::EvasionProfile;
 use crate::model::exclusion::Exclusions;
 use crate::model::technique::TcpScanTechnique;
 
@@ -635,7 +636,7 @@ impl Default for RetryConfig {
 /// port scan paces itself by a congestion window and treats it only as a
 /// ceiling. The unprivileged paths pace themselves by their connection
 /// concurrency instead.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ProbeTuning {
     pub send_mode: SendMode,
     pub retry: RetryConfig,
@@ -661,6 +662,16 @@ pub struct ProbeTuning {
     /// the same level, so turning it off means no connection is completed for
     /// identification by either route.
     pub service_detection: ServiceDetection,
+
+    /// What the caller has chosen to change about the packets each strategy
+    /// emits, over the defaults it would otherwise send.
+    ///
+    /// A default profile is inert: a strategy handed one sends exactly what it
+    /// would without it. Read wherever a strategy chooses a field a caller may
+    /// override — the source port a probe leaves from today, and the hop limit,
+    /// spoofed address, fragmentation and decoys as those land. See
+    /// [`EvasionProfile`].
+    pub evasion: EvasionProfile,
 }
 
 /// What a scan does, and what it is allowed to put on the wire.
@@ -852,6 +863,15 @@ pub struct ZondConfig {
     /// the one that completes connections, so a scan that must stay out of the
     /// target's application logs turns it off. Affects the port-scan phase only.
     pub service_detection: ServiceDetection,
+
+    /// What the scan changes about the packets it emits, over the defaults.
+    ///
+    /// Defaults to an inert profile — a scan that set nothing here is
+    /// indistinguishable from one run before the option existed. Carried into
+    /// [`probe_tuning`](Self::probe_tuning) for the strategies to read, and (once
+    /// the provenance surface lands) into the report, so a scan that evaded
+    /// something says so. See [`EvasionProfile`].
+    pub evasion: EvasionProfile,
 }
 
 impl ZondConfig {
@@ -864,6 +884,7 @@ impl ZondConfig {
             tcp_technique: self.tcp_technique,
             os_detection: self.os_detection,
             service_detection: self.service_detection,
+            evasion: self.evasion.clone(),
         }
     }
 }

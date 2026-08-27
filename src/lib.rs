@@ -215,6 +215,7 @@
 
 pub mod config;
 pub mod diff;
+pub mod evasion;
 pub mod export;
 pub mod fingerprint;
 pub mod format;
@@ -242,6 +243,7 @@ pub(crate) mod logging;
 // costs is that each name is a commitment, which is why the crate's whole
 // vocabulary is not re-exported wholesale.
 pub use crate::config::{RetryConfig, ScanEffort, SendMode, ZondConfig};
+pub use crate::evasion::EvasionProfile;
 pub use crate::model::exclusion::Exclusions;
 pub use crate::model::host::{Host, HostStatus};
 pub use crate::model::ip::scoped::{ScopedIp, Zone};

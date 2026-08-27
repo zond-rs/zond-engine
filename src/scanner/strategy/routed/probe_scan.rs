@@ -63,6 +63,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
+use crate::evasion::SegmentShaping;
 use crate::journal::settle::Outcome;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::port::{PortState, Protocol};
@@ -76,7 +77,7 @@ use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::PortScanner;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::ProbeTransport;
+use crate::transport::probe::{Emission, ProbeTransport};
 
 /// A probe's identity within a scan: which address, which port.
 pub type ProbeTarget = (IpAddr, u16);
@@ -114,6 +115,14 @@ pub struct RawProbeScan<T> {
     /// capture filter narrows to it, and anything addressed elsewhere answered
     /// somebody else.
     pub src_port: u16,
+    /// The IP-header state every probe in this scan carries: its hop limit and
+    /// any evasion override of the IP header. See
+    /// [`Emission`](crate::transport::probe::Emission).
+    pub emission: Emission,
+    /// The segment-level shaping every probe in this scan carries: the payload
+    /// padding and, on the TCP paths, the bad-checksum choice. See
+    /// [`SegmentShaping`](crate::evasion::SegmentShaping).
+    pub shaping: SegmentShaping,
     /// Why the first probe that could not be sent failed, if any did.
     ///
     /// The *first*, and the send path keeps it that way by only recording when
@@ -802,6 +811,8 @@ mod tests {
             ledger: ProbeLedger::new(super::super::RETRY_POLICY, 8),
             due: Vec::new(),
             src_port: 54_321,
+            emission: Emission::routed(),
+            shaping: SegmentShaping::default(),
             send_failure: None,
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),

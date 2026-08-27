@@ -55,6 +55,7 @@ use crate::config::OsDetection;
 use crate::config::ProbeTuning;
 use crate::config::ServiceDetection;
 use crate::error;
+use crate::evasion::SegmentShaping;
 use crate::fingerprint::os;
 use crate::journal::settle::Outcome;
 use crate::model::capture::IpObservation;
@@ -148,7 +149,11 @@ impl TcpPortScanner {
         target_count: usize,
         tuning: ProbeTuning,
     ) -> Result<Self, StrategyError> {
-        let src_port: u16 = rand::random_range(50_000..u16::MAX);
+        let src_port: u16 = tuning
+            .evasion
+            .source_port_or(rand::random_range(50_000..u16::MAX));
+        let emission = tuning.evasion.emission();
+        let shaping = tuning.evasion.segment_shaping();
         let transport = ProbeTransport::open_with(
             ProbeKind::TcpProbe {
                 reply_port: src_port,
@@ -164,6 +169,8 @@ impl TcpPortScanner {
             transport,
             target_count,
             src_port,
+            emission,
+            shaping,
             PORT_RETRY_POLICY.configured(tuning.retry),
             tuning.os_detection,
             tuning.service_detection,
@@ -201,6 +208,8 @@ impl TcpPortScanner {
             transport,
             target_count,
             rand::random_range(50_000..u16::MAX),
+            Emission::routed(),
+            SegmentShaping::default(),
             PORT_RETRY_POLICY,
             OsDetection::default(),
             ServiceDetection::default(),
@@ -220,6 +229,8 @@ impl TcpPortScanner {
         transport: ProbeTransport,
         target_count: usize,
         src_port: u16,
+        emission: Emission,
+        shaping: SegmentShaping,
         retry: RetryPolicy,
         os_detection: OsDetection,
         service_detection: ServiceDetection,
@@ -249,6 +260,8 @@ impl TcpPortScanner {
                 ledger: Ledger::new(retry, target_count.min(super::TCP_PORT_UNRESOLVED)),
                 due: Vec::new(),
                 src_port,
+                emission,
+                shaping,
                 send_failure: None,
                 audit: ProbeAudit::new(),
                 window: CongestionWindow::new(super::TCP_PORT_WINDOW),
@@ -301,7 +314,11 @@ impl TcpPortScanner {
         // recognized - and names which attempt it answered, so the round trip it
         // yields is the real one.
         let token = TcpToken {
-            nonce: tcp::echoed_nonce(self.technique, &tcp_packet),
+            nonce: tcp::echoed_nonce(
+                self.technique,
+                &tcp_packet,
+                self.core.shaping.padding.unwrap_or(0),
+            ),
         };
         let key = (ip, tcp_packet.get_source());
         self.resolve_probe(
@@ -752,12 +769,22 @@ fn send_tcp_probe(
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
+    emission: Emission,
+    shaping: SegmentShaping,
     reason: &mut Option<String>,
 ) -> Option<TcpToken> {
     let nonce: u32 = rand::random();
 
-    let packet = match tcp::create_probe(technique, &src_addr, &dst_addr, src_port, dst_port, nonce)
-    {
+    let packet = match tcp::create_probe_shaped(
+        technique,
+        &src_addr,
+        &dst_addr,
+        src_port,
+        dst_port,
+        nonce,
+        shaping.padding,
+        shaping.bad_tcp_checksum,
+    ) {
         Ok(packet) => packet,
         Err(e) => {
             error!(
@@ -768,7 +795,7 @@ fn send_tcp_probe(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr, Emission::routed()) {
+    match sender.send(&packet, src_addr, dst_addr, emission) {
         Ok(()) => {
             success!(
                 verbosity = 2,
@@ -872,6 +899,8 @@ impl TcpPortScanner {
             src_addr,
             ip,
             port,
+            self.core.emission,
+            self.core.shaping,
             &mut self.core.send_failure,
         );
         self.core.record_send(token.is_some(), first_attempt);

@@ -1366,6 +1366,35 @@
         "traceroute": {
           "description": "Whether the phase measured the route to each host that answered. A host with no path is two different findings - a scan that did not look, and a scan that looked and got nothing back - and only this separates them.",
           "type": "boolean"
+        },
+        "evasion": {
+          "description": "What the scan changed about the packets it sent, present only when it changed something - so an ordinary scan omits this object entirely and reads exactly as one produced before the option existed. Each field is present only for a technique the scan actually used. A finding read against it means more than one read without: a filtered port under a probe from a trusted source port is a different fact about the network than the same port under an ordinary one.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source_port": {
+              "description": "The source port every probe left from, replacing the port the engine would otherwise have chosen. A probe from a port a stateless filter trusts (53, 88, 20) can walk through it.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "ttl": {
+              "description": "The hop limit (IPv4 TTL / IPv6 hop limit) every ordinary probe carried, replacing the routed default. Set to defeat a filter or IDS that keys on hop count. Path measurement is unaffected - a traceroute chooses its own.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "padding": {
+              "description": "The number of random bytes appended to each probe's payload, to move the probe off the fixed size a signature or middlebox rule keys on.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "bad_tcp_checksum": {
+              "description": "Whether TCP probes carried a deliberately wrong checksum. A conformant host drops such a segment, so a reply to one implicates an inline middlebox that answered without checking rather than the host itself.",
+              "type": "boolean"
+            }
+          }
         }
       }
     },

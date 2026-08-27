@@ -47,6 +47,38 @@ pub fn create_packet(
     dst_port: u16,
     payload: Vec<u8>,
 ) -> Result<Vec<u8>> {
+    create_packet_shaped(src_addr, dst_addr, src_port, dst_port, payload, None)
+}
+
+/// [`create_packet`], with `padding` random bytes appended to the datagram's
+/// payload — the segment-level shaping an evasion profile applies to move a
+/// probe off the fixed size of a bare header.
+///
+/// The padding follows the meaningful payload, so it is covered by the length
+/// field and the checksum like any other bytes and an open port still reads the
+/// request in front of it. `None` appends nothing and builds exactly what
+/// [`create_packet`] does. See
+/// [`craft::random_padding`](craft::random_padding) for why the bytes are
+/// random.
+///
+/// # Errors
+///
+/// The same as [`create_packet`]: a
+/// [`FamilyMismatch`](crate::protocols::error::PacketError::FamilyMismatch)
+/// across address families, and a
+/// [`TooLong`](crate::protocols::error::PacketError::TooLong) for a payload —
+/// padding now counted — the 16-bit length field cannot describe.
+pub fn create_packet_shaped(
+    src_addr: &IpAddr,
+    dst_addr: &IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    mut payload: Vec<u8>,
+    padding: Option<u16>,
+) -> Result<Vec<u8>> {
+    if let Some(len) = padding {
+        payload.extend(craft::random_padding(len));
+    }
     craft::Udp::new(src_port, dst_port)
         .with_payload(payload)
         .to_bytes(Some((*src_addr, *dst_addr)))
@@ -162,5 +194,42 @@ mod tests {
     #[test]
     fn mismatched_address_families_are_rejected() {
         assert!(create_packet(&V4_SRC, &V6_DST, 40_000, 53, vec![]).is_err());
+    }
+
+    /// Padding follows the meaningful payload, and both the length field and the
+    /// checksum cover it. The baseline is the same datagram with `None`, which is
+    /// how this also pins the inert default: unshaped, nothing is appended.
+    ///
+    /// A mutant that appended nothing fails the length; one that padded in front
+    /// of the payload would displace the request an open port has to read; one
+    /// that left the padding out of the checksum fails the recompute.
+    #[test]
+    fn padding_extends_the_datagram_and_is_covered() {
+        let plain =
+            create_packet_shaped(&V4_SRC, &V4_DST, 40_000, 53, vec![1, 2, 3, 4], None).unwrap();
+        let padded =
+            create_packet_shaped(&V4_SRC, &V4_DST, 40_000, 53, vec![1, 2, 3, 4], Some(16)).unwrap();
+        let udp = UdpPacket::new(&padded).unwrap();
+
+        assert_eq!(
+            padded.len(),
+            plain.len() + 16,
+            "sixteen bytes were not appended"
+        );
+        assert_eq!(
+            udp.get_length() as usize,
+            padded.len(),
+            "the length field does not count the padding"
+        );
+        assert_eq!(
+            &udp.payload()[..4],
+            &[1, 2, 3, 4],
+            "the padding displaced the request an open port has to read"
+        );
+        assert_eq!(
+            udp.get_checksum(),
+            expected_checksum(&padded, &V4_SRC, &V4_DST),
+            "the checksum does not cover the padding"
+        );
     }
 }

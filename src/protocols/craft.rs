@@ -498,6 +498,33 @@ impl Tcp {
     pub fn to_bytes(&self, addresses: Option<(IpAddr, IpAddr)>) -> Result<Vec<u8>> {
         write_tcp(self, Vec::new(), addresses)
     }
+
+    /// The checksum this segment should carry against `addresses`, perturbed to
+    /// one that is definitely wrong and never zero.
+    ///
+    /// Computes the correct checksum through the ordinary build, then corrupts
+    /// it with [`corrupt_internet_checksum`]. Set the result on
+    /// [`checksum`](Self::checksum) with [`Field::Exact`] to emit a segment a
+    /// conformant host drops — so a reply to it came from something in the path
+    /// rather than from the host. Computing the correct value first and
+    /// perturbing it is what makes the result *guaranteed* wrong: an arbitrary
+    /// number might, once in 2^16, be the checksum the segment actually needs.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError::FamilyMismatch`] when the two addresses are of different
+    /// families, exactly as [`to_bytes`](Self::to_bytes) reports it.
+    pub fn corrupt_checksum(&self, addresses: Option<(IpAddr, IpAddr)>) -> Result<u16> {
+        let bytes = Tcp {
+            checksum: Field::Computed,
+            ..self.clone()
+        }
+        .to_bytes(addresses)?;
+        let correct = TcpPacket::new(&bytes)
+            .expect("a segment just built parses")
+            .get_checksum();
+        Ok(corrupt_internet_checksum(correct))
+    }
 }
 
 /// A UDP header and whatever it carries.
@@ -1297,6 +1324,38 @@ fn transport_checksum(
     }
 }
 
+/// `len` random bytes, for padding a probe's payload out to an unusual size.
+///
+/// Random rather than zero because a run of zeroes is itself a fixed pattern —
+/// the very thing padding exists to move a probe off. Drawn fresh on each call,
+/// so two probes padded to the same length still differ in their tails.
+pub fn random_padding(len: u16) -> Vec<u8> {
+    std::iter::repeat_with(rand::random)
+        .take(len as usize)
+        .collect()
+}
+
+/// A one's-complement internet checksum (RFC 1071) made deliberately, verifiably
+/// wrong.
+///
+/// Flipping every bit is the surest single change: a value and its complement
+/// verify differently, so the result is a checksum a conformant receiver
+/// rejects — which is the whole point, since a reply to a segment that should
+/// have been dropped came from something that did not check.
+///
+/// The one exception is a one's-complement zero, which has two encodings —
+/// `0x0000` and `0xFFFF` — that verify identically. Complementing one lands on
+/// the other, which is not actually a different value and so not actually wrong;
+/// zero is besides a checksum a segment may legitimately carry. So a corruption
+/// that produces either is moved to `0x0001`, which is unambiguously neither
+/// encoding of zero and therefore unambiguously wrong.
+pub fn corrupt_internet_checksum(correct: u16) -> u16 {
+    match correct ^ 0xFFFF {
+        0x0000 | 0xFFFF => 0x0001,
+        flipped => flipped,
+    }
+}
+
 fn write_sctp(header: &Sctp, payload: Vec<u8>) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(SCTP_COMMON_HDR_LEN + header.chunks.len() + payload.len());
     bytes.extend_from_slice(&header.source_port.to_be_bytes());
@@ -1712,5 +1771,61 @@ mod tests {
     fn a_deliberately_wrong_sctp_checksum_survives_to_the_wire() {
         let bytes = Sctp::new(50_000, 9).with_checksum(0).to_bytes();
         assert_eq!(&bytes[8..12], &[0; 4]);
+    }
+
+    // ── Corrupting a checksum on purpose ─────────────────────────────────────
+
+    /// The common case: flipping every bit lands on a value that verifies
+    /// differently, so it is guaranteed wrong. A mutant that returned the input
+    /// unchanged — a "corruption" equal to the correct checksum — would leave a
+    /// probe every host accepts, which is the opposite of the point.
+    #[test]
+    fn a_corrupt_checksum_differs_from_the_one_it_was_made_from() {
+        for correct in [0x1234, 0x00FF, 0xABCD, 0x8000, 0x0001] {
+            let corrupt = corrupt_internet_checksum(correct);
+            assert_ne!(corrupt, correct, "{correct:#06x} was not changed");
+            assert_ne!(corrupt, 0, "{correct:#06x} corrupted to a zero checksum");
+        }
+    }
+
+    /// The two encodings of a one's-complement zero verify identically, so a
+    /// flip between them is not actually wrong — and zero is a checksum a segment
+    /// may legitimately carry, so it can never be the corrupt one. A mutant that
+    /// only flipped the bits would return the *other* encoding of zero here and
+    /// ship a checksum still accepted as correct.
+    #[test]
+    fn corrupting_a_zero_encoding_avoids_the_other_encoding_of_zero() {
+        assert_eq!(corrupt_internet_checksum(0x0000), 0x0001);
+        assert_eq!(corrupt_internet_checksum(0xFFFF), 0x0001);
+    }
+
+    /// A segment asked for a bad TCP checksum carries one that a real parse
+    /// confirms is neither the value the segment should have nor zero — with
+    /// every other byte of the header untouched.
+    #[test]
+    fn a_tcp_segment_can_be_built_with_a_verifiably_wrong_checksum() {
+        let addresses = Some((IpAddr::V4(V4_SRC), IpAddr::V4(V4_DST)));
+        let segment = Tcp::new(50_000, 80).with_flags(tcp_flags::SYN);
+
+        let good = segment.to_bytes(addresses).expect("builds");
+        let corrupt = segment.corrupt_checksum(addresses).expect("perturbs");
+        let bad = Tcp {
+            checksum: Field::Exact(corrupt),
+            ..segment
+        }
+        .to_bytes(addresses)
+        .expect("builds");
+
+        let should_carry = TcpPacket::new(&good).expect("tcp").get_checksum();
+        let on_the_wire = TcpPacket::new(&bad).expect("tcp").get_checksum();
+        assert_ne!(on_the_wire, should_carry, "the checksum is not wrong");
+        assert_ne!(on_the_wire, 0, "zero is ambiguous, not wrong");
+
+        // Only the checksum moved: zero both copies' checksum field (bytes 16..18
+        // of the TCP header) and the rest must be byte-for-byte equal.
+        let (mut good, mut bad) = (good, bad);
+        good[16..18].fill(0);
+        bad[16..18].fill(0);
+        assert_eq!(good, bad, "corrupting the checksum disturbed another field");
     }
 }

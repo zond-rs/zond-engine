@@ -32,6 +32,7 @@ use std::{
 };
 
 use crate::config::ProbeTuning;
+use crate::evasion::SegmentShaping;
 use crate::journal::settle::{Outcome, Settled};
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
@@ -337,18 +338,26 @@ fn send_syn(
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
+    src_port_override: Option<u16>,
+    emission: Emission,
+    shaping: SegmentShaping,
     faults: &mut SendFaults,
 ) -> Option<SynToken> {
-    let src_port: u16 = rand::random_range(50_000..u16::MAX);
+    // A caller who pinned a source port gets that port; otherwise a fresh
+    // random high port, which is this sweep's default and is what makes a
+    // retried probe measurable — see the field this override travels on.
+    let src_port: u16 = src_port_override.unwrap_or_else(|| rand::random_range(50_000..u16::MAX));
     let seq_num: u32 = rand::random_range(0..=u32::MAX);
 
-    let packet = match protocol::tcp::create_probe(
+    let packet = match protocol::tcp::create_probe_shaped(
         TcpScanTechnique::Syn,
         &src_addr,
         &dst_addr,
         src_port,
         dst_port,
         seq_num,
+        shaping.padding,
+        shaping.bad_tcp_checksum,
     ) {
         Ok(pkt) => pkt,
         Err(e) => {
@@ -360,7 +369,7 @@ fn send_syn(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr, Emission::routed()) {
+    match sender.send(&packet, src_addr, dst_addr, emission) {
         Ok(_) => {
             success!(verbosity = 2, "sent SYN probe to {dst_addr}:{dst_port}");
             Some(SynToken {
@@ -423,14 +432,21 @@ fn send_udp(
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
+    emission: Emission,
+    shaping: SegmentShaping,
     reason: &mut Option<String>,
 ) -> Option<()> {
     // What makes an open port answer at all: UDP has no handshake, so the
     // application itself has to recognize the request. See [`payload`].
     let payload = payload::for_port(dst_port).to_vec();
 
-    let packet = match crate::protocols::udp::create_packet(
-        &src_addr, &dst_addr, src_port, dst_port, payload,
+    let packet = match crate::protocols::udp::create_packet_shaped(
+        &src_addr,
+        &dst_addr,
+        src_port,
+        dst_port,
+        payload,
+        shaping.padding,
     ) {
         Ok(pkt) => pkt,
         Err(e) => {
@@ -442,7 +458,7 @@ fn send_udp(
         }
     };
 
-    match sender.send(&packet, src_addr, dst_addr, Emission::routed()) {
+    match sender.send(&packet, src_addr, dst_addr, emission) {
         Ok(_) => {
             success!(verbosity = 2, "sent UDP probe to {dst_addr}:{dst_port}");
             Some(())
@@ -502,6 +518,21 @@ pub struct RoutedScanner {
     ips: IpSet,
     /// Transport used to send SYN probes and receive replies.
     transport: ProbeTransport,
+    /// The source port every probe leaves from, when a caller pinned one.
+    ///
+    /// `None` is the default and keeps this sweep's own behaviour: a fresh
+    /// random high port per probe, which together with a fresh sequence number
+    /// is what lets a reply name the attempt it answers. An evasion profile that
+    /// set a source port replaces that with the one port — the sequence number
+    /// still varies per attempt, so a reply is still attributable — so a probe
+    /// can leave from a port a filter is known to trust.
+    src_port: Option<u16>,
+    /// The IP-header state every SYN carries: its hop limit and any evasion
+    /// override of the IP header.
+    emission: Emission,
+    /// The segment-level shaping every SYN carries: payload padding, and a bad
+    /// TCP checksum when the sweep asked for one.
+    shaping: SegmentShaping,
     /// Governs how long this sweep keeps running, adapting to observed
     /// round-trip times.
     deadline: AdaptiveDeadline,
@@ -760,6 +791,9 @@ impl RoutedScanner {
             ctx,
             dns_tx,
             transport,
+            tuning.evasion.source_port,
+            tuning.evasion.emission(),
+            tuning.evasion.segment_shaping(),
             RETRY_POLICY.configured(tuning.retry),
             tuning.max_probe_rate.unwrap_or(PROBE_RATE_PER_SEC).max(1),
         ))
@@ -789,6 +823,9 @@ impl RoutedScanner {
             ctx,
             dns_tx,
             transport,
+            None,
+            Emission::routed(),
+            SegmentShaping::default(),
             RETRY_POLICY,
             PROBE_RATE_PER_SEC,
         )
@@ -797,11 +834,15 @@ impl RoutedScanner {
     /// The common constructor, taking the retry schedule and the send rate as
     /// arguments because the sweep's own deadline is derived from both and so
     /// has to be settled before anything is built.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
         dns_tx: Option<UnboundedSender<IpAddr>>,
         transport: ProbeTransport,
+        src_port: Option<u16>,
+        emission: Emission,
+        shaping: SegmentShaping,
         retry: RetryPolicy,
         rate_per_sec: u32,
     ) -> Self {
@@ -834,6 +875,9 @@ impl RoutedScanner {
             sources,
             ips,
             transport,
+            src_port,
+            emission,
+            shaping,
             deadline: AdaptiveDeadline::new(deadline_config, target_count),
             dns_tx,
             ledger: ProbeLedger::new(retry, target_count),
@@ -931,7 +975,11 @@ impl RoutedScanner {
     /// already proved it exists from being asked again.
     fn resolve_probe(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) -> Option<Resolution> {
         let token = TcpPacket::new(bytes).map(|tcp| SynToken {
-            seq: protocol::tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp),
+            seq: protocol::tcp::echoed_nonce(
+                TcpScanTechnique::Syn,
+                &tcp,
+                self.shaping.padding.unwrap_or(0),
+            ),
             src_port: tcp.get_destination(),
         });
 
@@ -1013,6 +1061,9 @@ impl RoutedScanner {
             source,
             target,
             DST_PORT,
+            self.src_port,
+            self.emission,
+            self.shaping,
             &mut self.faults,
         );
         self.audit.record_send(token.is_some());

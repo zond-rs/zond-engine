@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::config::ZondConfig;
+use crate::evasion::EvasionProfile;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
 use crate::model::host::{
@@ -207,11 +208,22 @@ pub(crate) fn report() -> ScanReport {
     let mut excluded = IpSet::new();
     excluded.insert_range("192.168.0.128/25".parse().expect("a valid range"));
 
+    // This phase evaded something, so the exported document carries an evasion
+    // record and every writer — and the published schema — is held to what one
+    // looks like. The port-scan phase below keeps the defaults, so the fixture
+    // exercises a phase that recorded evasion beside one that did not.
+    let mut config = ZondConfig::default();
+    config.evasion = EvasionProfile::default()
+        .with_source_port(53)
+        .with_ttl(40)
+        .with_padding(24)
+        .with_bad_tcp_checksum(true);
+
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
         true,
         TargetScope::from_ip_set(&mut targets, &Exclusions::new(excluded)),
-        &ZondConfig::default(),
+        &config,
     );
 
     ctx.record_failure(ScannerKind::Local, "raw socket unavailable".to_string());

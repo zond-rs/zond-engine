@@ -85,10 +85,10 @@ use crate::model::port::PortSet;
 use crate::model::technique::TcpScanTechnique;
 use crate::record::wire;
 use crate::record::{
-    CaptureRecord, CertificateRecord, DiscoveryRecord, FailureRecord, HardwareRecord, HopRecord,
-    HostRecord, OriginRecord, OsRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord,
-    RangeRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord, StatusReasonRecord,
-    TelemetryRecord, WindowRecord,
+    CaptureRecord, CertificateRecord, DiscoveryRecord, EvasionSettingsRecord, FailureRecord,
+    HardwareRecord, HopRecord, HostRecord, OriginRecord, OsRecord, PhaseRecord, PortRecord,
+    PortsRecord, ProbeStatsRecord, RangeRecord, ScopeRecord, SecurityRecord, ServiceRecord,
+    SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
 };
 use crate::scanner::report::{ScanPhase, ScanReport};
 
@@ -516,6 +516,10 @@ struct SettingsDto {
     os_detection: String,
     service_detection: String,
     traceroute: bool,
+    /// What the scan changed about its packets, absent when it changed nothing.
+    /// Deserialized straight into the journal's own record: the fields are plain
+    /// scalars with nothing to validate, unlike the named enums above.
+    evasion: Option<EvasionSettingsRecord>,
 }
 
 impl SettingsDto {
@@ -559,6 +563,7 @@ impl SettingsDto {
             os_detection: self.os_detection,
             service_detection: self.service_detection,
             traceroute: self.traceroute,
+            evasion: self.evasion,
         })
     }
 }

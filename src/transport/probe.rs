@@ -340,6 +340,15 @@ impl Emission {
             hop_limit: if hops == 0 { 1 } else { hops },
         }
     }
+
+    /// The same emission with its hop limit replaced. Carries an evasion
+    /// profile's chosen hop limit; path measurement sets its own with
+    /// [`at_hop`](Self::at_hop) instead.
+    #[must_use]
+    pub const fn with_hop_limit(mut self, hop_limit: u8) -> Self {
+        self.hop_limit = hop_limit;
+        self
+    }
 }
 
 impl Default for Emission {

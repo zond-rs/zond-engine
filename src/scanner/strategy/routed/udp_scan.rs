@@ -51,6 +51,7 @@ use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
 use crate::error;
+use crate::evasion::SegmentShaping;
 use crate::journal::settle::Outcome;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
@@ -67,7 +68,7 @@ use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::{ProbeKind, ProbeTransport};
+use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 
 use super::icmp_error::{self, Unreachable};
 use super::probe_scan::{self, AuditLabels, ProbeTarget, RawPortScan, RawProbeScan};
@@ -197,7 +198,11 @@ impl UdpPortScanner {
         target_count: usize,
         tuning: ProbeTuning,
     ) -> Result<Self, StrategyError> {
-        let src_port: u16 = rand::random_range(50_000..u16::MAX);
+        let src_port: u16 = tuning
+            .evasion
+            .source_port_or(rand::random_range(50_000..u16::MAX));
+        let emission = tuning.evasion.emission();
+        let shaping = tuning.evasion.segment_shaping();
         let transport = ProbeTransport::open_with(
             ProbeKind::UdpProbe {
                 reply_port: src_port,
@@ -211,6 +216,8 @@ impl UdpPortScanner {
             transport,
             target_count,
             src_port,
+            emission,
+            shaping,
             RETRY_POLICY.configured(tuning.retry),
             tuning
                 .max_probe_rate
@@ -241,6 +248,8 @@ impl UdpPortScanner {
             transport,
             target_count,
             src_port,
+            Emission::routed(),
+            SegmentShaping::default(),
             RETRY_POLICY,
             super::UDP_PORT_RATE_PER_SEC,
         )
@@ -249,12 +258,15 @@ impl UdpPortScanner {
     /// The common constructor, taking the retry schedule as an argument because
     /// the scan's own deadline is derived from it and so has to be settled
     /// before anything is built.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         resolver: SourceResolver,
         ctx: ScanContext,
         transport: ProbeTransport,
         target_count: usize,
         src_port: u16,
+        emission: Emission,
+        shaping: SegmentShaping,
         retry: RetryPolicy,
         rate_per_sec: u32,
     ) -> Self {
@@ -279,6 +291,8 @@ impl UdpPortScanner {
                 ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT as usize)),
                 due: Vec::new(),
                 src_port,
+                emission,
+                shaping,
                 send_failure: None,
                 audit: ProbeAudit::new(),
                 window: CongestionWindow::new(WindowLimits::fixed(MAX_IN_FLIGHT)),
@@ -687,6 +701,8 @@ impl UdpPortScanner {
             src_addr,
             ip,
             port,
+            self.core.emission,
+            self.core.shaping,
             &mut self.core.send_failure,
         );
         self.core.record_send(sent.is_some(), first_attempt);

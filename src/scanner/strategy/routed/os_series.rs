@@ -500,7 +500,10 @@ impl OsSeriesScanner {
         // A reply is one of ours only if it echoes a nonce we sent. Without the
         // check every segment the filter admits is read as an answer, and on a
         // busy host that is a table of other people's connections.
-        let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment);
+        // The OS-detection series does not carry an evasion profile, so its
+        // probes are never padded and the reset acknowledges the control span
+        // alone.
+        let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment, 0);
         let Some(&Sent { address }) = self.sent.get(&nonce) else {
             self.audit.record_off_target();
             return;

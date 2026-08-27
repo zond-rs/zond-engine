@@ -57,6 +57,36 @@ pub enum PacketError {
         dst: IpAddr,
     },
 
+    /// A datagram was handed to the fragmenter with an MTU too small to split
+    /// it into any useful piece.
+    ///
+    /// A fragment offset counts eight-byte units, so the smallest step a
+    /// fragment can make through the datagram is one unit past the header. An
+    /// MTU that will not hold even that carries no payload at all, and splitting
+    /// to fit it would emit headers forever without ever reaching the end —
+    /// refused rather than looped.
+    #[error("an MTU of {mtu} cannot fragment past a {minimum}-byte floor")]
+    MtuTooSmall {
+        /// The MTU that was asked for, in bytes.
+        mtu: usize,
+        /// The smallest MTU that could carry a fragment: the header and one
+        /// eight-byte unit.
+        minimum: usize,
+    },
+
+    /// An IPv4 header carrying options was handed to the fragmenter.
+    ///
+    /// Each option names in its own high bit whether it is copied into every
+    /// fragment or kept only on the first (RFC 791 §3.1). Splitting a header
+    /// without honouring that bit produces fragments a receiver reassembles into
+    /// the wrong header, so an option-bearing header is refused rather than
+    /// split blind.
+    #[error("cannot fragment an IPv4 header carrying {options} bytes of options")]
+    HeaderHasOptions {
+        /// How many option bytes the header carried.
+        options: usize,
+    },
+
     /// A frame carried something this module does not read.
     ///
     /// Not a malformed frame and not a fault. A promiscuous capture sees the

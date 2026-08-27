@@ -77,8 +77,8 @@ use crate::model::host::{
 use crate::model::ip::range::IpRange;
 use crate::model::port::{CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service};
 use crate::scanner::report::{
-    ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, PortScope, ProbeStats, ScanPhase, ScanReport, ScanSettings,
-    ScanSummary, ScannerFailure, TargetScope,
+    ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, ScanPhase,
+    ScanReport, ScanSettings, ScanSummary, ScannerFailure, TargetScope,
 };
 
 // The two values a reader of this document has to agree with are defined in
@@ -845,6 +845,48 @@ pub struct SettingsDto {
     pub service_detection: &'static str,
     /// Whether the phase measured the route to each host that answered.
     pub traceroute: bool,
+    /// What the scan changed about the packets it sent, omitted when it changed
+    /// nothing. See [`EvasionDto`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evasion: Option<EvasionDto>,
+}
+
+/// What a scan changed about the packets it sent, as it appears in the report.
+/// Each field is present only for a technique the scan used. The serialized form
+/// of [`EvasionRecord`](crate::scanner::report::EvasionRecord).
+#[derive(Debug, Clone, Serialize)]
+pub struct EvasionDto {
+    /// The source port every probe left from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_port: Option<u16>,
+    /// The hop limit every ordinary probe carried.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u8>,
+    /// The number of random bytes appended to each probe's payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub padding: Option<u16>,
+    /// Whether TCP probes carried a deliberately wrong checksum.
+    #[serde(skip_serializing_if = "is_false")]
+    pub bad_tcp_checksum: bool,
+}
+
+/// Omits a `false` boolean from the document, so a field appears only for a
+/// technique the scan used — the counterpart of `skip_serializing_if` on the
+/// optional fields beside it.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl EvasionDto {
+    /// Renders a recorded evasion profile.
+    pub fn new(record: &EvasionRecord) -> Self {
+        Self {
+            source_port: record.source_port,
+            ttl: record.ttl,
+            padding: record.padding,
+            bad_tcp_checksum: record.bad_tcp_checksum,
+        }
+    }
 }
 
 impl SettingsDto {
@@ -860,6 +902,7 @@ impl SettingsDto {
             os_detection: settings.os_detection.name(),
             service_detection: settings.service_detection.name(),
             traceroute: settings.traceroute,
+            evasion: settings.evasion.as_ref().map(EvasionDto::new),
         }
     }
 }

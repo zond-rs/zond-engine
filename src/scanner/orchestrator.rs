@@ -228,7 +228,7 @@ pub(super) async fn spawn_explorers(
             kind,
             step.target_count()
         );
-        match step.into_scanner(ctx.clone(), dns_tx.clone(), tuning) {
+        match step.into_scanner(ctx.clone(), dns_tx.clone(), tuning.clone()) {
             Ok(scanner) => explorers.push(scanner),
             Err(e) => ctx.record_failure(kind, e.to_string()),
         }
@@ -280,7 +280,7 @@ pub(super) fn build_port_scanner(
     let mut scanners: Vec<Box<dyn PortScanner>> = Vec::new();
     let mut opened = Vec::new();
     for step in plan.into_steps() {
-        match step.into_scanner(ctx.clone(), target_count, tuning) {
+        match step.into_scanner(ctx.clone(), target_count, tuning.clone()) {
             Ok(scanner) => {
                 opened.push(step);
                 scanners.push(scanner);

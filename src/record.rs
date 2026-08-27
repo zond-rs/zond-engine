@@ -72,8 +72,9 @@ use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{
-    Attachment, AttachmentSource, Origin, PhaseParts, PortScope, ProbeStats, ProbeStatsParts,
-    ScanKind, ScanPhase, ScanSettings, ScannerFailure, ScopeParts, StopReason, TargetScope,
+    Attachment, AttachmentSource, EvasionRecord, Origin, PhaseParts, PortScope, ProbeStats,
+    ProbeStatsParts, ScanKind, ScanPhase, ScanSettings, ScannerFailure, ScopeParts, StopReason,
+    TargetScope,
 };
 use crate::scanner::session::ScannerKind;
 
@@ -1272,6 +1273,35 @@ pub struct SettingsRecord {
     pub service_detection: String,
     /// Whether it traced the path to each host.
     pub traceroute: bool,
+    /// What the sitting changed about the packets it sent, omitted when it
+    /// changed nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evasion: Option<EvasionSettingsRecord>,
+}
+
+/// What a sitting changed about the packets it sent, as written to the journal.
+/// The serialized form of
+/// [`EvasionRecord`](crate::scanner::report::EvasionRecord).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvasionSettingsRecord {
+    /// The source port every probe left from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_port: Option<u16>,
+    /// The hop limit every ordinary probe carried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u8>,
+    /// The number of random bytes appended to each probe's payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding: Option<u16>,
+    /// Whether TCP probes carried a deliberately wrong checksum.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bad_tcp_checksum: bool,
+}
+
+/// Omits a `false` boolean, so a recorded technique appears only when it was
+/// used — the counterpart of `skip_serializing_if` on the optional fields.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl From<&ScanSettings> for SettingsRecord {
@@ -1289,6 +1319,12 @@ impl From<&ScanSettings> for SettingsRecord {
             os_detection: settings.os_detection.name().to_owned(),
             service_detection: settings.service_detection.name().to_owned(),
             traceroute: settings.traceroute,
+            evasion: settings.evasion.map(|e| EvasionSettingsRecord {
+                source_port: e.source_port,
+                ttl: e.ttl,
+                padding: e.padding,
+                bad_tcp_checksum: e.bad_tcp_checksum,
+            }),
         }
     }
 }
@@ -1310,6 +1346,12 @@ impl From<&SettingsRecord> for ScanSettings {
             os_detection: record.os_detection.parse().unwrap_or_default(),
             service_detection: record.service_detection.parse().unwrap_or_default(),
             traceroute: record.traceroute,
+            evasion: record.evasion.as_ref().map(|e| EvasionRecord {
+                source_port: e.source_port,
+                ttl: e.ttl,
+                padding: e.padding,
+                bad_tcp_checksum: e.bad_tcp_checksum,
+            }),
         }
     }
 }
