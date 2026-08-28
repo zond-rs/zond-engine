@@ -47,7 +47,9 @@ mod db;
 mod extract;
 mod http;
 mod matcher;
-mod pattern;
+// Crate-visible so the Tier-1 flow interpreter compiles its `expect`/`bind`
+// patterns through the one engine every Tier-0 signature does.
+pub(crate) mod pattern;
 mod prefilter;
 mod response;
 mod signature;
@@ -77,6 +79,9 @@ pub use signature::{
     MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, MatchRule, Probe, ServiceDefinition,
     ServiceSignature,
 };
+// The payload decoder Tier-0 probes use, reused by the Tier-1 interpreter to turn
+// a flow's `\x`/`\r\n` escapes into the bytes it sends. Crate-visible, not public.
+pub(crate) use signature::unescape;
 pub use ssh::SshAnalyzer;
 pub use tls_cert::TlsCertAnalyzer;
 

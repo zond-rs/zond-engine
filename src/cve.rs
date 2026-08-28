@@ -253,15 +253,27 @@ fn version_cmp(a: &str, b: &str) -> Ordering {
     for index in 0..a.len().max(b.len()) {
         let x = a.get(index).copied().unwrap_or("0");
         let y = b.get(index).copied().unwrap_or("0");
-        let ordering = match (x.parse::<u64>(), y.parse::<u64>()) {
-            (Ok(x), Ok(y)) => x.cmp(&y),
-            _ => x.cmp(y),
-        };
+        // The leading digits decide first — so `9.10` outranks `9.9`, and
+        // OpenSSH's `9.6p1` reads its `6` against a bound's `8` as 6 < 8 — with a
+        // trailing suffix like `p1` ordering after the bare number as a tiebreak.
+        let ordering = leading_number(x)
+            .cmp(&leading_number(y))
+            .then_with(|| x.cmp(y));
         if ordering != Ordering::Equal {
             return ordering;
         }
     }
     Ordering::Equal
+}
+
+/// The value of the leading run of ASCII digits in `component`, or 0 where it
+/// does not start with one — so `6p1` reads as 6 and `p1` as 0.
+fn leading_number(component: &str) -> u64 {
+    component
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -278,6 +290,10 @@ mod tests {
         assert_eq!(version_cmp("2.14", "2.14.0"), Ordering::Equal);
         // A patch letter sorts after the bare number.
         assert_eq!(version_cmp("1.3.5", "1.3.5a"), Ordering::Less);
+        // OpenSSH's `p` suffix: the leading number decides, the suffix breaks
+        // ties, so 9.6p1 < 9.8 but 9.8p1 > 9.8.
+        assert_eq!(version_cmp("9.6p1", "9.8"), Ordering::Less);
+        assert_eq!(version_cmp("9.8p1", "9.8"), Ordering::Greater);
     }
 
     #[test]
@@ -330,6 +346,32 @@ mod tests {
                 .findings_for("cpe:/a:nginx:nginx:1.24.0")
                 .is_empty(),
             "an unrelated product does not match"
+        );
+
+        // The curated identities fire against the shapes the corpus actually
+        // emits: OpenSSH banners carry a `p` suffix, and vsftpd is an exact match.
+        assert_eq!(
+            dataset()
+                .findings_for("cpe:/a:openbsd:openssh:9.6p1")
+                .len(),
+            1
+        );
+        assert!(
+            dataset()
+                .findings_for("cpe:/a:openbsd:openssh:9.8p1")
+                .is_empty(),
+            "the fixed OpenSSH release is not reported"
+        );
+        assert_eq!(
+            dataset()
+                .findings_for("cpe:/a:vsftpd_project:vsftpd:2.3.4")
+                .len(),
+            1
+        );
+        assert!(
+            dataset()
+                .findings_for("cpe:/a:vsftpd_project:vsftpd:3.0.5")
+                .is_empty()
         );
     }
 

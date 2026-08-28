@@ -9,9 +9,16 @@
 # Each entry matches a service CPE whose `vendor` and `product` equal its own
 # (case-insensitively) and whose version satisfies `affected` — a comma-joined
 # list of `<op> <version>` clauses (`<`, `<=`, `>`, `>=`, `==`), all of which
-# must hold, or `*` for any version. A match is reported at `probable`
-# confidence, never `certain`: a version string can be right while the fix is
-# backported, so a version-matched finding is *potentially affected, unverified*.
+# must hold, or `*` for any version.
+#
+# The `vendor` and `product` of every entry are the exact identities the
+# fingerprint corpus emits for that software — `apache:http_server`,
+# `openbsd:openssh`, `vsftpd_project:vsftpd` — so a real scan of a
+# version-revealing banner fires, not a hypothetical one.
+#
+# A match is reported at `probable` confidence, never `certain`: a version string
+# can be right while the fix is backported, so a version-matched finding is
+# *potentially affected, unverified*.
 
 [[vulnerability]]
 cve         = "CVE-2021-41773"
@@ -54,11 +61,11 @@ cwe         = 264
 remediation = "Upgrade ProFTPD to 1.3.5a or later, or disable mod_copy."
 
 [[vulnerability]]
-cve         = "CVE-2014-0160"
-title       = "OpenSSL heartbeat information disclosure (Heartbleed)"
-severity    = "high"
-vendor      = "openssl"
-product     = "openssl"
-affected    = ">= 1.0.1, < 1.0.1g"
-cwe         = 125
-remediation = "Upgrade OpenSSL to 1.0.1g or later and reissue affected keys."
+cve         = "CVE-2011-2523"
+title       = "vsftpd 2.3.4 backdoor command execution"
+severity    = "critical"
+vendor      = "vsftpd_project"
+product     = "vsftpd"
+affected    = "== 2.3.4"
+cwe         = 78
+remediation = "Replace the backdoored 2.3.4 build with a vsftpd release from a trusted source."

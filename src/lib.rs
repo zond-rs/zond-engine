@@ -215,6 +215,7 @@
 
 pub mod config;
 pub mod cve;
+pub mod detect;
 pub mod diff;
 pub mod evasion;
 pub mod export;

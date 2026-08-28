@@ -1,0 +1,35 @@
+# SNMP reachable with a default community string — a Tier-1 flow with a bounded
+# loop: a fixed community list walked with a byte budget. The one repetition
+# construct the language has, and it names its own cap.
+#
+# The payloads are single-quoted TOML literal strings so their `\x` byte escapes
+# stay literal for the interpreter rather than being read by the TOML parser.
+
+[detection]
+id      = "snmp-default-community"
+version = "1.0.0"
+title   = "SNMP reachable with a default community string"
+
+[detection.when]
+service  = "snmp"
+protocol = "udp"
+
+[detection.capabilities]
+class      = "active-benign"   # read-only SNMP GET of sysDescr; no SET, nothing mutated
+speak      = "target"
+max_bytes  = 32768
+max_millis = 3000
+
+[[step]]
+for_each    = { var = "community", in = ["public", "private", "manager", "admin"] }
+send        = '\x30\x29\x02\x01\x01\x04{community}\xa0'   # BER GetRequest, {community} interpolated
+expect      = '\xa2'                                      # GetResponse PDU tag, not an error
+bind        = { sysdescr = 'sysDescr[.:] (?<sysdescr>.+)' }
+on_no_match = "continue"                                  # try the next community
+
+  [[step.finding]]
+  when       = "matched"
+  severity   = "high"
+  summary    = "SNMP answered a default community string"
+  detail     = "Community '{community}' returned sysDescr: {sysdescr}"
+  references = [{ cwe = 1392 }]                            # Use of Default Credentials

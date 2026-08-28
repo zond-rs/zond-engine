@@ -151,6 +151,27 @@ impl CompiledPattern {
         }
     }
 
+    /// The value of the named capture group `name`, if the pattern matches `text`
+    /// and the group participated — how a Tier-1 `bind` pulls a value out of a
+    /// match by name rather than by numeric index.
+    ///
+    /// `allow(dead_code)`: consumed by the flow interpreter, not `build.rs`.
+    #[allow(dead_code)]
+    pub fn capture(&self, text: &str, name: &str) -> Option<String> {
+        match self {
+            CompiledPattern::Fast(regex) => regex
+                .captures(text)
+                .and_then(|captures| captures.name(name))
+                .map(|group| group.as_str().to_string()),
+            CompiledPattern::Fancy(regex) => regex
+                .captures(text)
+                .ok()
+                .flatten()
+                .and_then(|captures| captures.name(name))
+                .map(|group| group.as_str().to_string()),
+        }
+    }
+
     /// Matches `text`, returning [`PatternMatch`] on a match (with the
     /// `version_group` capture if requested) or `None` if the pattern does not
     /// match.

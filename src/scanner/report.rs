@@ -1539,6 +1539,13 @@ impl PhaseRecorder {
         let mut targets = self.targets;
         targets.record_sweeps(ctx.take_swept_links());
 
+        // Correlate known vulnerabilities against the services this phase named,
+        // but only where a service pass actually ran: a port carries the CPE the
+        // correlator joins on only once something asked it what it was. At
+        // `ServiceDetection::Off` there is nothing to correlate, so the pass is
+        // skipped rather than run to find nothing.
+        let correlate = self.settings.service_detection != ServiceDetection::Off;
+
         let phase = ScanPhase {
             kind: self.kind,
             started_at: self.started_at,
@@ -1559,7 +1566,13 @@ impl PhaseRecorder {
             attachments: ctx.take_attachments(),
         };
 
-        let hosts = ctx.store.iter().map(|entry| entry.value().clone());
+        let hosts = ctx.store.iter().map(|entry| {
+            let mut host = entry.value().clone();
+            if correlate {
+                crate::cve::correlate(&mut host);
+            }
+            host
+        });
         ScanReport::new(phase, hosts)
     }
 }
@@ -2376,6 +2389,78 @@ mod tests {
             "no strategy failed; that address is simply not reachable from here"
         );
         assert_eq!(report.failures().count(), 0);
+    }
+
+    /// A finished service scan carries the vulnerabilities its findings imply,
+    /// with no second pass a caller has to remember to run.
+    #[test]
+    fn finalizing_a_service_scan_correlates_known_vulnerabilities() {
+        use crate::model::ip::scoped::ScopedIp;
+        use crate::model::port::{Port, PortState, Protocol, Service};
+
+        let cfg = ZondConfig::default(); // service_detection defaults to Probe
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+
+        let mut targets = IpSet::from_str("192.168.0.1").expect("a valid address");
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, false, scope, &cfg);
+
+        let ip: IpAddr = "192.168.0.1".parse().expect("literal");
+        ctx.write_host(ScopedIp::unscoped(ip), |host| {
+            let service = Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49");
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(service));
+            true
+        });
+
+        let report = recorder.finish(&ctx);
+
+        let host = report
+            .hosts()
+            .find(|host| host.primary_ip() == ip)
+            .expect("the scanned host");
+        let port = host
+            .ports()
+            .find(|port| port.number() == 80)
+            .expect("port 80");
+        assert_eq!(
+            port.findings().count(),
+            1,
+            "finalization correlated the vulnerable Apache build"
+        );
+        assert!(port.findings().any(|f| f.detection().id() == "zond:cve-kev"));
+    }
+
+    /// At `ServiceDetection::Off` nothing asked a port what it was, so there is
+    /// nothing to correlate — and the pass does not run even where a CPE is
+    /// somehow present.
+    #[test]
+    fn finalization_does_not_correlate_when_no_service_pass_ran() {
+        use crate::model::ip::scoped::ScopedIp;
+        use crate::model::port::{Port, PortState, Protocol, Service};
+
+        let mut cfg = ZondConfig::default();
+        cfg.service_detection = ServiceDetection::Off;
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+
+        let mut targets = IpSet::from_str("192.168.0.1").expect("a valid address");
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, false, scope, &cfg);
+
+        let ip: IpAddr = "192.168.0.1".parse().expect("literal");
+        ctx.write_host(ScopedIp::unscoped(ip), |host| {
+            let service = Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49");
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(service));
+            true
+        });
+
+        let report = recorder.finish(&ctx);
+        let host = report.hosts().find(|host| host.primary_ip() == ip).unwrap();
+        let port = host.ports().find(|port| port.number() == 80).unwrap();
+        assert_eq!(
+            port.findings().count(),
+            0,
+            "no service pass ran, so no correlation"
+        );
     }
 
     /// scanner would have written.

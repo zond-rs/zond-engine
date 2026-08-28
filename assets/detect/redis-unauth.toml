@@ -1,0 +1,33 @@
+# Unauthenticated Redis access — a Tier-1 flow, and the shape most detections take:
+# a single probe, a match, and a typed finding. A real NSE parallel (redis-info),
+# reproduced with no code.
+
+[detection]
+id      = "redis-unauth-access"
+version = "1.0.0"
+title   = "Unauthenticated Redis access"
+
+# The gate: this runs only for a port identified as Redis over TCP.
+[detection.when]
+service  = "redis"
+protocol = "tcp"
+
+# What it asks to be handed. `active-benign` exchanges bytes with the scanned
+# socket and nothing else; the budget bounds the exchange.
+[detection.capabilities]
+class      = "active-benign"
+speak      = "target"
+max_bytes  = 8192
+max_millis = 2000
+
+[[step]]
+send   = "INFO\r\n"
+expect = "# Server"                                   # the gate: the flow halts if absent
+bind   = { version = "redis_version:(?<version>[0-9.]+)" }
+
+  [[step.finding]]
+  when       = "matched"
+  severity   = "high"
+  summary    = "Redis answered INFO without authentication"
+  detail     = "Server version {version} is reachable without a password."
+  references = [{ cwe = 306 }]                          # Missing Authentication
