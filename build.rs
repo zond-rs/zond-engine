@@ -103,25 +103,33 @@ fn main() {
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
 
     compile_os_rules(Path::new(&out_dir));
-    validate_flows();
+    compile_flows(Path::new(&out_dir));
 }
 
-/// Validates the Tier-1 flow corpus in `assets/detect`, failing the build on any
-/// ill-formed detection with a pointer to the file.
+/// Validates the Tier-1 flow corpus in `assets/detect` and compiles it into the
+/// `bincode` blob the engine embeds, failing the build on any ill-formed
+/// detection with a pointer to its file.
 ///
 /// The structural rules run through the shared [`validate`] — the same code a
 /// flow loaded at runtime would face — and the rules that need the pattern engine
 /// or the payload unescaper run here, where the build has them: that every
 /// `expect`/`bind` pattern compiles and its capture group exists, and that a
-/// declared byte budget covers what the flow must send. There is no flow database
-/// to emit yet — a flow is still loaded from its source; this pass is the gate
-/// that a broken one never reaches a scan.
-fn validate_flows() {
+/// declared byte budget covers what the flow must send.
+///
+/// What is emitted is each flow's **source and its content hash**, not a
+/// serialized [`schema::FlowDetection`]. The runtime re-parses the source it
+/// validated (so the build and the runtime read one text), and hashing the file
+/// bytes is exactly the provenance the finding records — the answer to "which
+/// detection body fired". Embedding the parsed form would demand a `bincode`
+/// spelling of the `untagged` match rule, which the format cannot round-trip.
+fn compile_flows(out_dir: &Path) {
     let mut toml_files = Vec::new();
     collect_toml_files(Path::new("assets/detect"), &mut toml_files);
+    // Sort for a deterministic, reproducible artifact.
     toml_files.sort();
 
     let mut ids = BTreeSet::new();
+    let mut compiled: Vec<(String, String)> = Vec::with_capacity(toml_files.len());
     for path in &toml_files {
         let content = fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
@@ -150,7 +158,23 @@ fn validate_flows() {
         validate_flow_patterns(&flow, path);
         validate_flow_budget(&flow, path);
         warn_flow_soft(&flow, path);
+
+        compiled.push((sha256_hex(content.as_bytes()), content));
     }
+
+    let encoded = bincode::serialize(&compiled).expect("failed to serialize the flow database");
+    fs::write(out_dir.join("detect_flows.bin"), encoded)
+        .expect("failed to write the flow database");
+}
+
+/// The lowercase hex SHA-256 of `bytes` — a detection body's content address, the
+/// same digest the certificate fingerprints use.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// H4/H5 — every `expect`/`bind` pattern compiles under the size cap with the

@@ -24,16 +24,18 @@
 //! clause is written in, `validate` is the build-time checker that rejects a
 //! malformed flow before it ships, and [`run`] is the bounded interpreter that
 //! walks a flow against a [`Probe`], asking the `eval` module whether each guard
-//! holds and the `convert` module to lower its authored types onto the model. See
-//! the design record in `audit/2026-08-28-scripting-engine-spec.md`, Part II.
+//! holds and the `convert` module to lower its authored types onto the model. The
+//! `db` module holds the compiled corpus the build emits, and `stage` runs that
+//! corpus's applicable flows over a host to produce findings. See the design
+//! record in `audit/2026-08-28-scripting-engine-spec.md`, Part II.
 //!
 //! ## Shared with the build
 //!
 //! `schema`, `expr`, and `validate` carry no dependency on the rest of the crate,
 //! so `build.rs` loads them with `#[path]` and validates the flow corpus with the
 //! very code the runtime reads — a flow the build accepts is a flow the runtime
-//! can run. `convert` and `eval` are runtime-only and free to reach into the
-//! model and the shared version order.
+//! can run. `convert`, `eval`, and `db` are runtime-only and free to reach into
+//! the model and the shared version order.
 
 pub mod schema;
 
@@ -41,8 +43,10 @@ pub(crate) mod expr;
 pub(crate) mod validate;
 
 mod convert;
+pub(crate) mod db;
 mod eval;
 mod interp;
+pub(crate) mod stage;
 
 pub use interp::{Probe, run};
 

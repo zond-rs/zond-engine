@@ -41,8 +41,9 @@
 // structural checks read only a subset of these authoring fields — the rest are
 // a finding's payload the runtime reads. Within the library every field is public
 // API and live; the unread-field lint fires only in the build-script crate, so it
-// is silenced here rather than field by field. (Emitting a flow database will read
-// them all through `Serialize` and make this moot, as it does for the signatures.)
+// is silenced here rather than field by field. (The flow database embeds each
+// flow's source, not a serialized form of this type, so unlike the signature
+// schema nothing in the build reads every field back.)
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

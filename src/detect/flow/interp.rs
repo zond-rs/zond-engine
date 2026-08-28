@@ -58,10 +58,11 @@ enum Flow {
 
 /// Runs `flow` against `probe`, returning the findings it produced.
 ///
-/// The findings carry an empty content hash until a loader computes it from the
-/// flow's bytes; everything else — id, version, severity, references — is the
-/// flow's own.
-pub fn run(flow: &FlowDetection, probe: &mut dyn Probe) -> Vec<Finding> {
+/// `content_hash` is the flow body's content address, stamped on every finding's
+/// [`DetectionId`] as provenance — the loader that sourced the flow computes it
+/// from the flow's bytes. Everything else, the id, version, severity and
+/// references, is the flow's own.
+pub fn run(flow: &FlowDetection, content_hash: &str, probe: &mut dyn Probe) -> Vec<Finding> {
     let mut env = Env::new();
     let mut findings = Vec::new();
 
@@ -71,13 +72,16 @@ pub fn run(flow: &FlowDetection, probe: &mut dyn Probe) -> Vec<Finding> {
                 for item in for_each.items.iter().take(MAX_LOOP_ITEMS) {
                     let mut local = env.clone();
                     local.insert(for_each.var.clone(), item.clone());
-                    if run_step(flow, step, &mut local, probe, &mut findings) == Flow::Halt {
+                    if run_step(flow, content_hash, step, &mut local, probe, &mut findings)
+                        == Flow::Halt
+                    {
                         return findings;
                     }
                 }
             }
             None => {
-                if run_step(flow, step, &mut env, probe, &mut findings) == Flow::Halt {
+                if run_step(flow, content_hash, step, &mut env, probe, &mut findings) == Flow::Halt
+                {
                     return findings;
                 }
             }
@@ -88,6 +92,7 @@ pub fn run(flow: &FlowDetection, probe: &mut dyn Probe) -> Vec<Finding> {
 
 fn run_step(
     flow: &FlowDetection,
+    content_hash: &str,
     step: &Step,
     env: &mut Env,
     probe: &mut dyn Probe,
@@ -137,7 +142,7 @@ fn run_step(
 
     for spec in &step.finding {
         if eval::holds(spec.when.as_deref(), env, Some(matched))
-            && let Some(finding) = build_finding(flow, spec, env, response.as_deref())
+            && let Some(finding) = build_finding(flow, content_hash, spec, env, response.as_deref())
         {
             findings.push(finding);
         }
@@ -176,12 +181,13 @@ fn capture(spec: &MatchSpec, text: &str, name: &str) -> Option<String> {
 /// emitted half-built.
 fn build_finding(
     flow: &FlowDetection,
+    content_hash: &str,
     spec: &FindingSpec,
     env: &Env,
     response: Option<&str>,
 ) -> Option<Finding> {
     let version = Version::parse(&flow.detection.version).unwrap_or(Version::new(0, 0, 0));
-    let detection = DetectionId::new(flow.detection.id.clone(), version, String::new()).ok()?;
+    let detection = DetectionId::new(flow.detection.id.clone(), version, content_hash).ok()?;
 
     // The finding's one-line title is its own `title`, or its `summary` when it
     // names none.
@@ -269,7 +275,7 @@ mod tests {
         let redis = flow("redis-unauth");
         let mut probe = Canned(b"# Server\r\nredis_version:7.2.4\r\nrun_id:abc".to_vec());
 
-        let findings = run(&redis, &mut probe);
+        let findings = run(&redis, "", &mut probe);
         assert_eq!(findings.len(), 1);
         let finding = &findings[0];
 
@@ -294,7 +300,7 @@ mod tests {
         // No "# Server" line, so the step's `expect` gate fails and the flow halts.
         let mut probe = Canned(b"-ERR NOAUTH Authentication required".to_vec());
 
-        assert!(run(&redis, &mut probe).is_empty());
+        assert!(run(&redis, "", &mut probe).is_empty());
     }
 
     /// A probe standing in for an SNMP agent that answers only the `public`
@@ -316,7 +322,7 @@ mod tests {
     #[test]
     fn the_snmp_flow_walks_its_community_list_and_finds_the_open_one() {
         let snmp = flow("snmp-default-community");
-        let findings = run(&snmp, &mut Snmp);
+        let findings = run(&snmp, "", &mut Snmp);
 
         // One community answered; the others continued without a finding.
         assert_eq!(findings.len(), 1);
@@ -365,7 +371,7 @@ mod tests {
             leak: b"HTTP/1.1 200 OK\r\n\r\nroot:x:0:0:root:/root:/bin/bash\n",
         };
 
-        let findings = run(&grafana, &mut probe);
+        let findings = run(&grafana, "", &mut probe);
         assert_eq!(findings.len(), 1);
         let finding = &findings[0];
         assert_eq!(finding.severity(), Severity::Critical);
@@ -392,7 +398,7 @@ mod tests {
             leak: b"HTTP/1.1 403 Forbidden\r\n\r\n",
         };
 
-        let findings = run(&grafana, &mut probe);
+        let findings = run(&grafana, "", &mut probe);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity(), Severity::Medium);
     }
@@ -408,7 +414,7 @@ mod tests {
             banner: b"HTTP/1.1 200 OK\r\nX-Grafana: Grafana v8.10.0\r\n\r\n",
             leak: b"root:x:0:0:should-never-be-sent",
         };
-        assert!(run(&grafana, &mut patched).is_empty());
+        assert!(run(&grafana, "", &mut patched).is_empty());
 
         // Not Grafana at all: `bound(version)` is false, so the guard skips the
         // step before the version comparison is even reached.
@@ -416,6 +422,6 @@ mod tests {
             banner: b"HTTP/1.1 200 OK\r\nServer: nginx\r\n\r\n",
             leak: b"root:x:0:0:should-never-be-sent",
         };
-        assert!(run(&grafana, &mut other).is_empty());
+        assert!(run(&grafana, "", &mut other).is_empty());
     }
 }
