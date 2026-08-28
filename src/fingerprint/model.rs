@@ -330,6 +330,9 @@ impl ServiceVerdict {
         if let Some(extrainfo) = &self.extrainfo {
             service = service.with_extrainfo(extrainfo.clone());
         }
+        if let Some(cpe) = &self.cpe {
+            service = service.with_cpe(cpe.clone());
+        }
         Some(service)
     }
 }
@@ -365,6 +368,21 @@ mod tests {
         assert!(Confidence::Certain > Confidence::Strong);
         assert!(Confidence::Strong > Confidence::Probable);
         assert!(Confidence::Probable > Confidence::Heuristic);
+    }
+
+    #[test]
+    fn a_cpe_flows_from_evidence_through_the_verdict_into_the_service() {
+        // Before `to_service` carried it, the verdict resolved the cpe and then
+        // dropped it on the way to the `Service` — so every service CPE was lost.
+        let mut evidence = ev(Confidence::Strong).with_product("nginx");
+        evidence.cpe = Some("cpe:/a:nginx:nginx:1.24.0".to_string());
+
+        let verdict = ServiceVerdict::resolve(vec![evidence]);
+        assert_eq!(verdict.cpe.as_deref(), Some("cpe:/a:nginx:nginx:1.24.0"));
+
+        let service = verdict.to_service().expect("names a service");
+        let cpes: Vec<String> = service.cpes().iter().map(ToString::to_string).collect();
+        assert_eq!(cpes.len(), 1, "the verdict's cpe reached the service");
     }
 
     #[test]

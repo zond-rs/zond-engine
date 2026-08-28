@@ -52,6 +52,41 @@ pub struct Signature {
     /// because dropping it is what made a full imported OS corpus invisible to
     /// the engine that compiled it.
     os: Option<Box<OsMetadata>>,
+
+    /// The service's CPE, as the corpus writes it: either a literal, or a
+    /// template naming `{service.version}` — the one variable any of the 1226
+    /// `service.cpe23` rules uses — resolved against the matched version when the
+    /// signature fires. Absent on a rule that names no platform identifier.
+    cpe: Option<String>,
+
+    /// A version the signature states outright, filling `{service.version}` for a
+    /// rule whose pattern captures none — an IIS 5.0 banner that says `5.0` in
+    /// prose the regex does not group.
+    service_version: Option<String>,
+}
+
+/// A non-empty metadata value for `key`, or [`None`].
+fn metadata_value(rule: &MatchRule, key: &str) -> Option<String> {
+    rule.metadata
+        .as_ref()?
+        .get(key)
+        .filter(|value| !value.is_empty())
+        .cloned()
+}
+
+/// Resolves a `service.cpe23` template against `version`.
+///
+/// The corpus uses exactly one variable, `{service.version}`; a literal CPE is
+/// returned unchanged. A template whose variable has no version to fill resolves
+/// to [`None`], because a CPE ending in an empty version — `cpe:/a:perl:perl:` —
+/// is worse than none: a consumer tries to match on it and matches the wrong
+/// thing.
+fn resolve_service_cpe(template: &str, version: Option<&str>) -> Option<String> {
+    const VERSION: &str = "{service.version}";
+    if !template.contains(VERSION) {
+        return Some(template.to_string());
+    }
+    Some(template.replace(VERSION, version?))
 }
 
 impl Signature {
@@ -70,6 +105,8 @@ impl Signature {
                 .as_ref()
                 .and_then(OsMetadata::from_map)
                 .map(Box::new),
+            cpe: metadata_value(rule, "service.cpe23"),
+            service_version: metadata_value(rule, "service.version"),
         }
     }
 
@@ -147,11 +184,19 @@ impl Signature {
         // established — the `detail` score above already reads
         // `self.product.is_some()` to rank a rule that does name one, so nothing
         // here depends on the field being populated.
+        // The platform identifier the corpus carries beside the product, resolved
+        // against the version this match found — the field CVE correlation joins
+        // on, and one a report consumer such as DefectDojo reads directly.
+        let cpe = self.cpe.as_deref().and_then(|template| {
+            resolve_service_cpe(template, version.as_deref().or(self.service_version.as_deref()))
+        });
+
         let mut evidence =
             Evidence::new(SourceId::BannerRegex, confidence).with_service(self.service.clone());
         evidence.product = self.product.clone();
         evidence.vendor = self.vendor.clone();
         evidence.version = version;
+        evidence.cpe = cpe;
 
         Some(Match {
             evidence,
@@ -223,6 +268,86 @@ mod tests {
             example: None,
             metadata: None,
         }
+    }
+
+    fn rule_with_metadata(
+        pattern: &str,
+        version_group: Option<u8>,
+        metadata: &[(&str, &str)],
+    ) -> MatchRule {
+        let mut rule = rule(pattern, version_group, None);
+        rule.metadata = Some(
+            metadata
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+        );
+        rule
+    }
+
+    #[test]
+    fn a_service_cpe_is_resolved_carried_and_dropped_when_unfillable() {
+        // A template resolves against the captured version — the wiring that was
+        // dropping 1226 corpus CPEs before Evidence.cpe was ever set.
+        let ev = Signature::new(
+            "http",
+            &rule_with_metadata(
+                r"^libwww-perl-daemon/([.0-9]+)$",
+                Some(1),
+                &[("service.cpe23", "cpe:/a:perl:perl:{service.version}")],
+            ),
+        )
+        .identify("libwww-perl-daemon/1.36", OsSource::ServiceBanner)
+        .expect("matches")
+        .evidence;
+        assert_eq!(ev.cpe.as_deref(), Some("cpe:/a:perl:perl:1.36"));
+
+        // A literal CPE is carried verbatim.
+        let ev = Signature::new(
+            "http",
+            &rule_with_metadata(
+                "^Transmission$",
+                None,
+                &[("service.cpe23", "cpe:/a:transmissionbt:transmission:-")],
+            ),
+        )
+        .identify("Transmission", OsSource::ServiceBanner)
+        .unwrap()
+        .evidence;
+        assert_eq!(ev.cpe.as_deref(), Some("cpe:/a:transmissionbt:transmission:-"));
+
+        // A template with no version to fill is dropped, never emitted with an
+        // empty version a consumer would mis-match on.
+        let ev = Signature::new(
+            "http",
+            &rule_with_metadata(
+                "^perl$",
+                None,
+                &[("service.cpe23", "cpe:/a:perl:perl:{service.version}")],
+            ),
+        )
+        .identify("perl", OsSource::ServiceBanner)
+        .unwrap()
+        .evidence;
+        assert_eq!(ev.cpe, None);
+
+        // An explicit `service.version` fills the template where the pattern
+        // captures none.
+        let ev = Signature::new(
+            "ftp",
+            &rule_with_metadata(
+                "^220 Microsoft FTP",
+                None,
+                &[
+                    ("service.cpe23", "cpe:/a:microsoft:iis:{service.version}"),
+                    ("service.version", "5.0"),
+                ],
+            ),
+        )
+        .identify("220 Microsoft FTP Service", OsSource::ServiceBanner)
+        .unwrap()
+        .evidence;
+        assert_eq!(ev.cpe.as_deref(), Some("cpe:/a:microsoft:iis:5.0"));
     }
 
     #[test]

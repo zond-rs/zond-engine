@@ -1,0 +1,64 @@
+# The CVE correlation seed.
+#
+# A hand-picked starter set of well-known, network-reachable vulnerabilities,
+# keyed by the CPE vendor and product a service identification produces. It
+# exists to exercise the correlator, not to be complete: the full CISA KEV
+# catalogue (~1,300 entries) is meant to compile in here later, the way the
+# fingerprint corpus does, once its data is on hand.
+#
+# Each entry matches a service CPE whose `vendor` and `product` equal its own
+# (case-insensitively) and whose version satisfies `affected` — a comma-joined
+# list of `<op> <version>` clauses (`<`, `<=`, `>`, `>=`, `==`), all of which
+# must hold, or `*` for any version. A match is reported at `probable`
+# confidence, never `certain`: a version string can be right while the fix is
+# backported, so a version-matched finding is *potentially affected, unverified*.
+
+[[vulnerability]]
+cve         = "CVE-2021-41773"
+title       = "Apache HTTP Server path traversal and RCE"
+severity    = "critical"
+vendor      = "apache"
+product     = "http_server"
+affected    = "== 2.4.49"
+cwe         = 22
+remediation = "Upgrade Apache HTTP Server to 2.4.51 or later."
+
+[[vulnerability]]
+cve         = "CVE-2024-6387"
+title       = "OpenSSH signal-handler race condition (regreSSHion)"
+severity    = "critical"
+vendor      = "openbsd"
+product     = "openssh"
+affected    = ">= 8.5, < 9.8"
+cwe         = 364
+remediation = "Upgrade OpenSSH to 9.8p1 or later."
+
+[[vulnerability]]
+cve         = "CVE-2019-10149"
+title       = "Exim deliver_message() command injection"
+severity    = "critical"
+vendor      = "exim"
+product     = "exim"
+affected    = ">= 4.87, <= 4.91"
+cwe         = 78
+remediation = "Upgrade Exim to 4.92 or later."
+
+[[vulnerability]]
+cve         = "CVE-2015-3306"
+title       = "ProFTPD mod_copy unauthenticated file copy"
+severity    = "high"
+vendor      = "proftpd"
+product     = "proftpd"
+affected    = ">= 1.3.5, < 1.3.5a"
+cwe         = 264
+remediation = "Upgrade ProFTPD to 1.3.5a or later, or disable mod_copy."
+
+[[vulnerability]]
+cve         = "CVE-2014-0160"
+title       = "OpenSSL heartbeat information disclosure (Heartbleed)"
+severity    = "high"
+vendor      = "openssl"
+product     = "openssl"
+affected    = ">= 1.0.1, < 1.0.1g"
+cwe         = 125
+remediation = "Upgrade OpenSSL to 1.0.1g or later and reissue affected keys."

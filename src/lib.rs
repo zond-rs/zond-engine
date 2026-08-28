@@ -214,6 +214,7 @@
 //! Linux and macOS. Windows is not currently supported.
 
 pub mod config;
+pub mod cve;
 pub mod diff;
 pub mod evasion;
 pub mod export;

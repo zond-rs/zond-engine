@@ -945,6 +945,20 @@ impl Host {
         }
     }
 
+    /// Records a finding about one of this host's ports, and reports whether it
+    /// was new — `false` if no such port is on record.
+    ///
+    /// The path a report-level pass such as CVE correlation takes: it reads a
+    /// port's service identification, concludes something about the software
+    /// behind it, and hands the finding back to the port it is about, named by
+    /// number and protocol. The host owns its ports, so the finding arrives
+    /// through it rather than through a loose mutable handle.
+    pub fn add_port_finding(&mut self, number: u16, protocol: Protocol, finding: Finding) -> bool {
+        self.ports
+            .get_mut(&(number, protocol))
+            .is_some_and(|port| port.add_finding(finding))
+    }
+
     pub fn set_os(&mut self, os: OsFingerprint) {
         self.os = Some(Box::new(os));
         self.last_seen = SystemTime::now();
