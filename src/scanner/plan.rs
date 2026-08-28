@@ -67,7 +67,9 @@ use crate::scanner::strategy::connect::{
     ConnectPortScanner, ConnectScanner, ConnectUdpPortScanner,
 };
 use crate::scanner::strategy::local::{LocalScanner, Scope};
-use crate::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
+use crate::scanner::strategy::routed::{
+    IdlePortScanner, RoutedScanner, TcpPortScanner, UdpPortScanner,
+};
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::interface::Link;
 use crate::system::interface::{self, RoutedTarget};
@@ -112,6 +114,24 @@ impl Refusal {
                  not have, and a connect scan answers a different question - so no TCP \
                  port was probed"
             ),
+        }
+    }
+
+    /// An idle scan was asked for without the privilege it needs.
+    ///
+    /// The forged source address of an idle scan's probe can only ride a
+    /// self-built frame, which needs privilege. There is deliberately no
+    /// fallback: scanning the target under this host's own address is the one
+    /// thing an idle scan exists to avoid, so the whole of it is refused rather
+    /// than run in the open.
+    pub fn idle_needs_privilege() -> Self {
+        Self {
+            scanner: ScannerKind::Idle,
+            reason: "an idle scan forges the source address of its probes, which needs \
+                     a self-built frame this process cannot open without privilege - and \
+                     scanning the target under this host's own address instead would \
+                     betray the scan, so no TCP port was probed"
+                .to_owned(),
         }
     }
 
@@ -387,6 +407,16 @@ pub enum PortScanStep {
     ConnectTcp,
     /// An unprivileged UDP probe.
     ConnectUdp,
+    /// The idle (zombie) TCP scan: port states read off a third party's IP-ID
+    /// counter, so the target is never addressed under this host's own address.
+    /// Needs the self-built frame a forged source requires.
+    Idle {
+        /// The zombie whose counter is the side channel.
+        zombie: IpAddr,
+        /// The port on the zombie to read the counter from, or `None` for the
+        /// scanner's default.
+        zombie_port: Option<u16>,
+    },
 }
 
 impl PortScanStep {
@@ -402,13 +432,14 @@ impl PortScanStep {
             Self::RawUdp => ScannerKind::UdpPort,
             Self::ConnectTcp => ScannerKind::Connect,
             Self::ConnectUdp => ScannerKind::ConnectUdp,
+            Self::Idle { .. } => ScannerKind::Idle,
         }
     }
 
     /// The transport protocol this step probes.
     pub fn protocol(&self) -> Protocol {
         match self {
-            Self::RawTcp { .. } | Self::ConnectTcp => Protocol::Tcp,
+            Self::RawTcp { .. } | Self::ConnectTcp | Self::Idle { .. } => Protocol::Tcp,
             Self::RawUdp | Self::ConnectUdp => Protocol::Udp,
         }
     }
@@ -461,6 +492,15 @@ impl PortScanStep {
                 limits::CONNECT_CONCURRENCY,
                 &tuning.evasion,
             ))),
+            Self::Idle {
+                zombie,
+                zombie_port,
+            } => Ok(Box::new(IdlePortScanner::new(
+                ctx,
+                zombie,
+                zombie_port,
+                tuning,
+            )?)),
         }
     }
 }
@@ -503,6 +543,26 @@ impl PortScanPlan {
     pub fn build(cfg: &ZondConfig, privileged: bool) -> Self {
         let mut steps = Vec::new();
         let mut refusals = Vec::new();
+
+        // An idle scan replaces the ordinary port scan wholesale. It is TCP-only
+        // by nature — a UDP port has no counter to be read through, and probing
+        // one directly would announce the scanner the technique exists to hide —
+        // so a UDP target is simply left unprobed, with no step to cover it.
+        if let Some(idle) = &cfg.idle_scan {
+            if privileged {
+                steps.push(PortScanStep::Idle {
+                    zombie: idle.zombie,
+                    zombie_port: idle.zombie_port,
+                });
+            } else {
+                refusals.push(Refusal::idle_needs_privilege());
+            }
+            return Self {
+                steps,
+                refusals,
+                technique: cfg.tcp_technique,
+            };
+        }
 
         // Raw scanning needs both the privilege and an address to probe from.
         let raw = privileged && interface::SourceResolver::from_system().has_sources();

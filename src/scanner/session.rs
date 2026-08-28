@@ -164,6 +164,15 @@ pub enum ScannerKind {
     /// *host*; whether anything is listening on 161 is the port scan's to
     /// report, and this phase deliberately does not.
     OsSnmp,
+    /// The idle (zombie) TCP port scan: port states read off a third party's
+    /// IP-ID counter rather than from any reply the target sent this scanner.
+    ///
+    /// Named apart from [`SynPort`](Self::SynPort) though the forged probe is a
+    /// SYN, because what it produces and what can go wrong are its own: a
+    /// verdict is `Open` or `ClosedFiltered` and nothing finer, and a run is
+    /// refused for want of a suitable zombie or an Ethernet path where a raw SYN
+    /// scan would simply have proceeded.
+    Idle,
     /// Composite scanner that delegates to protocol-specific scanners.
     Composite,
 }

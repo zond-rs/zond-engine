@@ -19,6 +19,7 @@
 
 pub mod characterise;
 mod icmp_error;
+mod idle;
 mod os_echo;
 mod os_series;
 mod port_scan;
@@ -57,6 +58,7 @@ use crate::scanner::report::StopReason;
 use crate::scanner::session::ScannerKind;
 use crate::scanner::strategy::{HostScanner, StrategyError};
 
+pub use idle::IdlePortScanner;
 pub use os_echo::OsEchoScanner;
 pub use os_series::{ACTIVE_SAMPLES, AGGRESSIVE_SAMPLES, OsSeriesScanner, SeriesTarget};
 pub use port_scan::TcpPortScanner;

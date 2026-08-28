@@ -65,7 +65,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RetryConfig;
-use crate::config::{OsDetection, SendMode, ServiceDetection, ZondConfig};
+use crate::config::{IdleScan, OsDetection, SendMode, ServiceDetection, ZondConfig};
 use crate::evasion::EvasionProfile;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
@@ -625,6 +625,13 @@ pub struct ScanSettings {
     /// a different fact than the same port found with an ordinary probe; see
     /// [`EvasionRecord`].
     pub evasion: Option<EvasionRecord>,
+
+    /// The zombie a TCP port scan read its verdicts through, or `None` for an
+    /// ordinary scan. Its presence is what tells a reader the ports were inferred
+    /// from a third party's counter rather than from the target's own replies —
+    /// which changes what an `open` or a `closed_filtered` means. See
+    /// [`IdleScan`].
+    pub idle_scan: Option<IdleScan>,
 }
 
 impl From<&ZondConfig> for ScanSettings {
@@ -641,6 +648,7 @@ impl From<&ZondConfig> for ScanSettings {
             traceroute: cfg.traceroute,
             characterise: cfg.characterise,
             evasion: EvasionRecord::from_profile(&cfg.evasion),
+            idle_scan: cfg.idle_scan,
         }
     }
 }

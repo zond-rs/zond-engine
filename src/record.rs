@@ -55,7 +55,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::RetryConfig;
+use crate::config::{IdleScan, RetryConfig};
 use crate::fingerprint::os::{OsEvidence, OsSource};
 use crate::model::capture::CaptureCounts;
 use crate::model::host::os::OsFingerprint;
@@ -1295,6 +1295,22 @@ pub struct SettingsRecord {
     /// changed nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evasion: Option<EvasionSettingsRecord>,
+    /// The zombie a TCP port scan read its verdicts through, omitted for an
+    /// ordinary scan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_scan: Option<IdleScanRecord>,
+}
+
+/// The zombie an idle scan ran through, as written to the journal. The
+/// serialized form of [`IdleScan`](crate::config::IdleScan).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdleScanRecord {
+    /// The zombie's address.
+    pub zombie: String,
+    /// The port on the zombie its counter was read from, omitted for the
+    /// scanner's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zombie_port: Option<u16>,
 }
 
 /// What a sitting changed about the packets it sent, as written to the journal.
@@ -1361,6 +1377,10 @@ impl From<&ScanSettings> for SettingsRecord {
                 decoys: e.decoys.iter().map(|ip| ip.to_string()).collect(),
                 flags: e.flags.map(wire::tcp_flags_name),
             }),
+            idle_scan: settings.idle_scan.map(|i| IdleScanRecord {
+                zombie: i.zombie.to_string(),
+                zombie_port: i.zombie_port,
+            }),
         }
     }
 }
@@ -1392,6 +1412,12 @@ impl From<&SettingsRecord> for ScanSettings {
                 fragment: e.fragment,
                 decoys: e.decoys.iter().filter_map(|s| s.parse().ok()).collect(),
                 flags: e.flags.as_deref().map(wire::tcp_flags),
+            }),
+            idle_scan: record.idle_scan.as_ref().and_then(|i| {
+                i.zombie.parse().ok().map(|zombie| IdleScan {
+                    zombie,
+                    zombie_port: i.zombie_port,
+                })
             }),
         }
     }

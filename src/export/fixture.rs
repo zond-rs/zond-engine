@@ -22,7 +22,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use crate::config::ZondConfig;
+use crate::config::{IdleScan, ZondConfig};
 use crate::evasion::EvasionProfile;
 use crate::protocols::tcp::flags;
 use crate::model::capture::CaptureCounts;
@@ -233,6 +233,12 @@ pub(crate) fn report() -> ScanReport {
             "192.0.2.62".parse().expect("a valid decoy address"),
         ])
         .with_flags(flags::SYN | flags::FIN);
+    // For the schema rather than for plausibility: a phase carries the idle-scan
+    // record beside the evasion one, so both serialized forms are exercised.
+    config.idle_scan = Some(IdleScan {
+        zombie: "192.0.2.9".parse().expect("a valid zombie address"),
+        zombie_port: Some(113),
+    });
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,

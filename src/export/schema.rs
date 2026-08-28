@@ -852,6 +852,10 @@ pub struct SettingsDto {
     /// nothing. See [`EvasionDto`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evasion: Option<EvasionDto>,
+    /// The zombie a TCP port scan read its verdicts through, omitted for an
+    /// ordinary scan. See [`IdleScanDto`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_scan: Option<IdleScanDto>,
 }
 
 /// What a scan changed about the packets it sent, as it appears in the report.
@@ -884,6 +888,20 @@ pub struct EvasionDto {
     /// named (e.g. `fin|psh|urg`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flags: Option<String>,
+}
+
+/// The zombie a TCP port scan read its verdicts through, as it appears in the
+/// report. Present only for an idle scan; its presence is what says the port
+/// states were inferred through a third party rather than seen directly. The
+/// serialized form of [`IdleScan`](crate::config::IdleScan).
+#[derive(Debug, Clone, Serialize)]
+pub struct IdleScanDto {
+    /// The zombie's address.
+    pub zombie: String,
+    /// The port on the zombie its counter was read from, omitted for the
+    /// scanner's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zombie_port: Option<u16>,
 }
 
 /// Omits a `false` boolean from the document, so a field appears only for a
@@ -924,6 +942,10 @@ impl SettingsDto {
             traceroute: settings.traceroute,
             characterise: settings.characterise,
             evasion: settings.evasion.as_ref().map(EvasionDto::new),
+            idle_scan: settings.idle_scan.map(|idle| IdleScanDto {
+                zombie: idle.zombie.to_string(),
+                zombie_port: idle.zombie_port,
+            }),
         }
     }
 }

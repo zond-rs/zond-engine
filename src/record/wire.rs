@@ -342,6 +342,7 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
         ScannerKind::OsEcho => "os_echo",
         ScannerKind::OsSeries => "os_series",
         ScannerKind::OsSnmp => "os_snmp",
+        ScannerKind::Idle => "idle",
         ScannerKind::Composite => "composite",
     }
 }
@@ -360,6 +361,7 @@ pub fn scanner_kind(name: &str) -> Option<ScannerKind> {
         "os_echo" => ScannerKind::OsEcho,
         "os_series" => ScannerKind::OsSeries,
         "os_snmp" => ScannerKind::OsSnmp,
+        "idle" => ScannerKind::Idle,
         "composite" => ScannerKind::Composite,
         _ => return None,
     })
@@ -490,6 +492,7 @@ mod tests {
             ScannerKind::OsEcho,
             ScannerKind::OsSeries,
             ScannerKind::OsSnmp,
+            ScannerKind::Idle,
             ScannerKind::Composite,
         ] {
             assert_eq!(scanner_kind(scanner_kind_name(value)), Some(value));

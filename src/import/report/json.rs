@@ -86,6 +86,7 @@ use crate::model::technique::TcpScanTechnique;
 use crate::record::wire;
 use crate::record::{
     CaptureRecord, CertificateRecord, DiscoveryRecord, EvasionSettingsRecord, FailureRecord,
+    IdleScanRecord,
     HardwareRecord, HopRecord, HostRecord, OriginRecord, OsRecord, PhaseRecord, PortRecord,
     PortsRecord, ProbeStatsRecord, RangeRecord, ScopeRecord, SecurityRecord, ServiceRecord,
     SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
@@ -521,6 +522,9 @@ struct SettingsDto {
     /// Deserialized straight into the journal's own record: the fields are plain
     /// scalars with nothing to validate, unlike the named enums above.
     evasion: Option<EvasionSettingsRecord>,
+    /// The zombie a TCP port scan ran through, absent for an ordinary scan.
+    /// Deserialized straight into the journal's record, like the evasion one.
+    idle_scan: Option<IdleScanRecord>,
 }
 
 impl SettingsDto {
@@ -566,6 +570,7 @@ impl SettingsDto {
             traceroute: self.traceroute,
             characterise: self.characterise,
             evasion: self.evasion,
+            idle_scan: self.idle_scan,
         })
     }
 }

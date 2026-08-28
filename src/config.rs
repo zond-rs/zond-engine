@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::fmt;
+use std::net::IpAddr;
 use std::str::FromStr;
 
 use crate::evasion::EvasionProfile;
@@ -674,6 +675,46 @@ pub struct ProbeTuning {
     pub evasion: EvasionProfile,
 }
 
+/// A third party whose IP-ID counter an idle scan reads to learn a target's
+/// ports without ever addressing the target as itself.
+///
+/// The idle (or zombie) scan is the quietest technique this engine has: it
+/// forges its probes to carry the zombie's source address, so the target's
+/// answers go to the zombie and never to the scanner. What the target said is
+/// read indirectly, off the one thing the zombie's replies leak — a global
+/// IP-ID counter that advances by one for every packet the zombie sends. Read
+/// the counter, forge a probe, read it again: an open port drew an answer the
+/// zombie had to reset, advancing the counter an extra step, and a closed or
+/// filtered one did not.
+///
+/// It follows that the zombie has to be the right kind of host — one whose
+/// IP-ID is a single shared counter — and that the forged probe needs a
+/// self-built Ethernet frame to carry a source address the kernel would never
+/// choose. A scan that cannot have either is refused rather than run quietly
+/// wrong; see the idle port scanner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleScan {
+    /// The zombie's address.
+    ///
+    /// It must be a host with a single global IP-ID counter — a *counting*
+    /// generator, in the terms the OS-detection series reads — and idle and
+    /// reachable enough that its counter moves for this scan's probes and little
+    /// else. A busy zombie's own traffic is noise the scan has to see through,
+    /// and one whose counter is random or per-connection carries no signal at
+    /// all; both are caught when the scan qualifies it, and an unsuitable zombie
+    /// is refused with the counter class it was found to have.
+    pub zombie: IpAddr,
+
+    /// A port on the zombie to probe for its counter, or `None` for the engine's
+    /// default.
+    ///
+    /// Any port serves in principle — an unsolicited SYN/ACK draws a reset
+    /// whether the port is open or closed, and it is the reset's IP-ID the scan
+    /// reads — but the zombie's own filter must not drop the probe, so a caller
+    /// that knows a port the zombie answers on can name it here.
+    pub zombie_port: Option<u16>,
+}
+
 /// What a scan does, and what it is allowed to put on the wire.
 ///
 /// **Every field here changes packets or timing.** Nothing about rendering — no
@@ -777,6 +818,20 @@ pub struct ZondConfig {
     /// today, would report every port filtered if it were the setting a scan ran
     /// under, which is exactly why it is a separate pass and not a scan option.
     pub characterise: bool,
+
+    /// Scan TCP ports through a third-party zombie rather than by addressing the
+    /// target directly, when set. See [`IdleScan`].
+    ///
+    /// This replaces the ordinary TCP port scan wholesale: the technique in
+    /// [`tcp_technique`](Self::tcp_technique) does not apply, because every probe
+    /// is a forged SYN read through the zombie's counter rather than a segment
+    /// whose own reply is classified. It is TCP-only — a UDP port cannot be read
+    /// this way, and probing one directly would announce the scanner the idle
+    /// technique exists to hide, so UDP targets are left unprobed. It needs the
+    /// privilege and the self-built frame a spoofed source address requires, and
+    /// a suitable zombie; lacking any of these the scan is refused, never run
+    /// under its own address instead.
+    pub idle_scan: Option<IdleScan>,
 
     /// Addresses this scan may not probe, whatever else it was asked to cover.
     ///

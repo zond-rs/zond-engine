@@ -1434,6 +1434,26 @@
               "type": "string"
             }
           }
+        },
+        "idle_scan": {
+          "description": "The zombie a TCP port scan read its verdicts through, present only for an idle scan. Its presence is what says the port states were inferred from a third party's IP-ID counter rather than seen in the target's own replies - so an 'open' or a 'closed_filtered' here is a claim about what the zombie bounced back, and the scanner never addressed the target under its own address at all.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "zombie"
+          ],
+          "properties": {
+            "zombie": {
+              "description": "The zombie's address - a host with a single global IP-ID counter, off which the target's answers were read.",
+              "type": "string"
+            },
+            "zombie_port": {
+              "description": "The port on the zombie its counter was read from.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          }
         }
       }
     },
