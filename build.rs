@@ -22,6 +22,7 @@
 //! canonical definitions in `src/fingerprint/signature.rs`, so the build-time
 //! and runtime views can never drift apart.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,7 +36,7 @@ use std::path::{Path, PathBuf};
 /// unimplemented in an editor while `cargo` compiles it perfectly. A `#[path]`
 /// module is an ordinary module and analyses like one.
 #[path = "src/fingerprint/signature.rs"]
-mod schema;
+mod signature;
 
 /// The operating-system rule schema, likewise shared verbatim. A rule the build
 /// accepts is exactly a rule the runtime can match, because both read this file.
@@ -52,12 +53,29 @@ mod os_schema;
 #[path = "src/fingerprint/pattern.rs"]
 mod pattern;
 
-use schema::{MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, ServiceDefinition, unescape};
+#[path = "src/detect/flow/expr.rs"]
+mod expr;
+/// The Tier-1 flow-detection trio, shared with the runtime the same way: the
+/// authoring `schema`, the guard-expression grammar `expr`, and the structural
+/// `validate` that rejects a malformed flow. A flow the build accepts is a flow
+/// the interpreter can run, because both read these files. `validate` names its
+/// siblings `schema` and `expr`, which is why the service schema above is
+/// `signature`: the two must not both be `schema`.
+#[path = "src/detect/flow/schema.rs"]
+mod schema;
+#[path = "src/detect/flow/validate.rs"]
+mod validate;
+
+use signature::{MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, ServiceDefinition, unescape};
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/fingerprinting");
     println!("cargo:rerun-if-changed=src/fingerprint/signature.rs");
     println!("cargo:rerun-if-changed=src/fingerprint/os/signature.rs");
+    println!("cargo:rerun-if-changed=assets/detect");
+    println!("cargo:rerun-if-changed=src/detect/flow/schema.rs");
+    println!("cargo:rerun-if-changed=src/detect/flow/expr.rs");
+    println!("cargo:rerun-if-changed=src/detect/flow/validate.rs");
 
     let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest_path = Path::new(&out_dir).join("fingerprints.bin");
@@ -85,6 +103,172 @@ fn main() {
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
 
     compile_os_rules(Path::new(&out_dir));
+    validate_flows();
+}
+
+/// Validates the Tier-1 flow corpus in `assets/detect`, failing the build on any
+/// ill-formed detection with a pointer to the file.
+///
+/// The structural rules run through the shared [`validate`] — the same code a
+/// flow loaded at runtime would face — and the rules that need the pattern engine
+/// or the payload unescaper run here, where the build has them: that every
+/// `expect`/`bind` pattern compiles and its capture group exists, and that a
+/// declared byte budget covers what the flow must send. There is no flow database
+/// to emit yet — a flow is still loaded from its source; this pass is the gate
+/// that a broken one never reaches a scan.
+fn validate_flows() {
+    let mut toml_files = Vec::new();
+    collect_toml_files(Path::new("assets/detect"), &mut toml_files);
+    toml_files.sort();
+
+    let mut ids = BTreeSet::new();
+    for path in &toml_files {
+        let content = fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        let flow: schema::FlowDetection = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
+
+        let errors = validate::check(&flow);
+        if !errors.is_empty() {
+            let mut message = format!("{}: this flow detection is ill-formed:", path.display());
+            for error in &errors {
+                message.push_str(&format!("\n  - the detection {error}"));
+            }
+            panic!("{message}");
+        }
+
+        // A detection id is a provenance claim, so it must be unique across the
+        // corpus — two findings that name the same id could not be told apart.
+        if !ids.insert(flow.detection.id.clone()) {
+            panic!(
+                "{}: detection id '{}' is already used by another flow",
+                path.display(),
+                flow.detection.id
+            );
+        }
+
+        validate_flow_patterns(&flow, path);
+        validate_flow_budget(&flow, path);
+        warn_flow_soft(&flow, path);
+    }
+}
+
+/// H4/H5 — every `expect`/`bind` pattern compiles under the size cap with the
+/// engine the runtime uses, and every `bind` can actually capture: its pattern
+/// has a named group of the bound variable, or a numeric `version_group` that
+/// exists. A bind that can capture nothing is a silent hole, so it fails here.
+fn validate_flow_patterns(flow: &schema::FlowDetection, path: &Path) {
+    let file = path.display();
+    let id = &flow.detection.id;
+    for (index, step) in flow.step.iter().enumerate() {
+        for spec in &step.expect {
+            compile_flow_pattern(
+                spec.pattern(),
+                format_args!("{file}: '{id}' step {index} expect"),
+            );
+        }
+        for (var, spec) in &step.bind {
+            let compiled = compile_flow_pattern(
+                spec.pattern(),
+                format_args!("{file}: '{id}' step {index} bind '{var}'"),
+            );
+            let named = compiled.capture_names().iter().any(|name| name == var);
+            let numbered = spec
+                .version_group()
+                .is_some_and(|group| (group as usize) < compiled.captures_len());
+            if !named && !numbered {
+                panic!(
+                    "{file}: '{id}' step {index} binds '{var}', but its pattern has no \
+                     (?<{var}>…) group and no valid version_group, so it can never capture\n  \
+                     pattern: {}",
+                    spec.pattern()
+                );
+            }
+        }
+    }
+}
+
+/// Compiles a flow pattern the way the runtime will, aborting the build with a
+/// pointer if it cannot — so a pattern that would fail at scan time never ships.
+fn compile_flow_pattern(pattern: &str, context: std::fmt::Arguments) -> pattern::CompiledPattern {
+    pattern::compile(pattern, MAX_COMPILED_REGEX_BYTES)
+        .unwrap_or_else(|e| panic!("{context} has an unusable pattern: {e}\n  pattern: {pattern}"))
+}
+
+/// H6 — a declared `max_bytes` covers the payloads the flow must send. The reply
+/// bytes a target controls are bounded at the capability boundary at run time,
+/// not here; what the build proves is that a flow can at least send what it
+/// declares without exceeding the budget it claims.
+fn validate_flow_budget(flow: &schema::FlowDetection, path: &Path) {
+    let Some(max_bytes) = flow.detection.capabilities.max_bytes else {
+        return;
+    };
+    let mut sent: u64 = 0;
+    for step in &flow.step {
+        if let Some(send) = &step.send {
+            let bytes = unescape(send).len() as u64;
+            let iterations = step
+                .for_each
+                .as_ref()
+                .map_or(1, |for_each| for_each.items.len() as u64);
+            sent += bytes * iterations;
+        }
+    }
+    if sent > u64::from(max_bytes) {
+        panic!(
+            "{}: '{}' declares max_bytes = {max_bytes} but its steps send {sent} bytes",
+            path.display(),
+            flow.detection.id
+        );
+    }
+}
+
+/// Soft issues that do not fail the build but an author should see: a class that
+/// is off by default, so the flow ships inert until an operator opts in, and a
+/// malformed CVE identifier that a finding would silently drop.
+fn warn_flow_soft(flow: &schema::FlowDetection, path: &Path) {
+    let file = path.display();
+    let id = &flow.detection.id;
+
+    if matches!(
+        flow.detection.capabilities.class,
+        schema::Class::ActiveMutating | schema::Class::Exploit | schema::Class::Dos
+    ) {
+        println!(
+            "cargo:warning={file}: '{id}' is class {:?}, which is off by default — it ships \
+             inert unless an operator opts the envelope in",
+            flow.detection.capabilities.class
+        );
+    }
+
+    for step in &flow.step {
+        for finding in &step.finding {
+            for reference in &finding.references {
+                if let schema::Reference::Cve(cve) = reference
+                    && !is_cve_shaped(cve)
+                {
+                    println!(
+                        "cargo:warning={file}: '{id}' cites a malformed CVE id '{cve}' \
+                         (expected CVE-YYYY-N…); the finding will drop it"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Whether `id` has the shape `CVE-\d{{4}}-\d+`, checked without a regex.
+fn is_cve_shaped(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("CVE-") else {
+        return false;
+    };
+    let mut parts = rest.splitn(2, '-');
+    let year = parts.next().unwrap_or("");
+    let sequence = parts.next().unwrap_or("");
+    year.len() == 4
+        && year.bytes().all(|b| b.is_ascii_digit())
+        && !sequence.is_empty()
+        && sequence.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Compiles the operating-system rules the same way, and validates them harder.

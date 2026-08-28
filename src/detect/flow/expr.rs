@@ -49,6 +49,7 @@
 //! *compute* would be the first inch of a programming language, and the signal
 //! that a detection belongs in the compute tier instead.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// A parsed guard expression — the boolean a `when` clause denotes.
@@ -99,6 +100,56 @@ pub enum RelOp {
     Le,
     Gt,
     Ge,
+}
+
+// The static-analysis helpers below are consumed by the build-time validator
+// (which `#[path]`-loads this file), not by the runtime evaluator, so the plain
+// `--lib` build alone sees them as unused.
+#[allow(dead_code)]
+impl Expr {
+    /// The names of every variable this guard reads — the argument of a
+    /// `bound`/`unbound`, and any variable operand of a comparison. The build
+    /// uses it to prove a guard names only variables an earlier step binds.
+    pub fn referenced_vars(&self) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        self.collect_vars(&mut names);
+        names
+    }
+
+    fn collect_vars(&self, names: &mut BTreeSet<String>) {
+        match self {
+            Expr::Or(left, right) | Expr::And(left, right) => {
+                left.collect_vars(names);
+                right.collect_vars(names);
+            }
+            Expr::Not(inner) => inner.collect_vars(names),
+            Expr::Matched => {}
+            Expr::Bound(name) | Expr::Unbound(name) => {
+                names.insert(name.clone());
+            }
+            Expr::Compare { left, right, .. } => {
+                if let Operand::Var(name) = left {
+                    names.insert(name.clone());
+                }
+                if let Operand::Var(name) = right {
+                    names.insert(name.clone());
+                }
+            }
+        }
+    }
+
+    /// Whether this guard reads `matched`. A step's own guard may not — nothing
+    /// has matched when the step is gated — so the build rejects one that does.
+    pub fn uses_matched(&self) -> bool {
+        match self {
+            Expr::Matched => true,
+            Expr::Or(left, right) | Expr::And(left, right) => {
+                left.uses_matched() || right.uses_matched()
+            }
+            Expr::Not(inner) => inner.uses_matched(),
+            Expr::Bound(_) | Expr::Unbound(_) | Expr::Compare { .. } => false,
+        }
+    }
 }
 
 /// Why a guard string is not a valid expression. Its [`Display`](fmt::Display)
@@ -501,6 +552,28 @@ mod tests {
                 }),
             )
         );
+    }
+
+    #[test]
+    fn referenced_vars_and_uses_matched_walk_the_whole_tree() {
+        let expr = ok("bound(a) and (version < '2' or unbound(b)) and not matched");
+        assert_eq!(
+            expr.referenced_vars(),
+            ["a", "b", "version"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        );
+        assert!(expr.uses_matched());
+
+        // A comparison of two literals references nothing, and a guard with no
+        // `matched` anywhere reports none.
+        let literals = ok("3 < 4 and bound(x)");
+        assert_eq!(
+            literals.referenced_vars(),
+            ["x"].iter().map(|s| s.to_string()).collect()
+        );
+        assert!(!literals.uses_matched());
     }
 
     #[test]

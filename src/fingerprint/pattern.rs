@@ -151,6 +151,24 @@ impl CompiledPattern {
         }
     }
 
+    /// The declared names of this pattern's named capture groups, unnamed groups
+    /// skipped. Lets a build check that a `(?<name>…)` a `bind` expects actually
+    /// exists in the pattern, without text to match it against.
+    ///
+    /// `allow(dead_code)`: consumed by `build.rs` (validation), not the runtime
+    /// matcher — this module is shared by both, and each uses a different subset.
+    #[allow(dead_code)]
+    pub fn capture_names(&self) -> Vec<String> {
+        match self {
+            CompiledPattern::Fast(regex) => {
+                regex.capture_names().flatten().map(String::from).collect()
+            }
+            CompiledPattern::Fancy(regex) => {
+                regex.capture_names().flatten().map(String::from).collect()
+            }
+        }
+    }
+
     /// The value of the named capture group `name`, if the pattern matches `text`
     /// and the group participated — how a Tier-1 `bind` pulls a value out of a
     /// match by name rather than by numeric index.
@@ -318,5 +336,30 @@ mod tests {
         assert_eq!(compile(r"^ab$", LIMIT).unwrap().captures_len(), 1); // group 0 only
         assert_eq!(compile(r"^(a)(b)$", LIMIT).unwrap().captures_len(), 3); // + two groups
         assert_eq!(compile(r"^(\w+)\s+\1$", LIMIT).unwrap().captures_len(), 2); // fancy: + one
+    }
+
+    #[test]
+    fn capture_names_lists_the_named_groups_only() {
+        // A named group is reported; an unnamed one is not.
+        assert_eq!(
+            compile(r"v(?<version>[0-9.]+) \((\w+)\)", LIMIT)
+                .unwrap()
+                .capture_names(),
+            vec!["version".to_string()]
+        );
+        // A pattern with no named group reports none.
+        assert!(
+            compile(r"^\+PONG", LIMIT)
+                .unwrap()
+                .capture_names()
+                .is_empty()
+        );
+        // The fancy engine (backreference) reports its named group too.
+        assert_eq!(
+            compile(r"(?<w>\w+)\s+\k<w>", LIMIT)
+                .unwrap()
+                .capture_names(),
+            vec!["w".to_string()]
+        );
     }
 }

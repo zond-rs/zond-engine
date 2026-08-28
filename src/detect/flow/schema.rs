@@ -14,7 +14,11 @@
 //! service-signature format ([`crate::fingerprint`]) grown a spine — sequencing,
 //! a variable environment, and a typed [`Finding`](crate::model::finding::Finding)
 //! on the end — and it reuses the matcher rather than reinventing it: `expect`
-//! and `bind` are the same [`MatchRule`] every Tier-0 signature is.
+//! and `bind` carry the same pattern (and optional product) a Tier-0
+//! [`MatchRule`](crate::fingerprint::MatchRule) does, compiled by the one shared
+//! engine. The authoring form here ([`MatchDetail`]) is a self-contained mirror
+//! of the fields a flow uses, so this schema deserializes without reaching into
+//! the fingerprint types — the discipline that lets `build.rs` share this file.
 //!
 //! ## Authoring against the model
 //!
@@ -33,12 +37,17 @@
 //! time and metered without a fuel counter — see the module documentation for the
 //! interpreter and the validator that enforce it.
 
+// `build.rs` compiles this file too, to validate the flow corpus, and its
+// structural checks read only a subset of these authoring fields — the rest are
+// a finding's payload the runtime reads. Within the library every field is public
+// API and live; the unread-field lint fires only in the build-script crate, so it
+// is silenced here rather than field by field. (Emitting a flow database will read
+// them all through `Serialize` and make this moot, as it does for the signatures.)
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer};
-
-use crate::fingerprint::MatchRule;
-use crate::model::finding::{DetectionClass, Reference as ModelReference, Severity as ModelSeverity};
 
 /// The most steps a flow may have. The whole point of a fixed ceiling is that a
 /// flow's cost is knowable before it runs; the validator rejects a longer one.
@@ -104,7 +113,9 @@ pub struct Capabilities {
 }
 
 /// The intrusiveness a flow declares. Deserializes from the wire names and maps
-/// onto the model's [`DetectionClass`].
+/// onto the model's [`DetectionClass`](crate::model::finding::DetectionClass) —
+/// the mapping lives in the runtime `convert` module, so this
+/// schema stays free of the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Class {
@@ -113,19 +124,6 @@ pub enum Class {
     ActiveMutating,
     Exploit,
     Dos,
-}
-
-impl Class {
-    /// The model class this authoring class names.
-    pub fn into_model(self) -> DetectionClass {
-        match self {
-            Class::Passive => DetectionClass::Passive,
-            Class::ActiveBenign => DetectionClass::ActiveBenign,
-            Class::ActiveMutating => DetectionClass::ActiveMutating,
-            Class::Exploit => DetectionClass::Exploit,
-            Class::Dos => DetectionClass::Dos,
-        }
-    }
 }
 
 /// What a flow may `speak` to. One value for now; the enum is the room to grow.
@@ -164,34 +162,52 @@ pub struct Step {
     pub finding: Vec<FindingSpec>,
 }
 
-/// A match rule as authored: a bare pattern string, or a full [`MatchRule`].
+/// A match rule as authored: a bare pattern string, or a full [`MatchDetail`].
 /// Boxed so a bare-pattern step does not carry the whole rule's weight.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum MatchSpec {
     Pattern(String),
-    Rule(Box<MatchRule>),
+    Rule(Box<MatchDetail>),
 }
 
 impl MatchSpec {
-    /// The [`MatchRule`] this authored form denotes — a bare pattern becomes a
-    /// pattern-only rule so `expect` and `bind` compile through the one engine
-    /// every Tier-0 signature does.
-    pub fn as_rule(&self) -> MatchRule {
+    /// The regular-expression pattern this rule matches on — the one field
+    /// present in every form, whether the rule was authored as a bare string or
+    /// a table.
+    pub fn pattern(&self) -> &str {
         match self {
-            MatchSpec::Pattern(pattern) => MatchRule {
-                name: None,
-                pattern: pattern.clone(),
-                version_group: None,
-                vendor: None,
-                product: None,
-                context: None,
-                example: None,
-                metadata: None,
-            },
-            MatchSpec::Rule(rule) => (**rule).clone(),
+            MatchSpec::Pattern(pattern) => pattern,
+            MatchSpec::Rule(rule) => &rule.pattern,
         }
     }
+
+    /// The 1-based index of the numbered capture group an imported pattern uses
+    /// for its value, when it numbers one instead of naming it. A bare pattern
+    /// never sets one.
+    pub fn version_group(&self) -> Option<u8> {
+        match self {
+            MatchSpec::Pattern(_) => None,
+            MatchSpec::Rule(rule) => rule.version_group,
+        }
+    }
+}
+
+/// The full authored form of a match rule: a [`MatchRule`](crate::fingerprint::MatchRule)
+/// reduced to the fields a flow uses. It is a self-contained mirror rather than
+/// the fingerprint type itself, so this schema carries no dependency on the
+/// fingerprint module and `build.rs` can share it. `product`/`vendor` name what a
+/// gate identifies, for a finding's evidence; the matcher reads only `pattern`
+/// and `version_group`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MatchDetail {
+    pub pattern: String,
+    #[serde(default)]
+    pub version_group: Option<u8>,
+    #[serde(default)]
+    pub product: Option<String>,
+    #[serde(default)]
+    pub vendor: Option<String>,
 }
 
 /// A bounded loop over a literal list.
@@ -244,7 +260,9 @@ pub struct FindingSpec {
     pub excerpt_from: Option<String>,
 }
 
-/// How bad a finding is, as authored. Maps onto the model's [`ModelSeverity`].
+/// How bad a finding is, as authored. Maps onto the model's
+/// [`Severity`](crate::model::finding::Severity) in the runtime
+/// `convert` module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -255,39 +273,16 @@ pub enum Severity {
     Critical,
 }
 
-impl Severity {
-    /// The model severity this authoring severity names.
-    pub fn into_model(self) -> ModelSeverity {
-        match self {
-            Severity::Info => ModelSeverity::Info,
-            Severity::Low => ModelSeverity::Low,
-            Severity::Medium => ModelSeverity::Medium,
-            Severity::High => ModelSeverity::High,
-            Severity::Critical => ModelSeverity::Critical,
-        }
-    }
-}
-
 /// A typed reference, authored as an inline table: `{ cve = "CVE-…" }`,
-/// `{ cwe = 79 }`, or `{ url = "…" }`.
+/// `{ cwe = 79 }`, or `{ url = "…" }`. Maps onto the model's
+/// [`Reference`](crate::model::finding::Reference) in the runtime
+/// `convert` module.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Reference {
     Cve(String),
     Cwe(u32),
     Url(String),
-}
-
-impl Reference {
-    /// The model reference this names, or [`None`] for a CVE identifier of the
-    /// wrong shape — the model refuses a malformed one, and so does this.
-    pub fn into_model(&self) -> Option<ModelReference> {
-        match self {
-            Reference::Cve(id) => ModelReference::cve(id),
-            Reference::Cwe(number) => Some(ModelReference::cwe(*number)),
-            Reference::Url(url) => Some(ModelReference::url(url)),
-        }
-    }
 }
 
 /// Accepts one value or a list of them into a `Vec`, so `expect = "x"` and
@@ -355,10 +350,10 @@ mod tests {
 
     #[test]
     fn a_bare_pattern_and_a_full_rule_both_read_as_a_match_rule() {
-        // The shorthand.
+        // The shorthand: a pattern with nothing else.
         let pattern = MatchSpec::Pattern("^\\+PONG".to_string());
-        assert_eq!(pattern.as_rule().pattern, "^\\+PONG");
-        assert!(pattern.as_rule().product.is_none());
+        assert_eq!(pattern.pattern(), "^\\+PONG");
+        assert_eq!(pattern.version_group(), None);
 
         // The full form, carrying a product the shorthand cannot.
         let flow = parse(
@@ -375,18 +370,11 @@ mod tests {
             expect = { pattern = "Server: nginx", product = "nginx" }
             "#,
         );
-        let rule = flow.step[0].expect[0].as_rule();
-        assert_eq!(rule.pattern, "Server: nginx");
-        assert_eq!(rule.product.as_deref(), Some("nginx"));
-    }
-
-    #[test]
-    fn the_authoring_enums_map_onto_the_model_vocabulary() {
-        assert_eq!(Class::Exploit.into_model(), DetectionClass::Exploit);
-        assert_eq!(Severity::Critical.into_model(), ModelSeverity::Critical);
-        assert_eq!(Reference::Cwe(79).into_model(), Some(ModelReference::Cwe(79)));
-        assert!(Reference::Cve("CVE-2021-44228".into()).into_model().is_some());
-        // A malformed CVE is refused, exactly as the model refuses it.
-        assert!(Reference::Cve("not-a-cve".into()).into_model().is_none());
+        let spec = &flow.step[0].expect[0];
+        assert_eq!(spec.pattern(), "Server: nginx");
+        let MatchSpec::Rule(detail) = spec else {
+            panic!("the table form reads as a full rule");
+        };
+        assert_eq!(detail.product.as_deref(), Some("nginx"));
     }
 }

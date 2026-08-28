@@ -155,19 +155,17 @@ fn on_no_match(step: &Step) -> Flow {
 
 /// Whether `spec`'s pattern matches `text`.
 fn matches(spec: &MatchSpec, text: &str) -> bool {
-    let rule = spec.as_rule();
-    pattern::compile(&rule.pattern, MAX_COMPILED_REGEX_BYTES)
-        .is_ok_and(|compiled| compiled.identify(text, rule.version_group).is_some())
+    pattern::compile(spec.pattern(), MAX_COMPILED_REGEX_BYTES)
+        .is_ok_and(|compiled| compiled.identify(text, spec.version_group()).is_some())
 }
 
 /// The value `spec` binds out of `text` for a variable named `name`: a named
 /// capture group of that name, or the numeric `version_group` an imported pattern
 /// numbers instead.
 fn capture(spec: &MatchSpec, text: &str, name: &str) -> Option<String> {
-    let rule = spec.as_rule();
-    let compiled = pattern::compile(&rule.pattern, MAX_COMPILED_REGEX_BYTES).ok()?;
+    let compiled = pattern::compile(spec.pattern(), MAX_COMPILED_REGEX_BYTES).ok()?;
     compiled.capture(text, name).or_else(|| {
-        rule.version_group
+        spec.version_group()
             .and_then(|group| compiled.identify(text, Some(group)).and_then(|m| m.version))
     })
 }

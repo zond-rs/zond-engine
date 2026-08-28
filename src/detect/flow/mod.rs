@@ -21,15 +21,26 @@
 //!
 //! [`schema`] is the authoring format — the serde types a flow file deserializes
 //! into — the internal `expr` module is the guard expression grammar a `when`
-//! clause is written in, and [`run`] is the bounded interpreter that walks a
-//! flow against a [`Probe`], asking the `eval` module whether each guard holds.
-//! The build-time validator joins them as the tier is built out; see the design
-//! record in `audit/2026-08-28-scripting-engine-spec.md`, Part II.
+//! clause is written in, `validate` is the build-time checker that rejects a
+//! malformed flow before it ships, and [`run`] is the bounded interpreter that
+//! walks a flow against a [`Probe`], asking the `eval` module whether each guard
+//! holds and the `convert` module to lower its authored types onto the model. See
+//! the design record in `audit/2026-08-28-scripting-engine-spec.md`, Part II.
+//!
+//! ## Shared with the build
+//!
+//! `schema`, `expr`, and `validate` carry no dependency on the rest of the crate,
+//! so `build.rs` loads them with `#[path]` and validates the flow corpus with the
+//! very code the runtime reads — a flow the build accepts is a flow the runtime
+//! can run. `convert` and `eval` are runtime-only and free to reach into the
+//! model and the shared version order.
 
 pub mod schema;
 
 pub(crate) mod expr;
+pub(crate) mod validate;
 
+mod convert;
 mod eval;
 mod interp;
 
