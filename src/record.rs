@@ -56,8 +56,12 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{IdleScan, RetryConfig};
+use crate::fingerprint::Confidence;
 use crate::fingerprint::os::{OsEvidence, OsSource};
 use crate::model::capture::CaptureCounts;
+use crate::model::finding::{
+    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+};
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
 use crate::model::host::telemetry::HostTelemetry;
@@ -126,6 +130,10 @@ pub struct HostRecord {
     /// Its ports, in the order the model holds them.
     #[serde(default)]
     pub ports: Vec<PortRecord>,
+    /// What a detection concluded was wrong with the host as a whole, in claim
+    /// order.
+    #[serde(default)]
+    pub findings: Vec<FindingRecord>,
 }
 
 impl From<&Host> for HostRecord {
@@ -174,6 +182,9 @@ impl From<&Host> for HostRecord {
             first_seen: host.first_seen(),
             last_seen: host.last_seen(),
             ports: host.ports().map(PortRecord::from).collect(),
+            // Already claim-ordered by the model's map, so no sort is needed for
+            // two runs to write the same file.
+            findings: host.findings().map(FindingRecord::from).collect(),
         }
     }
 }
@@ -223,6 +234,9 @@ impl From<&HostRecord> for Host {
         }
         for port in &record.ports {
             host.add_port(port.into());
+        }
+        for finding in record.findings.iter().filter_map(FindingRecord::rebuild) {
+            host.add_finding(finding);
         }
 
         // Last, because everything above moves `last_seen` forward as it goes.
@@ -605,6 +619,10 @@ pub struct PortRecord {
     /// The packet that settled the state.
     #[serde(default)]
     pub discovery: Option<DiscoveryRecord>,
+    /// What a detection concluded was wrong with what is listening here, in
+    /// claim order.
+    #[serde(default)]
+    pub findings: Vec<FindingRecord>,
 }
 
 impl From<&Port> for PortRecord {
@@ -616,6 +634,8 @@ impl From<&Port> for PortRecord {
             service: port.service().map(ServiceRecord::from),
             security: port.security().map(SecurityRecord::from),
             discovery: port.discovery().map(DiscoveryRecord::from),
+            // Already claim-ordered by the model's map.
+            findings: port.findings().map(FindingRecord::from).collect(),
         }
     }
 }
@@ -637,7 +657,146 @@ impl From<&PortRecord> for Port {
         if let Some(discovery) = &record.discovery {
             port = port.with_discovery(discovery.into());
         }
+        for finding in record.findings.iter().filter_map(FindingRecord::rebuild) {
+            port.add_finding(finding);
+        }
         port
+    }
+}
+
+/// A finding, as a file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindingRecord {
+    /// Which detection produced it, to which version, from which bytes.
+    pub detection: DetectionIdRecord,
+    /// Its one-line title.
+    pub title: String,
+    /// How bad it is if true, by wire name.
+    pub severity: String,
+    /// How sure it is true, by wire name.
+    pub confidence: String,
+    /// The intrusiveness the detection ran under, by wire name.
+    pub class: String,
+    /// The bytes that justify it, if any.
+    #[serde(default)]
+    pub excerpt: Option<String>,
+    /// Its external references, in sorted order.
+    #[serde(default)]
+    pub references: Vec<ReferenceRecord>,
+    /// Remediation advice, if any.
+    #[serde(default)]
+    pub remediation: Option<String>,
+}
+
+impl From<&Finding> for FindingRecord {
+    fn from(finding: &Finding) -> Self {
+        Self {
+            detection: DetectionIdRecord::from(finding.detection()),
+            title: finding.title().to_owned(),
+            severity: wire::severity_name(finding.severity()).to_owned(),
+            confidence: wire::confidence_name(finding.confidence()).to_owned(),
+            class: wire::detection_class_name(finding.class()).to_owned(),
+            excerpt: (!finding.excerpt().is_empty())
+                .then(|| finding.excerpt().as_str().to_owned()),
+            references: finding.references().map(ReferenceRecord::from).collect(),
+            remediation: finding.remediation().map(str::to_owned),
+        }
+    }
+}
+
+impl FindingRecord {
+    /// Rebuilds the finding, or [`None`] if it names no detection or has no
+    /// title — the two things a finding cannot be without.
+    ///
+    /// Everything softer reads *downward* rather than failing: an unknown
+    /// severity, confidence, or class reads as the least it could claim, and a
+    /// reference that will not rebuild is dropped while the finding is kept —
+    /// because provenance that does not parse is not grounds to discard a real
+    /// finding.
+    pub fn rebuild(&self) -> Option<Finding> {
+        let severity = wire::severity(&self.severity).unwrap_or(Severity::Info);
+        let confidence = wire::confidence(&self.confidence).unwrap_or(Confidence::Heuristic);
+        let class = wire::detection_class(&self.class).unwrap_or(DetectionClass::Passive);
+
+        let mut finding = Finding::new(
+            self.detection.rebuild()?,
+            self.title.clone(),
+            severity,
+            confidence,
+            class,
+        )
+        .ok()?;
+
+        if let Some(excerpt) = &self.excerpt {
+            finding = finding.with_excerpt(Excerpt::new(excerpt.clone()));
+        }
+        if let Some(remediation) = &self.remediation {
+            finding = finding.with_remediation(remediation.clone());
+        }
+        for reference in self.references.iter().filter_map(ReferenceRecord::rebuild) {
+            finding = finding.with_reference(reference);
+        }
+        Some(finding)
+    }
+}
+
+/// A detection identity, as a file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectionIdRecord {
+    /// The author-chosen identifier.
+    pub id: String,
+    /// Its version, as `major.minor.patch`.
+    pub version: String,
+    /// The content hash of the detection body.
+    pub content_hash: String,
+}
+
+impl From<&DetectionId> for DetectionIdRecord {
+    fn from(detection: &DetectionId) -> Self {
+        Self {
+            id: detection.id().to_owned(),
+            version: detection.version().to_string(),
+            content_hash: detection.content_hash().to_owned(),
+        }
+    }
+}
+
+impl DetectionIdRecord {
+    /// Rebuilds the identity, or [`None`] if it names nothing. A version that
+    /// will not parse reads as `0.0.0` — the earliest, least-trusted — rather
+    /// than discarding the finding it identifies.
+    pub fn rebuild(&self) -> Option<DetectionId> {
+        let version = Version::parse(&self.version).unwrap_or(Version::new(0, 0, 0));
+        DetectionId::new(self.id.clone(), version, self.content_hash.clone()).ok()
+    }
+}
+
+/// An external reference, as a file holds it: a kind and the value it carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferenceRecord {
+    /// Which kind of reference, by wire name.
+    pub kind: String,
+    /// The value it carries — a CVE id, a CWE number, or a URL.
+    pub value: String,
+}
+
+impl From<&Reference> for ReferenceRecord {
+    fn from(reference: &Reference) -> Self {
+        Self {
+            kind: wire::reference_kind_name(reference).to_owned(),
+            value: match reference {
+                Reference::Cve(id) | Reference::Url(id) => id.clone(),
+                Reference::Cwe(number) => number.to_string(),
+            },
+        }
+    }
+}
+
+impl ReferenceRecord {
+    /// Rebuilds the reference, or [`None`] for an unknown kind or a malformed
+    /// value.
+    pub fn rebuild(&self) -> Option<Reference> {
+        wire::reference(&self.kind, &self.value)
     }
 }
 
@@ -1824,6 +1983,8 @@ mod tests {
         host.add_port(Port::new(53, Protocol::Udp, PortState::OpenFiltered));
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
 
+        host.add_finding(maximal_finding());
+
         host.restore_seen(at(1_700_000_000), at(1_700_003_600));
         host
     }
@@ -1859,10 +2020,12 @@ mod tests {
             .with_ttl(58)
             .with_source_ip(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
 
-        Port::new(443, Protocol::Tcp, PortState::Open)
+        let mut port = Port::new(443, Protocol::Tcp, PortState::Open)
             .with_service(service)
             .with_security(security)
-            .with_discovery(discovery)
+            .with_discovery(discovery);
+        port.add_finding(maximal_finding());
+        port
     }
 
     /// **The oracle.**
@@ -1888,6 +2051,107 @@ mod tests {
             render(&rebuilt),
             "a field was lost in the round trip"
         );
+    }
+
+    fn maximal_finding() -> Finding {
+        Finding::new(
+            DetectionId::new("grafana-path-traversal", Version::new(1, 2, 3), "deadbeef").unwrap(),
+            "Grafana plugin path traversal",
+            Severity::Critical,
+            Confidence::Strong,
+            DetectionClass::ActiveBenign,
+        )
+        .unwrap()
+        .with_excerpt(Excerpt::new("root:x:0:0:root:/root:/bin/bash"))
+        .with_reference(Reference::cve("CVE-2021-43798").unwrap())
+        .with_reference(Reference::cwe(22))
+        .with_reference(Reference::url("https://grafana.com/security/"))
+        .with_remediation("Upgrade to 8.3.1 or later.")
+    }
+
+    #[test]
+    fn a_fully_populated_finding_survives_a_round_trip() {
+        let original = maximal_finding();
+        let rebuilt = FindingRecord::from(&original)
+            .rebuild()
+            .expect("a finding rebuilds");
+        assert_eq!(original, rebuilt, "a field was lost in the round trip");
+    }
+
+    #[test]
+    fn a_finding_record_reads_unknown_names_downward_and_a_nameless_one_away() {
+        // A record this build does not fully understand still yields a finding,
+        // read to the least it could claim — never guessed upward, never dropped
+        // over a soft field.
+        let softened = FindingRecord {
+            detection: DetectionIdRecord {
+                id: "det".into(),
+                version: "not-a-version".into(), // -> 0.0.0
+                content_hash: "h".into(),
+            },
+            title: "A finding".into(),
+            severity: "catastrophic".into(), // -> Info
+            confidence: "absolute".into(),   // -> Heuristic
+            class: "nosy".into(),            // -> Passive
+            excerpt: None,
+            references: vec![ReferenceRecord {
+                kind: "mystery".into(),
+                value: "x".into(),
+            }],
+            remediation: None,
+        };
+        let finding = softened
+            .rebuild()
+            .expect("an unparseable-but-named finding still rebuilds");
+        assert_eq!(finding.severity(), Severity::Info);
+        assert_eq!(finding.confidence(), Confidence::Heuristic);
+        assert_eq!(finding.class(), DetectionClass::Passive);
+        assert_eq!(finding.detection().version(), Version::new(0, 0, 0));
+        assert_eq!(
+            finding.references().count(),
+            0,
+            "an unknown reference is dropped, the finding kept"
+        );
+
+        // But a finding that names no detection, or has no title, is not a
+        // finding — those two are refused, not softened.
+        let nameless = FindingRecord {
+            detection: DetectionIdRecord {
+                id: "  ".into(),
+                ..softened.detection.clone()
+            },
+            ..softened.clone()
+        };
+        assert!(nameless.rebuild().is_none());
+        let titleless = FindingRecord {
+            title: "  ".into(),
+            ..softened.clone()
+        };
+        assert!(titleless.rebuild().is_none());
+    }
+
+    #[test]
+    fn a_hosts_findings_survive_a_record_round_trip() {
+        // The silent failure guarded here: a HostRecord that carries ports but
+        // forgets findings would round-trip a host with its findings gone.
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
+        host.add_finding(maximal_finding());
+        let rebuilt = Host::from(&HostRecord::from(&host));
+
+        let original: Vec<_> = host.findings().cloned().collect();
+        let round: Vec<_> = rebuilt.findings().cloned().collect();
+        assert_eq!(original, round, "a host's findings were lost in the record");
+    }
+
+    #[test]
+    fn a_ports_findings_survive_a_record_round_trip() {
+        let mut port = Port::new(3000, Protocol::Tcp, PortState::Open);
+        port.add_finding(maximal_finding());
+        let rebuilt = Port::from(&PortRecord::from(&port));
+
+        let original: Vec<_> = port.findings().cloned().collect();
+        let round: Vec<_> = rebuilt.findings().cloned().collect();
+        assert_eq!(original, round, "a port's findings were lost in the record");
     }
 
     /// The record is the same after a round trip through the model, which

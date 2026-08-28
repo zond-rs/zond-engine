@@ -85,8 +85,9 @@ use std::fmt::{self, Write as _};
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::export::schema::{ENGINE_NAME, protocol_name};
+use crate::export::schema::{ENGINE_NAME, protocol_name, reference_text, severity_name};
 use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::model::finding::Finding;
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
@@ -414,6 +415,14 @@ fn write_host(
         writeln!(out, r#"<distance value="{distance}"/>"#)?;
     }
 
+    // `<hostscript>` carries the host-level findings, after `<distance>` and
+    // before `<trace>` as nmap's DTD fixes the order.
+    if host.findings().next().is_some() {
+        writeln!(out, "<hostscript>")?;
+        write_finding_scripts(out, host.findings())?;
+        writeln!(out, "</hostscript>")?;
+    }
+
     write_trace(out, host)?;
 
     // Nmap reports these in microseconds, which is also what the engine keeps,
@@ -476,6 +485,48 @@ fn write_trace(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
 }
 
 /// Writes one `<port>` element.
+/// A finding flattened to one line of `<script output>` text: severity, title,
+/// references, the justifying excerpt, and any remediation. Every part is
+/// attacker-influenced and is written through [`Attr`] at the call site, never
+/// raw.
+fn finding_output(finding: &Finding) -> String {
+    let mut parts = vec![format!(
+        "[{}] {}",
+        severity_name(finding.severity()),
+        finding.title()
+    )];
+    let references: Vec<String> = finding.references().map(reference_text).collect();
+    if !references.is_empty() {
+        parts.push(references.join(", "));
+    }
+    if !finding.excerpt().is_empty() {
+        parts.push(finding.excerpt().as_str().to_owned());
+    }
+    if let Some(remediation) = finding.remediation() {
+        parts.push(format!("fix: {remediation}"));
+    }
+    parts.join(" | ")
+}
+
+/// Writes a subject's findings as `<script id="…" output="…"/>` elements, the
+/// shape nmap gives NSE output and the shape DefectDojo and its neighbours read.
+/// The id and the flattened output are both attacker-influenced, so both pass
+/// through [`Attr`].
+fn write_finding_scripts<'a>(
+    out: &mut dyn Write,
+    findings: impl Iterator<Item = &'a Finding>,
+) -> Result<(), ExportError> {
+    for finding in findings {
+        writeln!(
+            out,
+            r#"<script id="{}" output="{}"/>"#,
+            Attr(finding.detection().id()),
+            Attr(&finding_output(finding)),
+        )?;
+    }
+    Ok(())
+}
+
 fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
     writeln!(
         out,
@@ -518,6 +569,9 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
             nmap_confidence(service.confidence()),
         )?;
     }
+
+    // `<script>` follows `<service>` in nmap's DTD for a `<port>`.
+    write_finding_scripts(out, port.findings())?;
 
     writeln!(out, "</port>")?;
     Ok(())

@@ -58,11 +58,13 @@
 use std::io::Write;
 
 use crate::export::schema::{
-    host_status_name, network_role_name, port_state_name, protocol_name, scan_response_name,
+    host_status_name, network_role_name, port_state_name, protocol_name, reference_text,
+    scan_response_name, severity_name,
 };
 use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::format::csv::{COLUMNS, PORT_COLUMNS};
 use crate::format::time::rfc3339;
+use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::Port;
 use crate::scanner::report::ScanReport;
@@ -280,6 +282,37 @@ fn write_port(row: &mut Row, port: &Port, options: &ExportOptions) {
             .map(|cert| rfc3339(cert.validity_end()))
             .unwrap_or_default(),
     );
+    row.push(findings_cell(port));
+}
+
+/// The port's findings as one cell: each finding as `severity: title (refs)`,
+/// worst-first, joined by `; `.
+///
+/// The excerpt is left out — it is for a reader of the richer formats, not a
+/// spreadsheet cell. The cell always leads with a severity word, so it can never
+/// begin with a formula character; `push` quotes any cell carrying a `;`, so the
+/// summary survives a spreadsheet locale that reads `;` as the column delimiter.
+fn findings_cell(port: &Port) -> String {
+    let mut findings: Vec<&Finding> = port.findings().collect();
+    findings.sort_by(|a, b| {
+        b.severity()
+            .cmp(&a.severity())
+            .then_with(|| a.detection().id().cmp(b.detection().id()))
+    });
+    findings
+        .into_iter()
+        .map(|finding| {
+            let mut entry = format!("{}: {}", severity_name(finding.severity()), finding.title());
+            let references: Vec<String> = finding.references().map(reference_text).collect();
+            if !references.is_empty() {
+                entry.push_str(" (");
+                entry.push_str(&references.join(", "));
+                entry.push(')');
+            }
+            entry
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Renders `true` and `false` the way a spreadsheet expects to read them.
@@ -323,8 +356,12 @@ impl Row {
 
         let field = field.as_ref();
         let needs_formula_guard = field.starts_with(FORMULA_LEADERS) || field.starts_with('\r');
+        // A `;` is quoted alongside the delimiters proper because a spreadsheet
+        // in a comma-for-decimal locale reads `;` as the column separator, and a
+        // quoted field survives that reading — which is what lets the findings
+        // column join its entries with `; `.
         let needs_quotes = needs_formula_guard
-            || field.contains([',', '"', '\n', '\r'])
+            || field.contains([',', ';', '"', '\n', '\r'])
             || field.starts_with(' ')
             || field.ends_with(' ');
 

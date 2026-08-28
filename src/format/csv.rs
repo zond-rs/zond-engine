@@ -18,7 +18,7 @@
 
 /// The column names, in order. Host columns first, then the port columns that
 /// are empty on a host with no ports.
-pub const COLUMNS: [&str; 24] = [
+pub const COLUMNS: [&str; 25] = [
     "ip",
     "hostname",
     "status",
@@ -43,9 +43,10 @@ pub const COLUMNS: [&str; 24] = [
     "tls_version",
     "cert_common_name",
     "cert_not_after",
+    "findings",
 ];
 
 /// How many of [`COLUMNS`] describe the port rather than the host.
 ///
 /// The split point, not a second list: the host half is everything before it.
-pub const PORT_COLUMNS: usize = 11;
+pub const PORT_COLUMNS: usize = 12;

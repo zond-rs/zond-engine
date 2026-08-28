@@ -43,6 +43,7 @@
 
 pub mod capture;
 pub mod exclusion;
+pub mod finding;
 pub mod host;
 pub mod ip;
 pub mod mac;

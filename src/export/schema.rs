@@ -71,6 +71,7 @@ use crate::config::{RetryConfig, ScanEffort};
 use crate::export::ExportOptions;
 use crate::format::time::rfc3339;
 use crate::model::capture::CaptureCounts;
+use crate::model::finding::{Finding, Reference};
 use crate::model::host::{
     HardwareInfo, Hop, Host, HostStatus, HostTelemetry, OsFingerprint, StatusReason,
 };
@@ -104,8 +105,9 @@ pub use crate::scanner::report::ENGINE_VERSION;
 // apart. Re-exported rather than called through, since these appear in the
 // export's hot paths and a caller should not have to know where they live.
 pub use crate::record::wire::{
-    attachment_source_name, filtering_name, host_status_name, network_role_name, port_scope_name,
-    port_state_name, protocol_name, scan_kind_name, scan_response_name, scanner_kind_name,
+    attachment_source_name, confidence_name, detection_class_name, filtering_name,
+    host_status_name, network_role_name, port_scope_name, port_state_name, protocol_name,
+    reference_kind_name, scan_kind_name, scan_response_name, scanner_kind_name, severity_name,
     status_protocol_name, stop_reason_name, tcp_flags_name,
 };
 
@@ -1247,6 +1249,9 @@ pub struct HostDto<'a> {
     pub path: Vec<HopDto>,
     /// Discovered ports, ascending by number.
     pub ports: Vec<PortDto<'a>>,
+    /// What a detection concluded is wrong with the host as a whole, worst-first.
+    /// A port's own findings are on the port.
+    pub findings: Vec<FindingDto<'a>>,
     /// When this host was first seen.
     pub first_seen: String,
     /// When it was last updated.
@@ -1311,6 +1316,7 @@ impl<'a> HostDto<'a> {
                 .ports()
                 .map(|port| PortDto::new(port, options))
                 .collect(),
+            findings: findings_dto(host.findings()),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
         }
@@ -1556,6 +1562,9 @@ pub struct PortDto<'a> {
     pub security: Option<SecurityDto<'a>>,
     /// How the state was established.
     pub discovery: Option<DiscoveryDto<'a>>,
+    /// What a detection concluded is wrong with what is listening here,
+    /// worst-first.
+    pub findings: Vec<FindingDto<'a>>,
 }
 
 impl<'a> PortDto<'a> {
@@ -1570,7 +1579,110 @@ impl<'a> PortDto<'a> {
                 .security()
                 .map(|security| SecurityDto::new(security, options)),
             discovery: port.discovery().map(DiscoveryDto::new),
+            findings: findings_dto(port.findings()),
         }
+    }
+}
+
+/// The findings of a subject, rendered worst-first for a person reading the
+/// report — severity descending, then producer id — rather than in the claim
+/// order the file is written in. The model sorts by identity for a stable file;
+/// a report sorts by severity for a legible page.
+fn findings_dto<'a>(findings: impl Iterator<Item = &'a Finding>) -> Vec<FindingDto<'a>> {
+    let mut findings: Vec<&'a Finding> = findings.collect();
+    findings.sort_by(|a, b| {
+        b.severity()
+            .cmp(&a.severity())
+            .then_with(|| a.detection().id().cmp(b.detection().id()))
+    });
+    findings.into_iter().map(FindingDto::new).collect()
+}
+
+/// One finding, for a report a consumer parses.
+#[derive(Debug, Clone, Serialize)]
+pub struct FindingDto<'a> {
+    /// The detection that produced it. Author-chosen and untrusted; an exporter
+    /// writing to markup escapes it.
+    pub id: &'a str,
+    /// The detection's version, `major.minor.patch`.
+    pub version: String,
+    /// The content hash of the detection body, for reproducibility.
+    pub content_hash: &'a str,
+    /// The one-line title. Untrusted.
+    pub title: &'a str,
+    /// How bad it is if true: `info`, `low`, `medium`, `high` or `critical`.
+    pub severity: &'static str,
+    /// How sure it is true: `heuristic`, `weak`, `probable`, `strong` or
+    /// `certain`. Independent of severity — a finding can be `critical` and only
+    /// `probable`.
+    pub confidence: &'static str,
+    /// The intrusiveness the detection ran under.
+    pub class: &'static str,
+    /// The bytes that justify it, for a person rather than a parser. Untrusted;
+    /// absent where the detection carried none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<&'a str>,
+    /// External references — CVE, CWE, and advisory links.
+    pub references: Vec<ReferenceDto<'a>>,
+    /// Remediation advice, if the detection carried any. Untrusted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<&'a str>,
+}
+
+impl<'a> FindingDto<'a> {
+    /// Renders a finding.
+    pub fn new(finding: &'a Finding) -> Self {
+        Self {
+            id: finding.detection().id(),
+            version: finding.detection().version().to_string(),
+            content_hash: finding.detection().content_hash(),
+            title: finding.title(),
+            severity: severity_name(finding.severity()),
+            confidence: confidence_name(finding.confidence()),
+            class: detection_class_name(finding.class()),
+            excerpt: (!finding.excerpt().is_empty()).then(|| finding.excerpt().as_str()),
+            references: finding.references().map(ReferenceDto::new).collect(),
+            remediation: finding.remediation(),
+        }
+    }
+}
+
+/// One external reference: a typed kind and the value it carries.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReferenceDto<'a> {
+    /// `cve`, `cwe`, or `url`.
+    pub kind: &'static str,
+    /// The identifier or link. A `url` value is untrusted.
+    pub value: Cow<'a, str>,
+}
+
+impl<'a> ReferenceDto<'a> {
+    /// Renders a reference.
+    pub fn new(reference: &'a Reference) -> Self {
+        Self {
+            kind: reference_kind_name(reference),
+            value: match reference {
+                Reference::Cve(id) | Reference::Url(id) => Cow::Borrowed(id.as_str()),
+                Reference::Cwe(number) => Cow::Owned(number.to_string()),
+            },
+        }
+    }
+}
+
+/// A reference as one line of human-readable text: the CVE or CWE identifier, or
+/// the URL. Distinct from [`ReferenceDto`], which keeps the kind and value apart
+/// for a parser; this is the flattened form the text-oriented exporters — the
+/// nmap-XML `<script output>` and the CSV findings column — put in front of a
+/// reader.
+///
+/// Compiled only for the exporters that use it, so a build with neither reads no
+/// dead code.
+#[cfg(any(feature = "export-nmap", feature = "export-csv"))]
+pub(crate) fn reference_text(reference: &Reference) -> String {
+    match reference {
+        Reference::Cve(id) => id.clone(),
+        Reference::Cwe(number) => format!("CWE-{number}"),
+        Reference::Url(url) => url.clone(),
     }
 }
 

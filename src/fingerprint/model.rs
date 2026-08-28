@@ -53,6 +53,17 @@ impl Confidence {
             Confidence::Certain => 100,
         }
     }
+
+    /// Every level, weakest-first, for a caller that iterates rather than
+    /// writing the list out — the round-trip that keeps the wire names in step
+    /// with the enum, among them.
+    pub const ALL: [Confidence; 5] = [
+        Self::Heuristic,
+        Self::Weak,
+        Self::Probable,
+        Self::Strong,
+        Self::Certain,
+    ];
 }
 
 /// Which detector produced a piece of [`Evidence`].

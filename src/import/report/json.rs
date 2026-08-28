@@ -803,6 +803,9 @@ impl HostDto {
                 .into_iter()
                 .map(PortDto::record)
                 .collect::<Result<_, _>>()?,
+            // The narrow import document carries what a target list needs, not a
+            // detection's conclusions. See the module documentation.
+            findings: Vec::new(),
         })
     }
 }
@@ -951,6 +954,7 @@ impl PortDto {
             service: self.service.map(ServiceDto::record),
             security: maybe(self.security, SecurityDto::record)?,
             discovery: maybe(self.discovery, DiscoveryDto::record)?,
+            findings: Vec::new(),
         })
     }
 }

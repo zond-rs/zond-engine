@@ -79,7 +79,7 @@ use std::io::Write;
 use std::time::SystemTime;
 
 use crate::export::schema::{
-    ENGINE_NAME, HostDto, PhaseDto, PortDto, ProbeStatsDto, SCHEMA_VERSION, SummaryDto,
+    ENGINE_NAME, FindingDto, HostDto, PhaseDto, PortDto, ProbeStatsDto, SCHEMA_VERSION, SummaryDto,
     host_status_name, port_state_name, scan_kind_name, total_elapsed_us,
 };
 use crate::export::{ExportError, ExportOptions, Exporter};
@@ -629,6 +629,12 @@ fn write_host(
 fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), ExportError> {
     writeln!(out, "<dl class=\"facts\">")?;
 
+    if !dto.findings.is_empty() {
+        let mut findings = String::new();
+        write_finding_facts(&mut findings, &dto.findings);
+        write!(out, "{findings}")?;
+    }
+
     if dto.ips.len() > 1 {
         let addresses: Vec<String> = dto.ips.iter().map(|ip| esc(ip)).collect();
         fact(out, "addresses", &addresses.join(", "))?;
@@ -820,9 +826,44 @@ fn write_port(out: &mut dyn Write, port: &Port, dto: &PortDto<'_>) -> Result<(),
     write_port_detail(out, dto)
 }
 
+/// Appends a subject's findings to a fact list, worst-first.
+///
+/// Every attacker-influenced field it shows — the title, the excerpt, the
+/// remediation, and any URL reference — is written as element content through
+/// [`Text`]/[`esc`], never into an attribute, so a markup-bearing banner is inert
+/// on the page. The reused classes are `mono`, which the stylesheet already
+/// defines; the class-name test holds it to that.
+fn write_finding_facts(facts: &mut String, findings: &[FindingDto<'_>]) {
+    for finding in findings {
+        let mut detail = vec![Text(finding.confidence).to_string()];
+        if !finding.references.is_empty() {
+            let references: Vec<String> =
+                finding.references.iter().map(|r| esc(&r.value)).collect();
+            detail.push(references.join(", "));
+        }
+        let _ = write!(
+            facts,
+            "<dt>{severity}</dt><dd>{title}{detail}",
+            severity = Text(finding.severity),
+            title = Text(finding.title),
+            detail = dim(&detail),
+        );
+        if let Some(excerpt) = finding.excerpt {
+            let _ = write!(facts, "<div class=\"mono\">{}</div>", Text(excerpt));
+        }
+        if let Some(remediation) = finding.remediation {
+            let _ = write!(facts, "<div>{}</div>", Text(remediation));
+        }
+        facts.push_str("</dd>");
+    }
+}
+
 /// The second row a port gets when there is more to say than fits in a column.
 fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), ExportError> {
     let mut facts = String::new();
+
+    // Findings lead: the worst thing about a port is the first thing to read.
+    write_finding_facts(&mut facts, &dto.findings);
 
     if let Some(service) = &dto.service {
         let cpes: Vec<String> = service.cpe.iter().map(|cpe| esc(cpe)).collect();

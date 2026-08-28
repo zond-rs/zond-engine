@@ -24,9 +24,13 @@ use std::time::{Duration, SystemTime};
 
 use crate::config::{IdleScan, ZondConfig};
 use crate::evasion::EvasionProfile;
+use crate::fingerprint::Confidence;
 use crate::protocols::tcp::flags;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
+use crate::model::finding::{
+    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+};
 use crate::model::host::{
     Filtering, Hop, Host, HostStatus, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
 };
@@ -494,6 +498,22 @@ fn after_hosts() -> Vec<Host> {
 pub(crate) const HOSTILE: &str = "=<script>alert(\"x\")</script>&'\u{202e}";
 
 /// A host on the hostile fixture's network.
+/// A finding whose every describable string is hostile, including a `url`
+/// reference — the one reference kind that carries attacker-controlled text.
+fn hostile_finding() -> Finding {
+    Finding::new(
+        DetectionId::new(HOSTILE, Version::new(1, 0, 0), HOSTILE).unwrap(),
+        HOSTILE,
+        Severity::Critical,
+        Confidence::Certain,
+        DetectionClass::Exploit,
+    )
+    .unwrap()
+    .with_excerpt(Excerpt::new(HOSTILE))
+    .with_reference(Reference::url(HOSTILE))
+    .with_remediation(HOSTILE)
+}
+
 fn hostile_host() -> Host {
     let mut host = Host::new(ip(3));
     host.set_hostname(Some(HOSTILE.to_string()));
@@ -516,6 +536,7 @@ fn hostile_host() -> Host {
     host.set_os(os);
     host.add_rtt(Duration::from_micros(1_000));
 
+    host.add_finding(hostile_finding());
     host.add_port(hostile_port());
     host
 }
@@ -544,10 +565,12 @@ fn hostile_port() -> Port {
         .with_alpn(HOSTILE)
         .with_certificate(certificate);
 
-    Port::new(8443, Protocol::Tcp, PortState::Open)
+    let mut port = Port::new(8443, Protocol::Tcp, PortState::Open)
         .with_service(service)
         .with_security(security)
-        .with_discovery(Discovery::new(ScanResponse::TcpSynAck).with_source_ip(ip(50)))
+        .with_discovery(Discovery::new(ScanResponse::TcpSynAck).with_source_ip(ip(50)));
+    port.add_finding(hostile_finding());
+    port
 }
 
 /// A report whose every attacker-controlled string is [`HOSTILE`].

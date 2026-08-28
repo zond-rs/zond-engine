@@ -429,6 +429,7 @@
         "hardware",
         "telemetry",
         "ports",
+        "findings",
         "first_seen",
         "last_seen",
         "zone",
@@ -549,6 +550,13 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/port"
+          }
+        },
+        "findings": {
+          "description": "What a detection concluded is wrong with the host as a whole, worst-first. A port's own findings are on the port.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
           }
         },
         "first_seen": {
@@ -756,7 +764,8 @@
         "state",
         "service",
         "security",
-        "discovery"
+        "discovery",
+        "findings"
       ],
       "properties": {
         "port": {
@@ -806,6 +815,110 @@
               "type": "null"
             }
           ]
+        },
+        "findings": {
+          "description": "What a detection concluded is wrong with what is listening here, worst-first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
+          }
+        }
+      }
+    },
+    "finding": {
+      "description": "One thing a detection concluded is wrong with a subject: a typed, provenance-tagged claim. `severity` (how bad if true) and `confidence` (how sure it is true) are independent axes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "content_hash",
+        "title",
+        "severity",
+        "confidence",
+        "class",
+        "references"
+      ],
+      "properties": {
+        "id": {
+          "description": "The detection that produced the finding. Author-chosen and untrusted.",
+          "type": "string"
+        },
+        "version": {
+          "description": "The detection's version, as `major.minor.patch`.",
+          "type": "string"
+        },
+        "content_hash": {
+          "description": "The content hash of the detection body, for reproducibility.",
+          "type": "string"
+        },
+        "title": {
+          "description": "The one-line title. Untrusted.",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "heuristic",
+            "weak",
+            "probable",
+            "strong",
+            "certain"
+          ]
+        },
+        "class": {
+          "enum": [
+            "passive",
+            "active_benign",
+            "active_mutating",
+            "exploit",
+            "dos"
+          ]
+        },
+        "excerpt": {
+          "description": "The bytes that justify it, for a person rather than a parser. Absent where the detection carried none. Untrusted.",
+          "type": "string"
+        },
+        "references": {
+          "description": "External references — CVE, CWE, and advisory links.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "remediation": {
+          "description": "Remediation advice, if the detection carried any. Untrusted.",
+          "type": "string"
+        }
+      }
+    },
+    "reference": {
+      "description": "One external reference: a typed kind and the value it carries.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "value"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "cve",
+            "cwe",
+            "url"
+          ]
+        },
+        "value": {
+          "description": "The identifier or link. A `url` value is untrusted.",
+          "type": "string"
         }
       }
     },

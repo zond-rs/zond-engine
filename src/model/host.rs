@@ -30,6 +30,7 @@
 //! would.
 
 use crate::fingerprint::os::{OsEvidence, OsSource};
+use crate::model::finding::{ClaimId, Finding, MAX_FINDINGS_PER_SUBJECT};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
 use crate::model::port::{Port, PortState, Protocol};
@@ -505,6 +506,16 @@ pub struct Host {
     /// What the filter in front of this host was shown to be doing, if anything.
     filtering: HashSet<Filtering>,
 
+    /// What a detection concluded was wrong with this host, keyed on the claim so
+    /// that the same finding reached twice records once.
+    ///
+    /// Host-level findings are the cross-cutting ones — a weakness inferred from
+    /// several ports together, or a correlation over the host as a whole — as
+    /// distinct from the per-port findings a [`Port`] carries. Bounded by
+    /// [`MAX_FINDINGS_PER_SUBJECT`], and keyed like [`os_evidence`](Self::os_evidence)
+    /// so that a detection re-firing corroborates rather than accumulates.
+    findings: BTreeMap<ClaimId, Finding>,
+
     /// The timestamp of the first discovery event for this host.
     first_seen: SystemTime,
 
@@ -588,6 +599,7 @@ impl Host {
             path: NetworkPath::new(),
             network_roles: HashSet::new(),
             filtering: HashSet::new(),
+            findings: BTreeMap::new(),
             first_seen: now,
             last_seen: now,
             ports: BTreeMap::new(),
@@ -848,6 +860,15 @@ impl Host {
         self.os_evidence.values()
     }
 
+    /// This host's findings, in a stable order.
+    ///
+    /// The cross-host conclusions — a weakness of the host as a whole, not of one
+    /// of its ports. A port's own findings are on the [`Port`]. Ordered by claim,
+    /// so two runs that found the same things render them the same way.
+    pub fn findings(&self) -> impl Iterator<Item = &Finding> {
+        self.findings.values()
+    }
+
     /// Files what one source concluded, keeping the strongest reading per
     /// source.
     ///
@@ -893,6 +914,32 @@ impl Host {
             None if full => false,
             None => {
                 self.os_evidence.insert(claim, evidence);
+                true
+            }
+        }
+    }
+
+    /// Records a finding about this host, and reports whether it was new
+    /// information — a claim not seen before, or a stronger reading of one that
+    /// was.
+    ///
+    /// A finding reached again by the same detection is not a second finding: it
+    /// folds into the one on record through [`Finding::corroborate`], keeping the
+    /// strongest confidence and the newest verdict. The ceiling turns away only a
+    /// genuinely new claim, so a subject already at the limit still updates the
+    /// findings it holds. Mirrors [`record_os_evidence`](Self::record_os_evidence).
+    pub fn add_finding(&mut self, finding: Finding) -> bool {
+        let claim = finding.claim_id();
+
+        // The ceiling is read before the map is borrowed to edit, because a claim
+        // already on record occupies room it does not have to ask for.
+        let full = self.findings.len() >= MAX_FINDINGS_PER_SUBJECT;
+
+        match self.findings.get_mut(&claim) {
+            Some(existing) => existing.corroborate(finding),
+            None if full => false,
+            None => {
+                self.findings.insert(claim, finding);
                 true
             }
         }
@@ -1186,6 +1233,13 @@ impl Host {
         }
 
         self.network_roles.extend(other.network_roles);
+
+        // Findings accumulate: a claim missing from one record is a detection
+        // that did not run there, never a retraction, so a fold adds and never
+        // removes. A claim on both corroborates through `add_finding`.
+        for finding in other.findings.into_values() {
+            self.add_finding(finding);
+        }
 
         for port in other.ports.into_values() {
             self.add_port(port);
@@ -1723,5 +1777,50 @@ mod tests {
             host.ips().contains(&second),
             "it is still an address it has"
         );
+    }
+
+    fn a_finding(detection_id: &str) -> Finding {
+        use crate::fingerprint::Confidence;
+        use crate::model::finding::{DetectionClass, DetectionId, Severity, Version};
+        Finding::new(
+            DetectionId::new(detection_id, Version::new(1, 0, 0), "hash").unwrap(),
+            "A host-level finding",
+            Severity::High,
+            Confidence::Certain,
+            DetectionClass::ActiveBenign,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_same_finding_recorded_twice_is_one() {
+        let mut host = Host::new(IP_ADDR);
+        assert!(host.add_finding(a_finding("det-a")), "the first is new");
+        assert!(
+            !host.add_finding(a_finding("det-a")),
+            "an identical re-firing is not new information"
+        );
+        assert_eq!(host.findings().count(), 1);
+    }
+
+    #[test]
+    fn a_merge_keeps_both_hosts_findings() {
+        // The failure this guards is the silent one: a merge that folds ports and
+        // roles but forgets findings reports a clean host that had a finding.
+        let mut base = Host::new(IP_ADDR);
+        base.add_finding(a_finding("det-a"));
+
+        let mut other = Host::new(IP_ADDR);
+        other.add_finding(a_finding("det-b"));
+
+        base.merge(other);
+
+        let ids: Vec<String> = base
+            .findings()
+            .map(|f| f.detection().id().to_string())
+            .collect();
+        assert_eq!(ids.len(), 2, "a merge must not drop the other's findings");
+        assert!(ids.contains(&"det-a".to_string()));
+        assert!(ids.contains(&"det-b".to_string()));
     }
 }

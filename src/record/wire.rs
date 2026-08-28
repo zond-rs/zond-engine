@@ -34,7 +34,9 @@
 
 use std::borrow::Cow;
 
+use crate::fingerprint::Confidence;
 use crate::fingerprint::os::OsSource;
+use crate::model::finding::{DetectionClass, Reference, Severity};
 use crate::model::host::{Filtering, HostStatus, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
@@ -157,6 +159,107 @@ pub fn filtering(name: &str) -> Option<Filtering> {
         "stateful_filter" => Filtering::StatefulFilter,
         "port_trusting_acl" => Filtering::PortTrustingAcl,
         "stateless_filter" => Filtering::StatelessFilter,
+        _ => return None,
+    })
+}
+
+/// How bad a finding is, on the wire.
+pub fn severity_name(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Info => "info",
+        Severity::Low => "low",
+        Severity::Medium => "medium",
+        Severity::High => "high",
+        Severity::Critical => "critical",
+    }
+}
+
+/// [`severity_name`] read back.
+pub fn severity(name: &str) -> Option<Severity> {
+    Some(match name {
+        "info" => Severity::Info,
+        "low" => Severity::Low,
+        "medium" => Severity::Medium,
+        "high" => Severity::High,
+        "critical" => Severity::Critical,
+        _ => return None,
+    })
+}
+
+/// The intrusiveness a detection ran under, on the wire.
+pub fn detection_class_name(class: DetectionClass) -> &'static str {
+    match class {
+        DetectionClass::Passive => "passive",
+        DetectionClass::ActiveBenign => "active_benign",
+        DetectionClass::ActiveMutating => "active_mutating",
+        DetectionClass::Exploit => "exploit",
+        DetectionClass::Dos => "dos",
+    }
+}
+
+/// [`detection_class_name`] read back.
+pub fn detection_class(name: &str) -> Option<DetectionClass> {
+    Some(match name {
+        "passive" => DetectionClass::Passive,
+        "active_benign" => DetectionClass::ActiveBenign,
+        "active_mutating" => DetectionClass::ActiveMutating,
+        "exploit" => DetectionClass::Exploit,
+        "dos" => DetectionClass::Dos,
+        _ => return None,
+    })
+}
+
+/// How sure a finding — or a service identification — is, on the wire.
+///
+/// The first wire form [`Confidence`] has: nothing serialized it until a finding
+/// did, so its names are defined here beside every other model enum's rather than
+/// in the fingerprinting module that owns the type.
+pub fn confidence_name(confidence: Confidence) -> &'static str {
+    match confidence {
+        Confidence::Heuristic => "heuristic",
+        Confidence::Weak => "weak",
+        Confidence::Probable => "probable",
+        Confidence::Strong => "strong",
+        Confidence::Certain => "certain",
+    }
+}
+
+/// [`confidence_name`] read back.
+pub fn confidence(name: &str) -> Option<Confidence> {
+    Some(match name {
+        "heuristic" => Confidence::Heuristic,
+        "weak" => Confidence::Weak,
+        "probable" => Confidence::Probable,
+        "strong" => Confidence::Strong,
+        "certain" => Confidence::Certain,
+        _ => return None,
+    })
+}
+
+/// Which kind of [`Reference`] this is, on the wire.
+///
+/// The kind travels beside a value the record carries separately, so its
+/// read-back is [`reference()`], which takes both halves — the one parser here that
+/// needs the value alongside the name, because a reference is an enum with a
+/// payload rather than a bare one.
+pub fn reference_kind_name(reference: &Reference) -> &'static str {
+    match reference {
+        Reference::Cve(_) => "cve",
+        Reference::Cwe(_) => "cwe",
+        Reference::Url(_) => "url",
+    }
+}
+
+/// A [`Reference`] rebuilt from its wire `kind` and `value`.
+///
+/// Returns [`None`] for an unknown kind, a CWE number that is not a number, or a
+/// CVE identifier of the wrong shape — a malformed reference is dropped rather
+/// than guessed at, the same discipline every parser here follows.
+pub fn reference(kind: &str, value: &str) -> Option<Reference> {
+    Some(match kind {
+        "cve" => Reference::cve(value)?,
+        "cwe" => Reference::cwe(value.parse().ok()?),
+        "url" => Reference::url(value),
         _ => return None,
     })
 }
@@ -516,6 +619,33 @@ mod tests {
             assert_eq!(network_role(network_role_name(value)), Some(value));
         }
 
+        for value in Severity::ALL {
+            assert_eq!(severity(severity_name(value)), Some(value));
+        }
+
+        for value in DetectionClass::ALL {
+            assert_eq!(detection_class(detection_class_name(value)), Some(value));
+        }
+
+        for value in Confidence::ALL {
+            assert_eq!(confidence(confidence_name(value)), Some(value));
+        }
+
+        // A reference carries a value beside its kind, so its round trip is over
+        // both halves rather than a bare name.
+        for value in [
+            Reference::Cve("CVE-2021-44228".to_string()),
+            Reference::Cwe(79),
+            Reference::url("https://example.test/advisory"),
+        ] {
+            let kind = reference_kind_name(&value);
+            let carried = match &value {
+                Reference::Cve(s) | Reference::Url(s) => s.clone(),
+                Reference::Cwe(n) => n.to_string(),
+            };
+            assert_eq!(reference(kind, &carried), Some(value));
+        }
+
         for value in [
             OsSource::TcpStack,
             OsSource::HardwareVendor,
@@ -636,6 +766,10 @@ mod tests {
         assert_eq!(scan_kind("enrichment"), None);
         assert_eq!(scanner_kind("telepathy"), None);
         assert_eq!(stop_reason("bored"), None);
+        assert_eq!(severity("catastrophic"), None);
+        assert_eq!(detection_class("nosy"), None);
+        assert_eq!(confidence("absolute"), None);
+        assert_eq!(reference("mystery", "x"), None);
     }
 
     /// A custom name that is empty renders as the bare prefix and names nothing.

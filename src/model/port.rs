@@ -60,6 +60,10 @@ pub use security::{CertificateInfo, Security};
 pub use service::Service;
 pub use set::{PortSet, PortSetParseError};
 
+use std::collections::BTreeMap;
+
+use crate::model::finding::{ClaimId, Finding, MAX_FINDINGS_PER_SUBJECT};
+
 /// Supported transport layer protocols.
 ///
 /// Ordered so that a set of protocols has one canonical rendering, which is what
@@ -164,6 +168,16 @@ pub struct Port {
 
     /// The packet that settled [`state`](Self::state), and what it carried.
     discovery: Option<Discovery>,
+
+    /// What a detection concluded was wrong with this endpoint, keyed on the
+    /// claim so that the same finding reached twice records once.
+    ///
+    /// The per-port findings — a vulnerable service, a weak configuration on the
+    /// thing listening here — as distinct from the cross-host findings a
+    /// [`Host`](crate::model::host::Host) carries. Bounded by
+    /// [`MAX_FINDINGS_PER_SUBJECT`], and folded through [`Finding::corroborate`]
+    /// when a detection re-fires.
+    findings: BTreeMap<ClaimId, Finding>,
 }
 
 impl Port {
@@ -176,6 +190,7 @@ impl Port {
             service: None,
             security: None,
             discovery: None,
+            findings: BTreeMap::new(),
         }
     }
 
@@ -271,6 +286,36 @@ impl Port {
     /// names one endpoint per transport, so merging TCP/53 into UDP/53 produces
     /// a record of neither. [`Host`](crate::model::host::Host) keys on both and
     /// cannot reach this; a caller merging by hand can.
+    /// This port's findings, in a stable order.
+    ///
+    /// What is wrong with the service listening here. Ordered by claim, so two
+    /// runs that found the same things render them the same way.
+    pub fn findings(&self) -> impl Iterator<Item = &Finding> {
+        self.findings.values()
+    }
+
+    /// Records a finding about this port, and reports whether it was new
+    /// information — a claim not seen before, or a stronger reading of one that
+    /// was.
+    ///
+    /// A finding reached again folds into the one on record through
+    /// [`Finding::corroborate`] rather than accumulating. The ceiling
+    /// ([`MAX_FINDINGS_PER_SUBJECT`]) turns away only a genuinely new claim.
+    pub fn add_finding(&mut self, finding: Finding) -> bool {
+        let claim = finding.claim_id();
+
+        let full = self.findings.len() >= MAX_FINDINGS_PER_SUBJECT;
+
+        match self.findings.get_mut(&claim) {
+            Some(existing) => existing.corroborate(finding),
+            None if full => false,
+            None => {
+                self.findings.insert(claim, finding);
+                true
+            }
+        }
+    }
+
     pub fn merge(&mut self, other: Port) {
         debug_assert_eq!(
             (self.number, self.protocol),
@@ -322,6 +367,13 @@ impl Port {
         // explanation of a weaker verdict still beats none.
         if other.discovery.is_some() && (other.state > previous_state || self.discovery.is_none()) {
             self.discovery = other.discovery;
+        }
+
+        // 5. Merge findings. A claim missing from one record is a detection that
+        // did not run there, not a retraction, so a fold adds and never removes;
+        // a claim on both corroborates through `add_finding`.
+        for finding in other.findings.into_values() {
+            self.add_finding(finding);
         }
     }
 }
@@ -417,6 +469,38 @@ mod tests {
         assert_eq!(
             p_filtered.discovery().unwrap().reason(),
             &ScanResponse::TcpSynAck
+        );
+    }
+
+    fn a_finding(detection_id: &str) -> Finding {
+        use crate::fingerprint::Confidence;
+        use crate::model::finding::{DetectionClass, DetectionId, Severity, Version};
+        Finding::new(
+            DetectionId::new(detection_id, Version::new(1, 0, 0), "hash").unwrap(),
+            "A port finding",
+            Severity::High,
+            Confidence::Certain,
+            DetectionClass::ActiveBenign,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_merge_keeps_both_ports_findings() {
+        // The silent failure: a merge that folds state and service but forgets
+        // findings reports a clean port that had one.
+        let mut base = Port::new(443, Protocol::Tcp, PortState::Open);
+        base.add_finding(a_finding("det-a"));
+
+        let mut other = Port::new(443, Protocol::Tcp, PortState::Open);
+        other.add_finding(a_finding("det-b"));
+
+        base.merge(other);
+
+        assert_eq!(
+            base.findings().count(),
+            2,
+            "a merge must not drop the other's findings"
         );
     }
 }
