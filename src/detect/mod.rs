@@ -22,4 +22,7 @@
 //! The compute tier, for the detections that genuinely need logic, joins it
 //! later.
 
+pub mod envelope;
 pub mod flow;
+
+pub use envelope::DetectionEnvelope;

@@ -140,6 +140,7 @@ pub mod strategy;
 // tail, `service` identifies what is behind an open port, and `pool` and
 // `payload` are shared probe machinery.
 pub mod audit;
+pub mod detect;
 pub mod dispatcher;
 pub mod payload;
 pub mod pool;

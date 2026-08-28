@@ -40,6 +40,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::config::{OsDetection, ProbeTuning, ServiceDetection, ZondConfig};
+use crate::detect::DetectionEnvelope;
 use crate::evasion::EvasionProfile;
 use crate::fingerprint::os;
 use crate::journal::cursor::Checkpoint;
@@ -409,12 +410,20 @@ pub(super) async fn run_port_scan(
     mut scanner: Box<dyn PortScanner>,
     rx: mpsc::Receiver<PlannedTarget>,
     ctx: &ScanContext,
+    service_detection: ServiceDetection,
+    detection: DetectionEnvelope,
 ) {
     let kind = scanner.kind();
     match scanner.scan(rx).await {
         Ok(()) => {
             if !ctx.handle.should_stop() {
                 scanner.detect_services(ctx).await;
+            }
+            // Active detections run over the services just identified, on the same
+            // terms service detection did — after it, and only if the scan is not
+            // stopping.
+            if !ctx.handle.should_stop() {
+                super::detect::detect(ctx, service_detection, detection).await;
             }
         }
         Err(e) => ctx.record_failure(kind, e.to_string()),
@@ -970,7 +979,7 @@ pub(super) async fn run_port_phase(
     }
     let rx = dispatcher.run_shuffled(ctx);
 
-    run_port_scan(built.scanner, rx, ctx).await;
+    run_port_scan(built.scanner, rx, ctx, cfg.service_detection, cfg.detection).await;
     finish_enrichment(enrichment, caps, ctx).await;
     // Passive first, then active: the echo probe is aimed at the hosts the
     // passive sources could not name, and it can only know which those are once

@@ -1,0 +1,328 @@
+// Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors
+//
+// This file is part of Zond Engine, licensed under the GNU Affero General
+// Public License, version 3 or later. See the LICENSE file for details, or
+// <https://www.gnu.org/licenses/agpl-3.0.html>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! # Detection phase
+//!
+//! Runs the Tier-1 [flow](crate::detect::flow) corpus against the open ports a
+//! scan has already found and identified, recording a [`Finding`] wherever a flow
+//! fires. It is the active counterpart to the [CVE correlator](crate::cve): the
+//! correlator reads the service versions the scan gathered and joins them against
+//! known vulnerabilities without touching the target, while this opens a fresh
+//! connection to a port and exchanges bytes to decide.
+//!
+//! ## The socket a flow speaks through
+//!
+//! The flow interpreter is synchronous and interleaves I/O with its own logic (a
+//! conditional step sends only after an earlier one matched), so it does not fit
+//! the reactor's collect-then-analyse shape. It runs instead on the blocking pool
+//! ([`spawn_blocking`](tokio::task::spawn_blocking)), where a blocking
+//! `SocketProbe` serves its `speak`. The connection is a plain one to the
+//! scanned address, as [service detection](crate::scanner::service) makes: the
+//! probe is bound to the one port it was built for, so a flow can reach nothing
+//! else.
+//!
+//! ## What it does not do yet
+//!
+//! The flow's declared budgets (`max_bytes`, `max_millis`) are not yet enforced
+//! at the socket; fixed ceilings bound a probe instead. Enforcing the declared
+//! budget, and letting an operator enable the intrusive classes, is the capability
+//! envelope, a later increment.
+
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::time::Duration;
+
+use crate::config::ServiceDetection;
+use crate::detect::DetectionEnvelope;
+use crate::detect::flow::db::FlowDb;
+use crate::detect::flow::{Probe, stage};
+use crate::model::finding::Finding;
+use crate::model::ip::scoped::ScopedIp;
+use crate::model::port::{PortState, Protocol};
+use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
+use crate::scanner::pool::ProbePool;
+use crate::scanner::session::{ScanContext, ScannerKind};
+
+/// How long a flow's probe waits for a reply before taking silence for an answer.
+const REPLY_TIMEOUT: Duration = Duration::from_millis(2000);
+
+/// The most a flow's probe reads from one exchange, a ceiling on what an
+/// answering port can make the scan buffer.
+const MAX_REPLY_BYTES: usize = 64 * 1024;
+
+/// Runs the flow corpus against every open port a flow is interested in,
+/// recording the findings it produces.
+///
+/// Gated on a service pass having run: a flow's `when` selects a port by its
+/// service, so with nothing identified there is nothing to select, and the flow
+/// probes are the same kind of active connection service detection already made.
+/// `envelope` decides which detection classes the operator permits.
+pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: DetectionEnvelope) {
+    if detection == ServiceDetection::Off {
+        return;
+    }
+
+    let corpus = FlowDb::global();
+    let targets = interested_ports(ctx, corpus, envelope);
+    if targets.is_empty() {
+        return;
+    }
+
+    let mut pool = ProbePool::new(
+        CONNECT_CONCURRENCY,
+        ctx.clone(),
+        ScannerKind::Connect,
+        |result, _audit| {
+            if let Some((key, number, protocol, findings)) = result {
+                record(ctx, key, number, protocol, findings);
+            }
+        },
+    );
+
+    for (target, number, protocol, service) in targets {
+        if ctx.handle.should_stop() {
+            break;
+        }
+        pool.admit(detect_one(
+            target, number, protocol, service, corpus, envelope,
+        ))
+        .await;
+    }
+
+    pool.drain().await;
+}
+
+/// Every open `(address, port, protocol, service)` some flow would probe,
+/// snapshotted so the store is not borrowed across the exchanges that follow.
+///
+/// Pre-filtered by [`stage::interested`] so a port no flow gates onto costs
+/// nothing here rather than a blocking task that opens no socket.
+fn interested_ports(
+    ctx: &ScanContext,
+    corpus: &FlowDb,
+    envelope: DetectionEnvelope,
+) -> Vec<(ScopedIp, u16, Protocol, Option<String>)> {
+    let mut targets = Vec::new();
+    for host in ctx.store.iter() {
+        let address = host.value().scoped_ip();
+        for port in host.value().ports() {
+            if port.state() != PortState::Open {
+                continue;
+            }
+            let service = port.service().map(|service| service.name().to_string());
+            if stage::interested(
+                corpus,
+                &envelope,
+                service.as_deref(),
+                port.number(),
+                port.protocol(),
+            ) {
+                targets.push((address.clone(), port.number(), port.protocol(), service));
+            }
+        }
+    }
+    targets
+}
+
+/// Runs one port's flows on the blocking pool and returns the findings, or
+/// [`None`] if the port yielded nothing or has no reachable address.
+async fn detect_one(
+    target: ScopedIp,
+    number: u16,
+    protocol: Protocol,
+    service: Option<String>,
+    corpus: &'static FlowDb,
+    envelope: DetectionEnvelope,
+) -> Option<(ScopedIp, u16, Protocol, Vec<Finding>)> {
+    let addr = target.to_socket_addr(number)?;
+
+    // The interpreter is synchronous and the socket blocks, so it runs off the
+    // reactor. `spawn_blocking` fails only if the runtime is shutting down.
+    let findings = tokio::task::spawn_blocking(move || {
+        stage::detect_port(
+            corpus,
+            &envelope,
+            service.as_deref(),
+            number,
+            protocol,
+            || Some(Box::new(SocketProbe { addr, protocol }) as Box<dyn Probe>),
+        )
+    })
+    .await
+    .ok()?;
+
+    (!findings.is_empty()).then_some((target, number, protocol, findings))
+}
+
+/// Folds one port's findings back into its host.
+fn record(
+    ctx: &ScanContext,
+    key: ScopedIp,
+    number: u16,
+    protocol: Protocol,
+    findings: Vec<Finding>,
+) {
+    ctx.update_host(key, |host| {
+        for finding in findings {
+            host.add_port_finding(number, protocol, finding);
+        }
+    });
+}
+
+/// A blocking [`Probe`] over a fresh connection to one scanned port. Each `speak`
+/// is one request and its reply, which is enough for the corpus's stateless
+/// exchanges; it is bound to the address it was built for and reaches nothing
+/// else.
+struct SocketProbe {
+    addr: SocketAddr,
+    protocol: Protocol,
+}
+
+impl Probe for SocketProbe {
+    fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        match self.protocol {
+            Protocol::Tcp => tcp_exchange(self.addr, bytes),
+            Protocol::Udp => udp_exchange(self.addr, bytes),
+        }
+    }
+}
+
+/// Connects, sends `bytes`, and reads the reply until the port falls silent, hits
+/// [`MAX_REPLY_BYTES`], or closes. [`None`] on any failure or an empty reply.
+fn tcp_exchange(addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut stream = TcpStream::connect_timeout(&addr, CONNECT_PROBE_TIMEOUT).ok()?;
+    stream.set_read_timeout(Some(REPLY_TIMEOUT)).ok()?;
+    stream.write_all(bytes).ok()?;
+
+    let mut reply = Vec::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                reply.extend_from_slice(&buffer[..read]);
+                if reply.len() >= MAX_REPLY_BYTES {
+                    break;
+                }
+            }
+            // A read timeout is the ordinary end of a reply that does not close
+            // the connection; any other error ends it too.
+            Err(_) => break,
+        }
+    }
+    (!reply.is_empty()).then_some(reply)
+}
+
+/// Sends one datagram and reads one reply. [`None`] on failure or silence.
+fn udp_exchange(addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
+    let bind = if addr.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let socket = UdpSocket::bind(bind).ok()?;
+    socket.connect(addr).ok()?;
+    socket.set_read_timeout(Some(REPLY_TIMEOUT)).ok()?;
+    socket.send(bytes).ok()?;
+
+    let mut buffer = vec![0u8; MAX_REPLY_BYTES];
+    let read = socket.recv(&mut buffer).ok()?;
+    buffer.truncate(read);
+    (!buffer.is_empty()).then_some(buffer)
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::host::Host;
+    use crate::model::port::{Port, Service};
+    use crate::scanner::session::ScanSession;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn detect_runs_a_flow_against_a_live_port_and_records_its_finding() {
+        // A loopback "redis" that answers the flow's INFO probe with a version
+        // banner, standing in for the real service the flow is written against.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut probe = [0u8; 64];
+                let _ = sock.read(&mut probe).await;
+                let _ = sock.write_all(b"# Server\r\nredis_version:7.2.4\r\n").await;
+            }
+        });
+
+        // Seed the store as the earlier phases would: the port is open and
+        // identified as redis, so the flow's `when` service gate fits.
+        let (session, ctx) = ScanSession::new();
+        let ip = addr.ip();
+        let mut host = Host::new(ip);
+        host.add_port(
+            Port::new(addr.port(), Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("redis", 100)),
+        );
+        session.hosts().insert(ip, host);
+
+        detect(
+            &ctx,
+            ServiceDetection::default(),
+            DetectionEnvelope::default(),
+        )
+        .await;
+
+        let host = session.hosts().get(ip).unwrap();
+        let port = host
+            .ports()
+            .find(|port| port.number() == addr.port())
+            .unwrap();
+        let findings: Vec<_> = port.findings().collect();
+        assert_eq!(
+            findings.len(),
+            1,
+            "the redis flow fired against the live port"
+        );
+        assert_eq!(findings[0].detection().id(), "redis-unauth-access");
+        // Its provenance is the flow's real content hash.
+        assert_eq!(findings[0].detection().content_hash().len(), 64);
+    }
+
+    #[tokio::test]
+    async fn detection_off_connects_to_nothing() {
+        let (session, ctx) = ScanSession::new();
+        // An open, identified port on an address nothing is listening at:
+        // reaching the network would take the connect timeout, so a prompt
+        // return is the observable form of "no connection was attempted".
+        let unreachable: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        ctx.update_host(unreachable, |host| {
+            host.add_port(
+                Port::new(6379, Protocol::Tcp, PortState::Open)
+                    .with_service(Service::new("redis", 100)),
+            );
+        });
+
+        let started = std::time::Instant::now();
+        detect(&ctx, ServiceDetection::Off, DetectionEnvelope::default()).await;
+
+        assert!(
+            started.elapsed() < CONNECT_PROBE_TIMEOUT,
+            "a detection turned off cannot have waited on a connection"
+        );
+        drop(session);
+    }
+}

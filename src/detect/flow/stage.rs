@@ -30,6 +30,7 @@
 // supplies the Probe), so for now only the tests exercise it.
 #![allow(dead_code)]
 
+use crate::detect::DetectionEnvelope;
 use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::{Port, PortState, Protocol};
@@ -43,9 +44,13 @@ use super::schema::{Class, Rule};
 /// recording every finding they produce. `probe_for` supplies the [`Probe`] a
 /// flow speaks through for a given port, or [`None`] to skip that port. A scan
 /// passes [`FlowDb::global`]; a test can pass a corpus of its own.
+///
+/// The host-level convenience over [`detect_port`], for a synchronous caller with
+/// the whole host in hand.
 pub(crate) fn run_flows(
     host: &mut Host,
     corpus: &FlowDb,
+    envelope: &DetectionEnvelope,
     mut probe_for: impl FnMut(&Port) -> Option<Box<dyn Probe>>,
 ) {
     // Collect first, mutate second: reading the ports borrows the host, and
@@ -55,17 +60,13 @@ pub(crate) fn run_flows(
         if port.state() != PortState::Open {
             continue;
         }
-        for flow in corpus.flows() {
-            let manifest = &flow.flow().detection;
-            if !enabled(manifest.capabilities.class) || !applies(&manifest.when, port) {
-                continue;
-            }
-            let Some(mut probe) = probe_for(port) else {
-                continue;
-            };
-            for finding in flow.run(probe.as_mut()) {
-                hits.push((port.number(), port.protocol(), finding));
-            }
+        let number = port.number();
+        let protocol = port.protocol();
+        let service = port.service().map(|service| service.name());
+        for finding in detect_port(corpus, envelope, service, number, protocol, || {
+            probe_for(port)
+        }) {
+            hits.push((number, protocol, finding));
         }
     }
 
@@ -74,26 +75,70 @@ pub(crate) fn run_flows(
     }
 }
 
-/// Whether the default policy runs a flow of this class. `passive` and
-/// `active-benign` are on; the intrusive classes are off until an operator opts
-/// them in, so a flow that mutates, exploits, or degrades never runs unasked.
-fn enabled(class: Class) -> bool {
-    matches!(class, Class::Passive | Class::ActiveBenign)
+/// The findings `corpus`'s enabled, applicable flows produce for one port with
+/// these facts. `probe_for` yields a fresh [`Probe`], bound to the port, for each
+/// flow that runs, or [`None`] to skip that flow. This is the per-port core the
+/// live detection phase drives: it holds no host and does no I/O of its own, so a
+/// caller can run it wherever the socket lives.
+pub(crate) fn detect_port(
+    corpus: &FlowDb,
+    envelope: &DetectionEnvelope,
+    service: Option<&str>,
+    number: u16,
+    protocol: Protocol,
+    mut probe_for: impl FnMut() -> Option<Box<dyn Probe>>,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for flow in corpus.flows() {
+        let manifest = &flow.flow().detection;
+        if !enabled(manifest.capabilities.class, envelope)
+            || !applies(&manifest.when, service, number, protocol)
+        {
+            continue;
+        }
+        let Some(mut probe) = probe_for() else {
+            continue;
+        };
+        findings.extend(flow.run(probe.as_mut()));
+    }
+    findings
 }
 
-/// Whether a flow's `when` gate fits `port`. Every set field must hold; an empty
-/// gate fits any open port.
-fn applies(when: &Rule, port: &Port) -> bool {
+/// Whether any enabled flow in `corpus` gates onto a port with these facts, so a
+/// caller can skip opening a socket to a port no flow would probe.
+pub(crate) fn interested(
+    corpus: &FlowDb,
+    envelope: &DetectionEnvelope,
+    service: Option<&str>,
+    number: u16,
+    protocol: Protocol,
+) -> bool {
+    corpus.flows().any(|flow| {
+        let manifest = &flow.flow().detection;
+        enabled(manifest.capabilities.class, envelope)
+            && applies(&manifest.when, service, number, protocol)
+    })
+}
+
+/// Whether `envelope` permits a flow of this class to run. The class is the
+/// flow's declared intrusiveness; the envelope is the operator's grant.
+fn enabled(class: Class, envelope: &DetectionEnvelope) -> bool {
+    envelope.permits(class.into_model())
+}
+
+/// Whether a flow's `when` gate fits a port's facts. Every set field must hold;
+/// an empty gate fits any open port.
+fn applies(when: &Rule, service: Option<&str>, number: u16, protocol: Protocol) -> bool {
     let service_ok = when
         .service
         .as_deref()
-        .is_none_or(|name| port.service().is_some_and(|service| service.name() == name));
-    let number_ok = when.port.is_none_or(|number| number == port.number())
-        && (when.ports.is_empty() || when.ports.contains(&port.number()));
+        .is_none_or(|name| service == Some(name));
+    let number_ok = when.port.is_none_or(|wanted| wanted == number)
+        && (when.ports.is_empty() || when.ports.contains(&number));
     let protocol_ok = when
         .protocol
         .as_deref()
-        .is_none_or(|protocol| protocol == wire::protocol_name(port.protocol()));
+        .is_none_or(|wanted| wanted == wire::protocol_name(protocol));
 
     service_ok && number_ok && protocol_ok
 }
@@ -101,8 +146,14 @@ fn applies(when: &Rule, port: &Port) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::finding::DetectionClass;
     use crate::model::port::Service;
     use std::net::{IpAddr, Ipv4Addr};
+
+    /// The default grant: passive and active-benign run.
+    fn default_envelope() -> DetectionEnvelope {
+        DetectionEnvelope::default()
+    }
 
     /// A socket that answers every send with one canned reply.
     struct Canned(&'static [u8]);
@@ -126,7 +177,7 @@ mod tests {
     fn a_matching_flow_runs_and_records_its_finding_on_the_port() {
         let mut host = host_with(open(6379, Protocol::Tcp, "redis"));
 
-        run_flows(&mut host, FlowDb::global(), |_port| {
+        run_flows(&mut host, FlowDb::global(), &default_envelope(), |_port| {
             Some(Box::new(Canned(b"# Server\r\nredis_version:7.2.4")))
         });
 
@@ -139,12 +190,18 @@ mod tests {
     }
 
     #[test]
-    fn the_default_policy_enables_benign_flows_but_not_intrusive_ones() {
-        assert!(enabled(Class::Passive));
-        assert!(enabled(Class::ActiveBenign));
-        assert!(!enabled(Class::ActiveMutating));
-        assert!(!enabled(Class::Exploit));
-        assert!(!enabled(Class::Dos));
+    fn the_envelope_decides_which_classes_run() {
+        // The default permits benign flows but withholds the intrusive ones.
+        let default = default_envelope();
+        assert!(enabled(Class::Passive, &default));
+        assert!(enabled(Class::ActiveBenign, &default));
+        assert!(!enabled(Class::ActiveMutating, &default));
+        assert!(!enabled(Class::Exploit, &default));
+        assert!(!enabled(Class::Dos, &default));
+
+        // Raising the ceiling opens a class the default withheld.
+        let permissive = DetectionEnvelope::up_to(DetectionClass::Exploit);
+        assert!(enabled(Class::Exploit, &permissive));
     }
 
     #[test]
@@ -152,7 +209,7 @@ mod tests {
         // Wrong service: the redis flow's `when.service = "redis"` does not fit an
         // http port, so nothing fires even though the socket would answer.
         let mut http = host_with(open(6379, Protocol::Tcp, "http"));
-        run_flows(&mut http, FlowDb::global(), |_| {
+        run_flows(&mut http, FlowDb::global(), &default_envelope(), |_| {
             Some(Box::new(Canned(b"# Server\r\nredis_version:7.2.4")))
         });
         let port = http.ports().find(|port| port.number() == 6379).unwrap();
@@ -163,7 +220,7 @@ mod tests {
             Port::new(6379, Protocol::Tcp, PortState::Closed)
                 .with_service(Service::new("redis", 100)),
         );
-        run_flows(&mut closed, FlowDb::global(), |_| {
+        run_flows(&mut closed, FlowDb::global(), &default_envelope(), |_| {
             Some(Box::new(Canned(b"# Server\r\nredis_version:7.2.4")))
         });
         let port = closed.ports().find(|port| port.number() == 6379).unwrap();
@@ -198,14 +255,29 @@ mod tests {
         let flow: FlowDetection = toml::from_str(source).expect("a valid flow");
         let corpus = FlowDb::from_flows(vec![CompiledFlow::from_parts(flow, "0".repeat(64))]);
 
+        // Under the default envelope the exploit is withheld.
         let mut host = host_with(open(6379, Protocol::Tcp, "redis"));
-        run_flows(&mut host, &corpus, |_| Some(Box::new(Canned(b"ok"))));
-
+        run_flows(&mut host, &corpus, &default_envelope(), |_| {
+            Some(Box::new(Canned(b"ok")))
+        });
         let port = host.ports().find(|port| port.number() == 6379).unwrap();
         assert_eq!(
             port.findings().count(),
             0,
-            "an exploit-class flow ran under the default policy"
+            "an exploit-class flow ran under the default envelope"
+        );
+
+        // Raise the ceiling to exploit and the same flow now runs.
+        let mut opened = host_with(open(6379, Protocol::Tcp, "redis"));
+        let permissive = DetectionEnvelope::up_to(DetectionClass::Exploit);
+        run_flows(&mut opened, &corpus, &permissive, |_| {
+            Some(Box::new(Canned(b"ok")))
+        });
+        let port = opened.ports().find(|port| port.number() == 6379).unwrap();
+        assert_eq!(
+            port.findings().count(),
+            1,
+            "an exploit the operator opted into did not run"
         );
     }
 }

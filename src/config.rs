@@ -10,6 +10,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use crate::detect::DetectionEnvelope;
 use crate::evasion::EvasionProfile;
 use crate::model::exclusion::Exclusions;
 use crate::model::technique::TcpScanTechnique;
@@ -934,6 +935,16 @@ pub struct ZondConfig {
     /// the one that completes connections, so a scan that must stay out of the
     /// target's application logs turns it off. Affects the port-scan phase only.
     pub service_detection: ServiceDetection,
+
+    /// How intrusive a detection the scan may run against an identified service.
+    ///
+    /// After service detection names a port, the flow corpus can probe it further
+    /// to conclude what is *wrong* with it, not just what it is. This is the
+    /// ceiling on how far that goes: the default permits passive and active-benign
+    /// detections, and a detection that mutates, exploits, or degrades the target
+    /// runs only where the operator raises the ceiling to it. Read by the
+    /// detection phase, after service detection, and only when it ran.
+    pub detection: DetectionEnvelope,
 
     /// What the scan changes about the packets it emits, over the defaults.
     ///
