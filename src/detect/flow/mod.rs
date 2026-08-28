@@ -20,13 +20,23 @@
 //! ## What is here
 //!
 //! [`schema`] is the authoring format — the serde types a flow file deserializes
-//! into — and [`run`] is the bounded interpreter that runs one against a
-//! [`Probe`]. The build-time validator and the full guard expression language
-//! join them as the tier is built out; see the design record in
-//! `audit/2026-08-28-scripting-engine-spec.md`, Part II.
+//! into — the internal `expr` module is the guard expression grammar a `when`
+//! clause is written in, and [`run`] is the bounded interpreter that walks a
+//! flow against a [`Probe`], asking the `eval` module whether each guard holds.
+//! The build-time validator joins them as the tier is built out; see the design
+//! record in `audit/2026-08-28-scripting-engine-spec.md`, Part II.
 
 pub mod schema;
 
+pub(crate) mod expr;
+
+mod eval;
 mod interp;
 
 pub use interp::{Probe, run};
+
+/// The variables a flow has bound so far — names to their string values. One
+/// environment threads through a flow's steps (a `for_each` iteration runs in a
+/// clone of its own), and it holds only what a `bind` put there: no host facts,
+/// no clock, which is what keeps a flow a pure function of the bytes it was told.
+type Env = std::collections::BTreeMap<String, String>;

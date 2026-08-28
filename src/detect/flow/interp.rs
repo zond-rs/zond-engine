@@ -22,21 +22,23 @@
 //! in an environment of its own, so one iteration's binds never leak into the
 //! next.
 //!
-//! ## Guards, for now
+//! ## Guards decide the branches
 //!
-//! A finding's `when` is evaluated here as `matched` or absent; the full guard
-//! expression language — comparisons, `and`/`or`/`not`, and the conditional steps
-//! it unlocks — joins in the next increment. Until then an unrecognised guard is
-//! treated as unmet rather than guessed at.
-
-use std::collections::BTreeMap;
+//! Two kinds of `when` clause steer a flow, both written in the [guard
+//! grammar](super::expr) and answered by [`eval`](super::eval). A step's `when`
+//! is checked against the environment *before* the step runs — a false guard
+//! skips the step and moves on — so a step may be made conditional on what an
+//! earlier one bound. A finding's `when` is checked against the environment *and*
+//! its step's match result, so a finding fires only in the case it names. An
+//! absent guard always holds; an unparseable one never does.
 
 use crate::fingerprint::{Confidence, MAX_COMPILED_REGEX_BYTES, pattern, unescape};
 use crate::model::finding::{DetectionId, Excerpt, Finding, Version};
 use crate::record::wire;
 
-use super::schema::{FindingSpec, FlowDetection, MatchSpec, OnNoMatch, Step};
 use super::schema::MAX_LOOP_ITEMS;
+use super::schema::{FindingSpec, FlowDetection, MatchSpec, OnNoMatch, Step};
+use super::{Env, eval};
 
 /// The one capability a flow reaches the world through: send bytes to the scanned
 /// socket and read its reply. A test supplies a canned one; a scan supplies the
@@ -46,9 +48,6 @@ pub trait Probe {
     /// nothing.
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>>;
 }
-
-/// The variables a flow has bound so far.
-type Env = BTreeMap<String, String>;
 
 /// Whether the flow should keep running after a step.
 #[derive(PartialEq, Eq)]
@@ -94,6 +93,14 @@ fn run_step(
     probe: &mut dyn Probe,
     findings: &mut Vec<Finding>,
 ) -> Flow {
+    // A step's guard is checked before it runs: a false guard skips the step —
+    // its probe, its binds, its findings — and the flow proceeds to the next.
+    // `matched` is out of scope here, nothing having matched yet, so the guard
+    // reads only what earlier steps bound.
+    if !eval::holds(step.when.as_deref(), env, None) {
+        return Flow::Continue;
+    }
+
     // The probe exchange. A step with no `send` reads nothing new — for now it
     // has no reply to match against.
     let response = match &step.send {
@@ -129,7 +136,7 @@ fn run_step(
     }
 
     for spec in &step.finding {
-        if finding_holds(spec, matched)
+        if eval::holds(spec.when.as_deref(), env, Some(matched))
             && let Some(finding) = build_finding(flow, spec, env, response.as_deref())
         {
             findings.push(finding);
@@ -143,16 +150,6 @@ fn on_no_match(step: &Step) -> Flow {
     match step.on_no_match {
         OnNoMatch::Halt => Flow::Halt,
         OnNoMatch::Continue => Flow::Continue,
-    }
-}
-
-/// Whether a bare `matched`/absent guard holds. The richer expression language is
-/// a later increment; an unrecognised guard is treated as unmet.
-fn finding_holds(spec: &FindingSpec, matched: bool) -> bool {
-    match spec.when.as_deref() {
-        None => true,
-        Some("matched") => matched,
-        Some(_) => false,
     }
 }
 
@@ -332,5 +329,95 @@ mod tests {
             finding.excerpt().as_str(),
             "Community 'public' returned sysDescr: Linux router 6.1"
         );
+    }
+
+    /// Whether `haystack` contains `needle` as a contiguous run.
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    /// A probe standing in for a Grafana server. The identify step's `/login`
+    /// GET draws `banner`; the exploit step's traversal draws `leak`, which is
+    /// only ever sent when the conditional guard let the step run.
+    struct Grafana {
+        banner: &'static [u8],
+        leak: &'static [u8],
+    }
+    impl Probe for Grafana {
+        fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+            if contains(bytes, b"/login") {
+                Some(self.banner.to_vec())
+            } else if contains(bytes, b"etc/passwd") {
+                Some(self.leak.to_vec())
+            } else {
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn the_conditional_step_confirms_a_leak_on_a_vulnerable_server() {
+        let grafana = flow("grafana-path-traversal");
+        // An affected version, and a traversal that reads the file: the step
+        // runs and the leak confirms.
+        let mut probe = Grafana {
+            banner: b"HTTP/1.1 200 OK\r\nX-Grafana: Grafana v8.2.0\r\n\r\n",
+            leak: b"HTTP/1.1 200 OK\r\n\r\nroot:x:0:0:root:/root:/bin/bash\n",
+        };
+
+        let findings = run(&grafana, &mut probe);
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(finding.severity(), Severity::Critical);
+        // `excerpt_from = "$response"` carried the leaked bytes onto the finding.
+        assert!(
+            finding.excerpt().as_str().contains("root:x:0:0:"),
+            "the excerpt is the leaked passwd line, got {:?}",
+            finding.excerpt().as_str()
+        );
+        assert!(
+            finding
+                .references()
+                .any(|r| matches!(r, Reference::Cve(id) if id == "CVE-2021-43798"))
+        );
+    }
+
+    #[test]
+    fn an_affected_version_whose_leak_is_blocked_is_still_flagged() {
+        let grafana = flow("grafana-path-traversal");
+        // Affected version, but the traversal is refused: the step runs, its
+        // `expect` fails, and the `not matched and bound(version)` finding fires.
+        let mut probe = Grafana {
+            banner: b"HTTP/1.1 200 OK\r\nX-Grafana: Grafana v8.2.0\r\n\r\n",
+            leak: b"HTTP/1.1 403 Forbidden\r\n\r\n",
+        };
+
+        let findings = run(&grafana, &mut probe);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity(), Severity::Medium);
+    }
+
+    #[test]
+    fn a_patched_or_unrelated_server_never_reaches_the_exploit_step() {
+        let grafana = flow("grafana-path-traversal");
+
+        // 8.10.0 is *newer* than 8.3.1 — a lexical `<` would misread it as
+        // affected (10 < 3 as strings) and probe a patched server; the
+        // version-compare guard skips the step, so no finding and no traversal.
+        let mut patched = Grafana {
+            banner: b"HTTP/1.1 200 OK\r\nX-Grafana: Grafana v8.10.0\r\n\r\n",
+            leak: b"root:x:0:0:should-never-be-sent",
+        };
+        assert!(run(&grafana, &mut patched).is_empty());
+
+        // Not Grafana at all: `bound(version)` is false, so the guard skips the
+        // step before the version comparison is even reached.
+        let mut other = Grafana {
+            banner: b"HTTP/1.1 200 OK\r\nServer: nginx\r\n\r\n",
+            leak: b"root:x:0:0:should-never-be-sent",
+        };
+        assert!(run(&grafana, &mut other).is_empty());
     }
 }

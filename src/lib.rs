@@ -231,6 +231,7 @@ pub mod resolve;
 pub mod scanner;
 pub mod system;
 pub mod transport;
+pub(crate) mod version;
 
 // Nothing here is public: it is the five macros the engine emits its own
 // diagnostics through, and a library that exported those would shadow
