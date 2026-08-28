@@ -65,6 +65,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RetryConfig;
+use crate::detect::DetectionEnvelope;
 use crate::config::{IdleScan, OsDetection, SendMode, ServiceDetection, ZondConfig};
 use crate::evasion::EvasionProfile;
 use crate::model::capture::CaptureCounts;
@@ -604,6 +605,17 @@ pub struct ScanSettings {
     /// completed a connection to each open port at all, which is what a target's
     /// application logs would have recorded.
     pub service_detection: ServiceDetection,
+
+    /// How intrusive a detection the phase was permitted to run over the services
+    /// it identified.
+    ///
+    /// Recorded because it decides which findings could appear at all: a port
+    /// with no vulnerability finding is one thing when the envelope permitted the
+    /// detection that would have found one, and another when it withheld it. The
+    /// report says which, so a reader is not left to guess whether a clean port
+    /// was probed or spared.
+    pub detection: DetectionEnvelope,
+
     /// Whether the phase measured the route to each host that answered.
     ///
     /// Recorded because a host with no path is two different findings: a scan
@@ -645,6 +657,7 @@ impl From<&ZondConfig> for ScanSettings {
             redact: cfg.redact,
             os_detection: cfg.os_detection,
             service_detection: cfg.service_detection,
+            detection: cfg.detection,
             traceroute: cfg.traceroute,
             characterise: cfg.characterise,
             evasion: EvasionRecord::from_profile(&cfg.evasion),

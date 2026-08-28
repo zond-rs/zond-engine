@@ -516,6 +516,8 @@ struct SettingsDto {
     redact: bool,
     os_detection: String,
     service_detection: String,
+    #[serde(default)]
+    detection: String,
     traceroute: bool,
     characterise: bool,
     /// What the scan changed about its packets, absent when it changed nothing.
@@ -567,6 +569,7 @@ impl SettingsDto {
             redact: self.redact,
             os_detection: self.os_detection,
             service_detection: self.service_detection,
+            detection: self.detection,
             traceroute: self.traceroute,
             characterise: self.characterise,
             evasion: self.evasion,

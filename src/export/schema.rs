@@ -845,6 +845,13 @@ pub struct SettingsDto {
     /// connection to every open port, which is what the target would have
     /// logged.
     pub service_detection: &'static str,
+
+    /// The intrusiveness ceiling detections ran under: `passive`,
+    /// `active_benign`, `active_mutating`, `exploit` or `dos`. A finding of a
+    /// given class could appear only where the scan permitted that class, so this
+    /// bounds what the report could ever have said was wrong.
+    pub detection: &'static str,
+
     /// Whether the phase measured the route to each host that answered.
     pub traceroute: bool,
     /// Whether the phase characterised the filter in front of each host that
@@ -941,6 +948,7 @@ impl SettingsDto {
             redact: settings.redact,
             os_detection: settings.os_detection.name(),
             service_detection: settings.service_detection.name(),
+            detection: detection_class_name(settings.detection.ceiling()),
             traceroute: settings.traceroute,
             characterise: settings.characterise,
             evasion: settings.evasion.as_ref().map(EvasionDto::new),

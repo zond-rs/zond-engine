@@ -1431,6 +1431,7 @@
         "redact",
         "os_detection",
         "service_detection",
+        "detection",
         "traceroute",
         "characterise"
       ],
@@ -1488,6 +1489,16 @@
             "off",
             "banner",
             "probe"
+          ]
+        },
+        "detection": {
+          "description": "The most intrusive class of detection the scan was permitted to run over the services it identified. A finding of a given class could appear only where the scan permitted that class, so this bounds what the report could ever have concluded was wrong: `passive` reads only what the scan already gathered, `active_benign` exchanges bytes within a budget, and the classes above it change, exploit, or degrade the target and run only where an operator opted in.",
+          "enum": [
+            "passive",
+            "active_benign",
+            "active_mutating",
+            "exploit",
+            "dos"
           ]
         },
         "traceroute": {

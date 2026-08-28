@@ -56,6 +56,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{IdleScan, RetryConfig};
+use crate::detect::DetectionEnvelope;
 use crate::fingerprint::Confidence;
 use crate::fingerprint::os::{OsEvidence, OsSource};
 use crate::model::capture::CaptureCounts;
@@ -1445,6 +1446,10 @@ pub struct SettingsRecord {
     pub os_detection: String,
     /// How far it went to identify services.
     pub service_detection: String,
+    /// The intrusiveness ceiling detections ran under, by wire name. Defaults on
+    /// an older journal that predates the field.
+    #[serde(default)]
+    pub detection: String,
     /// Whether it traced the path to each host.
     pub traceroute: bool,
     /// Whether it characterised the filter in front of each host.
@@ -1524,6 +1529,7 @@ impl From<&ScanSettings> for SettingsRecord {
             redact: settings.redact,
             os_detection: settings.os_detection.name().to_owned(),
             service_detection: settings.service_detection.name().to_owned(),
+            detection: wire::detection_class_name(settings.detection.ceiling()).to_owned(),
             traceroute: settings.traceroute,
             characterise: settings.characterise,
             evasion: settings.evasion.as_ref().map(|e| EvasionSettingsRecord {
@@ -1560,6 +1566,9 @@ impl From<&SettingsRecord> for ScanSettings {
             redact: record.redact,
             os_detection: record.os_detection.parse().unwrap_or_default(),
             service_detection: record.service_detection.parse().unwrap_or_default(),
+            detection: wire::detection_class(&record.detection)
+                .map(DetectionEnvelope::up_to)
+                .unwrap_or_default(),
             traceroute: record.traceroute,
             characterise: record.characterise,
             evasion: record.evasion.as_ref().map(|e| EvasionRecord {
@@ -2222,6 +2231,29 @@ mod tests {
             };
             assert_eq!(render(phase), render(&rebuilt), "a field was lost");
         }
+    }
+
+    /// The detection envelope has to come back as what the scan ran, not as the
+    /// default: a report replayed from a journal must gate a re-analysis the same
+    /// way the live scan did.
+    #[test]
+    fn the_detection_envelope_survives_the_settings_round_trip() {
+        use crate::config::ZondConfig;
+        use crate::detect::DetectionEnvelope;
+        use crate::model::finding::DetectionClass;
+        use crate::scanner::report::ScanSettings;
+
+        // A raised ceiling, so the round trip must carry the value rather than
+        // fall back to the default it happens to start at.
+        let mut settings = ScanSettings::from(&ZondConfig::default());
+        settings.detection = DetectionEnvelope::up_to(DetectionClass::Exploit);
+
+        let rebuilt = ScanSettings::from(&SettingsRecord::from(&settings));
+        assert_eq!(
+            rebuilt.detection.ceiling(),
+            DetectionClass::Exploit,
+            "the envelope ceiling was lost in the round trip"
+        );
     }
 
     /// And through a file.

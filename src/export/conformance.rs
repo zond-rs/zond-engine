@@ -24,6 +24,8 @@ use serde_json::Value;
 
 use crate::config::{OsDetection, ServiceDetection};
 use crate::export::schema::SCHEMA_VERSION;
+use crate::model::finding::DetectionClass;
+use crate::record::wire::detection_class_name;
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
 use crate::model::technique::TcpScanTechnique;
 
@@ -191,6 +193,25 @@ fn every_service_detection_level_the_engine_runs_is_a_value_the_schema_accepts()
         assert!(
             accepted.contains(&Value::from(detection.name())),
             "the schema does not accept `{detection}`, which a scan can be asked for"
+        );
+    }
+}
+
+/// Every detection intrusiveness class the envelope can permit, on the same
+/// reasoning as the levels above: a class the report can name is a class the
+/// schema must list.
+#[test]
+fn every_detection_class_the_engine_can_run_is_a_value_the_schema_accepts() {
+    let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
+    let accepted = schema["$defs"]["settings"]["properties"]["detection"]["enum"]
+        .as_array()
+        .expect("the schema names the classes it accepts");
+
+    for class in DetectionClass::ALL {
+        let name = detection_class_name(class);
+        assert!(
+            accepted.contains(&Value::from(name)),
+            "the schema does not accept `{name}`, a class a scan can be permitted"
         );
     }
 }
