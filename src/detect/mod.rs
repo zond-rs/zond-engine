@@ -19,9 +19,17 @@
 //! sequence of probe-and-match steps ending in a typed finding. It carries no
 //! code, so it is safe and replayable by construction and validated end to end
 //! at build time — most of what a scripting engine is used for, without a VM.
-//! The compute tier, for the detections that genuinely need logic, joins it
-//! later.
+//!
+//! ## Tier 2, for the remainder
+//!
+//! [`compute`] is the tier for the detections that genuinely need logic — real
+//! parsing, a stateful exchange, a decision from behaviour rather than a string.
+//! It is code, and code runs in a capability sandbox: a module reaches the world
+//! only through the verbs the host injects, so the same fact holds as for a flow
+//! — a detection's power is exactly what it was handed — and safety, metering and
+//! replay all follow from it rather than being bolted on.
 
+pub mod compute;
 pub mod envelope;
 pub mod flow;
 
