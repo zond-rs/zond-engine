@@ -339,6 +339,20 @@ pub enum Filtering {
     /// [`StatefulFilter`](Self::StatefulFilter), and against the same recorded
     /// port state.
     PortTrustingAcl,
+
+    /// A stateless filter: it matches on the first fragment and passes the rest.
+    ///
+    /// Proven by a *fragmented* SYN drawing an answer from a port the scan found
+    /// filtered to a whole one. A filter that reassembled would have seen the
+    /// same forbidden SYN either way; one that lets the fragments through has
+    /// judged only the first, where the ports are but the flags are not yet, and
+    /// so is matching without keeping the state reassembly needs. Comparative
+    /// against the same recorded port state as
+    /// [`StatefulFilter`](Self::StatefulFilter), and — because a fragmented probe
+    /// can only be sent over a self-built Ethernet frame — drawn only for a host
+    /// that path can reach; one it cannot simply goes without the conclusion,
+    /// never against it.
+    StatelessFilter,
 }
 
 impl Filtering {
@@ -347,10 +361,11 @@ impl Filtering {
     /// The array's length is the compile-time check that a conclusion added to
     /// the enum was added here too: a set is rendered through this order, and a
     /// member missing from it would be silently dropped from every report.
-    pub const ALL: [Filtering; 3] = [
+    pub const ALL: [Filtering; 4] = [
         Self::InlineMiddlebox,
         Self::StatefulFilter,
         Self::PortTrustingAcl,
+        Self::StatelessFilter,
     ];
 }
 

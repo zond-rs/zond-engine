@@ -146,6 +146,7 @@ pub fn filtering_name(filtering: Filtering) -> &'static str {
         Filtering::InlineMiddlebox => "inline_middlebox",
         Filtering::StatefulFilter => "stateful_filter",
         Filtering::PortTrustingAcl => "port_trusting_acl",
+        Filtering::StatelessFilter => "stateless_filter",
     }
 }
 
@@ -155,6 +156,7 @@ pub fn filtering(name: &str) -> Option<Filtering> {
         "inline_middlebox" => Filtering::InlineMiddlebox,
         "stateful_filter" => Filtering::StatefulFilter,
         "port_trusting_acl" => Filtering::PortTrustingAcl,
+        "stateless_filter" => Filtering::StatelessFilter,
         _ => return None,
     })
 }
@@ -461,6 +463,12 @@ mod tests {
 
         for value in [ScanKind::Discovery, ScanKind::PortScan, ScanKind::Listen] {
             assert_eq!(scan_kind(scan_kind_name(value)), Some(value));
+        }
+
+        // Driven by `Filtering::ALL`, which the enum keeps exhaustive, so a new
+        // conclusion is round-tripped here the moment it is added there.
+        for value in Filtering::ALL {
+            assert_eq!(filtering(filtering_name(value)), Some(value));
         }
 
         for value in [AttachmentSource::Lldp, AttachmentSource::Cdp] {

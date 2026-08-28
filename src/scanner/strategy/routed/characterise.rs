@@ -39,7 +39,8 @@ use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
 use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::system::interface::SourceResolver;
-use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
+use crate::transport::link::EthernetSender;
+use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
 use crate::{error, info};
 
 /// How long to listen for replies once the last diagnostic probe has left. A
@@ -50,6 +51,15 @@ const REPLY_WINDOW: Duration = Duration::from_secs(2);
 /// The source port a port-trusting ACL is most likely to hold a door open for:
 /// a rule that lets "returning DNS" back in lets anything from port 53 in.
 const TRUSTED_SOURCE_PORT: u16 = 53;
+
+/// The largest each fragment of the stateless-filter probe may be, in bytes.
+///
+/// Twenty-eight is an IP header (20) plus one eight-byte fragment, the smallest
+/// a conformant path carries. It puts the ports in the first fragment and the
+/// flags in a later one, so a filter that judges only the first sees a segment
+/// to nowhere in particular and lets the rest through — which is the thing this
+/// probe is built to catch.
+const STATELESS_FRAGMENT_MTU: u16 = 28;
 
 /// One host and the ports the pass aims its diagnostic probes at.
 pub struct Target {
@@ -84,6 +94,14 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
 
     let mut resolver = SourceResolver::from_system();
 
+    // A self-built Ethernet sender for the one probe that needs one — the
+    // fragmented stateless probe, which a raw socket cannot place. `None` where
+    // this host has no Ethernet path at all, and even when it is `Some` a send
+    // is refused for any host that path cannot route to; either way the
+    // stateless conclusion simply goes undrawn there, while the raw probes below
+    // still reach every host.
+    let ethernet = EthernetSender::from_system(ProbeKind::TcpSyn.ip_protocols());
+
     info!(
         "characterising the filter in front of {} host(s)",
         targets.len()
@@ -102,7 +120,7 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
             let nonce: u32 = rand::random();
             let src_port: u16 = rand::random_range(50_000..u16::MAX);
             send_diagnostic(
-                &transport,
+                transport.tx.as_ref(),
                 &mut awaiting,
                 source,
                 target.host,
@@ -117,6 +135,7 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
                     None,
                     true,
                 ),
+                Emission::routed(),
                 Filtering::InlineMiddlebox,
             );
         }
@@ -125,7 +144,7 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
             let nonce: u32 = rand::random();
             let src_port: u16 = rand::random_range(50_000..u16::MAX);
             send_diagnostic(
-                &transport,
+                transport.tx.as_ref(),
                 &mut awaiting,
                 source,
                 target.host,
@@ -138,12 +157,13 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
                     port,
                     nonce,
                 ),
+                Emission::routed(),
                 Filtering::StatefulFilter,
             );
 
             let nonce: u32 = rand::random();
             send_diagnostic(
-                &transport,
+                transport.tx.as_ref(),
                 &mut awaiting,
                 source,
                 target.host,
@@ -156,8 +176,38 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
                     port,
                     nonce,
                 ),
+                Emission::routed(),
                 Filtering::PortTrustingAcl,
             );
+
+            // The stateless probe, and the one that needs a self-built frame: a
+            // whole SYN fragmented small enough that its flags fall past the
+            // first fragment. A filter reachable only by a raw path never sees
+            // it, and the host goes without this one conclusion.
+            if let Some(ethernet) = ethernet.as_ref() {
+                let nonce: u32 = rand::random();
+                let src_port: u16 = rand::random_range(50_000..u16::MAX);
+                send_diagnostic(
+                    ethernet,
+                    &mut awaiting,
+                    source,
+                    target.host,
+                    nonce,
+                    tcp::create_probe(
+                        TcpScanTechnique::Syn,
+                        &source,
+                        &target.host,
+                        src_port,
+                        port,
+                        nonce,
+                    ),
+                    Emission {
+                        fragment: Some(STATELESS_FRAGMENT_MTU),
+                        ..Emission::routed()
+                    },
+                    Filtering::StatelessFilter,
+                );
+            }
         }
     }
 
@@ -189,13 +239,15 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
 
 /// Builds `packet`, sends it from `source` to `host`, and — if it reached the
 /// wire — files its `nonce` under the `conclusion` a reply to it would prove.
+#[allow(clippy::too_many_arguments)]
 fn send_diagnostic(
-    transport: &ProbeTransport,
+    sender: &dyn ProbeSender,
     awaiting: &mut HashMap<u32, (IpAddr, Filtering)>,
     source: IpAddr,
     host: IpAddr,
     nonce: u32,
     packet: crate::protocols::error::Result<Vec<u8>>,
+    emission: Emission,
     conclusion: Filtering,
 ) {
     let packet = match packet {
@@ -208,11 +260,10 @@ fn send_diagnostic(
             return;
         }
     };
-    if transport
-        .tx
-        .send(&packet, source, host, Emission::routed())
-        .is_ok()
-    {
+    // A refused send files nothing: the fragmented stateless probe reaches only
+    // a host the Ethernet path can route to, and one it cannot simply goes
+    // uncharacterised rather than credited a conclusion no probe proved.
+    if sender.send(&packet, source, host, emission).is_ok() {
         awaiting.insert(nonce, (host, conclusion));
     }
 }

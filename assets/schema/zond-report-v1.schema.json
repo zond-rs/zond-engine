@@ -516,7 +516,8 @@
             "enum": [
               "inline_middlebox",
               "stateful_filter",
-              "port_trusting_acl"
+              "port_trusting_acl",
+              "stateless_filter"
             ]
           }
         },

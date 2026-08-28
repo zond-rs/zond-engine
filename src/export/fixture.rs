@@ -98,6 +98,7 @@ fn router() -> Host {
     host.add_filtering(Filtering::InlineMiddlebox);
     host.add_filtering(Filtering::StatefulFilter);
     host.add_filtering(Filtering::PortTrustingAcl);
+    host.add_filtering(Filtering::StatelessFilter);
 
     host
 }

@@ -121,7 +121,7 @@ impl ProbeKind {
     /// has nothing else to read it from. A wrong number here is invisible
     /// locally and fatal remotely: the datagram arrives and is handed to the
     /// wrong protocol handler, so it is simply never answered.
-    fn ip_protocols(self) -> IpProtocols {
+    pub(crate) fn ip_protocols(self) -> IpProtocols {
         match self {
             ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => {
                 IpProtocols::same(IpNextHeaderProtocols::Tcp)
