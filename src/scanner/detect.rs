@@ -26,20 +26,22 @@
 //! probe is bound to the one port it was built for, so a flow can reach nothing
 //! else.
 //!
-//! ## What it does not do yet
+//! ## The budget is enforced here
 //!
-//! The flow's declared budgets (`max_bytes`, `max_millis`) are not yet enforced
-//! at the socket; fixed ceilings bound a probe instead. Enforcing the declared
-//! budget, and letting an operator enable the intrusive classes, is the capability
-//! envelope, a later increment.
+//! A flow's declared `max_bytes`, `max_millis`, and `max_connections` bound the
+//! `SocketProbe` that serves it: it refuses an exchange the budget cannot pay
+//! for, and caps a reply at the bytes left. A flow that declares none falls back
+//! to a default ceiling. What is *not* here yet is provenance — the report does
+//! not yet record which envelope the scan ran under.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::ServiceDetection;
 use crate::detect::DetectionEnvelope;
 use crate::detect::flow::db::FlowDb;
+use crate::detect::flow::schema::Capabilities;
 use crate::detect::flow::{Probe, stage};
 use crate::model::finding::Finding;
 use crate::model::ip::scoped::ScopedIp;
@@ -48,12 +50,16 @@ use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT}
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, ScannerKind};
 
-/// How long a flow's probe waits for a reply before taking silence for an answer.
-const REPLY_TIMEOUT: Duration = Duration::from_millis(2000);
+/// The reply-byte budget a flow that declares none is held to.
+const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
 
-/// The most a flow's probe reads from one exchange, a ceiling on what an
-/// answering port can make the scan buffer.
-const MAX_REPLY_BYTES: usize = 64 * 1024;
+/// The time budget a flow that declares none is held to.
+const DEFAULT_MAX_MILLIS: u64 = 2000;
+
+/// The connection budget a flow that declares none is held to. A flow's step and
+/// loop ceilings already bound how many exchanges it can attempt; this caps the
+/// sockets an undeclared one opens at the widest a single loop can be.
+const DEFAULT_MAX_CONNECTIONS: u32 = 64;
 
 /// Runs the flow corpus against every open port a flow is interested in,
 /// recording the findings it produces.
@@ -150,7 +156,7 @@ async fn detect_one(
             service.as_deref(),
             number,
             protocol,
-            || Some(Box::new(SocketProbe { addr, protocol }) as Box<dyn Probe>),
+            |caps| Some(Box::new(SocketProbe::new(addr, protocol, caps)) as Box<dyn Probe>),
         )
     })
     .await
@@ -174,42 +180,88 @@ fn record(
     });
 }
 
-/// A blocking [`Probe`] over a fresh connection to one scanned port. Each `speak`
-/// is one request and its reply, which is enough for the corpus's stateless
-/// exchanges; it is bound to the address it was built for and reaches nothing
-/// else.
+/// A blocking [`Probe`] over a fresh connection to one scanned port, holding the
+/// flow's budget and debiting it as it goes. Each `speak` is one request and its
+/// reply, which is enough for the corpus's stateless exchanges; it is bound to
+/// the address it was built for and reaches nothing else.
+///
+/// The budget is enforced at this boundary, which is the point: a flow cannot
+/// spend more bytes, time, or connections than it declared, because the thing
+/// that would spend them refuses to. An undeclared budget falls back to a default
+/// ceiling rather than to no ceiling at all.
 struct SocketProbe {
     addr: SocketAddr,
     protocol: Protocol,
+    /// Bytes still available across this flow's remaining sends and replies.
+    bytes_left: u64,
+    /// When the flow's time budget runs out.
+    deadline: Instant,
+    /// Connections still available to this flow.
+    connections_left: u32,
 }
 
-impl Probe for SocketProbe {
-    fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        match self.protocol {
-            Protocol::Tcp => tcp_exchange(self.addr, bytes),
-            Protocol::Udp => udp_exchange(self.addr, bytes),
+impl SocketProbe {
+    fn new(addr: SocketAddr, protocol: Protocol, caps: &Capabilities) -> Self {
+        let millis = caps.max_millis.map_or(DEFAULT_MAX_MILLIS, u64::from);
+        Self {
+            addr,
+            protocol,
+            bytes_left: caps.max_bytes.map_or(DEFAULT_MAX_BYTES, u64::from),
+            deadline: Instant::now() + Duration::from_millis(millis),
+            connections_left: caps
+                .max_connections
+                .map_or(DEFAULT_MAX_CONNECTIONS, u32::from),
         }
     }
 }
 
-/// Connects, sends `bytes`, and reads the reply until the port falls silent, hits
-/// [`MAX_REPLY_BYTES`], or closes. [`None`] on any failure or an empty reply.
-fn tcp_exchange(addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut stream = TcpStream::connect_timeout(&addr, CONNECT_PROBE_TIMEOUT).ok()?;
-    stream.set_read_timeout(Some(REPLY_TIMEOUT)).ok()?;
+impl Probe for SocketProbe {
+    fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        // Refuse the exchange the budget cannot pay for, before any packet leaves.
+        if self.connections_left == 0 || remaining(self.deadline).is_none() {
+            return None;
+        }
+        let sent = bytes.len() as u64;
+        if sent > self.bytes_left {
+            return None;
+        }
+        self.bytes_left -= sent;
+        self.connections_left -= 1;
+
+        // The reply may consume at most what the byte budget has left.
+        let reply = match self.protocol {
+            Protocol::Tcp => tcp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
+            Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
+        }?;
+        self.bytes_left -= reply.len() as u64;
+        Some(reply)
+    }
+}
+
+/// The time left before `deadline`, or [`None`] if it has passed. Used for every
+/// socket timeout so no exchange outlives the flow's time budget.
+fn remaining(deadline: Instant) -> Option<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|left| !left.is_zero())
+}
+
+/// Connects, sends `bytes`, and reads the reply until the port falls silent, the
+/// byte budget `cap` is spent, or the connection closes. [`None`] on any failure,
+/// an expired deadline, or an empty reply.
+fn tcp_exchange(addr: SocketAddr, bytes: &[u8], deadline: Instant, cap: u64) -> Option<Vec<u8>> {
+    let mut stream =
+        TcpStream::connect_timeout(&addr, remaining(deadline)?.min(CONNECT_PROBE_TIMEOUT)).ok()?;
+    stream.set_read_timeout(Some(remaining(deadline)?)).ok()?;
     stream.write_all(bytes).ok()?;
 
     let mut reply = Vec::new();
     let mut buffer = [0u8; 4096];
-    loop {
-        match stream.read(&mut buffer) {
+    while (reply.len() as u64) < cap {
+        let want = ((cap - reply.len() as u64) as usize).min(buffer.len());
+        match stream.read(&mut buffer[..want]) {
             Ok(0) => break,
-            Ok(read) => {
-                reply.extend_from_slice(&buffer[..read]);
-                if reply.len() >= MAX_REPLY_BYTES {
-                    break;
-                }
-            }
+            Ok(read) => reply.extend_from_slice(&buffer[..read]),
             // A read timeout is the ordinary end of a reply that does not close
             // the connection; any other error ends it too.
             Err(_) => break,
@@ -218,8 +270,9 @@ fn tcp_exchange(addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
     (!reply.is_empty()).then_some(reply)
 }
 
-/// Sends one datagram and reads one reply. [`None`] on failure or silence.
-fn udp_exchange(addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
+/// Sends one datagram and reads one reply, capped at `cap` bytes. [`None`] on
+/// failure, an expired deadline, or silence.
+fn udp_exchange(addr: SocketAddr, bytes: &[u8], deadline: Instant, cap: u64) -> Option<Vec<u8>> {
     let bind = if addr.is_ipv6() {
         "[::]:0"
     } else {
@@ -227,10 +280,10 @@ fn udp_exchange(addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
     };
     let socket = UdpSocket::bind(bind).ok()?;
     socket.connect(addr).ok()?;
-    socket.set_read_timeout(Some(REPLY_TIMEOUT)).ok()?;
+    socket.set_read_timeout(Some(remaining(deadline)?)).ok()?;
     socket.send(bytes).ok()?;
 
-    let mut buffer = vec![0u8; MAX_REPLY_BYTES];
+    let mut buffer = vec![0u8; cap.min(65535) as usize];
     let read = socket.recv(&mut buffer).ok()?;
     buffer.truncate(read);
     (!buffer.is_empty()).then_some(buffer)
@@ -248,11 +301,29 @@ fn udp_exchange(addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::flow::schema::{Class, Speak};
     use crate::model::host::Host;
     use crate::model::port::{Port, Service};
     use crate::scanner::session::ScanSession;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    /// An `active-benign` capability set with the given budgets, for building a
+    /// `SocketProbe` a budget test can drive.
+    fn caps(
+        max_bytes: Option<u32>,
+        max_millis: Option<u32>,
+        max_connections: Option<u16>,
+    ) -> Capabilities {
+        Capabilities {
+            class: Class::ActiveBenign,
+            speak: Some(Speak::Target),
+            resolve: false,
+            max_bytes,
+            max_millis,
+            max_connections,
+        }
+    }
 
     #[tokio::test]
     async fn detect_runs_a_flow_against_a_live_port_and_records_its_finding() {
@@ -324,5 +395,65 @@ mod tests {
             "a detection turned off cannot have waited on a connection"
         );
         drop(session);
+    }
+
+    #[test]
+    fn a_reply_is_capped_at_the_flows_byte_budget() {
+        use std::io::{Read as _, Write as _};
+
+        // A loopback that floods the probe with far more than the budget allows.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let _ = sock.read(&mut [0u8; 64]);
+                let _ = sock.write_all(&vec![b'A'; 4096]);
+            }
+        });
+
+        // 20-byte budget, one of which the `x` send spends: the reply gets 19.
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, &caps(Some(20), None, None));
+        let reply = probe.speak(b"x").expect("a reply within budget");
+        assert!(
+            reply.len() <= 19,
+            "reply was not capped, got {}",
+            reply.len()
+        );
+    }
+
+    #[test]
+    fn a_flow_cannot_open_more_connections_than_its_budget() {
+        use std::io::Write as _;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            // Answer the one connection the budget permits, and no more.
+            if let Ok((mut sock, _)) = listener.accept() {
+                let _ = sock.write_all(b"ok");
+            }
+        });
+
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, &caps(None, None, Some(1)));
+        assert!(
+            probe.speak(b"a").is_some(),
+            "the one permitted exchange failed"
+        );
+        assert!(
+            probe.speak(b"b").is_none(),
+            "a second connection was opened past the budget"
+        );
+    }
+
+    #[test]
+    fn an_expired_time_budget_refuses_the_exchange() {
+        // A zero-millisecond budget is spent the instant it is granted, so no
+        // packet leaves; the unreachable address is never dialed.
+        let addr: SocketAddr = "192.0.2.1:9".parse().unwrap();
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, &caps(None, Some(0), None));
+        assert!(
+            probe.speak(b"x").is_none(),
+            "an exchange ran past the time budget"
+        );
     }
 }

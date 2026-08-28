@@ -38,7 +38,7 @@ use crate::record::wire;
 
 use super::Probe;
 use super::db::FlowDb;
-use super::schema::{Class, Rule};
+use super::schema::{Capabilities, Class, Rule};
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
 /// recording every finding they produce. `probe_for` supplies the [`Probe`] a
@@ -63,7 +63,7 @@ pub(crate) fn run_flows(
         let number = port.number();
         let protocol = port.protocol();
         let service = port.service().map(|service| service.name());
-        for finding in detect_port(corpus, envelope, service, number, protocol, || {
+        for finding in detect_port(corpus, envelope, service, number, protocol, |_caps| {
             probe_for(port)
         }) {
             hits.push((number, protocol, finding));
@@ -76,17 +76,18 @@ pub(crate) fn run_flows(
 }
 
 /// The findings `corpus`'s enabled, applicable flows produce for one port with
-/// these facts. `probe_for` yields a fresh [`Probe`], bound to the port, for each
-/// flow that runs, or [`None`] to skip that flow. This is the per-port core the
-/// live detection phase drives: it holds no host and does no I/O of its own, so a
-/// caller can run it wherever the socket lives.
+/// these facts. `probe_for` is handed the running flow's declared
+/// [`Capabilities`] (its budget) and yields a fresh [`Probe`] bound to the port,
+/// or [`None`] to skip that flow. This is the per-port core the live detection
+/// phase drives: it holds no host and does no I/O of its own, so a caller can run
+/// it wherever the socket lives.
 pub(crate) fn detect_port(
     corpus: &FlowDb,
     envelope: &DetectionEnvelope,
     service: Option<&str>,
     number: u16,
     protocol: Protocol,
-    mut probe_for: impl FnMut() -> Option<Box<dyn Probe>>,
+    mut probe_for: impl FnMut(&Capabilities) -> Option<Box<dyn Probe>>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for flow in corpus.flows() {
@@ -96,7 +97,7 @@ pub(crate) fn detect_port(
         {
             continue;
         }
-        let Some(mut probe) = probe_for() else {
+        let Some(mut probe) = probe_for(&manifest.capabilities) else {
             continue;
         };
         findings.extend(flow.run(probe.as_mut()));
