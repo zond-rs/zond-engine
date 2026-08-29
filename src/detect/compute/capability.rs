@@ -33,10 +33,12 @@
 //! problems, and it is the whole architecture.
 
 use std::net::IpAddr;
+use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::model::finding::{DetectionClass, DetectionId};
+use crate::detect::manifest::{Class, Manifest};
+use crate::model::finding::{DetectionClass, DetectionId, Version};
 
 use super::budget::Budget;
 
@@ -167,4 +169,100 @@ pub struct Grant {
     pub speak: bool,
     /// Whether to serve [`resolve`](Capabilities::resolve).
     pub resolve: bool,
+}
+
+/// The work bound a compute detection runs under when it declares none — enough
+/// for real parsing and a stateful exchange, and bounded against a runaway.
+const DEFAULT_FUEL: u64 = 10_000_000;
+/// The allocation ceiling a detection that declares none runs under: the largest
+/// string, array, or map it may build, counted in elements.
+const DEFAULT_MAX_MEMORY: usize = 1_000_000;
+/// The time budget a detection that declares none runs under.
+const DEFAULT_MAX_MILLIS: u64 = 2_000;
+/// The byte budget across all exchanges a detection that declares none runs under.
+const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
+/// The connection budget a detection that declares none runs under.
+const DEFAULT_MAX_CONNECTIONS: u32 = 64;
+
+impl Grant {
+    /// The grant a [`Manifest`] and the content hash of its body resolve into: its
+    /// identity and class stamped on for provenance, its declared budget filled
+    /// out with defaults for whatever it left open, and its capability verbs
+    /// exposed per the class. [`None`] only if the manifest's id is empty, which a
+    /// corpus refuses at build, so a loaded detection always resolves.
+    pub fn from_manifest(manifest: &Manifest, content_hash: &str) -> Option<Self> {
+        let version = Version::parse(&manifest.version).unwrap_or(Version::new(0, 0, 0));
+        let detection = DetectionId::new(manifest.id.clone(), version, content_hash).ok()?;
+        let caps = &manifest.capabilities;
+        // The class is the boundary, not the declaration: a passive detection is
+        // served no network verb whatever it wrote, so even a manifest that slips
+        // one past the corpus validator cannot reach the network here.
+        let active = caps.class != Class::Passive;
+        Some(Self {
+            detection,
+            class: caps.class.into_model(),
+            budget: Budget {
+                fuel: DEFAULT_FUEL,
+                deadline: Duration::from_millis(
+                    caps.max_millis.map_or(DEFAULT_MAX_MILLIS, u64::from),
+                ),
+                max_memory: DEFAULT_MAX_MEMORY,
+                max_bytes: caps.max_bytes.map_or(DEFAULT_MAX_BYTES, u64::from),
+                max_connections: caps
+                    .max_connections
+                    .map_or(DEFAULT_MAX_CONNECTIONS, u32::from),
+            },
+            speak: active && caps.speak.is_some(),
+            resolve: active && caps.resolve,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detect::manifest::{CapabilitySpec, Rule, Speak};
+
+    fn manifest(class: Class, speak: bool, resolve: bool) -> Manifest {
+        Manifest {
+            id: "test".into(),
+            version: "2.1.0".into(),
+            title: "test".into(),
+            when: Rule {
+                service: None,
+                port: None,
+                ports: Vec::new(),
+                protocol: None,
+            },
+            capabilities: CapabilitySpec {
+                class,
+                speak: speak.then_some(Speak::Target),
+                resolve,
+                max_bytes: None,
+                max_millis: Some(500),
+                max_connections: None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_passive_grant_is_served_no_network_verb_even_if_it_declared_one() {
+        let grant = Grant::from_manifest(&manifest(Class::Passive, true, true), "hash").unwrap();
+        assert!(!grant.speak, "a passive detection was served speak");
+        assert!(!grant.resolve, "a passive detection was served resolve");
+        assert_eq!(grant.class, DetectionClass::Passive);
+    }
+
+    #[test]
+    fn an_active_grant_exposes_the_verbs_it_declared_and_fills_the_budget() {
+        let grant =
+            Grant::from_manifest(&manifest(Class::ActiveBenign, true, false), "hash").unwrap();
+        assert!(grant.speak);
+        assert!(!grant.resolve);
+        // Provenance and the declared time budget carried through.
+        assert_eq!(grant.detection.version(), Version::new(2, 1, 0));
+        assert_eq!(grant.budget.deadline, Duration::from_millis(500));
+        // What the manifest left open fell back to a default.
+        assert_eq!(grant.budget.max_bytes, DEFAULT_MAX_BYTES);
+    }
 }

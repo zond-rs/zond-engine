@@ -35,5 +35,6 @@ pub mod flow;
 pub mod manifest;
 
 mod convert;
+mod gate;
 
 pub use envelope::DetectionEnvelope;

@@ -34,11 +34,10 @@ use crate::detect::DetectionEnvelope;
 use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::{Port, PortState, Protocol};
-use crate::record::wire;
 
 use super::Probe;
 use super::db::FlowDb;
-use crate::detect::manifest::{CapabilitySpec, Class, Rule};
+use crate::detect::manifest::{CapabilitySpec, Class};
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
 /// recording every finding they produce. `probe_for` supplies the [`Probe`] a
@@ -93,7 +92,7 @@ pub(crate) fn detect_port(
     for flow in corpus.flows() {
         let manifest = &flow.flow().detection;
         if !enabled(manifest.capabilities.class, envelope)
-            || !applies(&manifest.when, service, number, protocol)
+            || !manifest.when.applies(service, number, protocol)
         {
             continue;
         }
@@ -117,7 +116,7 @@ pub(crate) fn interested(
     corpus.flows().any(|flow| {
         let manifest = &flow.flow().detection;
         enabled(manifest.capabilities.class, envelope)
-            && applies(&manifest.when, service, number, protocol)
+            && manifest.when.applies(service, number, protocol)
     })
 }
 
@@ -125,23 +124,6 @@ pub(crate) fn interested(
 /// flow's declared intrusiveness; the envelope is the operator's grant.
 fn enabled(class: Class, envelope: &DetectionEnvelope) -> bool {
     envelope.permits(class.into_model())
-}
-
-/// Whether a flow's `when` gate fits a port's facts. Every set field must hold;
-/// an empty gate fits any open port.
-fn applies(when: &Rule, service: Option<&str>, number: u16, protocol: Protocol) -> bool {
-    let service_ok = when
-        .service
-        .as_deref()
-        .is_none_or(|name| service == Some(name));
-    let number_ok = when.port.is_none_or(|wanted| wanted == number)
-        && (when.ports.is_empty() || when.ports.contains(&number));
-    let protocol_ok = when
-        .protocol
-        .as_deref()
-        .is_none_or(|wanted| wanted == wire::protocol_name(protocol));
-
-    service_ok && number_ok && protocol_ok
 }
 
 #[cfg(test)]

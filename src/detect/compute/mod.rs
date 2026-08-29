@@ -52,9 +52,11 @@ mod capability;
 mod live;
 mod rhai;
 mod runtime;
+pub(crate) mod stage;
 
 pub use budget::{Budget, BudgetTrap, Denial, ModuleFault, RunOutcome};
 pub use capability::{CapError, Capabilities, Capability, Grant, ScanInstant};
 pub use live::LiveCapabilities;
 pub use rhai::RhaiRuntime;
 pub use runtime::{ComputeRuntime, LoadError, ModuleBody};
+pub use stage::LoadedDetection;
