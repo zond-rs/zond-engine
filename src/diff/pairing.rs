@@ -321,3 +321,170 @@ fn index(tokens: &[HashSet<Token>]) -> HashMap<&Token, Vec<usize>> {
     }
     index
 }
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗██║  ██║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+    use crate::model::host::HostStatus;
+    use crate::model::ip::scoped::Zone;
+    use crate::model::mac::MacAddr;
+
+    fn v4(last: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+    }
+
+    fn host(primary: IpAddr) -> Host {
+        let mut host = Host::new(primary);
+        host.set_status(HostStatus::Up);
+        host
+    }
+
+    /// Components, sorted so an assertion does not depend on iteration order.
+    fn shape(components: &[Component]) -> Vec<(Vec<usize>, Vec<usize>)> {
+        let mut out: Vec<(Vec<usize>, Vec<usize>)> = components
+            .iter()
+            .map(|c| {
+                let mut b = c.baseline.clone();
+                let mut n = c.current.clone();
+                b.sort_unstable();
+                n.sort_unstable();
+                (b, n)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_host_at_the_same_address_pairs_with_itself() {
+        let before = [host(v4(1))];
+        let after = [host(v4(1))];
+        let components = components(
+            &before.iter().collect::<Vec<_>>(),
+            &after.iter().collect::<Vec<_>>(),
+            HostIdentity::AnyAddress,
+        );
+        assert_eq!(shape(&components), vec![(vec![0], vec![0])]);
+    }
+
+    #[test]
+    fn hosts_sharing_no_address_do_not_pair() {
+        let before = [host(v4(1))];
+        let after = [host(v4(2))];
+        let components = components(
+            &before.iter().collect::<Vec<_>>(),
+            &after.iter().collect::<Vec<_>>(),
+            HostIdentity::AnyAddress,
+        );
+        assert_eq!(
+            shape(&components),
+            vec![(vec![], vec![0]), (vec![0], vec![])],
+            "one host went away and another arrived"
+        );
+    }
+
+    /// The case `AnyAddress` exists for: a machine answering at a second address
+    /// in the later scan is one host, not two.
+    #[test]
+    fn a_shared_secondary_address_pairs_two_records() {
+        let mut before = host(v4(1));
+        before.add_ip(v4(50));
+        let after = host(v4(50));
+
+        let components = components(&[&before], &[&after], HostIdentity::AnyAddress);
+        assert_eq!(shape(&components), vec![(vec![0], vec![0])]);
+    }
+
+    /// Under `PrimaryAddress` the same pair does not, because only the primary
+    /// is a token.
+    #[test]
+    fn a_shared_secondary_address_does_not_pair_under_primary_address() {
+        let mut before = host(v4(1));
+        before.add_ip(v4(50));
+        let after = host(v4(50));
+
+        let components = components(&[&before], &[&after], HostIdentity::PrimaryAddress);
+        assert_eq!(
+            shape(&components),
+            vec![(vec![], vec![0]), (vec![0], vec![])]
+        );
+    }
+
+    /// Two records on one side and one on the other is a regrouping, and is
+    /// reported as one component rather than resolved by picking a winner.
+    #[test]
+    fn records_the_two_scans_grouped_differently_form_one_component() {
+        let mut merged = host(v4(1));
+        merged.add_ip(v4(2));
+        let split_a = host(v4(1));
+        let split_b = host(v4(2));
+
+        let components = components(&[&merged], &[&split_a, &split_b], HostIdentity::AnyAddress);
+        assert_eq!(shape(&components), vec![(vec![0], vec![0, 1])]);
+    }
+
+    /// `fe80::1` names a different machine on every segment, so two records on
+    /// two interfaces must not fold into one.
+    #[test]
+    fn link_local_addresses_on_different_zones_are_different_hosts() {
+        let link_local = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
+
+        let mut before = Host::new(link_local);
+        before.set_zone(Zone::new(1, "en0"));
+        before.set_status(HostStatus::Up);
+
+        let mut after = Host::new(link_local);
+        after.set_zone(Zone::new(2, "en1"));
+        after.set_status(HostStatus::Up);
+
+        let components = components(&[&before], &[&after], HostIdentity::AnyAddress);
+        assert_eq!(
+            shape(&components),
+            vec![(vec![], vec![0]), (vec![0], vec![])],
+            "the same link-local address on two segments is two machines"
+        );
+    }
+
+    #[test]
+    fn hardware_identity_pairs_a_host_that_changed_address() {
+        let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3);
+
+        let mut before = host(v4(1));
+        before.record_mac(mac);
+        let mut after = host(v4(2));
+        after.record_mac(mac);
+
+        let components = components(&[&before], &[&after], HostIdentity::Hardware);
+        assert_eq!(
+            shape(&components),
+            vec![(vec![0], vec![0])],
+            "a DHCP lease moving is not a host being replaced"
+        );
+    }
+
+    #[test]
+    fn groups_folds_records_that_share_an_address() {
+        let mut one = host(v4(1));
+        one.add_ip(v4(9));
+        let two = host(v4(9));
+        let three = host(v4(3));
+
+        let mut groups = groups(&[&one, &two, &three], HostIdentity::AnyAddress);
+        for group in &mut groups {
+            group.sort_unstable();
+        }
+        groups.sort();
+        assert_eq!(groups, vec![vec![0, 1], vec![2]]);
+    }
+}

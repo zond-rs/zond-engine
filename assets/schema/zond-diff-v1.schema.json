@@ -360,7 +360,7 @@
       ],
       "properties": {
         "kind": {
-          "description": "Which field moved. `certificate_expiring` and `certificate_expired` are the two an untouched certificate undergoes: nothing about it moved, a threshold was crossed between the two scans, and `after` is when it lapses.",
+          "description": "Which field moved. `certificate_expiring` and `certificate_expired` are the two an untouched certificate undergoes: nothing about it moved, a threshold was crossed between the two scans, and `after` is when it lapses. `finding_appeared`, `finding_resolved` and `finding_reassessed` carry a finding's severity and title; the report the diff was taken over holds its evidence. A reassessment is one claim both scans make, graded differently.",
           "enum": [
             "status",
             "hostname",
@@ -390,7 +390,10 @@
             "certificate_withdrawn",
             "certificate_rotated",
             "certificate_expiring",
-            "certificate_expired"
+            "certificate_expired",
+            "finding_appeared",
+            "finding_resolved",
+            "finding_reassessed"
           ]
         },
         "before": {

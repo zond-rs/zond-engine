@@ -85,10 +85,11 @@ use crate::model::port::PortSet;
 use crate::model::technique::TcpScanTechnique;
 use crate::record::wire;
 use crate::record::{
-    CaptureRecord, CertificateRecord, DiscoveryRecord, EvasionSettingsRecord, FailureRecord,
-    HardwareRecord, HopRecord, HostRecord, IdleScanRecord, OriginRecord, OsRecord, PhaseRecord,
-    PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord, ScopeRecord, SecurityRecord,
-    ServiceRecord, SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
+    CaptureRecord, CertificateRecord, DetectionIdRecord, DiscoveryRecord, EvasionSettingsRecord,
+    FailureRecord, FindingRecord, HardwareRecord, HopRecord, HostRecord, IdleScanRecord,
+    OriginRecord, OsRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord,
+    ReferenceRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord,
+    StatusReasonRecord, TelemetryRecord, WindowRecord,
 };
 use crate::report::{ScanPhase, ScanReport};
 use crate::transport::probe::SendMode;
@@ -744,6 +745,7 @@ struct HostDto {
     first_seen: String,
     last_seen: String,
     path: Vec<HopDto>,
+    findings: Vec<FindingDto>,
 }
 
 impl HostDto {
@@ -806,9 +808,7 @@ impl HostDto {
                 .into_iter()
                 .map(PortDto::record)
                 .collect::<Result<_, _>>()?,
-            // The narrow import document carries what a target list needs, not a
-            // detection's conclusions. See the module documentation.
-            findings: Vec::new(),
+            findings: self.findings.into_iter().map(FindingDto::record).collect(),
         })
     }
 }
@@ -939,6 +939,7 @@ struct PortDto {
     service: Option<ServiceDto>,
     security: Option<SecurityDto>,
     discovery: Option<DiscoveryDto>,
+    findings: Vec<FindingDto>,
 }
 
 impl PortDto {
@@ -957,7 +958,7 @@ impl PortDto {
             service: self.service.map(ServiceDto::record),
             security: maybe(self.security, SecurityDto::record)?,
             discovery: maybe(self.discovery, DiscoveryDto::record)?,
-            findings: Vec::new(),
+            findings: self.findings.into_iter().map(FindingDto::record).collect(),
         })
     }
 }
@@ -984,6 +985,65 @@ impl ServiceDto {
             version: self.version,
             extrainfo: self.extrainfo,
             cpes: self.cpe,
+        }
+    }
+}
+
+/// A finding on a host or a port.
+///
+/// The document flattens the detection's identity into the finding; the record
+/// keeps it as a [`DetectionIdRecord`], so this is where the two shapes meet.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FindingDto {
+    id: String,
+    version: String,
+    content_hash: String,
+    title: String,
+    severity: String,
+    confidence: String,
+    class: String,
+    excerpt: Option<String>,
+    references: Vec<ReferenceDto>,
+    remediation: Option<String>,
+}
+
+impl FindingDto {
+    fn record(self) -> FindingRecord {
+        FindingRecord {
+            detection: DetectionIdRecord {
+                id: self.id,
+                version: self.version,
+                content_hash: self.content_hash,
+            },
+            title: self.title,
+            severity: self.severity,
+            confidence: self.confidence,
+            class: self.class,
+            excerpt: self.excerpt,
+            references: self
+                .references
+                .into_iter()
+                .map(ReferenceDto::record)
+                .collect(),
+            remediation: self.remediation,
+        }
+    }
+}
+
+/// One reference a finding cites.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ReferenceDto {
+    kind: String,
+    value: String,
+}
+
+impl ReferenceDto {
+    fn record(self) -> ReferenceRecord {
+        ReferenceRecord {
+            kind: self.kind,
+            value: self.value,
         }
     }
 }
@@ -1397,6 +1457,43 @@ mod tests {
         assert!(
             restored.hosts().any(|host| host.status() != HostStatus::Up),
             "the fixture carries a host that is not up, and it survives"
+        );
+    }
+
+    /// Findings are what a detection concluded, and losing them on the way back
+    /// in would make every archived report read as a network nothing was ever
+    /// found on.
+    ///
+    /// Counted rather than compared through [`ScanDiff`], because a diff does
+    /// not look at findings: this exact loss went unnoticed while the
+    /// diff-based round-trip test above passed.
+    #[test]
+    fn every_finding_survives_the_round_trip() {
+        let (original, restored) = round_trip();
+
+        let count = |report: &ScanReport| -> (usize, usize) {
+            (
+                report.hosts().map(|host| host.findings().count()).sum(),
+                report
+                    .hosts()
+                    .flat_map(|host| host.ports())
+                    .map(|port| port.findings().count())
+                    .sum(),
+            )
+        };
+
+        let (hosts_before, ports_before) = count(&original);
+        let (hosts_after, ports_after) = count(&restored);
+
+        assert!(
+            hosts_before + ports_before > 0,
+            "the fixture must carry a finding for this to test anything"
+        );
+        assert_eq!(
+            (hosts_before, ports_before),
+            (hosts_after, ports_after),
+            "host findings {hosts_before} -> {hosts_after}, port findings \
+             {ports_before} -> {ports_after}"
         );
     }
 }

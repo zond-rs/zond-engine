@@ -396,6 +396,40 @@ fn compared_router(later: bool) -> Host {
             .with_generation(if later { "6.1.0" } else { "5.15.0" }),
     );
 
+    // A finding the later scan draws and the baseline did not, so the comparison
+    // carries `finding_appeared`.
+    if later {
+        host.add_finding(
+            Finding::new(
+                DetectionId::new("kev", Version::new(1, 0, 0), "seed")
+                    .expect("a valid detection id"),
+                "Known exploited vulnerability in the management interface",
+                Severity::High,
+                Confidence::Strong,
+                DetectionClass::Passive,
+            )
+            .expect("a titled finding"),
+        );
+    }
+
+    // One claim both scans make, graded higher by the later one, so the document
+    // carries `finding_reassessed` as well.
+    host.add_finding(
+        Finding::new(
+            DetectionId::new("tls-audit", Version::new(1, 0, 0), "seed")
+                .expect("a valid detection id"),
+            "Management interface accepts a deprecated TLS version",
+            if later {
+                Severity::High
+            } else {
+                Severity::Medium
+            },
+            Confidence::Strong,
+            DetectionClass::Passive,
+        )
+        .expect("a titled finding"),
+    );
+
     // A service that moved a version.
     host.add_port(
         Port::new(22, Protocol::Tcp, PortState::Open).with_service(

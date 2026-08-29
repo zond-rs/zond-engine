@@ -27,6 +27,8 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use crate::diff::change::{Change, Coverage, Presence};
+use crate::diff::host::Reassessment;
+use crate::model::finding::Finding;
 use crate::model::port::security::CertificateInfo;
 use crate::model::port::{Port, PortState, Protocol, Security, Service};
 
@@ -129,6 +131,17 @@ pub enum PortChange {
     Service(ServiceChange),
     /// What the endpoint presents at the TLS handshake changed.
     Security(SecurityChange),
+    /// Findings that appeared on the port, and findings no longer claimed about
+    /// it. Paired the way [`HostChange::Findings`](super::host::HostChange::Findings)
+    /// pairs its own.
+    Findings {
+        /// Findings the current scan claims and the baseline did not.
+        appeared: Vec<Finding>,
+        /// Findings the baseline claimed and the current scan does not.
+        resolved: Vec<Finding>,
+        /// Findings both scans claim, where the severity moved.
+        reassessed: Vec<Reassessment>,
+    },
 }
 
 /// Something that moved about what is listening on an endpoint.
@@ -354,6 +367,16 @@ fn changes_between(
             .map(PortChange::Security),
     );
 
+    let (appeared, resolved, reassessed) =
+        super::host::findings_between(before.findings(), after.findings());
+    if !appeared.is_empty() || !resolved.is_empty() || !reassessed.is_empty() {
+        changes.push(PortChange::Findings {
+            appeared,
+            resolved,
+            reassessed,
+        });
+    }
+
     changes
 }
 
@@ -551,4 +574,115 @@ fn set_change(
     let gained = after.difference(&before).cloned().collect();
     let lost = before.difference(&after).cloned().collect();
     (gained, lost)
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗██║  ██║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::confidence::Confidence;
+    use crate::model::finding::{DetectionClass, DetectionId, Severity, Version};
+
+    fn clocks() -> Clocks {
+        Clocks {
+            baseline: SystemTime::UNIX_EPOCH,
+            current: SystemTime::UNIX_EPOCH,
+            expiry_threshold: Duration::from_secs(30 * 24 * 60 * 60),
+        }
+    }
+
+    fn port(state: PortState) -> Port {
+        Port::new(443, Protocol::Tcp, state)
+    }
+
+    fn finding(title: &str) -> Finding {
+        Finding::new(
+            DetectionId::new("audit", Version::new(1, 0, 0), "hash").expect("a detection id"),
+            title,
+            Severity::High,
+            Confidence::Certain,
+            DetectionClass::Passive,
+        )
+        .expect("a titled finding")
+    }
+
+    fn findings_change(
+        changes: &[PortChange],
+    ) -> Option<(&[Finding], &[Finding], &[Reassessment])> {
+        changes.iter().find_map(|change| match change {
+            PortChange::Findings {
+                appeared,
+                resolved,
+                reassessed,
+            } => Some((
+                appeared.as_slice(),
+                resolved.as_slice(),
+                reassessed.as_slice(),
+            )),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn an_endpoint_that_did_not_move_reports_nothing() {
+        let before = port(PortState::Open);
+        let after = port(PortState::Open);
+        assert!(changes_between(Some(&before), Some(&after), &clocks()).is_empty());
+    }
+
+    #[test]
+    fn a_state_change_is_reported() {
+        let before = port(PortState::Open);
+        let after = port(PortState::Closed);
+
+        let changes = changes_between(Some(&before), Some(&after), &clocks());
+        assert!(changes.iter().any(|change| matches!(
+            change,
+            PortChange::State(state)
+                if state.before == PortState::Open && state.after == PortState::Closed
+        )));
+    }
+
+    /// The port half of ZA-4-008.
+    #[test]
+    fn a_finding_that_appeared_on_the_endpoint_is_reported() {
+        let before = port(PortState::Open);
+        let mut after = port(PortState::Open);
+        after.add_finding(finding("Weak cipher"));
+
+        let changes = changes_between(Some(&before), Some(&after), &clocks());
+        let (appeared, resolved, _) = findings_change(&changes).expect("a findings change");
+        assert_eq!(appeared.len(), 1);
+        assert_eq!(appeared[0].title(), "Weak cipher");
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn a_finding_that_went_away_from_the_endpoint_is_reported_as_resolved() {
+        let mut before = port(PortState::Open);
+        before.add_finding(finding("Weak cipher"));
+        let after = port(PortState::Open);
+
+        let changes = changes_between(Some(&before), Some(&after), &clocks());
+        let (appeared, resolved, _) = findings_change(&changes).expect("a findings change");
+        assert!(appeared.is_empty());
+        assert_eq!(resolved.len(), 1);
+    }
+
+    /// One side missing is an endpoint that appeared or went away, which the
+    /// presence of the delta already says. Comparing fields would restate it.
+    #[test]
+    fn an_endpoint_present_on_one_side_only_reports_no_field_changes() {
+        let only = port(PortState::Open);
+        assert!(changes_between(Some(&only), None, &clocks()).is_empty());
+        assert!(changes_between(None, Some(&only), &clocks()).is_empty());
+    }
 }

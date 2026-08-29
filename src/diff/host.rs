@@ -26,12 +26,13 @@
 //! confidence each was recorded at, so a second scan that grew more certain of
 //! the same answer reports nothing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
 use crate::diff::change::{Change, Presence};
 use crate::diff::port::{self, Clocks, PortDelta, PresenceFor};
 use crate::diff::scope::ScopeIndex;
+use crate::model::finding::{ClaimId, Finding, Severity};
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::{Host, HostStatus, NetworkRole};
 use crate::model::mac::MacAddr;
@@ -168,6 +169,37 @@ pub enum HostChange {
         /// Roles the baseline inferred and the current scan does not.
         lost: Vec<NetworkRole>,
     },
+    /// Findings that appeared on the host, and findings no longer claimed about
+    /// it.
+    ///
+    /// Paired by [`ClaimId`], which is what keeps a detection's own version bump
+    /// from reading as the old finding going away and a new one arriving. A
+    /// finding whose severity moved under the same claim is not reported here.
+    Findings {
+        /// Findings the current scan claims and the baseline did not.
+        appeared: Vec<Finding>,
+        /// Findings the baseline claimed and the current scan does not.
+        resolved: Vec<Finding>,
+        /// Findings both scans claim, where the severity moved.
+        reassessed: Vec<Reassessment>,
+    },
+}
+
+/// One claim both scans make, graded differently.
+///
+/// A finding going from `Medium` to `Critical` is the most consequential thing a
+/// rescan can say about a host it already knew, and it is invisible in
+/// `appeared` and `resolved`: the claim is on both sides.
+///
+/// Only the severity is compared. A detection re-running writes a fresh excerpt
+/// almost every time, so treating any difference as a reassessment would report
+/// every finding on every scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reassessment {
+    /// The finding as the current scan states it.
+    pub finding: Finding,
+    /// Where the severity moved.
+    pub severity: Change<Severity>,
 }
 
 /// Compares one host's two records, either of which may be absent.
@@ -297,7 +329,51 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         changes.push(HostChange::Roles { gained, lost });
     }
 
+    let (appeared, resolved, reassessed) = findings_between(before.findings(), after.findings());
+    if !appeared.is_empty() || !resolved.is_empty() || !reassessed.is_empty() {
+        changes.push(HostChange::Findings {
+            appeared,
+            resolved,
+            reassessed,
+        });
+    }
+
     changes
+}
+
+/// The findings one subject gained and lost between two scans.
+///
+/// Paired on [`ClaimId`] rather than on the whole finding, so that a detection
+/// re-running and producing the same claim with a fresh excerpt is not a change.
+pub(super) fn findings_between<'a>(
+    before: impl Iterator<Item = &'a Finding>,
+    after: impl Iterator<Item = &'a Finding>,
+) -> (Vec<Finding>, Vec<Finding>, Vec<Reassessment>) {
+    let before: BTreeMap<ClaimId, &Finding> = before.map(|f| (f.claim_id(), f)).collect();
+    let after: BTreeMap<ClaimId, &Finding> = after.map(|f| (f.claim_id(), f)).collect();
+
+    let appeared = after
+        .iter()
+        .filter(|(claim, _)| !before.contains_key(*claim))
+        .map(|(_, finding)| (*finding).clone())
+        .collect();
+    let resolved = before
+        .iter()
+        .filter(|(claim, _)| !after.contains_key(*claim))
+        .map(|(_, finding)| (*finding).clone())
+        .collect();
+    let reassessed = after
+        .iter()
+        .filter_map(|(claim, finding)| {
+            let was = before.get(claim)?;
+            Change::between(was.severity(), finding.severity()).map(|severity| Reassessment {
+                finding: (*finding).clone(),
+                severity,
+            })
+        })
+        .collect();
+
+    (appeared, resolved, reassessed)
 }
 
 /// Whether two fingerprints name the same system.
@@ -332,4 +408,186 @@ fn difference<T: Ord + Clone>(
     let gained = after.difference(&before).cloned().collect();
     let lost = before.difference(&after).cloned().collect();
     (gained, lost)
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗██║  ██║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+    use crate::model::confidence::Confidence;
+    use crate::model::finding::{DetectionClass, DetectionId, Reference, Severity, Version};
+
+    fn host(last: u8) -> Host {
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, last)));
+        host.set_status(HostStatus::Up);
+        host
+    }
+
+    fn finding(id: &str, title: &str, severity: Severity) -> Finding {
+        Finding::new(
+            DetectionId::new(id, Version::new(1, 0, 0), "hash").expect("a valid detection id"),
+            title,
+            severity,
+            Confidence::Certain,
+            DetectionClass::Passive,
+        )
+        .expect("a titled finding")
+    }
+
+    fn findings_change(
+        changes: &[HostChange],
+    ) -> Option<(&[Finding], &[Finding], &[Reassessment])> {
+        changes.iter().find_map(|change| match change {
+            HostChange::Findings {
+                appeared,
+                resolved,
+                reassessed,
+            } => Some((
+                appeared.as_slice(),
+                resolved.as_slice(),
+                reassessed.as_slice(),
+            )),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_host_that_did_not_move_reports_nothing() {
+        let before = host(1);
+        let after = host(1);
+        assert!(changes_between(&before, &after).is_empty());
+    }
+
+    /// The property ZA-4-008 was filed for: a finding arriving is a change.
+    #[test]
+    fn a_finding_that_appeared_is_reported() {
+        let before = host(1);
+        let mut after = host(1);
+        after.add_finding(finding("cve", "Log4Shell", Severity::Critical));
+
+        let changes = changes_between(&before, &after);
+        let (appeared, resolved, _) = findings_change(&changes).expect("a findings change");
+        assert_eq!(appeared.len(), 1);
+        assert_eq!(appeared[0].title(), "Log4Shell");
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn a_finding_that_went_away_is_reported_as_resolved() {
+        let mut before = host(1);
+        before.add_finding(finding("cve", "Log4Shell", Severity::Critical));
+        let after = host(1);
+
+        let changes = changes_between(&before, &after);
+        let (appeared, resolved, _) = findings_change(&changes).expect("a findings change");
+        assert!(appeared.is_empty());
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].title(), "Log4Shell");
+    }
+
+    #[test]
+    fn the_same_finding_on_both_sides_is_not_a_change() {
+        let mut before = host(1);
+        before.add_finding(finding("cve", "Log4Shell", Severity::Critical));
+        let mut after = host(1);
+        after.add_finding(finding("cve", "Log4Shell", Severity::Critical));
+
+        assert!(findings_change(&changes_between(&before, &after)).is_none());
+    }
+
+    /// A detection publishing a new version of itself is the same claim, not a
+    /// finding that went away and another that arrived. This is what
+    /// [`ClaimId`] is for.
+    #[test]
+    fn a_detection_version_bump_is_not_a_finding_appearing() {
+        let mut before = host(1);
+        before.add_finding(
+            Finding::new(
+                DetectionId::new("cve", Version::new(1, 0, 0), "hash").unwrap(),
+                "Log4Shell",
+                Severity::Critical,
+                Confidence::Certain,
+                DetectionClass::Passive,
+            )
+            .unwrap()
+            .with_reference(Reference::cve("CVE-2021-44228").unwrap()),
+        );
+        let mut after = host(1);
+        after.add_finding(
+            Finding::new(
+                DetectionId::new("cve", Version::new(2, 0, 0), "other").unwrap(),
+                "Log4Shell, restated",
+                Severity::Critical,
+                Confidence::Certain,
+                DetectionClass::Passive,
+            )
+            .unwrap()
+            .with_reference(Reference::cve("CVE-2021-44228").unwrap()),
+        );
+
+        assert!(
+            findings_change(&changes_between(&before, &after)).is_none(),
+            "the same CVE under one detection is one claim across versions"
+        );
+    }
+
+    #[test]
+    fn a_severity_that_moved_under_one_claim_is_reported_as_a_reassessment() {
+        let mut before = host(1);
+        before.add_finding(finding("audit", "Deprecated TLS", Severity::Medium));
+        let mut after = host(1);
+        after.add_finding(finding("audit", "Deprecated TLS", Severity::Critical));
+
+        let changes = changes_between(&before, &after);
+        let (appeared, resolved, reassessed) =
+            findings_change(&changes).expect("a findings change");
+        assert!(
+            appeared.is_empty() && resolved.is_empty(),
+            "the claim is on both sides, so it neither appeared nor resolved"
+        );
+        assert_eq!(reassessed.len(), 1);
+        assert_eq!(reassessed[0].severity.before, Severity::Medium);
+        assert_eq!(reassessed[0].severity.after, Severity::Critical);
+        assert_eq!(reassessed[0].finding.title(), "Deprecated TLS");
+    }
+
+    /// A detection re-running writes a fresh excerpt almost every time. Only the
+    /// severity is compared, so that is not a change.
+    #[test]
+    fn an_excerpt_that_changed_under_one_claim_is_not_a_reassessment() {
+        use crate::model::finding::Excerpt;
+
+        let mut before = host(1);
+        before.add_finding(
+            finding("audit", "Deprecated TLS", Severity::Medium).with_excerpt(Excerpt::new("one")),
+        );
+        let mut after = host(1);
+        after.add_finding(
+            finding("audit", "Deprecated TLS", Severity::Medium).with_excerpt(Excerpt::new("two")),
+        );
+
+        assert!(findings_change(&changes_between(&before, &after)).is_none());
+    }
+
+    #[test]
+    fn two_findings_from_one_detection_are_told_apart_by_subject() {
+        let before = host(1);
+        let mut after = host(1);
+        after.add_finding(finding("audit", "Weak cipher", Severity::Medium));
+        after.add_finding(finding("audit", "Expired certificate", Severity::High));
+
+        let changes = changes_between(&before, &after);
+        let (appeared, _, _) = findings_change(&changes).expect("a findings change");
+        assert_eq!(appeared.len(), 2);
+    }
 }

@@ -21,6 +21,7 @@
 
 use serde::Serialize;
 
+use crate::diff::host::Reassessment;
 use crate::diff::{
     CertificateChange, Confirmed, Coverage, DiffSummary, HostChange, HostDelta, PortChange,
     PortDelta, Presence, ScanDiff, SecurityChange, ServiceChange,
@@ -28,6 +29,7 @@ use crate::diff::{
 use crate::export::ExportOptions;
 use crate::export::schema::{EngineDto, HostDto};
 use crate::format::time::rfc3339;
+use crate::model::finding::Finding;
 use crate::model::host::os::OsFingerprint;
 use crate::record::wire::{host_status_name, port_state_name, protocol_name, scan_kind_name};
 
@@ -465,7 +467,40 @@ impl ChangeDto {
                 let lost: Vec<&'static str> = lost.iter().copied().map(name).collect();
                 Self::set("role_gained", "role_lost", &gained, &lost)
             }
+            HostChange::Findings {
+                appeared,
+                resolved,
+                reassessed,
+            } => Self::findings(appeared, resolved, reassessed),
         }
+    }
+
+    /// Findings gained and lost, as one entry each.
+    ///
+    /// Rendered as severity and title rather than the whole finding: this
+    /// document says what moved, and the report the diff was taken over carries
+    /// the evidence.
+    fn findings(
+        appeared: &[Finding],
+        resolved: &[Finding],
+        reassessed: &[Reassessment],
+    ) -> Vec<Self> {
+        let name = crate::record::wire::severity_name;
+        let describe =
+            |finding: &Finding| format!("{}: {}", name(finding.severity()), finding.title());
+
+        let gained: Vec<String> = appeared.iter().map(describe).collect();
+        let lost: Vec<String> = resolved.iter().map(describe).collect();
+
+        let mut entries = Self::set("finding_appeared", "finding_resolved", &gained, &lost);
+        entries.extend(reassessed.iter().map(|shift| {
+            Self::between(
+                "finding_reassessed",
+                format!("{}: {}", name(shift.severity.before), shift.finding.title()),
+                format!("{}: {}", name(shift.severity.after), shift.finding.title()),
+            )
+        }));
+        entries
     }
 
     /// What an endpoint-level change amounts to.
@@ -489,6 +524,11 @@ impl ChangeDto {
             )],
             PortChange::Service(service) => Self::of_service(service),
             PortChange::Security(security) => Self::of_security(security),
+            PortChange::Findings {
+                appeared,
+                resolved,
+                reassessed,
+            } => Self::findings(appeared, resolved, reassessed),
         }
     }
 
