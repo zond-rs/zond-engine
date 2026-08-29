@@ -28,10 +28,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// large range stops promptly instead of after the address it is on.
 ///
 /// **Stopping is not cancelling.** The scan winds down and still produces its
-/// [`ScanReport`](crate::scanner::report::ScanReport), describing however far it
+/// [`ScanReport`](crate::report::ScanReport), describing however far it
 /// got — the hosts already found are findings, and discarding them because the
 /// caller ran out of patience would throw away the work the scan had done. The
-/// report's [`StopReason`](crate::scanner::report::StopReason) says
+/// report's [`StopReason`](crate::report::StopReason) says
 /// `Aborted` so nobody mistakes a shortened scan for a complete one.
 ///
 /// Cloneable and shareable: the copy on a [`ScanSession`](crate::scanner::session::ScanSession)

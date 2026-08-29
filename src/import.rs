@@ -27,7 +27,7 @@
 //! scan next", and are narrow on purpose: a report read here becomes a target
 //! list and everything else in the document is skipped. `report` answers "what
 //! did this scan find", and builds the whole
-//! [`ScanReport`](crate::scanner::report::ScanReport) — which is what lets
+//! [`ScanReport`](crate::report::ScanReport) — which is what lets
 //! [`diff`](crate::diff) compare a scan another tool performed against one this
 //! engine ran.
 //!

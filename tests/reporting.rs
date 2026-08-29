@@ -8,7 +8,7 @@
 
 //! Scan report tests: what the engine records about a run it just completed.
 //!
-//! The unit tests in `scanner::report` cover the aggregate's own arithmetic against
+//! The unit tests in `report` cover the aggregate's own arithmetic against
 //! hand-built hosts. These drive the real public entry points instead, so they
 //! catch the failure the unit tests cannot see: a report that is correct in
 //! isolation but wired to the wrong scan, taken at the wrong moment, or filled
@@ -22,8 +22,8 @@ use common::fake_net::unsendable_transport;
 use common::*;
 use zond_engine::model::host::HostStatus;
 use zond_engine::model::port::{PortState, Protocol};
+use zond_engine::report::{ENGINE_VERSION, ScanKind};
 use zond_engine::scanner;
-use zond_engine::scanner::report::{ENGINE_VERSION, ScanKind};
 use zond_engine::scanner::session::{ScanEvent, ScanSession};
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::routed::RoutedScanner;

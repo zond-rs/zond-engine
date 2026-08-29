@@ -8,7 +8,7 @@
 
 //! # A scan while it is running
 //!
-//! The live half of what a scan produces. [`ScanReport`](super::report) is the
+//! The live half of what a scan produces. [`ScanReport`](crate::report) is the
 //! record afterwards; everything here describes the present moment and keeps no
 //! history.
 //!
@@ -84,118 +84,9 @@ use crate::model::host::Host;
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::Positions;
 use crate::model::port::Protocol;
-use crate::model::technique::TcpScanTechnique;
+use crate::report::ScannerKind;
+use crate::report::{Attachment, AttachmentSource, ProbeStats, ScannerFailure};
 use crate::scanner::handle::ScanHandle;
-use crate::scanner::report::{Attachment, AttachmentSource, ProbeStats, ScannerFailure};
-
-/// Which scanning strategy a [`ScanEvent::ScannerFailed`] refers to.
-///
-/// Marked `#[non_exhaustive]`: strategies are added as the engine learns to
-/// probe in new ways, and a consumer matching on this enum should pay for that
-/// with a recompile rather than a major version.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScannerKind {
-    /// Layer-2 discovery (ARP/NDP) on a local segment.
-    Local,
-    /// Reading a link's own traffic, having sent nothing.
-    ///
-    /// The one strategy here that puts no packet on the wire, which changes
-    /// what its counters mean. `sends_attempted` is zero for it and always
-    /// will be; what it saw is bounded by what the network happened to carry
-    /// rather than by anything this engine chose, so a quiet run says the
-    /// segment was quiet and never that a host was absent.
-    Passive,
-    /// Raw TCP SYN discovery for gateway-routed targets.
-    Routed,
-    /// Raw TCP SYN port scanning (the port-scan phase, distinct from [`Routed`]
-    /// host discovery).
-    ///
-    /// [`Routed`]: ScannerKind::Routed
-    SynPort,
-    /// Raw TCP port scanning with a probe that is not a SYN - a FIN, a flagless
-    /// segment, a bare ACK.
-    ///
-    /// The same scanner as [`SynPort`], asking a different question. They are
-    /// named apart because a report saying `syn_port` should mean a half-open
-    /// connection attempt was made, and for these it was not; which technique
-    /// ran is in the phase's settings.
-    ///
-    /// [`SynPort`]: ScannerKind::SynPort
-    TcpPort,
-    /// Unprivileged TCP connect fallback, for both host discovery and port
-    /// scanning.
-    Connect,
-    /// Unprivileged UDP fallback.
-    ///
-    /// Named apart from [`Connect`] because a report has to be able to say which
-    /// half of an unprivileged scan failed. The two send different datagrams,
-    /// read different answers, and fail for different reasons — a host that
-    /// refuses one may be perfectly happy with the other, and one name for both
-    /// makes that indistinguishable.
-    ///
-    /// [`Connect`]: ScannerKind::Connect
-    ConnectUdp,
-    /// Privileged raw UDP port scanning.
-    UdpPort,
-    /// The active operating-system echo probe, sent at the hosts the passive
-    /// sources could not name.
-    ///
-    /// Named apart from the port scanners because it answers a different
-    /// question about a different dimension: not which ports a host has, but
-    /// which stack answered the ping. A report attributing an echo probe to any
-    /// other strategy would describe traffic nobody sent.
-    OsEcho,
-    /// The active operating-system series probe: one host asked the same
-    /// question several times, so the policies behind its counters become
-    /// visible.
-    ///
-    /// Named apart from [`SynPort`] though it sends the same segment, because
-    /// what it is doing with the answers is a different activity and a report
-    /// that filed it as a port scan would describe traffic nobody asked for:
-    /// these probes revisit ports whose state is already settled, and none of
-    /// their replies changes one.
-    ///
-    /// [`SynPort`]: ScannerKind::SynPort
-    OsSeries,
-    /// The active operating-system management probe: one SNMP `GetRequest` at a
-    /// host whose kernel is not otherwise known.
-    ///
-    /// Named apart from the port scanners because it establishes no port state.
-    /// It asks one question of one service and files the answer against the
-    /// *host*; whether anything is listening on 161 is the port scan's to
-    /// report, and this phase deliberately does not.
-    OsSnmp,
-    /// The idle (zombie) TCP port scan: port states read off a third party's
-    /// IP-ID counter rather than from any reply the target sent this scanner.
-    ///
-    /// Named apart from [`SynPort`](Self::SynPort) though the forged probe is a
-    /// SYN, because what it produces and what can go wrong are its own: a
-    /// verdict is `Open` or `ClosedFiltered` and nothing finer, and a run is
-    /// refused for want of a suitable zombie or an Ethernet path where a raw SYN
-    /// scan would simply have proceeded.
-    Idle,
-    /// Composite scanner that delegates to protocol-specific scanners.
-    Composite,
-}
-
-impl ScannerKind {
-    /// What a raw TCP scan carrying `technique` reports itself as.
-    ///
-    /// One function because the answer has to be the same everywhere it is
-    /// asked, and it is asked twice: once by the plan, to attribute a step that
-    /// could not open its socket, and once by the running scanner, to attribute
-    /// anything that went wrong afterwards. Two spellings meant one strategy
-    /// filed its failures under two names depending on when it failed, and the
-    /// planning half called every technique [`SynPort`](Self::SynPort) whether
-    /// or not a SYN was involved.
-    pub const fn for_raw_tcp(technique: TcpScanTechnique) -> Self {
-        match technique {
-            TcpScanTechnique::Syn => Self::SynPort,
-            _ => Self::TcpPort,
-        }
-    }
-}
 
 /// Lightweight notifications for the status of an ongoing scan.
 #[derive(Debug, Clone)]
@@ -306,7 +197,7 @@ impl HostStore {
     /// A point-in-time copy: the scan carries on writing, and this does not
     /// change afterwards. Ordered rather than in map order so two reads of the
     /// same data can be compared, for the reason
-    /// [`ScanReport`](crate::scanner::report::ScanReport) orders its hosts.
+    /// [`ScanReport`](crate::report::ScanReport) orders its hosts.
     pub fn snapshot(&self) -> Vec<Host> {
         let mut hosts: Vec<Host> = self
             .inner
@@ -411,7 +302,7 @@ impl ScanSession {
 }
 
 /// Where an instrumented scanner leaves its counters for the final
-/// [`ScanReport`](crate::scanner::report::ScanReport).
+/// [`ScanReport`](crate::report::ScanReport).
 ///
 /// A scanner reports its audit as its receive loop exits, which is well before
 /// the phase that spawned it knows the scan is over, and the strategy is
@@ -504,7 +395,7 @@ impl Tapes {
 }
 
 /// Where strategy failures accumulate for the final
-/// [`ScanReport`](crate::scanner::report::ScanReport).
+/// [`ScanReport`](crate::report::ScanReport).
 ///
 /// [`ScanEvent::ScannerFailed`] tells a live consumer about a failure the moment
 /// it happens, but an event nobody listens for is an event that never happened:
@@ -971,7 +862,7 @@ impl ScanContext {
     ///
     /// The reading counterpart of [`record_probe_stats`](Self::record_probe_stats),
     /// for a caller driving strategies themselves: they never reach the phase
-    /// that drains these into a [`ScanReport`](crate::scanner::report::ScanReport),
+    /// that drains these into a [`ScanReport`](crate::report::ScanReport),
     /// so this is how they read what a strategy filed. Non-destructive on
     /// purpose — draining is the report's privilege, and a caller who could do
     /// it would leave the report describing a scan that recorded nothing.
@@ -1009,7 +900,7 @@ impl ScanContext {
     ///
     /// Called by a strategy that put a probe on the segment which every host
     /// there is required to answer. What it buys is stated on
-    /// [`TargetScope::links`](crate::scanner::report::TargetScope::links): a
+    /// [`TargetScope::links`](crate::report::TargetScope::links): a
     /// comparison can then tell a host that appeared on a link somebody was
     /// watching from one that turned up on ground nobody had covered.
     pub fn record_sweep(&self, zone: Zone) {
@@ -1158,7 +1049,7 @@ impl ScanContext {
     /// answers for a consumer that happened to be listening.
     ///
     /// Non-destructive on purpose. Draining belongs to
-    /// [`PhaseRecorder::finish`](crate::scanner::report::PhaseRecorder::finish),
+    /// [`PhaseRecorder::finish`](crate::scanner::recorder::PhaseRecorder::finish),
     /// and a caller who could do it here would leave the report claiming a
     /// clean run over a scan that lost work.
     pub fn failures_snapshot(&self) -> Vec<ScannerFailure> {

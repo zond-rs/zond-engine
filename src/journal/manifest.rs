@@ -86,7 +86,7 @@ use crate::model::ip::set::IpSet;
 use crate::model::target::TargetMap;
 use crate::model::technique::TcpScanTechnique;
 use crate::record::{PlanRecord, wire};
-use crate::scanner::report::ScanKind;
+use crate::report::ScanKind;
 
 /// What a scan will actually walk, in the shape the phase it belongs to counts.
 ///

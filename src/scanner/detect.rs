@@ -51,8 +51,9 @@ use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::config::DetectionEnvelope;
 use crate::config::ServiceDetection;
-use crate::detect::DetectionEnvelope;
+use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::detect::compute::db::ComputeDb;
 use crate::detect::compute::stage as compute_stage;
 use crate::detect::compute::{CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities};
@@ -66,9 +67,9 @@ use crate::model::finding::Finding;
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
 use crate::record::{DetectionIdRecord, wire};
-use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
+use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
-use crate::scanner::session::{ScanContext, ScannerKind, Tapes};
+use crate::scanner::session::{ScanContext, Tapes};
 
 /// The reply-byte budget a flow that declares none is held to.
 const DEFAULT_MAX_BYTES: u64 = 64 * 1024;

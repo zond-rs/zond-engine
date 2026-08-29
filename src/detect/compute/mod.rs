@@ -44,7 +44,7 @@
 //!
 //! Every tier emits one type, [`Finding`](crate::model::finding::Finding); a
 //! compute module is one more producer of it, gated by the same
-//! [envelope](super::envelope) a flow is. See the design record in
+//! [envelope](crate::config::envelope) a flow is. See the design record in
 //! `audit/2026-08-28-scripting-engine-spec.md`, Part III.
 
 mod budget;

@@ -48,13 +48,14 @@ use tokio::sync::mpsc;
 
 use crate::model::port::Protocol;
 use crate::model::target::PlannedTarget;
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::report::ScannerKind;
+use crate::scanner::session::ScanContext;
 
 /// Why one scanning strategy could not start, or could not finish.
 ///
 /// **This is not how a scan fails.** A scan runs several strategies and carries
 /// on with whatever survives, so one of these is recorded in the report's
-/// [`failures`](crate::scanner::report::ScanReport::failures) and announced on
+/// [`failures`](crate::report::ScanReport::failures) and announced on
 /// the event stream rather than returned from
 /// [`discover`](crate::scanner::discover) or [`scan`](crate::scanner::scan). It
 /// reaches a caller directly when they build and run a strategy themselves.

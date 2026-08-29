@@ -39,7 +39,7 @@ use zond_engine::journal::store::Journal;
 use zond_engine::model::ip::scoped::Zone;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::protocols::{craft, ethernet, tcp};
-use zond_engine::scanner::report::ScanKind;
+use zond_engine::report::ScanKind;
 use zond_engine::scanner::session::{ScanContext, ScanSession};
 use zond_engine::scanner::strategy::passive::{OnLink, PassiveListener, Recording};
 use zond_engine::transport::capture::CapturedFrame;

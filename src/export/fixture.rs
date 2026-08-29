@@ -40,12 +40,14 @@ use crate::model::port::{
     CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
 };
 use crate::protocols::tcp::flags;
-use crate::scanner::pacing::congestion::WindowSummary;
-use crate::scanner::report::{
-    Attachment, AttachmentSource, BUCKET_BOUNDS_MS, PhaseRecorder, ProbeStats, ScanKind,
-    ScanReport, StopReason, TargetScope,
+use crate::report::ScannerKind;
+use crate::report::WindowSummary;
+use crate::report::{
+    Attachment, AttachmentSource, BUCKET_BOUNDS_MS, ProbeStats, ScanKind, ScanReport, StopReason,
+    TargetScope,
 };
-use crate::scanner::session::{ScanSession, ScannerKind};
+use crate::scanner::recorder::PhaseRecorder;
+use crate::scanner::session::ScanSession;
 
 /// An address on the fixture's network.
 fn ip(last: u8) -> IpAddr {
@@ -330,7 +332,7 @@ pub(crate) fn compared() -> (ScanReport, ScanReport) {
 fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
     use crate::model::port::PortSet;
     use crate::model::target::{TargetMap, TargetSet};
-    use crate::scanner::report::{PhaseParts, ScanPhase, ScanSettings};
+    use crate::report::{PhaseParts, ScanPhase, ScanSettings};
 
     let mut targets = TargetMap::new();
     let mut addresses = IpSet::new();
@@ -357,7 +359,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         origin: None,
     });
 
-    ScanReport::recorded(crate::scanner::report::ENGINE_VERSION, vec![phase], hosts)
+    ScanReport::recorded(crate::report::ENGINE_VERSION, vec![phase], hosts)
 }
 
 /// A certificate, by the two things that make one distinguishable.

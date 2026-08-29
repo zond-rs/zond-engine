@@ -67,7 +67,7 @@ use crate::format::time::rfc3339;
 use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::Port;
-use crate::scanner::report::ScanReport;
+use crate::report::ScanReport;
 
 /// Characters that make a spreadsheet read a cell as a formula.
 const FORMULA_LEADERS: [char; 5] = ['=', '+', '-', '@', '\t'];
@@ -79,7 +79,7 @@ const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use zond_engine::scanner::report::ScanReport;
+/// use zond_engine::report::ScanReport;
 /// use zond_engine::export::{CsvExporter, ExportOptions, Exporter};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {
@@ -451,7 +451,7 @@ mod tests {
 
     /// Exports one report, so a test comparing two exports compares the same
     /// scan rather than two fixtures built a few microseconds apart.
-    fn bytes(exporter: &CsvExporter, report: &crate::scanner::report::ScanReport) -> Vec<u8> {
+    fn bytes(exporter: &CsvExporter, report: &crate::report::ScanReport) -> Vec<u8> {
         let mut bytes = Vec::new();
         exporter
             .export(report, &mut bytes)

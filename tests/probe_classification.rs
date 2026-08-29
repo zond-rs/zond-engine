@@ -30,7 +30,7 @@ use common::*;
 use zond_engine::model::host::{HostStatus, StatusProtocol, StatusReason};
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
-use zond_engine::scanner::report::StopReason;
+use zond_engine::report::StopReason;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};

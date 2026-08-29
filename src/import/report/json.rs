@@ -90,7 +90,7 @@ use crate::record::{
     PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord, ScopeRecord, SecurityRecord,
     ServiceRecord, SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
 };
-use crate::scanner::report::{ScanPhase, ScanReport};
+use crate::report::{ScanPhase, ScanReport};
 
 /// The format's name in errors.
 const FORMAT: &str = "JSON";

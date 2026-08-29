@@ -64,7 +64,7 @@
 //! ## Who uses it
 //!
 //! [`nmap`](super::nmap) reads a document as the targets to scan next.
-//! [`report::nmap`](super::report::nmap) reads the same document as the findings
+//! [`report::nmap`](crate::import::report::nmap) reads the same document as the findings
 //! of the scan that produced it. One audited parser rather than two, because two
 //! hand-rolled XML parsers kept hardened in step is the failure this module's
 //! refusals exist to prevent.

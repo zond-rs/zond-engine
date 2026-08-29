@@ -52,10 +52,10 @@ use async_trait::async_trait;
 use pnet_packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::report::ScannerKind;
+use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::payload;
-use crate::scanner::report::StopReason;
-use crate::scanner::session::ScannerKind;
 use crate::scanner::strategy::{HostScanner, StrategyError};
 
 pub use idle::IdlePortScanner;
@@ -330,10 +330,8 @@ pub struct SynToken {
 /// What a scan's evasion settings come to for one probe: how the packet reaches
 /// the wire, how its segment is shaped, and the decoys it travels among.
 ///
-/// A struct rather than three positional arguments. All three are derived from
-/// one [`EvasionProfile`](crate::evasion::EvasionProfile) and always travel
-/// together, and carrying them separately is what pushed both send functions
-/// past the number of arguments a reader can hold.
+/// All three are derived from one
+/// [`EvasionProfile`](crate::evasion::EvasionProfile).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct EvasionParts<'a> {
     /// How the packet is put on the wire, including any fragmentation.

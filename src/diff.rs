@@ -16,7 +16,7 @@
 //!
 //! ```no_run
 //! use zond_engine::diff::ScanDiff;
-//! # use zond_engine::scanner::report::ScanReport;
+//! # use zond_engine::report::ScanReport;
 //! # fn example(last_week: &ScanReport, today: &ScanReport) {
 //! let diff = ScanDiff::between(last_week, today);
 //!
@@ -53,7 +53,7 @@
 //! ## Verdicts are compared. Evidence is not.
 //!
 //! A report carries two kinds of record, and the
-//! [`report`](crate::scanner::report) module keeps them apart on purpose:
+//! [`report`](crate::report) module keeps them apart on purpose:
 //! findings about the network, and measurements about the scan. **Only the
 //! findings are compared.**
 //!
@@ -76,7 +76,7 @@
 //! disappearance carries [`Coverage`]: what the *other* scan says about whether
 //! it covered that target at all.
 //!
-//! [`TargetScope`](crate::scanner::report::TargetScope) is where that comes
+//! [`TargetScope`](crate::report::TargetScope) is where that comes
 //! from. Each phase of a report records the ranges it walked after exclusions and
 //! the ranges its policy withheld, so an address can be placed in one, the other,
 //! or neither. A report carrying no scope answers [`Coverage::Unstated`], and
@@ -118,7 +118,7 @@ mod scope;
 use std::time::{Duration, SystemTime};
 
 use crate::model::host::Host;
-use crate::scanner::report::{ScanKind, ScanReport};
+use crate::report::{ScanKind, ScanReport};
 
 pub use crate::diff::change::{Change, Coverage, Presence};
 pub use crate::diff::host::{HostChange, HostDelta};
@@ -518,7 +518,7 @@ mod tests {
     use crate::model::parse::ip::to_set;
     use crate::model::port::security::CertificateInfo;
     use crate::model::port::{Port, PortSet, PortState, Protocol, Security, Service};
-    use crate::scanner::report::{
+    use crate::report::{
         PhaseParts, PortScope, ScanKind, ScanPhase, ScanReport, ScanSettings, ScopeParts,
         TargetScope,
     };

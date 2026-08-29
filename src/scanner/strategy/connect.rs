@@ -25,6 +25,7 @@
 //! an address paired with a port, which is the unit each of them settles.
 
 use crate::config::ServiceDetection;
+use crate::config::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
 use crate::error;
 use crate::evasion::EvasionProfile;
 use crate::journal::settle::{Outcome, Settled};
@@ -33,14 +34,14 @@ use crate::model::ip::set::IpSet;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::{Port, PortSet, PortState, Protocol};
 use crate::model::target::PlannedTarget;
+use crate::report::ScannerKind;
+use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::dispatcher::shuffled_addresses;
 use crate::scanner::handle::ScanHandle;
-use crate::scanner::pacing::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
 use crate::scanner::payload;
 use crate::scanner::pool::ProbePool;
-use crate::scanner::report::StopReason;
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use async_trait::async_trait;
 use socket2::{Domain, Socket, Type};

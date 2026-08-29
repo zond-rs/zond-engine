@@ -77,7 +77,7 @@ use crate::model::host::{
 };
 use crate::model::ip::range::IpRange;
 use crate::model::port::{CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service};
-use crate::scanner::report::{
+use crate::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, ScanPhase,
     ScanReport, ScanSettings, ScanSummary, ScannerFailure, TargetScope,
 };
@@ -88,7 +88,7 @@ use crate::scanner::report::{
 // ever reads. Re-exported so this module still reads as the whole description of
 // the document.
 pub use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
-pub use crate::scanner::report::ENGINE_VERSION;
+pub use crate::report::ENGINE_VERSION;
 
 // ---------------------------------------------------------------------------
 // Enum names
@@ -156,7 +156,7 @@ fn micros_opt(duration: Option<Duration>) -> Option<u64> {
 /// [module documentation](self) for the conventions the output obeys.
 ///
 /// ```no_run
-/// use zond_engine::scanner::report::ScanReport;
+/// use zond_engine::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, schema::ReportDto};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {
@@ -589,7 +589,7 @@ impl<'a> PhaseDto<'a> {
     /// Renders a recorded phase, applying the redaction policy in `options`.
     ///
     /// A phase carried nothing to redact until it began carrying an
-    /// [`attachment`](crate::scanner::report::Attachment), which names a device
+    /// [`attachment`](crate::report::Attachment), which names a device
     /// and its hardware address — both of them exactly what the policy exists to
     /// mask, and neither of them less identifying for describing a switch
     /// rather than a workstation.
@@ -1847,8 +1847,8 @@ mod tests {
     use crate::model::port::PortSet;
     use crate::model::port::{Protocol, ScanResponse};
     use crate::model::target::{TargetMap, TargetSet};
-    use crate::scanner::report::{ScanKind, StopReason};
-    use crate::scanner::session::ScannerKind;
+    use crate::report::ScannerKind;
+    use crate::report::{ScanKind, StopReason};
 
     /// Every enumerated value the document can carry has to be spelled the same
     /// way twice - once here, once in the schema file. Pinning the strings is

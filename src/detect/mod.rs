@@ -30,12 +30,9 @@
 //! replay all follow from it rather than being bolted on.
 
 pub mod compute;
-pub mod envelope;
 pub mod flow;
 pub mod host;
 pub mod manifest;
 
 mod convert;
 mod gate;
-
-pub use envelope::DetectionEnvelope;

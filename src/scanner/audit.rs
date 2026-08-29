@@ -38,9 +38,9 @@
 use std::time::{Duration, Instant};
 
 use crate::model::capture::CaptureCounts;
-use crate::scanner::pacing::congestion::WindowSummary;
-use crate::scanner::report::{ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, StopReason};
-use crate::scanner::session::ScannerKind;
+use crate::report::ScannerKind;
+use crate::report::WindowSummary;
+use crate::report::{ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, StopReason};
 
 /// Per-run counters for one raw scanner.
 ///

@@ -8,21 +8,20 @@
 
 //! # What the unprivileged paths cannot measure for themselves
 //!
-//! The timeouts and concurrency ceilings the TCP-connect scan paths run
-//! against, in one place because more than one path uses each of them: the
-//! connect port scanner, the connect discovery sweep and the service-detection
-//! pass all open the same kind of connection for the same purpose. A budget
-//! spelled separately in each is a budget that gets tuned in one and left behind
-//! in the others, and the failure is silent — the paths simply stop agreeing
-//! about how patient a scan is.
+//! The timeouts and concurrency ceilings every TCP-connect path runs against.
+//! The connect port scanner, the connect discovery sweep, the service-detection
+//! pass and the detection tiers all open the same kind of connection for the
+//! same purpose, so they share one set of numbers. Spelled separately in each,
+//! a budget gets tuned in one place and left behind in the others, and nothing
+//! reports the disagreement.
 //!
 //! **Only the connect paths need constants at all.** A raw scanner measures the
-//! round trips it is getting and sizes its own patience from them (see
-//! [`AdaptiveDeadline`](super::deadline::AdaptiveDeadline)). A connect probe
-//! cannot: it sends one SYN, the kernel owns the retransmission, and the scanner
-//! never sees a round trip it could learn from. So its numbers come from what
-//! the protocol guarantees rather than from what the network is doing, and each
-//! one below says which guarantee.
+//! round trips it is getting and sizes its own patience from them, through
+//! [`AdaptiveDeadline`](crate::scanner::pacing::deadline::AdaptiveDeadline). A
+//! connect probe cannot: it sends one SYN, the kernel owns the retransmission,
+//! and the scanner never sees a round trip it could learn from. Its numbers come
+//! from what the protocol guarantees instead, and each one below says which
+//! guarantee.
 
 use std::time::Duration;
 

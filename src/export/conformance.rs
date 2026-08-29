@@ -338,8 +338,8 @@ fn the_lines_schema_rejects_a_record_it_should_reject() {
 
 /// Exports a comparison and parses it back.
 fn comparison(
-    baseline: &crate::scanner::report::ScanReport,
-    current: &crate::scanner::report::ScanReport,
+    baseline: &crate::report::ScanReport,
+    current: &crate::report::ScanReport,
     options: ExportOptions,
 ) -> Value {
     use crate::diff::ScanDiff;

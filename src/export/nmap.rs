@@ -91,7 +91,7 @@ use crate::model::finding::Finding;
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
-use crate::scanner::report::{ScanPhase, ScanReport};
+use crate::report::{ScanPhase, ScanReport};
 
 /// The format's name in errors.
 const FORMAT: &str = "nmap XML";
@@ -106,7 +106,7 @@ const XML_OUTPUT_VERSION: &str = "1.05";
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use zond_engine::scanner::report::ScanReport;
+/// use zond_engine::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, Exporter, NmapXmlExporter};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {
@@ -152,7 +152,7 @@ impl Exporter for NmapXmlExporter {
             // version on zond's name, and reading the file back turned the pair
             // into one string: `zond 0.13.0` became the *version* of the next
             // document exported from it.
-            Attr(crate::scanner::report::ENGINE_VERSION),
+            Attr(crate::report::ENGINE_VERSION),
             XML_OUTPUT_VERSION,
         )?;
 

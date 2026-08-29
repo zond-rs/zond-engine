@@ -28,7 +28,8 @@ use crate::info;
 use crate::journal::settle::Outcome;
 use crate::model::port::Protocol;
 use crate::model::target::PlannedTarget;
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::report::ScannerKind;
+use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{PortScanner, StrategyError};
 
 /// A port scanner that multiplexes targets by protocol.

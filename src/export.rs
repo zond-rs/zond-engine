@@ -41,7 +41,7 @@
 //!
 //! ```
 //! use std::io::{self, Write};
-//! use zond_engine::scanner::report::ScanReport;
+//! use zond_engine::report::ScanReport;
 //! use zond_engine::export::{ExportError, Exporter};
 //!
 //! /// Writes one line per host: the address and how many ports it had.
@@ -104,7 +104,7 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::model::mac::MacAddr;
-use crate::scanner::report::ScanReport;
+use crate::report::ScanReport;
 
 #[cfg(feature = "export-json")]
 pub use json::JsonExporter;

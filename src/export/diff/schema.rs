@@ -99,7 +99,7 @@ impl<'a> DiffDto<'a> {
             schema_version: DIFF_SCHEMA_VERSION,
             engine: EngineDto {
                 name: ENGINE_NAME,
-                version: crate::scanner::report::ENGINE_VERSION,
+                version: crate::report::ENGINE_VERSION,
             },
             generated_at: rfc3339(std::time::SystemTime::now()),
             baseline: ProvenanceDto::new(diff.baseline()),

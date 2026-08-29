@@ -42,7 +42,7 @@ use super::settle::Settlements;
 use crate::detect::compute::DetectionRunRecord;
 use crate::model::host::Host;
 use crate::record::{HostRecord, PhaseRecord};
-use crate::scanner::report::{ScanKind, ScanPhase, ScanReport};
+use crate::report::{ScanKind, ScanPhase, ScanReport};
 
 const MANIFEST: &str = "manifest.json";
 const CURSOR: &str = "cursor.json";
@@ -1081,7 +1081,7 @@ pub fn spawn_checkpoints(
 
                     if let Err(e) = outcome {
                         ctx.record_failure(
-                            crate::scanner::session::ScannerKind::Composite,
+                            crate::report::ScannerKind::Composite,
                             format!("journal checkpoint failed, so a resume would replay further back than it should: {e}"),
                         );
                     }
@@ -1621,7 +1621,7 @@ mod tests {
         assert_eq!(replayed.engine_version(), "0.1.0");
         assert_ne!(
             replayed.engine_version(),
-            crate::scanner::report::ENGINE_VERSION,
+            crate::report::ENGINE_VERSION,
             "this build's version must not have been stamped over the record's"
         );
     }

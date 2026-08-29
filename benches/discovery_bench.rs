@@ -114,8 +114,8 @@ use zond_engine::export::schema::status_protocol_name;
 use zond_engine::model::host::Host;
 use zond_engine::model::parse::ip::to_set as to_ipset;
 use zond_engine::model::parse::ip::{Keyword, names_keyword};
+use zond_engine::report::{BUCKET_BOUNDS_MS, ProbeStats};
 use zond_engine::scanner;
-use zond_engine::scanner::report::{BUCKET_BOUNDS_MS, ProbeStats};
 use zond_engine::system::interface;
 
 /// What counts as "the same thing found twice".

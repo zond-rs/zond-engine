@@ -47,7 +47,7 @@
 //! opened, run it, and read the store. None of it needs a cargo feature.
 //!
 //! A scan driven this way produces the same record as one the engine ran.
-//! [`report::PhaseRecorder`] takes the scope and settings before the strategies
+//! [`recorder::PhaseRecorder`] takes the scope and settings before the strategies
 //! start and closes into a [`ScanReport`] when they finish, so a
 //! self-orchestrated scan reaches the exporters on the same terms [`discover`]
 //! and [`scan`] do. Until then, what a strategy has filed is readable through
@@ -114,20 +114,22 @@ use tokio::task::JoinHandle;
 use crate::config::ZondConfig;
 use crate::journal::cursor::Checkpoint;
 use crate::model::{ip::set::IpSet, target::TargetMap};
+#[cfg(feature = "journal-format")]
+use crate::report::ScanPhase;
+use crate::report::ScannerKind;
+use crate::report::{ScanKind, ScanReport, TargetScope};
 use crate::scanner::orchestrator::{
     Enrichment, ScanCapabilities, finish_enrichment, live_addresses, probed_subset, run_port_phase,
     target_ips,
 };
-#[cfg(feature = "journal-format")]
-use crate::scanner::report::ScanPhase;
-use crate::scanner::report::{PhaseRecorder, ScanKind, ScanReport, TargetScope};
-use crate::scanner::session::{ScanContext, ScanSession, ScannerKind};
+use crate::scanner::recorder::PhaseRecorder;
+use crate::scanner::session::{ScanContext, ScanSession};
 use strategy::local::Scope;
 
 // What running a scan produces: a `ScanSession` to watch it, a `ScanHandle` to
 // stop it, and a `ScanReport` once it is over.
 pub mod handle;
-pub mod report;
+pub mod recorder;
 pub mod session;
 
 // The strategies, and the traits that make them interchangeable. Public

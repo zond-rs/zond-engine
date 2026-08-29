@@ -18,7 +18,7 @@
 //! ## The class is the request, not the grant
 //!
 //! Nothing here self-reports a permission. A detection *declares* a
-//! [`Class`] and a [`CapabilitySpec`]; the [envelope](super::envelope) decides
+//! [`Class`] and a [`CapabilitySpec`]; the [envelope](crate::config::envelope) decides
 //! what to serve, and the runtime serves exactly that. The class a detection asks
 //! for is the set of capabilities an envelope will hand it, so a `passive`
 //! detection cannot reach the network however it is authored — the boundary is

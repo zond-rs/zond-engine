@@ -30,7 +30,7 @@
 // supplies the Probe), so for now only the tests exercise it.
 #![allow(dead_code)]
 
-use crate::detect::DetectionEnvelope;
+use crate::config::DetectionEnvelope;
 use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::{Port, PortState, Protocol};

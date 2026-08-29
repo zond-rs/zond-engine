@@ -344,10 +344,6 @@ pub fn parse_captured_segment(link: LinkType, frame: &[u8]) -> Option<IpSegment<
 
 /// Everything a frame needs except its payload: where it goes at both layers,
 /// what it carries, and how far it may travel.
-///
-/// A struct rather than positional arguments. Two `MacAddr`s and two `IpAddr`s
-/// sit next to each other here, and nothing would diagnose a caller swapping
-/// either pair.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameSpec {
     /// The sending interface's address, or a spoofed one.

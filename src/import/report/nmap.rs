@@ -92,7 +92,7 @@ use crate::model::mac::MacAddr;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::model::technique::TcpScanTechnique;
-use crate::scanner::report::{
+use crate::report::{
     PhaseParts, PortScope, ScanKind, ScanPhase, ScanReport, ScanSettings, ScopeParts, TargetScope,
 };
 

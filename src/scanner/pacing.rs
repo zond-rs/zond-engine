@@ -24,10 +24,10 @@
 //!   the network is actually doing.
 //! - [`rtt_window`] — the recent round trips both of those are sized from.
 //! - [`timer`] — the budget a scan is given and the clock it is measured on.
-//! - [`limits`] — the fixed timeouts and ceilings the unprivileged paths run
+//! - [`limits`](crate::config::limits) — the fixed timeouts and ceilings the unprivileged paths run
 //!   against, which is the one part of this module that does not adapt.
 //!
-//! That last distinction is the reason [`limits`] is a module of its own rather
+//! That last distinction is the reason [`limits`](crate::config::limits) is a module of its own rather
 //! than constants scattered through the strategies. A raw scanner sizes its own
 //! patience from round trips it measured; a connect probe cannot, because it
 //! sends one SYN and the host stack's retransmission is the only second attempt
@@ -61,7 +61,6 @@
 
 pub mod congestion;
 pub mod deadline;
-pub mod limits;
 pub mod retry;
 pub mod rtt_window;
 pub mod timer;

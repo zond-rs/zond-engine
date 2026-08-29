@@ -56,13 +56,14 @@ use std::net::IpAddr;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::config::limits;
 use crate::config::{ProbeTuning, ZondConfig};
 use crate::model::ip::range::{IpRange, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::model::port::Protocol;
 use crate::model::technique::TcpScanTechnique;
-use crate::scanner::pacing::limits;
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::report::ScannerKind;
+use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::connect::{
     ConnectPortScanner, ConnectScanner, ConnectUdpPortScanner,
 };

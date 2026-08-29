@@ -41,8 +41,8 @@ use crate::model::host::{Filtering, HostStatus, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::protocols::tcp;
-use crate::scanner::report::{AttachmentSource, PortScope, ScanKind, StopReason};
-use crate::scanner::session::ScannerKind;
+use crate::report::ScannerKind;
+use crate::report::{AttachmentSource, PortScope, ScanKind, StopReason};
 
 /// The prefix that marks a name a strategy supplied rather than one this engine
 /// defines.

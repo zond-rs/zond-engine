@@ -44,7 +44,7 @@ use zond_engine::model::host::{Host, HostStatus};
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::{PortSet, PortState, Protocol};
 use zond_engine::model::target::{PlannedTarget, Target, TargetMap, TargetSet};
-use zond_engine::scanner::report::ScanReport;
+use zond_engine::report::ScanReport;
 use zond_engine::scanner::session::{HostStore, ScanEvent, ScanSession};
 use zond_engine::scanner::strategy::PortScanner;
 use zond_engine::scanner::{self, ScanTask};

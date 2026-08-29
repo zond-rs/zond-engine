@@ -62,18 +62,18 @@
 //!
 //! ## A resumed scan is two phases, and says so
 //!
-//! [`ScanReport::merge`](crate::scanner::report::ScanReport::merge) already
+//! [`ScanReport::merge`](crate::report::ScanReport::merge) already
 //! folds "a later phase of the same job" into a report: phases append, hosts
 //! combine, the engine version stays the first one's. So a resumed report
-//! carries one [`ScanPhase`](crate::scanner::report::ScanPhase) per sitting,
+//! carries one [`ScanPhase`](crate::report::ScanPhase) per sitting,
 //! each with its own settings, timings and probe statistics.
 //!
 //! **That is a property to preserve rather than smooth over.** A resumed scan
 //! is not one continuous scan, and a report that presented it as one would be
 //! claiming a coverage story it cannot support. Collapsing the phases would
 //! make this feature start lying, which is the same argument
-//! [`ScannerFailure`](crate::scanner::report::ScannerFailure) and
-//! [`TargetScope`](crate::scanner::report::TargetScope) already make about
+//! [`ScannerFailure`](crate::report::ScannerFailure) and
+//! [`TargetScope`](crate::report::TargetScope) already make about
 //! their own fields.
 //!
 //! ## What lives here

@@ -18,7 +18,7 @@ use crate::diff::change::Coverage;
 use crate::model::host::Host;
 use crate::model::ip::range::IpRange;
 use crate::model::port::Protocol;
-use crate::scanner::report::{PortScope, ScanReport, TargetScope};
+use crate::report::{PortScope, ScanReport, TargetScope};
 
 /// The ranges and port sets a report says it walked, gathered once so an address
 /// can be placed without walking the phases again.

@@ -25,8 +25,9 @@
 use tokio::task::JoinSet;
 
 use crate::error;
+use crate::report::ScannerKind;
 use crate::scanner::audit::ProbeAudit;
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::scanner::session::ScanContext;
 
 /// A bounded pool of in-flight probe tasks.
 ///

@@ -31,7 +31,7 @@ use zond_engine::export::{
     CsvExporter, ExportFormat, ExportOptions, Exporter, HtmlExporter, JsonExporter,
     JsonLinesExporter, Redaction,
 };
-use zond_engine::scanner::report::ScanReport;
+use zond_engine::report::ScanReport;
 
 /// The schemas shipped in `assets/`, which are what a consumer validates
 /// against.

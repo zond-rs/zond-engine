@@ -50,7 +50,7 @@ use crate::export::diff::schema::{ChangeDto, DiffDto, HostDeltaDto, PortDeltaDto
 use crate::export::html::{Plain, STYLE, TONE_FOUND, TONE_INERT, TONE_NONE, TONE_PARTIAL, Text};
 use crate::export::schema::ENGINE_NAME;
 use crate::export::{ExportError, ExportOptions};
-use crate::scanner::report::ENGINE_VERSION;
+use crate::report::ENGINE_VERSION;
 
 /// What the page is called when a caller names nothing.
 const DEFAULT_HEADING: &str = "Scan comparison";
@@ -497,7 +497,7 @@ mod tests {
     use super::*;
     use crate::export::Redaction;
     use crate::export::fixture;
-    use crate::scanner::report::ScanReport;
+    use crate::report::ScanReport;
 
     fn page(diff: &ScanDiff) -> String {
         let mut bytes = Vec::new();

@@ -6,11 +6,15 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub mod envelope;
+pub mod limits;
+
+pub use crate::config::envelope::DetectionEnvelope;
+
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use crate::detect::DetectionEnvelope;
 use crate::evasion::EvasionProfile;
 use crate::model::exclusion::Exclusions;
 use crate::model::technique::TcpScanTechnique;
@@ -726,7 +730,7 @@ pub struct IdleScan {
 /// carries them nowhere and holds no opinion about them.
 ///
 /// That boundary is worth keeping because this type is also the record of *how a
-/// scan was run*. [`ScanSettings`](crate::scanner::report::ScanSettings) is derived
+/// scan was run*. [`ScanSettings`](crate::report::ScanSettings) is derived
 /// from it into every report, and a field that cannot change a finding has no
 /// business in the record of one.
 #[derive(Debug, Clone, Default)]
@@ -866,7 +870,7 @@ pub struct ZondConfig {
     ///
     /// The engine does not mask anything itself; a scan holds what it found. This
     /// records the caller's intent, and it reaches the point of use through
-    /// [`ScanSettings`](crate::scanner::report::ScanSettings) and the export layer's
+    /// [`ScanSettings`](crate::report::ScanSettings) and the export layer's
     /// own [`Redaction`](crate::export::Redaction) policy. Masking on the way out
     /// rather than on the way in is deliberate: the alternative is a report that
     /// has quietly lost data nobody can recover.

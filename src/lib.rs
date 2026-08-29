@@ -188,13 +188,19 @@
 //!   segment-sweep question are answered together, rather than being four things
 //!   for every consumer to remember separately.
 //! - [`fingerprint`] — identifying the service behind an open port.
+//! - [`report`] — what a scan was and what it found: [`ScanReport`],
+//!   [`ScanPhase`](report::ScanPhase), the settings it ran under and the
+//!   counters it kept. Below [`scanner`] rather than inside it, because a report
+//!   outlives the scan that made one. It is journalled, read back without a
+//!   network, compared against a file from last year, merged with an nmap
+//!   document somebody else wrote, and exported in five formats, and only the
+//!   first of those involves a scanner at all.
+//! - [`record`] — the same information in a shape that survives a file.
 //! - [`scanner`] — the two entry points, the [`plan`](scanner::plan) behind
 //!   them, and the [`strategy`](scanner::strategy) implementations behind that,
-//!   together with what running one produces: the live
-//!   [`session`](scanner::session), the [`handle`](scanner::handle) that stops
-//!   it, and the [`report`](scanner::report) it leaves behind. Those are the
-//!   scanner's output rather than a foundation under it, and they live with it
-//!   for that reason.
+//!   together with the live [`session`](scanner::session), the
+//!   [`handle`](scanner::handle) that stops it, and the
+//!   [`recorder`](scanner::recorder) that closes a phase into a [`ScanReport`].
 //! - [`diff`] — what changed between two scans. It sits above [`scanner`]
 //!   because it reads the report the scanner leaves behind, and below the file
 //!   formats because it compares reports rather than documents: where either
@@ -227,6 +233,7 @@ pub mod merge;
 pub mod model;
 pub mod protocols;
 pub mod record;
+pub mod report;
 pub mod resolve;
 pub mod scanner;
 pub mod system;
@@ -254,9 +261,9 @@ pub use crate::model::ip::set::IpSet;
 pub use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 pub use crate::model::target::{Target, TargetMap, TargetSet};
 pub use crate::model::technique::TcpScanTechnique;
+pub use crate::report::{ScanReport, ScanSummary};
 pub use crate::resolve::{ResolveConfig, Resolver};
 pub use crate::scanner::handle::ScanHandle;
-pub use crate::scanner::report::{ScanReport, ScanSummary};
 pub use crate::scanner::session::{HostStore, ScanEvent, ScanEvents, ScanSession};
 pub use crate::scanner::strategy::StrategyError;
 pub use crate::scanner::{ListenScope, ScanError, ScanTask, Until, discover, listen, scan};

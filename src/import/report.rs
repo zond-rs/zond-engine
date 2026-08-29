@@ -43,7 +43,7 @@
 //!
 //! A [`ScanReport`] built here is attributed to whatever wrote the document —
 //! `nmap 7.94`, not this crate — through
-//! [`ScanReport::recorded`](crate::scanner::report::ScanReport::recorded), and
+//! [`ScanReport::recorded`](crate::report::ScanReport::recorded), and
 //! [`Provenance::engine_version`](crate::diff::Provenance::engine_version) hands
 //! that back unchanged. Nothing downstream should read a report as proof this
 //! engine's scanners ran.
@@ -65,7 +65,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 use crate::import::{ImportError, ImportLimits};
-use crate::scanner::report::ScanReport;
+use crate::report::ScanReport;
 
 /// Reads a document as the report of the scan that produced it.
 ///

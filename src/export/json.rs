@@ -20,7 +20,7 @@ use std::io::Write;
 
 use crate::export::schema::ReportDto;
 use crate::export::{ExportError, ExportOptions, Exporter};
-use crate::scanner::report::ScanReport;
+use crate::report::ScanReport;
 
 /// The format name carried in a [`ExportError::Render`].
 const FORMAT: &str = "json";
@@ -29,7 +29,7 @@ const FORMAT: &str = "json";
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use zond_engine::scanner::report::ScanReport;
+/// use zond_engine::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, Exporter, JsonExporter, Redaction};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(document["engine"]["name"], "zond-engine");
         assert_eq!(
             document["engine"]["version"],
-            crate::scanner::report::ENGINE_VERSION,
+            crate::report::ENGINE_VERSION,
             "the version beside a fixed name has to be that name's"
         );
         assert_eq!(document["produced_by"], "nmap 7.94");
@@ -184,10 +184,7 @@ mod tests {
 
         assert_eq!(document["schema_version"], 1);
         assert_eq!(document["engine"]["name"], "zond-engine");
-        assert_eq!(
-            document["engine"]["version"],
-            crate::scanner::report::ENGINE_VERSION
-        );
+        assert_eq!(document["engine"]["version"], crate::report::ENGINE_VERSION);
         assert_eq!(
             document["produced_by"],
             crate::export::fixture::report().engine_version()

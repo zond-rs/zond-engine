@@ -144,7 +144,7 @@ pub enum ServiceChange {
     /// Something was identified here before, and nothing is now. Not the same as
     /// the service being gone: the endpoint may simply not have been asked, which
     /// the phase's
-    /// [`service_detection`](crate::scanner::report::ScanSettings::service_detection)
+    /// [`service_detection`](crate::report::ScanSettings::service_detection)
     /// setting records.
     Unidentified(Service),
     /// The service is called something else.

@@ -170,7 +170,7 @@ fn load_module(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detect::DetectionEnvelope;
+    use crate::config::DetectionEnvelope;
     use crate::detect::compute::{CapError, Capabilities, ScanInstant};
     use crate::fingerprint::PortContext;
     use crate::model::finding::Severity;

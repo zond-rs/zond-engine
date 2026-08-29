@@ -39,8 +39,9 @@ use std::net::IpAddr;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
+use crate::config::DetectionEnvelope;
+use crate::config::limits::CONNECT_CONCURRENCY;
 use crate::config::{OsDetection, ProbeTuning, ServiceDetection, ZondConfig};
-use crate::detect::DetectionEnvelope;
 use crate::evasion::EvasionProfile;
 use crate::fingerprint::os;
 use crate::journal::cursor::Checkpoint;
@@ -52,13 +53,13 @@ use crate::model::{
     target::{PlannedTarget, TargetMap, TargetSet},
     technique::TcpScanTechnique,
 };
-use crate::scanner::pacing::limits::CONNECT_CONCURRENCY;
+use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::resolver::HostnameResolver;
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::local::Scope;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
-use crate::scanner::{pacing, plan, resolver, strategy};
+use crate::scanner::{plan, resolver, strategy};
 use crate::system::interface;
 use crate::system::privilege::is_elevated;
 use crate::{error, info, success, warn};
@@ -354,7 +355,7 @@ pub(super) fn ensure_coverage(
         if technique.finds_open_ports() {
             scanners.push(Box::new(strategy::connect::ConnectPortScanner::new(
                 ctx.clone(),
-                pacing::limits::CONNECT_CONCURRENCY,
+                crate::config::limits::CONNECT_CONCURRENCY,
                 detection,
                 evasion,
             )));
@@ -367,7 +368,7 @@ pub(super) fn ensure_coverage(
     if missing(Protocol::Udp) {
         scanners.push(Box::new(strategy::connect::ConnectUdpPortScanner::new(
             ctx.clone(),
-            pacing::limits::CONNECT_CONCURRENCY,
+            crate::config::limits::CONNECT_CONCURRENCY,
             evasion,
         )));
     }
@@ -992,7 +993,7 @@ pub(super) async fn run_port_phase(
 /// **Not what the dispatcher walks.** That is the whole plan, so that a position
 /// means the same target in every sitting — see
 /// [`live_addresses`]. This is what the phase *covered*, which is a different
-/// number and the one a [`TargetScope`](crate::scanner::report::TargetScope)
+/// number and the one a [`TargetScope`](crate::report::TargetScope)
 /// records: a reader compares it against the liveness phase's to see how much of
 /// what they asked about went unprobed, and a scope that claimed the whole plan
 /// would report a scan that covered ground it deliberately skipped.
@@ -1106,7 +1107,7 @@ fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
 mod tests {
     use super::*;
     use crate::model::host::{Host, HostStatus};
-    use crate::scanner::report::ScannerFailure;
+    use crate::report::ScannerFailure;
     use crate::scanner::session::ScanSession;
     use tokio::sync::mpsc;
 

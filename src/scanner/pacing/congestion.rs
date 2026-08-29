@@ -166,7 +166,7 @@
 //! stays paced by the fixed rate its ICMP rate limiter demands. A controller fed
 //! no evidence is not a conservative controller, it is a random one.
 
-use std::fmt;
+use crate::report::WindowSummary;
 
 /// The bounds a [`CongestionWindow`] moves within, and where it starts.
 ///
@@ -385,48 +385,6 @@ impl CongestionWindow {
             adaptive: self.limits.adaptive(),
             at_floor: self.limits.adaptive() && self.capacity() <= self.limits.floor as usize,
         }
-    }
-}
-
-/// What a [`CongestionWindow`] did over one run.
-///
-/// Instrumentation rather than telemetry: it says whether pacing engaged and how
-/// hard, which is the difference between "this host is firewalled" and "this
-/// host was asked too fast", and that difference is otherwise invisible in
-/// everything else a scan reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WindowSummary {
-    /// The window at the end of the run.
-    pub capacity: usize,
-    /// The largest it reached.
-    pub peak: usize,
-    /// How many times it was cut.
-    pub reductions: u32,
-    /// Whether it was allowed to move at all.
-    pub adaptive: bool,
-    /// Whether it finished cut back as far as it is permitted to go.
-    ///
-    /// The controller having run out of room, which is the one state worth
-    /// telling an operator about: it means the scan was still being outrun when
-    /// it stopped, so what it recorded as silence may be loss rather than
-    /// filtering, and the remedy is a narrower scan rather than a different
-    /// setting.
-    pub at_floor: bool,
-}
-
-impl fmt::Display for WindowSummary {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if !self.adaptive {
-            return write!(f, "fixed {}", self.capacity);
-        }
-        write!(
-            f,
-            "{} (peak {}, cut {}x){}",
-            self.capacity,
-            self.peak,
-            self.reductions,
-            if self.at_floor { " at floor" } else { "" }
-        )
     }
 }
 

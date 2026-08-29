@@ -30,7 +30,7 @@
 //! [`Up`](HostStatus::Up) and never as down; it adds a role, a name, a hardware
 //! address; and it never contradicts or removes anything. The phase's scope says
 //! the same thing in the report — see
-//! [`TargetScope::listening_on`](crate::scanner::report::TargetScope::listening_on),
+//! [`TargetScope::listening_on`](crate::report::TargetScope::listening_on),
 //! which covers no address, so a comparison cannot read a host that stayed quiet
 //! as a host that went away.
 //!
@@ -78,8 +78,9 @@ use crate::model::port::{Port, PortState, Protocol};
 use crate::model::technique::TcpReply;
 use crate::protocols::ethernet::{self, Frame};
 use crate::protocols::{cdp, dhcp, lldp, tcp};
-use crate::scanner::report::{Attachment, AttachmentSource};
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::report::ScannerKind;
+use crate::report::{Attachment, AttachmentSource};
+use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::discovery::{self, DiscoveryProtocol, ProtocolMatch};
 use crate::transport::capture::{self, CaptureOptions, CapturedFrame, FrameStream};

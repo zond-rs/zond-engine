@@ -33,8 +33,8 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
+use crate::config::limits::CONNECT_PROBE_TIMEOUT;
 use crate::model::port::Protocol;
-use crate::scanner::pacing::limits::CONNECT_PROBE_TIMEOUT;
 
 use super::budget::Budget;
 use super::capability::{CapError, Capabilities, ScanInstant};

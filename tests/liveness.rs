@@ -25,7 +25,7 @@ use common::*;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::PortSet;
 use zond_engine::model::target::{TargetMap, TargetSet};
-use zond_engine::scanner::report::ScanKind;
+use zond_engine::report::ScanKind;
 
 /// Reserved for documentation, and therefore reliably dead.
 const DEAD: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));

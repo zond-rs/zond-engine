@@ -15,7 +15,7 @@
 //!
 //! ```no_run
 //! use zond_engine::merge::{Merge, MergeOptions};
-//! # use zond_engine::scanner::report::ScanReport;
+//! # use zond_engine::report::ScanReport;
 //! # fn example(tonight: ScanReport, archived: ScanReport, chunk: ScanReport) {
 //! let mut merge = Merge::new(MergeOptions::default());
 //! merge.add(tonight);                       // a scan this process ran
@@ -125,7 +125,7 @@ use crate::model::host::hardware::HardwareInfo;
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, Protocol, Security, Service};
-use crate::scanner::report::{Origin, ScanPhase, ScanReport};
+use crate::report::{Origin, ScanPhase, ScanReport};
 
 /// What a merge is allowed to assume.
 ///
@@ -746,7 +746,7 @@ mod tests {
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortState;
     use crate::model::port::discovery::{Discovery, ScanResponse};
-    use crate::scanner::report::{PhaseParts, ScanKind, ScanSettings, TargetScope};
+    use crate::report::{PhaseParts, ScanKind, ScanSettings, TargetScope};
 
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
     const TCP: Protocol = Protocol::Tcp;

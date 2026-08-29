@@ -86,7 +86,7 @@ use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::format::time::rfc3339;
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, PortState};
-use crate::scanner::report::ScanReport;
+use crate::report::ScanReport;
 
 /// The stylesheet inlined into every report.
 ///
@@ -155,7 +155,7 @@ fn port_tone(state: PortState) -> &'static str {
 /// ```no_run
 /// use std::fs::File;
 /// use std::io::BufWriter;
-/// use zond_engine::scanner::report::ScanReport;
+/// use zond_engine::report::ScanReport;
 /// use zond_engine::export::{ExportOptions, Exporter, HtmlExporter};
 ///
 /// # fn example(report: &ScanReport) -> Result<(), Box<dyn std::error::Error>> {
@@ -256,7 +256,7 @@ impl Exporter for HtmlExporter {
 /// both, so it does, and says nothing extra for the ordinary case where the
 /// engine that scanned is the engine that wrote.
 fn findings_from(report: &ScanReport) -> String {
-    if report.engine_version() == crate::scanner::report::ENGINE_VERSION {
+    if report.engine_version() == crate::report::ENGINE_VERSION {
         return String::new();
     }
 
@@ -285,7 +285,7 @@ fn write_head(out: &mut dyn Write, title: &str) -> Result<(), ExportError> {
 <input type="checkbox" id="zond-theme" class="theme-switch" aria-label="Use the other colour scheme">
 <div class="sheet">"#,
         engine = ENGINE_NAME,
-        version = crate::scanner::report::ENGINE_VERSION,
+        version = crate::report::ENGINE_VERSION,
         title = Plain(title),
         style = STYLE,
     )?;
@@ -1280,7 +1280,7 @@ fn write_colophon(
 <div>self-contained: no scripts, no external requests</div>
 </footer>"#,
         engine = ENGINE_NAME,
-        version = crate::scanner::report::ENGINE_VERSION,
+        version = crate::report::ENGINE_VERSION,
         findings = findings_from(report),
         schema = SCHEMA_VERSION,
         generated = Text(generated_at),

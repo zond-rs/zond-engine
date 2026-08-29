@@ -10,7 +10,7 @@
 //!
 //! The Tier-2 detection stage, the sibling of [`flow::stage`](crate::detect::flow)
 //! and the active counterpart to the [CVE correlator](crate::cve). For a port,
-//! every loaded detection whose class the [envelope](crate::detect::DetectionEnvelope)
+//! every loaded detection whose class the [envelope](crate::config::DetectionEnvelope)
 //! permits and whose `when` rule fits is instantiated under its
 //! [grant](Grant) and run, and the findings it returns are recorded. It gates on
 //! exactly the two questions the [`gate`](crate::detect::gate) module answers, so
@@ -32,7 +32,7 @@
 
 use tracing::debug;
 
-use crate::detect::DetectionEnvelope;
+use crate::config::DetectionEnvelope;
 use crate::detect::manifest::Manifest;
 use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;

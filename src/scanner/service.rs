@@ -35,11 +35,12 @@ use crate::warn;
 use tokio::time::timeout;
 
 use crate::config::ServiceDetection;
+use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::fingerprint::os;
 use crate::model::port::{Port, PortState, Protocol};
-use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
+use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::scanner::session::ScanContext;
 
 /// Fingerprints every open port currently in the store worth an exchange,
 /// upgrading each port's service in place.

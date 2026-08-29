@@ -31,7 +31,8 @@ use zond_engine::model::exclusion::Exclusions;
 use zond_engine::model::host::telemetry::RttSource;
 use zond_engine::model::host::{HostStatus, NetworkRole};
 use zond_engine::model::ip::set::IpSet;
-use zond_engine::scanner::report::{AttachmentSource, PhaseRecorder, ScanKind, TargetScope};
+use zond_engine::report::{AttachmentSource, ScanKind, TargetScope};
+use zond_engine::scanner::recorder::PhaseRecorder;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
@@ -969,7 +970,8 @@ async fn every_frame_the_sweep_sends_is_counted() {
 async fn a_segment_sweep_records_the_link_it_covered() {
     use zond_engine::ZondConfig;
     use zond_engine::model::exclusion::Exclusions;
-    use zond_engine::scanner::report::{PhaseRecorder, ScanKind, TargetScope};
+    use zond_engine::report::{ScanKind, TargetScope};
+    use zond_engine::scanner::recorder::PhaseRecorder;
 
     let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A));
     let (_session, ctx) = sweep_audited(&lan, &[v4(10)], Scope::Sweep).await;
@@ -999,7 +1001,8 @@ async fn a_segment_sweep_records_the_link_it_covered() {
 async fn a_targeted_run_claims_no_link() {
     use zond_engine::ZondConfig;
     use zond_engine::model::exclusion::Exclusions;
-    use zond_engine::scanner::report::{PhaseRecorder, ScanKind, TargetScope};
+    use zond_engine::report::{ScanKind, TargetScope};
+    use zond_engine::scanner::recorder::PhaseRecorder;
 
     let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A));
     let (_session, ctx) = sweep_audited(&lan, &[v4(10)], Scope::Targeted).await;

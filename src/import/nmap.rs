@@ -35,7 +35,7 @@
 //! | `state`, `hostnames` | nothing; named so their content is skipped knowingly |
 //!
 //! Reading the same document for what the scan *found* rather than for what to
-//! scan next is [`report::nmap`](super::report::nmap), which shares this
+//! scan next is [`report::nmap`](crate::import::report::nmap), which shares this
 //! module's parser and keeps a much longer list of attributes.
 //!
 //! A hardware address is skipped: a MAC is not something to scan. Hostnames are

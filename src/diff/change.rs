@@ -167,7 +167,7 @@ impl Presence {
 
 /// What a report says about whether a target was within what it walked.
 ///
-/// Read off the [`TargetScope`](crate::scanner::report::TargetScope) of the
+/// Read off the [`TargetScope`](crate::report::TargetScope) of the
 /// report's phases, which record the ranges a scan iterated after its exclusion
 /// policy was applied and the ranges that policy withheld. A report that carries
 /// no scope at all - one rebuilt from a foreign scanner's output, or from a scan

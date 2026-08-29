@@ -55,8 +55,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::DetectionEnvelope;
 use crate::config::{IdleScan, RetryConfig};
-use crate::detect::DetectionEnvelope;
 use crate::fingerprint::Confidence;
 use crate::fingerprint::os::{OsEvidence, OsSource};
 use crate::model::capture::CaptureCounts;
@@ -75,13 +75,13 @@ use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::security::{CertificateInfo, Security};
 use crate::model::port::{Port, PortSet, PortState, Protocol, Service};
 use crate::model::target::{TargetMap, TargetSet};
-use crate::scanner::pacing::congestion::WindowSummary;
-use crate::scanner::report::{
+use crate::report::ScannerKind;
+use crate::report::WindowSummary;
+use crate::report::{
     Attachment, AttachmentSource, EvasionRecord, Origin, PhaseParts, PortScope, ProbeStats,
     ProbeStatsParts, ScanKind, ScanPhase, ScanSettings, ScannerFailure, ScopeParts, StopReason,
     TargetScope,
 };
-use crate::scanner::session::ScannerKind;
 
 /// One host, as a file holds it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2237,10 +2237,10 @@ mod tests {
     /// way the live scan did.
     #[test]
     fn the_detection_envelope_survives_the_settings_round_trip() {
+        use crate::config::DetectionEnvelope;
         use crate::config::ZondConfig;
-        use crate::detect::DetectionEnvelope;
         use crate::model::finding::DetectionClass;
-        use crate::scanner::report::ScanSettings;
+        use crate::report::ScanSettings;
 
         // A raised ceiling, so the round trip must carry the value rather than
         // fall back to the default it happens to start at.
