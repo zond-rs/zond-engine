@@ -25,7 +25,11 @@
 //! with 80 open is not a web server there. A host detection is the opposite reading:
 //! a finding drawn precisely from which ports a host presents together.
 
-mod convert;
+// Re-exported so the build-shared `schema` can name the finding vocabulary as
+// `super::authoring` in both the library, where it lives one level up in
+// `detect`, and `build.rs`, where every shared file is a crate-root sibling.
+pub(crate) use super::authoring;
+
 pub(crate) mod db;
 pub(crate) mod schema;
 pub(crate) mod stage;

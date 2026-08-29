@@ -20,6 +20,7 @@
 // it is silenced here rather than item by item.
 #![allow(dead_code)]
 
+use super::authoring::{Reference, Severity};
 use std::collections::BTreeSet;
 
 use serde::Deserialize;
@@ -96,25 +97,4 @@ pub struct FindingSpec {
     /// What to do about it, if anything.
     #[serde(default)]
     pub remediation: Option<String>,
-}
-
-/// How bad a finding is if true.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Info,
-    Low,
-    Medium,
-    High,
-    Critical,
-}
-
-/// An external reference a finding cites, written as `{ cve = "..." }`,
-/// `{ cwe = 79 }`, or `{ url = "..." }`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Reference {
-    Cve(String),
-    Cwe(u32),
-    Url(String),
 }

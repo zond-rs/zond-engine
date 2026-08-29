@@ -47,6 +47,7 @@
 // schema nothing in the build reads every field back.)
 #![allow(dead_code)]
 
+use super::authoring::{Reference, Severity};
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer};
@@ -195,31 +196,6 @@ pub struct FindingSpec {
     /// Which variable (or `$response`) supplies the finding's evidence excerpt.
     #[serde(default)]
     pub excerpt_from: Option<String>,
-}
-
-/// How bad a finding is, as authored. Maps onto the model's
-/// [`Severity`](crate::model::finding::Severity) in the runtime
-/// `convert` module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Info,
-    Low,
-    Medium,
-    High,
-    Critical,
-}
-
-/// A typed reference, authored as an inline table: `{ cve = "CVE-…" }`,
-/// `{ cwe = 79 }`, or `{ url = "…" }`. Maps onto the model's
-/// [`Reference`](crate::model::finding::Reference) in the runtime
-/// `convert` module.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Reference {
-    Cve(String),
-    Cwe(u32),
-    Url(String),
 }
 
 /// Accepts one value or a list of them into a `Vec`, so `expect = "x"` and

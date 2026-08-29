@@ -42,7 +42,6 @@ pub mod schema;
 pub(crate) mod expr;
 pub(crate) mod validate;
 
-mod convert;
 pub(crate) mod db;
 mod eval;
 mod interp;
@@ -53,7 +52,7 @@ pub use interp::{Probe, run};
 // Re-exported so the build-shared `schema` and `validate` can name the shared
 // manifest as `super::manifest` in both the library, where it lives one level up
 // in `detect`, and `build.rs`, where every shared file is a crate-root sibling.
-pub(crate) use super::manifest;
+pub(crate) use super::{authoring, manifest};
 
 /// The variables a flow has bound so far — names to their string values. One
 /// environment threads through a flow's steps (a `for_each` iteration runs in a

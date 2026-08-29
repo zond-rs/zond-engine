@@ -53,6 +53,16 @@ mod os_schema;
 #[path = "src/fingerprint/pattern.rs"]
 mod pattern;
 
+/// The shared `[detection]` manifest and the Tier-1 flow trio that reads it: the
+/// authoring `schema`, the guard-expression grammar `expr`, and the structural
+/// `validate` that rejects a malformed flow. A flow the build accepts is a flow
+/// the interpreter can run, because both read these files. `schema` and `validate`
+/// name their siblings — `manifest`, each other, and `expr` — as `super::…`, which
+/// resolves here because every shared file is a crate-root sibling, and in the
+/// library because a re-export puts `manifest` beside them. It is also why the
+/// service schema above is `signature`: the two must not both be `schema`.
+#[path = "src/detect/authoring.rs"]
+mod authoring;
 /// The Tier-2 compute-detection schema, shared the same way: the build reads a
 /// `[compute]` file to validate its structure and resolve a body reference before
 /// embedding. It names the shared manifest as `super::manifest`, which resolves
@@ -63,14 +73,6 @@ mod compute_schema;
 mod expr;
 #[path = "src/detect/host/schema.rs"]
 mod host_schema;
-/// The shared `[detection]` manifest and the Tier-1 flow trio that reads it: the
-/// authoring `schema`, the guard-expression grammar `expr`, and the structural
-/// `validate` that rejects a malformed flow. A flow the build accepts is a flow
-/// the interpreter can run, because both read these files. `schema` and `validate`
-/// name their siblings — `manifest`, each other, and `expr` — as `super::…`, which
-/// resolves here because every shared file is a crate-root sibling, and in the
-/// library because a re-export puts `manifest` beside them. It is also why the
-/// service schema above is `signature`: the two must not both be `schema`.
 #[path = "src/detect/manifest.rs"]
 mod manifest;
 #[path = "src/detect/flow/schema.rs"]
@@ -86,6 +88,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/fingerprint/os/signature.rs");
     println!("cargo:rerun-if-changed=assets/detect");
     println!("cargo:rerun-if-changed=src/detect/manifest.rs");
+    println!("cargo:rerun-if-changed=src/detect/authoring.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/schema.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/expr.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/validate.rs");
@@ -464,7 +467,7 @@ fn warn_flow_soft(flow: &schema::FlowDetection, path: &Path) {
     for step in &flow.step {
         for finding in &step.finding {
             for reference in &finding.references {
-                if let schema::Reference::Cve(cve) = reference
+                if let authoring::Reference::Cve(cve) = reference
                     && !is_cve_shaped(cve)
                 {
                     println!(

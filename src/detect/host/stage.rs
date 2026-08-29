@@ -110,7 +110,7 @@ fn build_finding(spec: &FindingSpec, id: &DetectionId, fallback_title: &str) -> 
         finding = finding.with_excerpt(Excerpt::new(detail.to_owned()));
     }
     for reference in &spec.references {
-        if let Some(reference) = reference.clone().into_model() {
+        if let Some(reference) = reference.to_model() {
             finding = finding.with_reference(reference);
         }
     }
@@ -123,7 +123,8 @@ fn build_finding(spec: &FindingSpec, id: &DetectionId, fallback_title: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::super::schema::{FindingSpec, HostGate, HostManifest, Severity};
+    use super::super::authoring::Severity;
+    use super::super::schema::{FindingSpec, HostGate, HostManifest};
     use super::*;
     use crate::model::finding::Severity as ModelSeverity;
 

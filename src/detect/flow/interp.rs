@@ -217,7 +217,7 @@ fn build_finding(
     }
 
     for reference in &spec.references {
-        if let Some(reference) = reference.into_model() {
+        if let Some(reference) = reference.to_model() {
             finding = finding.with_reference(reference);
         }
     }

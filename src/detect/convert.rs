@@ -6,18 +6,22 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Lowering the shared manifest to the model
+//! # Lowering the authoring vocabulary to the model
 //!
-//! The [`manifest`](super::manifest) types deserialize free of the model, so the
-//! conversion into the model's own vocabulary lives here, apart from them — the
-//! discipline that lets `build.rs` share the manifest file. This is the tier-
-//! neutral half: the intrusiveness [`Class`] every detection declares maps onto
-//! the model's [`DetectionClass`]. A flow's own authoring enums (its severity and
-//! references) convert beside the flow schema, which the compute tier does not
-//! share.
+//! The [`manifest`](super::manifest) and [`authoring`](super::authoring) types
+//! deserialize free of the model, which is the discipline that lets `build.rs`
+//! share those files. Their conversion into the model's own vocabulary lives
+//! here instead.
+//!
+//! Everything shared between the tiers converts in one place: the intrusiveness
+//! [`Class`] a detection declares, and the [`Severity`] and [`Reference`] its
+//! findings carry.
 
-use crate::model::finding::DetectionClass;
+use crate::model::finding::{
+    DetectionClass, Reference as ModelReference, Severity as ModelSeverity,
+};
 
+use super::authoring::{Reference, Severity};
 use super::manifest::Class;
 
 impl Class {
@@ -29,6 +33,34 @@ impl Class {
             Class::ActiveMutating => DetectionClass::ActiveMutating,
             Class::Exploit => DetectionClass::Exploit,
             Class::Dos => DetectionClass::Dos,
+        }
+    }
+}
+
+impl Severity {
+    /// The model severity this authoring severity names.
+    pub(crate) fn into_model(self) -> ModelSeverity {
+        match self {
+            Severity::Info => ModelSeverity::Info,
+            Severity::Low => ModelSeverity::Low,
+            Severity::Medium => ModelSeverity::Medium,
+            Severity::High => ModelSeverity::High,
+            Severity::Critical => ModelSeverity::Critical,
+        }
+    }
+}
+
+impl Reference {
+    /// The model reference this names, or [`None`] for a CVE identifier of the
+    /// wrong shape, which the model refuses and so does this.
+    ///
+    /// Borrows rather than consumes: a spec's references are read once per
+    /// finding it produces, and the spec outlives the finding.
+    pub(crate) fn to_model(&self) -> Option<ModelReference> {
+        match self {
+            Reference::Cve(id) => ModelReference::cve(id),
+            Reference::Cwe(number) => Some(ModelReference::cwe(*number)),
+            Reference::Url(url) => Some(ModelReference::url(url)),
         }
     }
 }
@@ -50,5 +82,30 @@ mod tests {
         );
         assert_eq!(Class::Exploit.into_model(), DetectionClass::Exploit);
         assert_eq!(Class::Dos.into_model(), DetectionClass::Dos);
+    }
+
+    #[test]
+    fn the_authoring_severities_map_onto_the_model_vocabulary() {
+        assert_eq!(Severity::Info.into_model(), ModelSeverity::Info);
+        assert_eq!(Severity::Low.into_model(), ModelSeverity::Low);
+        assert_eq!(Severity::Medium.into_model(), ModelSeverity::Medium);
+        assert_eq!(Severity::High.into_model(), ModelSeverity::High);
+        assert_eq!(Severity::Critical.into_model(), ModelSeverity::Critical);
+    }
+
+    #[test]
+    fn a_reference_carries_its_identifier_across() {
+        assert_eq!(Reference::Cwe(79).to_model(), Some(ModelReference::Cwe(79)));
+        assert!(Reference::Cve("CVE-2021-44228".into()).to_model().is_some());
+        assert!(
+            Reference::Url("https://example.invalid/a".into())
+                .to_model()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_malformed_cve_is_refused_exactly_as_the_model_refuses_it() {
+        assert!(Reference::Cve("not-a-cve".into()).to_model().is_none());
     }
 }

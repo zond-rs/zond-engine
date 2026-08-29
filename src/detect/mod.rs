@@ -29,6 +29,7 @@
 //! — a detection's power is exactly what it was handed — and safety, metering and
 //! replay all follow from it rather than being bolted on.
 
+pub mod authoring;
 pub mod compute;
 pub mod flow;
 pub mod host;
