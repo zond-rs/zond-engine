@@ -66,7 +66,9 @@ pub(crate) use super::manifest;
 pub use budget::{Budget, BudgetTrap, Denial, ModuleFault, RunOutcome};
 pub use capability::{CapError, Capabilities, Capability, Grant, ScanInstant};
 pub use live::LiveCapabilities;
-pub use record::{CapErrorRecord, CapTapeRecord, ResolveExchangeRecord, SpeakExchangeRecord};
+pub use record::{
+    CapErrorRecord, CapTapeRecord, DetectionRunRecord, ResolveExchangeRecord, SpeakExchangeRecord,
+};
 pub use replay::{
     CapTape, RecordedCapabilities, RecordingCapabilities, ResolveExchange, SpeakExchange,
 };

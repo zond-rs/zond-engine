@@ -31,6 +31,24 @@ use serde::{Deserialize, Serialize};
 
 use super::capability::CapError;
 use super::replay::{CapTape, ResolveExchange, SpeakExchange};
+use crate::record::DetectionIdRecord;
+
+/// One detection run, as the journal holds it: which detection ran over which
+/// subject, and the tape of what it read. This is the line the journal writes per
+/// run, so a recorded scan can be replayed offline, detection by detection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectionRunRecord {
+    /// The address the detection ran against.
+    pub host: String,
+    /// The port it ran over.
+    pub port: u16,
+    /// The transport, by wire name.
+    pub protocol: String,
+    /// Which detection ran, to which version, from which bytes.
+    pub detection: DetectionIdRecord,
+    /// What it read from its capabilities, kept for replay.
+    pub tape: CapTapeRecord,
+}
 
 /// A capability tape, as a file holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

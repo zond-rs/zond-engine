@@ -40,6 +40,7 @@ use super::lock::{Lock, LockRefused, LockState};
 use super::manifest::{Manifest, Plan, PlanChanged};
 use super::settle::Settlements;
 use crate::model::host::Host;
+use crate::detect::compute::DetectionRunRecord;
 use crate::record::{HostRecord, PhaseRecord};
 use crate::scanner::report::{ScanKind, ScanPhase, ScanReport};
 
@@ -47,6 +48,7 @@ const MANIFEST: &str = "manifest.json";
 const CURSOR: &str = "cursor.json";
 const HOSTS: &str = "hosts.jsonl";
 const PHASES: &str = "phases.jsonl";
+const DETECTIONS: &str = "detections.jsonl";
 const LOCK: &str = "LOCK";
 
 /// Why a journal could not be opened for writing.
@@ -240,6 +242,32 @@ impl Journal {
         writer.flush()?;
 
         self.appended += hosts.len();
+        Ok(())
+    }
+
+    /// Appends the tapes of detection runs, each recording what one detection read
+    /// from its capabilities so the run can be replayed offline later.
+    ///
+    /// Its own file, created on the first run and appended after. It is never read
+    /// by the resume path: a tape is evidence for later analysis, not a settled
+    /// verdict, so it does not advance a cursor or change what a resume skips.
+    pub fn record_detections(&mut self, runs: &[DetectionRunRecord]) -> Result<(), JournalError> {
+        if runs.is_empty() {
+            return Ok(());
+        }
+
+        let path = self.directory.join(DETECTIONS);
+        let mut writer = if path.exists() {
+            let file = fs::OpenOptions::new().append(true).open(&path)?;
+            crate::journal::format::Writer::append(std::io::BufWriter::new(file))
+        } else {
+            let file = create_private_file(&path)?;
+            crate::journal::format::Writer::create(std::io::BufWriter::new(file))?
+        };
+        for run in runs {
+            writer.write(run)?;
+        }
+        writer.flush()?;
         Ok(())
     }
 
@@ -680,6 +708,30 @@ fn read_phases(directory: &Path) -> Result<Vec<ScanPhase>, JournalError> {
         phases.push(ScanPhase::from(&record));
     }
     Ok(phases)
+}
+
+/// Reads back the detection-run tapes a journal holds, for offline replay.
+///
+/// A missing file is no runs rather than a failure, the same as a journal read
+/// before any detection ran.
+pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, JournalError> {
+    let file = match fs::File::open(directory.join(DETECTIONS)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut reader = match crate::journal::format::Reader::open(std::io::BufReader::new(file)) {
+        Ok(reader) => reader,
+        Err(JournalError::NotAJournal) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+
+    let mut runs = Vec::new();
+    while let Some(run) = reader.read::<DetectionRunRecord>()? {
+        runs.push(run);
+    }
+    Ok(runs)
 }
 
 fn read_manifest(directory: &Path) -> Result<Manifest, JournalError> {
@@ -1383,6 +1435,54 @@ mod tests {
         assert_eq!(restored[0].hostname(), Some("router.example"));
         assert_eq!(restored[0].port_count(), 1);
         assert!(restored[0].is_alive());
+    }
+
+    /// A detection run's tape survives being written to the journal and read back,
+    /// so a recorded scan can be replayed offline. Its own file, so it never
+    /// disturbs the hosts a resume reads.
+    #[test]
+    fn detection_run_tapes_survive_a_journal_round_trip() {
+        use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord, SpeakExchange};
+        use crate::model::finding::{DetectionId, Version};
+        use crate::record::DetectionIdRecord;
+
+        let root = scratch("detections");
+        let map = plan("192.0.2.1", "80");
+
+        let tape = CapTape {
+            speaks: vec![SpeakExchange {
+                sent: b"PING\r\n".to_vec(),
+                reply: Ok(b"+PONG\r\n".to_vec()),
+            }],
+            nows: vec![7],
+            ..CapTape::default()
+        };
+        let detection = DetectionId::new("redis-unauth", Version::new(1, 0, 0), "abc").unwrap();
+        let run = DetectionRunRecord {
+            host: "192.0.2.1".to_string(),
+            port: 80,
+            protocol: "tcp".to_string(),
+            detection: DetectionIdRecord::from(&detection),
+            tape: CapTapeRecord::from(&tape),
+        };
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            journal
+                .record_detections(&[run.clone()])
+                .expect("records the run");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        let read = read_detections(&directory).expect("reads the runs back");
+        assert_eq!(read, vec![run], "a detection run did not survive the journal");
+        assert_eq!(
+            read[0].tape.rebuild(),
+            tape,
+            "the tape did not rebuild to what was recorded"
+        );
     }
 
     /// A host written more than once comes back whole rather than as its last
