@@ -34,9 +34,9 @@
 
 use std::borrow::Cow;
 
-use crate::fingerprint::Confidence;
-use crate::fingerprint::os::OsSource;
+use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, Reference, Severity};
+use crate::model::host::OsSource;
 use crate::model::host::{Filtering, HostStatus, NetworkRole, StatusProtocol};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};

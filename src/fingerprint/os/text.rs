@@ -70,8 +70,8 @@
 
 use std::collections::HashMap;
 
-use super::evidence::OsEvidence;
-use super::verdict::OsSource;
+use crate::model::host::OsEvidence;
+use crate::model::host::OsSource;
 
 /// What a matched service rule said about the operating system underneath it.
 ///
@@ -590,7 +590,8 @@ mod tests {
     /// this is where a verdict legitimately passes what one packet could support.
     #[test]
     fn a_banner_agreeing_with_the_wire_is_worth_more_than_either() {
-        use super::super::{OsSource, OsVerdict};
+        use super::super::OsVerdict;
+        use crate::model::host::OsSource;
 
         let banner = evidence_from(
             &metadata(&[("os.family", "Linux"), ("os.product", "Ubuntu")]),
@@ -802,7 +803,7 @@ mod against_the_shipped_corpus {
 
         assert_eq!(found.family.as_deref(), Some("Linux"));
         assert_eq!(found.kernel.as_deref(), Some("6.1.0"));
-        assert_eq!(found.source, super::super::OsSource::SnmpAgent);
+        assert_eq!(found.source, crate::model::host::OsSource::SnmpAgent);
     }
 
     /// Releases nobody has a machine for.

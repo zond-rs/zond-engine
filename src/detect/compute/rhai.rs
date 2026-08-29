@@ -44,7 +44,8 @@ use ::rhai::{
     AST, Array, Blob, Dynamic, Engine, EvalAltResult, ImmutableString, Map, Position, Scope,
 };
 
-use crate::fingerprint::{Confidence, PortContext};
+use crate::fingerprint::PortContext;
+use crate::model::confidence::Confidence;
 use crate::model::finding::{Excerpt, Finding, Reference};
 use crate::record::wire;
 

@@ -94,10 +94,10 @@ pub(crate) fn reads(port: u16, protocol: Protocol) -> bool {
 /// machine's management agent describing the machine — and it is keyed on the
 /// same port [`from_datagram`] decodes, so the decoder and the weight put on
 /// what it decodes cannot drift apart.
-pub(crate) fn attested_by(port: u16, protocol: Protocol) -> super::os::OsSource {
+pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::OsSource {
     match (protocol, port) {
-        (Protocol::Udp, 161) => super::os::OsSource::SnmpAgent,
-        _ => super::os::OsSource::ServiceBanner,
+        (Protocol::Udp, 161) => crate::model::host::OsSource::SnmpAgent,
+        _ => crate::model::host::OsSource::ServiceBanner,
     }
 }
 

@@ -739,9 +739,9 @@ mod tests {
 
     use crate::config::ZondConfig;
     use crate::diff::ScanDiff;
-    use crate::fingerprint::os::{OsEvidence, OsSource};
     use crate::model::exclusion::Exclusions;
     use crate::model::host::path::Hop;
+    use crate::model::host::{OsEvidence, OsSource};
     use crate::model::ip::scoped::Zone;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortState;

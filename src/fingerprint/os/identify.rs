@@ -35,7 +35,8 @@
 
 use crate::model::host::Host;
 
-use super::{OsEvidence, hardware_evidence, hostname_evidence, resolve};
+use super::{hardware_evidence, hostname_evidence, resolve};
+use crate::model::host::OsEvidence;
 
 /// Folds `observed` together with what the host already implies, and records the
 /// verdict.
@@ -131,7 +132,7 @@ pub fn identify(host: &mut Host, observed: impl IntoIterator<Item = OsEvidence>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fingerprint::os::verdict::OsSource;
+    use crate::model::host::OsSource;
     use std::net::{IpAddr, Ipv4Addr};
 
     fn host() -> Host {

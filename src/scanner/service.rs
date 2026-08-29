@@ -28,6 +28,7 @@
 //! runs on them needs a real conversation with the service. Splitting the two lets
 //! each use the transport that suits it.
 
+use crate::model::host::OsEvidence;
 use tokio::net::TcpStream;
 
 use crate::model::ip::scoped::ScopedIp;
@@ -67,7 +68,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::Connect,
-        |fingerprinted: Option<(ScopedIp, Port, Vec<os::OsEvidence>, Vec<String>)>, _audit| {
+        |fingerprinted: Option<(ScopedIp, Port, Vec<OsEvidence>, Vec<String>)>, _audit| {
             if let Some((ip, port, about_the_host, banners)) = fingerprinted {
                 ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
                 write_back(ctx, ip, port, about_the_host);
@@ -133,7 +134,7 @@ async fn fingerprint_one(
     port_number: u16,
     protocol: Protocol,
     detection: ServiceDetection,
-) -> Option<(ScopedIp, Port, Vec<os::OsEvidence>, Vec<String>)> {
+) -> Option<(ScopedIp, Port, Vec<OsEvidence>, Vec<String>)> {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
             verbosity = 1,
@@ -172,7 +173,7 @@ async fn fingerprint_one(
 /// `about_the_host` is what the service said about the *machine*, which is a
 /// different finding filed in a different place: the service belongs to the port,
 /// the operating system to the host.
-fn write_back(ctx: &ScanContext, key: ScopedIp, port: Port, about_the_host: Vec<os::OsEvidence>) {
+fn write_back(ctx: &ScanContext, key: ScopedIp, port: Port, about_the_host: Vec<OsEvidence>) {
     ctx.update_host(key, |host| {
         host.add_port(port);
 

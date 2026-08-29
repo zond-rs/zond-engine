@@ -136,11 +136,12 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::config::ScanEffort;
-use crate::config::{SendMode, ZondConfig};
+use crate::config::ZondConfig;
 use crate::model::exclusion::Exclusions;
 use crate::model::ip::set::IpSet;
 use crate::model::port::PortSet;
 use crate::model::technique::TcpScanTechnique;
+use crate::transport::probe::SendMode;
 
 /// The name a settings document is expected to have on disk.
 pub const FILE_NAME: &str = "engine.toml";

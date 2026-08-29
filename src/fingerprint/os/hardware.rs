@@ -48,8 +48,8 @@
 
 use crate::model::host::HardwareInfo;
 
-use super::evidence::OsEvidence;
-use super::verdict::OsSource;
+use crate::model::host::OsEvidence;
+use crate::model::host::OsSource;
 
 /// What a vendor match contributes on its own.
 ///

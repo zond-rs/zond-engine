@@ -29,7 +29,6 @@
 //! one host, so folding one phase into another gives what a single phase
 //! would.
 
-use crate::fingerprint::os::{OsEvidence, OsSource};
 use crate::model::finding::{ClaimId, Finding, MAX_FINDINGS_PER_SUBJECT};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
@@ -47,7 +46,7 @@ pub mod status;
 pub mod telemetry;
 
 pub use hardware::HardwareInfo;
-pub use os::OsFingerprint;
+pub use os::{OsEvidence, OsFingerprint, OsSource};
 pub use path::{Hop, NetworkPath};
 pub use status::{HostStatus, StatusProtocol, StatusReason};
 pub use telemetry::HostTelemetry;
@@ -1794,7 +1793,7 @@ mod tests {
     }
 
     fn a_finding(detection_id: &str) -> Finding {
-        use crate::fingerprint::Confidence;
+        use crate::model::confidence::Confidence;
         use crate::model::finding::{DetectionClass, DetectionId, Severity, Version};
         Finding::new(
             DetectionId::new(detection_id, Version::new(1, 0, 0), "hash").unwrap(),

@@ -19,7 +19,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::fingerprint::Confidence;
+use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, DetectionId, Excerpt, Finding, Version};
 use crate::record::wire;
 

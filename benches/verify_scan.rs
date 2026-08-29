@@ -41,11 +41,12 @@
 
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 
-use zond_engine::config::{SendMode, ZondConfig};
+use zond_engine::ZondConfig;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::{PortSet, PortState};
 use zond_engine::model::target::{TargetMap, TargetSet};
 use zond_engine::scanner;
+use zond_engine::transport::probe::SendMode;
 
 #[tokio::main]
 async fn main() {

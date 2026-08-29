@@ -290,8 +290,8 @@ impl SignatureDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fingerprint::os::OsSource;
     use crate::fingerprint::signature::{MatchRule, Probe, ServiceSignature};
+    use crate::model::host::OsSource;
 
     fn def(name: &str, ports: Vec<u16>, patterns: &[&str]) -> ServiceDefinition {
         ServiceDefinition {

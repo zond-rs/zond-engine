@@ -31,18 +31,93 @@
 //! `Box<dyn ProbeSender>` and a capture-fed receive stream, and every scanner
 //! depends only on those two things.
 
+use std::fmt;
 use std::net::IpAddr;
+use std::str::FromStr;
 
 use pnet_packet::Packet;
 use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 
-use crate::config::SendMode;
 use crate::model::capture::CaptureCounts;
 use crate::model::ip::scoped::Zone;
 use crate::model::mac::MacAddr;
 use crate::transport::capture::{self, CaptureGuard, CaptureOptions, CaptureStream};
 use crate::transport::link::EthernetSender;
 use crate::transport::raw::{self, TransportSenderHandle, TransportType};
+
+/// The error [`SendMode::from_str`] returns, carrying the names that would have
+/// worked so a front end can print it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown send mode '{input}', expected one of: auto, raw_socket, ethernet")]
+pub struct UnknownSendMode {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+/// How the privileged (raw) scanners put probe packets on the wire.
+///
+/// Only affects the raw-socket SYN paths; the unprivileged TCP-connect
+/// fallback and the on-link ARP/ICMPv6 [`LocalScanner`](crate::scanner)
+/// discovery are unaffected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SendMode {
+    /// Pick per platform: a raw Layer-4 socket on Unix - which the kernel
+    /// routes, ARPs, and fragments for us, and which works through VPN
+    /// tunnels - and self-built Layer-2 Ethernet frames on Windows, where the
+    /// OS blocks raw-socket TCP sends outright.
+    #[default]
+    Auto,
+    /// Force a raw Layer-4 socket regardless of platform.
+    RawSocket,
+    /// Force self-built Layer-2 Ethernet frames, bypassing the host IP stack
+    /// (and the local firewall / connection tracking that a raw-socket send
+    /// still traverses). Requires an Ethernet-capable interface and can't
+    /// reach loopback or tunnel-only destinations.
+    Ethernet,
+}
+impl SendMode {
+    /// Every mode, in the order a front end should offer them.
+    pub const ALL: [SendMode; 3] = [SendMode::Auto, SendMode::RawSocket, SendMode::Ethernet];
+
+    /// The name this mode is written under, wherever it arrives as text.
+    pub const fn name(self) -> &'static str {
+        match self {
+            SendMode::Auto => "auto",
+            SendMode::RawSocket => "raw_socket",
+            SendMode::Ethernet => "ethernet",
+        }
+    }
+}
+impl fmt::Display for SendMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+impl FromStr for SendMode {
+    type Err = UnknownSendMode;
+
+    /// Parses a mode name, ignoring case and surrounding whitespace, so a choice
+    /// arriving as text - from an argument, a form field, a settings file -
+    /// needs no mapping table of its own.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::transport::probe::SendMode;
+    ///
+    /// assert_eq!("Ethernet".parse(), Ok(SendMode::Ethernet));
+    /// assert!("layer2".parse::<SendMode>().is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == name)
+            .ok_or_else(|| UnknownSendMode {
+                input: s.to_string(),
+            })
+    }
+}
 
 /// Which kind of raw probe traffic a [`ProbeTransport`] carries. Determines
 /// both the raw socket(s) opened for sending and the kernel BPF filter that

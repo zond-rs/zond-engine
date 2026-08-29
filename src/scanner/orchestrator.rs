@@ -34,6 +34,7 @@
 //! actually opened. A protocol left with no strategy at all is not a degraded
 //! scan but a silent one, since nothing would route its targets anywhere.
 
+use crate::model::host::OsEvidence;
 use std::net::IpAddr;
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -672,12 +673,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::OsSnmp,
-        |found: Option<(
-            crate::model::ip::scoped::ScopedIp,
-            Port,
-            Vec<os::OsEvidence>,
-        )>,
-         _audit| {
+        |found: Option<(crate::model::ip::scoped::ScopedIp, Port, Vec<OsEvidence>)>, _audit| {
             if let Some((key, port, evidence)) = found {
                 ctx.update_host(key, |host| {
                     host.add_port(port);
@@ -715,11 +711,7 @@ const SNMP_PORT: u16 = 161;
 /// describing this host's routing rather than anything about the target.
 async fn ask_for_kernel(
     target: crate::model::ip::scoped::ScopedIp,
-) -> Option<(
-    crate::model::ip::scoped::ScopedIp,
-    Port,
-    Vec<os::OsEvidence>,
-)> {
+) -> Option<(crate::model::ip::scoped::ScopedIp, Port, Vec<OsEvidence>)> {
     let addr = target.to_socket_addr(SNMP_PORT)?;
 
     let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);

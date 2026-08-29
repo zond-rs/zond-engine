@@ -70,7 +70,7 @@
 //! ## Two axes: what it runs, and what it is
 //!
 //! A verdict answers two questions, and a source may answer either without the
-//! other. [`OsEvidence::family`] is what the machine *runs*, [`OsEvidence::device`]
+//! other. [`OsEvidence::family`](crate::model::host::OsEvidence::family) is what the machine *runs*, [`OsEvidence::device`](crate::model::host::OsEvidence::device)
 //! is what it *is* — printer, switch, camera — and neither stands in for the
 //! other. A hop counter of 255 reaches the first and never the second; an SNMP
 //! agent reading `Brother NC-8700w` reaches the second and genuinely does not
@@ -134,7 +134,7 @@ pub use observation::{
 // discovering it when one is silently dropped, exactly as the service signature
 // schema is.
 pub use db::RuleDb;
-pub use evidence::{MAX_FUSED_ACCURACY, OsEvidence, resolve};
+pub use evidence::{MAX_FUSED_ACCURACY, resolve};
 pub use hardware::evidence_from as hardware_evidence;
 pub use hostname::evidence_from as hostname_evidence;
 pub use identify::identify;
@@ -150,6 +150,6 @@ pub use text::{
     AGENT_CEILING, BANNER_CEILING, OsMetadata, ceiling, evidence_from as banner_evidence,
 };
 pub use verdict::{
-    MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict, classify,
-    classify_echo_reply, classify_reply, classify_series,
+    MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsVerdict, classify, classify_echo_reply,
+    classify_reply, classify_series,
 };

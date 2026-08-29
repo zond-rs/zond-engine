@@ -49,8 +49,9 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use super::analyzer::{Analyzer, PortContext};
-use super::model::{Confidence, Evidence, SourceId};
+use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
+use crate::model::confidence::Confidence;
 
 /// Ports where an SSH server is expected, and thus worth an active probe.
 const SSH_PORTS: &[u16] = &[22, 2222];

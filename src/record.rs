@@ -57,9 +57,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::DetectionEnvelope;
 use crate::config::{IdleScan, RetryConfig};
-use crate::fingerprint::Confidence;
-use crate::fingerprint::os::{OsEvidence, OsSource};
 use crate::model::capture::CaptureCounts;
+use crate::model::confidence::Confidence;
 use crate::model::finding::{
     DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
 };
@@ -67,6 +66,7 @@ use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
 use crate::model::host::telemetry::HostTelemetry;
 use crate::model::host::{HardwareInfo, Host, StatusProtocol, StatusReason};
+use crate::model::host::{OsEvidence, OsSource};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;

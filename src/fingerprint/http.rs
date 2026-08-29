@@ -43,8 +43,9 @@
 use async_trait::async_trait;
 
 use super::analyzer::{Analyzer, PortContext};
-use super::model::{Confidence, Evidence, SourceId};
+use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
+use crate::model::confidence::Confidence;
 
 /// Identifies HTTP servers from the structured headers of a captured response.
 /// See the module docs for why it is passive and what evidence it emits.
@@ -435,7 +436,7 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
 /// miss compiles and tries every candidate the prefilter selected. Paid once per
 /// open HTTP port, against a path that has already spent a TCP connect and up to
 /// half a second waiting for the banner, so it does not show.
-fn os_from(header: &str) -> Option<crate::fingerprint::os::OsEvidence> {
+fn os_from(header: &str) -> Option<crate::model::host::OsEvidence> {
     use crate::fingerprint::prefilter::Prefilter;
 
     let db = crate::fingerprint::SignatureDb::global();
@@ -444,7 +445,7 @@ fn os_from(header: &str) -> Option<crate::fingerprint::os::OsEvidence> {
         .into_iter()
         .filter_map(|index| {
             db.signature(index)
-                .identify(header, crate::fingerprint::os::OsSource::ServiceBanner)
+                .identify(header, crate::model::host::OsSource::ServiceBanner)
         })
         .filter_map(|matched| matched.os)
         .max_by(|a, b| {
@@ -1064,7 +1065,7 @@ mod os_from_headers {
             .into_iter()
             .filter_map(|index| {
                 db.signature(index)
-                    .identify(response, crate::fingerprint::os::OsSource::ServiceBanner)
+                    .identify(response, crate::model::host::OsSource::ServiceBanner)
             })
             .find_map(|matched| matched.os);
 

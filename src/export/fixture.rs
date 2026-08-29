@@ -24,8 +24,8 @@ use std::time::{Duration, SystemTime};
 
 use crate::config::{IdleScan, ZondConfig};
 use crate::evasion::EvasionProfile;
-use crate::fingerprint::Confidence;
 use crate::model::capture::CaptureCounts;
+use crate::model::confidence::Confidence;
 use crate::model::exclusion::Exclusions;
 use crate::model::finding::{
     DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,

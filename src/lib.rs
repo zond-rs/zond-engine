@@ -160,8 +160,8 @@
 //! below are the whole of it:
 //!
 //! The list is an order, not a set: each module depends only on the ones above
-//! it, and that is a property the crate is arranged to keep rather than an
-//! observation about how it happens to look today.
+//! it. `tests/architecture.rs` reads every `use crate::…` in the library and
+//! fails if that stops being true, so this is a rule rather than an aspiration.
 //!
 //! - [`model`] — the vocabulary every other module names: [`Host`], [`Port`],
 //!   [`IpSet`], [`TargetMap`], and the grammars that construct them from what a
@@ -252,7 +252,7 @@ pub(crate) mod logging;
 // well, so this is a convenience and never the only way to name a type; what it
 // costs is that each name is a commitment, which is why the crate's whole
 // vocabulary is not re-exported wholesale.
-pub use crate::config::{RetryConfig, ScanEffort, SendMode, ZondConfig};
+pub use crate::config::{RetryConfig, ScanEffort, ZondConfig};
 pub use crate::evasion::EvasionProfile;
 pub use crate::model::exclusion::Exclusions;
 pub use crate::model::host::{Host, HostStatus};
@@ -269,6 +269,7 @@ pub use crate::scanner::strategy::StrategyError;
 pub use crate::scanner::{ListenScope, ScanError, ScanTask, Until, discover, listen, scan};
 #[cfg(feature = "journal-format")]
 pub use crate::scanner::{discover_with_journal, listen_with_journal, scan_with_journal};
+pub use crate::transport::probe::SendMode;
 
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
 // from anywhere in the crate. They are deliberately not part of the public API;

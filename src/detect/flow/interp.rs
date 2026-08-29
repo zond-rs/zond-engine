@@ -32,7 +32,8 @@
 //! its step's match result, so a finding fires only in the case it names. An
 //! absent guard always holds; an unparseable one never does.
 
-use crate::fingerprint::{Confidence, MAX_COMPILED_REGEX_BYTES, pattern, unescape};
+use crate::fingerprint::{MAX_COMPILED_REGEX_BYTES, pattern, unescape};
+use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionId, Excerpt, Finding, Version};
 use crate::record::wire;
 

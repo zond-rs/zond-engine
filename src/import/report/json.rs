@@ -75,7 +75,7 @@ use std::time::{Duration, SystemTime};
 use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
-use crate::config::{OsDetection, ScanEffort, SendMode, ServiceDetection};
+use crate::config::{OsDetection, ScanEffort, ServiceDetection};
 use crate::format::time::parse_rfc3339;
 use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
 use crate::import::report::{ReportOptions, ReportReader};
@@ -91,6 +91,7 @@ use crate::record::{
     ServiceRecord, SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
 };
 use crate::report::{ScanPhase, ScanReport};
+use crate::transport::probe::SendMode;
 
 /// The format's name in errors.
 const FORMAT: &str = "JSON";

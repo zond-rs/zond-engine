@@ -51,7 +51,7 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::fingerprint::Confidence;
+use crate::model::confidence::Confidence;
 
 /// The most justifying text a finding retains, in bytes.
 ///
@@ -127,7 +127,7 @@ impl Severity {
     }
 
     /// Projects onto the `0..=100` scale, mirroring
-    /// [`Confidence::as_score`](crate::fingerprint::Confidence::as_score) so a
+    /// [`Confidence::as_score`](crate::model::confidence::Confidence::as_score) so a
     /// caller can put impact and certainty on one bar. The numbers are tunable;
     /// the ordering is the invariant.
     pub const fn as_score(self) -> u8 {

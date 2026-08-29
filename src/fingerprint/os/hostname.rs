@@ -45,8 +45,8 @@
 //! would make this source confidently wrong about every carefully-named machine
 //! on the network.
 
-use super::evidence::OsEvidence;
-use super::verdict::OsSource;
+use crate::model::host::OsEvidence;
+use crate::model::host::OsSource;
 
 /// What a hostname match contributes on its own.
 ///

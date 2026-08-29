@@ -49,6 +49,7 @@
 //! is believed. nmap's aggressive-guess mode is a wart, not a feature to copy.
 
 use crate::model::host::OsFingerprint;
+use crate::model::host::{OsEvidence, OsSource};
 
 use super::db::RuleDb;
 use super::observation::{StackObservation, StackReply};
@@ -88,40 +89,6 @@ const MEASURED_ACCURACY: f32 = 65.0;
 /// on real hardware is what promotes it.
 const PUBLISHED_ACCURACY: f32 = 50.0;
 
-/// Which evidence produced a verdict.
-///
-/// A report says *why* a host was named and not only what it was named, and the
-/// variants are ordered by nothing: what each is worth is decided where the
-/// evidence is made, not here.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum OsSource {
-    /// The shape of a single TCP reply.
-    TcpStack,
-    /// The vendor a host's hardware address is registered to.
-    HardwareVendor,
-    /// Text a service volunteered about the system it runs on.
-    ServiceBanner,
-    /// A management agent answering for the machine itself — `sysDescr` out of
-    /// SNMP.
-    ///
-    /// Held apart from [`ServiceBanner`](Self::ServiceBanner) because it is worth
-    /// more, and the reason is not that SNMP is trustworthy. A banner is a string
-    /// a daemon was *compiled* with, so a container reports its base image and a
-    /// proxy reports itself. `sysDescr` on a Unix host is `uname -a` rendered at
-    /// the moment of asking: the running kernel, from the machine, now. On an
-    /// appliance it is the firmware build the box is actually executing. See
-    /// [`ceiling`](super::ceiling).
-    SnmpAgent,
-    /// The host's own name, where it is one an operating system generates by
-    /// default.
-    ///
-    /// The only source that reaches a host whose firewall drops every probe —
-    /// a stock Windows desktop still announces `DESKTOP-` over mDNS — which is
-    /// why it exists despite being the weakest of them.
-    Hostname,
-}
-
 /// What the rules concluded about one observation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OsVerdict {
@@ -129,7 +96,7 @@ pub struct OsVerdict {
     ///
     /// `None` where every source abstained — a host identified down to its make
     /// and model by an agent that never said what it runs. See
-    /// [`OsEvidence::family`](super::OsEvidence::family).
+    /// [`OsEvidence::family`](crate::model::host::OsEvidence::family).
     pub family: Option<String>,
     /// What kind of box this is, where a source said: `Printer`, `Switch`,
     /// `Router`. Orthogonal to the family, never a substitute for it.
@@ -182,8 +149,8 @@ impl OsVerdict {
     /// and option layout are consequences of one stack build and agree by
     /// construction; scoring them apart would count a single observation several
     /// times over and manufacture confidence out of nothing.
-    pub fn as_evidence(&self) -> super::evidence::OsEvidence {
-        super::evidence::OsEvidence {
+    pub fn as_evidence(&self) -> OsEvidence {
+        OsEvidence {
             source: self.source,
             family: self.family.clone(),
             device: self.device.clone(),

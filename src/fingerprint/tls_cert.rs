@@ -37,8 +37,9 @@ use async_trait::async_trait;
 use x509_parser::parse_x509_certificate;
 
 use super::analyzer::{Analyzer, PortContext};
-use super::model::{Confidence, Evidence, SourceId};
+use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
+use crate::model::confidence::Confidence;
 
 /// Identifies TLS-bearing ports from the certificate captured during the
 /// handshake. See the module docs for what it does and does not claim.

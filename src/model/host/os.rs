@@ -343,7 +343,7 @@ impl OsFingerprint {
 
 /// What separates two readings in an evidence line.
 ///
-/// The same separator [`resolve`](crate::fingerprint::os::resolve) folds its
+/// The same separator [`resolve`](crate::fingerprint::os::resolve)(crate::fingerprint::os::resolve) folds its
 /// sources with, so a person reading a report meets one convention rather than
 /// two.
 const SEPARATOR: &str = " | ";
@@ -651,4 +651,87 @@ mod tests {
         os.merge(other);
         assert_eq!(os.cpes().len(), MAX_CPES_PER_OS);
     }
+}
+
+/// Which evidence produced a verdict.
+///
+/// A report says *why* a host was named and not only what it was named, and the
+/// variants are ordered by nothing: what each is worth is decided where the
+/// evidence is made, not here.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OsSource {
+    /// The shape of a single TCP reply.
+    TcpStack,
+    /// The vendor a host's hardware address is registered to.
+    HardwareVendor,
+    /// Text a service volunteered about the system it runs on.
+    ServiceBanner,
+    /// A management agent answering for the machine itself — `sysDescr` out of
+    /// SNMP.
+    ///
+    /// Held apart from [`ServiceBanner`](Self::ServiceBanner) because it is worth
+    /// more, and the reason is not that SNMP is trustworthy. A banner is a string
+    /// a daemon was *compiled* with, so a container reports its base image and a
+    /// proxy reports itself. `sysDescr` on a Unix host is `uname -a` rendered at
+    /// the moment of asking: the running kernel, from the machine, now. On an
+    /// appliance it is the firmware build the box is actually executing. See
+    /// [`ceiling`](crate::fingerprint::os::ceiling).
+    SnmpAgent,
+    /// The host's own name, where it is one an operating system generates by
+    /// default.
+    ///
+    /// The only source that reaches a host whose firewall drops every probe —
+    /// a stock Windows desktop still announces `DESKTOP-` over mDNS — which is
+    /// why it exists despite being the weakest of them.
+    Hostname,
+}
+
+/// One source's opinion about one host.
+///
+/// The identity is a path like [`OsVerdict`](crate::fingerprint::os::OsVerdict)'s, and the confidence is a
+/// probability rather than a percentage — the arithmetic that combines these
+/// only makes sense on `0.0..=1.0`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OsEvidence {
+    /// What produced it.
+    pub source: OsSource,
+    /// The broad family, where this source can name one.
+    ///
+    /// **`None` is an abstention, not an unknown.** [`resolve`](crate::fingerprint::os::resolve) settles the
+    /// family by vote and every other field by agreement, so a source with
+    /// nothing to say at that level has to be able to say nothing: forced to
+    /// supply a family it would have to invent one, and an invented family votes
+    /// against the real ones. A rule reading `Brother NC-8700w` off an SNMP agent
+    /// knows the make, the model and the firmware of a box and genuinely does not
+    /// know what it runs.
+    pub family: Option<String>,
+    /// What kind of box this is — `Printer`, `Switch`, `Router` — where a source
+    /// says.
+    ///
+    /// A second axis rather than a coarser family: what a machine *is* and what
+    /// it *runs* are independent, and the corpus answers them separately. A Linux
+    /// print server is both, and neither answer contradicts the other.
+    pub device: Option<String>,
+    /// The vendor, where the source knew one.
+    pub vendor: Option<String>,
+    /// The product, where the source knew one.
+    pub product: Option<String>,
+    /// The version, where the source knew one.
+    pub version: Option<String>,
+    /// The kernel release, where the source read one.
+    ///
+    /// Beside the version rather than instead of it: a distribution release and
+    /// the kernel it ships are two facts, not two answers.
+    pub kernel: Option<String>,
+    /// A Common Platform Enumeration identifier, where one applies exactly.
+    pub cpe: Option<String>,
+    /// How much this source is worth on its own, from 0 to 1.
+    ///
+    /// Not a percentage and not an accuracy: it is what this one source
+    /// contributes before anything else is taken into account, and the value a
+    /// source alone would produce is its own ceiling.
+    pub confidence: f32,
+    /// One line describing what was read, for the report to carry.
+    pub evidence: String,
 }

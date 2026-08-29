@@ -66,7 +66,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::config::DetectionEnvelope;
 use crate::config::RetryConfig;
-use crate::config::{IdleScan, OsDetection, SendMode, ServiceDetection, ZondConfig};
+use crate::config::{IdleScan, OsDetection, ServiceDetection, ZondConfig};
 use crate::evasion::EvasionProfile;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
@@ -78,6 +78,7 @@ use crate::model::mac::MacAddr;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::model::technique::TcpScanTechnique;
+use crate::transport::probe::SendMode;
 
 /// The version of the engine that produced a report.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");

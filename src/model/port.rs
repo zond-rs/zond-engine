@@ -473,7 +473,7 @@ mod tests {
     }
 
     fn a_finding(detection_id: &str) -> Finding {
-        use crate::fingerprint::Confidence;
+        use crate::model::confidence::Confidence;
         use crate::model::finding::{DetectionClass, DetectionId, Severity, Version};
         Finding::new(
             DetectionId::new(detection_id, Version::new(1, 0, 0), "hash").unwrap(),

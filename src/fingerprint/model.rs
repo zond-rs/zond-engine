@@ -20,51 +20,8 @@
 //! These types are deliberately independent of *how* evidence is produced, so
 //! adding a new kind of detector never changes them.
 
+use crate::model::confidence::Confidence;
 use crate::model::port::Service;
-
-/// How much trust to place in a single piece of [`Evidence`].
-///
-/// Ordered weakest-to-strongest, so evidence can be compared and ranked
-/// directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub enum Confidence {
-    /// A guess from context alone, e.g. the registered name for a port number
-    /// with no probing performed.
-    #[default]
-    Heuristic,
-    /// A plausible but non-authoritative signal.
-    Weak,
-    /// A signature matched, but the match is generic (no product/version).
-    Probable,
-    /// A specific signature matched, yielding product and/or version detail.
-    Strong,
-    /// Effectively certain: the service self-identified unambiguously.
-    Certain,
-}
-
-impl Confidence {
-    /// Projects onto the `0..=100` confidence scale used by [`Service`].
-    pub fn as_score(self) -> u8 {
-        match self {
-            Confidence::Heuristic => 0,
-            Confidence::Weak => 40,
-            Confidence::Probable => 70,
-            Confidence::Strong => 90,
-            Confidence::Certain => 100,
-        }
-    }
-
-    /// Every level, weakest-first, for a caller that iterates rather than
-    /// writing the list out — the round-trip that keeps the wire names in step
-    /// with the enum, among them.
-    pub const ALL: [Confidence; 5] = [
-        Self::Heuristic,
-        Self::Weak,
-        Self::Probable,
-        Self::Strong,
-        Self::Certain,
-    ];
-}
 
 /// Which detector produced a piece of [`Evidence`].
 ///
@@ -150,7 +107,7 @@ pub struct Evidence {
     /// from, not the kernel it runs on. `ServiceVerdict` retains its whole
     /// evidence set, so this reaches a caller without the resolver having to
     /// rank it.
-    pub os: Option<crate::fingerprint::os::OsEvidence>,
+    pub os: Option<crate::model::host::OsEvidence>,
 }
 
 impl Evidence {

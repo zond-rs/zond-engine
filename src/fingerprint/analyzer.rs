@@ -179,7 +179,7 @@ fn best_match(
     db: &SignatureDb,
     indices: &[usize],
     texts: &[&str],
-    attested_by: super::os::OsSource,
+    attested_by: crate::model::host::OsSource,
 ) -> Option<Evidence> {
     let matched: Vec<super::matcher::Match> = texts
         .iter()
@@ -238,7 +238,7 @@ fn best_match(
 /// given a home of its own, the rule that read one lost to an imported rule that
 /// had crammed the same string into `version`, purely because this function had
 /// not been told the new field existed.
-fn os_detail(os: &super::os::OsEvidence) -> u8 {
+fn os_detail(os: &crate::model::host::OsEvidence) -> u8 {
     u8::from(os.version.is_some())
         + u8::from(os.kernel.is_some())
         + u8::from(os.product.is_some())
@@ -259,7 +259,7 @@ fn banner_evidence(
     db: &SignatureDb,
     port_signatures: &[usize],
     banner: &str,
-    attested_by: super::os::OsSource,
+    attested_by: crate::model::host::OsSource,
 ) -> Option<(Evidence, bool)> {
     let texts = super::extract::texts(banner);
 
@@ -317,7 +317,7 @@ pub(crate) fn os_from_banner(
     port: u16,
     protocol: Protocol,
     banner: &str,
-) -> Option<super::os::OsEvidence> {
+) -> Option<crate::model::host::OsEvidence> {
     let port_signatures = db.signatures_for_port(port);
     db.warm(port_signatures);
     let attested_by = super::extract::attested_by(port, protocol);
@@ -345,7 +345,7 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext, port_confirmed: bool) -> Evi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fingerprint::model::Confidence;
+    use crate::model::confidence::Confidence;
 
     /// An active analyzer: its `collect` produces raw frames that its `analyze`
     /// turns into evidence. Proves the two-phase wiring end to end — the frames

@@ -23,7 +23,7 @@
 //! ```
 //!
 //! * [`model`] is the shared vocabulary: [`Evidence`], [`ServiceVerdict`],
-//!   [`Confidence`].
+//!   [`Confidence`](crate::model::confidence::Confidence).
 //! * [`SignatureDb`] is the runtime view of the signature database — a cheap
 //!   `port -> name` index plus lazily compiled, cached matchers.
 //! * [`Analyzer`]s are the extension point; [`BannerRegexAnalyzer`] is the first.
@@ -66,10 +66,11 @@ mod corpus;
 #[cfg(test)]
 mod pattern_properties;
 
+use crate::model::host::OsEvidence;
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
 pub use db::SignatureDb;
 pub use http::HttpHeadersAnalyzer;
-pub use model::{Confidence, Evidence, ServiceVerdict, SourceId, Tunnel};
+pub use model::{Evidence, ServiceVerdict, SourceId, Tunnel};
 pub use response::{Collected, ResponseSet, TlsInfo};
 // The schema an `assets/fingerprinting` signature file is written against.
 // `build.rs` compiles the shipped signatures out of it and validates them; these
@@ -218,7 +219,7 @@ pub async fn fingerprint_tcp_detailed(
     stream: TcpStream,
     mut port: Port,
     detection: ServiceDetection,
-) -> (Port, Vec<os::OsEvidence>, Vec<String>) {
+) -> (Port, Vec<OsEvidence>, Vec<String>) {
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target.
     let addr = stream.peer_addr().ok();
@@ -298,7 +299,7 @@ pub async fn fingerprint_tcp_detailed(
 pub async fn fingerprint_udp_detailed(
     addr: std::net::SocketAddr,
     mut port: Port,
-) -> Option<(Port, Vec<os::OsEvidence>, Vec<String>)> {
+) -> Option<(Port, Vec<OsEvidence>, Vec<String>)> {
     let text = probe_udp(addr).await?;
     let responses = ResponseSet::from_banners(vec![text]);
     let banners = responses.banners.clone();

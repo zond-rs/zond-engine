@@ -25,12 +25,14 @@
 
 use std::sync::OnceLock;
 
-use crate::fingerprint::os::{OsMetadata, OsSource};
+use crate::fingerprint::os::OsMetadata;
 use crate::fingerprint::signature::{MAX_COMPILED_REGEX_BYTES, MatchRule};
+use crate::model::host::OsSource;
 use crate::warn;
 
-use super::model::{Confidence, Evidence, SourceId};
+use super::model::{Evidence, SourceId};
 use super::pattern::{self, CompiledPattern};
+use crate::model::confidence::Confidence;
 
 /// A single service signature: metadata, its pattern, and its lazily-compiled
 /// regex.
@@ -229,7 +231,7 @@ pub struct Match {
     /// A banner identifies a *service*; that it also implies a host is a second
     /// inference, weaker than the first, and one a caller uninterested in
     /// operating systems should be able to ignore entirely.
-    pub os: Option<crate::fingerprint::os::OsEvidence>,
+    pub os: Option<crate::model::host::OsEvidence>,
 }
 
 /// How specific a signature's match is, for ranking competing matches against

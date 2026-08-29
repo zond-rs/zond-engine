@@ -20,9 +20,9 @@
 
 use std::net::IpAddr;
 
-use crate::config::SendMode;
 use crate::model::mac::MacAddr;
 use crate::transport::probe::Emission;
+use crate::transport::probe::SendMode;
 
 /// What a scan changes about the packets it sends, over the engine's defaults.
 ///

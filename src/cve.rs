@@ -47,7 +47,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::fingerprint::Confidence;
+use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, DetectionId, Excerpt, Finding, Reference, Version};
 use crate::model::host::Host;
 use crate::model::port::Protocol;

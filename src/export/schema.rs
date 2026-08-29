@@ -66,7 +66,6 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 use serde::ser::{SerializeSeq, Serializer};
 
-use crate::config::SendMode;
 use crate::config::{RetryConfig, ScanEffort};
 use crate::export::ExportOptions;
 use crate::format::time::rfc3339;
@@ -81,6 +80,7 @@ use crate::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, ScanPhase,
     ScanReport, ScanSettings, ScanSummary, ScannerFailure, TargetScope,
 };
+use crate::transport::probe::SendMode;
 
 // The two values a reader of this document has to agree with are defined in
 // [`crate::format`] rather than here, because a reader that had to reach into

@@ -37,9 +37,8 @@ use super::db::SignatureDb;
 use super::matcher::Signature;
 use super::prefilter::{LiteralPrefilter, Prefilter};
 use super::response::{Collected, ResponseSet, TlsInfo};
-use super::{
-    Analyzer, BannerRegexAnalyzer, Confidence, PortContext, ServiceVerdict, TlsCertAnalyzer, Tunnel,
-};
+use super::{Analyzer, BannerRegexAnalyzer, PortContext, ServiceVerdict, TlsCertAnalyzer, Tunnel};
+use crate::model::confidence::Confidence;
 
 /// Recorded examples that do not match their own pattern today (lost recog case
 /// flags — see the module docs). Ratchet down as fixed; a rise is a regression.
@@ -70,7 +69,7 @@ fn every_signature_matches_its_example() {
         .filter_map(|(signature, example)| {
             let example = example.as_deref()?;
             signature
-                .identify(example, crate::fingerprint::os::OsSource::ServiceBanner)
+                .identify(example, crate::model::host::OsSource::ServiceBanner)
                 .is_none()
                 .then(|| format!("example={example:?} pattern={:?}", signature.pattern()))
         })
@@ -108,7 +107,7 @@ fn prefilter_never_drops_a_matching_signature() {
                 return false;
             };
             if signature
-                .identify(example, crate::fingerprint::os::OsSource::ServiceBanner)
+                .identify(example, crate::model::host::OsSource::ServiceBanner)
                 .is_none()
             {
                 return false; // example doesn't match anyway (known baseline)

@@ -50,9 +50,10 @@
 //! the result is no answer, which is the honest outcome for a host two techniques
 //! disagree about.
 
+use crate::model::host::OsEvidence;
 use std::collections::BTreeMap;
 
-use super::verdict::{MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict};
+use super::verdict::{MIN_REPORTABLE_ACCURACY, OsVerdict};
 
 /// The most any combination of sources may claim.
 ///
@@ -67,55 +68,6 @@ use super::verdict::{MIN_REPORTABLE_ACCURACY, OsSource, OsVerdict};
 /// more than one. Below 100, which stays reserved for a host that identified
 /// itself rather than one that was worked out.
 pub const MAX_FUSED_ACCURACY: u8 = 95;
-
-/// One source's opinion about one host.
-///
-/// The identity is a path like [`OsVerdict`]'s, and the confidence is a
-/// probability rather than a percentage — the arithmetic that combines these
-/// only makes sense on `0.0..=1.0`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct OsEvidence {
-    /// What produced it.
-    pub source: OsSource,
-    /// The broad family, where this source can name one.
-    ///
-    /// **`None` is an abstention, not an unknown.** [`resolve`] settles the
-    /// family by vote and every other field by agreement, so a source with
-    /// nothing to say at that level has to be able to say nothing: forced to
-    /// supply a family it would have to invent one, and an invented family votes
-    /// against the real ones. A rule reading `Brother NC-8700w` off an SNMP agent
-    /// knows the make, the model and the firmware of a box and genuinely does not
-    /// know what it runs.
-    pub family: Option<String>,
-    /// What kind of box this is — `Printer`, `Switch`, `Router` — where a source
-    /// says.
-    ///
-    /// A second axis rather than a coarser family: what a machine *is* and what
-    /// it *runs* are independent, and the corpus answers them separately. A Linux
-    /// print server is both, and neither answer contradicts the other.
-    pub device: Option<String>,
-    /// The vendor, where the source knew one.
-    pub vendor: Option<String>,
-    /// The product, where the source knew one.
-    pub product: Option<String>,
-    /// The version, where the source knew one.
-    pub version: Option<String>,
-    /// The kernel release, where the source read one.
-    ///
-    /// Beside the version rather than instead of it: a distribution release and
-    /// the kernel it ships are two facts, not two answers.
-    pub kernel: Option<String>,
-    /// A Common Platform Enumeration identifier, where one applies exactly.
-    pub cpe: Option<String>,
-    /// How much this source is worth on its own, from 0 to 1.
-    ///
-    /// Not a percentage and not an accuracy: it is what this one source
-    /// contributes before anything else is taken into account, and the value a
-    /// source alone would produce is its own ceiling.
-    pub confidence: f32,
-    /// One line describing what was read, for the report to carry.
-    pub evidence: String,
-}
 
 /// Folds every source's opinion into one answer, or none.
 ///
@@ -334,6 +286,7 @@ fn combine(confidences: impl Iterator<Item = f32>) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::host::OsSource;
 
     /// The Brother print server this behaviour was found on, as its agent
     /// answered on 2026-08-26: a make, a model and a firmware, and not one word
