@@ -25,14 +25,20 @@
 //! panicking a scan — the shipped corpus is proven to compile by a test, so a skip
 //! is a defence, not an expected path.
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
 
 use tracing::warn;
 
+use crate::fingerprint::PortContext;
+use crate::model::finding::Finding;
+use crate::record::wire;
+
+use super::record::DetectionRunRecord;
 use super::rhai::{RhaiModule, RhaiRuntime};
 use super::runtime::{ComputeRuntime, ModuleBody};
 use super::schema::ComputeDetection;
-use super::stage::LoadedDetection;
+use super::stage::{self, LoadedDetection};
 
 /// The validated, normalised module corpus, compiled from `assets/detect/` by
 /// `build.rs`.
@@ -76,6 +82,58 @@ impl ComputeDb {
     pub(crate) fn detections(&self) -> &[LoadedDetection<RhaiModule>] {
         &self.detections
     }
+
+    /// The loaded detection whose body has this content hash, so a journalled run
+    /// replays against the exact detection that produced it.
+    pub(crate) fn detection_by_hash(
+        &self,
+        content_hash: &str,
+    ) -> Option<&LoadedDetection<RhaiModule>> {
+        self.detections
+            .iter()
+            .find(|detection| detection.content_hash() == content_hash)
+    }
+}
+
+/// Replays one journalled detection run offline, reproducing the findings it
+/// produced, with no network.
+///
+/// [`None`] if the corpus no longer holds the exact detection that ran, matched by
+/// content hash, so a changed or removed detection is never silently reproduced by a
+/// different one; also [`None`] if the record names a transport this build does not
+/// know.
+pub fn replay_run(run: &DetectionRunRecord) -> Option<Vec<Finding>> {
+    let db = ComputeDb::global();
+    let detection = db.detection_by_hash(&run.detection.content_hash)?;
+    let protocol = wire::protocol(&run.protocol)?;
+
+    let addr = run
+        .host
+        .parse::<IpAddr>()
+        .ok()
+        .map(|ip| SocketAddr::new(ip, run.port));
+    let ctx = PortContext {
+        port: run.port,
+        protocol,
+        addr,
+        tunnel: None,
+    };
+
+    let responses: Vec<Vec<u8>> = run
+        .responses
+        .iter()
+        .cloned()
+        .map(String::into_bytes)
+        .collect();
+    let slices: Vec<&[u8]> = responses.iter().map(Vec::as_slice).collect();
+
+    Some(stage::replay_over_tape(
+        db.runtime(),
+        detection,
+        &ctx,
+        &slices,
+        run.tape.rebuild(),
+    ))
 }
 
 /// Compiles one embedded module into a runnable detection, or [`None`] with a
@@ -196,6 +254,45 @@ mod tests {
                 .iter()
                 .any(|f| f.detection().id() == "http-missing-security-headers"),
             "a hardened server was flagged"
+        );
+    }
+
+    #[test]
+    fn a_journalled_run_of_a_shipped_detection_replays() {
+        use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord};
+        use crate::record::DetectionIdRecord;
+
+        let db = ComputeDb::global();
+        let detection = db
+            .detections()
+            .iter()
+            .find(|d| d.manifest().id == "http-missing-security-headers")
+            .expect("the http detection ships");
+
+        // A run of that exact detection over a bare response, as the journal holds
+        // it. The detection is passive, so its tape is empty and the response is the
+        // whole input; replaying it reproduces the finding with no network.
+        let run = DetectionRunRecord {
+            host: "127.0.0.1".to_string(),
+            port: 80,
+            protocol: "tcp".to_string(),
+            detection: DetectionIdRecord {
+                id: "http-missing-security-headers".to_string(),
+                version: "1.0.0".to_string(),
+                content_hash: detection.content_hash().to_string(),
+            },
+            responses: vec![
+                "HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\n\r\n".to_string(),
+            ],
+            tape: CapTapeRecord::from(&CapTape::default()),
+        };
+
+        let findings = replay_run(&run).expect("the run replays against the shipped detection");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.detection().id() == "http-missing-security-headers"),
+            "the replay did not reproduce the finding"
         );
     }
 }

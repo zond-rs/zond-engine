@@ -76,6 +76,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::error;
 
+use crate::detect::compute::DetectionRunRecord;
 use crate::info;
 use crate::journal::settle::{Outcome, Settled, Settlements};
 use crate::model::exclusion::Exclusions;
@@ -472,6 +473,36 @@ impl Responses {
     }
 }
 
+/// The tapes of detection runs, captured as the detection phase produces them and
+/// drained into the journal by the checkpoint task. A plain queue: unlike the
+/// responses, a tape is never looked up by port, only appended once and taken in a
+/// batch.
+#[derive(Debug, Default)]
+pub(crate) struct Tapes {
+    inner: Mutex<Vec<DetectionRunRecord>>,
+}
+
+impl Tapes {
+    /// Records one detection run's tape.
+    pub(crate) fn record(&self, run: DetectionRunRecord) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(run);
+    }
+
+    /// Takes every tape captured since the last call, freeing them as the journal
+    /// writes them down.
+    pub(crate) fn take(&self) -> Vec<DetectionRunRecord> {
+        std::mem::take(
+            &mut self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
 /// Where strategy failures accumulate for the final
 /// [`ScanReport`](crate::scanner::report::ScanReport).
 ///
@@ -578,6 +609,7 @@ pub struct ScanProgress {
     changed: Arc<ChangedHosts>,
     settlements: Arc<Settlements>,
     failures: Arc<FailureLog>,
+    tapes: Arc<Tapes>,
 }
 
 impl ScanProgress {
@@ -593,6 +625,12 @@ impl ScanProgress {
             .into_iter()
             .filter_map(|key| self.store.get(&key).map(|host| host.clone()))
             .collect()
+    }
+
+    /// Takes the detection tapes captured since this was last called, for the
+    /// journal to write down.
+    pub fn take_tapes(&self) -> Vec<DetectionRunRecord> {
+        self.tapes.take()
     }
 
     /// Every host found so far, cloned.
@@ -723,6 +761,9 @@ pub struct ScanContext {
     /// Each open port's gathered responses, kept from the service phase for the
     /// detection phase to hand a passive detection.
     pub(crate) responses: Arc<Responses>,
+    /// The tapes of detection runs, captured for the journal to write down so a
+    /// recorded scan can be replayed offline.
+    pub(crate) tapes: Arc<Tapes>,
 }
 
 impl ScanContext {
@@ -1073,6 +1114,7 @@ impl ScanContext {
             changed: Arc::clone(&self.changed),
             settlements: Arc::clone(&self.settlements),
             failures: Arc::clone(&self.failures),
+            tapes: Arc::clone(&self.tapes),
         }
     }
 
@@ -1214,6 +1256,7 @@ impl ScanSession {
             settlements: Arc::new(Settlements::resuming(settled)),
             positions: Arc::new(positions),
             responses: Arc::new(Responses::default()),
+            tapes: Arc::new(Tapes::default()),
         };
 
         (session, ctx)

@@ -39,7 +39,7 @@ use crate::model::finding::Finding;
 use crate::model::port::Protocol;
 
 use super::capability::{Capabilities, Grant};
-use super::replay::{CapTape, RecordingCapabilities};
+use super::replay::{CapTape, RecordedCapabilities, RecordingCapabilities};
 use super::runtime::ComputeRuntime;
 
 /// A compute detection compiled and ready to run: its [`Manifest`], its compiled
@@ -60,6 +60,19 @@ impl<M> LoadedDetection<M> {
             module,
             content_hash: content_hash.into(),
         }
+    }
+
+    /// The content hash of the detection body, its provenance and the key a
+    /// journalled run is matched back to for replay.
+    pub(crate) fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    /// What the detection declares. Used by tests to find a shipped detection by
+    /// name; the live path matches a run to its detection by content hash instead.
+    #[cfg(test)]
+    pub(crate) fn manifest(&self) -> &Manifest {
+        &self.manifest
     }
 }
 
@@ -129,6 +142,32 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
         record(&grant, recording.into_tape());
     }
     findings
+}
+
+/// Replays one detection over a recorded [`CapTape`], reproducing the findings the
+/// recorded run produced with no network.
+///
+/// Where [`detect_port`] serves a live socket, this serves the tape, so the same
+/// module reads the same bytes and reaches the same verdict offline. It does not
+/// gate on the envelope: the run already happened and passed the gate live, so this
+/// reproduces it rather than deciding again.
+pub(crate) fn replay_over_tape<R: ComputeRuntime>(
+    runtime: &R,
+    detection: &LoadedDetection<R::Module>,
+    ctx: &PortContext,
+    responses: &[&[u8]],
+    tape: CapTape,
+) -> Vec<Finding> {
+    let Some(grant) = Grant::from_manifest(&detection.manifest, &detection.content_hash) else {
+        return Vec::new();
+    };
+    let Ok(mut instance) = runtime.instantiate(&detection.module, &grant) else {
+        return Vec::new();
+    };
+    let mut caps = RecordedCapabilities::from_tape(tape);
+    runtime
+        .run(&mut instance, ctx, responses, &mut caps)
+        .unwrap_or_default()
 }
 
 /// Whether any loaded detection the envelope permits gates onto a port with these
@@ -389,5 +428,37 @@ mod tests {
             Ok(b"# Server".to_vec()),
             "the recorded reply is not what the socket returned"
         );
+    }
+
+    #[test]
+    fn a_recorded_run_replays_an_active_detection_offline() {
+        // The offline replay: an active detection that decides on a socket reply is
+        // reproduced from its tape alone, no network. The recorded reply drives the
+        // finding exactly as the live one did.
+        use crate::detect::compute::SpeakExchange;
+
+        let runtime = RhaiRuntime::new();
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let reply = speak(blob(1, 0x41));
+                if reply.len() > 0 {
+                    [ #{ severity: "high", summary: "the port answered" } ]
+                } else {
+                    []
+                }
+            }
+        "#;
+        let detection = loaded(&runtime, "active", "redis", Class::ActiveBenign, source);
+        let tape = CapTape {
+            speaks: vec![SpeakExchange {
+                sent: vec![0x41],
+                reply: Ok(b"# Server".to_vec()),
+            }],
+            ..Default::default()
+        };
+
+        let findings = replay_over_tape(&runtime, &detection, &ctx(6379), &[], tape);
+        assert_eq!(findings.len(), 1, "the recorded run did not replay");
+        assert_eq!(findings[0].severity(), Severity::High);
     }
 }

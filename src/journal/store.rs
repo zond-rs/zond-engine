@@ -1085,6 +1085,10 @@ pub fn spawn_checkpoints(
                             format!("journal checkpoint failed, so a resume would replay further back than it should: {e}"),
                         );
                     }
+
+                    // Tapes are additive: they settle nothing, so a failed write
+                    // does not disturb the checkpoint and is not folded above.
+                    let _ = journal.record_detections(&ctx.take_tapes());
                 }
                 // A dropped signal is a task nobody joined: there are no phases
                 // to record, and what has been settled so far still is.
@@ -1096,6 +1100,7 @@ pub fn spawn_checkpoints(
         }
 
         let _ = journal.record(&ctx.take_changed_hosts(), ctx.settlements());
+        let _ = journal.record_detections(&ctx.take_tapes());
         let _ = journal.close();
     });
 
@@ -1463,6 +1468,7 @@ mod tests {
             port: 80,
             protocol: "tcp".to_string(),
             detection: DetectionIdRecord::from(&detection),
+            responses: vec!["+PONG\r\n".to_string()],
             tape: CapTapeRecord::from(&tape),
         };
 

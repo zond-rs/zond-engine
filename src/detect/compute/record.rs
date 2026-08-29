@@ -46,6 +46,11 @@ pub struct DetectionRunRecord {
     pub protocol: String,
     /// Which detection ran, to which version, from which bytes.
     pub detection: DetectionIdRecord,
+    /// The responses the scan had already gathered and handed the detection, which
+    /// a passive detection reads instead of speaking. Kept so a replay feeds the
+    /// same input.
+    #[serde(default)]
+    pub responses: Vec<String>,
     /// What it read from its capabilities, kept for replay.
     pub tape: CapTapeRecord,
 }

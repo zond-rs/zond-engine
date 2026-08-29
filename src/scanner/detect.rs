@@ -47,13 +47,14 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::ServiceDetection;
 use crate::detect::DetectionEnvelope;
 use crate::detect::compute::db::ComputeDb;
 use crate::detect::compute::stage as compute_stage;
-use crate::detect::compute::{Capabilities, LiveCapabilities};
+use crate::detect::compute::{CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities};
 use crate::detect::flow::db::FlowDb;
 use crate::detect::flow::{Probe, stage};
 use crate::detect::manifest::CapabilitySpec;
@@ -61,9 +62,10 @@ use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
+use crate::record::{DetectionIdRecord, wire};
 use crate::scanner::pacing::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::scanner::pool::ProbePool;
-use crate::scanner::session::{ScanContext, ScannerKind};
+use crate::scanner::session::{ScanContext, ScannerKind, Tapes};
 
 /// The reply-byte budget a flow that declares none is held to.
 const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
@@ -111,7 +113,15 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
             break;
         }
         pool.admit(detect_one(
-            target, number, protocol, service, responses, flows, modules, envelope,
+            target,
+            number,
+            protocol,
+            service,
+            responses,
+            flows,
+            modules,
+            envelope,
+            Arc::clone(&ctx.tapes),
         ))
         .await;
     }
@@ -163,6 +173,8 @@ fn interested_ports(
 
 /// Runs one port's detections on the blocking pool and returns the findings, or
 /// [`None`] if the port yielded nothing or has no reachable address.
+// Nine inputs: the port's situation, both corpora, the envelope, and the tape sink.
+#[allow(clippy::too_many_arguments)]
 async fn detect_one(
     target: ScopedIp,
     number: u16,
@@ -172,6 +184,7 @@ async fn detect_one(
     flows: &'static FlowDb,
     modules: &'static ComputeDb,
     envelope: DetectionEnvelope,
+    tapes: Arc<Tapes>,
 ) -> Option<(ScopedIp, u16, Protocol, Vec<Finding>)> {
     let addr = target.to_socket_addr(number)?;
 
@@ -189,6 +202,9 @@ async fn detect_one(
 
         // A passive module reads the gathered responses; an active one speaks
         // through a capability bound to this port, budgeted like a flow's probe.
+        // The responses are kept for the run record so a replay feeds the same
+        // input a passive detection read.
+        let record_responses = responses.clone();
         let response_bytes: Vec<Vec<u8>> = responses.into_iter().map(String::into_bytes).collect();
         let response_slices: Vec<&[u8]> = response_bytes.iter().map(Vec::as_slice).collect();
         let port_context = PortContext {
@@ -210,7 +226,16 @@ async fn detect_one(
                         as Box<dyn Capabilities>,
                 )
             },
-            |_, _| {},
+            |grant, tape| {
+                tapes.record(DetectionRunRecord {
+                    host: addr.ip().to_string(),
+                    port: number,
+                    protocol: wire::protocol_name(protocol).to_string(),
+                    detection: DetectionIdRecord::from(&grant.detection),
+                    responses: record_responses.clone(),
+                    tape: CapTapeRecord::from(&tape),
+                });
+            },
         ));
         findings
     })
@@ -413,6 +438,46 @@ mod tests {
             port.findings()
                 .any(|finding| finding.detection().id() == "http-missing-security-headers"),
             "the compute module did not fire over the gathered response"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_detection_run_is_captured_as_a_tape() {
+        // The same run, checked from the other side: the scan captures a tape of
+        // what the detection read, with its subject and the responses it saw, so
+        // the checkpoint task can journal it for an offline replay.
+        let (session, ctx) = ScanSession::new();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        let mut host = Host::new(ip);
+        host.add_port(
+            Port::new(80, Protocol::Tcp, PortState::Open).with_service(Service::new("http", 100)),
+        );
+        session.hosts().insert(ip, host);
+        ctx.record_responses(
+            ScopedIp::from(ip),
+            80,
+            Protocol::Tcp,
+            vec!["HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\n\r\n".to_string()],
+        );
+
+        detect(
+            &ctx,
+            ServiceDetection::default(),
+            DetectionEnvelope::default(),
+        )
+        .await;
+
+        let tapes = ctx.progress().take_tapes();
+        let run = tapes
+            .iter()
+            .find(|run| run.detection.id == "http-missing-security-headers")
+            .expect("the compute detection's run was not captured as a tape");
+        assert_eq!(run.host, "127.0.0.1");
+        assert_eq!(run.port, 80);
+        assert!(
+            !run.responses.is_empty(),
+            "the run did not keep the responses it read"
         );
     }
 
