@@ -41,8 +41,8 @@ use std::time::{Duration, Instant};
 use crate::config::ServiceDetection;
 use crate::detect::DetectionEnvelope;
 use crate::detect::flow::db::FlowDb;
-use crate::detect::flow::schema::Capabilities;
 use crate::detect::flow::{Probe, stage};
+use crate::detect::manifest::CapabilitySpec;
 use crate::model::finding::Finding;
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
@@ -201,7 +201,7 @@ struct SocketProbe {
 }
 
 impl SocketProbe {
-    fn new(addr: SocketAddr, protocol: Protocol, caps: &Capabilities) -> Self {
+    fn new(addr: SocketAddr, protocol: Protocol, caps: &CapabilitySpec) -> Self {
         let millis = caps.max_millis.map_or(DEFAULT_MAX_MILLIS, u64::from);
         Self {
             addr,
@@ -301,7 +301,7 @@ fn udp_exchange(addr: SocketAddr, bytes: &[u8], deadline: Instant, cap: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detect::flow::schema::{Class, Speak};
+    use crate::detect::manifest::{Class, Speak};
     use crate::model::host::Host;
     use crate::model::port::{Port, Service};
     use crate::scanner::session::ScanSession;
@@ -314,8 +314,8 @@ mod tests {
         max_bytes: Option<u32>,
         max_millis: Option<u32>,
         max_connections: Option<u16>,
-    ) -> Capabilities {
-        Capabilities {
+    ) -> CapabilitySpec {
+        CapabilitySpec {
             class: Class::ActiveBenign,
             speak: Some(Speak::Target),
             resolve: false,

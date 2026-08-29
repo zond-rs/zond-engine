@@ -44,7 +44,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use super::expr::{self, ParseError};
-use super::schema::{Class, FindingSpec, FlowDetection, MAX_FLOW_STEPS, MAX_LOOP_ITEMS, Step};
+use super::manifest::Class;
+use super::schema::{FindingSpec, FlowDetection, MAX_FLOW_STEPS, MAX_LOOP_ITEMS, Step};
 
 /// The reserved identity prefix the engine's own detections use; an authored
 /// flow may not claim it, so a third-party flow cannot forge a first-party

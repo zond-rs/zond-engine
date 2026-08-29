@@ -55,12 +55,16 @@ mod pattern;
 
 #[path = "src/detect/flow/expr.rs"]
 mod expr;
-/// The Tier-1 flow-detection trio, shared with the runtime the same way: the
+/// The shared `[detection]` manifest and the Tier-1 flow trio that reads it: the
 /// authoring `schema`, the guard-expression grammar `expr`, and the structural
 /// `validate` that rejects a malformed flow. A flow the build accepts is a flow
-/// the interpreter can run, because both read these files. `validate` names its
-/// siblings `schema` and `expr`, which is why the service schema above is
-/// `signature`: the two must not both be `schema`.
+/// the interpreter can run, because both read these files. `schema` and `validate`
+/// name their siblings — `manifest`, each other, and `expr` — as `super::…`, which
+/// resolves here because every shared file is a crate-root sibling, and in the
+/// library because a re-export puts `manifest` beside them. It is also why the
+/// service schema above is `signature`: the two must not both be `schema`.
+#[path = "src/detect/manifest.rs"]
+mod manifest;
 #[path = "src/detect/flow/schema.rs"]
 mod schema;
 #[path = "src/detect/flow/validate.rs"]
@@ -73,6 +77,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/fingerprint/signature.rs");
     println!("cargo:rerun-if-changed=src/fingerprint/os/signature.rs");
     println!("cargo:rerun-if-changed=assets/detect");
+    println!("cargo:rerun-if-changed=src/detect/manifest.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/schema.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/expr.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/validate.rs");
@@ -256,7 +261,7 @@ fn warn_flow_soft(flow: &schema::FlowDetection, path: &Path) {
 
     if matches!(
         flow.detection.capabilities.class,
-        schema::Class::ActiveMutating | schema::Class::Exploit | schema::Class::Dos
+        manifest::Class::ActiveMutating | manifest::Class::Exploit | manifest::Class::Dos
     ) {
         println!(
             "cargo:warning={file}: '{id}' is class {:?}, which is off by default — it ships \

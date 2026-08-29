@@ -15,24 +15,9 @@
 //! does not: keeping it here leaves `schema` free of any dependency on the model,
 //! which is the discipline that lets `build.rs` share that file.
 
-use crate::model::finding::{
-    DetectionClass, Reference as ModelReference, Severity as ModelSeverity,
-};
+use crate::model::finding::{Reference as ModelReference, Severity as ModelSeverity};
 
-use super::schema::{Class, Reference, Severity};
-
-impl Class {
-    /// The model class this authoring class names.
-    pub fn into_model(self) -> DetectionClass {
-        match self {
-            Class::Passive => DetectionClass::Passive,
-            Class::ActiveBenign => DetectionClass::ActiveBenign,
-            Class::ActiveMutating => DetectionClass::ActiveMutating,
-            Class::Exploit => DetectionClass::Exploit,
-            Class::Dos => DetectionClass::Dos,
-        }
-    }
-}
+use super::schema::{Reference, Severity};
 
 impl Severity {
     /// The model severity this authoring severity names.
@@ -65,7 +50,6 @@ mod tests {
 
     #[test]
     fn the_authoring_enums_map_onto_the_model_vocabulary() {
-        assert_eq!(Class::Exploit.into_model(), DetectionClass::Exploit);
         assert_eq!(Severity::Critical.into_model(), ModelSeverity::Critical);
         assert_eq!(
             Reference::Cwe(79).into_model(),

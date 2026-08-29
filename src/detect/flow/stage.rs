@@ -38,7 +38,7 @@ use crate::record::wire;
 
 use super::Probe;
 use super::db::FlowDb;
-use super::schema::{Capabilities, Class, Rule};
+use crate::detect::manifest::{CapabilitySpec, Class, Rule};
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
 /// recording every finding they produce. `probe_for` supplies the [`Probe`] a
@@ -77,7 +77,7 @@ pub(crate) fn run_flows(
 
 /// The findings `corpus`'s enabled, applicable flows produce for one port with
 /// these facts. `probe_for` is handed the running flow's declared
-/// [`Capabilities`] (its budget) and yields a fresh [`Probe`] bound to the port,
+/// [`CapabilitySpec`] (its budget) and yields a fresh [`Probe`] bound to the port,
 /// or [`None`] to skip that flow. This is the per-port core the live detection
 /// phase drives: it holds no host and does no I/O of its own, so a caller can run
 /// it wherever the socket lives.
@@ -87,7 +87,7 @@ pub(crate) fn detect_port(
     service: Option<&str>,
     number: u16,
     protocol: Protocol,
-    mut probe_for: impl FnMut(&Capabilities) -> Option<Box<dyn Probe>>,
+    mut probe_for: impl FnMut(&CapabilitySpec) -> Option<Box<dyn Probe>>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for flow in corpus.flows() {

@@ -25,9 +25,10 @@
 //! These are *authoring* types — they deserialize from TOML and are deliberately
 //! separate from the [`model`](crate::model) types they map onto, for the reason
 //! [`fingerprint::signature`](crate::fingerprint) is separate from the model: the
-//! model stays serde-free, so a flow's `class`, `severity` and `references` are
-//! parsed here and [converted](Class::into_model) into the model's own vocabulary
-//! when a flow produces a finding.
+//! model stays serde-free, so a flow's `severity` and `references` are parsed here
+//! and converted into the model's own vocabulary when a flow produces a finding.
+//! The `[detection]` manifest a flow shares with the compute tier — its id, gate,
+//! and class — lives in [`manifest`](crate::detect::manifest).
 //!
 //! ## Bounded by construction
 //!
@@ -50,6 +51,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer};
 
+use super::manifest::Manifest;
+
 /// The most steps a flow may have. The whole point of a fixed ceiling is that a
 /// flow's cost is knowable before it runs; the validator rejects a longer one.
 pub const MAX_FLOW_STEPS: usize = 16;
@@ -65,73 +68,6 @@ pub struct FlowDetection {
     pub detection: Manifest,
     #[serde(default)]
     pub step: Vec<Step>,
-}
-
-/// `[detection]` — what the detection *is* and what it *asks to be handed*.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Manifest {
-    /// The author-chosen identity, stamped on every finding this flow produces.
-    pub id: String,
-    /// The version, `major.minor.patch`. A string here; the validator parses it.
-    pub version: String,
-    pub title: String,
-    /// The cheap gate deciding whether this detection runs for a port at all.
-    pub when: Rule,
-    pub capabilities: Capabilities,
-}
-
-/// `[detection.when]` — the rule that gates the whole detection, nmap's portrule.
-/// Every set field ANDs; an empty table means "any port the level offers".
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Rule {
-    #[serde(default)]
-    pub service: Option<String>,
-    #[serde(default)]
-    pub port: Option<u16>,
-    #[serde(default)]
-    pub ports: Vec<u16>,
-    /// `"tcp"` or `"udp"`. Gates which transport serves `speak`.
-    #[serde(default)]
-    pub protocol: Option<String>,
-}
-
-/// `[detection.capabilities]` — what the flow asks to be handed. The class *is*
-/// the capability set an envelope will serve; nothing here self-reports.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Capabilities {
-    pub class: Class,
-    /// The only value today is `target`: exchange bytes with the scanned socket.
-    #[serde(default)]
-    pub speak: Option<Speak>,
-    #[serde(default)]
-    pub resolve: bool,
-    #[serde(default)]
-    pub max_bytes: Option<u32>,
-    #[serde(default)]
-    pub max_millis: Option<u32>,
-    #[serde(default)]
-    pub max_connections: Option<u16>,
-}
-
-/// The intrusiveness a flow declares. Deserializes from the wire names and maps
-/// onto the model's [`DetectionClass`](crate::model::finding::DetectionClass) —
-/// the mapping lives in the runtime `convert` module, so this
-/// schema stays free of the model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Class {
-    Passive,
-    ActiveBenign,
-    ActiveMutating,
-    Exploit,
-    Dos,
-}
-
-/// What a flow may `speak` to. One value for now; the enum is the room to grow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Speak {
-    Target,
 }
 
 /// One `[[step]]` — a straight-line node. There is no jump field; the absence is
@@ -308,6 +244,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::manifest::{Class, Speak};
 
     fn parse(toml: &str) -> FlowDetection {
         toml::from_str(toml).expect("a valid flow parses")
@@ -327,7 +264,11 @@ mod tests {
         let step = &flow.step[0];
         // A TOML `\r\n` is a real carriage-return / line-feed by the time it is here.
         assert_eq!(step.send.as_deref(), Some("INFO\r\n"));
-        assert_eq!(step.expect.len(), 1, "the bare-string shorthand read as one rule");
+        assert_eq!(
+            step.expect.len(),
+            1,
+            "the bare-string shorthand read as one rule"
+        );
         assert!(step.bind.contains_key("version"));
         assert_eq!(step.finding.len(), 1);
 
@@ -339,7 +280,9 @@ mod tests {
 
     #[test]
     fn the_snmp_example_parses_its_bounded_loop() {
-        let flow = parse(include_str!("../../../assets/detect/snmp-default-community.toml"));
+        let flow = parse(include_str!(
+            "../../../assets/detect/snmp-default-community.toml"
+        ));
 
         assert_eq!(flow.detection.when.protocol.as_deref(), Some("udp"));
         let step = &flow.step[0];

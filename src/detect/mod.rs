@@ -32,5 +32,8 @@
 pub mod compute;
 pub mod envelope;
 pub mod flow;
+pub mod manifest;
+
+mod convert;
 
 pub use envelope::DetectionEnvelope;
