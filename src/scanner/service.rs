@@ -66,8 +66,9 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::Connect,
-        |fingerprinted, _audit| {
-            if let Some((ip, port, about_the_host)) = fingerprinted {
+        |fingerprinted: Option<(ScopedIp, Port, Vec<os::OsEvidence>, Vec<String>)>, _audit| {
+            if let Some((ip, port, about_the_host, banners)) = fingerprinted {
+                ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
                 write_back(ctx, ip, port, about_the_host);
             }
         },
@@ -117,10 +118,10 @@ fn fingerprintable_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16, Protocol)> {
     targets
 }
 
-/// Connects to one open port and fingerprints it, returning the upgraded [`Port`]
-/// and whatever the service said about the machine behind it, or `None` if the
-/// connection could not be established (the port keeps whatever the discovery
-/// phase already recorded).
+/// Connects to one open port and fingerprints it, returning the upgraded [`Port`],
+/// whatever the service said about the machine behind it, and the responses it
+/// drew, or `None` if the connection could not be established (the port keeps
+/// whatever the discovery phase already recorded).
 ///
 /// A link-local address with no interface recorded against it yields no socket
 /// address at all, and is skipped with a word about why. Attempting the
@@ -131,7 +132,7 @@ async fn fingerprint_one(
     port_number: u16,
     protocol: Protocol,
     detection: ServiceDetection,
-) -> Option<(ScopedIp, Port, Vec<os::OsEvidence>)> {
+) -> Option<(ScopedIp, Port, Vec<os::OsEvidence>, Vec<String>)> {
     let Some(addr) = target.to_socket_addr(port_number) else {
         warn!(
             verbosity = 1,
@@ -144,7 +145,7 @@ async fn fingerprint_one(
     // refine it over the live exchange.
     let port = crate::fingerprint::baseline_port(port_number, protocol, PortState::Open);
 
-    let (port, about_the_host) = match protocol {
+    let (port, about_the_host, banners) = match protocol {
         Protocol::Tcp => {
             let stream = timeout(CONNECT_PROBE_TIMEOUT, TcpStream::connect(addr))
                 .await
@@ -160,7 +161,7 @@ async fn fingerprint_one(
 
     // The key, not the address: this is what the finding is written back
     // under, and a link-local written back bare would fork the host's record.
-    Some((target, port, about_the_host))
+    Some((target, port, about_the_host, banners))
 }
 
 /// Folds a freshly fingerprinted port back into its host and announces the

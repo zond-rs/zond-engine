@@ -8,12 +8,24 @@
 
 //! # Detection phase
 //!
-//! Runs the Tier-1 [flow](crate::detect::flow) corpus against the open ports a
-//! scan has already found and identified, recording a [`Finding`] wherever a flow
+//! Runs the authored detection corpus — the Tier-1 [flows](crate::detect::flow)
+//! and the Tier-2 [compute modules](crate::detect::compute) — against the open
+//! ports a scan has found and identified, recording a [`Finding`] wherever one
 //! fires. It is the active counterpart to the [CVE correlator](crate::cve): the
 //! correlator reads the service versions the scan gathered and joins them against
-//! known vulnerabilities without touching the target, while this opens a fresh
-//! connection to a port and exchanges bytes to decide.
+//! known vulnerabilities without touching the target, while this runs the corpus
+//! over each port — a flow opening a fresh connection to decide, a module reading
+//! the response the scan already drew or speaking its own.
+//!
+//! ## Compute modules over the same port
+//!
+//! Both tiers run on the blocking pool for each interested port. A compute module
+//! is served through [`LiveCapabilities`] — the same socket-backed budget a flow's
+//! probe enforces — when it *speaks*, and reads the port's gathered responses when
+//! it is *passive*. Those responses are what the [service
+//! phase](crate::scanner::service) drew to name the service and
+//! [kept](crate::scanner::session) for this phase, so a passive module adds no
+//! traffic of its own: it reads what the scan already had.
 //!
 //! ## The socket a flow speaks through
 //!
@@ -40,9 +52,13 @@ use std::time::{Duration, Instant};
 
 use crate::config::ServiceDetection;
 use crate::detect::DetectionEnvelope;
+use crate::detect::compute::db::ComputeDb;
+use crate::detect::compute::stage as compute_stage;
+use crate::detect::compute::{Capabilities, LiveCapabilities};
 use crate::detect::flow::db::FlowDb;
 use crate::detect::flow::{Probe, stage};
 use crate::detect::manifest::CapabilitySpec;
+use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
@@ -61,20 +77,21 @@ const DEFAULT_MAX_MILLIS: u64 = 2000;
 /// sockets an undeclared one opens at the widest a single loop can be.
 const DEFAULT_MAX_CONNECTIONS: u32 = 64;
 
-/// Runs the flow corpus against every open port a flow is interested in,
+/// Runs the corpus against every open port a detection is interested in,
 /// recording the findings it produces.
 ///
-/// Gated on a service pass having run: a flow's `when` selects a port by its
-/// service, so with nothing identified there is nothing to select, and the flow
-/// probes are the same kind of active connection service detection already made.
+/// Gated on a service pass having run: a detection's `when` selects a port by its
+/// service, so with nothing identified there is nothing to select, and the probes
+/// are the same kind of active connection service detection already made.
 /// `envelope` decides which detection classes the operator permits.
 pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: DetectionEnvelope) {
     if detection == ServiceDetection::Off {
         return;
     }
 
-    let corpus = FlowDb::global();
-    let targets = interested_ports(ctx, corpus, envelope);
+    let flows = FlowDb::global();
+    let modules = ComputeDb::global();
+    let targets = interested_ports(ctx, flows, modules, envelope);
     if targets.is_empty() {
         return;
     }
@@ -90,12 +107,12 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         },
     );
 
-    for (target, number, protocol, service) in targets {
+    for (target, number, protocol, service, responses) in targets {
         if ctx.handle.should_stop() {
             break;
         }
         pool.admit(detect_one(
-            target, number, protocol, service, corpus, envelope,
+            target, number, protocol, service, responses, flows, modules, envelope,
         ))
         .await;
     }
@@ -103,16 +120,21 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
     pool.drain().await;
 }
 
-/// Every open `(address, port, protocol, service)` some flow would probe,
-/// snapshotted so the store is not borrowed across the exchanges that follow.
+/// Every open `(address, port, protocol, service, responses)` some detection
+/// would run over, snapshotted so the store is not borrowed across the exchanges
+/// that follow, each carrying the responses the service phase gathered for a
+/// passive module to read.
 ///
-/// Pre-filtered by [`stage::interested`] so a port no flow gates onto costs
-/// nothing here rather than a blocking task that opens no socket.
+/// Pre-filtered by each tier's `interested` so a port no detection gates onto
+/// costs nothing here rather than a blocking task that does nothing. The
+/// responses are *taken* — removed from the context — so they are freed as the
+/// snapshot is built rather than held to the end of the scan.
 fn interested_ports(
     ctx: &ScanContext,
-    corpus: &FlowDb,
+    flows: &FlowDb,
+    modules: &ComputeDb,
     envelope: DetectionEnvelope,
-) -> Vec<(ScopedIp, u16, Protocol, Option<String>)> {
+) -> Vec<(ScopedIp, u16, Protocol, Option<String>, Vec<String>)> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
         let address = host.value().scoped_ip();
@@ -120,44 +142,77 @@ fn interested_ports(
             if port.state() != PortState::Open {
                 continue;
             }
+            let number = port.number();
+            let protocol = port.protocol();
             let service = port.service().map(|service| service.name().to_string());
-            if stage::interested(
-                corpus,
-                &envelope,
-                service.as_deref(),
-                port.number(),
-                port.protocol(),
-            ) {
-                targets.push((address.clone(), port.number(), port.protocol(), service));
+            let wanted = stage::interested(flows, &envelope, service.as_deref(), number, protocol)
+                || compute_stage::interested(
+                    modules.detections(),
+                    &envelope,
+                    service.as_deref(),
+                    number,
+                    protocol,
+                );
+            if wanted {
+                let responses = ctx.take_responses(&address, number, protocol);
+                targets.push((address.clone(), number, protocol, service, responses));
             }
         }
     }
     targets
 }
 
-/// Runs one port's flows on the blocking pool and returns the findings, or
+/// Runs one port's detections on the blocking pool and returns the findings, or
 /// [`None`] if the port yielded nothing or has no reachable address.
 async fn detect_one(
     target: ScopedIp,
     number: u16,
     protocol: Protocol,
     service: Option<String>,
-    corpus: &'static FlowDb,
+    responses: Vec<String>,
+    flows: &'static FlowDb,
+    modules: &'static ComputeDb,
     envelope: DetectionEnvelope,
 ) -> Option<(ScopedIp, u16, Protocol, Vec<Finding>)> {
     let addr = target.to_socket_addr(number)?;
 
-    // The interpreter is synchronous and the socket blocks, so it runs off the
+    // Both tiers are synchronous and hold a blocking socket, so they run off the
     // reactor. `spawn_blocking` fails only if the runtime is shutting down.
     let findings = tokio::task::spawn_blocking(move || {
-        stage::detect_port(
-            corpus,
+        let mut findings = stage::detect_port(
+            flows,
             &envelope,
             service.as_deref(),
             number,
             protocol,
             |caps| Some(Box::new(SocketProbe::new(addr, protocol, caps)) as Box<dyn Probe>),
-        )
+        );
+
+        // A passive module reads the gathered responses; an active one speaks
+        // through a capability bound to this port, budgeted like a flow's probe.
+        let response_bytes: Vec<Vec<u8>> = responses.into_iter().map(String::into_bytes).collect();
+        let response_slices: Vec<&[u8]> = response_bytes.iter().map(Vec::as_slice).collect();
+        let port_context = PortContext {
+            port: number,
+            protocol,
+            addr: Some(addr),
+            tunnel: None,
+        };
+        findings.extend(compute_stage::detect_port(
+            modules.runtime(),
+            modules.detections(),
+            &envelope,
+            service.as_deref(),
+            &port_context,
+            &response_slices,
+            |grant| {
+                Some(
+                    Box::new(LiveCapabilities::new(addr, protocol, &grant.budget))
+                        as Box<dyn Capabilities>,
+                )
+            },
+        ));
+        findings
     })
     .await
     .ok()?;
@@ -305,6 +360,7 @@ mod tests {
     use crate::model::host::Host;
     use crate::model::port::{Port, Service};
     use crate::scanner::session::ScanSession;
+    use std::net::IpAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -323,6 +379,41 @@ mod tests {
             max_millis,
             max_connections,
         }
+    }
+
+    #[tokio::test]
+    async fn detect_runs_a_compute_module_over_the_gathered_response() {
+        let (session, ctx) = ScanSession::new();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        // An open http port, as the service phase would leave it, plus the
+        // response that phase gathered — a page missing every baseline header.
+        let mut host = Host::new(ip);
+        host.add_port(
+            Port::new(80, Protocol::Tcp, PortState::Open).with_service(Service::new("http", 100)),
+        );
+        session.hosts().insert(ip, host);
+        ctx.record_responses(
+            ScopedIp::from(ip),
+            80,
+            Protocol::Tcp,
+            vec!["HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\n\r\n".to_string()],
+        );
+
+        detect(
+            &ctx,
+            ServiceDetection::default(),
+            DetectionEnvelope::default(),
+        )
+        .await;
+
+        let host = session.hosts().get(ip).unwrap();
+        let port = host.ports().find(|port| port.number() == 80).unwrap();
+        assert!(
+            port.findings()
+                .any(|finding| finding.detection().id() == "http-missing-security-headers"),
+            "the compute module did not fire over the gathered response"
+        );
     }
 
     #[tokio::test]

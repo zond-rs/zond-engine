@@ -82,6 +82,7 @@ use crate::model::exclusion::Exclusions;
 use crate::model::host::Host;
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::Positions;
+use crate::model::port::Protocol;
 use crate::model::technique::TcpScanTechnique;
 use crate::scanner::handle::ScanHandle;
 use crate::scanner::report::{Attachment, AttachmentSource, ProbeStats, ScannerFailure};
@@ -438,6 +439,39 @@ impl ProbeStatsLog {
     }
 }
 
+/// Each open port's gathered responses, held from the service phase to the
+/// detection phase for a passive [detection](crate::detect) to read.
+///
+/// The service phase already draws a first-contact banner and any probe replies
+/// to name the service; rather than a later phase redrawing them, they are kept
+/// here, keyed by port, and *taken* by the detection phase — so a response body
+/// is held only across the two adjacent phases and freed as it is read, not
+/// retained through the whole paced scan.
+#[derive(Default)]
+pub(crate) struct Responses {
+    inner: DashMap<(ScopedIp, u16, Protocol), Vec<String>>,
+}
+
+impl Responses {
+    /// Records what the service phase gathered for one port. An empty set is not
+    /// stored: there is nothing for a detection to read, and a passive detection
+    /// over no bytes has nothing to do.
+    fn record(&self, ip: ScopedIp, number: u16, protocol: Protocol, banners: Vec<String>) {
+        if !banners.is_empty() {
+            self.inner.insert((ip, number, protocol), banners);
+        }
+    }
+
+    /// Takes one port's gathered responses, removing them so the memory is freed
+    /// as the detection phase reads it. Empty if the port drew nothing.
+    fn take(&self, ip: &ScopedIp, number: u16, protocol: Protocol) -> Vec<String> {
+        self.inner
+            .remove(&(ip.clone(), number, protocol))
+            .map(|(_, banners)| banners)
+            .unwrap_or_default()
+    }
+}
+
 /// Where strategy failures accumulate for the final
 /// [`ScanReport`](crate::scanner::report::ScanReport).
 ///
@@ -686,9 +720,35 @@ pub struct ScanContext {
     /// advance its watermark over probes nobody sent, so a context that does not
     /// count addresses answers `None` to every address and nothing is recorded.
     pub(crate) positions: Arc<Positions>,
+    /// Each open port's gathered responses, kept from the service phase for the
+    /// detection phase to hand a passive detection.
+    pub(crate) responses: Arc<Responses>,
 }
 
 impl ScanContext {
+    /// Records the responses the service phase gathered for one port, for the
+    /// detection phase to hand a passive detection.
+    pub(crate) fn record_responses(
+        &self,
+        ip: ScopedIp,
+        number: u16,
+        protocol: Protocol,
+        banners: Vec<String>,
+    ) {
+        self.responses.record(ip, number, protocol, banners);
+    }
+
+    /// Takes a port's gathered responses, freeing them as the detection phase
+    /// reads it.
+    pub(crate) fn take_responses(
+        &self,
+        ip: &ScopedIp,
+        number: u16,
+        protocol: Protocol,
+    ) -> Vec<String> {
+        self.responses.take(ip, number, protocol)
+    }
+
     /// The single place a host finding enters the store.
     ///
     /// Upserts the host at `ip`, runs `edit` against it while the store guard is
@@ -1153,6 +1213,7 @@ impl ScanSession {
             changed: Arc::new(ChangedHosts::default()),
             settlements: Arc::new(Settlements::resuming(settled)),
             positions: Arc::new(positions),
+            responses: Arc::new(Responses::default()),
         };
 
         (session, ctx)

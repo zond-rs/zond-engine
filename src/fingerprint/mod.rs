@@ -210,17 +210,21 @@ pub async fn fingerprint_tcp(stream: TcpStream, port: Port, detection: ServiceDe
 /// findings belong to different places: the service belongs to the port, and what
 /// it implies about the operating system belongs to the host. A caller with no
 /// host to file it against should not have to handle it.
+///
+/// The gathered responses are returned as a third value, for a caller that runs a
+/// later detection over them rather than redrawing them; it is empty when nothing
+/// was read.
 pub async fn fingerprint_tcp_detailed(
     stream: TcpStream,
     mut port: Port,
     detection: ServiceDetection,
-) -> (Port, Vec<os::OsEvidence>) {
+) -> (Port, Vec<os::OsEvidence>, Vec<String>) {
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target.
     let addr = stream.peer_addr().ok();
     let (responses, tunnel) = gather(stream, port.number(), detection).await;
     if responses.is_empty() {
-        return (port, Vec::new());
+        return (port, Vec::new(), Vec::new());
     }
 
     // Recorded before the response set is handed off, and independently of what
@@ -232,9 +236,11 @@ pub async fn fingerprint_tcp_detailed(
         port.set_security(tls_summary::security(tls));
     }
 
-    // Analysis runs off the reactor. Keep a last-resort banner label before the
-    // response set is handed to the blocking pool.
+    // Analysis runs off the reactor. Keep a last-resort banner label — and the
+    // gathered responses a later detection may read — before the response set is
+    // handed to the blocking pool.
     let fallback = first_printable(&responses.banners);
+    let banners = responses.banners.clone();
     let mut about_the_host = Vec::new();
     match analyze(port.number(), Protocol::Tcp, addr, responses, tunnel).await {
         Some(verdict) if !verdict.is_empty() => {
@@ -255,7 +261,7 @@ pub async fn fingerprint_tcp_detailed(
         }
     }
 
-    (port, about_the_host)
+    (port, about_the_host, banners)
 }
 
 /// Fingerprints an open **UDP** port, returning the upgraded [`Port`] and
@@ -292,9 +298,10 @@ pub async fn fingerprint_tcp_detailed(
 pub async fn fingerprint_udp_detailed(
     addr: std::net::SocketAddr,
     mut port: Port,
-) -> Option<(Port, Vec<os::OsEvidence>)> {
+) -> Option<(Port, Vec<os::OsEvidence>, Vec<String>)> {
     let text = probe_udp(addr).await?;
     let responses = ResponseSet::from_banners(vec![text]);
+    let banners = responses.banners.clone();
 
     // No tunnel: nothing here carries UDP over TLS. No peer address handed to
     // the analyzers either — an active analyzer dials TCP, and this port's
@@ -312,7 +319,7 @@ pub async fn fingerprint_udp_detailed(
         port.set_service(service);
     }
 
-    Some((port, about_the_host))
+    Some((port, about_the_host, banners))
 }
 
 /// Sends this port's registered probe and reads back whatever text the reply

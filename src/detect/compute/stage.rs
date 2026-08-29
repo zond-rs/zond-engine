@@ -40,6 +40,7 @@ use crate::detect::DetectionEnvelope;
 use crate::detect::manifest::Manifest;
 use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;
+use crate::model::port::Protocol;
 
 use super::capability::{Capabilities, Grant};
 use super::runtime::ComputeRuntime;
@@ -121,6 +122,23 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
         }
     }
     findings
+}
+
+/// Whether any loaded detection the envelope permits gates onto a port with these
+/// facts, so a caller can skip a port no compute detection would run over.
+pub(crate) fn interested<M>(
+    detections: &[LoadedDetection<M>],
+    envelope: &DetectionEnvelope,
+    service: Option<&str>,
+    number: u16,
+    protocol: Protocol,
+) -> bool {
+    detections.iter().any(|detection| {
+        Grant::from_manifest(&detection.manifest, &detection.content_hash).is_some_and(|grant| {
+            envelope.permits(grant.class)
+                && detection.manifest.when.applies(service, number, protocol)
+        })
+    })
 }
 
 #[cfg(test)]

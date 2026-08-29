@@ -722,7 +722,7 @@ async fn ask_for_kernel(
     let addr = target.to_socket_addr(SNMP_PORT)?;
 
     let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);
-    let (port, evidence) = crate::fingerprint::fingerprint_udp_detailed(addr, port).await?;
+    let (port, evidence, _) = crate::fingerprint::fingerprint_udp_detailed(addr, port).await?;
 
     // Recorded with what found it, so a report can tell this port from one the
     // port scan established — and never has to imply it was asked for.
