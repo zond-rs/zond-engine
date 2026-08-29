@@ -43,8 +43,7 @@
 //! A flow's declared `max_bytes`, `max_millis`, and `max_connections` bound the
 //! `SocketProbe` that serves it: it refuses an exchange the budget cannot pay
 //! for, and caps a reply at the bytes left. A flow that declares none falls back
-//! to a default ceiling. What is *not* here yet is provenance — the report does
-//! not yet record which envelope the scan ran under.
+//! to a default ceiling.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
@@ -211,6 +210,7 @@ async fn detect_one(
                         as Box<dyn Capabilities>,
                 )
             },
+            |_, _| {},
         ));
         findings
     })

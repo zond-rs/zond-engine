@@ -68,6 +68,24 @@ pub trait Capabilities: Send {
     fn now(&mut self) -> ScanInstant;
 }
 
+/// A boxed capability set is itself a capability set, forwarding every verb to the
+/// value it holds. This lets the [recording wrapper](super::RecordingCapabilities)
+/// and the detection stage carry a `Box<dyn Capabilities>` without knowing which
+/// concrete set is inside.
+impl Capabilities for Box<dyn Capabilities> {
+    fn speak(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CapError> {
+        (**self).speak(bytes)
+    }
+
+    fn resolve(&mut self, name: &str) -> Result<Vec<IpAddr>, CapError> {
+        (**self).resolve(name)
+    }
+
+    fn now(&mut self) -> ScanInstant {
+        (**self).now()
+    }
+}
+
 /// A scan-relative instant: milliseconds since the scan's clock started.
 ///
 /// A value the engine mints and can write down, deliberately not a

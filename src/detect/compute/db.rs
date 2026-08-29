@@ -25,10 +25,6 @@
 //! panicking a scan — the shipped corpus is proven to compile by a test, so a skip
 //! is a defence, not an expected path.
 
-// The corpus is loaded but not yet run in a scan: the orchestrator that draws on
-// it is a later increment, so for now only the tests exercise this.
-#![allow(dead_code)]
-
 use std::sync::OnceLock;
 
 use tracing::warn;
@@ -175,6 +171,7 @@ mod tests {
                 &http_ctx(),
                 &[response],
                 |_grant| Some(Box::new(NoCaps)),
+                |_, _| {},
             )
         };
 

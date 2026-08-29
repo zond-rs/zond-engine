@@ -30,10 +30,6 @@
 //! turned into a finding, so a reader never mistakes "ran out of fuel" for "found
 //! nothing wrong."
 
-// Wired into a scan by a later increment (the orchestrator that loads the corpus
-// and supplies the live capabilities), so for now only the tests exercise it.
-#![allow(dead_code)]
-
 use tracing::debug;
 
 use crate::detect::DetectionEnvelope;
@@ -43,6 +39,7 @@ use crate::model::finding::Finding;
 use crate::model::port::Protocol;
 
 use super::capability::{Capabilities, Grant};
+use super::replay::{CapTape, RecordingCapabilities};
 use super::runtime::ComputeRuntime;
 
 /// A compute detection compiled and ready to run: its [`Manifest`], its compiled
@@ -74,6 +71,13 @@ impl<M> LoadedDetection<M> {
 /// [`Capabilities`] a detection is served under the grant it will run, or [`None`]
 /// to skip it. A detection the envelope forbids or whose gate does not fit the
 /// port never instantiates.
+///
+/// Every run is recorded, and its [`CapTape`] is handed to `record` once the run
+/// ends, clean or not, so a caller can keep it for a later replay. A caller that
+/// does not want the tapes ignores them.
+// Eight inputs: the whole per-port situation plus both capability seams. Bundling
+// them into a request type is a later cleanup shared with the flow stage.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn detect_port<R: ComputeRuntime>(
     runtime: &R,
     detections: &[LoadedDetection<R::Module>],
@@ -82,6 +86,7 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
     ctx: &PortContext,
     responses: &[&[u8]],
     mut caps_for: impl FnMut(&Grant) -> Option<Box<dyn Capabilities>>,
+    mut record: impl FnMut(&Grant, CapTape),
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for detection in detections {
@@ -108,11 +113,12 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
                 continue;
             }
         };
-        let Some(mut caps) = caps_for(&grant) else {
+        let Some(caps) = caps_for(&grant) else {
             continue;
         };
+        let mut recording = RecordingCapabilities::new(caps);
 
-        match runtime.run(&mut instance, ctx, responses, caps.as_mut()) {
+        match runtime.run(&mut instance, ctx, responses, &mut recording) {
             Ok(produced) => findings.extend(produced),
             Err(outcome) => debug!(
                 detection = grant.detection.id(),
@@ -120,6 +126,7 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
                 "a compute detection ended without a clean result"
             ),
         }
+        record(&grant, recording.into_tape());
     }
     findings
 }
@@ -230,6 +237,7 @@ mod tests {
             &ctx(6379),
             &[],
             |_grant| Some(Box::new(StubCaps)),
+            |_, _| {},
         );
 
         assert_eq!(findings.len(), 1, "only the redis gate fit the port");
@@ -250,6 +258,7 @@ mod tests {
             &ctx(6379),
             &[],
             |_grant| Some(Box::new(StubCaps)),
+            |_, _| {},
         );
         assert!(
             withheld.is_empty(),
@@ -265,6 +274,7 @@ mod tests {
             &ctx(6379),
             &[],
             |_grant| Some(Box::new(StubCaps)),
+            |_, _| {},
         );
         assert_eq!(permitted.len(), 1, "an opted-in exploit did not run");
     }
@@ -299,6 +309,7 @@ mod tests {
             &ctx(6379),
             &[],
             |_grant| Some(Box::new(StubCaps)),
+            |_, _| {},
         );
 
         assert_eq!(findings.len(), 1);
@@ -326,11 +337,57 @@ mod tests {
             &ctx(6379),
             &[],
             |_grant| Some(Box::new(StubCaps)),
+            |_, _| {},
         );
 
         assert!(
             findings.is_empty(),
             "a passive detection reached the network"
+        );
+    }
+
+    #[test]
+    fn a_run_is_recorded_and_its_tape_handed_back() {
+        // An active detection that speaks once. The tape the stage captures must
+        // hold that exchange, so a later replay can reproduce the run.
+        let runtime = RhaiRuntime::new();
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let reply = speak(blob(1, 0x41));
+                if reply.len() > 0 {
+                    [ #{ severity: "high", summary: "the port answered" } ]
+                } else {
+                    []
+                }
+            }
+        "#;
+        let detections = vec![loaded(
+            &runtime,
+            "active",
+            "redis",
+            Class::ActiveBenign,
+            source,
+        )];
+
+        let mut tapes = Vec::new();
+        let findings = detect_port(
+            &runtime,
+            &detections,
+            &DetectionEnvelope::default(),
+            Some("redis"),
+            &ctx(6379),
+            &[],
+            |_grant| Some(Box::new(StubCaps)),
+            |_grant, tape| tapes.push(tape),
+        );
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(tapes.len(), 1, "the run's tape was not handed back");
+        assert_eq!(tapes[0].speaks.len(), 1, "the speak was not recorded");
+        assert_eq!(
+            tapes[0].speaks[0].reply,
+            Ok(b"# Server".to_vec()),
+            "the recorded reply is not what the socket returned"
         );
     }
 }

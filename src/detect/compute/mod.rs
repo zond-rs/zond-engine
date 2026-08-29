@@ -51,6 +51,7 @@ mod budget;
 mod capability;
 pub(crate) mod db;
 mod live;
+mod replay;
 mod rhai;
 mod runtime;
 mod schema;
@@ -64,6 +65,9 @@ pub(crate) use super::manifest;
 pub use budget::{Budget, BudgetTrap, Denial, ModuleFault, RunOutcome};
 pub use capability::{CapError, Capabilities, Capability, Grant, ScanInstant};
 pub use live::LiveCapabilities;
+pub use replay::{
+    CapTape, RecordedCapabilities, RecordingCapabilities, ResolveExchange, SpeakExchange,
+};
 pub use rhai::RhaiRuntime;
 pub use runtime::{ComputeRuntime, LoadError, ModuleBody};
 pub use stage::LoadedDetection;
