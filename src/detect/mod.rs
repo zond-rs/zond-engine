@@ -32,6 +32,7 @@
 pub mod compute;
 pub mod envelope;
 pub mod flow;
+pub mod host;
 pub mod manifest;
 
 mod convert;
