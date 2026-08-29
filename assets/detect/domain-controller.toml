@@ -1,0 +1,17 @@
+# A host-level detection. It concludes something no single port can: Kerberos,
+# LDAP, and SMB open together are a domain controller, where each port on its own
+# is just a service. The [detection.host] gate is what marks this a host detection
+# rather than a per-port flow or module.
+
+[detection]
+id      = "domain-controller"
+version = "1.0.0"
+title   = "Windows domain controller"
+
+[detection.host]
+ports_open = [88, 389, 445]
+
+[[finding]]
+severity = "info"
+summary  = "Kerberos, LDAP and SMB are open together, the signature of a domain controller"
+detail   = "Ports 88 (Kerberos), 389 (LDAP) and 445 (SMB) all answer, the set a domain controller presents together."

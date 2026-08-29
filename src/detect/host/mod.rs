@@ -25,10 +25,7 @@
 //! with 80 open is not a web server there. A host detection is the opposite reading:
 //! a finding drawn precisely from which ports a host presents together.
 
-// Wired into a scan by the next increment (the build-time corpus and the host
-// detection pass), so for now only the tests exercise it.
-#![allow(dead_code)]
-
 mod convert;
+pub(crate) mod db;
 pub(crate) mod schema;
 pub(crate) mod stage;

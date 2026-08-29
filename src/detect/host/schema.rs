@@ -14,6 +14,12 @@
 //! corpus with the same types the runtime reads; the lowering to the model's own
 //! vocabulary lives in [`convert`](super::convert).
 
+// `build.rs` compiles this file to validate the host corpus, and its checks read
+// only a subset of these fields and never the runtime `matches`. Within the library
+// every item is used; the unread-item lint fires only in the build-script crate, so
+// it is silenced here rather than item by item.
+#![allow(dead_code)]
+
 use std::collections::BTreeSet;
 
 use serde::Deserialize;

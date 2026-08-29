@@ -45,6 +45,7 @@
 //! for, and caps a reply at the bytes left. A flow that declares none falls back
 //! to a default ceiling.
 
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
@@ -57,6 +58,8 @@ use crate::detect::compute::stage as compute_stage;
 use crate::detect::compute::{CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities};
 use crate::detect::flow::db::FlowDb;
 use crate::detect::flow::{Probe, stage};
+use crate::detect::host::db::HostDb;
+use crate::detect::host::stage as host_stage;
 use crate::detect::manifest::CapabilitySpec;
 use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;
@@ -92,6 +95,12 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
 
     let flows = FlowDb::global();
     let modules = ComputeDb::global();
+
+    // Host-level detections correlate a host's ports into a Host finding. They read
+    // only what the service phase already found, so they run independently of the
+    // per-port pass below.
+    detect_hosts(ctx);
+
     let targets = interested_ports(ctx, flows, modules, envelope);
     if targets.is_empty() {
         return;
@@ -258,6 +267,48 @@ fn record(
             host.add_port_finding(number, protocol, finding);
         }
     });
+}
+
+/// Runs the host-level detections over every host the scan found, drawing a Host
+/// finding wherever a host's open ports and identified services fit a detection's
+/// gate. It reads what the earlier phases recorded and sends nothing.
+fn detect_hosts(ctx: &ScanContext) {
+    let host_db = HostDb::global();
+    if host_db.detections().is_empty() {
+        return;
+    }
+
+    // Snapshot each host's open ports and service names first, so the store is not
+    // borrowed while the findings are written back.
+    let mut per_host: Vec<(ScopedIp, BTreeSet<u16>, Vec<String>)> = Vec::new();
+    for host in ctx.store.iter() {
+        let mut open_ports = BTreeSet::new();
+        let mut services = Vec::new();
+        for port in host.value().ports() {
+            if port.state() == PortState::Open {
+                open_ports.insert(port.number());
+                if let Some(service) = port.service() {
+                    services.push(service.name().to_string());
+                }
+            }
+        }
+        if !open_ports.is_empty() {
+            per_host.push((host.value().scoped_ip(), open_ports, services));
+        }
+    }
+
+    for (key, open_ports, service_names) in per_host {
+        let services: BTreeSet<&str> = service_names.iter().map(String::as_str).collect();
+        let findings = host_stage::detect_host(host_db.detections(), &open_ports, &services);
+        if findings.is_empty() {
+            continue;
+        }
+        ctx.update_host(key, |host| {
+            for finding in findings {
+                host.add_finding(finding);
+            }
+        });
+    }
 }
 
 /// A blocking [`Probe`] over a fresh connection to one scanned port, holding the
@@ -478,6 +529,34 @@ mod tests {
         assert!(
             !run.responses.is_empty(),
             "the run did not keep the responses it read"
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_draws_a_host_finding_for_a_domain_controller() {
+        // Kerberos, LDAP and SMB open together: the shipped host detection concludes
+        // a domain controller, a finding no single port makes.
+        let (session, ctx) = ScanSession::new();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        let mut host = Host::new(ip);
+        for number in [88u16, 389, 445] {
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::Open));
+        }
+        session.hosts().insert(ip, host);
+
+        detect(
+            &ctx,
+            ServiceDetection::default(),
+            DetectionEnvelope::default(),
+        )
+        .await;
+
+        let host = session.hosts().get(ip).unwrap();
+        assert!(
+            host.findings()
+                .any(|finding| finding.detection().id() == "domain-controller"),
+            "the domain-controller host finding was not drawn"
         );
     }
 

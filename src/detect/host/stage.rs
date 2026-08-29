@@ -40,6 +40,13 @@ impl LoadedHostDetection {
             content_hash: content_hash.into(),
         }
     }
+
+    /// The detection's author-chosen id. Used by tests to find a shipped detection;
+    /// the scan path reads the id through the finding's provenance instead.
+    #[cfg(test)]
+    pub(crate) fn id(&self) -> &str {
+        &self.detection.detection.id
+    }
 }
 
 /// Runs the host detections over one host, returning the findings whose gate fit.

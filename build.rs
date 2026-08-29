@@ -75,6 +75,8 @@ mod manifest;
 mod schema;
 #[path = "src/detect/flow/validate.rs"]
 mod validate;
+#[path = "src/detect/host/schema.rs"]
+mod host_schema;
 
 use signature::{MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, ServiceDefinition, unescape};
 
@@ -142,13 +144,16 @@ fn compile_detections(out_dir: &Path) {
     let mut ids = BTreeSet::new();
     let mut flows: Vec<(String, String)> = Vec::new();
     let mut modules: Vec<(String, String)> = Vec::new();
+    let mut hosts: Vec<(String, String)> = Vec::new();
     for path in &toml_files {
         let content = fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
         let value: toml::Value = toml::from_str(&content)
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
 
-        if value.get("compute").is_some() {
+        if value.get("detection").and_then(|d| d.get("host")).is_some() {
+            compile_host(path, &content, &mut ids, &mut hosts);
+        } else if value.get("compute").is_some() {
             compile_module(path, &content, &mut ids, &mut modules);
         } else {
             compile_flow(path, &content, &mut ids, &mut flows);
@@ -157,6 +162,7 @@ fn compile_detections(out_dir: &Path) {
 
     write_database(&out_dir.join("detect_flows.bin"), &flows, "flow");
     write_database(&out_dir.join("detect_modules.bin"), &modules, "module");
+    write_database(&out_dir.join("detect_host.bin"), &hosts, "host");
 }
 
 /// Validates one Tier-1 flow through the shared [`validate`] plus the rules that
@@ -298,6 +304,59 @@ fn resolve_module_source(compute: &compute_schema::ComputeSection, path: &Path) 
 }
 
 /// Serialises `entries` to `bincode` and writes them to `dest`.
+/// Validates one host-level detection and appends its source and content hash. A
+/// host detection is embedded as text, like a flow, and re-parsed at runtime.
+fn compile_host(
+    path: &Path,
+    content: &str,
+    ids: &mut BTreeSet<String>,
+    hosts: &mut Vec<(String, String)>,
+) {
+    let detection: host_schema::HostDetection = toml::from_str(content)
+        .unwrap_or_else(|e| panic!("{}: not a valid host detection: {e}", path.display()));
+
+    validate_host(&detection, path);
+    claim_id(ids, &detection.detection.id, path);
+
+    hosts.push((sha256_hex(content.as_bytes()), content.to_string()));
+}
+
+/// The rules a host detection must satisfy before it ships: a non-empty,
+/// non-reserved id, a parseable version, a gate that names at least one port or
+/// service, and at least one finding. An empty gate would fire on every host and a
+/// detection that draws no finding can conclude nothing, so both fail the build.
+fn validate_host(detection: &host_schema::HostDetection, path: &Path) {
+    let file = path.display();
+    let manifest = &detection.detection;
+    if manifest.id.trim().is_empty() {
+        panic!("{file}: a detection needs a non-empty id");
+    }
+    if manifest.id.starts_with("zond:") {
+        panic!(
+            "{file}: '{}' claims the reserved 'zond:' id namespace",
+            manifest.id
+        );
+    }
+    if !is_version_triple(&manifest.version) {
+        panic!(
+            "{file}: '{}' has version '{}', which is not major.minor.patch",
+            manifest.id, manifest.version
+        );
+    }
+    if manifest.host.ports_open.is_empty() && manifest.host.services.is_empty() {
+        panic!(
+            "{file}: '{}' has an empty host gate, which would fire on every host",
+            manifest.id
+        );
+    }
+    if detection.finding.is_empty() {
+        panic!(
+            "{file}: '{}' draws no finding, so it can conclude nothing",
+            manifest.id
+        );
+    }
+}
+
 fn write_database(dest: &Path, entries: &[(String, String)], kind: &str) {
     let encoded = bincode::serialize(entries)
         .unwrap_or_else(|e| panic!("failed to serialize the {kind} database: {e}"));
