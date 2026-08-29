@@ -53,6 +53,12 @@ mod os_schema;
 #[path = "src/fingerprint/pattern.rs"]
 mod pattern;
 
+/// The Tier-2 compute-detection schema, shared the same way: the build reads a
+/// `[compute]` file to validate its structure and resolve a body reference before
+/// embedding. It names the shared manifest as `super::manifest`, which resolves
+/// here as a crate-root sibling.
+#[path = "src/detect/compute/schema.rs"]
+mod compute_schema;
 #[path = "src/detect/flow/expr.rs"]
 mod expr;
 /// The shared `[detection]` manifest and the Tier-1 flow trio that reads it: the
@@ -81,6 +87,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/detect/flow/schema.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/expr.rs");
     println!("cargo:rerun-if-changed=src/detect/flow/validate.rs");
+    println!("cargo:rerun-if-changed=src/detect/compute/schema.rs");
 
     let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest_path = Path::new(&out_dir).join("fingerprints.bin");
@@ -108,68 +115,193 @@ fn main() {
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
 
     compile_os_rules(Path::new(&out_dir));
-    compile_flows(Path::new(&out_dir));
+    compile_detections(Path::new(&out_dir));
 }
 
-/// Validates the Tier-1 flow corpus in `assets/detect` and compiles it into the
-/// `bincode` blob the engine embeds, failing the build on any ill-formed
-/// detection with a pointer to its file.
+/// Validates the detection corpus in `assets/detect` and compiles each tier into
+/// the `bincode` blob the engine embeds, failing the build on any ill-formed
+/// detection with a pointer to its file. A file's body section decides its tier:
+/// `[[step]]` is a Tier-1 [flow](compile_flow), `[compute]` a Tier-2
+/// [module](compile_module).
 ///
-/// The structural rules run through the shared [`validate`] — the same code a
-/// flow loaded at runtime would face — and the rules that need the pattern engine
-/// or the payload unescaper run here, where the build has them: that every
-/// `expect`/`bind` pattern compiles and its capture group exists, and that a
-/// declared byte budget covers what the flow must send.
-///
-/// What is emitted is each flow's **source and its content hash**, not a
-/// serialized [`schema::FlowDetection`]. The runtime re-parses the source it
-/// validated (so the build and the runtime read one text), and hashing the file
-/// bytes is exactly the provenance the finding records — the answer to "which
-/// detection body fired". Embedding the parsed form would demand a `bincode`
-/// spelling of the `untagged` match rule, which the format cannot round-trip.
-fn compile_flows(out_dir: &Path) {
+/// What is emitted for a flow is its **source and content hash**, the same text
+/// the runtime re-parses — embedding the parsed form would demand a `bincode`
+/// spelling of the `untagged` match rule, which the format cannot round-trip. For
+/// a module, its manifest and body **normalised to the inline form**, with the
+/// hash taken over the body: a module has no `untagged` rule, so it is embedded as
+/// text with any file reference resolved away, and the hash is the provenance a
+/// finding records.
+fn compile_detections(out_dir: &Path) {
     let mut toml_files = Vec::new();
     collect_toml_files(Path::new("assets/detect"), &mut toml_files);
     // Sort for a deterministic, reproducible artifact.
     toml_files.sort();
 
+    // An id is a provenance claim and must be unique across the whole corpus, both
+    // tiers together: two findings that named one id could not be told apart.
     let mut ids = BTreeSet::new();
-    let mut compiled: Vec<(String, String)> = Vec::with_capacity(toml_files.len());
+    let mut flows: Vec<(String, String)> = Vec::new();
+    let mut modules: Vec<(String, String)> = Vec::new();
     for path in &toml_files {
         let content = fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-        let flow: schema::FlowDetection = toml::from_str(&content)
+        let value: toml::Value = toml::from_str(&content)
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
 
-        let errors = validate::check(&flow);
-        if !errors.is_empty() {
-            let mut message = format!("{}: this flow detection is ill-formed:", path.display());
-            for error in &errors {
-                message.push_str(&format!("\n  - the detection {error}"));
-            }
-            panic!("{message}");
+        if value.get("compute").is_some() {
+            compile_module(path, &content, &mut ids, &mut modules);
+        } else {
+            compile_flow(path, &content, &mut ids, &mut flows);
         }
-
-        // A detection id is a provenance claim, so it must be unique across the
-        // corpus — two findings that name the same id could not be told apart.
-        if !ids.insert(flow.detection.id.clone()) {
-            panic!(
-                "{}: detection id '{}' is already used by another flow",
-                path.display(),
-                flow.detection.id
-            );
-        }
-
-        validate_flow_patterns(&flow, path);
-        validate_flow_budget(&flow, path);
-        warn_flow_soft(&flow, path);
-
-        compiled.push((sha256_hex(content.as_bytes()), content));
     }
 
-    let encoded = bincode::serialize(&compiled).expect("failed to serialize the flow database");
-    fs::write(out_dir.join("detect_flows.bin"), encoded)
-        .expect("failed to write the flow database");
+    write_database(&out_dir.join("detect_flows.bin"), &flows, "flow");
+    write_database(&out_dir.join("detect_modules.bin"), &modules, "module");
+}
+
+/// Validates one Tier-1 flow through the shared [`validate`] plus the rules that
+/// need the pattern engine, and appends its source and content hash.
+fn compile_flow(
+    path: &Path,
+    content: &str,
+    ids: &mut BTreeSet<String>,
+    flows: &mut Vec<(String, String)>,
+) {
+    let flow: schema::FlowDetection = toml::from_str(content)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
+
+    let errors = validate::check(&flow);
+    if !errors.is_empty() {
+        let mut message = format!("{}: this flow detection is ill-formed:", path.display());
+        for error in &errors {
+            message.push_str(&format!("\n  - the detection {error}"));
+        }
+        panic!("{message}");
+    }
+    claim_id(ids, &flow.detection.id, path);
+
+    validate_flow_patterns(&flow, path);
+    validate_flow_budget(&flow, path);
+    warn_flow_soft(&flow, path);
+
+    flows.push((sha256_hex(content.as_bytes()), content.to_string()));
+}
+
+/// Validates one Tier-2 module, resolves its body to inline source, and appends
+/// the normalised detection with the content hash of that source.
+fn compile_module(
+    path: &Path,
+    content: &str,
+    ids: &mut BTreeSet<String>,
+    modules: &mut Vec<(String, String)>,
+) {
+    let detection: compute_schema::ComputeDetection = toml::from_str(content)
+        .unwrap_or_else(|e| panic!("{}: not a valid compute detection: {e}", path.display()));
+
+    validate_module(&detection, path);
+    claim_id(ids, &detection.detection.id, path);
+
+    let source = resolve_module_source(&detection.compute, path);
+
+    // Normalise to the inline form so the runtime never sees a file reference; the
+    // toml serializer escapes the source, so there is no hand-rolled quoting to
+    // get wrong.
+    let mut value: toml::Value = toml::from_str(content)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
+    let compute = value
+        .get_mut("compute")
+        .and_then(toml::Value::as_table_mut)
+        .expect("the compute section is a table");
+    compute.insert("source".to_string(), toml::Value::String(source.clone()));
+    compute.remove("body");
+
+    let normalised = toml::to_string(&value)
+        .unwrap_or_else(|e| panic!("failed to re-serialize {}: {e}", path.display()));
+    modules.push((sha256_hex(source.as_bytes()), normalised));
+}
+
+/// Records a detection id, failing the build if the corpus already used it.
+fn claim_id(ids: &mut BTreeSet<String>, id: &str, path: &Path) {
+    if !ids.insert(id.to_string()) {
+        panic!(
+            "{}: detection id '{id}' is already used by another detection",
+            path.display()
+        );
+    }
+}
+
+/// The structural rules a compute detection must satisfy before it ships: a
+/// non-empty, non-reserved id, a parseable version, and exactly one of an inline
+/// `source` or a `body` file. The body's code is compiled at load, not here — that
+/// is the tier's contract — so what the build proves is the shape, not the logic.
+fn validate_module(detection: &compute_schema::ComputeDetection, path: &Path) {
+    let file = path.display();
+    let manifest = &detection.detection;
+    if manifest.id.trim().is_empty() {
+        panic!("{file}: a detection needs a non-empty id");
+    }
+    if manifest.id.starts_with("zond:") {
+        panic!(
+            "{file}: '{}' claims the reserved 'zond:' id namespace",
+            manifest.id
+        );
+    }
+    if !is_version_triple(&manifest.version) {
+        panic!(
+            "{file}: '{}' has version '{}', which is not major.minor.patch",
+            manifest.id, manifest.version
+        );
+    }
+    match (&detection.compute.source, &detection.compute.body) {
+        (Some(_), Some(_)) => panic!(
+            "{file}: '{}' sets both an inline source and a body file; use exactly one",
+            manifest.id
+        ),
+        (None, None) => panic!(
+            "{file}: '{}' sets neither an inline source nor a body file",
+            manifest.id
+        ),
+        _ => {}
+    }
+}
+
+/// Whether `version` is three dot-separated unsigned 16-bit integers, the range
+/// the runtime's version type parses.
+fn is_version_triple(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let component = |part: Option<&str>| part.is_some_and(|s| s.parse::<u16>().is_ok());
+    component(parts.next())
+        && component(parts.next())
+        && component(parts.next())
+        && parts.next().is_none()
+}
+
+/// The inline source of a module, reading its `body` file when it names one,
+/// resolved beside the manifest so a detection is one directory entry plus, at
+/// most, its body.
+fn resolve_module_source(compute: &compute_schema::ComputeSection, path: &Path) -> String {
+    if let Some(source) = &compute.source {
+        return source.clone();
+    }
+    let body = compute
+        .body
+        .as_deref()
+        .expect("a module validated to have a source or a body");
+    let body_path = path.parent().unwrap_or_else(|| Path::new(".")).join(body);
+    fs::read_to_string(&body_path).unwrap_or_else(|e| {
+        panic!(
+            "{}: cannot read its body file {}: {e}",
+            path.display(),
+            body_path.display()
+        )
+    })
+}
+
+/// Serialises `entries` to `bincode` and writes them to `dest`.
+fn write_database(dest: &Path, entries: &[(String, String)], kind: &str) {
+    let encoded = bincode::serialize(entries)
+        .unwrap_or_else(|e| panic!("failed to serialize the {kind} database: {e}"));
+    fs::write(dest, encoded).unwrap_or_else(|e| panic!("failed to write the {kind} database: {e}"));
 }
 
 /// The lowercase hex SHA-256 of `bytes` — a detection body's content address, the

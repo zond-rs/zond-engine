@@ -1,0 +1,21 @@
+# A Tier-2 compute detection. The [detection] table is the same manifest a flow
+# carries; the [compute] section is what makes it a module. The body is large
+# enough to want its own file, so it is referenced rather than inlined — the build
+# resolves the reference and the runtime only ever sees the resolved source.
+
+[detection]
+id      = "http-missing-security-headers"
+version = "1.0.0"
+title   = "Missing HTTP security headers"
+
+[detection.when]
+service = "http"
+
+[detection.capabilities]
+# Reads only the response the scan already gathered, so it touches the network in
+# no new way and needs no speak.
+class = "passive"
+
+[compute]
+language = "rhai"
+body     = "http-missing-security-headers.rhai"

@@ -29,7 +29,7 @@
 //! These deserialize from TOML and are deliberately separate from the
 //! [`model`](crate::model) types they map onto, for the reason the fingerprint
 //! signature schema is: the model stays serde-free, so a detection's `class` is
-//! parsed here and [converted](super::convert) into the model's own vocabulary
+//! parsed here and [converted](Class::into_model) into the model's own vocabulary
 //! when a detection produces a finding. Keeping this file free of any dependency
 //! on the rest of the crate is also what lets `build.rs` share it, and validate
 //! the corpus with the very types the runtime deserializes.
@@ -98,8 +98,8 @@ pub struct CapabilitySpec {
 
 /// The intrusiveness a detection declares. Deserializes from the wire names and
 /// maps onto the model's [`DetectionClass`](crate::model::finding::DetectionClass)
-/// — the mapping lives in the runtime [`convert`](super::convert) module, so this
-/// stays free of the model.
+/// through [`into_model`](Self::into_model) in the runtime `convert` module, so
+/// this stays free of the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Class {

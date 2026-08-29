@@ -49,10 +49,17 @@
 
 mod budget;
 mod capability;
+pub(crate) mod db;
 mod live;
 mod rhai;
 mod runtime;
+mod schema;
 pub(crate) mod stage;
+
+// Re-exported so the build-shared `schema` can name the shared manifest as
+// `super::manifest` in both the library, where it lives one level up in `detect`,
+// and `build.rs`, where every shared file is a crate-root sibling.
+pub(crate) use super::manifest;
 
 pub use budget::{Budget, BudgetTrap, Denial, ModuleFault, RunOutcome};
 pub use capability::{CapError, Capabilities, Capability, Grant, ScanInstant};

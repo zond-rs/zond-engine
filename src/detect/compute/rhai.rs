@@ -202,6 +202,14 @@ impl ComputeRuntime for RhaiRuntime {
         engine.set_max_map_size(grant.budget.max_memory);
         engine.set_max_call_levels(MAX_CALL_LEVELS);
 
+        // A pure utility, always available and not a capability: decode bytes as
+        // text so a detection can do string work on a response. Latin-1, so every
+        // byte is its own code point and a binary reply is not mangled by a lossy
+        // conversion — the same decoding a flow's matcher reads a reply through.
+        engine.register_fn("text", |bytes: Blob| -> String {
+            bytes.iter().map(|&byte| byte as char).collect()
+        });
+
         // The class becomes the served set here: only the granted verbs are
         // registered, so an ungranted one is not refused but absent. `now` is
         // always available — an injected clock touches nothing.
