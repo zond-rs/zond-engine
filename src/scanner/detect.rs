@@ -117,16 +117,12 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         },
     );
 
-    for (target, number, protocol, service, responses) in targets {
+    for target in targets {
         if ctx.handle.should_stop() {
             break;
         }
         pool.admit(detect_one(
             target,
-            number,
-            protocol,
-            service,
-            responses,
             flows,
             modules,
             envelope,
@@ -138,21 +134,30 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
     pool.drain().await;
 }
 
-/// Every open `(address, port, protocol, service, responses)` some detection
-/// would run over, snapshotted so the store is not borrowed across the exchanges
-/// that follow, each carrying the responses the service phase gathered for a
-/// passive module to read.
+/// One open port a detection would run over, lifted out of the store so the
+/// exchanges that follow do not hold its lock. It carries the responses the service
+/// phase gathered for a passive module to read.
+struct PortTarget {
+    address: ScopedIp,
+    number: u16,
+    protocol: Protocol,
+    service: Option<String>,
+    responses: Vec<String>,
+}
+
+/// Every open port some detection would run over, snapshotted so the store is not
+/// borrowed across the exchanges that follow.
 ///
 /// Pre-filtered by each tier's `interested` so a port no detection gates onto
-/// costs nothing here rather than a blocking task that does nothing. The
-/// responses are *taken* — removed from the context — so they are freed as the
-/// snapshot is built rather than held to the end of the scan.
+/// costs nothing here rather than a blocking task that does nothing. The responses
+/// are *taken* from the context, so they are freed as the snapshot is built rather
+/// than held to the end of the scan.
 fn interested_ports(
     ctx: &ScanContext,
     flows: &FlowDb,
     modules: &ComputeDb,
     envelope: DetectionEnvelope,
-) -> Vec<(ScopedIp, u16, Protocol, Option<String>, Vec<String>)> {
+) -> Vec<PortTarget> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
         let address = host.value().scoped_ip();
@@ -173,7 +178,13 @@ fn interested_ports(
                 );
             if wanted {
                 let responses = ctx.take_responses(&address, number, protocol);
-                targets.push((address.clone(), number, protocol, service, responses));
+                targets.push(PortTarget {
+                    address: address.clone(),
+                    number,
+                    protocol,
+                    service,
+                    responses,
+                });
             }
         }
     }
@@ -182,20 +193,21 @@ fn interested_ports(
 
 /// Runs one port's detections on the blocking pool and returns the findings, or
 /// [`None`] if the port yielded nothing or has no reachable address.
-// Nine inputs: the port's situation, both corpora, the envelope, and the tape sink.
-#[allow(clippy::too_many_arguments)]
 async fn detect_one(
-    target: ScopedIp,
-    number: u16,
-    protocol: Protocol,
-    service: Option<String>,
-    responses: Vec<String>,
+    target: PortTarget,
     flows: &'static FlowDb,
     modules: &'static ComputeDb,
     envelope: DetectionEnvelope,
     tapes: Arc<Tapes>,
 ) -> Option<(ScopedIp, u16, Protocol, Vec<Finding>)> {
-    let addr = target.to_socket_addr(number)?;
+    let PortTarget {
+        address,
+        number,
+        protocol,
+        service,
+        responses,
+    } = target;
+    let addr = address.to_socket_addr(number)?;
 
     // Both tiers are synchronous and hold a blocking socket, so they run off the
     // reactor. `spawn_blocking` fails only if the runtime is shutting down.
@@ -251,7 +263,7 @@ async fn detect_one(
     .await
     .ok()?;
 
-    (!findings.is_empty()).then_some((target, number, protocol, findings))
+    (!findings.is_empty()).then_some((address, number, protocol, findings))
 }
 
 /// Folds one port's findings back into its host.
