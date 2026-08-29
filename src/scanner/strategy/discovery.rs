@@ -8,7 +8,7 @@
 
 //! # Discovery Response Protocols
 //!
-//! [`LocalScanner`](super::LocalScanner) sends more than one kind of probe onto
+//! [`LocalScanner`](super::local::LocalScanner) sends more than one kind of probe onto
 //! the wire and has to recognize more than one kind of reply. Rather than
 //! growing a single function that understands every wire format, each format is
 //! its own [`DiscoveryProtocol`] implementation, and the scanner tries each one
@@ -63,7 +63,7 @@ pub enum ProtocolMatch {
     ///
     /// The sender is asked directly afterwards, which is what turns an
     /// overheard neighbour into a measured one. See
-    /// [`LocalScanner::confirm`](super::LocalScanner::confirm).
+    /// `LocalScanner::confirm`.
     Unsolicited,
     /// A reply to the all-nodes echo request, carrying the identifier and
     /// sequence number it echoed back.
@@ -81,8 +81,8 @@ pub enum ProtocolMatch {
 /// Everything one frame turned out to say.
 ///
 /// Two questions, kept apart because they have different answers and different
-/// consequences. [`matched`](Self::matched) is what the frame does to the scan's
-/// ledger of outstanding probes; [`declared`](Self::declared) is what its sender
+/// consequences. [`matched`](field@Reading::matched) is what the frame does to the scan's
+/// ledger of outstanding probes; [`declared`](field@Reading::declared) is what its sender
 /// said about *itself* in the same message, which no probe was outstanding for
 /// and which no round trip depends on.
 ///
@@ -126,7 +126,7 @@ impl Reading {
 
 /// A wire-level protocol capable of recognizing discovery responses.
 ///
-/// [`LocalScanner`](super::LocalScanner) tries each configured protocol against
+/// [`LocalScanner`](super::local::LocalScanner) tries each configured protocol against
 /// every received frame in turn, and the first one to claim a frame decides what
 /// kind of answer it is. The scanner has already identified the frame's source
 /// address and ruled out obvious noise (packets from itself, addresses outside
@@ -283,7 +283,7 @@ fn is_assignable(address: std::net::Ipv6Addr) -> bool {
 /// advertise themselves unprompted every few minutes, and the sweep's capture is
 /// promiscuous, so an advertisement that crosses the segment while a scan is
 /// running arrives here for free. A sweep also asks for one outright — see
-/// [`LocalScanner`](super::LocalScanner) — because the unprompted timer is
+/// [`LocalScanner`](super::local::LocalScanner) — because the unprompted timer is
 /// measured in minutes and a sweep is measured in seconds.
 ///
 /// Claimed as [`Unsolicited`](ProtocolMatch::Unsolicited), and filed under the
@@ -320,7 +320,7 @@ impl DiscoveryProtocol for RouterAdvertProtocol {
 /// The counterpart of [`RouterAdvertProtocol`] over IPv4, and the only way a
 /// DHCP server can be found at all: the protocol is built on broadcast, so the
 /// server is discovered rather than addressed. See
-/// [`dhcp`](crate::protocols::dhcp) for why a port scan cannot ask this
+/// [`dhcp`] for why a port scan cannot ask this
 /// question.
 ///
 /// **The role goes on the address the server named for itself, and only when

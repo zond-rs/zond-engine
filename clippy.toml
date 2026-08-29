@@ -9,5 +9,7 @@
 #
 # **Keep in step with `rust-version` in `Cargo.toml`.** Two numbers for one
 # promise is how they drift; there is no way to have cargo derive this one, so it
-# is written down beside a note saying why.
+# is written down beside a note saying why. The `msrv` job in `lint.yml` builds
+# on that exact version, so a mismatch between these two files surfaces there
+# rather than in a consumer's build.
 msrv = "1.93"

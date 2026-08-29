@@ -11,7 +11,7 @@
 //! A diagnostic pass, run after the ports are known and only against hosts that
 //! answered. It sends a few deliberately-shaped probes to a host's ports and
 //! reads what the filter in front of it let through, as
-//! [`Filtering`](crate::model::host::Filtering) conclusions:
+//! [`Filtering`] conclusions:
 //!
 //! - **An inline middlebox**, from a reply to a bad-checksum probe to an *open*
 //!   port. A conformant host drops the corrupt segment unread, so a reply was

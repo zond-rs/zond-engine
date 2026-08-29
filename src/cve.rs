@@ -304,9 +304,7 @@ mod tests {
         // The curated identities fire against the shapes the corpus actually
         // emits: OpenSSH banners carry a `p` suffix, and vsftpd is an exact match.
         assert_eq!(
-            dataset()
-                .findings_for("cpe:/a:openbsd:openssh:9.6p1")
-                .len(),
+            dataset().findings_for("cpe:/a:openbsd:openssh:9.6p1").len(),
             1
         );
         assert!(

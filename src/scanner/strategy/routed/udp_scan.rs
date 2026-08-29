@@ -72,7 +72,7 @@ use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 
 use super::icmp_error::{self, Unreachable};
 use super::probe_scan::{self, AuditLabels, ProbeTarget, RawPortScan, RawProbeScan};
-use super::send_udp;
+use super::{EvasionParts, send_udp};
 use crate::scanner::audit::ProbeAudit;
 
 /// Outstanding probes and the schedule they are retried on.
@@ -706,9 +706,11 @@ impl UdpPortScanner {
             src_addr,
             ip,
             port,
-            self.core.emission,
-            self.core.shaping,
-            &self.core.decoys,
+            EvasionParts {
+                emission: self.core.emission,
+                shaping: self.core.shaping,
+                decoys: &self.core.decoys,
+            },
             &mut self.core.send_failure,
         );
         self.core.record_send(sent.is_some(), first_attempt);

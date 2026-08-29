@@ -200,26 +200,17 @@ impl ProbeSender for EthernetSender {
             // that already fits the requested MTU comes back as a single frame,
             // so the fragmenting path is not a second code path for the ordinary
             // case.
+            let spec = frame::FrameSpec {
+                src_mac,
+                dst_mac,
+                src,
+                dst,
+                protocol,
+                hop_limit: emission.hop_limit,
+            };
             let frames = match emission.fragment {
-                Some(mtu) => frame::build_fragmented_ethernet_frames(
-                    src_mac,
-                    dst_mac,
-                    src,
-                    dst,
-                    protocol,
-                    segment,
-                    emission.hop_limit,
-                    mtu,
-                )?,
-                None => vec![frame::build_ethernet_frame(
-                    src_mac,
-                    dst_mac,
-                    src,
-                    dst,
-                    protocol,
-                    segment,
-                    emission.hop_limit,
-                )?],
+                Some(mtu) => frame::build_fragmented_ethernet_frames(&spec, segment, mtu)?,
+                None => vec![frame::build_ethernet_frame(&spec, segment)?],
             };
 
             let mut channels = self.channels.lock().unwrap();

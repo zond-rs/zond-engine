@@ -46,7 +46,6 @@ name: Windows
 # bump — where none of the paths below has moved.
 on:
   push:
-    branches: ["main"]
     paths:
       - "src/**"
       - "tests/**"
@@ -56,7 +55,6 @@ on:
       - "clippy.toml"
       - ".github/workflows/windows.yml"
   pull_request:
-    branches: ["main"]
     paths:
       - "src/**"
       - "tests/**"

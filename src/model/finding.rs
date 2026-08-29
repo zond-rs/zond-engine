@@ -770,8 +770,8 @@ mod tests {
         let newer = Finding::new(
             DetectionId::new("redis-unauth-access", Version::new(1, 1, 0), "newhash").unwrap(),
             "Unauthenticated Redis access",
-            Severity::Critical,   // re-scored up
-            Confidence::Strong,   // weaker than Certain — must not lower it
+            Severity::Critical, // re-scored up
+            Confidence::Strong, // weaker than Certain — must not lower it
             DetectionClass::ActiveBenign,
         )
         .unwrap()
@@ -782,7 +782,11 @@ mod tests {
 
         assert!(base.corroborate(newer));
         assert_eq!(base.severity(), Severity::Critical, "newer severity wins");
-        assert_eq!(base.confidence(), Confidence::Certain, "confidence only rises");
+        assert_eq!(
+            base.confidence(),
+            Confidence::Certain,
+            "confidence only rises"
+        );
         assert_eq!(base.detection().version(), Version::new(1, 1, 0));
         assert_eq!(base.remediation(), Some("Require a password."));
         let refs: Vec<_> = base.references().cloned().collect();

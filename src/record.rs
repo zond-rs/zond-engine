@@ -697,8 +697,7 @@ impl From<&Finding> for FindingRecord {
             severity: wire::severity_name(finding.severity()).to_owned(),
             confidence: wire::confidence_name(finding.confidence()).to_owned(),
             class: wire::detection_class_name(finding.class()).to_owned(),
-            excerpt: (!finding.excerpt().is_empty())
-                .then(|| finding.excerpt().as_str().to_owned()),
+            excerpt: (!finding.excerpt().is_empty()).then(|| finding.excerpt().as_str().to_owned()),
             references: finding.references().map(ReferenceRecord::from).collect(),
             remediation: finding.remediation().map(str::to_owned),
         }
@@ -1466,7 +1465,7 @@ pub struct SettingsRecord {
 }
 
 /// The zombie an idle scan ran through, as written to the journal. The
-/// serialized form of [`IdleScan`](crate::config::IdleScan).
+/// serialized form of [`IdleScan`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdleScanRecord {
     /// The zombie's address.
@@ -1479,7 +1478,7 @@ pub struct IdleScanRecord {
 
 /// What a sitting changed about the packets it sent, as written to the journal.
 /// The serialized form of
-/// [`EvasionRecord`](crate::scanner::report::EvasionRecord).
+/// [`EvasionRecord`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvasionSettingsRecord {
     /// The source port every probe left from.

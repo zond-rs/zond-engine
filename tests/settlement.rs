@@ -189,9 +189,15 @@ async fn the_connect_path_settles_what_it_probed() {
     }
     drop(tx);
 
-    zond_engine::scanner::strategy::connect::scan(rx, 4, ctx, ServiceDetection::Off, &zond_engine::EvasionProfile::default())
-        .await
-        .expect("the connect scan runs");
+    zond_engine::scanner::strategy::connect::scan(
+        rx,
+        4,
+        ctx,
+        ServiceDetection::Off,
+        &zond_engine::EvasionProfile::default(),
+    )
+    .await
+    .expect("the connect scan runs");
 
     let settlements = observer.settlements();
     assert_eq!(
@@ -521,9 +527,13 @@ async fn a_sweep_settles_the_address_that_answered() {
     );
 
     let observer = ctx.clone();
-    zond_engine::scanner::strategy::connect::discover(plan, ctx, &zond_engine::EvasionProfile::default())
-        .await
-        .expect("the connect sweep runs anywhere");
+    zond_engine::scanner::strategy::connect::discover(
+        plan,
+        ctx,
+        &zond_engine::EvasionProfile::default(),
+    )
+    .await
+    .expect("the connect sweep runs anywhere");
 
     let settlements = observer.settlements();
     assert_eq!(
@@ -556,9 +566,13 @@ async fn a_sweep_inside_a_port_scan_settles_nothing() {
     let (_session, ctx) = ScanSession::new();
 
     let observer = ctx.clone();
-    zond_engine::scanner::strategy::connect::discover(addresses("127.0.0.1"), ctx, &zond_engine::EvasionProfile::default())
-        .await
-        .expect("the connect sweep runs anywhere");
+    zond_engine::scanner::strategy::connect::discover(
+        addresses("127.0.0.1"),
+        ctx,
+        &zond_engine::EvasionProfile::default(),
+    )
+    .await
+    .expect("the connect sweep runs anywhere");
 
     let settlements = observer.settlements();
     assert_eq!(
@@ -583,9 +597,13 @@ async fn an_address_outside_the_plan_settles_nothing() {
     );
 
     let observer = ctx.clone();
-    zond_engine::scanner::strategy::connect::discover(addresses("127.0.0.1"), ctx, &zond_engine::EvasionProfile::default())
-        .await
-        .expect("the connect sweep runs anywhere");
+    zond_engine::scanner::strategy::connect::discover(
+        addresses("127.0.0.1"),
+        ctx,
+        &zond_engine::EvasionProfile::default(),
+    )
+    .await
+    .expect("the connect sweep runs anywhere");
 
     assert_eq!(observer.settlements().settled_count(), 0);
 }

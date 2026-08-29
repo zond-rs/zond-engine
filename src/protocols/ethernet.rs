@@ -25,7 +25,8 @@
 //! and reports an empty segment.
 //!
 //! [`Frame`] is the answer, and it is why reading a frame goes through a view
-//! rather than through `pnet`'s [`EthernetPacket`] directly. It walks the tags
+//! rather than through `pnet`'s [`EthernetPacket`](pnet_packet::ethernet::EthernetPacket)
+//! directly. It walks the tags
 //! once, keeps them, and answers [`ethertype`](Frame::ethertype) and
 //! [`payload`](Frame::payload) with what is *behind* them. A reader written
 //! against it is VLAN-transparent without knowing that VLANs exist, and the tags

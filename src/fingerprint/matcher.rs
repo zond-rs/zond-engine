@@ -188,7 +188,10 @@ impl Signature {
         // against the version this match found — the field CVE correlation joins
         // on, and one a report consumer such as DefectDojo reads directly.
         let cpe = self.cpe.as_deref().and_then(|template| {
-            resolve_service_cpe(template, version.as_deref().or(self.service_version.as_deref()))
+            resolve_service_cpe(
+                template,
+                version.as_deref().or(self.service_version.as_deref()),
+            )
         });
 
         let mut evidence =
@@ -314,7 +317,10 @@ mod tests {
         .identify("Transmission", OsSource::ServiceBanner)
         .unwrap()
         .evidence;
-        assert_eq!(ev.cpe.as_deref(), Some("cpe:/a:transmissionbt:transmission:-"));
+        assert_eq!(
+            ev.cpe.as_deref(),
+            Some("cpe:/a:transmissionbt:transmission:-")
+        );
 
         // A template with no version to fill is dropped, never emitted with an
         // empty version a consumer would mis-match on.

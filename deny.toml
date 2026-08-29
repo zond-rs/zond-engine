@@ -1,0 +1,68 @@
+# What this crate will accept into its dependency tree.
+#
+# A scanner opens raw sockets, parses files it did not write, and embeds a
+# scripting interpreter. Every crate under it inherits that position, so the
+# tree is worth a gate rather than a periodic look. Run by the `supply-chain`
+# job in `.github/workflows/lint.yml`.
+
+[advisories]
+# Anything with a filed advisory fails. Unmaintained and unsound are warnings
+# rather than failures: both are judgements about a crate's future, and a build
+# that breaks the morning somebody files one is a build nobody trusts.
+yanked = "deny"
+unmaintained = "workspace"
+
+ignore = [
+    # RUSTSEC-2025-0141: bincode 1.x is unmaintained, and there is no upgrade
+    # inside the 1.x line. It is a direct dependency in both dependency sets,
+    # because `build.rs` serialises the signature and detection corpora into
+    # blobs the runtime deserialises with `include_bytes!`.
+    #
+    # Kept for now, and not because the advisory is wrong. Every byte bincode
+    # decodes here was produced by this crate's own build from files in
+    # `assets/`, so no input on this path is chosen by anyone outside the build.
+    # That bounds the exposure to a bug reachable from data we generate.
+    #
+    # Recorded as ZA-0-009. Moving to bincode 2.x means both the encode and the
+    # decode side and a format change to the embedded blobs, which is its own
+    # piece of work rather than something to slip into a CI fix.
+    "RUSTSEC-2025-0141",
+]
+
+[licenses]
+# The engine is AGPL-3.0-or-later, which can take in permissive dependencies but
+# cannot take in a copyleft one without that licence reaching the whole work.
+# This list is what the tree actually resolves to, checked rather than guessed.
+allow = [
+    # The engine's own licence.
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate major versions are recorded rather than refused. The tree carries
+# six today (three of `getrandom`, two each of `rand`, `bitflags`, `errno`,
+# `syn`, `system-configuration`), all pulled transitively. Resolving them is its
+# own piece of work; failing the build until then would only teach everyone to
+# ignore this job.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Nothing from a git revision or a private registry. A dependency that is not on
+# crates.io is one a consumer building this crate cannot audit the same way.
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -118,7 +118,9 @@ use crate::scanner::orchestrator::{
     Enrichment, ScanCapabilities, finish_enrichment, live_addresses, probed_subset, run_port_phase,
     target_ips,
 };
-use crate::scanner::report::{PhaseRecorder, ScanKind, ScanPhase, ScanReport, TargetScope};
+#[cfg(feature = "journal-format")]
+use crate::scanner::report::ScanPhase;
+use crate::scanner::report::{PhaseRecorder, ScanKind, ScanReport, TargetScope};
 use crate::scanner::session::{ScanContext, ScanSession, ScannerKind};
 use strategy::local::Scope;
 

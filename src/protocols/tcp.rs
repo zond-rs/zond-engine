@@ -613,7 +613,11 @@ mod tests {
         let sent = create_probe_with_flags(MASK, &SRC, &DST, 50_000, 80, NONCE, None, false)
             .expect("probe builds");
         let parsed = TcpPacket::new(&sent).unwrap();
-        assert_eq!(parsed.get_flags(), MASK, "the segment carries the chosen flags");
+        assert_eq!(
+            parsed.get_flags(),
+            MASK,
+            "the segment carries the chosen flags"
+        );
 
         let rst = conformant_rst(&sent);
         let reply = TcpPacket::new(&rst).unwrap();

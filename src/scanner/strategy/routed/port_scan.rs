@@ -237,7 +237,6 @@ impl TcpPortScanner {
     /// scan's own deadline is derived from it, so it has to be settled before
     /// anything is built rather than patched in afterwards.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn build(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -438,8 +437,8 @@ impl TcpPortScanner {
         }
 
         let key = (error.quoted.destination, quoted.destination);
-        let token =
-            tcp::quoted_nonce_with_flags(self.effective_flags(), &quoted).map(|nonce| TcpToken { nonce });
+        let token = tcp::quoted_nonce_with_flags(self.effective_flags(), &quoted)
+            .map(|nonce| TcpToken { nonce });
 
         match error.reason {
             // Nobody could reach the address at all, so the message carries no

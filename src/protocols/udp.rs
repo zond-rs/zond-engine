@@ -58,7 +58,7 @@ pub fn create_packet(
 /// field and the checksum like any other bytes and an open port still reads the
 /// request in front of it. `None` appends nothing and builds exactly what
 /// [`create_packet`] does. See
-/// [`craft::random_padding`](craft::random_padding) for why the bytes are
+/// [`craft::random_padding`] for why the bytes are
 /// random.
 ///
 /// # Errors

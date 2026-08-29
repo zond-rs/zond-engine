@@ -52,7 +52,7 @@ use pnet_base::MacAddr;
 /// Largest capture a scan's receive path ever needs: a reply is a bare TCP/UDP
 /// segment, but snapping generously costs nothing against a filter this narrow
 /// and avoids ever truncating one.
-const REPLY_SNAP_LEN: u32 = 65_535;
+pub const REPLY_SNAP_LEN: u32 = 65_535;
 
 /// How a capture is opened: what the kernel admits, how much of each frame it
 /// keeps, and whose traffic it accepts at all.

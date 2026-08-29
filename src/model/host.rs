@@ -324,7 +324,7 @@ pub enum Filtering {
     /// A stateful filter: it passes a bare ACK but drops a SYN.
     ///
     /// Proven by an ACK probe reaching the stack — a RST, which is
-    /// [`PortState::Unfiltered`](crate::model::port::PortState::Unfiltered) — for
+    /// [`PortState::Unfiltered`] — for
     /// a port the scan found filtered to a SYN. A filter that lets an ACK through
     /// and refuses a SYN is keeping connection state and opening no new
     /// connections. Comparative: the SYN's fate is the port state the scan

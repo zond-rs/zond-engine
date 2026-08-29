@@ -74,6 +74,7 @@ use tokio::time::timeout;
 use crate::config::ProbeTuning;
 use crate::fingerprint;
 use crate::fingerprint::os::{IdClass, SeriesClasses, SeriesSample};
+use crate::info;
 use crate::journal::settle::Outcome;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
@@ -87,7 +88,6 @@ use crate::scanner::session::{ScanContext, ScannerKind};
 use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::system::interface::SourceResolver;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
-use crate::info;
 
 /// The port on the zombie probed for its counter when a caller names none.
 ///
@@ -191,7 +191,7 @@ impl IdlePortScanner {
     /// self-built frame, so a host without that path fails here rather than
     /// quietly falling back to a scan under its own address. Whether the *zombie*
     /// is usable is a separate question, answered against the wire once the scan
-    /// runs; see [`qualify`](Self::qualify).
+    /// runs.
     pub fn new(
         ctx: ScanContext,
         zombie: IpAddr,
@@ -431,11 +431,17 @@ impl PortScanner for IdlePortScanner {
         vec![Protocol::Tcp]
     }
 
-    async fn scan(&mut self, mut targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
+    async fn scan(
+        &mut self,
+        mut targets: mpsc::Receiver<PlannedTarget>,
+    ) -> Result<(), StrategyError> {
         let Some(source) = self.source else {
             self.ctx.record_failure(
                 ScannerKind::Idle,
-                format!("no route to the zombie {} to run an idle scan through", self.zombie),
+                format!(
+                    "no route to the zombie {} to run an idle scan through",
+                    self.zombie
+                ),
             );
             drain(&mut targets);
             return Ok(());
@@ -492,8 +498,13 @@ impl PortScanner for IdlePortScanner {
 
         let capture = self.transport.capture_counts();
         self.audit.report("idle", probes, reason, capture, None);
-        self.ctx
-            .record_probe_stats(self.audit.stats(ScannerKind::Idle, probes, reason, capture, None));
+        self.ctx.record_probe_stats(self.audit.stats(
+            ScannerKind::Idle,
+            probes,
+            reason,
+            capture,
+            None,
+        ));
         Ok(())
     }
 }

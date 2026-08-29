@@ -865,7 +865,13 @@ mod tests {
             refuses,
         };
         let transport = ProbeTransport::from_parts(Box::new(link), rx as CaptureStream);
-        OsSeriesScanner::with_transport(ctx.clone(), vec![target], samples, transport, Emission::routed())
+        OsSeriesScanner::with_transport(
+            ctx.clone(),
+            vec![target],
+            samples,
+            transport,
+            Emission::routed(),
+        )
     }
 
     fn both_ports() -> SeriesTarget {
@@ -1024,8 +1030,13 @@ mod tests {
             open: Some(OPEN),
             closed: None,
         };
-        let mut scanner =
-            OsSeriesScanner::with_transport(ctx.clone(), vec![target], samples, transport, Emission::routed());
+        let mut scanner = OsSeriesScanner::with_transport(
+            ctx.clone(),
+            vec![target],
+            samples,
+            transport,
+            Emission::routed(),
+        );
         scanner.discover_hosts().await.expect("the phase runs");
 
         let sent = recorded.lock().expect("the record is readable").clone();
@@ -1065,8 +1076,13 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let (tx, rx) = mpsc::unbounded_channel();
         let transport = ProbeTransport::from_parts(Box::new(Silent), rx as CaptureStream);
-        let mut scanner =
-            OsSeriesScanner::with_transport(ctx.clone(), vec![both_ports()], 2, transport, Emission::routed());
+        let mut scanner = OsSeriesScanner::with_transport(
+            ctx.clone(),
+            vec![both_ports()],
+            2,
+            transport,
+            Emission::routed(),
+        );
 
         // A perfectly Linux-shaped handshake answer, acknowledging a sequence
         // number nothing here ever sent.

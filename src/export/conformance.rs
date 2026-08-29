@@ -24,10 +24,10 @@ use serde_json::Value;
 
 use crate::config::{OsDetection, ServiceDetection};
 use crate::export::schema::SCHEMA_VERSION;
-use crate::model::finding::DetectionClass;
-use crate::record::wire::detection_class_name;
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
+use crate::model::finding::DetectionClass;
 use crate::model::technique::TcpScanTechnique;
+use crate::record::wire::detection_class_name;
 
 /// The published schemas, compiled into the test binary so a test cannot pass
 /// against a file that was not shipped.

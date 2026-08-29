@@ -17,11 +17,12 @@ categories = ["network-programming", "asynchronous"]
 # user-facing. `audit/` is gitignored as well, so this line is the second of two
 # defences rather than the only one; `docs/` is tracked, so for it this line is
 # the only thing standing between a working note and crates.io. `.github/` is
-# this repository's own CI and belongs to nobody who depends on the crate.
+# this repository's own CI and belongs to nobody who depends on the crate, and
+# `deny.toml` is what that CI holds the dependency tree to.
 #
 # `assets/` is deliberately *not* excluded: `build.rs` compiles the fingerprint
 # signatures out of it, so a package without it does not build at all.
-exclude = ["audit/", "docs/", ".github/"]
+exclude = ["audit/", "docs/", ".github/", "deny.toml"]
 
 [features]
 default = ["export-json", "journal-format"]

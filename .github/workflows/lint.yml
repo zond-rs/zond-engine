@@ -1,4 +1,10 @@
-# Formatting, lints, and the documentation build.
+# Formatting, lints, the documentation build, the feature matrix, the minimum
+# toolchain, and the dependency audit.
+#
+# Everything here runs on every branch, not just `main`. A gate that only sees
+# the default branch sees the work after it has landed, which is how four
+# clippy errors and nineteen broken doc links accumulated unnoticed on a feature
+# branch.
 #
 # The doc job is here rather than beside the tests because for a library the
 # rendered documentation *is* an artifact — it is what a consumer reads on
@@ -8,7 +14,6 @@ name: Lint & Format
 
 on:
   push:
-    branches: ["main"]
     paths:
       - "src/**"
       - "tests/**"
@@ -18,7 +23,6 @@ on:
       - "clippy.toml"
       - ".github/workflows/lint.yml"
   pull_request:
-    branches: ["main"]
     paths:
       - "src/**"
       - "tests/**"
@@ -86,3 +90,88 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --all-features
+
+  # The crate ships 13 cargo features and justifies each of them individually in
+  # `Cargo.toml`. That is a 13-dimensional promise, and building the default set
+  # and `--all-features` checks two points on it. `cargo hack` checks the rest:
+  # each feature alone, then every pair, which is where the interesting failures
+  # live. The full powerset is 2^13 and is not a CI budget.
+  features:
+    name: Feature matrix
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      # `--no-dev-deps` because the dev-dependency on this crate itself turns
+      # `test-support` on, which would mask a feature that only compiles with it.
+      #
+      # Note for anyone running this locally: the flag works by stripping
+      # `[dev-dependencies]` out of `Cargo.toml` for the duration of the run and
+      # putting it back afterwards. Any other cargo command started against the
+      # same checkout while it runs sees a manifest with no dev-dependencies and
+      # fails in confusing ways. Harmless on a CI runner, which does nothing
+      # else; run it alone on a workstation.
+      - name: Every feature on its own
+        run: cargo hack check --each-feature --no-dev-deps
+
+      - name: Every pair of features
+        run: cargo hack check --feature-powerset --depth 2 --no-dev-deps
+
+  # `Cargo.toml` names `rust-version = "1.93"` and `clippy.toml` sets the same
+  # number so clippy stops suggesting APIs that do not exist there. Both are
+  # promises to a consumer, and before this job neither had ever been compiled.
+  msrv:
+    name: Minimum toolchain (1.93)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.93
+        uses: dtolnay/rust-toolchain@1.93
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # Check rather than test: the promise is that a consumer on 1.93 can build
+      # the library, and the suite's dev-dependencies are free to want newer.
+      - name: Check on the minimum supported toolchain
+        run: cargo check --all-features
+
+  # A scanner opens raw sockets, parses files it did not write, and embeds a
+  # scripting interpreter. Knowing when something in that tree is withdrawn or
+  # found vulnerable is worth a job.
+  supply-chain:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Advisories, licences, and duplicate versions
+        run: cargo deny check

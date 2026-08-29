@@ -327,6 +327,23 @@ pub struct SynToken {
     pub src_port: u16,
 }
 
+/// What a scan's evasion settings come to for one probe: how the packet reaches
+/// the wire, how its segment is shaped, and the decoys it travels among.
+///
+/// A struct rather than three positional arguments. All three are derived from
+/// one [`EvasionProfile`](crate::evasion::EvasionProfile) and always travel
+/// together, and carrying them separately is what pushed both send functions
+/// past the number of arguments a reader can hold.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct EvasionParts<'a> {
+    /// How the packet is put on the wire, including any fragmentation.
+    pub emission: Emission,
+    /// Padding and checksum corruption applied to the Layer-4 segment.
+    pub shaping: SegmentShaping,
+    /// Addresses the real probe is sent among. Empty for an ordinary send.
+    pub decoys: &'a [IpAddr],
+}
+
 /// Sends the real probe among its already-built decoy probes, in random order,
 /// and returns the real probe's send outcome.
 ///
@@ -382,11 +399,14 @@ fn send_syn(
     dst_addr: IpAddr,
     dst_port: u16,
     src_port_override: Option<u16>,
-    emission: Emission,
-    shaping: SegmentShaping,
-    decoys: &[IpAddr],
+    evasion: EvasionParts<'_>,
     faults: &mut SendFaults,
 ) -> Option<SynToken> {
+    let EvasionParts {
+        emission,
+        shaping,
+        decoys,
+    } = evasion;
     // A caller who pinned a source port gets that port; otherwise a fresh
     // random high port, which is this sweep's default and is what makes a
     // retried probe measurable — see the field this override travels on.
@@ -505,11 +525,14 @@ fn send_udp(
     src_addr: IpAddr,
     dst_addr: IpAddr,
     dst_port: u16,
-    emission: Emission,
-    shaping: SegmentShaping,
-    decoys: &[IpAddr],
+    evasion: EvasionParts<'_>,
     reason: &mut Option<String>,
 ) -> Option<()> {
+    let EvasionParts {
+        emission,
+        shaping,
+        decoys,
+    } = evasion;
     // What makes an open port answer at all: UDP has no handshake, so the
     // application itself has to recognize the request. See [`payload`].
     let payload = payload::for_port(dst_port).to_vec();
@@ -1172,9 +1195,11 @@ impl RoutedScanner {
             target,
             DST_PORT,
             self.src_port,
-            self.emission,
-            self.shaping,
-            &self.decoys,
+            EvasionParts {
+                emission: self.emission,
+                shaping: self.shaping,
+                decoys: &self.decoys,
+            },
             &mut self.faults,
         );
         self.audit.record_send(token.is_some());

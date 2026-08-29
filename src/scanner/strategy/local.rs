@@ -649,7 +649,8 @@ impl LocalScanner {
     /// has opened a channel on the interface they mean rather than letting
     /// [`new`](Self::new) choose. Paired with a synthetic channel
     /// (`EthernetHandle::from_parts`, behind the `test-support` feature) and a
-    /// hand-built [`NetworkInterface`], it is also the seam that lets ARP and
+    /// hand-built [`Link`], it is also the seam
+    /// that lets ARP and
     /// NDP discovery be driven against a simulated segment with no privileges.
     pub fn with_handle(
         link: Link,

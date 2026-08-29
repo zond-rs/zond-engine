@@ -61,6 +61,8 @@ mod pattern;
 mod compute_schema;
 #[path = "src/detect/flow/expr.rs"]
 mod expr;
+#[path = "src/detect/host/schema.rs"]
+mod host_schema;
 /// The shared `[detection]` manifest and the Tier-1 flow trio that reads it: the
 /// authoring `schema`, the guard-expression grammar `expr`, and the structural
 /// `validate` that rejects a malformed flow. A flow the build accepts is a flow
@@ -75,8 +77,6 @@ mod manifest;
 mod schema;
 #[path = "src/detect/flow/validate.rs"]
 mod validate;
-#[path = "src/detect/host/schema.rs"]
-mod host_schema;
 
 use signature::{MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, ServiceDefinition, unescape};
 

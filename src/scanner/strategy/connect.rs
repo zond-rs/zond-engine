@@ -123,7 +123,12 @@ impl HostScanner for ConnectScanner {
         // The targets are taken rather than cloned. A sweep asks each address
         // once, so a second call has nothing left to probe and correctly does
         // nothing, where a clone would silently re-probe the whole set.
-        discover(std::mem::take(&mut self.ips), self.ctx.clone(), &self.evasion).await
+        discover(
+            std::mem::take(&mut self.ips),
+            self.ctx.clone(),
+            &self.evasion,
+        )
+        .await
     }
 }
 
@@ -536,7 +541,11 @@ fn wildcard_for(target: IpAddr) -> SocketAddr {
 /// its destination, so the kernel keeps their replies apart. The bind itself is
 /// left to the caller, because TCP binds only to pin a port while UDP must bind
 /// before it can send at all.
-fn configure_shaping(socket: &Socket, family: IpAddr, shaping: ConnectShaping) -> std::io::Result<()> {
+fn configure_shaping(
+    socket: &Socket,
+    family: IpAddr,
+    shaping: ConnectShaping,
+) -> std::io::Result<()> {
     if let Some(hops) = shaping.hop_limit {
         match family {
             IpAddr::V4(_) => socket.set_ttl_v4(hops.into())?,
@@ -566,7 +575,9 @@ fn shaped_tcp_socket(family: IpAddr, shaping: ConnectShaping) -> std::io::Result
         socket.bind(&source_bind(family, port).into())?;
     }
     socket.set_nonblocking(true)?;
-    Ok(TcpSocket::from_std_stream(std::net::TcpStream::from(socket)))
+    Ok(TcpSocket::from_std_stream(std::net::TcpStream::from(
+        socket,
+    )))
 }
 
 /// Connects to `addr`, honouring `shaping`.
@@ -1084,7 +1095,11 @@ mod tests {
                 protocol: Protocol::Tcp,
             },
         );
-        assert!(udp_port_prober(target, ConnectShaping::default()).await.is_none());
+        assert!(
+            udp_port_prober(target, ConnectShaping::default())
+                .await
+                .is_none()
+        );
     }
 
     /// The two fields a connect can carry cross over from the profile, and a
@@ -1134,9 +1149,16 @@ mod tests {
         let stream = connect_shaped(addr, shaping)
             .await
             .expect("the shaped connect completes");
-        let (_accepted, peer) = accept.await.expect("the accept task joins").expect("an accept");
+        let (_accepted, peer) = accept
+            .await
+            .expect("the accept task joins")
+            .expect("an accept");
 
-        assert_eq!(peer.port(), PINNED, "the SYN left from the pinned source port");
+        assert_eq!(
+            peer.port(),
+            PINNED,
+            "the SYN left from the pinned source port"
+        );
         assert_eq!(
             stream.ttl().expect("the socket's hop limit"),
             u32::from(HOPS),
@@ -1165,11 +1187,21 @@ mod tests {
         let socket = shaped_udp_socket(IpAddr::V4(Ipv4Addr::LOCALHOST), shaping)
             .await
             .expect("a shaped UDP socket");
-        socket.connect(server_addr).await.expect("addressing the peer");
+        socket
+            .connect(server_addr)
+            .await
+            .expect("addressing the peer");
         socket.send(b"probe").await.expect("sending the probe");
 
         let mut buf = [0u8; 8];
-        let (_read, from) = server.recv_from(&mut buf).await.expect("the datagram arrives");
-        assert_eq!(from.port(), PINNED, "the datagram left from the pinned source port");
+        let (_read, from) = server
+            .recv_from(&mut buf)
+            .await
+            .expect("the datagram arrives");
+        assert_eq!(
+            from.port(),
+            PINNED,
+            "the datagram left from the pinned source port"
+        );
     }
 }

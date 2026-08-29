@@ -86,10 +86,9 @@ use crate::model::technique::TcpScanTechnique;
 use crate::record::wire;
 use crate::record::{
     CaptureRecord, CertificateRecord, DiscoveryRecord, EvasionSettingsRecord, FailureRecord,
-    IdleScanRecord,
-    HardwareRecord, HopRecord, HostRecord, OriginRecord, OsRecord, PhaseRecord, PortRecord,
-    PortsRecord, ProbeStatsRecord, RangeRecord, ScopeRecord, SecurityRecord, ServiceRecord,
-    SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
+    HardwareRecord, HopRecord, HostRecord, IdleScanRecord, OriginRecord, OsRecord, PhaseRecord,
+    PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord, ScopeRecord, SecurityRecord,
+    ServiceRecord, SettingsRecord, StatusReasonRecord, TelemetryRecord, WindowRecord,
 };
 use crate::scanner::report::{ScanPhase, ScanReport};
 

@@ -28,7 +28,6 @@ name: Test
 
 on:
   push:
-    branches: ["main"]
     paths:
       - "src/**"
       - "tests/**"
@@ -39,7 +38,6 @@ on:
       - "Cargo.lock"
       - ".github/workflows/test.yml"
   pull_request:
-    branches: ["main"]
     paths:
       - "src/**"
       - "tests/**"

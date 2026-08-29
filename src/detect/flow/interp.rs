@@ -281,7 +281,10 @@ mod tests {
 
         assert_eq!(finding.detection().id(), "redis-unauth-access");
         assert_eq!(finding.severity(), Severity::High);
-        assert_eq!(finding.title(), "Redis answered INFO without authentication");
+        assert_eq!(
+            finding.title(),
+            "Redis answered INFO without authentication"
+        );
         // The `{version}` in `detail` resolved from the bound capture.
         assert_eq!(
             finding.excerpt().as_str(),

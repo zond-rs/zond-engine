@@ -25,7 +25,6 @@ use std::time::{Duration, SystemTime};
 use crate::config::{IdleScan, ZondConfig};
 use crate::evasion::EvasionProfile;
 use crate::fingerprint::Confidence;
-use crate::protocols::tcp::flags;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
 use crate::model::finding::{
@@ -40,6 +39,7 @@ use crate::model::mac::MacAddr;
 use crate::model::port::{
     CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
 };
+use crate::protocols::tcp::flags;
 use crate::scanner::pacing::congestion::WindowSummary;
 use crate::scanner::report::{
     Attachment, AttachmentSource, BUCKET_BOUNDS_MS, PhaseRecorder, ProbeStats, ScanKind,
@@ -224,25 +224,28 @@ pub(crate) fn report() -> ScanReport {
     // record and every writer — and the published schema — is held to what one
     // looks like. The port-scan phase below keeps the defaults, so the fixture
     // exercises a phase that recorded evasion beside one that did not.
-    let mut config = ZondConfig::default();
-    config.evasion = EvasionProfile::default()
-        .with_source_port(53)
-        .with_ttl(40)
-        .with_padding(24)
-        .with_bad_tcp_checksum(true)
-        .with_spoof_mac(MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01))
-        .with_fragment(28)
-        .with_decoys(vec![
-            "192.0.2.61".parse().expect("a valid decoy address"),
-            "192.0.2.62".parse().expect("a valid decoy address"),
-        ])
-        .with_flags(flags::SYN | flags::FIN);
-    // For the schema rather than for plausibility: a phase carries the idle-scan
-    // record beside the evasion one, so both serialized forms are exercised.
-    config.idle_scan = Some(IdleScan {
-        zombie: "192.0.2.9".parse().expect("a valid zombie address"),
-        zombie_port: Some(113),
-    });
+    let config = ZondConfig {
+        evasion: EvasionProfile::default()
+            .with_source_port(53)
+            .with_ttl(40)
+            .with_padding(24)
+            .with_bad_tcp_checksum(true)
+            .with_spoof_mac(MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01))
+            .with_fragment(28)
+            .with_decoys(vec![
+                "192.0.2.61".parse().expect("a valid decoy address"),
+                "192.0.2.62".parse().expect("a valid decoy address"),
+            ])
+            .with_flags(flags::SYN | flags::FIN),
+        // For the schema rather than for plausibility: a phase carries the
+        // idle-scan record beside the evasion one, so both serialized forms are
+        // exercised.
+        idle_scan: Some(IdleScan {
+            zombie: "192.0.2.9".parse().expect("a valid zombie address"),
+            zombie_port: Some(113),
+        }),
+        ..Default::default()
+    };
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,

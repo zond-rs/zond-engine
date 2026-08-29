@@ -1024,7 +1024,7 @@ impl ScanContext {
     /// Records which switch port this machine turned out to be plugged into.
     ///
     /// Called by whatever read an announcement off a link — see
-    /// [`Attachment`](crate::scanner::report::Attachment) for why this is a fact
+    /// [`Attachment`] for why this is a fact
     /// about the phase rather than about any host in it. A device re-announcing
     /// itself replaces the previous reading for that link and protocol rather
     /// than adding to it.

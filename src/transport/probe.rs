@@ -864,7 +864,7 @@ mod filter_conformance {
 
     use super::ProbeKind;
     use crate::protocols::udp;
-    use crate::transport::frame::build_ethernet_frame;
+    use crate::transport::frame::{FrameSpec, build_ethernet_frame};
 
     const SRC_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
     const DST_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
@@ -942,13 +942,15 @@ mod filter_conformance {
         segment: &[u8],
     ) -> Vec<u8> {
         build_ethernet_frame(
-            MacAddr::new(0x02, 0, 0, 0, 0, 0x02),
-            MacAddr::new(0x02, 0, 0, 0, 0, 0x01),
-            src,
-            dst,
-            protocol,
+            &FrameSpec {
+                src_mac: MacAddr::new(0x02, 0, 0, 0, 0, 0x02),
+                dst_mac: MacAddr::new(0x02, 0, 0, 0, 0, 0x01),
+                src,
+                dst,
+                protocol,
+                hop_limit: crate::protocols::ip::HOP_LIMIT_ROUTED,
+            },
             segment,
-            crate::protocols::ip::HOP_LIMIT_ROUTED,
         )
         .expect("building an Ethernet frame")
     }

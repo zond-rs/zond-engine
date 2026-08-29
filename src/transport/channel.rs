@@ -15,7 +15,7 @@
 //!
 //! The send half is a `pnet` link-layer channel, because emitting a frame this
 //! crate built byte for byte is what it is for. The receive half is a
-//! [`capture`](crate::transport::capture), because everything that makes a
+//! [`capture`], because everything that makes a
 //! receive path trustworthy lives there: a BPF filter the *kernel* applies, the
 //! counters saying what the kernel discarded anyway, and a stop flag every
 //! reader thread checks so that dropping the handle ends them.

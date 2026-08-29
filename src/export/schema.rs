@@ -869,7 +869,7 @@ pub struct SettingsDto {
 
 /// What a scan changed about the packets it sent, as it appears in the report.
 /// Each field is present only for a technique the scan used. The serialized form
-/// of [`EvasionRecord`](crate::scanner::report::EvasionRecord).
+/// of [`EvasionRecord`].
 #[derive(Debug, Clone, Serialize)]
 pub struct EvasionDto {
     /// The source port every probe left from.

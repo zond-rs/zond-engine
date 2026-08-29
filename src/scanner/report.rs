@@ -65,8 +65,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RetryConfig;
-use crate::detect::DetectionEnvelope;
 use crate::config::{IdleScan, OsDetection, SendMode, ServiceDetection, ZondConfig};
+use crate::detect::DetectionEnvelope;
 use crate::evasion::EvasionProfile;
 use crate::model::capture::CaptureCounts;
 use crate::model::exclusion::Exclusions;
@@ -2440,7 +2440,10 @@ mod tests {
             1,
             "finalization correlated the vulnerable Apache build"
         );
-        assert!(port.findings().any(|f| f.detection().id() == "zond:cve-kev"));
+        assert!(
+            port.findings()
+                .any(|f| f.detection().id() == "zond:cve-kev")
+        );
     }
 
     /// At `ServiceDetection::Off` nothing asked a port what it was, so there is
@@ -2451,8 +2454,10 @@ mod tests {
         use crate::model::ip::scoped::ScopedIp;
         use crate::model::port::{Port, PortState, Protocol, Service};
 
-        let mut cfg = ZondConfig::default();
-        cfg.service_detection = ServiceDetection::Off;
+        let cfg = ZondConfig {
+            service_detection: ServiceDetection::Off,
+            ..Default::default()
+        };
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
 
         let mut targets = IpSet::from_str("192.168.0.1").expect("a valid address");

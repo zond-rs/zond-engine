@@ -37,9 +37,9 @@
 //! [`build_ethernet_frame`] wraps an already-built Layer-4 segment in IP and
 //! Ethernet headers for a Layer-2 send, and [`build_fragmented_ethernet_frames`]
 //! does the same while splitting the IP packet across fragments when a scan
-//! asked to. The raw-IP send path (tunnel and loopback links) doesn't use these
-//! - there the kernel writes the IP header - so they are only exercised on true
-//! Ethernet links.
+//! asked to. The raw-IP send path (tunnel and loopback links) doesn't use these,
+//! because there the kernel writes the IP header, so they are only exercised on
+//! true Ethernet links.
 
 use std::net::IpAddr;
 
@@ -342,26 +342,47 @@ pub fn parse_captured_segment(link: LinkType, frame: &[u8]) -> Option<IpSegment<
     parse_ip_segment(strip_to_ip(link, frame)?)
 }
 
+/// Everything a frame needs except its payload: where it goes at both layers,
+/// what it carries, and how far it may travel.
+///
+/// A struct rather than positional arguments. Two `MacAddr`s and two `IpAddr`s
+/// sit next to each other here, and nothing would diagnose a caller swapping
+/// either pair.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameSpec {
+    /// The sending interface's address, or a spoofed one.
+    pub src_mac: MacAddr,
+    /// The next hop's address on this segment.
+    pub dst_mac: MacAddr,
+    /// The source address written into the IP header. Must agree in family with
+    /// [`dst`](Self::dst).
+    pub src: IpAddr,
+    /// The destination address written into the IP header.
+    pub dst: IpAddr,
+    /// What the IP header says it carries.
+    pub protocol: IpNextHeaderProtocol,
+    /// IPv4's TTL or IPv6's hop limit, whichever the family calls it, so one
+    /// caller decides it once for both. It lives here rather than with the
+    /// kernel because this is the backend that can honour it exactly, the header
+    /// being built in this module; see
+    /// [`Emission`](crate::transport::probe::Emission).
+    pub hop_limit: u8,
+}
+
 /// Wraps a finished Layer-4 `segment` in IP and Ethernet headers, producing a
 /// frame ready to hand to a Layer-2 send.
 ///
-/// The IP version is taken from `src`/`dst`, which must agree; a mismatch is
-/// an error rather than a silent wrong-family packet.
-///
-/// `hop_limit` is written into whichever field the family calls it — IPv4's TTL
-/// or IPv6's hop limit — so one caller decides it once for both. It is a
-/// parameter because this is the backend that *can* honour it exactly, the
-/// header being built here rather than by a kernel; see
-/// [`Emission`](crate::transport::probe::Emission).
-pub fn build_ethernet_frame(
-    src_mac: MacAddr,
-    dst_mac: MacAddr,
-    src: IpAddr,
-    dst: IpAddr,
-    protocol: IpNextHeaderProtocol,
-    segment: &[u8],
-    hop_limit: u8,
-) -> anyhow::Result<Vec<u8>> {
+/// The IP version comes from the spec's address pair, which must agree. A
+/// mismatch is an error rather than a silent wrong-family packet.
+pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let FrameSpec {
+        src_mac,
+        dst_mac,
+        src,
+        dst,
+        protocol,
+        hop_limit,
+    } = *spec;
     let payload_len = u16::try_from(segment.len()).context("layer-4 segment too large for IP")?;
 
     let (ethertype, ip_header) = match (src, dst) {
@@ -384,33 +405,36 @@ pub fn build_ethernet_frame(
 }
 
 /// The Ethernet frames a probe becomes once its IP packet is split into
-/// fragments no larger than `mtu` bytes each — one frame per fragment, in order,
+/// fragments no larger than `mtu` bytes each: one frame per fragment, in order,
 /// each ready to put on the wire.
 ///
 /// The counterpart of [`build_ethernet_frame`] for a caller who chose to
-/// fragment: it builds the same IPv4 packet, splits it with
+/// fragment. It builds the same IPv4 packet, splits it with
 /// [`ip::fragment_ipv4`], and wraps each fragment in an Ethernet header. A packet
 /// that already fits the MTU comes back as a single frame.
 ///
 /// IPv4 only. IPv6 fragments through an extension header this engine does not
-/// build, so an IPv6 destination is refused rather than sent whole — a scan that
+/// build, so an IPv6 destination is refused rather than sent whole. A scan that
 /// reported it fragmented must have.
 ///
 /// # Errors
 ///
-/// Refuses an IPv6 destination, a mismatched address pair, and — through
-/// [`ip::fragment_ipv4`] — an MTU too small to carry a fragment or a datagram
+/// Refuses an IPv6 destination, a mismatched address pair, and, through
+/// [`ip::fragment_ipv4`], an MTU too small to carry a fragment or a datagram
 /// larger than the IP length field can describe.
 pub fn build_fragmented_ethernet_frames(
-    src_mac: MacAddr,
-    dst_mac: MacAddr,
-    src: IpAddr,
-    dst: IpAddr,
-    protocol: IpNextHeaderProtocol,
+    spec: &FrameSpec,
     segment: &[u8],
-    hop_limit: u8,
     mtu: u16,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
+    let FrameSpec {
+        src_mac,
+        dst_mac,
+        src,
+        dst,
+        protocol,
+        hop_limit,
+    } = *spec;
     let (src4, dst4) = match (src, dst) {
         (IpAddr::V4(s), IpAddr::V4(d)) => (s, d),
         (IpAddr::V6(_), IpAddr::V6(_)) => anyhow::bail!(
@@ -622,13 +646,15 @@ mod tests {
         let payload = [7, 7];
         let ip_packet = ipv4_packet(Ipv4Addr::new(192, 0, 2, 5), &payload);
         let frame = build_ethernet_frame(
-            MacAddr::new(1, 2, 3, 4, 5, 6),
-            MacAddr::new(6, 5, 4, 3, 2, 1),
-            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)),
-            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
-            TCP,
+            &FrameSpec {
+                src_mac: MacAddr::new(1, 2, 3, 4, 5, 6),
+                dst_mac: MacAddr::new(6, 5, 4, 3, 2, 1),
+                src: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)),
+                dst: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                protocol: TCP,
+                hop_limit: ip::HOP_LIMIT_ROUTED,
+            },
             &payload,
-            ip::HOP_LIMIT_ROUTED,
         )
         .unwrap();
 
@@ -655,13 +681,15 @@ mod tests {
         let mtu = (IP_V4_HDR_LEN + 16) as u16;
 
         let frames = build_fragmented_ethernet_frames(
-            src_mac,
-            dst_mac,
-            src,
-            dst,
-            TCP,
+            &FrameSpec {
+                src_mac,
+                dst_mac,
+                src,
+                dst,
+                protocol: TCP,
+                hop_limit: ip::HOP_LIMIT_ROUTED,
+            },
             &segment,
-            ip::HOP_LIMIT_ROUTED,
             mtu,
         )
         .expect("an IPv4 segment fragments");
@@ -696,13 +724,15 @@ mod tests {
         let src = IpAddr::V6(Ipv6Addr::LOCALHOST);
         let dst = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
         let result = build_fragmented_ethernet_frames(
-            mac,
-            mac,
-            src,
-            dst,
-            TCP,
+            &FrameSpec {
+                src_mac: mac,
+                dst_mac: mac,
+                src,
+                dst,
+                protocol: TCP,
+                hop_limit: ip::HOP_LIMIT_ROUTED,
+            },
             &[0u8; 40],
-            ip::HOP_LIMIT_ROUTED,
             40,
         );
         assert!(
@@ -747,13 +777,15 @@ mod tests {
         let inner = ipv4_packet(Ipv4Addr::new(198, 51, 100, 9), &[4, 2]);
 
         let plain = build_ethernet_frame(
-            sender,
-            MacAddr::new(1, 1, 1, 1, 1, 1),
-            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)),
-            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
-            TCP,
+            &FrameSpec {
+                src_mac: sender,
+                dst_mac: MacAddr::new(1, 1, 1, 1, 1, 1),
+                src: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)),
+                dst: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+                protocol: TCP,
+                hop_limit: ip::HOP_LIMIT_ROUTED,
+            },
             &[4, 2],
-            ip::HOP_LIMIT_ROUTED,
         )
         .unwrap();
         assert_eq!(source_mac(LinkType::Ethernet, &plain), Some(sender));

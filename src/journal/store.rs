@@ -39,8 +39,8 @@ use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
 use super::manifest::{Manifest, Plan, PlanChanged};
 use super::settle::Settlements;
-use crate::model::host::Host;
 use crate::detect::compute::DetectionRunRecord;
+use crate::model::host::Host;
 use crate::record::{HostRecord, PhaseRecord};
 use crate::scanner::report::{ScanKind, ScanPhase, ScanReport};
 
@@ -1475,7 +1475,7 @@ mod tests {
         let directory = {
             let mut journal = begin(&root, &map);
             journal
-                .record_detections(&[run.clone()])
+                .record_detections(std::slice::from_ref(&run))
                 .expect("records the run");
             let directory = journal.directory().to_path_buf();
             journal.close().expect("closes");
@@ -1483,7 +1483,11 @@ mod tests {
         };
 
         let read = read_detections(&directory).expect("reads the runs back");
-        assert_eq!(read, vec![run], "a detection run did not survive the journal");
+        assert_eq!(
+            read,
+            vec![run],
+            "a detection run did not survive the journal"
+        );
         assert_eq!(
             read[0].tape.rebuild(),
             tape,
