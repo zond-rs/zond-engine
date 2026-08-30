@@ -228,7 +228,14 @@ pub struct Ipv4 {
     pub total_length: Field<u16>,
     /// The header checksum. Computed over the finished header.
     pub checksum: Field<u16>,
-    /// Header options, padded by the caller to a four-byte boundary.
+    /// Header options, at most forty bytes and a whole number of four-byte
+    /// words.
+    ///
+    /// Both bounds come from the header-length field, which is four bits
+    /// counting words: fifteen of them, five of which the fixed header already
+    /// takes. [`Packet::build`] refuses a run that breaks either, because the
+    /// field wraps rather than saturating and a header that misdescribes itself
+    /// is read as something else by every receiver.
     pub options: Vec<u8>,
 }
 
@@ -414,8 +421,12 @@ pub struct Tcp {
     pub data_offset: Field<u8>,
     /// The checksum, over the segment and an IP pseudo-header. Computed.
     pub checksum: Field<u16>,
-    /// Header options, as raw bytes, padded by the caller to a four-byte
-    /// boundary.
+    /// Header options, as raw bytes: at most forty, and a whole number of
+    /// four-byte words.
+    ///
+    /// The data offset is the same shape of field as IPv4's header length and
+    /// carries the same bounds; see [`Ipv4::options`]. [`Packet::build`] refuses
+    /// a run that breaks either.
     pub options: Vec<u8>,
     /// The segment's payload.
     pub payload: Vec<u8>,
@@ -1140,6 +1151,8 @@ fn write_ethernet(header: &Ethernet, payload: Vec<u8>, inner: Option<&Layer>) ->
 }
 
 fn write_ipv4(header: &Ipv4, payload: Vec<u8>, inner: Option<&Layer>) -> Result<Vec<u8>> {
+    PacketError::check_options("an IPv4 header", header.options.len())?;
+
     let header_len = header.header_len();
     let total = header_len + payload.len();
     let total_length = match header.total_length {
@@ -1219,6 +1232,8 @@ fn write_tcp(
     payload: Vec<u8>,
     addresses: Option<(IpAddr, IpAddr)>,
 ) -> Result<Vec<u8>> {
+    PacketError::check_options("a TCP header", header.options.len())?;
+
     let header_len = header.header_len();
     let mut bytes = vec![0u8; header_len];
     bytes.extend_from_slice(&header.payload);
@@ -1674,6 +1689,80 @@ mod tests {
             8 + 5
         );
         assert_eq!(&bytes[bytes.len() - 5..], b"hello");
+    }
+
+    /// Options past what the length field measures are refused rather than
+    /// wrapped into it.
+    ///
+    /// Both fields are four bits of four-byte words, so forty bytes of options
+    /// is the most either header can describe. Silently, forty-four produced a
+    /// header declaring itself **zero** words long and a hundred produced one
+    /// claiming fifty-six bytes over a buffer of a hundred and twenty — a packet
+    /// every receiver reads as something other than what was built.
+    #[test]
+    fn options_past_what_the_length_field_measures_are_refused() {
+        const LARGEST: usize = 40;
+
+        for options in [LARGEST + 4, 100, 252] {
+            let mut ip = Ipv4::new(V4_SRC, V4_DST);
+            ip.options = vec![0u8; options];
+            assert!(
+                matches!(
+                    Packet::new().push(Layer::Ipv4(ip)).build(),
+                    Err(PacketError::OptionsTooLong { .. })
+                ),
+                "{options} bytes of IPv4 options was accepted"
+            );
+
+            let mut tcp = Tcp::new(1234, 80);
+            tcp.options = vec![0u8; options];
+            assert!(
+                matches!(
+                    Packet::new().push(Layer::Tcp(tcp)).build(),
+                    Err(PacketError::OptionsTooLong { .. })
+                ),
+                "{options} bytes of TCP options was accepted"
+            );
+        }
+
+        // And the largest that fits still builds, with the field describing it.
+        let mut ip = Ipv4::new(V4_SRC, V4_DST);
+        ip.options = vec![0u8; LARGEST];
+        let bytes = Packet::new()
+            .push(Layer::Ipv4(ip))
+            .build()
+            .expect("forty bytes of options is the most that fits");
+        assert_eq!(usize::from(bytes[0] & 0x0F) * 4, IP_V4_HDR_LEN + LARGEST);
+    }
+
+    /// Options that are not a whole number of words are refused too.
+    ///
+    /// The field counts words, so the division rounded down and the odd bytes
+    /// became payload to whatever received the packet: six bytes of options
+    /// built a twenty-six byte header declaring twenty-four.
+    #[test]
+    fn options_that_are_not_a_whole_number_of_words_are_refused() {
+        for options in [1usize, 2, 3, 5, 6, 7, 39] {
+            let mut ip = Ipv4::new(V4_SRC, V4_DST);
+            ip.options = vec![0u8; options];
+            assert!(
+                matches!(
+                    Packet::new().push(Layer::Ipv4(ip)).build(),
+                    Err(PacketError::OptionsMisaligned { .. })
+                ),
+                "{options} bytes of IPv4 options was accepted"
+            );
+
+            let mut tcp = Tcp::new(1234, 80);
+            tcp.options = vec![0u8; options];
+            assert!(
+                matches!(
+                    Packet::new().push(Layer::Tcp(tcp)).build(),
+                    Err(PacketError::OptionsMisaligned { .. })
+                ),
+                "{options} bytes of TCP options was accepted"
+            );
+        }
     }
 
     /// Options lengthen the header, so the data offset that finds the payload

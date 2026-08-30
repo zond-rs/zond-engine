@@ -103,6 +103,41 @@ pub enum PacketError {
         dst: IpAddr,
     },
 
+    /// A header's options do not fit the field that measures them.
+    ///
+    /// Both IPv4's header length and TCP's data offset are four bits counting
+    /// four-byte words, so each describes at most fifteen of them: sixty bytes
+    /// of header, forty of which are options. A longer run cannot be measured,
+    /// and the field wraps rather than saturating — forty-four bytes of options
+    /// produce a header declaring itself zero words long.
+    #[error(
+        "{what} carrying {options} bytes of options cannot be measured: its length field holds at most {limit}"
+    )]
+    OptionsTooLong {
+        /// Which header, such as `"an IPv4 header"`.
+        what: &'static str,
+        /// How many option bytes were given.
+        options: usize,
+        /// The most that field can describe, in bytes.
+        limit: usize,
+    },
+
+    /// A header's options are not a whole number of four-byte words.
+    ///
+    /// The field that measures them counts words, so a run that is not a
+    /// multiple of four is rounded down and the odd bytes are read as payload
+    /// by whatever receives the packet. Padding options to the boundary is the
+    /// caller's job, and this is what says they did not.
+    #[error(
+        "{what} carrying {options} bytes of options is not a whole number of the four-byte words its length field counts"
+    )]
+    OptionsMisaligned {
+        /// Which header, such as `"a TCP header"`.
+        what: &'static str,
+        /// How many option bytes were given.
+        options: usize,
+    },
+
     /// A frame carried something this module does not read.
     ///
     /// Not a malformed frame and not a fault. A promiscuous capture sees the
@@ -172,6 +207,31 @@ impl PacketError {
     /// The error for reading `what` out of a buffer that is too short.
     pub(crate) fn truncated(what: &'static str, needed: usize, got: usize) -> Self {
         Self::Truncated { what, needed, got }
+    }
+
+    /// Checks that `options` can be measured by a four-bit field counting
+    /// four-byte words, which is what both IPv4 and TCP use.
+    ///
+    /// Shared because the two headers have the same field in the same shape, and
+    /// a bound written twice is a bound that comes to disagree with itself.
+    pub(crate) fn check_options(
+        what: &'static str,
+        options: usize,
+    ) -> std::result::Result<(), Self> {
+        /// Four bits of words, less the five words of fixed header both have.
+        const LARGEST: usize = (15 - 5) * 4;
+
+        if !options.is_multiple_of(4) {
+            return Err(Self::OptionsMisaligned { what, options });
+        }
+        if options > LARGEST {
+            return Err(Self::OptionsTooLong {
+                what,
+                options,
+                limit: LARGEST,
+            });
+        }
+        Ok(())
     }
 
     /// The error for `what` whose structure did not hold, carrying whatever the
