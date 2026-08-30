@@ -1,5 +1,11 @@
 # The CVE correlation seed.
 #
+# Read through `Catalogue::embedded`, which supplies the `id` and `version` this
+# document deliberately does not carry: `zond:cve-kev` is reserved, so only the
+# reader that knows it is loading the shipped seed may stamp it. A catalogue
+# somebody else writes names itself, and `Catalogue::read` refuses one that
+# reaches for this namespace.
+#
 # A hand-picked starter set of well-known, network-reachable vulnerabilities,
 # keyed by the CPE vendor and product a service identification produces. It
 # exists to exercise the correlator, not to be complete: the full CISA KEV

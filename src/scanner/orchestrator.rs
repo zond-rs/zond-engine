@@ -783,9 +783,16 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
     strategy::routed::traceroute::trace(ctx, alive).await;
 }
 
-/// Joins what the scan identified against the embedded vulnerability database,
+/// Joins what the scan identified against the embedded vulnerability catalogue,
 /// recording a [`Finding`](crate::model::finding::Finding) on every port whose
 /// software a known vulnerability names at an affected version.
+///
+/// The embedded one because it is the only catalogue a scan has: nothing in
+/// [`ZondConfig`] names a dataset, and nothing should, since the rule there is
+/// that every field changes packets or timing and a catalogue changes neither.
+/// A caller with their own feed runs
+/// [`cve::correlate_report`](crate::cve::correlate_report) over the finished
+/// report, which is what that call is for.
 ///
 /// A sibling of the passes above and a step of its own, rather than something a
 /// report builder does on the way past. It sends nothing: everything it needs

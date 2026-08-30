@@ -320,7 +320,51 @@ impl core::marker::UnsafeUnpin for zond_engine::config::ZondConfig
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ZondConfig
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ZondConfig
 pub mod zond_engine::cve
+#[non_exhaustive] pub enum zond_engine::cve::CatalogueError
+pub zond_engine::cve::CatalogueError::Io(core::io::error::Error)
+pub zond_engine::cve::CatalogueError::Malformed(alloc::string::String)
+pub zond_engine::cve::CatalogueError::ReservedId
+pub zond_engine::cve::CatalogueError::ReservedId::id: alloc::string::String
+pub zond_engine::cve::CatalogueError::UnreadableVersion
+pub zond_engine::cve::CatalogueError::UnreadableVersion::version: alloc::string::String
+impl core::convert::From<core::io::error::Error> for zond_engine::cve::CatalogueError
+pub fn zond_engine::cve::CatalogueError::from(core::io::error::Error) -> Self
+impl core::error::Error for zond_engine::cve::CatalogueError
+pub fn zond_engine::cve::CatalogueError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::cve::CatalogueError
+pub fn zond_engine::cve::CatalogueError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::cve::CatalogueError
+pub fn zond_engine::cve::CatalogueError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::cve::CatalogueError
+impl core::marker::Send for zond_engine::cve::CatalogueError
+impl core::marker::Sync for zond_engine::cve::CatalogueError
+impl core::marker::Unpin for zond_engine::cve::CatalogueError
+impl core::marker::UnsafeUnpin for zond_engine::cve::CatalogueError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::CatalogueError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::cve::CatalogueError
+pub struct zond_engine::cve::Catalogue
+impl zond_engine::cve::Catalogue
+pub fn zond_engine::cve::Catalogue::content_hash(&self) -> &str
+pub fn zond_engine::cve::Catalogue::embedded() -> &'static Self
+pub fn zond_engine::cve::Catalogue::id(&self) -> &str
+pub fn zond_engine::cve::Catalogue::is_empty(&self) -> bool
+pub fn zond_engine::cve::Catalogue::len(&self) -> usize
+pub fn zond_engine::cve::Catalogue::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<Self, zond_engine::cve::CatalogueError>
+pub fn zond_engine::cve::Catalogue::version(&self) -> zond_engine::model::finding::Version
+impl core::clone::Clone for zond_engine::cve::Catalogue
+pub fn zond_engine::cve::Catalogue::clone(&self) -> zond_engine::cve::Catalogue
+impl core::fmt::Debug for zond_engine::cve::Catalogue
+pub fn zond_engine::cve::Catalogue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::cve::Catalogue
+impl core::marker::Send for zond_engine::cve::Catalogue
+impl core::marker::Sync for zond_engine::cve::Catalogue
+impl core::marker::Unpin for zond_engine::cve::Catalogue
+impl core::marker::UnsafeUnpin for zond_engine::cve::Catalogue
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::Catalogue
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::cve::Catalogue
 pub fn zond_engine::cve::correlate(&mut zond_engine::model::host::Host)
+pub fn zond_engine::cve::correlate_report(&mut zond_engine::report::ScanReport, &zond_engine::cve::Catalogue)
+pub fn zond_engine::cve::correlate_with(&mut zond_engine::model::host::Host, &zond_engine::cve::Catalogue)
 pub mod zond_engine::detect
 pub mod zond_engine::detect::authoring
 pub enum zond_engine::detect::authoring::Reference

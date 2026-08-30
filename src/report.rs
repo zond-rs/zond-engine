@@ -1642,6 +1642,18 @@ impl ScanReport {
         self.hosts.values()
     }
 
+    /// Every host recorded, to be changed in place.
+    ///
+    /// Crate-private, because a report is a record and letting a consumer edit
+    /// one would make it a mutable document that still claims to describe a scan
+    /// that happened. The one thing that legitimately runs over a finished
+    /// report is a pass adding what the scan already knew but had not been asked
+    /// to conclude, and [`cve::correlate_report`](crate::cve::correlate_report)
+    /// is the whole of that today.
+    pub(crate) fn hosts_mut(&mut self) -> impl Iterator<Item = &mut Host> {
+        self.hosts.values_mut()
+    }
+
     /// The number of hosts recorded.
     pub fn host_count(&self) -> usize {
         self.hosts.len()
