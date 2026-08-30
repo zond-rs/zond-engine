@@ -105,6 +105,24 @@ pub struct ServiceSignature {
     /// files under `assets/fingerprinting/imported` set it (`"Rapid7 Recog"`)
     /// and name the upstream licence they arrived under in their own header.
     pub attribution: Option<String>,
+
+    /// The application protocol this service is carried over, where it is
+    /// carried over one somebody else can also speak. `http` for Grafana,
+    /// absent for Redis.
+    ///
+    /// The corpus gives a product its own service name, so a Grafana server is
+    /// identified as `grafana` and a plain web server on the same port as
+    /// `http`. Without this, a detection written about HTTP has to name every
+    /// product that speaks it, and is wrong again the next time the corpus
+    /// grows. A detection names the protocol instead, through
+    /// [`Rule::speaks`](crate::detect::manifest::Rule::speaks).
+    ///
+    /// **It says what this signature matched on, not what the product offers.**
+    /// Riak, Neo4j and RethinkDB all have HTTP APIs and are fingerprinted here
+    /// by their binary wire protocols, so none of them sets it: a port
+    /// identified from those bytes is not a port answering HTTP.
+    #[serde(default)]
+    pub speaks: Option<String>,
 }
 
 /// Something to send to a port to make it answer.

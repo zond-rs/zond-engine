@@ -2,6 +2,7 @@
 name = "influxdb"
 default_ports = [8086]
 description = "InfluxDB API"
+speaks = "http"
 
 [[probe]]
 name = "ping"

@@ -11,6 +11,8 @@ description = "Hypertext Transfer Protocol"
 # exporter, an admin panel, a development build — and one request names it. The
 # alternative is what this engine used to do: wait out a banner that never comes,
 # then guess at TLS, and report the port with no service at all.
+speaks = "http"
+
 [[probe]]
 name = "get_root"
 payload = 'GET / HTTP/1.1\r\nHost: localhost\r\nUser-Agent: ZondScanner/1.0\r\nAccept: */*\r\n\r\n'

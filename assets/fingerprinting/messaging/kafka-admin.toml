@@ -2,6 +2,7 @@
 name = "kafka_rest"
 default_ports = [8082]
 description = "Confluent Kafka REST Proxy"
+speaks = "http"
 
 [[probe]]
 name = "get_topics"

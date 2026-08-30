@@ -2,6 +2,7 @@
 name = "consul"
 default_ports = [8500]
 description = "HashiCorp Consul"
+speaks = "http"
 
 [[probe]]
 name = "get_v1"

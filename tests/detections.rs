@@ -375,6 +375,52 @@ async fn a_compute_module_grades_the_response_the_scan_already_gathered() {
     );
 }
 
+/// ZA-4-015: the generic HTTP detection has to reach a web application the
+/// corpus can put a name to, and not only a web server it cannot.
+///
+/// The same module, the same scan shape, against a port the service pass
+/// identifies as `grafana` rather than as `http`. Before the gate named the
+/// protocol it named `http` alone, so this port, and every other product the
+/// corpus recognises, went unexamined. The `http` case above is the control:
+/// both must fire, or the gate has simply moved which half it misses.
+#[tokio::test]
+async fn the_http_module_reaches_a_web_application_the_corpus_names() {
+    if skip_when_privileged() {
+        return;
+    }
+
+    let server = spawn_grafana_server().await;
+    let (session, ctx) = ScanSession::new();
+
+    let mut scanner = ConnectPortScanner::new(
+        ctx.clone(),
+        CONNECT_CONCURRENCY,
+        ServiceDetection::Off,
+        &EvasionProfile::default(),
+    );
+    run_port_scanner(&mut scanner, vec![tcp(LOOPBACK, server.port)]).await;
+    service::detect(&ctx, ServiceDetection::Probe).await;
+    detect::detect(&ctx, ServiceDetection::Probe, DetectionEnvelope::default()).await;
+
+    let host = session.hosts().get(LOOPBACK).expect("the loopback host");
+
+    // The premise: this port is not called `http`. Without it the test could
+    // pass because the identification failed rather than because the gate
+    // widened.
+    let port = host
+        .ports()
+        .find(|port| port.number() == server.port)
+        .expect("the scanned port");
+    assert_eq!(
+        port.service().map(|service| service.name()),
+        Some("grafana"),
+        "the corpus names this port for its product, which is the whole premise"
+    );
+
+    port_finding(&host, server.port, "http-missing-security-headers")
+        .expect("a detection gated on the protocol reaches a port named for its product");
+}
+
 /// A port the gate does not fit is never handed to a detection, and the phase
 /// that skipped it is the same one that fired on the port beside it.
 ///

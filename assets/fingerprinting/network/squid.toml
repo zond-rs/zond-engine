@@ -2,6 +2,7 @@
 name = "squid"
 default_ports = [3128, 8080]
 description = "Squid HTTP Proxy"
+speaks = "http"
 
 [[probe]]
 name = "get_root"

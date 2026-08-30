@@ -266,6 +266,7 @@ mod tests {
                 port: None,
                 ports: Vec::new(),
                 protocol: None,
+                speaks: None,
             },
             capabilities: CapabilitySpec {
                 class,

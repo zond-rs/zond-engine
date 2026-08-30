@@ -2,6 +2,7 @@
 name = "kubernetes"
 default_ports = [6443, 8443, 10250]
 description = "Kubernetes API Server"
+speaks = "http"
 
 [[probe]]
 name = "get_api"

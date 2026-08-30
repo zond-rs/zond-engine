@@ -83,6 +83,10 @@ pub struct SignatureDb {
     /// scanner asking "what should I send to port 161" must not be handed a TCP
     /// payload that would mean nothing there.
     udp_probes: HashMap<u16, Vec<Vec<u8>>>,
+    /// `service name -> the application protocol it is carried over`, for the
+    /// services that declare one. See
+    /// [`ServiceSignature::speaks`](crate::fingerprint::ServiceSignature::speaks).
+    speaks: HashMap<Arc<str>, Arc<str>>,
     /// The global-match prefilter, built on first use.
     prefilter: OnceLock<LiteralPrefilter>,
 }
@@ -142,6 +146,18 @@ impl SignatureDb {
             }
         }
 
+        // The application protocol per service, where one is declared. Keyed by
+        // name rather than by file, because a service is often authored across
+        // several: `http` alone is six.
+        let mut speaks: HashMap<Arc<str>, Arc<str>> = HashMap::new();
+        for def in &defs {
+            if let Some(protocol) = &def.service.speaks {
+                speaks
+                    .entry(Arc::from(def.service.name.as_str()))
+                    .or_insert_with(|| Arc::from(protocol.as_str()));
+            }
+        }
+
         // Primary name and reachable-service set per port, from ported defs.
         let mut name_index: HashMap<u16, Arc<str>> = HashMap::new();
         let mut port_services: HashMap<u16, Vec<String>> = HashMap::new();
@@ -196,6 +212,7 @@ impl SignatureDb {
             tcp_probes,
             generic_tcp_probes,
             udp_probes,
+            speaks,
             prefilter: OnceLock::new(),
         }
     }
@@ -214,6 +231,17 @@ impl SignatureDb {
     /// stops it.
     pub fn indexed_ports(&self) -> impl Iterator<Item = u16> + '_ {
         self.name_index.keys().copied()
+    }
+
+    /// The application protocol `service` is carried over, where the corpus
+    /// says it is carried over one.
+    ///
+    /// A tunnelled service arrives labelled `ssl/http`, and the label is two
+    /// facts rather than a name, so the scheme is stripped before the lookup:
+    /// what a TLS-wrapped web server speaks is still HTTP.
+    pub fn speaks(&self, service: &str) -> Option<&str> {
+        let bare = service.rsplit('/').next().unwrap_or(service);
+        self.speaks.get(bare).map(|protocol| &**protocol)
     }
 
     /// The TCP probes to send to a port that registers none of its own.
@@ -294,12 +322,23 @@ mod tests {
     use crate::model::host::OsSource;
 
     fn def(name: &str, ports: Vec<u16>, patterns: &[&str]) -> ServiceDefinition {
+        speaking(name, ports, patterns, None)
+    }
+
+    /// A definition that declares what it is carried over.
+    fn speaking(
+        name: &str,
+        ports: Vec<u16>,
+        patterns: &[&str],
+        speaks: Option<&str>,
+    ) -> ServiceDefinition {
         ServiceDefinition {
             service: ServiceSignature {
                 name: name.to_string(),
                 default_ports: ports,
                 description: None,
                 attribution: None,
+                speaks: speaks.map(str::to_owned),
             },
             probe: Vec::new(),
             r#match: patterns
@@ -324,6 +363,22 @@ mod tests {
             def("https", vec![443], &["^TLS"]),
             def("http-alt", vec![80], &["^HTX"]),
         ])
+    }
+
+    /// A tunnelled port arrives labelled `ssl/http`, which is two facts and not
+    /// a name, so the scheme comes off before the corpus is asked.
+    #[test]
+    fn a_tunnelled_label_speaks_what_the_service_inside_it_speaks() {
+        let db = SignatureDb::from_defs(vec![
+            speaking("http", vec![80], &["^HTTP/1"], Some("http")),
+            speaking("redis", vec![6379], &["^-ERR"], None),
+        ]);
+
+        assert_eq!(db.speaks("http"), Some("http"));
+        assert_eq!(db.speaks("ssl/http"), Some("http"));
+        assert_eq!(db.speaks("redis"), None);
+        assert_eq!(db.speaks("ssl/redis"), None);
+        assert_eq!(db.speaks("nothing-here"), None);
     }
 
     #[test]

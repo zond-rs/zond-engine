@@ -92,6 +92,21 @@ pub struct Rule {
     /// `"tcp"` or `"udp"`. Gates which transport serves `speak`.
     #[serde(default)]
     pub protocol: Option<String>,
+
+    /// The application protocol the port must be carried over, `http`.
+    ///
+    /// What a detection written about a protocol rather than about a product
+    /// gates on. The fingerprint corpus gives a product its own service name,
+    /// so a Grafana server is identified as `grafana` and a plain web server as
+    /// `http`; a gate naming service names has to list every product that
+    /// speaks the protocol and is short by one the next time the corpus grows.
+    /// This asks the corpus instead, through
+    /// [`speaks`](crate::fingerprint::ServiceSignature::speaks).
+    ///
+    /// Fits a tunnelled service too: a port labelled `ssl/http` is a port
+    /// speaking HTTP, and the label is two facts rather than a name.
+    #[serde(default)]
+    pub speaks: Option<String>,
 }
 
 /// `[detection.capabilities]` — what a detection asks to be handed. The class *is*

@@ -2,6 +2,7 @@
 name = "vault"
 default_ports = [8200]
 description = "HashiCorp Vault"
+speaks = "http"
 
 [[probe]]
 name = "get_health"

@@ -2,6 +2,7 @@
 name = "couchdb"
 default_ports = [5984]
 description = "Apache CouchDB"
+speaks = "http"
 
 [[probe]]
 name = "http_get"

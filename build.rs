@@ -120,7 +120,11 @@ fn main() {
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
 
     compile_os_rules(Path::new(&out_dir));
-    compile_detections(Path::new(&out_dir), &corpus_service_names(&services));
+    compile_detections(
+        Path::new(&out_dir),
+        &corpus_service_names(&services),
+        &corpus_protocols(&services),
+    );
 }
 
 /// Every service name the fingerprint corpus can put on a port.
@@ -130,6 +134,43 @@ fn main() {
 /// vocabulary the corpus contributes to a detection gate.
 fn corpus_service_names(defs: &[ServiceDefinition]) -> BTreeSet<String> {
     defs.iter().map(|def| def.service.name.clone()).collect()
+}
+
+/// Every application protocol the corpus declares a service is carried over.
+///
+/// Unlike a service name, this vocabulary has exactly one source: nothing in
+/// Rust mints one and a tunnel does not rename one, so a gate naming a protocol
+/// absent from here can be refused rather than merely reported.
+fn corpus_protocols(defs: &[ServiceDefinition]) -> BTreeSet<String> {
+    defs.iter()
+        .filter_map(|def| def.service.speaks.clone())
+        .collect()
+}
+
+/// Refuses a gate naming an application protocol no service is carried over.
+///
+/// A refusal where [`warn_unknown_gate_services`] only warns, and the difference
+/// is what each can be sure of. A service name can be minted in Rust, so that
+/// check reads a list kept by hand and reports rather than decides. A protocol
+/// comes from `[service].speaks` and nowhere else, so a gate naming one the
+/// corpus does not is unambiguously a gate that fits no port.
+fn refuse_unknown_gate_protocol(
+    path: &Path,
+    id: &str,
+    when: &manifest::Rule,
+    known: &BTreeSet<String>,
+) {
+    let Some(protocol) = when.speaks.as_deref() else {
+        return;
+    };
+    if known.contains(protocol) {
+        return;
+    }
+    panic!(
+        "{}: '{id}' gates on speaks = '{protocol}', which no [service] in \
+         assets/fingerprinting is carried over; the detection can never fit a port",
+        path.display()
+    );
 }
 
 /// Service names the fingerprint analyzers state outright rather than drawing
@@ -197,7 +238,11 @@ fn gated_services(when: &manifest::Rule) -> impl Iterator<Item = &str> {
 /// hash taken over the body: a module has no `untagged` rule, so it is embedded as
 /// text with any file reference resolved away, and the hash is the provenance a
 /// finding records.
-fn compile_detections(out_dir: &Path, known_services: &BTreeSet<String>) {
+fn compile_detections(
+    out_dir: &Path,
+    known_services: &BTreeSet<String>,
+    known_protocols: &BTreeSet<String>,
+) {
     let mut toml_files = Vec::new();
     collect_toml_files(Path::new("assets/detect"), &mut toml_files);
     // Sort for a deterministic, reproducible artifact.
@@ -218,9 +263,23 @@ fn compile_detections(out_dir: &Path, known_services: &BTreeSet<String>) {
         if value.get("detection").and_then(|d| d.get("host")).is_some() {
             compile_host(path, &content, &mut ids, &mut hosts, known_services);
         } else if value.get("compute").is_some() {
-            compile_module(path, &content, &mut ids, &mut modules, known_services);
+            compile_module(
+                path,
+                &content,
+                &mut ids,
+                &mut modules,
+                known_services,
+                known_protocols,
+            );
         } else {
-            compile_flow(path, &content, &mut ids, &mut flows, known_services);
+            compile_flow(
+                path,
+                &content,
+                &mut ids,
+                &mut flows,
+                known_services,
+                known_protocols,
+            );
         }
     }
 
@@ -237,6 +296,7 @@ fn compile_flow(
     ids: &mut BTreeSet<String>,
     flows: &mut Vec<(String, String)>,
     known_services: &BTreeSet<String>,
+    known_protocols: &BTreeSet<String>,
 ) {
     let flow: schema::FlowDetection = toml::from_str(content)
         .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
@@ -260,6 +320,12 @@ fn compile_flow(
         gated_services(&flow.detection.when),
         known_services,
     );
+    refuse_unknown_gate_protocol(
+        path,
+        &flow.detection.id,
+        &flow.detection.when,
+        known_protocols,
+    );
 
     flows.push((sha256_hex(content.as_bytes()), content.to_string()));
 }
@@ -272,6 +338,7 @@ fn compile_module(
     ids: &mut BTreeSet<String>,
     modules: &mut Vec<(String, String)>,
     known_services: &BTreeSet<String>,
+    known_protocols: &BTreeSet<String>,
 ) {
     let detection: compute_schema::ComputeDetection = toml::from_str(content)
         .unwrap_or_else(|e| panic!("{}: not a valid compute detection: {e}", path.display()));
@@ -283,6 +350,12 @@ fn compile_module(
         &detection.detection.id,
         gated_services(&detection.detection.when),
         known_services,
+    );
+    refuse_unknown_gate_protocol(
+        path,
+        &detection.detection.id,
+        &detection.detection.when,
+        known_protocols,
     );
 
     let source = resolve_module_source(&detection.compute, path);

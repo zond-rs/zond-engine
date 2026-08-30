@@ -1132,6 +1132,7 @@ pub zond_engine::detect::manifest::Rule::ports: alloc::vec::Vec<u16>
 pub zond_engine::detect::manifest::Rule::protocol: core::option::Option<alloc::string::String>
 pub zond_engine::detect::manifest::Rule::service: core::option::Option<alloc::string::String>
 pub zond_engine::detect::manifest::Rule::services: alloc::vec::Vec<alloc::string::String>
+pub zond_engine::detect::manifest::Rule::speaks: core::option::Option<alloc::string::String>
 impl core::clone::Clone for zond_engine::detect::manifest::Rule
 pub fn zond_engine::detect::manifest::Rule::clone(&self) -> zond_engine::detect::manifest::Rule
 impl core::default::Default for zond_engine::detect::manifest::Rule
@@ -4213,6 +4214,7 @@ pub zond_engine::fingerprint::ServiceSignature::attribution: core::option::Optio
 pub zond_engine::fingerprint::ServiceSignature::default_ports: alloc::vec::Vec<u16>
 pub zond_engine::fingerprint::ServiceSignature::description: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::ServiceSignature::name: alloc::string::String
+pub zond_engine::fingerprint::ServiceSignature::speaks: core::option::Option<alloc::string::String>
 impl core::clone::Clone for zond_engine::fingerprint::ServiceSignature
 pub fn zond_engine::fingerprint::ServiceSignature::clone(&self) -> zond_engine::fingerprint::ServiceSignature
 impl core::fmt::Debug for zond_engine::fingerprint::ServiceSignature
@@ -4267,6 +4269,7 @@ pub fn zond_engine::fingerprint::SignatureDb::prefilter(&self) -> &zond_engine::
 pub fn zond_engine::fingerprint::SignatureDb::service_name(&self, u16) -> core::option::Option<alloc::sync::Arc<str>>
 pub fn zond_engine::fingerprint::SignatureDb::signature(&self, usize) -> &zond_engine::fingerprint::matcher::Signature
 pub fn zond_engine::fingerprint::SignatureDb::signatures_for_port(&self, u16) -> &[usize]
+pub fn zond_engine::fingerprint::SignatureDb::speaks(&self, &str) -> core::option::Option<&str>
 pub fn zond_engine::fingerprint::SignatureDb::tcp_probe_payloads(&self, u16) -> &[alloc::vec::Vec<u8>]
 pub fn zond_engine::fingerprint::SignatureDb::udp_probe_payloads(&self, u16) -> &[alloc::vec::Vec<u8>]
 pub fn zond_engine::fingerprint::SignatureDb::warm(&self, &[usize])

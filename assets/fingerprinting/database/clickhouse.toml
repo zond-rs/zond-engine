@@ -2,6 +2,7 @@
 name = "clickhouse"
 default_ports = [8123, 9000]
 description = "ClickHouse Database"
+speaks = "http"
 
 [[probe]]
 name = "http_ping"

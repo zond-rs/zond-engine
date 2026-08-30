@@ -2,6 +2,7 @@
 name = "docker"
 default_ports = [2375, 2376]
 description = "Docker Remote API"
+speaks = "http"
 
 [[probe]]
 name = "get_version"
