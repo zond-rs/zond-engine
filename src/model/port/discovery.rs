@@ -76,6 +76,7 @@ pub enum ScanResponse {
 /// other. `timestamp` places the finding on a timeline a person reads, so it is
 /// wall-clock. `rtt` is measured elapsed time, and stays correct across a clock
 /// adjustment mid-scan because it was never derived from the clock.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {
     /// The packet that settled the state.

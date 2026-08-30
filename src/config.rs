@@ -72,6 +72,7 @@ use crate::transport::probe::SendMode;
 /// ICMP error only as fast as the host is permitted to send one. This scales
 /// that starting point rather than replacing it, so choosing "fast" does not
 /// quietly hand the UDP scanner a schedule its protocol cannot satisfy.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ScanEffort {
     /// One probe per target and no repeats.
@@ -195,6 +196,7 @@ impl std::str::FromStr for ScanEffort {
 /// construction what an intrusion-detection system was written to notice. None
 /// is sent yet; the level is documented for what it does rather than for what it
 /// is named after.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OsDetection {
     /// Level 0. Identify nothing, and record nothing about the stacks that
@@ -412,6 +414,7 @@ impl FromStr for OsDetection {
 ///
 /// Ordered by what each level puts on the wire, so a caller can compare two
 /// levels and a report can record which was asked for.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ServiceDetection {
     /// Level 0. Do not connect. A port keeps whatever its number implies and
@@ -714,6 +717,18 @@ pub struct IdleScan {
 /// scan was run*. [`ScanSettings`](crate::report::ScanSettings) is derived
 /// from it into every report, and a field that cannot change a finding has no
 /// business in the record of one.
+///
+/// Non-exhaustive and [`Default`]-constructed, so the next knob is an additive
+/// change rather than a major version. Start from
+/// [`default`](Default::default) and set what you want:
+///
+/// ```
+/// use zond_engine::ZondConfig;
+///
+/// let mut cfg = ZondConfig::default();
+/// cfg.traceroute = true;
+/// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct ZondConfig {
     /// Forbids the scan from generating any DNS traffic of its own: no A, AAAA

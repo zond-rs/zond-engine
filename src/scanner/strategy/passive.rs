@@ -302,6 +302,7 @@ impl OnLink {
 /// direction: what makes a targeted run targeted is what it may **record**, not
 /// what it may ask. For a listener there is no asking at all, so recording is
 /// where the whole of the scope lives.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub enum Recording {
     /// Record findings about the machines attached to the links being listened
@@ -441,6 +442,7 @@ impl<'a> Announced<'a> {
 /// Findings go to the [`ScanContext`] it was built with, as they do for the
 /// other two: a strategy writes what it found, and returns only whether the
 /// attempt itself got to the end.
+#[must_use]
 pub struct PassiveListener {
     ctx: ScanContext,
     frames: FrameStream,

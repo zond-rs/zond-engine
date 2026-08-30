@@ -171,6 +171,7 @@ impl fmt::Display for ImportOrigin {
 /// These are refusals, not tuning. Every default is far past anything an honest
 /// file reaches, and a caller who has vetted its input can lift them with
 /// [`ImportLimits::none`].
+#[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImportLimits {
@@ -340,6 +341,7 @@ impl fmt::Display for RejectedTarget {
 ///
 /// Non-exhaustive and constructed through [`ImportOptions::new`], so a future
 /// option is an additive change rather than a break for everyone who built one.
+#[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ImportOptions<'a> {

@@ -68,6 +68,7 @@ pub struct UnknownSendMode {
 /// Only affects the raw-socket SYN paths; the unprivileged TCP-connect
 /// fallback and the on-link ARP/ICMPv6 [`LocalScanner`](crate::scanner)
 /// discovery are unaffected.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SendMode {
     /// Pick per platform: a raw Layer-4 socket on Unix - which the kernel
@@ -131,6 +132,7 @@ impl FromStr for SendMode {
 /// Which kind of raw probe traffic a [`ProbeTransport`] carries. Determines
 /// both the raw socket(s) opened for sending and the kernel BPF filter that
 /// decides which captured frames are worth copying to userspace.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum ProbeKind {
     /// TCP SYN probes and their SYN+ACK / RST replies, over IPv4 and IPv6,

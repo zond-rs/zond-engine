@@ -83,6 +83,7 @@ pub trait ReportReader {
 /// A struct rather than a bare [`ImportLimits`] so that a policy this side needs
 /// and the target side does not stays an additive change.
 /// [`max_document_bytes`](Self::max_document_bytes) is the first such policy.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReportOptions {
     /// The bounds shared with the target readers.

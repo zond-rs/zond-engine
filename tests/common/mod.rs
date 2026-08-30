@@ -57,10 +57,9 @@ pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 /// A config with DNS disabled, so a result reflects only what was actually
 /// observed on the wire — no reverse-lookup side effects.
 pub fn test_config() -> ZondConfig {
-    ZondConfig {
-        no_dns: true,
-        ..Default::default()
-    }
+    let mut cfg = ZondConfig::default();
+    cfg.no_dns = true;
+    cfg
 }
 
 /// True when the process would take the raw ARP/SYN scan paths rather than the

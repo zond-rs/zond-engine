@@ -39,6 +39,7 @@ const FORMAT: &str = "diff json";
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 #[derive(Debug, Clone, Default)]
 pub struct JsonDiffExporter {
     options: ExportOptions,

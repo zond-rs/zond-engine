@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// Information about transport security (TLS/SSL) successfully negotiated on a port.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Security {
     /// The TLS version negotiated, such as `"TLSv1.3"`.
@@ -215,6 +216,7 @@ impl Default for Security {
 }
 
 /// A parsed summary of a service's X.509 security certificate.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertificateInfo {
     /// The Common Name of the certificate subject.

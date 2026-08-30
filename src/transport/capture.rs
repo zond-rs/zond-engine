@@ -77,6 +77,7 @@ pub const REPLY_SNAP_LEN: u32 = 65_535;
 /// The snapshot length is also the only place a limit on **what this process
 /// reads of other people's traffic** can be enforced by the kernel rather than
 /// by discipline, which is a property worth having a type to hang on.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct CaptureOptions {
     /// A `libpcap` filter expression, in `tcpdump` syntax, compiled to a kernel

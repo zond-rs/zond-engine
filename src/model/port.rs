@@ -149,6 +149,7 @@ pub enum PortState {
 /// The number and protocol identify it; everything else is a finding, and is
 /// absent until something establishes it. See the module documentation for what
 /// the four optional halves each answer and why they are kept apart.
+#[must_use]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Port {
     /// The 16-bit port number.

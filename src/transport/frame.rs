@@ -43,7 +43,6 @@
 
 use std::net::IpAddr;
 
-use anyhow::Context;
 use pnet_base::MacAddr;
 use pnet_packet::ethernet::EtherTypes;
 use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
@@ -52,6 +51,7 @@ use pnet_packet::ipv6::Ipv6Packet;
 
 use crate::model::capture::{IpObservation, Ipv4Observation, Ipv6Observation};
 use crate::protocols::craft;
+use crate::protocols::error::PacketError;
 use crate::protocols::ethernet;
 use crate::protocols::ip;
 use crate::protocols::sizes::{ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN};
@@ -59,6 +59,7 @@ use crate::protocols::sizes::{ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN};
 /// The subset of `pcap` data-link types this crate knows how to strip down to
 /// an IP packet. Anything else is [`LinkType::Unsupported`] and the caller
 /// must refuse to capture on that interface rather than misparse its frames.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkType {
     /// `DLT_EN10MB`: a 14-byte Ethernet II header (plus optional 802.1Q VLAN
@@ -370,7 +371,7 @@ pub struct FrameSpec {
 ///
 /// The IP version comes from the spec's address pair, which must agree. A
 /// mismatch is an error rather than a silent wrong-family packet.
-pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> anyhow::Result<Vec<u8>> {
+pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> Result<Vec<u8>, PacketError> {
     let FrameSpec {
         src_mac,
         dst_mac,
@@ -379,7 +380,10 @@ pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> anyhow::Result<
         protocol,
         hop_limit,
     } = *spec;
-    let payload_len = u16::try_from(segment.len()).context("layer-4 segment too large for IP")?;
+    // Counted before the family is known, so the header this will be added to
+    // has no size yet and the bound is the width of the field alone.
+    let payload_len = u16::try_from(segment.len())
+        .map_err(|_| PacketError::too_long("an IP payload length", 0, segment.len()))?;
 
     let (ethertype, ip_header) = match (src, dst) {
         (IpAddr::V4(s), IpAddr::V4(d)) => (
@@ -390,7 +394,7 @@ pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> anyhow::Result<
             EtherTypes::Ipv6,
             ip::build_ipv6_header(s, d, payload_len, protocol, hop_limit),
         ),
-        _ => anyhow::bail!("IP version mismatch between {src} and {dst}"),
+        _ => return Err(PacketError::FamilyMismatch { src, dst }),
     };
 
     let mut frame = Vec::with_capacity(ETH_HDR_LEN + ip_header.len() + segment.len());
@@ -422,7 +426,7 @@ pub fn build_fragmented_ethernet_frames(
     spec: &FrameSpec,
     segment: &[u8],
     mtu: u16,
-) -> anyhow::Result<Vec<Vec<u8>>> {
+) -> Result<Vec<Vec<u8>>, PacketError> {
     let FrameSpec {
         src_mac,
         dst_mac,
@@ -433,11 +437,10 @@ pub fn build_fragmented_ethernet_frames(
     } = *spec;
     let (src4, dst4) = match (src, dst) {
         (IpAddr::V4(s), IpAddr::V4(d)) => (s, d),
-        (IpAddr::V6(_), IpAddr::V6(_)) => anyhow::bail!(
-            "cannot fragment to {dst}: IPv6 fragments through an extension header this engine \
-             does not build"
-        ),
-        _ => anyhow::bail!("IP version mismatch between {src} and {dst}"),
+        (IpAddr::V6(_), IpAddr::V6(_)) => {
+            return Err(PacketError::UnsupportedFragmentation { dst });
+        }
+        _ => return Err(PacketError::FamilyMismatch { src, dst }),
     };
 
     let header = craft::Ipv4 {

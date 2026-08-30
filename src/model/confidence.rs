@@ -16,6 +16,11 @@
 ///
 /// Ordered weakest-to-strongest, so evidence can be compared and ranked
 /// directly.
+///
+/// Non-exhaustive, as [`Severity`](crate::model::finding::Severity) is and for
+/// the same reason: a grade added to the scale costs a recompile rather than a
+/// major version. [`ALL`](Self::ALL) is the list to iterate.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Confidence {
     /// A guess from context alone, e.g. the registered name for a port number

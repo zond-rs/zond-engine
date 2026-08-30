@@ -33,6 +33,7 @@ use super::timer::{ScanBudget, ScanTimer};
 /// jitter adds to it, and `rtt_window_capacity` sets how many recent
 /// samples inform that adaptation. See [`RttWindow::suggest_timeout`] for
 /// exactly how the latter three combine.
+#[must_use]
 #[derive(Debug, Clone, Copy)]
 pub struct AdaptiveDeadlineConfig {
     /// The hard deadline, past which the scan stops with whatever it has.

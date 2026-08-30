@@ -67,6 +67,7 @@ pub struct Budget {
 
 /// Which bound a run hit. Each is a *deterministic* trap at a known point, not a
 /// timing accident, so the same inputs trap at the same place every time.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetTrap {
     /// The work bound. A module that computes without end is trapped here.
@@ -100,6 +101,7 @@ pub struct Denial {
 }
 
 /// The module itself broke — as opposed to hitting a bound or being refused.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleFault {
     /// The guest raised an error, or an error it could have handled propagated
@@ -115,6 +117,7 @@ pub enum ModuleFault {
 /// The `Err` half of a [`run`](super::ComputeRuntime::run): an `Ok(vec)` is a
 /// clean run (an empty vector its clean no-finding case), and every other way a
 /// run can end is one of these, recorded rather than swallowed.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunOutcome {
     /// A bound was hit; the module was trapped at a known point.

@@ -138,10 +138,8 @@ async fn a_real_discovery_sweep_exports_a_document_the_schema_accepts() {
 #[tokio::test]
 async fn a_merged_two_phase_report_exports_both_phases() {
     let cfg = test_config();
-    let already_swept = zond_engine::ZondConfig {
-        assume_up: true,
-        ..test_config()
-    };
+    let mut already_swept = test_config();
+    already_swept.assume_up = true;
     let server = spawn_banner_server(b"hi\r\n").await;
 
     let mut report = run_discover(ip_set(LOOPBACK), &cfg).await.report;

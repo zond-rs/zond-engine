@@ -48,6 +48,7 @@ use super::cursor::{Checkpoint, Cursor};
 /// The unsettled outcomes are deliberately absent. They carry no position, so
 /// there is nothing to attach and they are recorded straight through
 /// [`Settlements::record`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Settled {
     /// The target answered.
@@ -70,6 +71,7 @@ impl Settled {
 ///
 /// Settled variants carry the target's position in the plan's enumeration; see
 /// [`PlannedTarget`](crate::model::target::PlannedTarget).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Outcome {
     /// The target answered. **Settled.**

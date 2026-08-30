@@ -508,6 +508,7 @@ async fn run_discovery(
 /// link says which links those are; see [`system::interface`](crate::system::interface)
 /// for how to find them. That is the same rule that keeps the engine from
 /// opening a journal nobody asked for.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct ListenScope {
     links: Vec<crate::model::ip::scoped::Zone>,
@@ -521,6 +522,7 @@ pub struct ListenScope {
 /// asked nothing and can never be finished, so somebody else decides — which is
 /// why this is a required part of the scope rather than a setting with a
 /// default.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Until {
     /// It runs until the caller stops it through

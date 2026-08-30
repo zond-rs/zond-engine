@@ -37,6 +37,7 @@ pub const MAX_CPES_PER_OS: usize = 50;
 /// The accuracy is what makes several techniques combinable: a better-informed
 /// finding replaces a worse one and equally-informed ones fill each other's
 /// gaps. See [`merge`](Self::merge).
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OsFingerprint {
     /// The operating system's name, such as `"Linux"` or `"Windows"`.
@@ -170,7 +171,6 @@ impl OsFingerprint {
     }
 
     /// Builder method to set the device class.
-    #[must_use]
     pub fn with_device(mut self, device: impl Into<Arc<str>>) -> Self {
         self.device = Some(device.into());
         self
@@ -192,7 +192,6 @@ impl OsFingerprint {
     }
 
     /// Records the kernel release.
-    #[must_use]
     pub fn with_kernel(mut self, kernel: impl Into<Arc<str>>) -> Self {
         self.kernel = Some(kernel.into());
         self

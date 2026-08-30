@@ -31,6 +31,7 @@ use std::sync::Arc;
 pub const MAX_CPES_PER_SERVICE: usize = 50;
 
 /// A service identified on a port, and how sure the identification is.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     /// The high-level service protocol name, such as `"ssh"` or `"http"`.

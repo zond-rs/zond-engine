@@ -69,6 +69,7 @@ const DEFAULT_HEADING: &str = "Scan comparison";
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 #[derive(Debug, Clone, Default)]
 pub struct HtmlDiffExporter {
     options: ExportOptions,

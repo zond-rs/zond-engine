@@ -106,6 +106,7 @@ pub enum CsvColumn {
 /// Reads target expressions out of a table.
 ///
 /// Holds one record at a time, so a file of any size costs the same memory.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct CsvImporter {
     limits: ImportLimits,

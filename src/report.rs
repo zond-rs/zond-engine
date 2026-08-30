@@ -139,6 +139,7 @@ impl fmt::Display for ScanKind {
 /// that an endpoint was not probed. Nothing this engine builds is `Unstated`;
 /// it is what a report from another tool, or from a build older than this
 /// field, reads back as.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PortScope {
     /// The record does not say which ports were walked.
@@ -933,6 +934,7 @@ impl ProbeStats {
 /// a report that carries failures still carries results - just narrower ones
 /// than the caller asked for. This is the record that lets a consumer tell a
 /// genuinely empty network from a sweep whose raw scanner never started.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannerFailure {
     scanner: ScannerKind,
@@ -1115,6 +1117,7 @@ impl ProbeStats {
 /// A phase may carry several: one per link it captured on, and another whenever
 /// the answer changed while it ran, which for a listener running for days is a
 /// cable somebody moved.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
     link: Zone,
@@ -1135,6 +1138,7 @@ pub struct Attachment {
 /// of. It is also the honest answer to "why does this say VLAN 40" — the two
 /// protocols carry that field in different places and not every device sends
 /// either.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AttachmentSource {
     /// IEEE 802.1AB, which anything may speak.
@@ -1254,6 +1258,7 @@ impl Attachment {
 /// record id, a bucket key. [`merge`](crate::merge) is the only thing that
 /// writes a `PhaseOrigin`, and it takes the version from the source report's own
 /// attribution.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhaseOrigin {
     label: Option<Arc<str>>,
@@ -1813,7 +1818,8 @@ impl ScanReport {
     ///
     /// // The sweep already established these hosts answer, so the scan is told
     /// // to take them on trust rather than probe for liveness a second time.
-    /// let scanning = ZondConfig { assume_up: true, ..cfg.clone() };
+    /// let mut scanning = cfg.clone();
+    /// scanning.assume_up = true;
     /// let targets = report.alive_targets(PortSet::try_from("22,80,443")?);
     /// let (_, ports) = scan(targets, &scanning).await?;
     /// report.merge(ports.join().await?);

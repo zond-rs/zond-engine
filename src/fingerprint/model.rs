@@ -27,6 +27,7 @@ use crate::model::port::Service;
 ///
 /// Retained on every observation for provenance, resolver tie-breaking, and
 /// per-analyzer metrics. New analyzers add a variant here.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceId {
     /// The registered name for the port number, with no probing.
@@ -47,6 +48,7 @@ pub enum SourceId {
 /// When an analyzer identifies a protocol from data read through a tunnel, the
 /// verdict records it here so the label can reflect both facts (e.g. `ssl/http`)
 /// while `Evidence::service` stays the bare protocol for downstream use.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tunnel {
     /// A completed TLS handshake — the payload was decrypted before analysis.
@@ -71,6 +73,7 @@ impl Tunnel {
 /// Comparable but not [`Eq`]: [`os`](Self::os) carries a confidence, which is a
 /// float, and a value nobody can write down exactly is not one two observations
 /// should be claimed to share.
+#[must_use]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Evidence {
     /// The protocol the port was speaking, in the corpus's vocabulary: `http`,

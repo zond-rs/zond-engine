@@ -130,6 +130,7 @@ use crate::report::{PhaseOrigin, ScanPhase, ScanReport};
 /// What a merge is allowed to assume.
 ///
 /// The default suits scans of one network, by whatever tools, in whatever order.
+#[must_use]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MergeOptions {
     identity: HostIdentity,

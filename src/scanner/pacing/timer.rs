@@ -124,6 +124,7 @@ impl ScanTimer {
 /// plus a small increment added once per additional target (`per_target`),
 /// so the resulting duration grows with the size of the scan while never
 /// exceeding an absolute `ceiling`.
+#[must_use]
 #[derive(Debug, Clone, Copy)]
 pub struct ScanBudget {
     base: Duration,

@@ -150,6 +150,7 @@ pub struct CapabilitySpec {
 /// maps onto the model's [`DetectionClass`](crate::model::finding::DetectionClass)
 /// through [`into_model`](Self::into_model) in the runtime `convert` module, so
 /// this stays free of the model.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Class {
@@ -171,6 +172,7 @@ pub enum Class {
 
 /// What a detection may `speak` to. One value for now; the enum is the room to
 /// grow.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Speak {

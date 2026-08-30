@@ -155,6 +155,7 @@ pub type HostLookup<'a> = &'a dyn Fn(&str) -> Option<Vec<IpAddr>>;
 /// resolving `lan`, `%en0` or a hostname means reading the host this process
 /// runs on, and a parser that does that on its own behalf cannot be embedded
 /// anywhere its author did not anticipate.
+#[must_use]
 #[derive(Default, Clone, Copy)]
 pub struct TargetContext<'a> {
     /// Expands keywords such as `lan` into the addresses they stand for.

@@ -109,6 +109,7 @@ pub struct Step {
 
 /// A match rule as authored: a bare pattern string, or a full [`MatchDetail`].
 /// Boxed so a bare-pattern step does not carry the whole rule's weight.
+#[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum MatchSpec {

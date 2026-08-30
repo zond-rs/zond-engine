@@ -84,10 +84,8 @@ async fn the_port_phase_covers_only_what_answered() {
 /// skips the phase entirely rather than running it and ignoring the result.
 #[tokio::test]
 async fn assume_up_probes_the_ports_without_asking_first() {
-    let cfg = zond_engine::ZondConfig {
-        assume_up: true,
-        ..test_config()
-    };
+    let mut cfg = test_config();
+    cfg.assume_up = true;
     let outcome = run_scan(target_map(DEAD, "1,2"), &cfg).await;
 
     let kinds: Vec<ScanKind> = outcome

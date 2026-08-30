@@ -39,6 +39,7 @@ use std::sync::Arc;
 /// aliveness also ranks by strength of evidence. Were a timeout allowed to
 /// produce `Filtered`, a host nobody ever heard from would outrank an explicit
 /// unreachable, and this ordering would invert the evidence it claims to rank.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostStatus {
     /// Nothing was received that says anything about this host. This is what a
@@ -129,6 +130,7 @@ pub enum StatusProtocol {
 ///
 /// `StatusReason` pairs a protocol event with optional human-readable or machine-parsable
 /// details to provide a transparent "audit trail" for host discovery.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct StatusReason {

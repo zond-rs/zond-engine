@@ -142,6 +142,7 @@ fn port_tone(state: PortState) -> &'static str {
 /// that costs a syscall per write wants a [`BufWriter`] as above.
 ///
 /// [`BufWriter`]: std::io::BufWriter
+#[must_use]
 #[derive(Debug, Clone, Default)]
 pub struct HtmlExporter {
     options: ExportOptions,

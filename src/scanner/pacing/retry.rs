@@ -110,6 +110,7 @@ impl SilentHostPolicy {
 /// reasonable wait differs by protocol far more than by network: a SYN is
 /// answered as fast as the path allows, while an ICMP error is rate-limited to
 /// roughly one per second by the host that would send it.
+#[must_use]
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     /// Total sends per probe, initial attempt included. One disables

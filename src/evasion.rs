@@ -29,6 +29,7 @@ use crate::transport::probe::SendMode;
 /// A default profile is inert — see the [module documentation](self). Set a
 /// field for each technique you want; [`is_active`](Self::is_active) reports
 /// whether any is set.
+#[must_use]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EvasionProfile {
     /// The source port every probe leaves from, replacing the port the engine
@@ -230,14 +231,12 @@ impl EvasionProfile {
     }
 
     /// Sets the [source port](Self::source_port) every probe leaves from.
-    #[must_use]
     pub fn with_source_port(mut self, port: u16) -> Self {
         self.source_port = Some(port);
         self
     }
 
     /// Sets the [hop limit](Self::ttl) every ordinary probe carries.
-    #[must_use]
     pub fn with_ttl(mut self, ttl: u8) -> Self {
         self.ttl = Some(ttl);
         self
@@ -245,7 +244,6 @@ impl EvasionProfile {
 
     /// Sets the number of random [padding](Self::padding) bytes every probe
     /// appends to its payload.
-    #[must_use]
     pub fn with_padding(mut self, padding: u16) -> Self {
         self.padding = Some(padding);
         self
@@ -253,7 +251,6 @@ impl EvasionProfile {
 
     /// Sets whether every TCP probe carries a
     /// [deliberately wrong checksum](Self::bad_tcp_checksum).
-    #[must_use]
     pub fn with_bad_tcp_checksum(mut self, corrupt: bool) -> Self {
         self.bad_tcp_checksum = corrupt;
         self
@@ -261,7 +258,6 @@ impl EvasionProfile {
 
     /// Sets the [hardware address](Self::spoof_mac) every frame claims to come
     /// from.
-    #[must_use]
     pub fn with_spoof_mac(mut self, mac: MacAddr) -> Self {
         self.spoof_mac = Some(mac);
         self
@@ -269,7 +265,6 @@ impl EvasionProfile {
 
     /// Sets the largest each [IP fragment](Self::fragment) a probe is split into
     /// may be, in bytes.
-    #[must_use]
     pub fn with_fragment(mut self, mtu: u16) -> Self {
         self.fragment = Some(mtu);
         self
@@ -277,14 +272,12 @@ impl EvasionProfile {
 
     /// Sets the [decoy](Self::decoys) source addresses every probe is copied
     /// from.
-    #[must_use]
     pub fn with_decoys(mut self, decoys: Vec<IpAddr>) -> Self {
         self.decoys = decoys;
         self
     }
 
     /// Sets the exact [TCP flag byte](Self::flags) every port probe carries.
-    #[must_use]
     pub fn with_flags(mut self, flags: u8) -> Self {
         self.flags = Some(flags);
         self

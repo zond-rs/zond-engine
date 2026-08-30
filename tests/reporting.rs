@@ -258,10 +258,8 @@ async fn merging_two_phases_keeps_both_findings() {
     // The scan is asked with `assume_up`: a caller holding a sweep's results
     // already knows these hosts answer, and letting the scan establish it again
     // would spend the probes twice.
-    let already_swept = zond_engine::ZondConfig {
-        assume_up: true,
-        ..test_config()
-    };
+    let mut already_swept = test_config();
+    already_swept.assume_up = true;
 
     let discovery = run_discover(ip_set(LOOPBACK), &cfg).await.report;
     let ports = run_scan(

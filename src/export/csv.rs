@@ -88,6 +88,7 @@ const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 #[derive(Debug, Clone, Default)]
 pub struct CsvExporter {
     options: ExportOptions,

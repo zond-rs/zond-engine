@@ -22,6 +22,7 @@ use pnet_packet::ethernet::EtherTypes;
 use crate::protocols::ethernet::Frame;
 
 use crate::model::host::{NetworkRole, StatusProtocol};
+use crate::protocols::error::PacketError;
 use crate::protocols::{dhcp, ip, ndp};
 
 /// What a [`DiscoveryProtocol`] found when asked to interpret one received frame.
@@ -146,7 +147,13 @@ pub trait DiscoveryProtocol: Send {
     /// other protocol, and the sweep offers it to the next reader. An error is
     /// for a frame this protocol owns and could not parse, which ends the
     /// reading: the frame is credited to nobody.
-    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading>;
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError`], the same type the parsers in
+    /// [`protocols`](crate::protocols) return, since reading a frame is the
+    /// whole of what an implementation does.
+    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError>;
 
     /// The evidence this protocol produces, for the liveness record of whichever
     /// host it claims a frame from.
@@ -202,7 +209,7 @@ pub fn sweep_protocols() -> Vec<Box<dyn DiscoveryProtocol>> {
 pub struct ArpProtocol;
 
 impl DiscoveryProtocol for ArpProtocol {
-    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
+    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
         if frame.ethertype() != EtherTypes::Arp {
             return Ok(Reading::unhandled());
         }
@@ -238,7 +245,7 @@ impl DiscoveryProtocol for ArpProtocol {
 pub struct NdpProtocol;
 
 impl DiscoveryProtocol for NdpProtocol {
-    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
+    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
         match ndp::advertisement(frame) {
             Some(advert) if is_assignable(advert.target) => {
                 let matched = ProtocolMatch::Solicited(Some(IpAddr::V6(advert.target)));
@@ -308,7 +315,7 @@ fn is_assignable(address: std::net::Ipv6Addr) -> bool {
 pub struct RouterAdvertProtocol;
 
 impl DiscoveryProtocol for RouterAdvertProtocol {
-    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
+    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
         Ok(match ndp::is_router_advertisement(frame) {
             true => Reading::declaring(ProtocolMatch::Unsolicited, NetworkRole::Router),
             false => Reading::unhandled(),
@@ -346,7 +353,7 @@ impl DiscoveryProtocol for RouterAdvertProtocol {
 pub struct DhcpProtocol;
 
 impl DiscoveryProtocol for DhcpProtocol {
-    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
+    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
         let Some(reply) = dhcp::server_reply(frame) else {
             return Ok(Reading::unhandled());
         };
@@ -400,7 +407,7 @@ impl DiscoveryProtocol for DhcpProtocol {
 pub struct Icmpv6EchoProtocol;
 
 impl DiscoveryProtocol for Icmpv6EchoProtocol {
-    fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading> {
+    fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError> {
         if frame.ethertype() != EtherTypes::Ipv6 {
             return Ok(Reading::unhandled());
         }

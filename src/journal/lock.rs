@@ -103,6 +103,7 @@ impl LockRecord {
 }
 
 /// What is known about a journal's writer.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockState {
     /// No lock file. The journal is free.
@@ -504,6 +505,7 @@ mod persistence {
     }
 
     /// Why a lock could not be taken.
+    #[non_exhaustive]
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum LockRefused {
         /// Somebody else has it. Carries the state so a caller can render

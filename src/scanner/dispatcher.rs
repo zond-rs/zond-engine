@@ -84,6 +84,7 @@ async fn drain(
 
 /// Streams the targets of a [`TargetMap`] out in shuffled batches, each
 /// numbered by its position in the plan.
+#[must_use]
 pub struct Dispatcher {
     target_map: TargetMap,
     batch_size: usize,

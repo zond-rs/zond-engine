@@ -87,6 +87,22 @@ pub enum PacketError {
         options: usize,
     },
 
+    /// A datagram was handed to the fragmenter for a family this engine does
+    /// not fragment.
+    ///
+    /// IPv6 puts fragmentation in an extension header rather than in the header
+    /// itself, and a sender is meant to discover the path MTU instead of
+    /// splitting on the way out. Nothing here builds that header, so the request
+    /// is refused by name rather than answered with a datagram that is not
+    /// fragmented at all.
+    #[error(
+        "cannot fragment to {dst}: IPv6 fragments through an extension header this engine does not build"
+    )]
+    UnsupportedFragmentation {
+        /// The destination that was asked for.
+        dst: IpAddr,
+    },
+
     /// A frame carried something this module does not read.
     ///
     /// Not a malformed frame and not a fault. A promiscuous capture sees the

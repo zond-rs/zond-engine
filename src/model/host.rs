@@ -413,6 +413,7 @@ const MAX_OS_EVIDENCE: usize = 8;
 /// [`OsFingerprint`] is boxed. It is both the largest thing a host can carry and
 /// one of the rarest, since most hosts in a scan never get one, so holding it by
 /// reference keeps a `Host` cheap to move in collections of thousands.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct Host {
     /// The primary IP address used to target or identify this host.

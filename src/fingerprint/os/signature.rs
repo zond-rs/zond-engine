@@ -70,6 +70,7 @@ impl<T> Predicate<T> {
 /// on a real segment wrote identifier zero on its SYN+ACK path and ran a counter
 /// on its reset path. A rule that does not say which segment it reads is
 /// matching two different things at once.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplyKind {
@@ -111,6 +112,7 @@ pub enum ReplyKind {
 /// wrong, and it fails by matching nothing while looking perfectly correct.
 ///
 /// So a published rule ships, and scores lower until somebody confirms it here.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {

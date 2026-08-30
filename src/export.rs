@@ -236,6 +236,7 @@ impl Redaction {
 ///
 /// Non-exhaustive and [`Default`]-constructed, so a future option is an
 /// additive change rather than a break for everyone who built one of these.
+#[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ExportOptions {

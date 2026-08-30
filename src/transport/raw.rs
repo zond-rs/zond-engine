@@ -51,6 +51,7 @@ const CHANNEL_TYPE_ICMP_V6: TransportChannelType =
     TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Icmpv6));
 
 /// Which transport-layer protocol, and address family coverage, to open a capture for.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum TransportType {
     /// Raw TCP segments, over both IPv4 and IPv6 where available.

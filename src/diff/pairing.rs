@@ -47,6 +47,7 @@ use crate::model::mac::MacAddr;
 /// The default is [`AnyAddress`](Self::AnyAddress), which is the policy that
 /// survives a dual-stack host being keyed under IPv4 one night and IPv6 the
 /// next.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HostIdentity {
     /// Two records are the same host when their primary addresses match.

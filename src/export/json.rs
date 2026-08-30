@@ -40,6 +40,7 @@ const FORMAT: &str = "json";
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 #[derive(Debug, Clone, Default)]
 pub struct JsonExporter {
     options: ExportOptions,

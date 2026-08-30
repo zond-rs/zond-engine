@@ -54,7 +54,7 @@ use tokio::time::timeout;
 
 use common::*;
 use zond_engine::config::limits::CONNECT_CONCURRENCY;
-use zond_engine::config::{DetectionEnvelope, ServiceDetection, ZondConfig};
+use zond_engine::config::{DetectionEnvelope, ServiceDetection};
 use zond_engine::detect::compute::{
     ComputeRuntime, Grant, LiveCapabilities, LoadError, ModuleBody, ModuleFault, RhaiRuntime,
     RunOutcome,
@@ -475,10 +475,8 @@ async fn the_envelope_withholds_the_class_above_its_ceiling_and_serves_the_one_b
     }
 
     let withheld = spawn_web_server(0).await;
-    let passive_only = ZondConfig {
-        detection: DetectionEnvelope::up_to(DetectionClass::Passive),
-        ..test_config()
-    };
+    let mut passive_only = test_config();
+    passive_only.detection = DetectionEnvelope::up_to(DetectionClass::Passive);
     let outcome = run_scan(
         target_map(LOOPBACK, &withheld.port.to_string()),
         &passive_only,

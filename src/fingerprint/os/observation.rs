@@ -532,6 +532,7 @@ impl EchoObservation {
 /// somehow named a TCP field *and* an echo reply fails because the value is
 /// absent, which is the same "the peer did not say" rule the matcher already
 /// applies everywhere else.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum StackReply {
     /// A TCP reply: a handshake or a refusal.

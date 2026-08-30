@@ -173,6 +173,7 @@ impl Presence {
 /// no scope at all - one rebuilt from a foreign scanner's output, or from a scan
 /// that stopped before it wrote a phase down - answers [`Unstated`](Self::Unstated)
 /// rather than guessing.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Coverage {
     /// The report says a phase walked this target.

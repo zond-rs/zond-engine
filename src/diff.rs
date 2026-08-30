@@ -144,6 +144,7 @@ pub const DEFAULT_EXPIRY_THRESHOLD: Duration = Duration::from_secs(30 * 24 * 60 
 /// [`identity`](Self::with_identity) when addresses are not stable between the
 /// two, and [`as_of`](Self::as_of) when the question is where certificates stand
 /// now rather than when the scan ran.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffOptions {
     identity: HostIdentity,

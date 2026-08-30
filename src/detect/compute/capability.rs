@@ -124,6 +124,7 @@ impl ScanInstant {
 
 /// Which capability a call named — recorded on a [`Denial`](super::Denial), and
 /// the vocabulary a runtime uses to decide which verbs a grant exposes.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
     /// [`Capabilities::speak`].
