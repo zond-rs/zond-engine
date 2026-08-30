@@ -1,0 +1,58 @@
+# The fuzzing harnesses, as a crate of their own.
+#
+# Separate because `libfuzzer-sys` links a runtime that replaces `main` and needs
+# a nightly toolchain and a sanitizer, none of which the library or its suite
+# should have to carry. `[workspace]` detaches this from the parent so a plain
+# `cargo build` at the repository root never reaches it.
+#
+# `cargo fuzz run <target>` from the repository root; `cargo fuzz list` names
+# them. Everything under `fuzz/` except this file and the targets is generated
+# and gitignored.
+[package]
+name = "zond-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# The features the targets read through. `import-nmap` and `import-json` are what
+# put the document readers in reach; without them two of these targets would
+# compile against nothing.
+[dependencies.zond-engine]
+path = ".."
+features = ["import-nmap", "import-json", "export-json"]
+
+[[bin]]
+name = "ethernet_frame"
+path = "fuzz_targets/ethernet_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_buffer"
+path = "fuzz_targets/wire_buffer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nmap_document"
+path = "fuzz_targets/nmap_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "report_document"
+path = "fuzz_targets/report_document.rs"
+test = false
+doc = false
+bench = false

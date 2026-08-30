@@ -55,6 +55,10 @@ It belongs here rather than beside each parser because the interesting inputs ar
 whole frames, and building one means reaching across `protocols::craft`,
 `protocols::ethernet` and the reader under test at once.
 
+Coverage-guided fuzzing over the same parsers lives in `fuzz/`, which has its
+own README. This tier is what runs on every commit; that one is what runs for
+hours.
+
 **The generators are shaped, and their shape is checked.** Uniform random bytes
 are refused at the first length check, so most of these build a well-formed
 frame and vary what the reader actually walks: LLDP TLVs with their seven-bit

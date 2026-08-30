@@ -9,3 +9,12 @@
 # machine's — so they stay out of the repository entirely rather than out of the
 # published crate.
 /audit/
+
+# The fuzzing harnesses are tracked; everything the fuzzer produces is not.
+# A corpus and a crash file are machine-local artifacts of one run, and a corpus
+# checked in goes stale the moment a parser's framing changes.
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+/fuzz/Cargo.lock

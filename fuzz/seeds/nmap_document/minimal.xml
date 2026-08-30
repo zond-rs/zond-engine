@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV 127.0.0.1" start="1756500000" version="7.94">
+<scaninfo type="syn" protocol="tcp" numservices="3" services="22,80,443"/>
+<host starttime="1756500000" endtime="1756500001"><status state="up" reason="syn-ack"/>
+<address addr="127.0.0.1" addrtype="ipv4"/>
+<hostnames><hostname name="localhost" type="PTR"/></hostnames>
+<ports><port protocol="tcp" portid="22"><state state="open" reason="syn-ack"/>
+<service name="ssh" product="OpenSSH" version="9.6" method="probed"/></port>
+<port protocol="tcp" portid="80"><state state="closed" reason="reset"/></port></ports>
+</host>
+<runstats><finished time="1756500001" elapsed="1.00"/><hosts up="1" down="0" total="1"/></runstats>
+</nmaprun>
