@@ -70,6 +70,16 @@ impl Privilege {
     pub fn is_raw(self) -> bool {
         matches!(self, Self::Raw)
     }
+
+    /// The privilege a `true` or `false` on the wire stands for.
+    ///
+    /// The inverse of [`is_raw`](Self::is_raw), for the two formats that write
+    /// this as a boolean: the journal's manifest and the published report
+    /// schema, both of which promised a boolean before this type existed and go
+    /// on doing so.
+    pub fn from_raw(raw: bool) -> Self {
+        if raw { Self::Raw } else { Self::Connect }
+    }
 }
 
 /// Returns `true` when the current process holds the privileges required to

@@ -752,6 +752,7 @@ fn newest_claim_port<'a, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system::privilege::Privilege;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::time::{Duration, SystemTime};
 
@@ -791,7 +792,7 @@ mod tests {
             kind: ScanKind::PortScan,
             started_at: at,
             elapsed: Duration::from_secs(60),
-            privileged: Some(true),
+            privilege: Some(Privilege::Raw),
             targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),

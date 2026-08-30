@@ -82,6 +82,7 @@ use crate::report::{
     ProbeStatsParts, ScanKind, ScanPhase, ScanSettings, ScannerFailure, ScopeParts, StopReason,
     TargetScope,
 };
+use crate::system::privilege::Privilege;
 
 /// One host, as a file holds it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1159,7 +1160,7 @@ impl From<&ScanPhase> for PhaseRecord {
             kind: crate::export::schema::scan_kind_name(phase.kind()).to_owned(),
             started_at: phase.started_at(),
             elapsed: phase.elapsed(),
-            privileged: phase.privileged(),
+            privileged: phase.privilege().map(Privilege::is_raw),
             targets: ScopeRecord::from(phase.targets()),
             settings: SettingsRecord::from(phase.settings()),
             failures: phase.failures().iter().map(FailureRecord::from).collect(),
@@ -1190,7 +1191,7 @@ impl From<&PhaseRecord> for ScanPhase {
             kind: wire::scan_kind(&record.kind).unwrap_or(ScanKind::Discovery),
             started_at: record.started_at,
             elapsed: record.elapsed,
-            privileged: record.privileged,
+            privilege: record.privileged.map(Privilege::from_raw),
             targets: TargetScope::from(&record.targets),
             settings: ScanSettings::from(&record.settings),
             failures: record.failures.iter().map(ScannerFailure::from).collect(),
@@ -2225,6 +2226,43 @@ mod tests {
                     .expect("a phase renders")
             };
             assert_eq!(render(phase), render(&rebuilt), "a field was lost");
+        }
+    }
+
+    /// Privilege is a `Privilege` in the model and a boolean on the wire, and
+    /// this is where the two meet.
+    ///
+    /// The journal's format and the published report schema both promised a
+    /// boolean before the type existed and go on promising one, so the
+    /// conversion has to be exact in both directions and cannot drift with the
+    /// enum. A flipped polarity here would report every unprivileged scan as
+    /// privileged in an archived report, which is a claim about what a result is
+    /// worth rather than a cosmetic error.
+    ///
+    /// Driven off a real phase with only this field varied, so it stays true as
+    /// `PhaseParts` grows.
+    #[test]
+    fn privilege_crosses_the_record_boundary_as_the_boolean_the_format_promised() {
+        let report = crate::export::fixture::report();
+        let original = report.phases().first().expect("the fixture has a phase");
+
+        for (privilege, written) in [
+            (Some(Privilege::Raw), Some(true)),
+            (Some(Privilege::Connect), Some(false)),
+            // A third state, not a missing boolean: a phase read out of another
+            // scanner's document is not a phase that ran unprivileged.
+            (None, None),
+        ] {
+            let mut record = PhaseRecord::from(original);
+            record.privileged = written;
+
+            let phase = ScanPhase::from(&record);
+            assert_eq!(phase.privilege(), privilege, "reading {written:?}");
+            assert_eq!(
+                PhaseRecord::from(&phase).privileged,
+                written,
+                "writing {privilege:?}"
+            );
         }
     }
 

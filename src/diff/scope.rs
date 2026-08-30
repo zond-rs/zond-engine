@@ -166,6 +166,7 @@ impl ScopeIndex {
 
 #[cfg(test)]
 mod tests {
+    use crate::system::privilege::Privilege;
     use std::net::Ipv4Addr;
     use std::time::{Duration, SystemTime};
 
@@ -217,7 +218,7 @@ mod tests {
             kind: ScanKind::Discovery,
             started_at: SystemTime::UNIX_EPOCH,
             elapsed: Duration::from_secs(1),
-            privileged: Some(true),
+            privilege: Some(Privilege::Raw),
             targets: scope,
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),

@@ -1251,7 +1251,7 @@ mod tests {
                 before.elapsed(),
                 after.elapsed()
             );
-            assert_eq!(after.privileged(), before.privileged());
+            assert_eq!(after.privilege(), before.privilege());
             assert_eq!(after.targets().ranges(), before.targets().ranges());
             assert_eq!(after.targets().excluded(), before.targets().excluded());
             assert_eq!(after.targets().addresses(), before.targets().addresses());

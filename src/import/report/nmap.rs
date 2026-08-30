@@ -691,7 +691,7 @@ impl Run {
             // sweep nmap performed over ARP as root had none — which put this
             // engine's advice about running as root under findings that plainly
             // contradicted it.
-            privileged: None,
+            privilege: None,
             targets,
             settings: self.settings(),
             failures: Vec::new(),

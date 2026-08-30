@@ -75,6 +75,7 @@ use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::interface::Link;
 use crate::system::interface::{self, RoutedTarget};
 use crate::system::neighbors;
+use crate::system::privilege::Privilege;
 use crate::{info, warn};
 
 /// Something the scan will not do, decided at planning time.
@@ -518,7 +519,7 @@ impl PortScanPlan {
     /// Works out which strategies would probe the requested ports, opening
     /// nothing.
     ///
-    /// `privileged` is whether raw sockets are available. It is a parameter
+    /// `privilege` is which sockets the scan would run with. It is a parameter
     /// rather than something read here so a caller can plan for a privilege
     /// level they do not currently hold — asking "what would a root scan do?"
     /// is a reasonable question and needs no root to answer.
@@ -541,7 +542,7 @@ impl PortScanPlan {
     /// undone — worse for the caller, and honest, where a silent substitution
     /// would hand back verdicts from a technique they did not choose with no
     /// field in the report saying so.
-    pub fn build(cfg: &ZondConfig, privileged: bool) -> Self {
+    pub fn build(cfg: &ZondConfig, privilege: Privilege) -> Self {
         let mut steps = Vec::new();
         let mut refusals = Vec::new();
 
@@ -550,7 +551,7 @@ impl PortScanPlan {
         // one directly would announce the scanner the technique exists to hide —
         // so a UDP target is simply left unprobed, with no step to cover it.
         if let Some(idle) = &cfg.idle_scan {
-            if privileged {
+            if privilege.is_raw() {
                 steps.push(PortScanStep::Idle {
                     zombie: idle.zombie,
                     zombie_port: idle.zombie_port,
@@ -566,8 +567,8 @@ impl PortScanPlan {
         }
 
         // Raw scanning needs both the privilege and an address to probe from.
-        let raw = privileged && interface::SourceResolver::from_system().has_sources();
-        if privileged && !raw {
+        let raw = privilege.is_raw() && interface::SourceResolver::from_system().has_sources();
+        if privilege.is_raw() && !raw {
             warn!("no usable network interface found; using TCP connect fallback");
         }
 
@@ -822,7 +823,7 @@ mod tests {
     /// they are never probed and never reported.
     #[test]
     fn an_unprivileged_plan_covers_both_protocols() {
-        let plan = PortScanPlan::build(&ZondConfig::default(), false);
+        let plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
 
         assert!(plan.covers(Protocol::Tcp));
         assert!(plan.covers(Protocol::Udp));
@@ -839,7 +840,7 @@ mod tests {
             tcp_technique: TcpScanTechnique::Fin,
             ..ZondConfig::default()
         };
-        let plan = PortScanPlan::build(&cfg, false);
+        let plan = PortScanPlan::build(&cfg, Privilege::Connect);
 
         assert!(
             !plan.covers(Protocol::Tcp),
@@ -925,7 +926,7 @@ mod tests {
             ..ZondConfig::default()
         };
         assert_eq!(
-            PortScanPlan::build(&cfg, false).technique(),
+            PortScanPlan::build(&cfg, Privilege::Connect).technique(),
             TcpScanTechnique::Ack
         );
     }
@@ -934,7 +935,7 @@ mod tests {
     /// run. The guard against editing it into silence is `covers`.
     #[test]
     fn dropping_a_step_is_visible_in_what_the_plan_covers() {
-        let mut plan = PortScanPlan::build(&ZondConfig::default(), false);
+        let mut plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
         plan.steps_mut()
             .retain(|step| step.protocol() != Protocol::Udp);
 

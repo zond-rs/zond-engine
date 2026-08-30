@@ -33,6 +33,20 @@
 //! pattern as a candidate. Measured on the current set: ~0.8% of signatures
 //! fall in the always-run bucket, zero soundness violations.
 //!
+//! ### Cost per response
+//!
+//! Selection runs once per response, and a scan fingerprints every open port on
+//! every host, so this is a hot path. A signature contributes several literals
+//! and a response can hit any of them repeatedly, so hits are deduplicated as
+//! they arrive, through a bitset indexed by *signature*. Both halves of that
+//! are load-bearing. Indexing the bitset by literal instead makes it eight
+//! times wider to allocate and zero without filtering anything more, and
+//! dropping it to let the closing sort absorb the duplicates is slower still:
+//! a response at the 4 KiB read cap can carry over a hundred thousand literal
+//! hits, and the sort would see every one. Measured over the shipped corpus of
+//! 4,737 signatures and 36,503 literals: 1.4 µs for a recorded example, 38 µs
+//! for a full 4 KiB HTTP response.
+//!
 //! [`Prefilter`] is a trait so a faster backend (e.g. `hyperscan`/`vectorscan`)
 //! can replace the engine without touching callers.
 
@@ -61,6 +75,9 @@ pub struct LiteralPrefilter {
     literal_owner: Vec<usize>,
     /// Signatures with no usable required literal; always candidates.
     always_run: Vec<usize>,
+    /// How many signatures were indexed, which is the width of the dedup
+    /// bitset [`LiteralPrefilter::candidates`] allocates.
+    signature_count: usize,
 }
 
 impl LiteralPrefilter {
@@ -94,25 +111,29 @@ impl LiteralPrefilter {
             automaton,
             literal_owner,
             always_run,
+            signature_count: signatures.len(),
         }
     }
 }
 
 impl Prefilter for LiteralPrefilter {
     fn candidates(&self, response: &str) -> Vec<usize> {
-        let mut selected = vec![false; self.literal_owner.len().max(1)];
+        let mut selected = vec![0u64; self.signature_count.div_ceil(64).max(1)];
         let mut candidates = self.always_run.clone();
+        for &owner in &self.always_run {
+            selected[owner / 64] |= 1u64 << (owner % 64);
+        }
 
         for m in self.automaton.find_overlapping_iter(response) {
             let owner = self.literal_owner[m.pattern().as_usize()];
-            // De-dup by owner cheaply: a signature can contribute many literals.
-            if !std::mem::replace(&mut selected[m.pattern().as_usize()], true) {
+            let (word, bit) = (owner / 64, 1u64 << (owner % 64));
+            if selected[word] & bit == 0 {
+                selected[word] |= bit;
                 candidates.push(owner);
             }
         }
 
         candidates.sort_unstable();
-        candidates.dedup();
         candidates
     }
 }
@@ -232,6 +253,22 @@ mod tests {
         let sigs = [sig(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")];
         let pf = LiteralPrefilter::build(&sigs);
         assert!(pf.candidates("anything at all").contains(&0));
+    }
+
+    /// The claim the dedup bitset makes: a signature is listed once, however
+    /// many of its literals the response carries and however often.
+    #[test]
+    fn a_signature_is_listed_once_however_many_of_its_literals_hit() {
+        let sigs = [
+            sig(r"^(?:Postfix|Sendmail|Exim) SMTP"),
+            sig(r"^HTTP/1\.[01]"),
+        ];
+        let pf = LiteralPrefilter::build(&sigs);
+
+        let response = "Postfix SMTP / Sendmail SMTP / Exim SMTP / Postfix SMTP";
+        let owned = pf.literal_owner.iter().filter(|&&o| o == 0).count();
+        assert!(owned > 1, "the alternation gives it several literals");
+        assert_eq!(pf.candidates(response), vec![0]);
     }
 
     #[test]

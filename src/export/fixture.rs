@@ -48,6 +48,7 @@ use crate::report::{
 };
 use crate::scanner::recorder::PhaseRecorder;
 use crate::scanner::session::ScanSession;
+use crate::system::privilege::Privilege;
 
 /// An address on the fixture's network.
 fn ip(last: u8) -> IpAddr {
@@ -251,7 +252,7 @@ pub(crate) fn report() -> ScanReport {
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
-        true,
+        Privilege::Raw,
         TargetScope::from_ip_set(&mut targets, &Exclusions::new(excluded)),
         &config,
     );
@@ -357,7 +358,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         kind: ScanKind::PortScan,
         started_at: std::time::UNIX_EPOCH + BASELINE_AT + DAY * days as u32,
         elapsed: Duration::from_secs(12),
-        privileged: Some(true),
+        privilege: Some(Privilege::Raw),
         targets: TargetScope::from_target_map(&mut targets, &Exclusions::none()),
         settings: ScanSettings::from(&ZondConfig::default()),
         failures: Vec::new(),
@@ -632,7 +633,7 @@ pub(crate) fn hostile() -> ScanReport {
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
-        true,
+        Privilege::Raw,
         TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
         &ZondConfig::default(),
     );

@@ -99,10 +99,33 @@
 //! each. A file of deliberately non-adjacent addresses keeps every one of its
 //! ranges and still benefits by the same amount.
 //!
-//! On a 65 536-line file this is roughly 1.6x faster end to end, whether or not
-//! anything merged. The one shape that gains nothing is a file naming a
-//! different port specification on every line, which produces as many groups as
-//! lines.
+//! On a 65 536-line file this is roughly 1.5x faster end to end, whether or not
+//! anything merged.
+//!
+//! ## When grouping stops paying
+//!
+//! Grouping buys a smaller unit count with an index lookup on every line, and
+//! the trade only works while lines share specifications. A file naming a
+//! distinct specification on every line groups nothing and pays the index
+//! anyway, and that file is not a contrivance: it is what reading a report back
+//! produces, one specification per host because each host was found on its own
+//! ports. Left alone the builder took 22.0 ms on that shape against the direct
+//! path's 12.7 ms for the same 65 536 units, so the optimisation inverted on
+//! the very input the import formats feed it.
+//!
+//! So the builder watches its own input and gives the index up when it is
+//! earning nothing: see `MIN_REGROUPED_SHARE`. Past that point every
+//! expression becomes a unit of its own, which is what the direct path did, and
+//! the shape costs 13.4 ms instead of 22.0. Against the direct path it went
+//! from 0.61x to 1.05x, the median of nine paired runs. Every shape that does
+//! group keeps its index and its speedup.
+//!
+//! The one thing given up is that two expressions naming the same ports no
+//! longer share a unit once the index is gone. Both are still scanned, on the
+//! same ports; what changes is that an address named twice is asked twice
+//! rather than once, which is what a [`TargetMap`] means by counting gross.
+//! That can only happen on input that had already gone a thousand expressions
+//! without repeating a specification more than one time in sixteen.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -384,12 +407,47 @@ impl<'a> TargetExpr<'a> {
     }
 }
 
+/// How many expressions [`TargetMapBuilder`] watches before it will judge the
+/// shape of its input.
+///
+/// The index is not worth measuring while it is this small. A thousand entries
+/// is a few tens of kilobytes and around a tenth of a millisecond of work, so
+/// nothing is lost by waiting, and what the wait buys is a reading taken from
+/// enough of a file to act on. The judgement below is made once and never
+/// revised, which is the whole reason it is not made on the first few lines.
+const GROUPING_SAMPLE: usize = 1_024;
+
+/// How little regrouping [`TargetMapBuilder`] will put up with before it stops
+/// paying for an index: fewer than one expression in this many joining a group
+/// that already existed.
+///
+/// Grouping trades a lookup on every expression against the number of units the
+/// map ends up with. On `benches/import_bench.rs` the two paths cross somewhere
+/// between four and eight lines to each port specification, and a file naming a
+/// distinct specification on every line has lost outright, taking 22.0 ms where
+/// the direct path takes 12.7 ms for the same units.
+///
+/// Sixteen, rather than the one or two that would sit at the crossing, because
+/// the reading is taken from a prefix and cannot be taken back. A file drawing
+/// its specifications from a pool repeats them at a rate this rule sees within
+/// its first thousand lines, and asking for only one repeat in sixteen means a
+/// pool smaller than about eight thousand keeps its index: past that the pool
+/// is large enough that grouping was not going to pay anyway. What no prefix can
+/// see is a file that spends its opening thousand lines on distinct
+/// specifications and repeats them only much later, and such a file does give
+/// its index up. It ends no worse off than the direct path it falls back to.
+const MIN_REGROUPED_SHARE: usize = 16;
+
 /// Accumulates target expressions into a [`TargetMap`], one unit per distinct
-/// port specification.
+/// port specification for as long as that is worth doing.
 ///
 /// Built incrementally rather than from a slice, so an importer can stream a
 /// file of any size through it and so a caller can decide for itself what to do
 /// with an expression that is refused.
+///
+/// Grouping is abandoned on input that does not group: see
+/// `MIN_REGROUPED_SHARE` for the rule, and the module documentation for why the
+/// builder degrades rather than inverting.
 #[derive(Debug, Clone)]
 pub struct TargetMapBuilder {
     /// The ports an expression that names none is scanned on.
@@ -397,12 +455,20 @@ pub struct TargetMapBuilder {
     /// The groups, in the order their port specification was first seen, so
     /// that two runs over the same input scan in the same order.
     groups: Vec<(PortSet, IpSet)>,
-    /// Where each port specification's group sits in `groups`.
+    /// Where each port specification's group sits in `groups`, while grouping
+    /// is still earning its keep.
     ///
     /// A map rather than a scan over `groups`, because the number of distinct
     /// port specifications in a file is not bounded by anything: input nobody
     /// vouches for should not be able to make this quadratic.
-    index: HashMap<PortSet, usize>,
+    ///
+    /// `None` once `MIN_REGROUPED_SHARE` says the grouping is buying nothing.
+    /// Taken rather than emptied, so a file that does not group stops paying
+    /// for the index's memory as well as for its lookups.
+    index: Option<HashMap<PortSet, usize>>,
+    /// How many expressions have been accepted, which the rule above reads
+    /// against the group count.
+    accepted: usize,
     /// Addresses accumulated so far, before overlapping expressions are merged.
     ///
     /// Kept as a running total rather than computed on demand, because it is
@@ -418,7 +484,8 @@ impl TargetMapBuilder {
         Self {
             default_ports,
             groups: Vec::new(),
-            index: HashMap::new(),
+            index: Some(HashMap::new()),
+            accepted: 0,
             gross_addresses: 0,
         }
     }
@@ -467,26 +534,51 @@ impl TargetMapBuilder {
         // most, rather than from the accumulated set - see
         // `gross_address_count` for what re-reading the whole set per line cost.
         self.gross_addresses = self.gross_addresses.saturating_add(resolved.len_gross());
+        self.accepted += 1;
 
-        let slot = match self.index.get(&ports) {
-            Some(&slot) => slot,
+        let existing = self
+            .index
+            .as_ref()
+            .and_then(|index| index.get(&ports).copied());
+
+        match existing {
+            Some(slot) => {
+                let target = &mut self.groups[slot].1;
+                for range in resolved.v4() {
+                    target.push_v4_range(*range);
+                }
+                for range in resolved.v6() {
+                    target.push_v6_range(*range);
+                }
+            }
             None => {
                 let slot = self.groups.len();
-                self.index.insert(ports.clone(), slot);
-                self.groups.push((ports, IpSet::new()));
-                slot
+                if let Some(index) = self.index.as_mut() {
+                    index.insert(ports.clone(), slot);
+                }
+                self.groups.push((ports, resolved));
             }
-        };
+        }
 
-        let target = &mut self.groups[slot].1;
-        for range in resolved.v4() {
-            target.push_v4_range(*range);
-        }
-        for range in resolved.v6() {
-            target.push_v6_range(*range);
-        }
+        self.reconsider_grouping();
 
         Ok(())
+    }
+
+    /// Drops the index once the groups have stopped earning it.
+    ///
+    /// The two constants carry the argument. Nothing here can be undone: once
+    /// the index is gone the groups already built stay as they are, and every
+    /// expression after this one becomes a unit of its own.
+    fn reconsider_grouping(&mut self) {
+        if self.index.is_none() || self.accepted < GROUPING_SAMPLE {
+            return;
+        }
+
+        let regrouped = self.accepted - self.groups.len();
+        if regrouped * MIN_REGROUPED_SHARE < self.accepted {
+            self.index = None;
+        }
     }
 
     /// Looks a hostname up through the caller's lookup and records what it
@@ -528,10 +620,15 @@ impl TargetMapBuilder {
         Ok(())
     }
 
-    /// How many distinct port specifications have been seen.
+    /// How many groups have accumulated.
     ///
-    /// This is the number of units [`build`](Self::build) will produce, and it
-    /// is a property of the input's shape rather than of its size.
+    /// This is the number of units [`build`](Self::build) will produce, and on
+    /// input that groups it is the number of distinct port specifications seen:
+    /// a property of the input's shape rather than of its size.
+    ///
+    /// On input that does not group it is the number of expressions accepted,
+    /// because a builder that has given the index up makes a unit of each. The
+    /// module documentation has when that happens and why.
     pub fn group_count(&self) -> usize {
         self.groups.len()
     }
@@ -627,6 +724,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::target::Target;
     use std::net::Ipv4Addr;
 
     fn ports(spec: &str) -> PortSet {
@@ -1018,6 +1116,161 @@ mod tests {
         let mut bare = TargetMapBuilder::new(ports("80"));
         bare.push("10.0.0.1, 10.0.0.2 ,10.0.0.3", &ctx).unwrap();
         assert_eq!(bare.address_count(), 3);
+    }
+
+    /// The map a builder that grouped unconditionally would have produced.
+    ///
+    /// Computed here rather than taken from the builder, so that a test
+    /// comparing the two is not asking the builder to vouch for itself.
+    fn grouped_by_hand(tokens: &[String], default: &PortSet) -> Vec<(PortSet, Vec<Target>)> {
+        let mut order: Vec<PortSet> = Vec::new();
+        let mut groups: HashMap<PortSet, IpSet> = HashMap::new();
+
+        for token in tokens {
+            let expr = TargetExpr::parse(token).expect("parses");
+            let ports = match expr.ports {
+                Some(spec) => PortSet::try_from(spec).expect("ports parse"),
+                None => default.clone(),
+            };
+
+            if !groups.contains_key(&ports) {
+                order.push(ports.clone());
+                groups.insert(ports.clone(), IpSet::new());
+            }
+
+            let ips = groups.get_mut(&ports).expect("just inserted");
+            for address in expr.addresses() {
+                insert_expression(address, ips, None, None).expect("addresses parse");
+            }
+        }
+
+        order
+            .into_iter()
+            .map(|ports| {
+                let ips = groups.remove(&ports).expect("one group per spelling");
+                let unit = TargetSet::new(ips, ports.clone());
+                (ports, unit.iter().collect())
+            })
+            .collect()
+    }
+
+    /// Every unit of a map, as the ports it asks about and the targets it
+    /// yields. Enough to tell two maps apart by what they would scan.
+    fn units_of(map: &TargetMap) -> Vec<(PortSet, Vec<Target>)> {
+        map.units
+            .iter()
+            .map(|unit| (unit.ports().clone(), unit.iter().collect()))
+            .collect()
+    }
+
+    /// The threshold changes how the builder works, and must not change what
+    /// it produces. Built at three lengths, one short of the sample and two
+    /// past it, and checked against a grouping computed in the test.
+    #[test]
+    fn the_map_is_the_same_either_side_of_the_grouping_threshold() {
+        let ctx = TargetContext::new();
+        let default = ports("80");
+
+        for count in [
+            GROUPING_SAMPLE - 1,
+            GROUPING_SAMPLE + 1,
+            GROUPING_SAMPLE * 4,
+        ] {
+            let tokens: Vec<String> = (0..count)
+                .map(|i| format!("10.0.{}.{}:{}", i / 256, i % 256, 1 + i))
+                .collect();
+
+            let mut builder = TargetMapBuilder::new(default.clone());
+            for token in &tokens {
+                builder.push(token, &ctx).expect("parses");
+            }
+            let built = builder.build();
+
+            assert_eq!(
+                units_of(&built),
+                grouped_by_hand(&tokens, &default),
+                "{count} expressions, none of them sharing a specification"
+            );
+        }
+    }
+
+    /// The shape the threshold exists for: a distinct specification on every
+    /// line, which is what reading a report back produces. Once the index is
+    /// given up a specification already seen gets a unit of its own, and from
+    /// outside the builder that is the only way to see it happened.
+    #[test]
+    fn a_file_that_never_groups_gives_the_index_up() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let ctx = TargetContext::new();
+
+        for i in 0..GROUPING_SAMPLE {
+            let token = format!("10.0.{}.{}:{}", i / 256, i % 256, 1 + i);
+            builder.push(&token, &ctx).expect("parses");
+        }
+        assert_eq!(builder.group_count(), GROUPING_SAMPLE);
+
+        // Port 1 has had a group since the first line. With the index gone it
+        // gets a second rather than joining it.
+        builder.push("10.9.9.9:1", &ctx).expect("parses");
+        assert_eq!(builder.group_count(), GROUPING_SAMPLE + 1);
+
+        let map = builder.build();
+        assert_eq!(map.units[0].ports(), &ports("1"));
+        assert_eq!(map.units[GROUPING_SAMPLE].ports(), &ports("1"));
+        assert_eq!(
+            map.gross_targets().unwrap(),
+            GROUPING_SAMPLE as u128 + 1,
+            "both units are still scanned, on the ports they named"
+        );
+    }
+
+    /// The other half of the rule. A file that does group must not lose its
+    /// index for being long, since that is where the whole saving is.
+    #[test]
+    fn a_file_that_groups_keeps_its_index_however_long_it_is() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let ctx = TargetContext::new();
+
+        for i in 0..GROUPING_SAMPLE * 4 {
+            let token = format!("10.0.{}.{}", i / 256, i % 256);
+            builder.push(&token, &ctx).expect("parses");
+        }
+
+        assert_eq!(builder.group_count(), 1);
+    }
+
+    /// The rule itself, from both sides. One line in eight repeating the
+    /// specification before it is thin grouping and still grouping, and the
+    /// shapes that gain from an index are the ones the rule must leave alone.
+    /// One line in thirty-two is not enough to be worth an index.
+    #[test]
+    fn the_index_is_kept_or_given_up_on_how_much_actually_regroups() {
+        let ctx = TargetContext::new();
+        let lines = GROUPING_SAMPLE * 4;
+
+        for (every, kept) in [(8usize, true), (32, false)] {
+            let mut builder = TargetMapBuilder::new(ports("80"));
+            for i in 0..lines {
+                // Every `every`th line repeats the specification before it.
+                let spec = 1 + i - usize::from(i % every == every - 1);
+                let token = format!("10.0.{}.{}:{}", i / 256, i % 256, spec);
+                builder.push(&token, &ctx).expect("parses");
+            }
+
+            let regrouped = lines / every;
+            if kept {
+                assert_eq!(
+                    builder.group_count(),
+                    lines - regrouped,
+                    "one line in {every} joined the group before it"
+                );
+            } else {
+                assert!(
+                    builder.group_count() > lines - regrouped,
+                    "one line in {every} is too little to keep an index for"
+                );
+            }
+        }
     }
 
     #[test]

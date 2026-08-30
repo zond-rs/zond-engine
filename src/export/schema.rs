@@ -80,6 +80,7 @@ use crate::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, ScanPhase,
     ScanReport, ScanSettings, ScanSummary, ScannerFailure, TargetScope,
 };
+use crate::system::privilege::Privilege;
 use crate::transport::probe::SendMode;
 
 // The two values a reader of this document has to agree with are defined in
@@ -598,7 +599,7 @@ impl<'a> PhaseDto<'a> {
             kind: scan_kind_name(phase.kind()),
             started_at: rfc3339(phase.started_at()),
             elapsed_us: micros(phase.elapsed()),
-            privileged: phase.privileged(),
+            privileged: phase.privilege().map(Privilege::is_raw),
             targets: ScopeDto::new(phase.targets()),
             settings: SettingsDto::new(phase.settings()),
             failures: phase.failures().iter().map(FailureDto::new).collect(),

@@ -67,6 +67,7 @@ use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
 use zond_engine::scanner::strategy::routed::{RoutedScanner, TcpPortScanner};
 use zond_engine::system::interface::RoutedTarget;
+use zond_engine::system::privilege::Privilege;
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -108,7 +109,7 @@ async fn scan_segment(net: &FakeNet, swept: &[IpAddr], ports: &str) -> ScanRepor
     }
     addresses.canonicalize();
     let sweep_scope = TargetScope::from_ip_set(&mut addresses, &Exclusions::none());
-    let sweep = PhaseRecorder::start(ScanKind::Discovery, true, sweep_scope, &cfg);
+    let sweep = PhaseRecorder::start(ScanKind::Discovery, Privilege::Raw, sweep_scope, &cfg);
 
     let mut scanner = RoutedScanner::with_transport(
         swept
@@ -144,7 +145,7 @@ async fn scan_segment(net: &FakeNet, swept: &[IpAddr], ports: &str) -> ScanRepor
     let mut asked = TargetMap::new();
     asked.add_unit(TargetSet::new(found, numbers.clone()));
     let port_scope = TargetScope::from_target_map(&mut asked, &Exclusions::none());
-    let recorder = PhaseRecorder::start(ScanKind::PortScan, true, port_scope, &cfg);
+    let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Raw, port_scope, &cfg);
 
     let endpoints: Vec<Target> = alive
         .iter()
@@ -181,7 +182,7 @@ async fn sweep_segment(lan: &FakeLan, targets: &[IpAddr]) -> ScanReport {
     }
     addresses.canonicalize();
     let scope = TargetScope::from_ip_set(&mut addresses.clone(), &Exclusions::none());
-    let recorder = PhaseRecorder::start(ScanKind::Discovery, true, scope, &cfg);
+    let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Raw, scope, &cfg);
 
     let mut scanner = LocalScanner::with_handle(
         scanner_interface(),

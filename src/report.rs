@@ -78,6 +78,7 @@ use crate::model::mac::MacAddr;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::model::technique::TcpScanTechnique;
+use crate::system::privilege::Privilege;
 use crate::transport::probe::SendMode;
 
 /// The version of the engine that produced a report.
@@ -1301,9 +1302,9 @@ pub struct PhaseParts {
     pub started_at: SystemTime,
     /// How long it ran.
     pub elapsed: Duration,
-    /// Whether it held the privileges its raw strategies need, or `None` where
-    /// this engine did not measure the phase and cannot say.
-    pub privileged: Option<bool>,
+    /// Which sockets the phase had, or `None` where this engine did not measure
+    /// it and cannot say.
+    pub privilege: Option<Privilege>,
     /// What it was asked to cover, and what it was forbidden.
     pub targets: TargetScope,
     /// The settings it ran under.
@@ -1332,7 +1333,7 @@ impl ScanPhase {
             kind: parts.kind,
             started_at: parts.started_at,
             elapsed: parts.elapsed,
-            privileged: parts.privileged,
+            privilege: parts.privilege,
             targets: parts.targets,
             settings: parts.settings,
             failures: parts.failures,
@@ -1358,7 +1359,7 @@ pub struct ScanPhase {
     kind: ScanKind,
     started_at: SystemTime,
     elapsed: Duration,
-    privileged: Option<bool>,
+    privilege: Option<Privilege>,
     targets: TargetScope,
     settings: ScanSettings,
     failures: Vec<ScannerFailure>,
@@ -1420,8 +1421,8 @@ impl ScanPhase {
     /// nmap sweep performed over ARP as root had no raw sockets — a claim about
     /// this engine that no document supports, printed under findings that
     /// plainly contradicted it.
-    pub fn privileged(&self) -> Option<bool> {
-        self.privileged
+    pub fn privilege(&self) -> Option<Privilege> {
+        self.privilege
     }
 
     /// What the phase was asked to cover.
@@ -2152,7 +2153,7 @@ mod tests {
             kind,
             started_at: SystemTime::UNIX_EPOCH,
             elapsed: Duration::from_millis(500),
-            privileged: Some(true),
+            privilege: Some(Privilege::Raw),
             targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),

@@ -35,6 +35,7 @@
 //! scan but a silent one, since nothing would route its targets anywhere.
 
 use crate::model::host::OsEvidence;
+use crate::system::privilege::Privilege;
 use std::net::IpAddr;
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -62,7 +63,6 @@ use crate::scanner::strategy::local::Scope;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::scanner::{plan, rdns, strategy};
 use crate::system::interface;
-use crate::system::privilege::is_elevated;
 use crate::{error, info, success, warn};
 
 /// The targets an unprivileged sweep can actually walk, refusing the rest.
@@ -123,9 +123,9 @@ pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
 /// between phases.
 #[derive(Clone, Copy)]
 pub(super) struct ScanCapabilities {
-    /// Whether raw-socket scanning is available, meaning the process is root.
-    /// When false, every phase falls back to unprivileged TCP connect scanning.
-    pub(super) privileged: bool,
+    /// Which sockets every phase of this scan runs with. At
+    /// [`Privilege::Connect`] each falls back to ordinary TCP connect attempts.
+    pub(super) privilege: Privilege,
     /// Whether hostname resolution is enabled, the inverse of `cfg.no_dns`.
     dns: bool,
 }
@@ -135,14 +135,14 @@ impl ScanCapabilities {
     /// announces the scanning mode they imply once, here, rather than from the
     /// code that later acts on them.
     pub(super) fn resolve(cfg: &ZondConfig) -> Self {
-        let privileged = is_elevated();
-        if privileged {
+        let privilege = Privilege::current();
+        if privilege.is_raw() {
             success!("raw sockets available: probing with ARP, ICMPv6 and SYN");
         } else {
             warn!("no raw sockets: probing with TCP connect only");
         }
         Self {
-            privileged,
+            privilege,
             dns: !cfg.no_dns,
         }
     }
@@ -970,7 +970,7 @@ pub(super) async fn run_port_phase(
 
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
     let built = build_port_scanner(
-        super::plan::PortScanPlan::build(cfg, caps.privileged),
+        super::plan::PortScanPlan::build(cfg, caps.privilege),
         ctx,
         target_count,
         cfg.probe_tuning(),
@@ -1253,7 +1253,7 @@ mod tests {
         let (_session, ctx) = ScanSession::new();
 
         let _built = build_port_scanner(
-            plan::PortScanPlan::build(&cfg, false),
+            plan::PortScanPlan::build(&cfg, Privilege::Connect),
             &ctx,
             0,
             cfg.probe_tuning(),

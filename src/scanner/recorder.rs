@@ -22,6 +22,7 @@ use std::time::{Instant, SystemTime};
 use crate::config::ZondConfig;
 use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope};
 use crate::scanner::session::ScanContext;
+use crate::system::privilege::Privilege;
 
 /// Carries a phase's metadata from the moment a scan starts to the moment it
 /// ends, and closes the record when it does.
@@ -49,6 +50,7 @@ use crate::scanner::session::ScanContext;
 /// use zond_engine::report::{ScanKind, TargetScope};
 /// use zond_engine::scanner::recorder::PhaseRecorder;
 /// use zond_engine::scanner::session::ScanSession;
+/// use zond_engine::system::privilege::Privilege;
 ///
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let cfg = ZondConfig::default();
@@ -63,7 +65,7 @@ use crate::scanner::session::ScanContext;
 /// // whatever the policy forbids, and the scope records what that cost.
 /// let mut targets = to_set(&["192.168.1.0/24"], None, None)?;
 /// let scope = TargetScope::from_ip_set(&mut targets, &cfg.exclusions);
-/// let recorder = PhaseRecorder::start(ScanKind::Discovery, false, scope, &cfg);
+/// let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
 ///
 /// // ... build strategies against `ctx` and run them ...
 ///
@@ -77,7 +79,7 @@ pub struct PhaseRecorder {
     kind: ScanKind,
     started_at: SystemTime,
     started: Instant,
-    privileged: bool,
+    privilege: Privilege,
     targets: TargetScope,
     settings: ScanSettings,
 }
@@ -87,19 +89,23 @@ impl PhaseRecorder {
     ///
     /// Call this before the scan starts. `targets` is the scope the phase was
     /// asked to cover, which has to be read while the target set is still in
-    /// hand; `privileged` is whether the strategies about to run hold the raw
-    /// sockets they need.
+    /// hand; `privilege` is which sockets the strategies about to run hold.
     ///
     /// Both clocks are read because they answer different questions: the wall
     /// clock says when the scan happened, the monotonic one says how long it
     /// took. Deriving the second from the first would let an NTP correction
     /// during a long sweep report a duration that never elapsed.
-    pub fn start(kind: ScanKind, privileged: bool, targets: TargetScope, cfg: &ZondConfig) -> Self {
+    pub fn start(
+        kind: ScanKind,
+        privilege: Privilege,
+        targets: TargetScope,
+        cfg: &ZondConfig,
+    ) -> Self {
         Self {
             kind,
             started_at: SystemTime::now(),
             started: Instant::now(),
-            privileged,
+            privilege,
             targets,
             settings: ScanSettings::from(cfg),
         }
@@ -129,7 +135,7 @@ impl PhaseRecorder {
             // Monotonic rather than the difference between two wall-clock
             // readings, which a clock correction mid-sweep would distort.
             elapsed: self.started.elapsed(),
-            privileged: Some(self.privileged),
+            privilege: Some(self.privilege),
             targets,
             settings: self.settings,
             failures: ctx.take_failures(),
@@ -192,7 +198,7 @@ mod tests {
 
         let mut targets = IpSet::from_str("192.168.0.1-192.168.0.2").expect("a valid range");
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
-        let recorder = PhaseRecorder::start(ScanKind::Discovery, false, scope, &cfg);
+        let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
 
         let unreachable: IpAddr = "2001:db8::1".parse().expect("literal");
         ctx.record_unroutable(unreachable);
@@ -218,7 +224,7 @@ mod tests {
 
         let mut targets = IpSet::from_str("192.168.0.1-192.168.0.4").expect("a valid range");
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
-        let recorder = PhaseRecorder::start(ScanKind::Discovery, false, scope, &cfg);
+        let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
 
         ctx.update_host(ip(1), |host| host.set_status(HostStatus::Up));
         ctx.record_failure(ScannerKind::Local, "eth0: no address".into());
@@ -238,7 +244,7 @@ mod tests {
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
         let recorder = PhaseRecorder::start(
             ScanKind::Discovery,
-            true,
+            Privilege::Raw,
             TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             &ZondConfig::default(),
         );

@@ -1590,7 +1590,7 @@ mod tests {
         // the closing lines of a run are drawn from.
         let (before, after) = (&original.phases()[0], &replayed.phases()[0]);
         assert_eq!(after.kind(), before.kind());
-        assert_eq!(after.privileged(), before.privileged());
+        assert_eq!(after.privilege(), before.privilege());
         assert_eq!(after.failures().len(), before.failures().len());
         assert_eq!(
             replayed.is_partial(),

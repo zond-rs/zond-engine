@@ -124,6 +124,7 @@ use crate::scanner::orchestrator::{
 };
 use crate::scanner::recorder::PhaseRecorder;
 use crate::scanner::session::{ScanContext, ScanSession};
+use crate::system::privilege::Privilege;
 use strategy::local::Scope;
 
 // What running a scan produces: a `ScanSession` to watch it, a `ScanHandle` to
@@ -440,7 +441,7 @@ fn spawn_discovery(
     // excluded address. Addresses a sweep finds for itself never pass through
     // here, and are gated on the context instead.
     let scope = TargetScope::from_ip_set(&mut targets, &cfg.exclusions);
-    let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privileged, scope, cfg);
+    let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, cfg);
 
     let reach = if cfg.segment_sweep {
         Scope::Sweep
@@ -482,7 +483,7 @@ async fn run_discovery(
     cfg: &ZondConfig,
     ctx: &ScanContext,
 ) {
-    if caps.privileged {
+    if caps.privilege.is_raw() {
         let plan = plan::DiscoveryPlan::build(targets, reach);
         let enrichment = Enrichment::spawn(plan, ctx, caps, cfg.probe_tuning()).await;
         finish_enrichment(Some(enrichment), caps, ctx).await;
@@ -714,7 +715,10 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         // the setting up, and with the open's own answer in hand.
         let recorder = PhaseRecorder::start(
             ScanKind::Listen,
-            opened.is_ok(),
+            // A listener that opened a capture held what it needed; one that
+            // did not, did not. The same question the scan phases answer from
+            // the process's own privileges, answered here from the open.
+            Privilege::from_raw(opened.is_ok()),
             TargetScope::listening_on(scope.links.clone(), &cfg.exclusions),
             &cfg,
         );
@@ -854,7 +858,7 @@ fn spawn_scan(
         } else {
             let mut ips = target_ips(&target_map);
             let scope = TargetScope::from_ip_set(&mut ips, &cfg.exclusions);
-            let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privileged, scope, &cfg);
+            let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg);
 
             // Targeted, never a sweep: a port scan was asked about addresses,
             // not about the network around them.
@@ -881,7 +885,7 @@ fn spawn_scan(
         };
         let scope = TargetScope::from_target_map(&mut covered, &cfg.exclusions);
         crate::model::exclusion::Exclusions::withhold_targets(&cfg.exclusions, &mut target_map);
-        let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privileged, scope, &cfg);
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privilege, scope, &cfg);
 
         run_port_phase(target_map, live, &ctx, caps, &cfg, settled).await;
 

@@ -92,9 +92,7 @@ use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
 use crate::report::{ScanPhase, ScanReport};
-
-/// The format's name in errors.
-const FORMAT: &str = "nmap XML";
+use crate::system::privilege::Privilege;
 
 /// The nmap XML output version this document is written to.
 ///
@@ -281,7 +279,7 @@ fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
     // engine did not measure keeps whatever technique its own document named,
     // since calling it `connect` would describe a probe on no better evidence
     // than that this engine was not there to see it.
-    if phase.privileged() == Some(false) {
+    if phase.privilege() == Some(Privilege::Connect) {
         return "connect";
     }
 
@@ -741,18 +739,6 @@ fn is_forbidden(character: char) -> bool {
     let bidirectional = matches!(code, 0x202A..=0x202E | 0x2066..=0x2069 | 0x200E | 0x200F);
 
     control || noncharacter || bidirectional
-}
-
-/// Turns a formatting failure into an export error.
-///
-/// Unreachable in practice - the only writer here is the caller's - but the
-/// format's name belongs on the error if it ever is.
-#[allow(dead_code)]
-fn render_error(error: fmt::Error) -> ExportError {
-    ExportError::Render {
-        format: FORMAT,
-        message: error.to_string(),
-    }
 }
 
 // ╔════════════════════════════════════════════╗

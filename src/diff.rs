@@ -507,6 +507,7 @@ fn merged(hosts: &[&Host], indices: &[usize]) -> Option<Host> {
 
 #[cfg(test)]
 mod tests {
+    use crate::system::privilege::Privilege;
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::Duration;
 
@@ -565,7 +566,7 @@ mod tests {
             kind: ScanKind::Discovery,
             started_at: at,
             elapsed: PROMPT,
-            privileged: Some(true),
+            privilege: Some(Privilege::Raw),
             targets: scope,
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
@@ -603,7 +604,7 @@ mod tests {
             kind: ScanKind::PortScan,
             started_at: at,
             elapsed: PROMPT,
-            privileged: Some(true),
+            privilege: Some(Privilege::Raw),
             targets: scope,
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
@@ -638,7 +639,7 @@ mod tests {
             kind: ScanKind::Discovery,
             started_at: at,
             elapsed: PROMPT,
-            privileged: Some(true),
+            privilege: Some(Privilege::Raw),
             targets: scope,
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),

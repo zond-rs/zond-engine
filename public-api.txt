@@ -10631,7 +10631,7 @@ pub zond_engine::report::PhaseParts::elapsed: core::time::Duration
 pub zond_engine::report::PhaseParts::failures: alloc::vec::Vec<zond_engine::report::ScannerFailure>
 pub zond_engine::report::PhaseParts::kind: zond_engine::report::ScanKind
 pub zond_engine::report::PhaseParts::origin: core::option::Option<zond_engine::report::PhaseOrigin>
-pub zond_engine::report::PhaseParts::privileged: core::option::Option<bool>
+pub zond_engine::report::PhaseParts::privilege: core::option::Option<zond_engine::system::privilege::Privilege>
 pub zond_engine::report::PhaseParts::probes: alloc::vec::Vec<zond_engine::report::ProbeStats>
 pub zond_engine::report::PhaseParts::settings: zond_engine::report::ScanSettings
 pub zond_engine::report::PhaseParts::started_at: std::time::SystemTime
@@ -10728,7 +10728,7 @@ pub fn zond_engine::report::ScanPhase::elapsed(&self) -> core::time::Duration
 pub fn zond_engine::report::ScanPhase::failures(&self) -> &[zond_engine::report::ScannerFailure]
 pub fn zond_engine::report::ScanPhase::kind(&self) -> zond_engine::report::ScanKind
 pub fn zond_engine::report::ScanPhase::origin(&self) -> core::option::Option<&zond_engine::report::PhaseOrigin>
-pub fn zond_engine::report::ScanPhase::privileged(&self) -> core::option::Option<bool>
+pub fn zond_engine::report::ScanPhase::privilege(&self) -> core::option::Option<zond_engine::system::privilege::Privilege>
 pub fn zond_engine::report::ScanPhase::probe_stats(&self) -> &[zond_engine::report::ProbeStats]
 pub fn zond_engine::report::ScanPhase::settings(&self) -> &zond_engine::report::ScanSettings
 pub fn zond_engine::report::ScanPhase::started_at(&self) -> std::time::SystemTime
@@ -11449,7 +11449,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::plan::Dis
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::plan::DiscoveryPlan
 pub struct zond_engine::scanner::plan::PortScanPlan
 impl zond_engine::scanner::plan::PortScanPlan
-pub fn zond_engine::scanner::plan::PortScanPlan::build(&zond_engine::config::ZondConfig, bool) -> Self
+pub fn zond_engine::scanner::plan::PortScanPlan::build(&zond_engine::config::ZondConfig, zond_engine::system::privilege::Privilege) -> Self
 pub fn zond_engine::scanner::plan::PortScanPlan::covers(&self, zond_engine::model::port::Protocol) -> bool
 pub fn zond_engine::scanner::plan::PortScanPlan::into_steps(self) -> alloc::vec::Vec<zond_engine::scanner::plan::PortScanStep>
 pub fn zond_engine::scanner::plan::PortScanPlan::refusals(&self) -> &[zond_engine::scanner::plan::RefusedStep]
@@ -11520,7 +11520,7 @@ pub mod zond_engine::scanner::recorder
 pub struct zond_engine::scanner::recorder::PhaseRecorder
 impl zond_engine::scanner::recorder::PhaseRecorder
 pub fn zond_engine::scanner::recorder::PhaseRecorder::finish(self, &zond_engine::scanner::session::ScanContext) -> zond_engine::report::ScanReport
-pub fn zond_engine::scanner::recorder::PhaseRecorder::start(zond_engine::report::ScanKind, bool, zond_engine::report::TargetScope, &zond_engine::config::ZondConfig) -> Self
+pub fn zond_engine::scanner::recorder::PhaseRecorder::start(zond_engine::report::ScanKind, zond_engine::system::privilege::Privilege, zond_engine::report::TargetScope, &zond_engine::config::ZondConfig) -> Self
 impl core::marker::Freeze for zond_engine::scanner::recorder::PhaseRecorder
 impl core::marker::Send for zond_engine::scanner::recorder::PhaseRecorder
 impl core::marker::Sync for zond_engine::scanner::recorder::PhaseRecorder
@@ -12617,6 +12617,7 @@ pub zond_engine::system::privilege::Privilege::Connect
 pub zond_engine::system::privilege::Privilege::Raw
 impl zond_engine::system::privilege::Privilege
 pub fn zond_engine::system::privilege::Privilege::current() -> Self
+pub fn zond_engine::system::privilege::Privilege::from_raw(bool) -> Self
 pub fn zond_engine::system::privilege::Privilege::is_raw(self) -> bool
 impl core::clone::Clone for zond_engine::system::privilege::Privilege
 pub fn zond_engine::system::privilege::Privilege::clone(&self) -> zond_engine::system::privilege::Privilege

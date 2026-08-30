@@ -36,6 +36,7 @@ use zond_engine::scanner::recorder::PhaseRecorder;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
+use zond_engine::system::privilege::Privilege;
 
 const PEER_A: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xAA);
 const PEER_B: MacAddr = MacAddr(0x02, 0x00, 0x00, 0x00, 0x00, 0xBB);
@@ -979,8 +980,13 @@ async fn a_segment_sweep_records_the_link_it_covered() {
     let mut ips = IpSet::new();
     ips.insert(v4(10));
     let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
-    let report =
-        PhaseRecorder::start(ScanKind::Discovery, true, scope, &ZondConfig::default()).finish(&ctx);
+    let report = PhaseRecorder::start(
+        ScanKind::Discovery,
+        Privilege::Raw,
+        scope,
+        &ZondConfig::default(),
+    )
+    .finish(&ctx);
 
     let links = report.phases()[0].targets().links();
     assert_eq!(
@@ -1010,8 +1016,13 @@ async fn a_targeted_run_claims_no_link() {
     let mut ips = IpSet::new();
     ips.insert(v4(10));
     let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
-    let report =
-        PhaseRecorder::start(ScanKind::Discovery, true, scope, &ZondConfig::default()).finish(&ctx);
+    let report = PhaseRecorder::start(
+        ScanKind::Discovery,
+        Privilege::Raw,
+        scope,
+        &ZondConfig::default(),
+    )
+    .finish(&ctx);
 
     assert!(
         report.phases()[0].targets().links().is_empty(),
@@ -1091,7 +1102,7 @@ async fn a_sweep_learns_which_switch_port_it_is_running_from() {
 
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
-        true,
+        Privilege::Raw,
         TargetScope::from_ip_set(&mut targets.clone(), &Exclusions::none()),
         &ZondConfig::default(),
     );
