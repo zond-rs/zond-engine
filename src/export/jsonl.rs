@@ -50,7 +50,7 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::export::schema::{HostDto, ReportHeaderDto};
-use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::export::{ExportError, ExportOptions, Exporter, write};
 use crate::report::ScanReport;
 
 /// The format name carried in an [`ExportError::Render`].
@@ -116,7 +116,7 @@ impl Exporter for JsonLinesExporter {
 /// a line break, which a consumer would read as a complete but malformed
 /// record.
 fn write_line<T: Serialize>(out: &mut dyn Write, record: &T) -> Result<(), ExportError> {
-    serde_json::to_writer(&mut *out, record).map_err(render_error)?;
+    serde_json::to_writer(&mut *out, record).map_err(|error| write::render_error(FORMAT, error))?;
     out.write_all(b"\n")?;
     Ok(())
 }
@@ -139,20 +139,6 @@ struct Tagged<'a, T: Serialize> {
     tag: &'static str,
     #[serde(flatten)]
     body: &'a T,
-}
-
-/// Sorts a serialization failure into the two cases a caller can act on: a
-/// failed write may succeed against another destination, an unrepresentable
-/// value will not.
-fn render_error(error: serde_json::Error) -> ExportError {
-    if error.is_io() {
-        ExportError::Io(error.into())
-    } else {
-        ExportError::Render {
-            format: FORMAT,
-            message: error.to_string(),
-        }
-    }
 }
 
 // ╔════════════════════════════════════════════╗

@@ -48,7 +48,7 @@ use zond_engine::report::ScanReport;
 use zond_engine::scanner::session::{HostStore, ScanEvent, ScanSession};
 use zond_engine::scanner::strategy::PortScanner;
 use zond_engine::scanner::{self, ScanTask};
-use zond_engine::system::interface::{Link, LinkAddress, LinkKind, SourceResolver};
+use zond_engine::system::interface::{Addressing, Link, LinkAddress, LinkKind, SourceResolver};
 use zond_engine::transport::mac::IntoCoreMac;
 
 /// The loopback address every portable test targets.
@@ -285,7 +285,7 @@ pub fn scanner_interface() -> Link {
         .of_kind(LinkKind::Wired)
         .up(true)
         .physical(true)
-        .addressing(true, false)
+        .addressing(Addressing::Broadcast)
         .with_mac(SCANNER_MAC.into_core())
         .with_addresses(vec![
             LinkAddress::new(IpAddr::V4(SCANNER_V4), 24),

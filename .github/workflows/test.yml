@@ -85,6 +85,53 @@ jobs:
         continue-on-error: true
         run: cargo test --all-features -- --ignored
 
+  # Tier 3, which `tests/README.md` describes and until now nothing ran: the
+  # tests that need a real kernel, and the one that needs a document this project
+  # did not write.
+  #
+  # The step above runs the same tests without gating, on a runner where none of
+  # them can pass, so it reports a known failure rather than checking anything.
+  # This job is where they are actually cashed, and it gates.
+  #
+  # **The nmap document is generated rather than committed**, which is the whole
+  # point of the test that reads it. Every other nmap test in this crate parses a
+  # document typed into the source file by somebody with beliefs about nmap's
+  # output, and that is the trap the project keeps finding. A committed fixture
+  # would be the same trap with a longer shelf life. So nmap writes one here, on
+  # every run, against this runner's own loopback.
+  privileged:
+    name: Privileged tests (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libpcap and nmap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev nmap
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # Against this runner's own loopback, so the scan leaves the machine
+      # nowhere. What is listening does not matter: the test reads the document's
+      # shape, and nmap writes a well-formed one either way.
+      - name: Have nmap write a document
+        run: nmap -oX "$RUNNER_TEMP/real.xml" -sV -p 22,80,443 127.0.0.1
+
+      # Built unprivileged, so the cache and the target directory stay owned by
+      # the runner user. Only the run below needs root.
+      - name: Build the test binaries
+        run: cargo test --all-features --no-run
+
+      - name: Run the tests that need a kernel and a real document
+        run: |
+          sudo -E env "PATH=$PATH" ZOND_NMAP_XML="$RUNNER_TEMP/real.xml" \
+            cargo test --all-features -- --ignored
+
   msrv:
     name: Minimum supported Rust version
     runs-on: ubuntu-latest

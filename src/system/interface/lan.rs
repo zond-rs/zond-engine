@@ -214,6 +214,7 @@ fn has_private_ipv4(link: &Link) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system::interface::Addressing;
     use crate::system::interface::LinkKind;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -227,7 +228,7 @@ mod tests {
     ) -> Link {
         let mut link = Link::new("test0", 0)
             .up(up)
-            .addressing(broadcast, p2p)
+            .addressing(Addressing::of(broadcast, p2p))
             // Every case this builds is a real interface unless it says
             // otherwise; the physical/virtual axis is exercised by `loopback`.
             .physical(!loopback)
@@ -330,7 +331,7 @@ mod tests {
         let airdrop = Link::new("awdl0", 17)
             .up(true)
             .physical(true)
-            .addressing(true, false)
+            .addressing(Addressing::Broadcast)
             .of_kind(LinkKind::Wired)
             .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 6))
             .with_addresses(vec![LinkAddress::new(
@@ -362,7 +363,7 @@ mod tests {
         let bridge = Link::new("bridge100", 20)
             .up(true)
             .physical(true)
-            .addressing(true, false)
+            .addressing(Addressing::Broadcast)
             .of_kind(LinkKind::Wired)
             .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 7))
             .with_addresses(vec![LinkAddress::new(
@@ -384,7 +385,7 @@ mod tests {
         let bare = Link::new("awdl0", 17)
             .up(true)
             .physical(true)
-            .addressing(true, false)
+            .addressing(Addressing::Broadcast)
             .of_kind(LinkKind::Wired)
             .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 6));
 

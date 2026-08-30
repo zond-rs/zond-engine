@@ -19,7 +19,7 @@
 use std::io::Write;
 
 use crate::export::schema::ReportDto;
-use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::export::{ExportError, ExportOptions, Exporter, write};
 use crate::report::ScanReport;
 
 /// The format name carried in a [`ExportError::Render`].
@@ -94,28 +94,12 @@ impl Exporter for JsonExporter {
         } else {
             serde_json::to_writer(&mut *out, &document)
         };
-        written.map_err(render_error)?;
+        written.map_err(|error| write::render_error(FORMAT, error))?;
 
         // A trailing newline, so the file is a well-formed POSIX text file and
         // appending output after it does not produce a broken line.
         out.write_all(b"\n")?;
         Ok(())
-    }
-}
-
-/// Sorts a serialization failure into the two cases a caller can act on.
-///
-/// `serde_json` reports a failed write and an unrepresentable value through the
-/// same error type, and they call for opposite responses: retrying against a
-/// different destination can fix the first and can never fix the second.
-fn render_error(error: serde_json::Error) -> ExportError {
-    if error.is_io() {
-        ExportError::Io(error.into())
-    } else {
-        ExportError::Render {
-            format: FORMAT,
-            message: error.to_string(),
-        }
     }
 }
 

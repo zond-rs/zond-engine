@@ -219,7 +219,7 @@ fn under_the_recorded_policy(
         return Ok(());
     };
 
-    manifest.covers(&this_run, manifest.privileged)?;
+    manifest.covers(&this_run, manifest.privilege)?;
     Ok(())
 }
 

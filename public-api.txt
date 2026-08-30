@@ -5461,16 +5461,16 @@ pub zond_engine::journal::manifest::JournalManifest::journal_version: u32
 pub zond_engine::journal::manifest::JournalManifest::kind: alloc::string::String
 pub zond_engine::journal::manifest::JournalManifest::links: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::journal::manifest::JournalManifest::plan: zond_engine::journal::manifest::PlanFingerprint
-pub zond_engine::journal::manifest::JournalManifest::privileged: bool
+pub zond_engine::journal::manifest::JournalManifest::privilege: zond_engine::system::privilege::Privilege
 pub zond_engine::journal::manifest::JournalManifest::summary: alloc::string::String
 pub zond_engine::journal::manifest::JournalManifest::sweep: bool
 pub zond_engine::journal::manifest::JournalManifest::targets: zond_engine::record::PlanRecord
 pub zond_engine::journal::manifest::JournalManifest::technique: alloc::string::String
 pub zond_engine::journal::manifest::JournalManifest::total_targets: u128
 impl zond_engine::journal::manifest::JournalManifest
-pub fn zond_engine::journal::manifest::JournalManifest::covers(&self, &zond_engine::journal::manifest::Plan, bool) -> core::result::Result<(), zond_engine::journal::manifest::PlanChanged>
+pub fn zond_engine::journal::manifest::JournalManifest::covers(&self, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege) -> core::result::Result<(), zond_engine::journal::manifest::PlanChanged>
 pub fn zond_engine::journal::manifest::JournalManifest::kind(&self) -> zond_engine::report::ScanKind
-pub fn zond_engine::journal::manifest::JournalManifest::new(impl core::convert::Into<alloc::string::String>, &zond_engine::journal::manifest::Plan, bool, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn zond_engine::journal::manifest::JournalManifest::new(impl core::convert::Into<alloc::string::String>, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::journal::manifest::JournalManifest::recorded(&self) -> zond_engine::journal::manifest::Plan
 pub fn zond_engine::journal::manifest::JournalManifest::technique(&self) -> zond_engine::model::technique::TcpScanTechnique
 impl core::clone::Clone for zond_engine::journal::manifest::JournalManifest
@@ -5546,7 +5546,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::manifest:
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::manifest::PlanChanged
 pub struct zond_engine::journal::manifest::PlanFingerprint(_)
 impl zond_engine::journal::manifest::PlanFingerprint
-pub fn zond_engine::journal::manifest::PlanFingerprint::of(&zond_engine::journal::manifest::Plan, bool) -> Self
+pub fn zond_engine::journal::manifest::PlanFingerprint::of(&zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege) -> Self
 impl core::clone::Clone for zond_engine::journal::manifest::PlanFingerprint
 pub fn zond_engine::journal::manifest::PlanFingerprint::clone(&self) -> zond_engine::journal::manifest::PlanFingerprint
 impl core::cmp::Eq for zond_engine::journal::manifest::PlanFingerprint
@@ -5755,7 +5755,7 @@ impl zond_engine::journal::store::Journal
 pub fn zond_engine::journal::store::Journal::checkpoint(&mut self, &zond_engine::journal::settle::Settlements) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::close(self) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::compact(&mut self, &[zond_engine::model::host::Host]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
-pub fn zond_engine::journal::store::Journal::create(&std::path::Path, &zond_engine::journal::manifest::Plan, bool, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, zond_engine::journal::store::OpenError>
+pub fn zond_engine::journal::store::Journal::create(&std::path::Path, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::directory(&self) -> &std::path::Path
 pub fn zond_engine::journal::store::Journal::earlier_phases(&self) -> &[zond_engine::report::ScanPhase]
 pub fn zond_engine::journal::store::Journal::manifest(&self) -> &zond_engine::journal::manifest::JournalManifest
@@ -5763,9 +5763,9 @@ pub fn zond_engine::journal::store::Journal::record(&mut self, &[zond_engine::mo
 pub fn zond_engine::journal::store::Journal::record_detections(&mut self, &[zond_engine::detect::compute::DetectionRunRecord]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::record_hosts(&mut self, &[zond_engine::model::host::Host]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::record_phases(&mut self, &[zond_engine::report::ScanPhase]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
-pub fn zond_engine::journal::store::Journal::reopen(&std::path::Path, bool) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint, zond_engine::journal::manifest::Plan), zond_engine::journal::store::OpenError>
+pub fn zond_engine::journal::store::Journal::reopen(&std::path::Path, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint, zond_engine::journal::manifest::Plan), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::restored(&self) -> &[zond_engine::model::host::Host]
-pub fn zond_engine::journal::store::Journal::resume(&std::path::Path, &zond_engine::journal::manifest::Plan, bool) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint), zond_engine::journal::store::OpenError>
+pub fn zond_engine::journal::store::Journal::resume(&std::path::Path, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::resume_point(&self) -> &zond_engine::journal::cursor::Checkpoint
 pub fn zond_engine::journal::store::Journal::should_compact(&self, usize) -> bool
 impl core::fmt::Debug for zond_engine::journal::store::Journal
@@ -5834,7 +5834,7 @@ impl zond_engine::journal::store::Journal
 pub fn zond_engine::journal::store::Journal::checkpoint(&mut self, &zond_engine::journal::settle::Settlements) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::close(self) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::compact(&mut self, &[zond_engine::model::host::Host]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
-pub fn zond_engine::journal::store::Journal::create(&std::path::Path, &zond_engine::journal::manifest::Plan, bool, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, zond_engine::journal::store::OpenError>
+pub fn zond_engine::journal::store::Journal::create(&std::path::Path, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::directory(&self) -> &std::path::Path
 pub fn zond_engine::journal::store::Journal::earlier_phases(&self) -> &[zond_engine::report::ScanPhase]
 pub fn zond_engine::journal::store::Journal::manifest(&self) -> &zond_engine::journal::manifest::JournalManifest
@@ -5842,9 +5842,9 @@ pub fn zond_engine::journal::store::Journal::record(&mut self, &[zond_engine::mo
 pub fn zond_engine::journal::store::Journal::record_detections(&mut self, &[zond_engine::detect::compute::DetectionRunRecord]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::record_hosts(&mut self, &[zond_engine::model::host::Host]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::Journal::record_phases(&mut self, &[zond_engine::report::ScanPhase]) -> core::result::Result<(), zond_engine::journal::format::JournalError>
-pub fn zond_engine::journal::store::Journal::reopen(&std::path::Path, bool) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint, zond_engine::journal::manifest::Plan), zond_engine::journal::store::OpenError>
+pub fn zond_engine::journal::store::Journal::reopen(&std::path::Path, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint, zond_engine::journal::manifest::Plan), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::restored(&self) -> &[zond_engine::model::host::Host]
-pub fn zond_engine::journal::store::Journal::resume(&std::path::Path, &zond_engine::journal::manifest::Plan, bool) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint), zond_engine::journal::store::OpenError>
+pub fn zond_engine::journal::store::Journal::resume(&std::path::Path, &zond_engine::journal::manifest::Plan, zond_engine::system::privilege::Privilege) -> core::result::Result<(Self, zond_engine::journal::cursor::Checkpoint), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::Journal::resume_point(&self) -> &zond_engine::journal::cursor::Checkpoint
 pub fn zond_engine::journal::store::Journal::should_compact(&self, usize) -> bool
 impl core::fmt::Debug for zond_engine::journal::store::Journal
@@ -12374,6 +12374,28 @@ pub async fn zond_engine::scanner::scan(zond_engine::model::target::TargetMap, &
 pub async fn zond_engine::scanner::scan_with_journal(zond_engine::model::target::TargetMap, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub mod zond_engine::system
 pub mod zond_engine::system::interface
+#[non_exhaustive] pub enum zond_engine::system::interface::Addressing
+pub zond_engine::system::interface::Addressing::Broadcast
+pub zond_engine::system::interface::Addressing::Neither
+pub zond_engine::system::interface::Addressing::PointToPoint
+impl core::clone::Clone for zond_engine::system::interface::Addressing
+pub fn zond_engine::system::interface::Addressing::clone(&self) -> zond_engine::system::interface::Addressing
+impl core::cmp::Eq for zond_engine::system::interface::Addressing
+impl core::cmp::PartialEq for zond_engine::system::interface::Addressing
+pub fn zond_engine::system::interface::Addressing::eq(&self, &zond_engine::system::interface::Addressing) -> bool
+impl core::fmt::Debug for zond_engine::system::interface::Addressing
+pub fn zond_engine::system::interface::Addressing::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::system::interface::Addressing
+pub fn zond_engine::system::interface::Addressing::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::system::interface::Addressing
+impl core::marker::StructuralPartialEq for zond_engine::system::interface::Addressing
+impl core::marker::Freeze for zond_engine::system::interface::Addressing
+impl core::marker::Send for zond_engine::system::interface::Addressing
+impl core::marker::Sync for zond_engine::system::interface::Addressing
+impl core::marker::Unpin for zond_engine::system::interface::Addressing
+impl core::marker::UnsafeUnpin for zond_engine::system::interface::Addressing
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::interface::Addressing
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::interface::Addressing
 #[non_exhaustive] pub enum zond_engine::system::interface::LinkKind
 pub zond_engine::system::interface::LinkKind::Loopback
 pub zond_engine::system::interface::LinkKind::Virtual
@@ -12440,7 +12462,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::interface::La
 pub struct zond_engine::system::interface::Link
 impl zond_engine::system::interface::Link
 pub fn zond_engine::system::interface::Link::addresses(&self) -> &[zond_engine::system::interface::LinkAddress]
-pub fn zond_engine::system::interface::Link::addressing(self, bool, bool) -> Self
+pub fn zond_engine::system::interface::Link::addressing(self, zond_engine::system::interface::Addressing) -> Self
 pub fn zond_engine::system::interface::Link::carries_default_route(&self) -> bool
 pub fn zond_engine::system::interface::Link::carries_frames(&self) -> bool
 pub fn zond_engine::system::interface::Link::carrying_the_default_route(self, bool) -> Self
@@ -12590,6 +12612,28 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::neighbors:
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::neighbors::Neighbor
 pub fn zond_engine::system::neighbors::ipv6_neighbors() -> alloc::vec::Vec<zond_engine::system::neighbors::Neighbor>
 pub mod zond_engine::system::privilege
+pub enum zond_engine::system::privilege::Privilege
+pub zond_engine::system::privilege::Privilege::Connect
+pub zond_engine::system::privilege::Privilege::Raw
+impl zond_engine::system::privilege::Privilege
+pub fn zond_engine::system::privilege::Privilege::current() -> Self
+pub fn zond_engine::system::privilege::Privilege::is_raw(self) -> bool
+impl core::clone::Clone for zond_engine::system::privilege::Privilege
+pub fn zond_engine::system::privilege::Privilege::clone(&self) -> zond_engine::system::privilege::Privilege
+impl core::cmp::Eq for zond_engine::system::privilege::Privilege
+impl core::cmp::PartialEq for zond_engine::system::privilege::Privilege
+pub fn zond_engine::system::privilege::Privilege::eq(&self, &zond_engine::system::privilege::Privilege) -> bool
+impl core::fmt::Debug for zond_engine::system::privilege::Privilege
+pub fn zond_engine::system::privilege::Privilege::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::system::privilege::Privilege
+impl core::marker::StructuralPartialEq for zond_engine::system::privilege::Privilege
+impl core::marker::Freeze for zond_engine::system::privilege::Privilege
+impl core::marker::Send for zond_engine::system::privilege::Privilege
+impl core::marker::Sync for zond_engine::system::privilege::Privilege
+impl core::marker::Unpin for zond_engine::system::privilege::Privilege
+impl core::marker::UnsafeUnpin for zond_engine::system::privilege::Privilege
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::privilege::Privilege
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::privilege::Privilege
 pub fn zond_engine::system::privilege::is_elevated() -> bool
 pub mod zond_engine::transport
 pub mod zond_engine::transport::capture

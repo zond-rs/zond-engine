@@ -173,6 +173,39 @@ pub(crate) struct Parser<'a> {
     text: Vec<u8>,
 }
 
+/// What to do with one attribute's value.
+///
+/// Three states rather than the two independent flags this used to be. They
+/// were never independent: a value was only ever lossy if it was also kept, so
+/// one of the four combinations the old signature could express did not exist,
+/// and two adjacent `bool`s could be swapped at a call site with no diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValuePolicy {
+    /// Scanned past and not stored: nothing this parser was asked to keep.
+    Skip,
+
+    /// Stored, and a value past the size bound refuses the document.
+    Keep,
+
+    /// Stored, and a value past the bound is dropped rather than refused, so
+    /// what comes back is the absence of the attribute rather than a prefix of
+    /// it. For the attributes where an over-long value is somebody else's
+    /// verbosity rather than an attack.
+    KeepIfItFits,
+}
+
+impl ValuePolicy {
+    /// The policy for an attribute this parser was asked to keep, or not, and
+    /// to treat leniently, or not. Leniency without keeping is not a state.
+    fn of(kept: bool, lossy: bool) -> Self {
+        match (kept, lossy) {
+            (false, _) => Self::Skip,
+            (true, false) => Self::Keep,
+            (true, true) => Self::KeepIfItFits,
+        }
+    }
+}
+
 impl<'a> Parser<'a> {
     /// A parser over `input` that keeps the values of `kept` and nothing else.
     pub(crate) fn new(
@@ -522,11 +555,13 @@ impl<'a> Parser<'a> {
         self.bump()?;
         self.skip_whitespace()?;
 
-        let keep = self.kept.contains(&name.as_slice());
-        let lossy = keep && self.lossy.contains(&name.as_slice());
+        let policy = ValuePolicy::of(
+            self.kept.contains(&name.as_slice()),
+            self.lossy.contains(&name.as_slice()),
+        );
 
-        if let Some(value) = self.read_value(keep, lossy)?
-            && keep
+        if let Some(value) = self.read_value(policy)?
+            && policy != ValuePolicy::Skip
         {
             self.element.values.push((name, value));
         }
@@ -534,13 +569,15 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Reads a quoted attribute value.
+    /// Reads a quoted attribute value under `policy`.
     ///
-    /// `keep` decides whether the bytes are stored or merely scanned past. An
-    /// unwanted value is not accumulated at all, which is what lets nmap's very
-    /// long `args` and `services` attributes through without any limit tuned
-    /// around them - only the element's total markup is bounded.
-    fn read_value(&mut self, keep: bool, lossy: bool) -> Result<Option<Vec<u8>>, ImportError> {
+    /// An unwanted value is not accumulated at all, which is what lets nmap's
+    /// very long `args` and `services` attributes through without any limit
+    /// tuned around them: only the element's total markup is bounded.
+    fn read_value(&mut self, policy: ValuePolicy) -> Result<Option<Vec<u8>>, ImportError> {
+        let keep = policy != ValuePolicy::Skip;
+        let lossy = policy == ValuePolicy::KeepIfItFits;
+
         let Some(quote) = self.peek()? else {
             return Err(self.malformed("the document ends inside a tag".to_string()));
         };
@@ -910,6 +947,28 @@ mod tests {
 
     /// A kept attribute's value past the bound is a refusal; the bound itself is
     /// accepted.
+    #[test]
+    fn an_unwanted_attribute_is_not_accumulated_and_so_is_not_bounded() {
+        // The claim `read_value`'s doc makes, and the reason nmap's `args` and
+        // `services` attributes need no limit tuned around them: a value this
+        // parser was not asked for is scanned past rather than collected, so
+        // the size bound never applies to it.
+        let enormous = "v".repeat(MAX_VALUE_BYTES * 8);
+        let events = read(&format!(r#"<a id="kept" args="{enormous}"/>"#))
+            .expect("an unwanted value is never measured against the bound");
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Start { .. })),
+            "the element should have been read"
+        );
+
+        // And the same value under a name the parser *was* asked for is refused,
+        // so the test above is about what is kept and not about the length.
+        assert!(!refusal(&format!(r#"<a id="{enormous}"/>"#)).is_empty());
+    }
+
     #[test]
     fn a_kept_attribute_value_is_bounded() {
         let at_bound = "v".repeat(MAX_VALUE_BYTES);

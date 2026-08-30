@@ -777,29 +777,6 @@ mod tests {
         String::from_utf8(out).expect("the document is UTF-8")
     }
 
-    /// Prints the rendered document so it can be held against a real parser.
-    ///
-    /// Nothing in this file can check that the output is XML a stranger will
-    /// open - every assertion here compares the document to strings this module
-    /// wrote, which proves consistency and not validity. The instrument that
-    /// answers the real question lives outside the crate:
-    ///
-    /// ```text
-    /// cargo test --features export-nmap dump_for_external_validation \
-    ///   -- --ignored --nocapture | sed -n '/<?xml/,/<\/nmaprun>/p' > zond.xml
-    /// xmllint --dtdvalid /path/to/nmap.dtd --noout zond.xml
-    /// ```
-    ///
-    /// Against nmap 7.99's DTD that reports exactly one error, the deliberate
-    /// one: `scanner="zond"` is not `scanner="nmap"`. Substituting the name and
-    /// nothing else validates clean. Run the same check on real nmap output
-    /// first - it passes, which is what makes the instrument worth trusting.
-    #[test]
-    #[ignore = "prints a document for external validation rather than asserting"]
-    fn dump_for_external_validation() {
-        print!("{}", render());
-    }
-
     /// The point of the whole format. A consumer keys on the root element and
     /// its output version, and gets a document in nmap's shape.
     #[test]

@@ -105,13 +105,17 @@ carried, that a whole scan hands a passive detection the responses it already
 drew: the connect path now keeps what its inline fingerprint read instead of
 discarding it. No live claim stands under the convention today.
 
-The four `#[ignore]`d tests in the crate are a different thing entirely — they
-are gated on an environment rather than on a missing feature, and each says so in
-its attribute: two UDP scan tests need libpcap capture access, one nmap importer
-test needs a real document named by `ZOND_NMAP_XML`, and one nmap exporter test
-prints a document for external validation instead of asserting. They are not
-claims about unfinished work and removing the attribute is not the definition of
-done for any of them.
+The three `#[ignore]`d tests in the crate are a different thing entirely. They
+are gated on an environment rather than on a missing feature, each says so in its
+attribute, and **Tier 3 below is the job that runs them**: two UDP scan tests
+need libpcap capture access, and one nmap importer test needs a document nmap
+itself wrote. They are not claims about unfinished work, and removing the
+attribute is not the definition of done for any of them.
+
+There were four. `dump_for_external_validation` asserted nothing, printing a
+document for `xmllint` to judge, so it was never a test at all. It is
+`examples/nmap_dump.rs` now, which compiles under `cargo check --all-targets` and
+runs without a harness flag.
 
 `retransmission.rs` is also the one place in Tier 2 that takes seconds rather
 than milliseconds, because a bounded retry schedule is exactly what it is
@@ -219,14 +223,33 @@ synthetic transport has no use in a shipped binary, so enable it for tests only.
 
 ## Tier 3: privileged Linux tests
 
-Not written yet.
+**The job exists; the namespace does not yet.**
 
-Tier 2 simulates the network, which means it cannot catch a bug in the real path
-below the seam. A wrong BPF filter, a bad checksum, or a mistake in interface
-selection passes Tier 2 happily and then fails in the field. Tier 3 is the
-answer to that: a veth pair into a network namespace, with `netem` for loss and
-latency, `tbf` for congestion, a lowered MTU for fragmentation, and `nftables`
-for the difference between a silent drop and a reject.
+`test.yml`'s `privileged` job installs libpcap and nmap on a Linux runner, has
+nmap write a document against the runner's own loopback, and runs the crate's
+three `#[ignore]`d tests as root. That is what cashes them.
+
+Before it they were reachable only through a `continue-on-error` step, and what
+that step reported is worth naming, because it is the failure mode a non-gating
+job has. It ran them without the environment any of them asks for, so it came
+back part green: on an unprivileged macOS runner one of the two capture tests
+passes anyway and the other two fail. A step that is always partly red and never
+blocks is one everybody learns to scroll past, which is the same place the four
+`#[ignore]`d tests were before ZA-6-006 was written.
+
+**The nmap document is generated on every run rather than committed**, and that
+is the point of the test reading it. Every other nmap test here parses a document
+somebody typed into a source file carrying their beliefs about nmap's output,
+which is the trap this project keeps finding; a committed fixture would be the
+same trap with a longer shelf life.
+
+What is still missing is the network itself. Tier 2 simulates it, which means it
+cannot catch a bug in the real path below the seam: a wrong BPF filter, a bad
+checksum, or a mistake in interface selection passes Tier 2 happily and then
+fails in the field. The answer to that is a veth pair into a network namespace,
+with `netem` for loss and latency, `tbf` for congestion, a lowered MTU for
+fragmentation, and `nftables` for the difference between a silent drop and a
+reject. The job above is where it goes when it is written.
 
 It should stay small. A handful of end to end cases confirming that real packets
 survive a real degraded link is the point, and duplicating the Tier 2 matrix here

@@ -43,6 +43,7 @@ use crate::detect::compute::DetectionRunRecord;
 use crate::model::host::Host;
 use crate::record::{HostRecord, PhaseRecord};
 use crate::report::{ScanKind, ScanPhase, ScanReport};
+use crate::system::privilege::Privilege;
 
 const MANIFEST: &str = "manifest.json";
 const CURSOR: &str = "cursor.json";
@@ -117,11 +118,11 @@ impl Journal {
     pub fn create(
         root: &Path,
         plan: &Plan,
-        privileged: bool,
+        privilege: Privilege,
         summary: impl Into<String>,
     ) -> Result<Self, OpenError> {
         let (id, directory) = claim_directory(root)?;
-        let manifest = JournalManifest::new(id, plan, privileged, summary);
+        let manifest = JournalManifest::new(id, plan, privilege, summary);
         write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
 
         let lock = match Lock::acquire(&directory.join(LOCK)) {
@@ -157,7 +158,7 @@ impl Journal {
     pub fn resume(
         directory: &Path,
         plan: &Plan,
-        privileged: bool,
+        privilege: Privilege,
     ) -> Result<(Self, Checkpoint), OpenError> {
         let manifest = read_manifest(directory)?;
         // The phase before the fingerprint, so continuing a sweep as a port scan
@@ -171,7 +172,7 @@ impl Journal {
         // The plan next: a refusal here is about the caller's arguments, and
         // reporting it before taking a lock means a mistaken resume disturbs
         // nothing.
-        manifest.covers(plan, privileged)?;
+        manifest.covers(plan, privilege)?;
 
         let lock = Lock::acquire(&directory.join(LOCK))?;
         let checkpoint = read_checkpoint(directory)?;
@@ -204,10 +205,10 @@ impl Journal {
     /// a journal half of each would be counting two things.
     pub fn reopen(
         directory: &Path,
-        privileged: bool,
+        privilege: Privilege,
     ) -> Result<(Self, Checkpoint, Plan), OpenError> {
         let plan = read_manifest(directory)?.recorded();
-        let (journal, checkpoint) = Self::resume(directory, &plan, privileged)?;
+        let (journal, checkpoint) = Self::resume(directory, &plan, privilege)?;
         Ok((journal, checkpoint, plan))
     }
 
@@ -1147,7 +1148,7 @@ mod tests {
     }
 
     fn begin(root: &Path, map: &TargetMap) -> Journal {
-        Journal::create(root, &ports(map), true, "test").expect("creates")
+        Journal::create(root, &ports(map), Privilege::Raw, "test").expect("creates")
     }
 
     /// The whole cycle: begin a scan, settle part of it, come back and continue
@@ -1171,7 +1172,7 @@ mod tests {
         };
 
         let (_journal, checkpoint) =
-            Journal::resume(&directory, &ports(&map), true).expect("resumes");
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
 
         assert_eq!(checkpoint.watermark, 3);
         let remaining: Vec<_> = checkpoint.remaining(map.iter()).collect();
@@ -1190,8 +1191,8 @@ mod tests {
         journal.close().expect("closes");
 
         let widened = plan("192.0.2.1-192.0.2.9", "80,443");
-        let refused =
-            Journal::resume(&directory, &ports(&widened), true).expect_err("the plan moved");
+        let refused = Journal::resume(&directory, &ports(&widened), Privilege::Raw)
+            .expect_err("the plan moved");
 
         assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
     }
@@ -1205,12 +1206,13 @@ mod tests {
         let journal = begin(&root, &map);
         let directory = journal.directory().to_path_buf();
 
-        let refused = Journal::resume(&directory, &ports(&map), true).expect_err("it is held");
+        let refused =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect_err("it is held");
         assert!(matches!(refused, OpenError::Locked(_)), "{refused:?}");
 
         // And released, it opens.
         journal.close().expect("closes");
-        Journal::resume(&directory, &ports(&map), true).expect("now free");
+        Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("now free");
     }
 
     /// Listing reports progress and liveness without taking the lock, so it
@@ -1277,7 +1279,7 @@ mod tests {
         journal.close().expect("closes");
 
         let (_journal, checkpoint) =
-            Journal::resume(&directory, &ports(&map), true).expect("resumes");
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
 
         assert_eq!(checkpoint, Checkpoint::default());
         assert_eq!(checkpoint.remaining(map.iter()).count(), 8);
@@ -1393,7 +1395,7 @@ mod tests {
         };
 
         let (mut journal, checkpoint) =
-            Journal::resume(&directory, &ports(&map), true).expect("resumes");
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
 
         // Seeded from the resume point, exactly as a scan does.
         let settlements = Settlements::resuming(&checkpoint);
@@ -1433,7 +1435,8 @@ mod tests {
             directory
         };
 
-        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
 
         let restored = journal.restored();
         assert_eq!(restored.len(), 1);
@@ -1525,7 +1528,8 @@ mod tests {
             directory
         };
 
-        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
 
         let restored = journal.restored();
         assert_eq!(restored.len(), 1, "one address is one host");
@@ -1544,7 +1548,8 @@ mod tests {
         let directory = journal.directory().to_path_buf();
         journal.close().expect("closes");
 
-        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
         assert!(journal.restored().is_empty());
     }
 
@@ -1748,12 +1753,12 @@ mod tests {
                 kind: crate::record::wire::scan_kind_name(ScanKind::PortScan).to_owned(),
                 plan: crate::journal::manifest::PlanFingerprint::of(
                     &ports(&plan("192.0.2.1", "80")),
-                    true,
+                    Privilege::Raw,
                 ),
                 targets: crate::record::PlanRecord::from(&plan("192.0.2.1", "80")),
                 technique: TcpScanTechnique::Syn.name().to_owned(),
                 sweep: false,
-                privileged: true,
+                privilege: Privilege::Raw,
                 total_targets: total,
                 summary: String::new(),
             },
@@ -1948,7 +1953,8 @@ mod tests {
             directory
         };
 
-        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
 
         let restored = journal.restored();
         assert_eq!(
@@ -2021,7 +2027,7 @@ mod tests {
         // Held by this process, so a second journal over the same directory is
         // refused — the same path a real contention takes.
         assert!(matches!(
-            Journal::resume(&directory, &ports(&map), true),
+            Journal::resume(&directory, &ports(&map), Privilege::Raw),
             Err(OpenError::Locked(_))
         ));
         assert!(directory.exists(), "the held journal is untouched");
@@ -2077,7 +2083,8 @@ mod tests {
         assert_eq!(lines, 1 + 4, "a header and one record each");
 
         // And nothing was lost.
-        let (journal, _) = Journal::resume(&directory, &ports(&map), true).expect("resumes");
+        let (journal, _) =
+            Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
 
         let restored = journal.restored();
         assert_eq!(restored.len(), 4);
@@ -2104,7 +2111,7 @@ mod tests {
             let journal = Journal::create(
                 &root,
                 &Plan::port_scan(&map, &Exclusions::none(), TcpScanTechnique::Fin),
-                true,
+                Privilege::Raw,
                 "test",
             )
             .expect("creates");
@@ -2113,7 +2120,8 @@ mod tests {
             directory
         };
 
-        let (journal, _checkpoint, recovered) = Journal::reopen(&directory, true).expect("reopens");
+        let (journal, _checkpoint, recovered) =
+            Journal::reopen(&directory, Privilege::Raw).expect("reopens");
 
         let recovered = recovered.targets().expect("a port scan's plan");
         assert_eq!(
@@ -2132,11 +2140,13 @@ mod tests {
         let root = scratch("reopen-privilege");
         let map = plan("192.0.2.1", "80");
 
-        let journal = Journal::create(&root, &ports(&map), true, "test").expect("creates");
+        let journal =
+            Journal::create(&root, &ports(&map), Privilege::Raw, "test").expect("creates");
         let directory = journal.directory().to_path_buf();
         journal.close().expect("closes");
 
-        let refused = Journal::reopen(&directory, false).expect_err("privileges differ");
+        let refused =
+            Journal::reopen(&directory, Privilege::Connect).expect_err("privileges differ");
         assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
     }
 
@@ -2162,7 +2172,7 @@ mod tests {
         prepare_root(&root).expect("an existing root is not an error");
 
         let plan = Plan::listen(vec![crate::model::ip::scoped::Zone::new(3, "en0")]);
-        Journal::create(&root, &plan, false, "listening")
+        Journal::create(&root, &plan, Privilege::Connect, "listening")
             .expect("a journal is created inside it")
             .close()
             .expect("it closes");
@@ -2180,8 +2190,8 @@ mod tests {
 
         let root = scratch("watch-never-complete");
         let plan = Plan::listen(vec![Zone::new(3, "en0")]);
-        let journal =
-            Journal::create(&root, &plan, true, "listening on en0").expect("a journal is created");
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "listening on en0")
+            .expect("a journal is created");
         journal.close().expect("it closes");
 
         let entries = list(&root).expect("the root lists");

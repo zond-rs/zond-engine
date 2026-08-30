@@ -52,13 +52,15 @@
 //! a device named `<script>…</script>` executes on whoever opens the report -
 //! the same class of attack the CSV exporter neutralises for spreadsheets.
 //!
-//! Everything from the report therefore goes through one escaping writer. It
-//! escapes the five characters that carry markup, and renders control characters
-//! as their code point rather than emitting them. That second part is not
-//! decoration: a hostname containing U+202E reverses the text that follows it,
-//! which is how a report is made to display one address while carrying another.
-//! No value from a report is ever written into an attribute, so there is one
-//! escaping context in the whole exporter and no way to pick the wrong one.
+//! Everything from the report therefore goes through one escaping writer,
+//! which the comparison page shares: it lives in `export::write` rather than
+//! here, so there is one of it. It escapes the five characters that carry
+//! markup, and renders control characters as their code point rather than
+//! emitting them. That second part is not decoration: a hostname containing
+//! U+202E reverses the text that follows it, which is how a report is made to
+//! display one address while carrying another. No value from a report is ever
+//! written into an attribute, so there is one escaping context in the whole
+//! exporter and no way to pick the wrong one.
 //!
 //! ## What the page says, and what it leaves out
 //!
@@ -74,7 +76,7 @@
 //! is a host nobody reads.
 
 use std::borrow::Cow;
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 use std::io::Write;
 use std::time::SystemTime;
 
@@ -82,47 +84,18 @@ use crate::export::schema::{
     ENGINE_NAME, FindingDto, HostDto, PhaseDto, PortDto, ProbeStatsDto, SCHEMA_VERSION, SummaryDto,
     host_status_name, port_state_name, scan_kind_name, total_elapsed_us,
 };
-use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::export::write::{TONE_FOUND, TONE_INERT, TONE_NONE, TONE_PARTIAL, Text, esc};
+use crate::export::{ExportError, ExportOptions, Exporter, write};
 use crate::format::time::rfc3339;
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, PortState};
 use crate::report::ScanReport;
-
-/// The stylesheet inlined into every report.
-///
-/// A file of its own rather than a string in this one: it is a stylesheet, it is
-/// edited as a stylesheet, and a test pins the class names it defines to the
-/// ones written here.
-pub(crate) const STYLE: &str = include_str!("../../assets/html/report.css");
 
 /// The heading a report carries when the caller names none.
 const DEFAULT_HEADING: &str = "Scan report";
 
 /// How many columns a host's port table has.
 const PORT_COLUMNS: usize = 7;
-
-// ---------------------------------------------------------------------------
-// Tones
-//
-// Four of them, rather than one colour per state name. The state's name is
-// always printed beside its colour, so the colour is free to carry something
-// the name does not: how much the finding is worth a second look.
-// ---------------------------------------------------------------------------
-
-/// Something is there and answering: `up`, `open`.
-pub(crate) const TONE_FOUND: &str = "s-found";
-
-/// Something is there and the scan could not pin it down. Drawn hatched as well
-/// as coloured, because green against amber is the pair a colour-blind reader
-/// loses first and a printed report is often greyscale.
-pub(crate) const TONE_PARTIAL: &str = "s-partial";
-
-/// A definite negative: `down`, `closed`. Real evidence, and rarely what the
-/// reader came for.
-pub(crate) const TONE_INERT: &str = "s-inert";
-
-/// Nothing was established at all.
-pub(crate) const TONE_NONE: &str = "s-none";
 
 /// The tone a host status is drawn in.
 fn host_tone(status: HostStatus) -> &'static str {
@@ -230,7 +203,7 @@ impl Exporter for HtmlExporter {
             .collect();
         let elapsed_us = total_elapsed_us(&phases);
 
-        write_head(out, &self.title(&started_at))?;
+        write::head(out, &self.title(&started_at))?;
         write_masthead(out, self.heading(), report, &started_at, elapsed_us)?;
         write_notices(out, report, &phases, &self.options)?;
         write_tiles(out, &summary, &phases)?;
@@ -239,7 +212,7 @@ impl Exporter for HtmlExporter {
         write_scan_detail(out, &phases)?;
         write_colophon(out, report, &generated_at)?;
 
-        out.write_all(b"</div>\n</body>\n</html>\n")?;
+        write::foot(out)?;
         Ok(())
     }
 }
@@ -263,36 +236,7 @@ fn findings_from(report: &ScanReport) -> String {
     format!(" · findings from {}", Text(report.engine_version()))
 }
 
-/// The head, the stylesheet, and everything down to the open page container.
-///
-/// Takes no report: a `generator` is what wrote the page, which is this build
-/// whoever the findings came from. Who *that* was is in the colophon.
-fn write_head(out: &mut dyn Write, title: &str) -> Result<(), ExportError> {
-    writeln!(
-        out,
-        r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="{engine} {version}">
-<meta name="robots" content="noindex, nofollow">
-<title>{title}</title>
-<style>
-{style}</style>
-</head>
-<body>
-<input type="checkbox" id="zond-theme" class="theme-switch" aria-label="Use the other colour scheme">
-<div class="sheet">"#,
-        engine = ENGINE_NAME,
-        version = crate::report::ENGINE_VERSION,
-        title = Plain(title),
-        style = STYLE,
-    )?;
-    Ok(())
-}
-
-/// The brand, the heading, a one-line description of the scan, and the switch.
+/// A one-line description of the scan, under the shared masthead.
 ///
 /// The description states no total the schema does not define. A figure that
 /// appears nowhere else is a figure nobody can check.
@@ -310,23 +254,15 @@ fn write_masthead(
         .map(|phase| esc(scan_kind_name(phase.kind())))
         .collect();
 
-    writeln!(
-        out,
-        r#"<header class="masthead">
-<div class="brand">zond<span class="brand-mark">_</span></div>
-<div class="masthead-title">
-<h1>{heading}</h1>
-<p class="subtitle">{kinds} · started {started_at} · {elapsed} · {count} {word}</p>
-</div>
-<label class="theme-label" for="zond-theme" title="Switch between light and dark"><span class="theme-icon"></span>theme</label>
-</header>"#,
-        heading = Text(heading),
+    let subtitle = format!(
+        "{kinds} · started {started_at} · {elapsed} · {count} {word}",
         kinds = kinds.join(" + "),
         started_at = Text(started_at),
         elapsed = duration(elapsed_us),
         word = plural(count, "phase", "phases"),
-    )?;
-    Ok(())
+    );
+
+    write::masthead(out, heading, &subtitle)
 }
 
 /// The three things that change how the rest of the page should be read.
@@ -356,7 +292,7 @@ fn write_notices(
     writeln!(out, "<p class=\"notices\">")?;
 
     if report.is_partial() {
-        notice(
+        write::notice(
             out,
             true,
             "partial",
@@ -364,7 +300,7 @@ fn write_notices(
         )?;
     }
     if unprivileged > 0 {
-        notice(
+        write::notice(
             out,
             true,
             "unprivileged",
@@ -372,7 +308,7 @@ fn write_notices(
         )?;
     }
     if options.redaction.is_active() {
-        notice(
+        write::notice(
             out,
             false,
             "redacted",
@@ -384,23 +320,6 @@ fn write_notices(
     Ok(())
 }
 
-/// One notice.
-fn notice(out: &mut dyn Write, alert: bool, key: &str, text: &str) -> Result<(), ExportError> {
-    let class = if alert {
-        "notice notice-alert"
-    } else {
-        "notice"
-    };
-
-    writeln!(
-        out,
-        "<span class=\"{class}\"><span class=\"notice-key\">{key}</span><span>{text}</span></span>",
-        key = Text(key),
-        text = Text(text),
-    )?;
-    Ok(())
-}
-
 /// The four figures somebody reads before they read anything else.
 fn write_tiles(
     out: &mut dyn Write,
@@ -409,20 +328,20 @@ fn write_tiles(
 ) -> Result<(), ExportError> {
     writeln!(out, "<section class=\"tiles\">")?;
 
-    tile(out, summary.hosts_total, "hosts", &ranges_note(phases))?;
-    tile(
+    write::tile(out, summary.hosts_total, "hosts", &ranges_note(phases))?;
+    write::tile(
         out,
         summary.hosts_alive,
         "alive",
         &esc("up or filtered — confirmed present"),
     )?;
-    tile(
+    write::tile(
         out,
         summary.ports_open,
         "open ports",
         &format!("of {} recorded", summary.ports_total),
     )?;
-    tile(
+    write::tile(
         out,
         summary.services_identified,
         "services",
@@ -430,16 +349,6 @@ fn write_tiles(
     )?;
 
     writeln!(out, "</section>")?;
-    Ok(())
-}
-
-/// One headline figure. `note` is markup the caller escaped.
-fn tile(out: &mut dyn Write, value: usize, label: &str, note: &str) -> Result<(), ExportError> {
-    writeln!(
-        out,
-        "<div class=\"tile\"><div class=\"tile-value\">{value}</div><div class=\"tile-label\">{label}</div><div class=\"tile-note\">{note}</div></div>",
-        label = Text(label),
-    )?;
     Ok(())
 }
 
@@ -1289,102 +1198,6 @@ fn write_colophon(
 }
 
 // ---------------------------------------------------------------------------
-// Escaping
-// ---------------------------------------------------------------------------
-
-/// Report text, escaped for the page as it is written.
-///
-/// Everything the scanned network chose to call itself passes through here.
-/// Beyond the five characters that carry markup, this renders the characters
-/// that carry *direction* - U+202E and the rest of the bidirectional set - as
-/// their code points instead of emitting them, because a hostname that reverses
-/// the text after it makes a report display one thing and mean another. The
-/// remaining control characters are shown the same way for the same reason: what
-/// a report claims to have found should be legible as bytes.
-///
-/// This writes markup, so it belongs in element content and nowhere else. No
-/// value from a report is written into an attribute anywhere in this module or
-/// in [`diff::html`](super::diff::html), which is what keeps that a rule rather
-/// than something to remember.
-///
-/// Shared with the comparison page rather than copied, so there is one escaper
-/// in this crate and no second one to keep in step with it.
-pub(crate) struct Text<'a>(pub(crate) &'a str);
-
-impl fmt::Display for Text<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for character in self.0.chars() {
-            match character {
-                '&' => f.write_str("&amp;")?,
-                '<' => f.write_str("&lt;")?,
-                '>' => f.write_str("&gt;")?,
-                '"' => f.write_str("&quot;")?,
-                '\'' => f.write_str("&#39;")?,
-                character if is_neutralized(character) => write!(
-                    f,
-                    "<span class=\"ctl\">U+{:04X}</span>",
-                    u32::from(character)
-                )?,
-                character => f.write_char(character)?,
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Report text for somewhere markup cannot go.
-///
-/// The document's title is text, not content: a `<span>` written into it renders
-/// as its own source. A neutralized character therefore becomes the replacement
-/// character, which already means "something was here that this cannot show"
-/// everywhere else.
-pub(crate) struct Plain<'a>(pub(crate) &'a str);
-
-impl fmt::Display for Plain<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for character in self.0.chars() {
-            match character {
-                '&' => f.write_str("&amp;")?,
-                '<' => f.write_str("&lt;")?,
-                '>' => f.write_str("&gt;")?,
-                '"' => f.write_str("&quot;")?,
-                '\'' => f.write_str("&#39;")?,
-                character if is_neutralized(character) => f.write_char('\u{fffd}')?,
-                character => f.write_char(character)?,
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Whether a character is shown as its code point rather than emitted.
-///
-/// The bidirectional formatting characters are the reason this exists: they
-/// reorder the text around them, and a reader cannot see that they are there.
-/// The control characters are included because a page renders them as nothing,
-/// so a banner containing one would silently lose it.
-///
-/// Tab, newline and carriage return pass through. They are ordinary whitespace
-/// in HTML, they cannot spoof anything, and a script's multi-line output is
-/// worth keeping the shape of.
-fn is_neutralized(character: char) -> bool {
-    matches!(character,
-        '\u{0}'..='\u{8}'
-        | '\u{b}' | '\u{c}'
-        | '\u{e}'..='\u{1f}'
-        | '\u{7f}'..='\u{9f}'
-        | '\u{61c}'
-        | '\u{200e}' | '\u{200f}'
-        | '\u{202a}'..='\u{202e}'
-        | '\u{2066}'..='\u{2069}')
-}
-
-/// Escapes one value into markup.
-fn esc(text: &str) -> String {
-    Text(text).to_string()
-}
-
-// ---------------------------------------------------------------------------
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
@@ -1468,6 +1281,7 @@ fn plural_str(count: &str, one: &'static str, many: &'static str) -> &'static st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::export::write::STYLE;
     use crate::export::{Redaction, fixture};
 
     fn page(exporter: &HtmlExporter) -> String {
@@ -1605,35 +1419,6 @@ mod tests {
         assert!(page.contains(">up<"));
         assert!(page.contains(">filtered<"));
         assert!(page.contains(">tcp_syn_ack<"));
-    }
-
-    /// A device names itself, and what it calls itself is written into a page
-    /// somebody opens. This is the security control of this module.
-    #[test]
-    fn a_hostname_that_would_execute_is_escaped() {
-        let hostile = "<script>alert('pwned')</script>";
-
-        assert_eq!(
-            esc(hostile),
-            "&lt;script&gt;alert(&#39;pwned&#39;)&lt;/script&gt;"
-        );
-        assert_eq!(esc("a & b"), "a &amp; b");
-        assert_eq!(esc("say \"hi\""), "say &quot;hi&quot;");
-    }
-
-    /// A right-to-left override reverses everything after it, so one address can
-    /// be made to read as another. It is shown as what it is instead.
-    #[test]
-    fn direction_and_control_characters_are_shown_rather_than_obeyed() {
-        assert_eq!(
-            esc("host\u{202e}txt.exe"),
-            "host<span class=\"ctl\">U+202E</span>txt.exe"
-        );
-        assert_eq!(esc("bell\u{7}"), "bell<span class=\"ctl\">U+0007</span>");
-        // Whitespace is whitespace, and a script's line breaks are worth having.
-        assert_eq!(esc("two\nlines\tapart"), "two\nlines\tapart");
-        // A title holds no markup, so the same character degrades instead.
-        assert_eq!(Plain("host\u{202e}txt").to_string(), "host\u{fffd}txt");
     }
 
     /// Redaction is chosen when the report is written, and the page has to

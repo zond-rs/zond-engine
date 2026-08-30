@@ -135,8 +135,7 @@ pub struct Link {
     addresses: Vec<LinkAddress>,
     kind: LinkKind,
     up: bool,
-    broadcast: bool,
-    point_to_point: bool,
+    addressing: Addressing,
     physical: bool,
     default_route: bool,
 }
@@ -156,8 +155,7 @@ impl Link {
             addresses: Vec::new(),
             kind: LinkKind::Virtual,
             up: false,
-            broadcast: false,
-            point_to_point: false,
+            addressing: Addressing::Neither,
             physical: false,
             default_route: false,
         }
@@ -191,12 +189,10 @@ impl Link {
         self
     }
 
-    /// Whether it can carry a broadcast, and whether it is a point-to-point
-    /// link.
+    /// How addresses on this link reach anything.
     #[must_use]
-    pub fn addressing(mut self, broadcast: bool, point_to_point: bool) -> Self {
-        self.broadcast = broadcast;
-        self.point_to_point = point_to_point;
+    pub fn addressing(mut self, addressing: Addressing) -> Self {
+        self.addressing = addressing;
         self
     }
 
@@ -297,12 +293,12 @@ impl Link {
 
     /// Whether it can carry a broadcast.
     pub fn is_broadcast(&self) -> bool {
-        self.broadcast
+        self.addressing == Addressing::Broadcast
     }
 
     /// Whether it is a point-to-point link, which has one peer and no segment.
     pub fn is_point_to_point(&self) -> bool {
-        self.point_to_point
+        self.addressing == Addressing::PointToPoint
     }
 
     /// Whether this machine's default route leaves by this link.
@@ -336,6 +332,45 @@ impl Link {
     /// the frame.
     pub fn carries_frames(&self) -> bool {
         !self.is_point_to_point() && !self.is_loopback() && self.mac.is_some()
+    }
+}
+
+/// How addresses on a link reach anything, which decides what a scan may send
+/// out of it.
+///
+/// One value rather than the two flags this used to be. A link is one of these
+/// three and the flags were never independent, so a signature that let a caller
+/// say both could describe a link no operating system reports.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Addressing {
+    /// A shared segment: one frame sent to the broadcast address reaches every
+    /// host on the link, which is what a sweep of a local network needs.
+    Broadcast,
+
+    /// Exactly one peer at the far end, and no broadcast address to reach it
+    /// by. A tunnel or a dial-up link. Sweeping it means probing one host.
+    PointToPoint,
+
+    /// Neither. Loopback carries nothing to another machine at all, and some
+    /// virtual interfaces present the same way.
+    Neither,
+}
+
+impl Addressing {
+    /// What a platform's two flags amount to.
+    ///
+    /// **A link reporting both is read as point-to-point.** No operating system
+    /// sets `IFF_BROADCAST` and `IFF_POINTOPOINT` together, so this is a rule
+    /// about a case that should not arise; it picks the direction that refuses
+    /// rather than the one that sweeps, because broadcasting onto something
+    /// that is not a broadcast domain is the more expensive mistake.
+    pub(crate) fn of(broadcast: bool, point_to_point: bool) -> Self {
+        match (broadcast, point_to_point) {
+            (_, true) => Self::PointToPoint,
+            (true, false) => Self::Broadcast,
+            (false, false) => Self::Neither,
+        }
     }
 }
 
@@ -399,8 +434,7 @@ impl Link {
             // administratively up with nothing on the other end. A scan wants
             // the conjunction — there is no point probing out of either.
             up: interface.is_up() && interface.is_oper_up(),
-            broadcast: interface.is_broadcast(),
-            point_to_point: interface.is_point_to_point(),
+            addressing: Addressing::of(interface.is_broadcast(), interface.is_point_to_point()),
             physical: interface.is_physical(),
             default_route: interface.default,
             name: interface.name,
@@ -508,7 +542,7 @@ mod tests {
             !Link::new("utun0", 1)
                 .of_kind(LinkKind::Wired)
                 .with_mac(mac)
-                .addressing(false, true)
+                .addressing(Addressing::PointToPoint)
                 .carries_frames(),
             "a peer rather than a segment"
         );

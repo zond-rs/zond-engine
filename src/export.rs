@@ -77,6 +77,13 @@ pub mod diff;
 pub mod redact;
 pub mod schema;
 
+#[cfg(any(
+    feature = "export-json",
+    feature = "export-jsonl",
+    feature = "export-html"
+))]
+pub(crate) mod write;
+
 #[cfg(feature = "export-json")]
 pub mod json;
 

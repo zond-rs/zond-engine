@@ -87,6 +87,7 @@ use crate::model::target::TargetMap;
 use crate::model::technique::TcpScanTechnique;
 use crate::record::{PlanRecord, wire};
 use crate::report::ScanKind;
+use crate::system::privilege::Privilege;
 
 /// What a scan will actually walk, in the shape the phase it belongs to counts.
 ///
@@ -278,18 +279,23 @@ pub struct PlanFingerprint(u64);
 impl PlanFingerprint {
     /// Fingerprints a resolved plan.
     ///
-    /// `privileged` is whether the scan holds the privileges its raw strategies
-    /// need, not whether it asked for them: what matters is which question the
-    /// probes actually answered. **It is read for the two enumerating phases
-    /// and ignored for a watch**, which sends no probe and so has no second
-    /// question a privilege change could switch it to; see the `Listen` arm.
+    /// `privilege` is what the scan could actually send, not what it asked for:
+    /// what matters is which question the probes answered. **It is read for the
+    /// two enumerating phases and ignored for a watch**, which sends no probe
+    /// and so has no second question a privilege change could switch it to; see
+    /// the `Listen` arm.
+    ///
+    /// It goes into the hasher as the boolean the manifest writes, because
+    /// every journal already on disk was fingerprinted from that byte and the
+    /// derivation may move when
+    /// [`JOURNAL_VERSION`](super::JOURNAL_VERSION) does and not before.
     ///
     /// The hash walks each unit's canonical ranges and ports rather than its
     /// targets, so this is cheap on a plan of any size. Feeding each field's
     /// count before the fields themselves is what keeps two differently-shaped
     /// plans from colliding — without it, one unit of two ranges and two units
     /// of one would hash the same.
-    pub fn of(plan: &Plan, privileged: bool) -> Self {
+    pub fn of(plan: &Plan, privilege: Privilege) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
         // The phase first, so a sweep and a port scan over the same addresses
@@ -303,7 +309,7 @@ impl PlanFingerprint {
                 // A raw SYN and a connect attempt ask different questions of the
                 // same port, so a journal half of each would be counting two
                 // things — which is what this bit refuses.
-                privileged.hash(&mut hasher);
+                privilege.is_raw().hash(&mut hasher);
                 sweep.hash(&mut hasher);
                 hash_addresses(addresses, &mut hasher);
             }
@@ -330,7 +336,7 @@ impl PlanFingerprint {
                 }
             }
             Resolved::PortScan { targets, technique } => {
-                privileged.hash(&mut hasher);
+                privilege.is_raw().hash(&mut hasher);
                 technique.hash(&mut hasher);
                 targets.units.len().hash(&mut hasher);
 
@@ -432,13 +438,17 @@ pub struct JournalManifest {
     /// meant by the link. Empty for the two phases that walk targets.
     #[serde(default)]
     pub links: Vec<String>,
-    /// Whether the scan held the privileges its raw strategies need.
+    /// What the scan was able to send.
     ///
     /// Recorded because a resume must run under the same answer. The connect
     /// fallback asks a different question than a raw technique does, and a
     /// journal half of each would be counting two things.
-    #[serde(default)]
-    pub privileged: bool,
+    #[serde(
+        rename = "privileged",
+        default = "wire_privilege::unrecorded",
+        with = "wire_privilege"
+    )]
+    pub privilege: Privilege,
     /// How many targets that plan holds, so a caller can report progress without
     /// walking it.
     pub total_targets: u128,
@@ -448,12 +458,50 @@ pub struct JournalManifest {
     pub summary: String,
 }
 
+/// The manifest's `privileged` field as it is written: a boolean, which is the
+/// only shape it has ever had on disk.
+///
+/// The distinction is worth making in the type and not worth making twice.
+/// Spelling it out in the file as well would change what every journal already
+/// written says, and that is a
+/// [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) bump for no reader's
+/// benefit.
+mod wire_privilege {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::system::privilege::Privilege;
+
+    /// What a journal written before the field existed was scanning under.
+    ///
+    /// Connect, which is what the boolean's absence has always meant here.
+    pub(super) fn unrecorded() -> Privilege {
+        Privilege::Connect
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        privilege: &Privilege,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        privilege.is_raw().serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Privilege, D::Error> {
+        Ok(if bool::deserialize(deserializer)? {
+            Privilege::Raw
+        } else {
+            Privilege::Connect
+        })
+    }
+}
+
 impl JournalManifest {
     /// Describes a scan about to start.
     pub fn new(
         id: impl Into<String>,
         plan: &Plan,
-        privileged: bool,
+        privilege: Privilege,
         summary: impl Into<String>,
     ) -> Self {
         Self {
@@ -462,7 +510,7 @@ impl JournalManifest {
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
             created_at: SystemTime::now(),
             kind: wire::scan_kind_name(plan.kind()).to_owned(),
-            plan: PlanFingerprint::of(plan, privileged),
+            plan: PlanFingerprint::of(plan, privilege),
             targets: plan.record(),
             technique: plan
                 .technique()
@@ -475,7 +523,7 @@ impl JournalManifest {
                 .iter()
                 .map(|link| link.name().to_owned())
                 .collect(),
-            privileged,
+            privilege,
             total_targets: plan.total_targets(),
             summary: summary.into(),
         }
@@ -535,8 +583,8 @@ impl JournalManifest {
 
     /// Whether `plan` under these conditions is the plan this journal was
     /// counted in.
-    pub fn covers(&self, plan: &Plan, privileged: bool) -> Result<(), PlanChanged> {
-        let found = PlanFingerprint::of(plan, privileged);
+    pub fn covers(&self, plan: &Plan, privilege: Privilege) -> Result<(), PlanChanged> {
+        let found = PlanFingerprint::of(plan, privilege);
         if found == self.plan {
             return Ok(());
         }
@@ -628,7 +676,7 @@ mod tests {
     }
 
     fn print(map: &TargetMap) -> PlanFingerprint {
-        PlanFingerprint::of(&ports(map), true)
+        PlanFingerprint::of(&ports(map), Privilege::Raw)
     }
 
     fn addresses(written: &str) -> IpSet {
@@ -732,18 +780,63 @@ mod tests {
         let map = plan(&[("192.0.2.1-192.0.2.10", "80,443")]);
 
         assert_ne!(
-            PlanFingerprint::of(&ports(&map), true),
-            PlanFingerprint::of(&ports(&map), false),
+            PlanFingerprint::of(&ports(&map), Privilege::Raw),
+            PlanFingerprint::of(&ports(&map), Privilege::Connect),
             "privilege decides which question the probes answered"
         );
         assert_ne!(
-            PlanFingerprint::of(&ports(&map), true),
+            PlanFingerprint::of(&ports(&map), Privilege::Raw),
             PlanFingerprint::of(
                 &Plan::port_scan(&map, &Exclusions::none(), TcpScanTechnique::Fin),
-                true
+                Privilege::Raw
             ),
             "a technique decides what silence means"
         );
+    }
+
+    /// Privilege is a type in this build and a boolean in the file, and the
+    /// boolean is the half that may not move.
+    ///
+    /// Every journal on disk was written with `"privileged": true` and
+    /// fingerprinted from that byte. Spelling the variant out instead would
+    /// refuse all of them without
+    /// [`JOURNAL_VERSION`](super::super::JOURNAL_VERSION) having moved to say
+    /// so, and the refusal would arrive as a plan that changed.
+    #[cfg(feature = "journal-format")]
+    #[test]
+    fn privilege_is_written_as_the_boolean_the_format_promised() {
+        let map = plan(&[("192.0.2.1", "80")]);
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &ports(&map), Privilege::Raw, "");
+
+        let mut written = serde_json::to_value(&manifest).expect("a manifest serializes");
+        assert_eq!(written["privileged"], serde_json::Value::Bool(true));
+
+        let read: JournalManifest =
+            serde_json::from_value(written.clone()).expect("and reads back");
+        assert_eq!(read.privilege, Privilege::Raw);
+        assert_eq!(read.plan, manifest.plan, "the same plan, still");
+
+        written["privileged"] = serde_json::Value::Bool(false);
+        let read: JournalManifest = serde_json::from_value(written).expect("a connect scan reads");
+        assert_eq!(read.privilege, Privilege::Connect, "the polarity is intact");
+    }
+
+    /// A journal written before the field existed reads as a connect scan,
+    /// which is what its absence has always meant here.
+    #[cfg(feature = "journal-format")]
+    #[test]
+    fn a_manifest_that_records_no_privilege_reads_as_a_connect_scan() {
+        let map = plan(&[("192.0.2.1", "80")]);
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &ports(&map), Privilege::Raw, "");
+
+        let mut written = serde_json::to_value(&manifest).expect("a manifest serializes");
+        written
+            .as_object_mut()
+            .expect("an object")
+            .remove("privileged");
+
+        let read: JournalManifest = serde_json::from_value(written).expect("an older manifest");
+        assert_eq!(read.privilege, Privilege::Connect);
     }
 
     /// The manifest accepts the plan it was made from and refuses anything else,
@@ -754,17 +847,17 @@ mod tests {
         let manifest = JournalManifest::new(
             "01J8Z5Q7VN",
             &ports(&original),
-            true,
+            Privilege::Raw,
             "192.0.2.1-192.0.2.10 on 2 ports",
         );
 
         assert_eq!(manifest.total_targets, 20);
         assert_eq!(manifest.kind(), ScanKind::PortScan);
-        assert!(manifest.covers(&ports(&original), true).is_ok());
+        assert!(manifest.covers(&ports(&original), Privilege::Raw).is_ok());
 
         let widened = plan(&[("192.0.2.1-192.0.2.20", "80,443")]);
         let refused = manifest
-            .covers(&ports(&widened), true)
+            .covers(&ports(&widened), Privilege::Raw)
             .expect_err("a widened plan renumbers every position past the first host");
 
         assert_eq!(refused.expected_targets, 20);
@@ -784,16 +877,17 @@ mod tests {
         let map = plan(&[("192.0.2.1-192.0.2.10", "80")]);
 
         assert_ne!(
-            PlanFingerprint::of(&sweeping(&ips, false), true),
+            PlanFingerprint::of(&sweeping(&ips, false), Privilege::Raw),
             print(&map),
             "the same ten addresses, asked two different questions"
         );
 
-        let manifest = JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
+        let manifest =
+            JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), Privilege::Raw, "");
         assert_eq!(manifest.kind(), ScanKind::Discovery);
         assert_eq!(manifest.total_targets, 10, "a sweep counts addresses");
         assert!(
-            manifest.covers(&ports(&map), true).is_err(),
+            manifest.covers(&ports(&map), Privilege::Raw).is_err(),
             "a sweep's journal must not accept a port scan's plan"
         );
     }
@@ -805,8 +899,8 @@ mod tests {
         let ips = addresses("192.0.2.1-192.0.2.10");
 
         assert_ne!(
-            PlanFingerprint::of(&sweeping(&ips, true), true),
-            PlanFingerprint::of(&sweeping(&ips, false), true)
+            PlanFingerprint::of(&sweeping(&ips, true), Privilege::Raw),
+            PlanFingerprint::of(&sweeping(&ips, false), Privilege::Raw)
         );
     }
 
@@ -815,7 +909,8 @@ mod tests {
     #[test]
     fn a_sweeps_addresses_survive_the_round_trip() {
         let ips = addresses("192.0.2.1-192.0.2.10,2001:db8::1");
-        let manifest = JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
+        let manifest =
+            JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), Privilege::Raw, "");
 
         assert_eq!(
             manifest.recorded().addresses().map(IpSet::len),
@@ -828,7 +923,7 @@ mod tests {
                         &manifest.recorded().addresses().cloned().unwrap_or_default(),
                         false
                     ),
-                    true
+                    Privilege::Raw
                 )
                 .is_ok(),
             "a plan rebuilt from the record must fingerprint as the original"
@@ -854,7 +949,8 @@ mod tests {
         }
         ips.canonicalize();
 
-        let manifest = JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
+        let manifest =
+            JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), Privilege::Raw, "");
         let recovered = manifest
             .recorded()
             .addresses()
@@ -867,7 +963,9 @@ mod tests {
             "the same addresses in the same order, so positions still mean what they did"
         );
         assert!(
-            manifest.covers(&sweeping(&recovered, false), true).is_ok(),
+            manifest
+                .covers(&sweeping(&recovered, false), Privilege::Raw)
+                .is_ok(),
             "and the plan rebuilt from the record fingerprints as the original"
         );
     }
@@ -877,12 +975,12 @@ mod tests {
     #[test]
     fn a_refusal_over_an_equal_count_says_so_rather_than_reporting_a_change() {
         let map = plan(&[("192.0.2.1-192.0.2.10", "80,443")]);
-        let manifest = JournalManifest::new("01J8Z5Q7VN", &ports(&map), true, "");
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &ports(&map), Privilege::Raw, "");
 
         let refused = manifest
             .covers(
                 &Plan::port_scan(&map, &Exclusions::none(), TcpScanTechnique::Fin),
-                true,
+                Privilege::Raw,
             )
             .expect_err("a different technique is a different plan");
 
@@ -902,8 +1000,8 @@ mod tests {
         ips.insert_range("10.0.0.0/24".parse().expect("a valid range"));
 
         assert_ne!(
-            PlanFingerprint::of(&listen, true),
-            PlanFingerprint::of(&sweeping(&ips, true), true),
+            PlanFingerprint::of(&listen, Privilege::Raw),
+            PlanFingerprint::of(&sweeping(&ips, true), Privilege::Raw),
         );
         assert_eq!(listen.kind(), ScanKind::Listen);
         assert_eq!(
@@ -922,12 +1020,12 @@ mod tests {
         let both = Plan::listen(vec![Zone::unresolved("en0"), Zone::unresolved("en1")]);
 
         assert_ne!(
-            PlanFingerprint::of(&one, true),
-            PlanFingerprint::of(&other, true),
+            PlanFingerprint::of(&one, Privilege::Raw),
+            PlanFingerprint::of(&other, Privilege::Raw),
         );
         assert_ne!(
-            PlanFingerprint::of(&one, true),
-            PlanFingerprint::of(&both, true),
+            PlanFingerprint::of(&one, Privilege::Raw),
+            PlanFingerprint::of(&both, Privilege::Raw),
         );
     }
 
@@ -950,22 +1048,22 @@ mod tests {
     fn privilege_decides_a_probing_plan_and_says_nothing_about_a_watch() {
         let watch = Plan::listen(vec![Zone::unresolved("en0")]);
         assert_eq!(
-            PlanFingerprint::of(&watch, false),
-            PlanFingerprint::of(&watch, true),
+            PlanFingerprint::of(&watch, Privilege::Connect),
+            PlanFingerprint::of(&watch, Privilege::Raw),
             "a watch under sudo is the same watch"
         );
 
         let ips = addresses("192.0.2.0/30");
         assert_ne!(
-            PlanFingerprint::of(&sweeping(&ips, false), false),
-            PlanFingerprint::of(&sweeping(&ips, false), true),
+            PlanFingerprint::of(&sweeping(&ips, false), Privilege::Connect),
+            PlanFingerprint::of(&sweeping(&ips, false), Privilege::Raw),
             "a sweep's probes are not the same probes"
         );
 
         let map = plan(&[("192.0.2.1-192.0.2.10", "80,443")]);
         assert_ne!(
-            PlanFingerprint::of(&ports(&map), false),
-            PlanFingerprint::of(&ports(&map), true),
+            PlanFingerprint::of(&ports(&map), Privilege::Connect),
+            PlanFingerprint::of(&ports(&map), Privilege::Raw),
             "and neither are a port scan's"
         );
     }
@@ -978,8 +1076,8 @@ mod tests {
         let after = Plan::listen(vec![Zone::new(11, "en0")]);
 
         assert_eq!(
-            PlanFingerprint::of(&before, true),
-            PlanFingerprint::of(&after, true),
+            PlanFingerprint::of(&before, Privilege::Raw),
+            PlanFingerprint::of(&after, Privilege::Raw),
         );
     }
 
@@ -988,7 +1086,7 @@ mod tests {
     #[test]
     fn a_watch_reads_back_as_the_links_it_was_written_with() {
         let plan = Plan::listen(vec![Zone::new(3, "en0"), Zone::new(4, "en1")]);
-        let manifest = JournalManifest::new("id", &plan, true, "listening");
+        let manifest = JournalManifest::new("id", &plan, Privilege::Raw, "listening");
 
         let recorded = manifest.recorded();
         assert_eq!(recorded.kind(), ScanKind::Listen);
@@ -1002,7 +1100,7 @@ mod tests {
             vec!["en0".to_owned(), "en1".to_owned()],
         );
         manifest
-            .covers(&plan, true)
+            .covers(&plan, Privilege::Raw)
             .expect("the plan it was written against still covers it");
     }
 }

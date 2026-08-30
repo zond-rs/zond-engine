@@ -28,7 +28,7 @@ mod source;
 mod utils;
 
 pub use lan::{LanLink, ViabilityError, lan_link, lan_network};
-pub use link::{Link, LinkAddress, LinkKind, interfaces};
+pub use link::{Addressing, Link, LinkAddress, LinkKind, interfaces};
 pub use resolve::{resolve_keyword, resolve_zone};
 pub use routing::{
     MAX_ENUMERABLE_ADDRESSES, RoutedTarget, RoutedTargets, is_enumerable, map_ips_to_interfaces,

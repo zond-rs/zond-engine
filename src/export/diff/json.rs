@@ -86,16 +86,7 @@ impl DiffExporter for JsonDiffExporter {
             serde_json::to_writer(&mut *out, &document)
         };
 
-        result.map_err(|error| {
-            if error.is_io() {
-                ExportError::Io(std::io::Error::other(error))
-            } else {
-                ExportError::Render {
-                    format: FORMAT,
-                    message: error.to_string(),
-                }
-            }
-        })?;
+        result.map_err(|error| crate::export::write::render_error(FORMAT, error))?;
 
         writeln!(out)?;
         Ok(())
@@ -116,6 +107,42 @@ mod tests {
 
     use super::*;
     use crate::export::fixture;
+
+    /// A destination that refuses every write with a nameable reason.
+    struct FullDisk;
+
+    impl Write for FullDisk {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A write that failed reports *why* it failed, and the report exporter and
+    /// the comparison exporter say the same thing about the same disk.
+    ///
+    /// This exporter carried its own copy of the sorting `write::render_error`
+    /// does, and the copy wrapped the error with `io::Error::other` instead of
+    /// unwrapping serde_json's own. A full disk during a comparison export came
+    /// back as `Other` where the same disk during a report export came back as
+    /// `StorageFull`. Found by W23's byte-comparison harness.
+    #[test]
+    fn a_failed_write_keeps_the_kind_the_destination_reported() {
+        let (before, after) = fixture::compared();
+        let diff = crate::diff::ScanDiff::between(&before, &after);
+
+        let error = JsonDiffExporter::new(ExportOptions::new())
+            .export(&diff, &mut FullDisk)
+            .expect_err("a destination that refuses every write");
+
+        match error {
+            ExportError::Io(io) => assert_eq!(io.kind(), std::io::ErrorKind::StorageFull),
+            other => panic!("expected an I/O failure, got {other:?}"),
+        }
+    }
 
     /// The fixture pair, compared and parsed back.
     fn document() -> Value {

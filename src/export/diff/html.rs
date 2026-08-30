@@ -16,8 +16,9 @@
 //! unchanged, and for the same reasons: the stylesheet is inlined and nothing
 //! is fetched from anywhere, there is no JavaScript at all, printing is a
 //! first-class output, and every value a scanned network chose goes through the
-//! same escaping writer that module defines. They are shared rather than copied,
-//! so there is one escaper in this crate and no second one to keep in step.
+//! same escaping writer. The escaper, the stylesheet and the frame the two
+//! pages share all live in `export::write`, so there is one of each and no
+//! second copy to keep in step.
 //!
 //! ## What a comparison page leads with
 //!
@@ -47,9 +48,9 @@ use std::io::Write;
 use crate::diff::{HostDelta, Presence, ScanDiff};
 use crate::export::diff::DiffExporter;
 use crate::export::diff::schema::{ChangeDto, DiffDto, HostDeltaDto, PortDeltaDto};
-use crate::export::html::{Plain, STYLE, TONE_FOUND, TONE_INERT, TONE_NONE, TONE_PARTIAL, Text};
 use crate::export::schema::ENGINE_NAME;
-use crate::export::{ExportError, ExportOptions};
+use crate::export::write::{TONE_FOUND, TONE_INERT, TONE_NONE, TONE_PARTIAL, Text, esc};
+use crate::export::{ExportError, ExportOptions, write};
 use crate::report::ENGINE_VERSION;
 
 /// What the page is called when a caller names nothing.
@@ -101,62 +102,31 @@ impl DiffExporter for HtmlDiffExporter {
         let document = DiffDto::new(diff, &self.options);
         let heading = self.heading.as_deref().unwrap_or(DEFAULT_HEADING);
 
-        write_head(out, heading)?;
+        write::head(out, heading)?;
         write_masthead(out, heading, &document)?;
         write_notices(out, diff, &document)?;
         write_tiles(out, &document)?;
         write_hosts(out, diff, &document)?;
         write_colophon(out, &document)?;
 
-        writeln!(out, "</div>\n</body>\n</html>")?;
+        write::foot(out)?;
         Ok(())
     }
 }
 
-/// The document, its stylesheet, and the checkbox the theme switch reads.
-fn write_head(out: &mut dyn Write, title: &str) -> Result<(), ExportError> {
-    writeln!(
-        out,
-        r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="{ENGINE_NAME} {ENGINE_VERSION}">
-<meta name="robots" content="noindex, nofollow">
-<title>{title}</title>
-<style>
-{STYLE}</style>
-</head>
-<body>
-<input type="checkbox" id="zond-theme" class="theme-switch" aria-label="Use the other colour scheme">
-<div class="sheet">"#,
-        title = Plain(title),
-    )?;
-    Ok(())
-}
-
-/// The brand, the heading, and which two scans these are.
+/// Which two scans these are, under the shared masthead.
 fn write_masthead(
     out: &mut dyn Write,
     heading: &str,
     document: &DiffDto<'_>,
 ) -> Result<(), ExportError> {
-    writeln!(
-        out,
-        r#"<header class="masthead">
-<div class="brand">zond<span class="brand-mark">_</span></div>
-<div class="masthead-title">
-<h1>{heading}</h1>
-<p class="subtitle">{before} → {after}</p>
-</div>
-<label class="theme-label" for="zond-theme" title="Switch between light and dark"><span class="theme-icon"></span>theme</label>
-</header>"#,
-        heading = Text(heading),
+    let subtitle = format!(
+        "{before} → {after}",
         before = Text(&document.baseline.at),
         after = Text(&document.current.at),
-    )?;
-    Ok(())
+    );
+
+    write::masthead(out, heading, &subtitle)
 }
 
 /// The things that change how the rest of the page should be read.
@@ -225,17 +195,7 @@ fn write_notices(
 
     writeln!(out, "<div class=\"notices\">")?;
     for (alert, key, text) in notices {
-        let class = if alert {
-            "notice notice-alert"
-        } else {
-            "notice"
-        };
-        writeln!(
-            out,
-            "<span class=\"{class}\"><span class=\"notice-key\">{key}</span><span>{text}</span></span>",
-            key = Text(key),
-            text = Text(&text),
-        )?;
+        write::notice(out, alert, key, &text)?;
     }
     writeln!(out, "</div>")?;
     Ok(())
@@ -263,32 +223,22 @@ fn write_tiles(out: &mut dyn Write, document: &DiffDto<'_>) -> Result<(), Export
             (_, 0) => "all confirmed".to_string(),
             (_, unconfirmed) => format!("{unconfirmed} nobody had looked for"),
         };
-        tile(out, count.total, label, &note)?;
+        write::tile(out, count.total, label, &esc(&note))?;
     }
 
-    tile(
+    write::tile(
         out,
         summary.hosts_changed,
         "hosts changed",
-        "in both scans, and different",
+        &esc("in both scans, and different"),
     )?;
-    tile(
+    write::tile(
         out,
         summary.certificates_rotated + summary.certificates_expiring + summary.certificates_expired,
         "certificates",
-        "rotated, expiring or lapsed",
+        &esc("rotated, expiring or lapsed"),
     )?;
     writeln!(out, "</div>")?;
-    Ok(())
-}
-
-fn tile(out: &mut dyn Write, value: usize, label: &str, note: &str) -> Result<(), ExportError> {
-    writeln!(
-        out,
-        "<div class=\"tile\"><div class=\"tile-value\">{value}</div><div class=\"tile-label\">{label}</div><div class=\"tile-note\">{note}</div></div>",
-        label = Text(label),
-        note = Text(note),
-    )?;
     Ok(())
 }
 

@@ -28,6 +28,7 @@ use zond_engine::journal::settle::Outcome;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::scanner::session::ScanSession;
+use zond_engine::system::privilege::Privilege;
 
 /// Away from the low numbers, so a mistake that indexed rather than keyed would
 /// produce visibly wrong ports.
@@ -265,7 +266,7 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     let journal = Journal::create(
         &root,
         &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
-        false,
+        Privilege::Connect,
         "loopback",
     )
     .expect("creates");
@@ -292,7 +293,7 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     let (journal, checkpoint) = Journal::resume(
         &directory,
         &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
-        false,
+        Privilege::Connect,
     )
     .expect("resumes");
 
@@ -408,7 +409,7 @@ async fn a_journalled_scan_lets_a_watcher_finish() {
     let journal = Journal::create(
         &root,
         &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
-        false,
+        Privilege::Connect,
         "loopback",
     )
     .expect("creates");
@@ -633,7 +634,7 @@ async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
     let journal = Journal::create(
         &root,
         &Plan::discovery(&plan, &Exclusions::none(), false),
-        false,
+        Privilege::Connect,
         "192.0.2.1 and 7 more",
     )
     .expect("creates");
@@ -646,7 +647,7 @@ async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
     withheld.insert_range("192.0.2.1-192.0.2.4".parse().expect("a range"));
     narrowed.exclusions = Exclusions::new(withheld);
 
-    let (journal, _, _) = Journal::reopen(&directory, false).expect("reopens");
+    let (journal, _, _) = Journal::reopen(&directory, Privilege::Connect).expect("reopens");
     let refused = zond_engine::discover_with_journal(plan.clone(), &narrowed, journal)
         .await
         .err()
@@ -659,7 +660,7 @@ async fn a_resume_under_a_narrower_exclusion_policy_is_refused() {
 
     // And the policy the record was written under is accepted, so the refusal
     // above is about the change rather than about there being a policy at all.
-    let (journal, _, _) = Journal::reopen(&directory, false).expect("reopens");
+    let (journal, _, _) = Journal::reopen(&directory, Privilege::Connect).expect("reopens");
     zond_engine::discover_with_journal(plan, &ZondConfig::default(), journal)
         .await
         .expect("the recorded policy still describes the recorded plan");

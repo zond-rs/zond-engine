@@ -42,6 +42,7 @@ use zond_engine::protocols::{craft, ethernet, tcp};
 use zond_engine::report::ScanKind;
 use zond_engine::scanner::session::{ScanContext, ScanSession};
 use zond_engine::scanner::strategy::passive::{OnLink, PassiveListener, Recording};
+use zond_engine::system::privilege::Privilege;
 use zond_engine::transport::capture::CapturedFrame;
 use zond_engine::transport::frame::LinkType;
 use zond_engine::transport::mac::IntoCoreMac;
@@ -118,8 +119,8 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// Opens a record of a watch of one link.
-fn record_of_a_watch(root: &Path, privileged: bool) -> Journal {
-    Journal::create(root, &Plan::listen(vec![zone()]), privileged, "sim0")
+fn record_of_a_watch(root: &Path, privilege: Privilege) -> Journal {
+    Journal::create(root, &Plan::listen(vec![zone()]), privilege, "sim0")
         .expect("a journal is created")
 }
 
@@ -179,7 +180,7 @@ async fn a_watch_resumed_from_its_record_is_one_watch() {
     let second = Ipv4Addr::new(10, 0, 0, 6);
 
     // Last night: the machine is heard at one of its addresses and written down.
-    let mut journal = record_of_a_watch(&root, false);
+    let mut journal = record_of_a_watch(&root, Privilege::Connect);
     let directory = journal.directory().to_path_buf();
 
     let (_session, ctx) = ScanSession::new();
@@ -192,7 +193,8 @@ async fn a_watch_resumed_from_its_record_is_one_watch() {
     // Tonight: the same machine, heard first at its *other* address. Which
     // address that is depends only on which frame happened to arrive first, so
     // it is the ordinary case rather than a corner.
-    let (journal, _checkpoint, plan) = Journal::reopen(&directory, false).expect("it reopens");
+    let (journal, _checkpoint, plan) =
+        Journal::reopen(&directory, Privilege::Connect).expect("it reopens");
     assert_eq!(plan.kind(), ScanKind::Listen, "the record knows its phase");
     assert_eq!(
         journal.restored().len(),
@@ -243,11 +245,11 @@ async fn a_watch_resumed_from_its_record_is_one_watch() {
 async fn a_watch_resumes_across_a_change_of_privilege() {
     let root = scratch("privilege");
 
-    let journal = record_of_a_watch(&root, false);
+    let journal = record_of_a_watch(&root, Privilege::Connect);
     let directory = journal.directory().to_path_buf();
     journal.close().expect("the record is released");
 
-    Journal::reopen(&directory, true)
+    Journal::reopen(&directory, Privilege::Raw)
         .expect("the same watch, this time under sudo, continues the same record");
 }
 
@@ -264,7 +266,7 @@ async fn a_restored_host_from_off_the_link_pairs_with_nothing() {
     let root = scratch("off-link");
     let elsewhere = IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
 
-    let mut journal = record_of_a_watch(&root, false);
+    let mut journal = record_of_a_watch(&root, Privilege::Connect);
     let directory = journal.directory().to_path_buf();
 
     // A watch under the wide scope records what crosses the link as well, and
@@ -288,7 +290,8 @@ async fn a_restored_host_from_off_the_link_pairs_with_nothing() {
 
     // Reopened, and the machine on the link speaks for itself. It must get a
     // record of its own rather than joining the one from off the link.
-    let (journal, _checkpoint, _plan) = Journal::reopen(&directory, false).expect("it reopens");
+    let (journal, _checkpoint, _plan) =
+        Journal::reopen(&directory, Privilege::Connect).expect("it reopens");
     let (_session, ctx) = ScanSession::new();
     ctx.restore_hosts(journal.restored());
 
