@@ -33,7 +33,10 @@ use crate::model::ip::set::IpSet;
 use crate::protocols::{arp, ndp};
 
 type Bytes = Vec<u8>;
-type PacketIter = Box<dyn Iterator<Item = (Bytes, IpAddr)> + Send>;
+
+/// The stream of first-attempt probes a sweep works through, each frame paired
+/// with the address it asks about.
+pub(super) type PacketIter = Box<dyn Iterator<Item = (Bytes, IpAddr)> + Send>;
 
 /// Every first-attempt probe a sweep owes, in the order they should leave.
 ///

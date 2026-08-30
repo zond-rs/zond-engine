@@ -28,8 +28,9 @@ use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY};
 use crate::error;
 use crate::evasion::EvasionProfile;
+use crate::fingerprint::os;
 use crate::journal::settle::{Outcome, Settled};
-use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
+use crate::model::host::{Host, HostStatus, NetworkRole, OsEvidence, StatusProtocol, StatusReason};
 use crate::model::ip::set::IpSet;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::{Port, PortSet, PortState, Protocol};
@@ -163,6 +164,14 @@ struct Probed {
     /// port, so bytes dropped here are bytes no later phase can read without
     /// dialling again. Empty for every probe that drew nothing.
     responses: Vec<String>,
+
+    /// What those same bytes said about the *machine*, carried out for the same
+    /// reason and filed in a different place: the service belongs to the port,
+    /// the operating system to the host.
+    ///
+    /// Empty for every probe that drew nothing, and for every verdict that came
+    /// from the kernel rather than from a conversation.
+    about_the_host: Vec<OsEvidence>,
     /// Whether the host answered. The kernel hands back a completed handshake or
     /// a `ConnectionRefused` only when a segment came back from the target, so
     /// either one proves a live stack - a refusal is a RST the kernel
@@ -437,6 +446,13 @@ fn absorb_probe(ctx: &ScanContext, probed: ProbedPort, audit: &mut ProbeAudit) {
                 StatusReason::new(StatusProtocol::TcpSyn, "tcp connect answered by the host"),
             );
         }
+        if !probed.about_the_host.is_empty() {
+            // The same call the service phase makes on the privileged path.
+            // What a banner says about the machine is worth the same whichever
+            // scanner happened to draw it, and this scanner is the only one
+            // that draws it without a raw socket.
+            os::identify(host, probed.about_the_host.clone());
+        }
     });
 }
 
@@ -488,18 +504,18 @@ async fn port_prober(
     match timeout(CONNECT_PROBE_TIMEOUT, connect_shaped(socket_addr, shaping)).await {
         Ok(Ok(stream)) => {
             let port = settled(target.port, PortState::Open, Some(ScanResponse::TcpSynAck));
-            // The detailed form, for the responses it returns as its third
-            // value. This handshake is the only conversation an unprivileged
-            // scan has with the port, so what it draws here is everything a
-            // passive detection will have to read. The middle value is what
-            // those same bytes say about the machine, which only the service
-            // phase files.
-            let (port, _about_the_host, responses) =
+            // The detailed form, for the second and third values. This
+            // handshake is the only conversation an unprivileged scan has with
+            // the port, so what it draws here is everything any later phase can
+            // read without dialling again: the responses a passive detection
+            // needs, and what the same bytes said about the machine.
+            let (port, about_the_host, responses) =
                 crate::fingerprint::fingerprint_tcp_detailed(stream, port, detection).await;
             Some(Probed {
                 ip: target.ip,
                 port: Some(port),
                 responses,
+                about_the_host,
                 answered: true,
                 outcome: Outcome::Answered { position },
                 // A TCP handshake proves a service, and the service is the
@@ -530,6 +546,7 @@ async fn port_prober(
                         Some(ScanResponse::TcpRst),
                     )),
                     responses: Vec::new(),
+                    about_the_host: Vec::new(),
                     answered: true,
                     outcome: Outcome::Answered { position },
                     role: None,
@@ -547,6 +564,7 @@ async fn port_prober(
                     ip: target.ip,
                     port: Some(settled(target.port, PortState::Filtered, None)),
                     responses: Vec::new(),
+                    about_the_host: Vec::new(),
                     answered: false,
                     outcome: Outcome::Unroutable,
                     role: None,
@@ -564,6 +582,7 @@ async fn port_prober(
                 Some(ScanResponse::NoResponse),
             )),
             responses: Vec::new(),
+            about_the_host: Vec::new(),
             answered: false,
             outcome: Outcome::Exhausted { position },
             role: None,
@@ -717,6 +736,7 @@ async fn udp_port_prober(planned: PlannedTarget, shaping: ConnectShaping) -> Pro
             // Nothing on this path turns a datagram into the text a detection
             // reads: the reply is read for the role it declares and no more.
             responses: Vec::new(),
+            about_the_host: Vec::new(),
             answered,
             outcome,
             // Filled in by the one arm that has a reply to read it from.

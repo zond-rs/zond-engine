@@ -82,3 +82,36 @@ async fn unknown_banner_still_yields_an_open_port() {
         "a reachable listener must read Open regardless of banner recognisability"
     );
 }
+
+/// ZA-4-013: an unprivileged scan reads what a banner says about the *machine*
+/// and has to file it, the way the privileged path does.
+///
+/// `SSH-2.0-OpenSSH_9.6p1 Debian-3` names an operating system as plainly as it
+/// names a product, and both come out of the one handshake this scanner makes.
+/// The connect prober drew that evidence and dropped it, so a scan without root
+/// disagreed with a scan with root about what it had just been told.
+#[tokio::test]
+async fn a_banner_naming_an_operating_system_reaches_the_host_record() {
+    if is_privileged() {
+        eprintln!("SKIP: exercises the unprivileged connect path; run as non-root");
+        return;
+    }
+
+    let server = spawn_banner_server(b"SSH-2.0-OpenSSH_9.6p1 Debian-3\r\n").await;
+    let outcome = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    let os = host
+        .os()
+        .expect("the banner named a system, so the host record should say so");
+
+    assert_eq!(
+        os.family().map(str::to_lowercase),
+        Some("linux".to_string()),
+        "got {os:?}"
+    );
+}

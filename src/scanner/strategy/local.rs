@@ -338,6 +338,40 @@ impl SourceIdentity {
     }
 }
 
+/// What a solicited reply proves about the probe it answers.
+///
+/// The two are separate because either can be missing on its own. An address
+/// asked more than once names the send it settles but not the interval, and one
+/// answered through the single confirmation an overheard address gets is timed
+/// with no send of this scan's to retire.
+struct ProbeCorrelation {
+    /// The round trip, where one can be attributed to this reply.
+    rtt: Option<(Duration, RttSource)>,
+    /// Which of this address's sends the reply retires, where the ledger can
+    /// say.
+    answered_attempt: Option<u8>,
+}
+
+/// What one turn of the send ticker put on the wire.
+///
+/// A first attempt is the only one the sweep counts, because it is the only
+/// one that draws an address out of the packet iterator: everything else is
+/// either a repeat of a question already asked or a question put to the whole
+/// segment.
+enum Dispatched {
+    /// A repeat, a confirmation, or the all-nodes solicitation, none of which
+    /// is a new address.
+    Again,
+    /// The next address the iterator held.
+    FirstAttempt,
+    /// The iterator is empty, so every address the sweep was handed has been
+    /// asked at least once.
+    Drained,
+    /// Nothing was due, which is what an already-drained iterator looks like
+    /// on a tick with no repeat behind it.
+    Nothing,
+}
+
 /// Finds the hosts sharing one Ethernet segment, asking IPv4 addresses by ARP
 /// and the IPv6 half of the segment by all-nodes solicitation.
 ///
@@ -491,20 +525,8 @@ impl HostScanner for LocalScanner {
             let now = Instant::now();
             self.service_retries(now);
 
-            if self.ctx.handle.should_stop() {
-                break StopReason::Aborted;
-            }
-            if self.deadline.hard_deadline_passed() {
-                break StopReason::DeadlineExpired;
-            }
-            if sending_finished && self.all_targets_responded() {
-                break StopReason::AllResponded;
-            }
-            // Silence is only evidence once nothing is outstanding: with probes
-            // still waiting on their timers, quiet is what the retry schedule
-            // expects rather than a sign the segment has gone quiet.
-            if sending_finished && self.idle(now) && self.deadline.has_expired() {
-                break StopReason::DeadlineExpired;
+            if let Some(reason) = self.stop_reason(now, sending_finished) {
+                break reason;
             }
 
             // Anything left to put on the wire, whether a first attempt or a
@@ -527,32 +549,11 @@ impl HostScanner for LocalScanner {
                 }
 
                 _ = send_interval.tick(), if sending => {
-                    // Repeats first: an address already asked once is an
-                    // obligation this sweep owns, where the next new address is
-                    // only work it intends to do.
                     let now = Instant::now();
-                    if let Some(target) = self.retries.pop_front() {
-                        self.send_probe(target, now);
-                    } else if let Some(target) = self.ipv6.next_confirmation() {
-                        self.send_confirmation(target, now);
-                    } else if self.ipv6.solicitation().is_due(now) {
-                        self.send_solicitation(now);
-                    } else if !sending_finished {
-                        match packet_iter.next() {
-                            Some((packet, ip)) => {
-                                // Armed only if the frame left. A probe nobody
-                                // sent must not run out of attempts and earn a
-                                // verdict, and the failure message below is
-                                // about exactly these addresses.
-                                if self.emit(&packet, "first attempt") {
-                                    self.record_probe(ip, Instant::now());
-                                }
-                                dispatched += 1;
-                            },
-                            None => {
-                                sending_finished = true;
-                            },
-                        }
+                    match self.send_next(&mut packet_iter, sending_finished, now) {
+                        Dispatched::FirstAttempt => dispatched += 1,
+                        Dispatched::Drained => sending_finished = true,
+                        Dispatched::Again | Dispatched::Nothing => {}
                     }
                 }
 
@@ -560,68 +561,7 @@ impl HostScanner for LocalScanner {
             }
         };
 
-        // What the sweep did not earn a verdict for, so a resumed one asks again
-        // rather than skipping it. None of these carries a position: a probe
-        // still mid-schedule was cut off rather than spent, and one the iterator
-        // still holds was never built, let alone sent.
-        let outstanding = self.ledger.drain_unresolved().len() as u64;
-        self.ctx.record_many(Outcome::Interrupted, outstanding);
-        self.ctx.record_many(
-            Outcome::Unasked,
-            u64::try_from(self.ip_set.len().saturating_sub(dispatched)).unwrap_or(u64::MAX),
-        );
-
-        // What the confirmations bought, which is only visible from here. An
-        // entry still in the map is a solicitation that went out and was never
-        // answered, and the difference between "none were sent" and "none came
-        // back" is the difference between a bug here and a segment full of
-        // devices that decline to answer a direct question.
-        if self.ipv6.unanswered_confirmations() > 0 {
-            info!(
-                verbosity = 2,
-                "{} of the addresses asked about directly never answered",
-                self.ipv6.unanswered_confirmations()
-            );
-        }
-
-        // A sweep whose frames never left is not a sweep that found nothing, and
-        // the difference is invisible in every number a caller reads. Reported
-        // once with a count and the first cause rather than once per probe, as
-        // the routed paths do.
-        //
-        // This covers every frame the sweep emits, which is what makes it worth
-        // having: while the first attempts bypassed the audit, the one path that
-        // sends a frame per target could fail entirely and this stayed silent.
-        if self.audit.sends_failed > 0 {
-            self.ctx.record_failure(
-                ScannerKind::Local,
-                format!(
-                    "{} of {} frames never reached {}, so those addresses are \
-                     reported absent without having been asked: {}",
-                    self.audit.sends_failed,
-                    self.audit.sends_attempted,
-                    self.identity.zone,
-                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
-                ),
-            );
-        }
-
-        // What the kernel discarded before this scanner could read it. A frame
-        // lost there is indistinguishable from a host that never answered, so a
-        // sweep finding fewer hosts than the segment holds can now be attributed
-        // to loss rather than guessed at. `None` only for a synthetic stream,
-        // which has no kernel buffer to have overflowed.
-        let capture = self.eth_handle.capture_counts();
-        let targets = self.ip_set.len();
-        self.audit
-            .report("local-discovery", targets, reason, capture, None);
-        self.ctx.record_probe_stats(self.audit.stats(
-            ScannerKind::Local,
-            targets,
-            reason,
-            capture,
-            None,
-        ));
+        self.report_outcome(reason, dispatched);
         Ok(())
     }
 }
@@ -733,6 +673,142 @@ impl LocalScanner {
             audit: ProbeAudit::new(),
             send_failure: None,
         })
+    }
+
+    /// Why the loop should stop, if it should.
+    ///
+    /// The order is the priority: a run somebody aborted and a run that ran out
+    /// of time are reported as such even when the sweep had in fact finished,
+    /// because the caller's next question is whether the result is complete.
+    fn stop_reason(&self, now: Instant, sending_finished: bool) -> Option<StopReason> {
+        if self.ctx.handle.should_stop() {
+            return Some(StopReason::Aborted);
+        }
+        if self.deadline.hard_deadline_passed() {
+            return Some(StopReason::DeadlineExpired);
+        }
+        if sending_finished && self.all_targets_responded() {
+            return Some(StopReason::AllResponded);
+        }
+        // Silence is only evidence once nothing is outstanding: with probes
+        // still waiting on their timers, quiet is what the retry schedule
+        // expects rather than a sign the segment has gone quiet.
+        if sending_finished && self.idle(now) && self.deadline.has_expired() {
+            return Some(StopReason::DeadlineExpired);
+        }
+
+        None
+    }
+
+    /// Puts the next frame this sweep owes on the wire, and says which kind it
+    /// was.
+    ///
+    /// Repeats first: an address already asked once is an obligation this sweep
+    /// owns, where the next new address is only work it intends to do. The two
+    /// IPv6 schedules are ahead of first attempts for the same reason, each
+    /// having a due time to keep.
+    fn send_next(
+        &mut self,
+        packet_iter: &mut probes::PacketIter,
+        sending_finished: bool,
+        now: Instant,
+    ) -> Dispatched {
+        if let Some(target) = self.retries.pop_front() {
+            self.send_probe(target, now);
+            Dispatched::Again
+        } else if let Some(target) = self.ipv6.next_confirmation() {
+            self.send_confirmation(target, now);
+            Dispatched::Again
+        } else if self.ipv6.solicitation().is_due(now) {
+            self.send_solicitation(now);
+            Dispatched::Again
+        } else if !sending_finished {
+            match packet_iter.next() {
+                Some((packet, ip)) => {
+                    // Armed only if the frame left. A probe nobody sent
+                    // must not run out of attempts and earn a verdict, and
+                    // the failure the sweep reports on its way out is about
+                    // exactly these addresses.
+                    if self.emit(&packet, "first attempt") {
+                        self.record_probe(ip, Instant::now());
+                    }
+                    Dispatched::FirstAttempt
+                }
+                None => Dispatched::Drained,
+            }
+        } else {
+            Dispatched::Nothing
+        }
+    }
+
+    /// What the sweep leaves behind once the loop has stopped: the addresses it
+    /// never settled, the questions that went unanswered, the frames that never
+    /// left, and the counters a later phase reads.
+    ///
+    /// `dispatched` is how many first attempts the packet iterator gave out.
+    fn report_outcome(&mut self, reason: StopReason, dispatched: u128) {
+        // What the sweep did not earn a verdict for, so a resumed one asks again
+        // rather than skipping it. None of these carries a position: a probe
+        // still mid-schedule was cut off rather than spent, and one the iterator
+        // still holds was never built, let alone sent.
+        let outstanding = self.ledger.drain_unresolved().len() as u64;
+        self.ctx.record_many(Outcome::Interrupted, outstanding);
+        self.ctx.record_many(
+            Outcome::Unasked,
+            u64::try_from(self.ip_set.len().saturating_sub(dispatched)).unwrap_or(u64::MAX),
+        );
+
+        // What the confirmations bought, which is only visible from here. An
+        // entry still in the map is a solicitation that went out and was never
+        // answered, and the difference between "none were sent" and "none came
+        // back" is the difference between a bug here and a segment full of
+        // devices that decline to answer a direct question.
+        if self.ipv6.unanswered_confirmations() > 0 {
+            info!(
+                verbosity = 2,
+                "{} of the addresses asked about directly never answered",
+                self.ipv6.unanswered_confirmations()
+            );
+        }
+
+        // A sweep whose frames never left is not a sweep that found nothing, and
+        // the difference is invisible in every number a caller reads. Reported
+        // once with a count and the first cause rather than once per probe, as
+        // the routed paths do.
+        //
+        // This covers every frame the sweep emits, which is what makes it worth
+        // having: while the first attempts bypassed the audit, the one path that
+        // sends a frame per target could fail entirely and this stayed silent.
+        if self.audit.sends_failed > 0 {
+            self.ctx.record_failure(
+                ScannerKind::Local,
+                format!(
+                    "{} of {} frames never reached {}, so those addresses are \
+                     reported absent without having been asked: {}",
+                    self.audit.sends_failed,
+                    self.audit.sends_attempted,
+                    self.identity.zone,
+                    self.send_failure.as_deref().unwrap_or("cause unrecorded"),
+                ),
+            );
+        }
+
+        // What the kernel discarded before this scanner could read it. A frame
+        // lost there is indistinguishable from a host that never answered, so a
+        // sweep finding fewer hosts than the segment holds can now be attributed
+        // to loss rather than guessed at. `None` only for a synthetic stream,
+        // which has no kernel buffer to have overflowed.
+        let capture = self.eth_handle.capture_counts();
+        let targets = self.ip_set.len();
+        self.audit
+            .report("local-discovery", targets, reason, capture, None);
+        self.ctx.record_probe_stats(self.audit.stats(
+            ScannerKind::Local,
+            targets,
+            reason,
+            capture,
+            None,
+        ));
     }
 
     /// Puts one frame on the segment and records what actually happened to it.
@@ -1267,47 +1343,11 @@ impl LocalScanner {
             // `interpret_response` returns `None` rather than this, so the arm
             // exists only to satisfy the match.
             ProtocolMatch::Unhandled => return Ok(()),
-            // The reply retires this address's own probe, and measures it if
-            // the ledger can say which attempt was answered.
-            //
-            // The two ways that fails are worth telling apart out loud, because
-            // from the outside they look identical - a host with no latency
-            // beside it - and they call for opposite responses. One is a probe
-            // this scan never had outstanding, which means the reply answered
-            // somebody else's question or arrived after we gave up. The other is
-            // Karn's rule: the address was asked more than once, consecutive
-            // probes are identical on the wire, and the reply cannot say which
-            // it answers.
-            ProtocolMatch::Solicited(_) => match self.resolve_probe(&subject, now) {
-                Some(resolution) => {
-                    answered_attempt = resolution.answered_attempt;
-                    if resolution.rtt.is_none() {
-                        info!(
-                            verbosity = 2,
-                            "{subject} answered over {protocol:?} after {} attempts, so it is not timed{}",
-                            resolution.attempts,
-                            self.ipv6.since_first_asked(&subject, now)
-                        );
-                    }
-                    resolution.rtt.map(|rtt| (rtt, RttSource::Direct))
-                }
-                // Not in the ledger, so either it answers the one confirmation
-                // an overheard address gets - unambiguous, because there is only
-                // ever one - or it is a neighbour talking to somebody else,
-                // which is worth asking about directly.
-                None => match self.ipv6.take_confirmation_rtt(&subject, now) {
-                    Some(rtt) => Some((rtt, RttSource::Direct)),
-                    None => {
-                        info!(
-                            verbosity = 2,
-                            "{subject} answered over {protocol:?} with no probe of ours outstanding{}",
-                            self.ipv6.since_first_asked(&subject, now)
-                        );
-                        self.confirm(subject);
-                        None
-                    }
-                },
-            },
+            ProtocolMatch::Solicited(_) => {
+                let correlated = self.correlate_rtt(subject, &protocol, now);
+                answered_attempt = correlated.answered_attempt;
+                correlated.rtt
+            }
             // Proof of presence and of nothing else. A probe may well be
             // outstanding for this address, and it stays outstanding: this
             // message did not answer it, so retiring it here would credit our
@@ -1321,45 +1361,10 @@ impl LocalScanner {
                 self.confirm(subject);
                 None
             }
-            // Measured against the exact request it answers, which the echoed
-            // identifier and sequence name outright. That is what a neighbor
-            // advertisement can never do, and it is why this probe is timed at
-            // all: a neighbour that wakes in time for the third request is
-            // measured against the third rather than the first. Several
-            // neighbours answering the same request each get their own
-            // measurement from it, because a segment-wide question is not used
-            // up by whoever replies first.
-            //
-            // Recorded as [`RttSource::SegmentWide`], because knowing *which*
-            // request was answered does not make the interval a clean round
-            // trip: a node answering the whole segment waits before it does, so
-            // this is an upper bound and is reported only by a host that
-            // produced nothing better.
-            //
-            // A token this scan never sent belongs to somebody else's ping, and
-            // a reply with no request on record cannot be an answer to one of
-            // ours at all.
             ProtocolMatch::AllNodes {
                 identifier,
                 sequence,
-            } => {
-                if self.ipv6.solicitation().nothing_sent() {
-                    return Err(FrameRejected::UnmappedRttSource(subject).into());
-                }
-                match self.ipv6.solicitation().sent_at(identifier, sequence) {
-                    Some(sent_at) => Some((
-                        now.saturating_duration_since(sent_at),
-                        RttSource::SegmentWide,
-                    )),
-                    None => {
-                        info!(
-                            verbosity = 2,
-                            "{subject} answered an echo request that was not ours, so it is not timed"
-                        );
-                        None
-                    }
-                }
-            }
+            } => self.match_solicitation(subject, identifier, sequence, now)?,
         };
 
         if self.ip_set.contains(&subject) {
@@ -1387,6 +1392,110 @@ impl LocalScanner {
         }
 
         Ok(())
+    }
+
+    /// What a solicited reply from `subject` says about the send it answers:
+    /// the round trip, and which attempt it retires.
+    ///
+    /// The two ways a round trip goes missing are worth telling apart out loud,
+    /// because from the outside they look identical - a host with no latency
+    /// beside it - and they call for opposite responses. One is a probe this
+    /// scan never had outstanding, which means the reply answered somebody
+    /// else's question or arrived after we gave up. The other is Karn's rule:
+    /// the address was asked more than once, consecutive probes are identical
+    /// on the wire, and the reply cannot say which it answers.
+    ///
+    /// An address with neither a probe nor a confirmation outstanding is asked
+    /// directly on the way out, so the next reply from it can be measured.
+    fn correlate_rtt(
+        &mut self,
+        subject: IpAddr,
+        protocol: &StatusProtocol,
+        now: Instant,
+    ) -> ProbeCorrelation {
+        match self.resolve_probe(&subject, now) {
+            Some(resolution) => {
+                if resolution.rtt.is_none() {
+                    info!(
+                        verbosity = 2,
+                        "{subject} answered over {protocol:?} after {} attempts, so it is not timed{}",
+                        resolution.attempts,
+                        self.ipv6.since_first_asked(&subject, now)
+                    );
+                }
+                ProbeCorrelation {
+                    rtt: resolution.rtt.map(|rtt| (rtt, RttSource::Direct)),
+                    answered_attempt: resolution.answered_attempt,
+                }
+            }
+            // Not in the ledger, so either it answers the one confirmation an
+            // overheard address gets - unambiguous, because there is only ever
+            // one - or it is a neighbour talking to somebody else, which is
+            // worth asking about directly.
+            None => {
+                let rtt = match self.ipv6.take_confirmation_rtt(&subject, now) {
+                    Some(rtt) => Some((rtt, RttSource::Direct)),
+                    None => {
+                        info!(
+                            verbosity = 2,
+                            "{subject} answered over {protocol:?} with no probe of ours outstanding{}",
+                            self.ipv6.since_first_asked(&subject, now)
+                        );
+                        self.confirm(subject);
+                        None
+                    }
+                };
+                ProbeCorrelation {
+                    rtt,
+                    answered_attempt: None,
+                }
+            }
+        }
+    }
+
+    /// Which all-nodes echo request a reply answers, and how long that took.
+    ///
+    /// The echoed identifier and sequence name the request outright. That is
+    /// what a neighbor advertisement can never do, and it is why this probe is
+    /// timed at all: a neighbour that wakes in time for the third request is
+    /// measured against the third rather than the first. Several neighbours
+    /// answering the same request each get their own measurement from it,
+    /// because a segment-wide question is not used up by whoever replies first.
+    ///
+    /// Reported as [`RttSource::SegmentWide`], because knowing *which* request
+    /// was answered does not make the interval a clean round trip: a node
+    /// answering the whole segment waits before it does, so this is an upper
+    /// bound and is reported only by a host that produced nothing better.
+    ///
+    /// A token this scan never sent belongs to somebody else's ping, so it is
+    /// not timed; a reply arriving when no request was ever sent is not an
+    /// answer to one of ours at all, and the frame is rejected.
+    fn match_solicitation(
+        &self,
+        subject: IpAddr,
+        identifier: u16,
+        sequence: u16,
+        now: Instant,
+    ) -> anyhow::Result<Option<(Duration, RttSource)>> {
+        if self.ipv6.solicitation().nothing_sent() {
+            return Err(FrameRejected::UnmappedRttSource(subject).into());
+        }
+
+        let rtt = match self.ipv6.solicitation().sent_at(identifier, sequence) {
+            Some(sent_at) => Some((
+                now.saturating_duration_since(sent_at),
+                RttSource::SegmentWide,
+            )),
+            None => {
+                info!(
+                    verbosity = 2,
+                    "{subject} answered an echo request that was not ours, so it is not timed"
+                );
+                None
+            }
+        };
+
+        Ok(rtt)
     }
 
     /// Whether every target address has answered, which is a question only a

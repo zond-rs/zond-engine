@@ -20,8 +20,15 @@
 //!   reset, which is unfiltered — where the scan's plain SYN did not.
 //! - **A port-trusting ACL**, from a SYN out of a trusted source port reaching a
 //!   *filtered* port where an ordinary SYN did not.
+//! - **A stateless filter**, from a *fragmented* SYN reaching a *filtered* port
+//!   where a whole one did not. A filter that reassembled would have judged the
+//!   same segment either way; one that lets the fragments through judged only
+//!   the first, where the ports are and the flags are not yet. The one probe a
+//!   raw socket cannot place, so it goes over the self-built Ethernet path, and
+//!   a host that path cannot route to goes without this conclusion rather than
+//!   against it.
 //!
-//! The comparative two read the plain SYN's fate off the port state the scan
+//! The comparative three read the plain SYN's fate off the port state the scan
 //! already recorded, so only the alternative shape is sent here. Every one is a
 //! positive claim: silence proves nothing and records nothing. Correlation is by
 //! the nonce a reply echoes, so a segment we never provoked names no host — and
@@ -75,6 +82,11 @@ pub struct Subject {
     pub filtered_port: Option<u16>,
 }
 
+/// The probes still outstanding. Each nonce names the host its probe went to
+/// and the conclusion a reply echoing it would prove, so a reply that echoes
+/// none of them is somebody else's traffic and settles nothing.
+type Awaiting = HashMap<u32, (IpAddr, Filtering)>;
+
 /// Sends each host's diagnostic probes and records what the filter in front of
 /// it demonstrably did.
 pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
@@ -108,134 +120,167 @@ pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
         subjects.len()
     );
 
-    // Each probe carries a nonce that maps back to the host and the conclusion a
-    // reply to it would prove. A reply that echoes no nonce here is somebody
-    // else's traffic and settles nothing.
-    let mut awaiting: HashMap<u32, (IpAddr, Filtering)> = HashMap::new();
-    for subject in &subjects {
+    let awaiting = send_diagnostics(
+        &subjects,
+        transport.tx.as_ref(),
+        ethernet.as_ref(),
+        &mut resolver,
+    );
+    collect_replies(ctx, &mut transport, &awaiting).await;
+}
+
+/// Sends every subject the probes its ports allow, and returns what a reply to
+/// each would prove.
+///
+/// A host with no source address to send from is passed over: a probe that
+/// never left proves nothing about the filter in front of it.
+fn send_diagnostics(
+    subjects: &[Subject],
+    sender: &dyn ProbeSender,
+    ethernet: Option<&EthernetSender>,
+    resolver: &mut SourceResolver,
+) -> Awaiting {
+    let mut awaiting = Awaiting::new();
+
+    for subject in subjects {
         let Some(source) = resolver.resolve(subject.host) else {
             continue;
         };
 
         if let Some(port) = subject.open_port {
-            let nonce: u32 = rand::random();
-            let src_port: u16 = rand::random_range(50_000..u16::MAX);
-            send_diagnostic(
-                transport.tx.as_ref(),
-                &mut awaiting,
-                source,
-                subject.host,
-                nonce,
-                tcp::build_probe_shaped(
-                    TcpScanTechnique::Syn,
-                    &source,
-                    &subject.host,
-                    src_port,
-                    port,
-                    nonce,
-                    None,
-                    true,
-                ),
-                Emission::routed(),
-                Filtering::InlineMiddlebox,
-            );
+            probe_inline_middlebox(sender, &mut awaiting, source, subject.host, port);
         }
 
-        if let Some(port) = subject.filtered_port {
-            let nonce: u32 = rand::random();
-            let src_port: u16 = rand::random_range(50_000..u16::MAX);
-            send_diagnostic(
-                transport.tx.as_ref(),
-                &mut awaiting,
-                source,
-                subject.host,
-                nonce,
-                tcp::build_probe(
-                    TcpScanTechnique::Ack,
-                    &source,
-                    &subject.host,
-                    src_port,
-                    port,
-                    nonce,
-                ),
-                Emission::routed(),
-                Filtering::StatefulFilter,
-            );
+        let Some(port) = subject.filtered_port else {
+            continue;
+        };
 
-            let nonce: u32 = rand::random();
-            send_diagnostic(
-                transport.tx.as_ref(),
-                &mut awaiting,
-                source,
-                subject.host,
-                nonce,
-                tcp::build_probe(
-                    TcpScanTechnique::Syn,
-                    &source,
-                    &subject.host,
-                    TRUSTED_SOURCE_PORT,
-                    port,
-                    nonce,
-                ),
-                Emission::routed(),
-                Filtering::PortTrustingAcl,
-            );
-
-            // The stateless probe, and the one that needs a self-built frame: a
-            // whole SYN fragmented small enough that its flags fall past the
-            // first fragment. A filter reachable only by a raw path never sees
-            // it, and the host goes without this one conclusion.
-            if let Some(ethernet) = ethernet.as_ref() {
-                let nonce: u32 = rand::random();
-                let src_port: u16 = rand::random_range(50_000..u16::MAX);
-                send_diagnostic(
-                    ethernet,
-                    &mut awaiting,
-                    source,
-                    subject.host,
-                    nonce,
-                    tcp::build_probe(
-                        TcpScanTechnique::Syn,
-                        &source,
-                        &subject.host,
-                        src_port,
-                        port,
-                        nonce,
-                    ),
-                    Emission {
-                        fragment: Some(STATELESS_FRAGMENT_MTU),
-                        ..Emission::routed()
-                    },
-                    Filtering::StatelessFilter,
-                );
-            }
+        probe_stateful_filter(sender, &mut awaiting, source, subject.host, port);
+        probe_port_trusting_acl(sender, &mut awaiting, source, subject.host, port);
+        if let Some(ethernet) = ethernet {
+            probe_stateless_filter(ethernet, &mut awaiting, source, subject.host, port);
         }
     }
 
-    // Listen until the window closes or the scan is stopped, folding each reply
-    // that names a probe into its host's findings.
-    let deadline = Instant::now() + REPLY_WINDOW;
-    loop {
-        if ctx.handle.should_stop() {
-            return;
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return;
-        }
-        match tokio::time::timeout(remaining, transport.rx.recv()).await {
-            Ok(Some(reply)) => {
-                if let Some((host, conclusion)) = matched_conclusion(&reply.bytes, &awaiting) {
-                    ctx.update_host(host, |host| {
-                        host.add_filtering(conclusion);
-                    });
-                }
-            }
-            // The stream closed, or the window elapsed. Either way there is
-            // nothing more to hear.
-            Ok(None) | Err(_) => return,
-        }
-    }
+    awaiting
+}
+
+/// Sends a SYN with a deliberately bad checksum to an open port. A conformant
+/// host drops the corrupt segment unread, so a reply was sent by something
+/// inline that answered without validating.
+fn probe_inline_middlebox(
+    sender: &dyn ProbeSender,
+    awaiting: &mut Awaiting,
+    source: IpAddr,
+    host: IpAddr,
+    port: u16,
+) {
+    let nonce: u32 = rand::random();
+    let src_port: u16 = rand::random_range(50_000..u16::MAX);
+    send_diagnostic(
+        sender,
+        awaiting,
+        source,
+        host,
+        nonce,
+        tcp::build_probe_shaped(
+            TcpScanTechnique::Syn,
+            &source,
+            &host,
+            src_port,
+            port,
+            nonce,
+            None,
+            true,
+        ),
+        Emission::routed(),
+        Filtering::InlineMiddlebox,
+    );
+}
+
+/// Sends an ACK to a port the scan's plain SYN found filtered. A reset back is
+/// a port that is unfiltered to an ACK and filtered to a SYN, which is a filter
+/// judging a segment by where it sits in a connection.
+fn probe_stateful_filter(
+    sender: &dyn ProbeSender,
+    awaiting: &mut Awaiting,
+    source: IpAddr,
+    host: IpAddr,
+    port: u16,
+) {
+    let nonce: u32 = rand::random();
+    let src_port: u16 = rand::random_range(50_000..u16::MAX);
+    send_diagnostic(
+        sender,
+        awaiting,
+        source,
+        host,
+        nonce,
+        tcp::build_probe(TcpScanTechnique::Ack, &source, &host, src_port, port, nonce),
+        Emission::routed(),
+        Filtering::StatefulFilter,
+    );
+}
+
+/// Sends a SYN out of the trusted source port to a port an ordinary SYN found
+/// filtered. A reply is a rule admitting the segment on the port it claims to
+/// come from rather than on what it is.
+fn probe_port_trusting_acl(
+    sender: &dyn ProbeSender,
+    awaiting: &mut Awaiting,
+    source: IpAddr,
+    host: IpAddr,
+    port: u16,
+) {
+    let nonce: u32 = rand::random();
+    send_diagnostic(
+        sender,
+        awaiting,
+        source,
+        host,
+        nonce,
+        tcp::build_probe(
+            TcpScanTechnique::Syn,
+            &source,
+            &host,
+            TRUSTED_SOURCE_PORT,
+            port,
+            nonce,
+        ),
+        Emission::routed(),
+        Filtering::PortTrustingAcl,
+    );
+}
+
+/// Sends a whole SYN fragmented small enough that its flags fall past the first
+/// fragment. A reply is a filter that judged the first fragment alone and
+/// passed the rest.
+///
+/// The one probe a raw socket cannot place, so it goes over the self-built
+/// Ethernet path, and a host that path cannot route to goes without this one
+/// conclusion.
+fn probe_stateless_filter(
+    ethernet: &EthernetSender,
+    awaiting: &mut Awaiting,
+    source: IpAddr,
+    host: IpAddr,
+    port: u16,
+) {
+    let nonce: u32 = rand::random();
+    let src_port: u16 = rand::random_range(50_000..u16::MAX);
+    send_diagnostic(
+        ethernet,
+        awaiting,
+        source,
+        host,
+        nonce,
+        tcp::build_probe(TcpScanTechnique::Syn, &source, &host, src_port, port, nonce),
+        Emission {
+            fragment: Some(STATELESS_FRAGMENT_MTU),
+            ..Emission::routed()
+        },
+        Filtering::StatelessFilter,
+    );
 }
 
 /// Builds `packet`, sends it from `source` to `host`, and — if it reached the
@@ -243,7 +288,7 @@ pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
 #[allow(clippy::too_many_arguments)]
 fn send_diagnostic(
     sender: &dyn ProbeSender,
-    awaiting: &mut HashMap<u32, (IpAddr, Filtering)>,
+    awaiting: &mut Awaiting,
     source: IpAddr,
     host: IpAddr,
     nonce: u32,
@@ -269,6 +314,33 @@ fn send_diagnostic(
     }
 }
 
+/// Listens until the reply window closes or the scan is stopped, folding every
+/// reply that names a probe into the findings of the host that probe went to.
+async fn collect_replies(ctx: &ScanContext, transport: &mut ProbeTransport, awaiting: &Awaiting) {
+    let deadline = Instant::now() + REPLY_WINDOW;
+    loop {
+        if ctx.handle.should_stop() {
+            return;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        match tokio::time::timeout(remaining, transport.rx.recv()).await {
+            Ok(Some(reply)) => {
+                if let Some((host, conclusion)) = matched_conclusion(&reply.bytes, awaiting) {
+                    ctx.update_host(host, |host| {
+                        host.add_filtering(conclusion);
+                    });
+                }
+            }
+            // The stream closed, or the window elapsed. Either way there is
+            // nothing more to hear.
+            Ok(None) | Err(_) => return,
+        }
+    }
+}
+
 /// The host and conclusion a reply implicates, if it echoes the nonce of a probe
 /// we sent.
 ///
@@ -278,10 +350,7 @@ fn send_diagnostic(
 /// is somebody else's traffic on a promiscuous capture and names no host, which
 /// is what keeps the pass from crediting a conclusion to a segment it never
 /// provoked.
-fn matched_conclusion(
-    reply: &[u8],
-    awaiting: &HashMap<u32, (IpAddr, Filtering)>,
-) -> Option<(IpAddr, Filtering)> {
+fn matched_conclusion(reply: &[u8], awaiting: &Awaiting) -> Option<(IpAddr, Filtering)> {
     let tcp = TcpPacket::new(reply)?;
     let as_syn = tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp, 0);
     let as_ack = tcp::echoed_nonce(TcpScanTechnique::Ack, &tcp, 0);

@@ -181,12 +181,7 @@ impl ReportReader for NmapXmlReportReader {
         let mut parser = Parser::new(input, self.options.limits.max_line_bytes, FORMAT, KEPT)
             .with_max_value_bytes(MAX_VALUE_BYTES)
             .with_lossy(LOSSY);
-        let mut run = Run::default();
-        let mut host: Option<HostAcc> = None;
-        let mut port: Option<PortAcc> = None;
-        // The state an `<extraports>` block is reporting, while inside one.
-        let mut bulk: Option<String> = None;
-        let mut inside = Inside::Nothing;
+        let mut state = State::default();
 
         loop {
             match parser.next_event()? {
@@ -194,158 +189,23 @@ impl ReportReader for NmapXmlReportReader {
 
                 Event::Start { self_closing } => {
                     let tag = Tag::of(&parser.element.name);
-
-                    match tag {
-                        Tag::NmapRun => {
-                            run.saw_root = true;
-                            run.scanner = attr(&parser.element, b"scanner");
-                            run.scanner_version = attr(&parser.element, b"version");
-                            run.started = attr(&parser.element, b"start").and_then(|s| epoch(&s));
-                        }
-                        Tag::ScanInfo => run.scan_info(&parser.element),
-                        Tag::Host => {
-                            host = Some(HostAcc {
-                                started: attr(&parser.element, b"starttime")
-                                    .and_then(|s| epoch(&s)),
-                                ended: attr(&parser.element, b"endtime").and_then(|s| epoch(&s)),
-                                ..HostAcc::default()
-                            });
-                        }
-                        Tag::Status => {
-                            if let Some(host) = host.as_mut() {
-                                host.state = attr(&parser.element, b"state");
-                                host.reason = attr(&parser.element, b"reason");
-                            }
-                        }
-                        Tag::Address => {
-                            if host.is_some() {
-                                let address = HostAcc::read_address(&parser.element, &parser)?;
-                                if let (Some(host), Some(address)) = (host.as_mut(), address) {
-                                    host.record(address);
-                                }
-                            }
-                        }
-                        Tag::HostName => {
-                            if let Some(host) = host.as_mut()
-                                && host.hostname.is_none()
-                            {
-                                host.hostname = attr(&parser.element, b"name");
-                            }
-                        }
-                        Tag::Port => port = Some(PortAcc::open(&parser.element, &parser)?),
-                        // The ports nmap did not think worth listing one by
-                        // one. It still probed them and still knows what it
-                        // found, and both are here.
-                        Tag::ExtraPorts => {
-                            bulk = attr(&parser.element, b"state");
-                        }
-                        Tag::ExtraReasons => {
-                            if let (Some(host), Some(state)) = (host.as_mut(), bulk.as_deref()) {
-                                let state = PortAcc::state_named(state, &parser)?;
-                                host.extend(state, &parser.element);
-                            }
-                        }
-                        Tag::State => {
-                            if port.is_some() {
-                                let settled = PortAcc::read_state(&parser.element, &parser)?;
-                                if let (Some(port), Some((state, reason))) =
-                                    (port.as_mut(), settled)
-                                {
-                                    port.state = state;
-                                    port.reason = reason;
-                                }
-                            }
-                        }
-                        Tag::Service => {
-                            if let Some(port) = port.as_mut() {
-                                port.identify(&parser.element);
-                                run.probed_services |= port.service.is_some();
-                            }
-                            if !self_closing {
-                                inside = Inside::Service;
-                            }
-                        }
-                        Tag::OsMatch => {
-                            if let Some(host) = host.as_mut() {
-                                host.match_os(&parser.element);
-                                run.identified_os |= host.os.is_some();
-                            }
-                            if !self_closing {
-                                inside = Inside::Os;
-                            }
-                        }
-                        Tag::OsClass => {
-                            if let Some(host) = host.as_mut() {
-                                host.classify_os(&parser.element);
-                            }
-                            if !self_closing {
-                                inside = Inside::Os;
-                            }
-                        }
-                        Tag::Cpe => {
-                            if !self_closing && inside != Inside::Nothing {
-                                parser.begin_text();
-                            }
-                        }
-                        Tag::Finished => {
-                            run.elapsed = attr(&parser.element, b"elapsed")
-                                .and_then(|s| s.parse::<f64>().ok())
-                                .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok());
-                        }
-                        Tag::Other => {}
-                    }
+                    state.on_start(tag, self_closing, &mut parser)?;
 
                     // A self-closing `<host/>` or `<port/>` opens and closes in
                     // one event and never sees an `End`.
                     if self_closing {
-                        match tag {
-                            Tag::Host => run.close(host.take()),
-                            Tag::Port => {
-                                if let (Some(host), Some(port)) = (host.as_mut(), port.take()) {
-                                    host.ports.push(port.into_port());
-                                }
-                            }
-                            _ => {}
-                        }
+                        state.close_element(tag);
                     }
                 }
 
-                Event::End => match Tag::of(&parser.element.name) {
-                    Tag::ExtraPorts => bulk = None,
-                    Tag::Host => run.close(host.take()),
-                    Tag::Port => {
-                        if let (Some(host), Some(port)) = (host.as_mut(), port.take()) {
-                            host.ports.push(port.into_port());
-                        }
-                    }
-                    Tag::Cpe => {
-                        let cpe = parser.take_text();
-                        if !cpe.is_empty() {
-                            match inside {
-                                Inside::Service => {
-                                    if let Some(service) =
-                                        port.as_mut().and_then(|port| port.service.as_mut())
-                                    {
-                                        service.add_cpe(cpe);
-                                    }
-                                }
-                                Inside::Os => {
-                                    if let Some(os) =
-                                        host.as_mut().and_then(|host| host.os.as_mut())
-                                    {
-                                        os.add_cpe(cpe);
-                                    }
-                                }
-                                Inside::Nothing => {}
-                            }
-                        }
-                    }
-                    Tag::Service | Tag::OsMatch => inside = Inside::Nothing,
-                    _ => {}
-                },
+                Event::End => {
+                    let tag = Tag::of(&parser.element.name);
+                    state.on_end(tag, &mut parser);
+                }
             }
         }
 
+        let run = state.run;
         if !run.saw_root {
             return Err(ImportError::Malformed {
                 format: FORMAT,
@@ -363,10 +223,214 @@ impl ReportReader for NmapXmlReportReader {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The walk
+// ---------------------------------------------------------------------------
+
+/// Everything the document has said so far, as the parser walks it.
+///
+/// The run being assembled, the host and port an element is currently being
+/// read into, and the two pieces of context that decide what a nested element
+/// belongs to.
+#[derive(Debug, Default)]
+struct State {
+    run: Run,
+    host: Option<HostAcc>,
+    port: Option<PortAcc>,
+    /// The state an `<extraports>` block is reporting, while inside one.
+    bulk: Option<String>,
+    inside: Inside,
+}
+
+impl State {
+    /// Takes one opening element and folds what it carries in.
+    ///
+    /// `self_closing` is here because an element with no content opens nothing:
+    /// the arms that record what the parser is inside of, and the one that
+    /// begins capturing text, skip that for such an element. What it closes
+    /// instead is [`close_element`](Self::close_element)'s to decide.
+    fn on_start(
+        &mut self,
+        tag: Tag,
+        self_closing: bool,
+        parser: &mut Parser<'_>,
+    ) -> Result<(), ImportError> {
+        match tag {
+            Tag::NmapRun => {
+                self.run.saw_root = true;
+                self.run.scanner = attr(&parser.element, b"scanner");
+                self.run.scanner_version = attr(&parser.element, b"version");
+                self.run.started = attr(&parser.element, b"start").and_then(|s| epoch(&s));
+            }
+            Tag::ScanInfo => self.run.scan_info(&parser.element),
+            Tag::Host => {
+                self.host = Some(HostAcc {
+                    started: attr(&parser.element, b"starttime").and_then(|s| epoch(&s)),
+                    ended: attr(&parser.element, b"endtime").and_then(|s| epoch(&s)),
+                    ..HostAcc::default()
+                });
+            }
+            Tag::Status => {
+                if let Some(host) = self.host.as_mut() {
+                    host.state = attr(&parser.element, b"state");
+                    host.reason = attr(&parser.element, b"reason");
+                }
+            }
+            Tag::Address => self.record_address(parser)?,
+            Tag::HostName => {
+                if let Some(host) = self.host.as_mut()
+                    && host.hostname.is_none()
+                {
+                    host.hostname = attr(&parser.element, b"name");
+                }
+            }
+            Tag::Port => self.port = Some(PortAcc::open(&parser.element, parser)?),
+            // The ports nmap did not think worth listing one by one. It still
+            // probed them and still knows what it found, and both are here.
+            Tag::ExtraPorts => self.bulk = attr(&parser.element, b"state"),
+            Tag::ExtraReasons => {
+                if let (Some(host), Some(state)) = (self.host.as_mut(), self.bulk.as_deref()) {
+                    let state = PortAcc::state_named(state, parser)?;
+                    host.extend(state, &parser.element);
+                }
+            }
+            Tag::State => self.settle_port(parser)?,
+            Tag::Service => {
+                if let Some(port) = self.port.as_mut() {
+                    port.identify(&parser.element);
+                    self.run.probed_services |= port.service.is_some();
+                }
+                if !self_closing {
+                    self.inside = Inside::Service;
+                }
+            }
+            Tag::OsMatch => {
+                if let Some(host) = self.host.as_mut() {
+                    host.match_os(&parser.element);
+                    self.run.identified_os |= host.os.is_some();
+                }
+                if !self_closing {
+                    self.inside = Inside::Os;
+                }
+            }
+            Tag::OsClass => {
+                if let Some(host) = self.host.as_mut() {
+                    host.classify_os(&parser.element);
+                }
+                if !self_closing {
+                    self.inside = Inside::Os;
+                }
+            }
+            Tag::Cpe => {
+                if !self_closing && self.inside != Inside::Nothing {
+                    parser.begin_text();
+                }
+            }
+            Tag::Finished => {
+                self.run.elapsed = attr(&parser.element, b"elapsed")
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok());
+            }
+            Tag::Other => {}
+        }
+
+        Ok(())
+    }
+
+    /// Takes one closing element.
+    fn on_end(&mut self, tag: Tag, parser: &mut Parser<'_>) {
+        match tag {
+            Tag::ExtraPorts => self.bulk = None,
+            Tag::Host | Tag::Port => self.close_element(tag),
+            Tag::Cpe => self.record_cpe(parser.take_text()),
+            Tag::Service | Tag::OsMatch => self.inside = Inside::Nothing,
+            _ => {}
+        }
+    }
+
+    /// Folds a finished element into what holds it: a `<host>` into the run, a
+    /// `<port>` into the host it was found on.
+    ///
+    /// A port found outside a host is dropped, since there is nothing to record
+    /// it against.
+    fn close_element(&mut self, tag: Tag) {
+        match tag {
+            Tag::Host => self.run.close(self.host.take()),
+            Tag::Port => {
+                if let (Some(host), Some(port)) = (self.host.as_mut(), self.port.take()) {
+                    host.ports.push(port.into_port());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Records what an `<address>` names on the host being read.
+    ///
+    /// One outside a `<host>` is skipped without being read at all, so an
+    /// address nmap could not have written refuses the document only where
+    /// there is a host it would have belonged to.
+    fn record_address(&mut self, parser: &Parser<'_>) -> Result<(), ImportError> {
+        if self.host.is_none() {
+            return Ok(());
+        }
+
+        let address = HostAcc::read_address(&parser.element, parser)?;
+        if let (Some(host), Some(address)) = (self.host.as_mut(), address) {
+            host.record(address);
+        }
+
+        Ok(())
+    }
+
+    /// Settles the port being read on the verdict its `<state>` names.
+    ///
+    /// One outside a `<port>` is skipped without being read, for the reason
+    /// [`record_address`](Self::record_address) gives.
+    fn settle_port(&mut self, parser: &Parser<'_>) -> Result<(), ImportError> {
+        if self.port.is_none() {
+            return Ok(());
+        }
+
+        let settled = PortAcc::read_state(&parser.element, parser)?;
+        if let (Some(port), Some((state, reason))) = (self.port.as_mut(), settled) {
+            port.state = state;
+            port.reason = reason;
+        }
+
+        Ok(())
+    }
+
+    /// Files a `<cpe>` under the identification it qualifies.
+    ///
+    /// An empty one, and one that appeared outside a `<service>` or an
+    /// `<osmatch>`, qualifies nothing and is dropped.
+    fn record_cpe(&mut self, cpe: String) {
+        if cpe.is_empty() {
+            return;
+        }
+
+        match self.inside {
+            Inside::Service => {
+                if let Some(service) = self.port.as_mut().and_then(|port| port.service.as_mut()) {
+                    service.add_cpe(cpe);
+                }
+            }
+            Inside::Os => {
+                if let Some(os) = self.host.as_mut().and_then(|host| host.os.as_mut()) {
+                    os.add_cpe(cpe);
+                }
+            }
+            Inside::Nothing => {}
+        }
+    }
+}
+
 /// Which element the parser is inside, for the ones whose text belongs to
 /// something further out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Inside {
+    #[default]
     Nothing,
     Service,
     Os,
