@@ -174,12 +174,17 @@ impl Exporter for NmapXmlExporter {
         }
 
         let summary = report.summary();
+        // One reading, used twice: `time` and `timestr` are the same instant
+        // said two ways, and two calls to the clock can straddle a second and
+        // name two.
+        let finished = SystemTime::now();
+
         writeln!(out, "<runstats>")?;
         writeln!(
             out,
             r#"<finished time="{}" timestr="{}" elapsed="{:.2}" summary="{}" exit="{}"/>"#,
-            epoch_seconds(SystemTime::now()),
-            Attr(&time_string(SystemTime::now())),
+            epoch_seconds(finished),
+            Attr(&time_string(finished)),
             elapsed,
             Attr(&format!(
                 "{ENGINE_NAME} done; {} IP addresses ({} hosts up) scanned in {elapsed:.2} seconds",
@@ -225,6 +230,33 @@ impl Exporter for NmapXmlExporter {
 /// omitting that part of the range was deliberately not covered, and a report
 /// that overstates its own coverage is the exact failure this policy exists to
 /// prevent.
+fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), ExportError> {
+    let mut excluded: Vec<String> = Vec::new();
+    for phase in report.phases() {
+        for range in phase.targets().excluded() {
+            let text = format!("{}-{}", range.start_addr(), range.end_addr());
+            if !excluded.contains(&text) {
+                excluded.push(text);
+            }
+        }
+    }
+
+    if excluded.is_empty() {
+        return Ok(());
+    }
+
+    // Rendered from addresses rather than from anything a caller wrote, so no
+    // attacker-controlled text reaches this line and `--` cannot appear in it to
+    // close the comment early.
+    writeln!(
+        out,
+        "<!-- zond: excluded by policy, not scanned: {} -->",
+        excluded.join(", ")
+    )?;
+
+    Ok(())
+}
+
 /// Writes one `<scaninfo>` per transport the phase walked ports on.
 ///
 /// Nothing is written for a phase whose port scope is not recorded, and nothing
@@ -291,33 +323,6 @@ fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
         TcpScanTechnique::Maimon => "maimon",
         TcpScanTechnique::Ack => "ack",
     }
-}
-
-fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), ExportError> {
-    let mut excluded: Vec<String> = Vec::new();
-    for phase in report.phases() {
-        for range in phase.targets().excluded() {
-            let text = format!("{}-{}", range.start_addr(), range.end_addr());
-            if !excluded.contains(&text) {
-                excluded.push(text);
-            }
-        }
-    }
-
-    if excluded.is_empty() {
-        return Ok(());
-    }
-
-    // Rendered from addresses rather than from anything a caller wrote, so no
-    // attacker-controlled text reaches this line and `--` cannot appear in it to
-    // close the comment early.
-    writeln!(
-        out,
-        "<!-- zond: excluded by policy, not scanned: {} -->",
-        excluded.join(", ")
-    )?;
-
-    Ok(())
 }
 
 /// Writes one `<host>` element.
@@ -482,7 +487,6 @@ fn write_trace(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
     Ok(())
 }
 
-/// Writes one `<port>` element.
 /// A finding flattened to one line of `<script output>` text: severity, title,
 /// references, the justifying excerpt, and any remediation. Every part is
 /// attacker-influenced and is written through [`Attr`] at the call site, never
@@ -525,6 +529,7 @@ fn write_finding_scripts<'a>(
     Ok(())
 }
 
+/// Writes one `<port>` element.
 fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
     writeln!(
         out,

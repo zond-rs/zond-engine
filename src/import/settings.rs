@@ -98,12 +98,19 @@
 //! browser's local storage, or in memory constructs one directly and never
 //! touches TOML or a filesystem at all.
 //!
-//! ## Every field is optional, and that is the whole design
+//! ## Every field that overrides is optional, and that is the whole design
 //!
-//! [`Settings`] holds `Option` everywhere so that *unset* and *set to the
-//! default value* stay distinguishable. Without that, layering is impossible: a
-//! user file could never override a system file back to a default, because
-//! "back to the default" would be indistinguishable from "said nothing".
+//! [`Settings`] holds `Option` for everything a later layer replaces, so that
+//! *unset* and *set to the default value* stay distinguishable. Without that,
+//! layering is impossible: a user file could never override a system file back
+//! to a default, because "back to the default" would be indistinguishable from
+//! "said nothing".
+//!
+//! [`exclude`](Settings::exclude) is the exception and is a bare
+//! [`Exclusions`]. It is the one key that accumulates rather than overrides, so
+//! there is no "said nothing" for it to be told apart from: an empty set adds
+//! nothing, which is exactly what silence means. See
+//! [`overlay`](Settings::overlay) for why that key accumulates.
 //!
 //! Layers, each overriding the one before:
 //!
@@ -469,7 +476,15 @@ impl Settings {
 // Reading
 // ---------------------------------------------------------------------------
 
-/// Every key [`Settings`] understands, for suggesting a correction.
+/// Every key [`Settings`] understands, for recognising one and for suggesting a
+/// correction.
+///
+/// Add a field to [`Settings`] and it goes here and in
+/// [`TEMPLATE`](crate::import::settings::TEMPLATE) too, or a document setting
+/// it is warned about while the value is quietly applied.
+/// `the_template_documents_every_key_and_no_others` holds this list and the
+/// template to each other in both directions; nothing can hold either to the
+/// struct, so that step is by hand.
 const KNOWN_KEYS: [&str; 11] = [
     "exclude",
     "no_dns",
@@ -1159,16 +1174,42 @@ mod tests {
         assert_eq!(config.tcp_technique, ZondConfig::default().tcp_technique);
     }
 
-    /// Every key the template mentions has to be a key this build reads, or the
-    /// file documents a setting that does nothing.
+    /// The template and [`KNOWN_KEYS`] name the same settings, both ways.
+    ///
+    /// One direction is that the template documents everything this build reads,
+    /// or a user editing the file it was handed cannot find the key they want.
+    /// The other is that the template documents nothing this build ignores, or
+    /// the file promises a setting that does nothing — which is the failure the
+    /// warnings exist to prevent, arriving from the one file the engine wrote
+    /// itself.
     #[test]
     fn the_template_documents_every_key_and_no_others() {
-        for key in KNOWN_KEYS {
-            assert!(
-                TEMPLATE.contains(&format!("{key} =")),
-                "the template does not document '{key}'"
-            );
-        }
+        let known: std::collections::BTreeSet<&str> = KNOWN_KEYS.into_iter().collect();
+
+        let documented: std::collections::BTreeSet<&str> = TEMPLATE
+            .lines()
+            .filter_map(|line| {
+                line.trim_start()
+                    .strip_prefix('#')
+                    .unwrap_or(line)
+                    .split_once('=')
+            })
+            .map(|(key, _)| key.trim())
+            .filter(|key| {
+                !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            })
+            .collect();
+
+        assert_eq!(
+            known.difference(&documented).collect::<Vec<_>>(),
+            Vec::<&&str>::new(),
+            "the template does not document a key this build reads"
+        );
+        assert_eq!(
+            documented.difference(&known).collect::<Vec<_>>(),
+            Vec::<&&str>::new(),
+            "the template documents a key this build ignores"
+        );
     }
 
     #[test]

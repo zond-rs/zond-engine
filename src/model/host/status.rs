@@ -63,6 +63,17 @@ pub enum HostStatus {
     Up,
 }
 
+impl HostStatus {
+    /// Every reachability verdict, in declaration order, which is least
+    /// definitive first.
+    ///
+    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
+    /// gives: the enum is `#[non_exhaustive]`, so a status added without a name
+    /// on the wire or a place in the exported schema would be a finding that
+    /// survives a scan and cannot be written down.
+    pub const ALL: [HostStatus; 4] = [Self::Unknown, Self::Down, Self::Filtered, Self::Up];
+}
+
 /// Known protocols or events that provide evidence of host reachability.
 ///
 /// Marked `#[non_exhaustive]`: probe types are added as the engine learns to

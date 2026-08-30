@@ -48,5 +48,7 @@ pub const COLUMNS: [&str; 25] = [
 
 /// How many of [`COLUMNS`] describe the port rather than the host.
 ///
-/// The split point, not a second list: the host half is everything before it.
+/// A count, not a second list and not an index: the port columns are the last
+/// `PORT_COLUMNS` of [`COLUMNS`] and the host columns are everything before
+/// them, so the boundary sits at `COLUMNS.len() - PORT_COLUMNS`.
 pub const PORT_COLUMNS: usize = 12;

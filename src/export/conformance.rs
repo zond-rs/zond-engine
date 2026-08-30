@@ -24,12 +24,19 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-use crate::config::{OsDetection, ServiceDetection};
-use crate::export::schema::SCHEMA_VERSION;
+use crate::config::{OsDetection, ScanEffort, ServiceDetection};
+use crate::export::schema::{SCHEMA_VERSION, scan_effort_name, send_mode_name};
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
-use crate::model::finding::DetectionClass;
+use crate::model::confidence::Confidence;
+use crate::model::finding::{DetectionClass, Severity};
+use crate::model::host::{Filtering, HostStatus, NetworkRole};
+use crate::model::port::{PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
-use crate::record::wire::detection_class_name;
+use crate::record::wire::{
+    confidence_name, detection_class_name, filtering_name, host_status_name, network_role_name,
+    port_state_name, protocol_name, severity_name,
+};
+use crate::transport::probe::SendMode;
 
 /// The published schemas, compiled into the test binary so a test cannot pass
 /// against a file that was not shipped.
@@ -137,83 +144,158 @@ fn the_schema_pins_the_version_the_code_emits() {
     );
 }
 
-/// Every scan technique the engine can run is a value the published schema
-/// accepts.
+/// Every enumerated value in the report document, as the schema lists it and as
+/// this build spells it, compared **both ways**.
 ///
-/// The document tests below only ever exercise whichever technique the fixture
-/// happens to use, so a seventh technique could be added, exported, and pass
-/// every one of them while producing documents no consumer's validator accepts.
-/// This is the check that fails instead - and it fails at the point the variant
-/// is added, which is where the schema is easiest to update.
-#[test]
-fn every_technique_the_engine_runs_is_a_value_the_schema_accepts() {
-    let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
-    let accepted = schema["$defs"]["settings"]["properties"]["tcp_technique"]["enum"]
-        .as_array()
-        .expect("the schema names the techniques it accepts");
-
-    for technique in TcpScanTechnique::ALL {
-        assert!(
-            accepted.contains(&Value::from(technique.name())),
-            "the schema does not accept `{technique}`, which a scan can be asked for"
-        );
-    }
-}
-
-/// Every OS detection level the engine can be asked for is a value the published
-/// schema accepts.
+/// One direction is the obvious one: a variant the engine can write and the
+/// schema does not accept produces documents no consumer's validator takes. The
+/// document tests below cannot see it, because they only ever exercise whichever
+/// variant the fixture happens to carry.
 ///
-/// Same reasoning as the techniques above, and the same blind spot without it:
-/// the document tests exercise whichever level the fixture happens to carry, so
-/// a fifth level could be added, exported, and pass every one of them while
-/// producing documents no consumer's validator accepts. This fails at the point
-/// the variant is added instead.
-#[test]
-fn every_os_detection_level_the_engine_runs_is_a_value_the_schema_accepts() {
-    let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
-    let accepted = schema["$defs"]["settings"]["properties"]["os_detection"]["enum"]
-        .as_array()
-        .expect("the schema names the levels it accepts");
+/// The other direction is the one that was missing, and it is how `sctp` came to
+/// sit in `$defs/protocol` for a release: a name the schema advertises and the
+/// engine cannot produce is a promise to a third party writing this format that
+/// both report readers then refuse. Nothing else in this crate looks at it.
+///
+/// Only the enums whose type publishes an `ALL` are here. That is not a
+/// shortcut: an exhaustive list written out in this file would be a third copy
+/// of the variants, which is the arrangement this test exists to catch.
+fn enumerations() -> Vec<(&'static str, Vec<String>)> {
+    let named = |names: Vec<&'static str>| names.into_iter().map(str::to_owned).collect();
 
-    for detection in OsDetection::ALL {
-        assert!(
-            accepted.contains(&Value::from(detection.name())),
-            "the schema does not accept `{detection}`, which a scan can be asked for"
-        );
-    }
+    vec![
+        (
+            "/$defs/settings/properties/tcp_technique/enum",
+            named(TcpScanTechnique::ALL.iter().map(|t| t.name()).collect()),
+        ),
+        (
+            "/$defs/settings/properties/send_mode/enum",
+            named(SendMode::ALL.iter().copied().map(send_mode_name).collect()),
+        ),
+        (
+            "/$defs/settings/properties/os_detection/enum",
+            named(OsDetection::ALL.iter().map(|d| d.name()).collect()),
+        ),
+        (
+            "/$defs/settings/properties/service_detection/enum",
+            named(ServiceDetection::ALL.iter().map(|d| d.name()).collect()),
+        ),
+        (
+            "/$defs/settings/properties/detection/enum",
+            named(
+                DetectionClass::ALL
+                    .iter()
+                    .copied()
+                    .map(detection_class_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/retry/properties/effort/enum",
+            named(
+                ScanEffort::ALL
+                    .iter()
+                    .copied()
+                    .map(scan_effort_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/host/properties/status/enum",
+            named(
+                HostStatus::ALL
+                    .iter()
+                    .copied()
+                    .map(host_status_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/host/properties/roles/items/enum",
+            named(
+                NetworkRole::ALL
+                    .iter()
+                    .copied()
+                    .map(network_role_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/host/properties/filtering/items/enum",
+            named(Filtering::ALL.iter().copied().map(filtering_name).collect()),
+        ),
+        (
+            "/$defs/port/properties/state/enum",
+            named(
+                PortState::ALL
+                    .iter()
+                    .copied()
+                    .map(port_state_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/protocol/enum",
+            named(Protocol::ALL.iter().copied().map(protocol_name).collect()),
+        ),
+        (
+            "/$defs/finding/properties/severity/enum",
+            named(Severity::ALL.iter().copied().map(severity_name).collect()),
+        ),
+        (
+            "/$defs/finding/properties/confidence/enum",
+            named(
+                Confidence::ALL
+                    .iter()
+                    .copied()
+                    .map(confidence_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/finding/properties/class/enum",
+            named(
+                DetectionClass::ALL
+                    .iter()
+                    .copied()
+                    .map(detection_class_name)
+                    .collect(),
+            ),
+        ),
+    ]
 }
 
-/// Every service-detection level, on the same reasoning as the levels above.
 #[test]
-fn every_service_detection_level_the_engine_runs_is_a_value_the_schema_accepts() {
+fn the_schema_lists_exactly_the_enumerated_values_the_engine_writes() {
     let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
-    let accepted = schema["$defs"]["settings"]["properties"]["service_detection"]["enum"]
-        .as_array()
-        .expect("the schema names the levels it accepts");
 
-    for detection in ServiceDetection::ALL {
-        assert!(
-            accepted.contains(&Value::from(detection.name())),
-            "the schema does not accept `{detection}`, which a scan can be asked for"
+    for (pointer, emitted) in enumerations() {
+        let accepted: BTreeSet<String> = schema
+            .pointer(pointer)
+            .unwrap_or_else(|| panic!("the schema has no enumeration at {pointer}"))
+            .as_array()
+            .unwrap_or_else(|| panic!("{pointer} is not a list of names"))
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{pointer} holds something that is not a name"))
+                    .to_owned()
+            })
+            .collect();
+
+        let emitted: BTreeSet<String> = emitted.into_iter().collect();
+
+        assert_eq!(
+            emitted.difference(&accepted).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "{pointer} does not accept a value this build can write"
         );
-    }
-}
-
-/// Every detection intrusiveness class the envelope can permit, on the same
-/// reasoning as the levels above: a class the report can name is a class the
-/// schema must list.
-#[test]
-fn every_detection_class_the_engine_can_run_is_a_value_the_schema_accepts() {
-    let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
-    let accepted = schema["$defs"]["settings"]["properties"]["detection"]["enum"]
-        .as_array()
-        .expect("the schema names the classes it accepts");
-
-    for class in DetectionClass::ALL {
-        let name = detection_class_name(class);
-        assert!(
-            accepted.contains(&Value::from(name)),
-            "the schema does not accept `{name}`, a class a scan can be permitted"
+        assert_eq!(
+            accepted.difference(&emitted).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "{pointer} advertises a value this build cannot write, which a third \
+             party producing this format would find refused on the way back in"
         );
     }
 }

@@ -2366,11 +2366,8 @@ impl core::marker::UnsafeUnpin for zond_engine::export::nmap::NmapXmlExporter
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::nmap::NmapXmlExporter
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::nmap::NmapXmlExporter
 pub mod zond_engine::export::redact
-pub fn zond_engine::export::redact::global_unicast(&core::net::ip_addr::Ipv6Addr) -> alloc::string::String
 pub fn zond_engine::export::redact::hostname(&str) -> alloc::string::String
-pub fn zond_engine::export::redact::link_local(&core::net::ip_addr::Ipv6Addr) -> alloc::string::String
 pub fn zond_engine::export::redact::mac_addr(&zond_engine::model::mac::MacAddr) -> alloc::string::String
-pub fn zond_engine::export::redact::unique_local(&core::net::ip_addr::Ipv6Addr) -> alloc::string::String
 pub mod zond_engine::export::schema
 pub struct zond_engine::export::schema::AttachmentDto<'a>
 pub zond_engine::export::schema::AttachmentDto::device_mac: core::option::Option<alloc::string::String>
@@ -4567,6 +4564,25 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::nmap::Nmap
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::nmap::NmapXmlImporter
 pub mod zond_engine::import::report
 pub mod zond_engine::import::report::json
+pub struct zond_engine::import::report::json::JsonLinesReportReader
+impl zond_engine::import::report::json::JsonLinesReportReader
+pub fn zond_engine::import::report::json::JsonLinesReportReader::new(zond_engine::import::report::ReportOptions) -> Self
+impl core::clone::Clone for zond_engine::import::report::json::JsonLinesReportReader
+pub fn zond_engine::import::report::json::JsonLinesReportReader::clone(&self) -> zond_engine::import::report::json::JsonLinesReportReader
+impl core::default::Default for zond_engine::import::report::json::JsonLinesReportReader
+pub fn zond_engine::import::report::json::JsonLinesReportReader::default() -> zond_engine::import::report::json::JsonLinesReportReader
+impl core::fmt::Debug for zond_engine::import::report::json::JsonLinesReportReader
+pub fn zond_engine::import::report::json::JsonLinesReportReader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::import::report::json::JsonLinesReportReader
+impl zond_engine::import::report::ReportReader for zond_engine::import::report::json::JsonLinesReportReader
+pub fn zond_engine::import::report::json::JsonLinesReportReader::read(&self, &mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::report::ScanReport, zond_engine::import::ImportError>
+impl core::marker::Freeze for zond_engine::import::report::json::JsonLinesReportReader
+impl core::marker::Send for zond_engine::import::report::json::JsonLinesReportReader
+impl core::marker::Sync for zond_engine::import::report::json::JsonLinesReportReader
+impl core::marker::Unpin for zond_engine::import::report::json::JsonLinesReportReader
+impl core::marker::UnsafeUnpin for zond_engine::import::report::json::JsonLinesReportReader
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::report::json::JsonLinesReportReader
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::report::json::JsonLinesReportReader
 pub struct zond_engine::import::report::json::JsonReportReader
 impl zond_engine::import::report::json::JsonReportReader
 pub fn zond_engine::import::report::json::JsonReportReader::new(zond_engine::import::report::ReportOptions) -> Self
@@ -4608,8 +4624,11 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::report::nm
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::report::nmap::NmapXmlReportReader
 #[non_exhaustive] pub enum zond_engine::import::report::ReportFormat
 pub zond_engine::import::report::ReportFormat::Json
+pub zond_engine::import::report::ReportFormat::JsonLines
 pub zond_engine::import::report::ReportFormat::Nmap
 impl zond_engine::import::report::ReportFormat
+pub fn zond_engine::import::report::ReportFormat::all() -> &'static [zond_engine::import::report::ReportFormat]
+pub fn zond_engine::import::report::ReportFormat::extension(self) -> &'static str
 pub fn zond_engine::import::report::ReportFormat::from_extension(&str) -> core::option::Option<Self>
 pub fn zond_engine::import::report::ReportFormat::from_path(&std::path::Path) -> core::option::Option<Self>
 pub fn zond_engine::import::report::ReportFormat::read(self, &mut dyn alloc::io::buf_read::BufRead, zond_engine::import::report::ReportOptions) -> core::result::Result<zond_engine::report::ScanReport, zond_engine::import::ImportError>
@@ -4660,6 +4679,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::report::Re
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::report::ReportOptions
 pub trait zond_engine::import::report::ReportReader
 pub fn zond_engine::import::report::ReportReader::read(&self, &mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::report::ScanReport, zond_engine::import::ImportError>
+impl zond_engine::import::report::ReportReader for zond_engine::import::report::json::JsonLinesReportReader
+pub fn zond_engine::import::report::json::JsonLinesReportReader::read(&self, &mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::report::ScanReport, zond_engine::import::ImportError>
 impl zond_engine::import::report::ReportReader for zond_engine::import::report::json::JsonReportReader
 pub fn zond_engine::import::report::json::JsonReportReader::read(&self, &mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::report::ScanReport, zond_engine::import::ImportError>
 impl zond_engine::import::report::ReportReader for zond_engine::import::report::nmap::NmapXmlReportReader
@@ -6593,6 +6614,8 @@ pub zond_engine::model::host::status::HostStatus::Filtered
 pub zond_engine::model::host::status::HostStatus::Unknown
 pub zond_engine::model::host::status::HostStatus::Up
 impl zond_engine::model::host::status::HostStatus
+pub const zond_engine::model::host::status::HostStatus::ALL: [zond_engine::model::host::status::HostStatus; 4]
+impl zond_engine::model::host::status::HostStatus
 pub fn zond_engine::model::host::status::HostStatus::is_alive(&self) -> bool
 pub fn zond_engine::model::host::status::HostStatus::is_down(&self) -> bool
 pub fn zond_engine::model::host::status::HostStatus::is_up(&self) -> bool
@@ -6787,6 +6810,8 @@ pub zond_engine::model::host::HostStatus::Down
 pub zond_engine::model::host::HostStatus::Filtered
 pub zond_engine::model::host::HostStatus::Unknown
 pub zond_engine::model::host::HostStatus::Up
+impl zond_engine::model::host::status::HostStatus
+pub const zond_engine::model::host::status::HostStatus::ALL: [zond_engine::model::host::status::HostStatus; 4]
 impl zond_engine::model::host::status::HostStatus
 pub fn zond_engine::model::host::status::HostStatus::is_alive(&self) -> bool
 pub fn zond_engine::model::host::status::HostStatus::is_down(&self) -> bool
@@ -8047,6 +8072,8 @@ pub zond_engine::model::port::PortState::Filtered
 pub zond_engine::model::port::PortState::Open
 pub zond_engine::model::port::PortState::OpenFiltered
 pub zond_engine::model::port::PortState::Unfiltered
+impl zond_engine::model::port::PortState
+pub const zond_engine::model::port::PortState::ALL: [zond_engine::model::port::PortState; 6]
 impl core::clone::Clone for zond_engine::model::port::PortState
 pub fn zond_engine::model::port::PortState::clone(&self) -> zond_engine::model::port::PortState
 impl core::cmp::Eq for zond_engine::model::port::PortState
@@ -8070,6 +8097,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::PortStat
 #[non_exhaustive] pub enum zond_engine::model::port::Protocol
 pub zond_engine::model::port::Protocol::Tcp
 pub zond_engine::model::port::Protocol::Udp
+impl zond_engine::model::port::Protocol
+pub const zond_engine::model::port::Protocol::ALL: [zond_engine::model::port::Protocol; 2]
 impl core::clone::Clone for zond_engine::model::port::Protocol
 pub fn zond_engine::model::port::Protocol::clone(&self) -> zond_engine::model::port::Protocol
 impl core::cmp::Eq for zond_engine::model::port::Protocol
@@ -13317,6 +13346,8 @@ pub zond_engine::HostStatus::Filtered
 pub zond_engine::HostStatus::Unknown
 pub zond_engine::HostStatus::Up
 impl zond_engine::model::host::status::HostStatus
+pub const zond_engine::model::host::status::HostStatus::ALL: [zond_engine::model::host::status::HostStatus; 4]
+impl zond_engine::model::host::status::HostStatus
 pub fn zond_engine::model::host::status::HostStatus::is_alive(&self) -> bool
 pub fn zond_engine::model::host::status::HostStatus::is_down(&self) -> bool
 pub fn zond_engine::model::host::status::HostStatus::is_up(&self) -> bool
@@ -13351,6 +13382,8 @@ pub zond_engine::PortState::Filtered
 pub zond_engine::PortState::Open
 pub zond_engine::PortState::OpenFiltered
 pub zond_engine::PortState::Unfiltered
+impl zond_engine::model::port::PortState
+pub const zond_engine::model::port::PortState::ALL: [zond_engine::model::port::PortState; 6]
 impl core::clone::Clone for zond_engine::model::port::PortState
 pub fn zond_engine::model::port::PortState::clone(&self) -> zond_engine::model::port::PortState
 impl core::cmp::Eq for zond_engine::model::port::PortState
@@ -13374,6 +13407,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::PortStat
 #[non_exhaustive] pub enum zond_engine::Protocol
 pub zond_engine::Protocol::Tcp
 pub zond_engine::Protocol::Udp
+impl zond_engine::model::port::Protocol
+pub const zond_engine::model::port::Protocol::ALL: [zond_engine::model::port::Protocol; 2]
 impl core::clone::Clone for zond_engine::model::port::Protocol
 pub fn zond_engine::model::port::Protocol::clone(&self) -> zond_engine::model::port::Protocol
 impl core::cmp::Eq for zond_engine::model::port::Protocol

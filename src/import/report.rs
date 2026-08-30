@@ -155,9 +155,10 @@ struct Bounded<'a> {
     left: u64,
     /// Whether the budget ran out, which is the only thing the dispatch needs
     /// back. A flag rather than a distinguishable error, because the refusal
-    /// travels out through `serde_json` and `quick-xml`, and both rewrite an
-    /// I/O failure into an error of their own. Asking this afterwards is exact
-    /// where reading the message that came back would be a guess.
+    /// travels out through `serde_json` and through
+    /// [`xml`](crate::import::xml), and both rewrite an I/O failure into an
+    /// error of their own. Asking this afterwards is exact where reading the
+    /// message that came back would be a guess.
     exhausted: bool,
 }
 
@@ -179,9 +180,23 @@ impl<'a> Bounded<'a> {
     }
 }
 
+impl Bounded<'_> {
+    /// Whether a reader asking for more bytes is asking for more than the
+    /// budget, rather than asking how it ends.
+    ///
+    /// A spent budget is not by itself an overrun. A document of exactly
+    /// `max_document_bytes` has been handed over whole, and a parser then asks
+    /// once more because that is how it learns there is nothing after the value
+    /// it read. Refusing that reading would make the ceiling refuse the largest
+    /// document it is supposed to admit.
+    fn overran(&mut self) -> std::io::Result<bool> {
+        Ok(self.left == 0 && !self.inner.fill_buf()?.is_empty())
+    }
+}
+
 impl std::io::Read for Bounded<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.left == 0 {
+        if self.overran()? {
             return Err(self.over_budget());
         }
         let ceiling = usize::try_from(self.left).unwrap_or(usize::MAX);
@@ -194,11 +209,11 @@ impl std::io::Read for Bounded<'_> {
 
 impl BufRead for Bounded<'_> {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        if self.left == 0 {
+        if self.overran()? {
             return Err(self.over_budget());
         }
-        let available = self.inner.fill_buf()?;
         let ceiling = usize::try_from(self.left).unwrap_or(usize::MAX);
+        let available = self.inner.fill_buf()?;
         Ok(&available[..available.len().min(ceiling)])
     }
 
@@ -217,9 +232,18 @@ impl BufRead for Bounded<'_> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ReportFormat {
-    /// This engine's own exported JSON.
+    /// This engine's own exported JSON, as a single document.
     #[cfg(feature = "import-json")]
     Json,
+    /// The same data one record per line, which is what
+    /// [`export::jsonl`](crate::export::jsonl) writes.
+    ///
+    /// Read here as well as in [`ImportFormat`](crate::import::ImportFormat),
+    /// because the format's whole argument for existing is that a scan cut short
+    /// still leaves a readable file, and a file that can only be read as the
+    /// targets it names is not that.
+    #[cfg(feature = "import-json")]
+    JsonLines,
     /// Nmap's XML, which this engine's own nmap exporter also writes.
     #[cfg(feature = "import-nmap")]
     Nmap,
@@ -235,10 +259,42 @@ impl ReportFormat {
         {
             #[cfg(feature = "import-json")]
             "json" => Some(ReportFormat::Json),
+            // `ndjson` is the other name the same format goes by, matching what
+            // the exporter and the target-side reader both accept.
+            #[cfg(feature = "import-json")]
+            "jsonl" | "ndjson" => Some(ReportFormat::JsonLines),
             #[cfg(feature = "import-nmap")]
             "xml" => Some(ReportFormat::Nmap),
             _ => None,
         }
+    }
+
+    /// The canonical file extension for this format, without a leading dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            #[cfg(feature = "import-json")]
+            ReportFormat::Json => "json",
+            #[cfg(feature = "import-json")]
+            ReportFormat::JsonLines => "jsonl",
+            #[cfg(feature = "import-nmap")]
+            ReportFormat::Nmap => "xml",
+        }
+    }
+
+    /// Every report format this build can read.
+    ///
+    /// Front ends use this to describe their own capabilities, for the reason
+    /// [`ImportFormat::all`](crate::import::ImportFormat::all) gives: a help
+    /// text listing formats the binary was not built with is worse than none.
+    pub fn all() -> &'static [ReportFormat] {
+        &[
+            #[cfg(feature = "import-json")]
+            ReportFormat::Json,
+            #[cfg(feature = "import-json")]
+            ReportFormat::JsonLines,
+            #[cfg(feature = "import-nmap")]
+            ReportFormat::Nmap,
+        ]
     }
 
     /// The format a path's extension names.
@@ -248,27 +304,58 @@ impl ReportFormat {
             .and_then(Self::from_extension)
     }
 
-    /// The format the first byte of `input` implies, without consuming it.
+    /// The format the start of `input` implies, without consuming it.
     ///
-    /// One byte decides: a report document is an object or an element, and
-    /// nothing else. Deliberately not a content sniff — which document *this* is
-    /// is the reader's question, and each refuses one it does not recognise by
-    /// naming what it found.
+    /// Almost one byte: a report document is an object or an element, and
+    /// nothing else. Deliberately not a content sniff beyond that — which
+    /// document *this* is is the reader's question, and each refuses one it does
+    /// not recognise by naming what it found.
+    ///
+    /// The exception is the two JSON shapes, which both open with a brace. The
+    /// record-per-line one names itself in its first record, so that tag is what
+    /// separates them, exactly as
+    /// [`ImportFormat::sniff`](crate::import::ImportFormat::sniff) separates them
+    /// in the other direction. Without it a record-per-line export is read as a
+    /// single document, its first line parses, its hosts are never reached, and
+    /// what comes back is a correctly attributed report of a scan that found
+    /// nothing.
     pub fn sniff(input: &mut dyn BufRead) -> Result<Self, ImportError> {
-        let available = input.fill_buf()?;
-        let first = available.iter().find(|byte| !byte.is_ascii_whitespace());
+        /// How a record-per-line document's header record names itself, written
+        /// as the compact exporter writes it.
+        #[cfg(feature = "import-json")]
+        const REPORT_TAG: &[u8] = br#""type":"report""#;
 
-        match first {
-            #[cfg(feature = "import-json")]
-            Some(b'{') => Ok(ReportFormat::Json),
-            #[cfg(feature = "import-nmap")]
-            Some(b'<') => Ok(ReportFormat::Nmap),
-            _ => Err(ImportError::Malformed {
-                format: "report",
-                origin: crate::import::ImportOrigin::unknown(),
-                message: "the input begins as neither a JSON document nor an XML one".to_string(),
-            }),
+        let available = input.fill_buf()?;
+        let prefix = available.trim_ascii_start();
+
+        // Bound before the arms, because a build with only one of the two
+        // features has no arm to read it and an unused binding there is a
+        // warning nobody can act on.
+        let _ = &prefix;
+
+        #[cfg(feature = "import-nmap")]
+        if prefix.first() == Some(&b'<') {
+            return Ok(ReportFormat::Nmap);
         }
+
+        #[cfg(feature = "import-json")]
+        if prefix.first() == Some(&b'{') {
+            let head = &prefix[..prefix.len().min(256)];
+            let tagged = head
+                .windows(REPORT_TAG.len())
+                .any(|window| window == REPORT_TAG);
+            return Ok(if tagged {
+                ReportFormat::JsonLines
+            } else {
+                ReportFormat::Json
+            });
+        }
+
+        Err(ImportError::Malformed {
+            format: "report",
+            origin: crate::import::ImportOrigin::unknown(),
+            message: "the input begins as neither a JSON document nor an XML one".to_string(),
+        })
     }
 
     /// The format at `path` if its extension names one, and otherwise whatever
@@ -299,6 +386,8 @@ impl ReportFormat {
         let read = match self {
             #[cfg(feature = "import-json")]
             ReportFormat::Json => json::JsonReportReader::new(options).read(&mut bounded),
+            #[cfg(feature = "import-json")]
+            ReportFormat::JsonLines => json::JsonLinesReportReader::new(options).read(&mut bounded),
             #[cfg(feature = "import-nmap")]
             ReportFormat::Nmap => nmap::NmapXmlReportReader::new(options).read(&mut bounded),
         };

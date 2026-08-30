@@ -1112,8 +1112,7 @@
     "protocol": {
       "enum": [
         "tcp",
-        "udp",
-        "sctp"
+        "udp"
       ]
     },
     "range": {

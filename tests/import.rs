@@ -40,9 +40,9 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use zond_engine::export::{ExportOptions, Exporter, JsonExporter};
+use zond_engine::export::{ExportOptions, Exporter, JsonExporter, JsonLinesExporter};
 use zond_engine::import::report::{ReportFormat, ReportOptions};
 use zond_engine::import::{
     ImportError, ImportFormat, ImportLimits, ImportOptions, ImportOrigin, Imported, OnRefusal,
@@ -184,12 +184,7 @@ fn read_report(
     document: &str,
     options: ReportOptions,
 ) -> Result<ScanReport, ImportError> {
-    let extension = match format {
-        ReportFormat::Json => "json",
-        _ => "xml",
-    };
-
-    through_a_file(name, extension, document.as_bytes(), |input| {
+    through_a_file(name, format.extension(), document.as_bytes(), |input| {
         format.read(input, options)
     })
 }
@@ -241,9 +236,85 @@ fn exported(report: &ScanReport) -> String {
     String::from_utf8(document).expect("the export is UTF-8")
 }
 
+fn exported_lines(report: &ScanReport) -> String {
+    let mut document = Vec::new();
+    JsonLinesExporter::new(ExportOptions::new())
+        .export(report, &mut document)
+        .expect("the report exports");
+    String::from_utf8(document).expect("the export is UTF-8")
+}
+
 // ---------------------------------------------------------------------------
 // Every reader, through the dispatch, against a file
 // ---------------------------------------------------------------------------
+
+/// A record-per-line export read back as the scan it records, off the disk and
+/// through the public dispatch.
+///
+/// The path this closes: `jsonl` named no report format, so `resolve` fell
+/// through to sniffing, sniffing saw a leading brace and answered `Json`, and
+/// the single-document reader parsed the first line and stopped. What came back
+/// was a report with the right attribution and no hosts at all, which a
+/// comparison reads as a network that emptied out overnight.
+#[test]
+fn a_record_per_line_report_on_disk_reads_back_as_the_scan_it_records() {
+    let report = hand_built_report();
+    let document = exported_lines(&report);
+
+    let resolved = through_a_file(
+        "report-lines-resolve",
+        "jsonl",
+        document.as_bytes(),
+        |input| {
+            ReportFormat::resolve(Some(Path::new("scan.jsonl")), input)
+                .expect("the path names a format")
+        },
+    );
+    assert_eq!(
+        resolved,
+        ReportFormat::JsonLines,
+        "a .jsonl report must not resolve to the single-document reader"
+    );
+
+    let sniffed = through_a_file(
+        "report-lines-sniff",
+        "jsonl",
+        document.as_bytes(),
+        |input| ReportFormat::sniff(input).expect("the bytes name a format"),
+    );
+    assert_eq!(
+        sniffed,
+        ReportFormat::JsonLines,
+        "and neither must one arriving with no name"
+    );
+
+    let restored = read_report(
+        "report-lines-read",
+        ReportFormat::JsonLines,
+        &document,
+        ReportOptions::default(),
+    )
+    .expect("the document reads");
+
+    assert_eq!(restored.host_count(), report.host_count());
+    assert_eq!(endpoints(&restored), endpoints(&report));
+}
+
+/// Every report format resolves from its own extension, and every one of them
+/// can be named for a help text.
+#[test]
+fn every_report_format_resolves_from_its_own_extension() {
+    for format in ReportFormat::all() {
+        assert_eq!(
+            ReportFormat::from_extension(format.extension()),
+            Some(*format),
+            "{format:?} does not resolve from its own extension"
+        );
+    }
+
+    assert_eq!(ReportFormat::from_path(Path::new("/tmp/scan")), None);
+    assert_eq!(ReportFormat::from_extension("pdf"), None);
+}
 
 /// A format with no document here is a format nothing below covers.
 #[test]

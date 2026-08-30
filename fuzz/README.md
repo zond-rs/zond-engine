@@ -1,8 +1,15 @@
 # Fuzzing
 
-Coverage-guided fuzzing over every parser that reads bytes somebody else wrote.
+Coverage-guided fuzzing over the parsers that read bytes somebody else wrote.
 Four targets, all of them entry points a hostile network or a hostile file
 reaches directly.
+
+Four, not all of them. The target-side readers behind `ImportFormat::read` have
+none: the list grammar, the CSV record reader with its quoting and its carriage
+returns, and the record-per-line reader. Neither does `settings::parse`, which
+reads a TOML file synced from a team repository, nor
+`format::time::parse_rfc3339`. The XML parser is covered through
+`nmap_document`, which is the one both nmap readers share.
 
 ```
 cargo +nightly fuzz list

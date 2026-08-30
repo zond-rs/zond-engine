@@ -151,6 +151,15 @@ struct Emitter<'a> {
     failure: Option<ImportError>,
     /// Whether a `schema_version` has been seen and accepted.
     versioned: bool,
+    /// Whether the document carried a `hosts` array at all.
+    ///
+    /// Required, and it is what tells a document from one *record* of a
+    /// record-per-line file. That file's first line is a complete object
+    /// carrying `schema_version` and nothing that names a host, so a reader that
+    /// let it pass would parse it, never look at the lines the hosts are on, and
+    /// return `Ok` with no targets and nothing said. A scan of an empty report
+    /// writes `"hosts": []`, so present-and-empty is how a document means it.
+    hosted: bool,
 }
 
 impl<'a> Emitter<'a> {
@@ -161,6 +170,7 @@ impl<'a> Emitter<'a> {
             ports: String::new(),
             failure: None,
             versioned: false,
+            hosted: false,
         }
     }
 
@@ -237,7 +247,7 @@ impl<'a> Emitter<'a> {
                 self.token.push('[');
                 self.token.push_str(address);
                 self.token.push_str("]:");
-                self.token.push_str(&self.ports.clone());
+                self.token.push_str(&self.ports);
             }
 
             if let Err(error) = self.sink.accept(&self.token, origin) {
@@ -312,6 +322,16 @@ impl Importer for JsonImporter {
             });
         }
 
+        if !emitter.hosted {
+            return Err(ImportError::Malformed {
+                format: FORMAT,
+                origin: ImportOrigin::unknown(),
+                message: "no 'hosts': a document with no host list names no targets, and a \
+                          record-per-line export is read as JSON Lines"
+                    .to_string(),
+            });
+        }
+
         Ok(())
     }
 }
@@ -349,6 +369,7 @@ impl<'de, 'a, 'e> Visitor<'de> for Document<'a, 'e> {
                     }
                 }
                 "hosts" => {
+                    self.emitter.hosted = true;
                     map.next_value_seed(Hosts {
                         emitter: &mut *self.emitter,
                     })?;
@@ -622,6 +643,34 @@ mod tests {
 
     /// A document from a future major version means something else by the same
     /// field names, so it is refused rather than half-understood.
+    /// A record-per-line file read as a single document has to refuse rather
+    /// than parse its first line and report no targets at all.
+    ///
+    /// The path this closes: `sniff` decides on whatever `fill_buf` returns, and
+    /// that is one byte on a pipe. A JSON Lines stream whose first read is short
+    /// resolves to `Json`, and without this the reader takes the header record
+    /// as the whole document and hands back `Ok` with nothing in it.
+    #[test]
+    fn a_record_per_line_file_read_as_a_document_is_refused() {
+        let file = concat!(
+            r#"{"type":"report","schema_version":1,"engine":{"name":"zond-engine"}}"#,
+            "\n",
+            r#"{"type":"host","primary_ip":"10.0.0.1","ports":[{"port":22,"protocol":"tcp"}]}"#,
+            "\n",
+        );
+
+        let error =
+            read(ImportFormat::Json, file).expect_err("a stream of records is not one document");
+
+        match error {
+            ImportError::Malformed { message, .. } => assert!(
+                message.contains("hosts"),
+                "the refusal should name what was missing, said: {message}"
+            ),
+            other => panic!("expected a malformed document, got {other:?}"),
+        }
+    }
+
     #[test]
     fn a_newer_schema_version_is_refused_and_a_missing_one_is_not_a_report() {
         let newer = r#"{"schema_version":9999,"hosts":[{"primary_ip":"10.0.0.1"}]}"#;

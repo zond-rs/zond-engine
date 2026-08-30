@@ -93,7 +93,7 @@ pub(crate) const MAX_VALUE_BYTES: usize = 256;
 /// The most elements one document may contain.
 pub(crate) const MAX_ELEMENTS: u64 = 1 << 24;
 
-/// The longest entity reference accepted, in bytes, including `&` and `;`.
+/// The longest entity name accepted, in bytes, between the `&` and the `;`.
 pub(crate) const MAX_ENTITY_BYTES: usize = 16;
 
 /// The longest run of element text kept, in bytes.
@@ -101,6 +101,10 @@ pub(crate) const MAX_ENTITY_BYTES: usize = 16;
 /// Applies only to text a caller asked for. The longest thing anything reads
 /// this way is a CPE identifier, which runs to a few dozen bytes.
 const MAX_TEXT_BYTES: usize = 512;
+
+/// The longest terminator [`Parser::skip_until`] is asked to find: `-->` and
+/// `]]>`, with `?>` and `>` shorter.
+const MAX_TERMINATOR_BYTES: usize = 3;
 
 // ---------------------------------------------------------------------------
 // The parser
@@ -134,6 +138,10 @@ impl Element {
     }
 
     /// One attribute's value as text, if the element carried it.
+    ///
+    /// `None` means the element did not carry the attribute, and nothing else:
+    /// a value that is not UTF-8 refused the document when it was read, so no
+    /// unreadable value ever reaches here.
     pub(crate) fn value(&self, name: &[u8]) -> Option<&str> {
         self.values
             .iter()
@@ -275,11 +283,19 @@ impl<'a> Parser<'a> {
     /// The text kept since [`begin_text`](Self::begin_text), and stops keeping.
     ///
     /// Trimmed, since element content is written with the indentation of the
-    /// document around it.
-    pub(crate) fn take_text(&mut self) -> String {
+    /// document around it. Text that is not UTF-8 refuses the document rather
+    /// than arriving with replacement characters in it: what this carries is a
+    /// CPE identifier, and one with a `U+FFFD` in the middle is a corrupted
+    /// identifier that reads as a real one.
+    pub(crate) fn take_text(&mut self) -> Result<String, ImportError> {
         self.capture = false;
         let text = std::mem::take(&mut self.text);
-        String::from_utf8_lossy(&text).trim().to_string()
+
+        let text = std::str::from_utf8(&text).map_err(|_| ImportError::InvalidUtf8 {
+            origin: self.origin(),
+        })?;
+
+        Ok(text.trim().to_string())
     }
 
     pub(crate) fn origin(&self) -> ImportOrigin {
@@ -563,6 +579,16 @@ impl<'a> Parser<'a> {
         if let Some(value) = self.read_value(policy)?
             && policy != ValuePolicy::Skip
         {
+            // Checked here rather than where the value is read out, because
+            // `None` there would mean "the element did not carry this
+            // attribute" and a host whose address is not text would vanish
+            // instead of refusing the document. Every other format in this
+            // module answers the same bytes with the same error.
+            if std::str::from_utf8(&value).is_err() {
+                return Err(ImportError::InvalidUtf8 {
+                    origin: self.origin(),
+                });
+            }
             self.element.values.push((name, value));
         }
 
@@ -709,8 +735,24 @@ impl<'a> Parser<'a> {
     }
 
     /// Skips everything up to and including `terminator`.
+    ///
+    /// Compares a sliding window of the last few bytes rather than advancing a
+    /// match counter. A counter has to decide, on a mismatch, how much of the
+    /// partial match to keep, and every cheap answer is wrong here: `]]]>` ends
+    /// a CDATA section whose content is `]`, and dropping back to one matched
+    /// byte on the third `]` runs past it to the end of the document. The window
+    /// is at most [`MAX_TERMINATOR_BYTES`] wide, so the comparison costs less
+    /// than the arithmetic it replaces.
     fn skip_until(&mut self, terminator: &[u8]) -> Result<(), ImportError> {
-        let mut matched = 0usize;
+        let width = terminator.len();
+        debug_assert!(
+            (1..=MAX_TERMINATOR_BYTES).contains(&width),
+            "every terminator this parser skips to fits the window"
+        );
+
+        let mut window = [0u8; MAX_TERMINATOR_BYTES];
+        let mut filled = 0usize;
+
         loop {
             let Some(byte) = self.bump()? else {
                 return Err(self.malformed(format!(
@@ -719,14 +761,16 @@ impl<'a> Parser<'a> {
                 )));
             };
 
-            if byte == terminator[matched] {
-                matched += 1;
-                if matched == terminator.len() {
-                    return Ok(());
-                }
+            if filled == width {
+                window.copy_within(1..width, 0);
+                window[width - 1] = byte;
             } else {
-                // Restart, allowing for the byte itself starting a fresh match.
-                matched = usize::from(byte == terminator[0]);
+                window[filled] = byte;
+                filled += 1;
+            }
+
+            if filled == width && window[..width] == *terminator {
+                return Ok(());
             }
         }
     }
@@ -800,6 +844,138 @@ mod tests {
             Ok(_) => panic!("the parser accepted a document it documents as refused"),
             Err(error) => error.to_string(),
         }
+    }
+
+    /// The kept attributes of one element, by name, as the parser reads them
+    /// back out.
+    type Kept = Vec<(&'static str, Option<String>)>;
+
+    /// Reads one document and hands back the first element's kept attributes.
+    fn attributes(document: &str) -> Result<Kept, ImportError> {
+        let mut input = Cursor::new(document.as_bytes().to_vec());
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+
+        loop {
+            match parser.next_event()? {
+                Event::Eof => return Ok(Vec::new()),
+                Event::Start { .. } => {
+                    return Ok(KEPT
+                        .iter()
+                        .map(|name| {
+                            (
+                                std::str::from_utf8(name).expect("the kept names are ASCII"),
+                                parser.element.value(name).map(str::to_owned),
+                            )
+                        })
+                        .collect());
+                }
+                Event::End => {}
+            }
+        }
+    }
+
+    // ─── Skipping to a terminator ────────────────────────────────────────────
+
+    /// `<![CDATA[a]]]>` is a section whose content is `a]`, and the `]]>` that
+    /// closes it begins inside the run of brackets. A parser that restarts its
+    /// match at the failing byte walks straight past it and reports a document
+    /// that ends unexpectedly, which is a legal file refused.
+    #[test]
+    fn a_terminator_overlapping_its_own_prefix_still_ends_the_section() {
+        for document in [
+            r#"<a><![CDATA[b]]]></a>"#,
+            r#"<a><![CDATA[b]]]]></a>"#,
+            r#"<a><!--- a comment ---></a>"#,
+            r#"<a><?target ??></a>"#,
+        ] {
+            let events =
+                read(document).unwrap_or_else(|error| panic!("{document} was refused: {error}"));
+            assert!(!events.is_empty(), "{document}");
+        }
+    }
+
+    /// And the ordinary shapes still terminate where they always did.
+    #[test]
+    fn a_terminator_that_does_not_overlap_still_ends_the_section() {
+        for document in [
+            r#"<a><![CDATA[b]]></a>"#,
+            r#"<a><!-- a comment --></a>"#,
+            r#"<a><?target value?></a>"#,
+        ] {
+            assert!(read(document).is_ok(), "{document}");
+        }
+    }
+
+    // ─── Bytes that are not text ─────────────────────────────────────────────
+
+    /// A value that is not UTF-8 refuses the document rather than reading as an
+    /// attribute the element did not carry.
+    ///
+    /// The silent form is the dangerous one: `addr` is how a host is named, so a
+    /// host whose address held a stray byte would have vanished from the import
+    /// with nothing counted, nothing refused and nothing said.
+    #[test]
+    fn an_attribute_value_that_is_not_text_refuses_the_document() {
+        let mut document = b"<a id=\"1".to_vec();
+        document.push(0xFF);
+        document.extend_from_slice(b"\"/>");
+
+        let mut input = Cursor::new(document);
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+
+        assert!(
+            matches!(parser.next_event(), Err(ImportError::InvalidUtf8 { .. })),
+            "a value that is not text has to be refused, not dropped"
+        );
+    }
+
+    /// An attribute nobody asked for is never stored, so its bytes are never
+    /// examined and cannot refuse a document over a value nothing reads.
+    #[test]
+    fn an_attribute_nobody_kept_is_not_checked_for_text() {
+        let mut document = b"<a other=\"".to_vec();
+        document.push(0xFF);
+        document.extend_from_slice(b"\" id=\"1\"/>");
+
+        let mut input = Cursor::new(document);
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+
+        assert!(matches!(parser.next_event(), Ok(Event::Start { .. })));
+        assert_eq!(parser.element.value(b"id"), Some("1"));
+    }
+
+    /// Kept text is held to the same rule, so a CPE identifier never arrives
+    /// with a replacement character standing in for a byte.
+    #[test]
+    fn element_text_that_is_not_text_refuses_the_document() {
+        let mut document = b"<a>cpe:/o:x".to_vec();
+        document.push(0xFF);
+        document.extend_from_slice(b"</a>");
+
+        let mut input = Cursor::new(document);
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+
+        assert!(matches!(parser.next_event(), Ok(Event::Start { .. })));
+        parser.begin_text();
+        assert!(matches!(parser.next_event(), Ok(Event::End)));
+        assert!(matches!(
+            parser.take_text(),
+            Err(ImportError::InvalidUtf8 { .. })
+        ));
+    }
+
+    /// The ordinary case, so the check above is a refusal of bad bytes rather
+    /// than of everything.
+    #[test]
+    fn a_value_and_a_text_run_that_are_text_read_back_whole() {
+        let kept = attributes(r#"<a id="7" name="gw" other="ignored"/>"#).expect("reads");
+        assert_eq!(
+            kept,
+            vec![
+                ("id", Some("7".to_string())),
+                ("name", Some("gw".to_string())),
+            ]
+        );
     }
 
     // ─── The six refusals ────────────────────────────────────────────────────

@@ -68,11 +68,24 @@
 //!
 //! ## What is not read
 //!
-//! Traceroute hops, host script output, the `<extraports>` summary, timing
-//! statistics and the raw service fingerprints. The first four have no bearing
-//! on what [`diff`](crate::diff) compares, and `<extraports>` is a count of ports
-//! nmap did not name — it says a thousand ports were closed without saying which,
-//! and there is nothing to record it against.
+//! Traceroute hops, `<distance>`, `<times>`, `<uptime>`, the sequence
+//! predictions, `<owner>`, the raw service fingerprints, and every `<script>`
+//! element on a port or under `<hostscript>`. None of them bears on what
+//! [`diff`](crate::diff) compares.
+//!
+//! Two of those are worth stating plainly rather than leaving in a list,
+//! because **this engine's own nmap exporter writes them**: a report exported to
+//! nmap XML and read back here has no findings and no path, since nmap's format
+//! carries a finding as `<script output>` text meant for a person and a rebuilt
+//! `Finding` needs the detection identity, version and content hash that text
+//! does not hold. `<distance>` and `<times>` are recoverable and are simply not
+//! read yet. [`json`](super::json) is the round trip that keeps everything.
+//!
+//! What *is* read, against the shape of that list: `<extraports>` and the
+//! `<extrareasons ports="…">` beneath it. Nmap names the ports it summarised
+//! there whenever it was asked to, and those hundreds of closed ports are the
+//! difference between a readable comparison and a wall of endpoints that appear
+//! to have opened.
 
 use std::io::BufRead;
 use std::net::IpAddr;
@@ -181,7 +194,7 @@ impl ReportReader for NmapXmlReportReader {
         let mut parser = Parser::new(input, self.options.limits.max_line_bytes, FORMAT, KEPT)
             .with_max_value_bytes(MAX_VALUE_BYTES)
             .with_lossy(LOSSY);
-        let mut state = State::default();
+        let mut state = State::new(self.options.limits.max_addresses);
 
         loop {
             match parser.next_event()? {
@@ -194,13 +207,13 @@ impl ReportReader for NmapXmlReportReader {
                     // A self-closing `<host/>` or `<port/>` opens and closes in
                     // one event and never sees an `End`.
                     if self_closing {
-                        state.close_element(tag);
+                        state.close_element(tag)?;
                     }
                 }
 
                 Event::End => {
                     let tag = Tag::of(&parser.element.name);
-                    state.on_end(tag, &mut parser);
+                    state.on_end(tag, &mut parser)?;
                 }
             }
         }
@@ -214,11 +227,10 @@ impl ReportReader for NmapXmlReportReader {
             });
         }
 
-        let max_hosts = self.options.limits.max_addresses;
-        if run.hosts.len() as u128 > max_hosts {
-            return Err(ImportError::TooManyHosts { limit: max_hosts });
-        }
-
+        // The host ceiling is not checked here. It is checked as each `<host>`
+        // closes, because a ceiling on what a document may make the process
+        // allocate has to refuse before the allocation rather than describe it
+        // afterwards.
         Ok(run.into_report())
     }
 }
@@ -240,9 +252,19 @@ struct State {
     /// The state an `<extraports>` block is reporting, while inside one.
     bulk: Option<String>,
     inside: Inside,
+    /// The most hosts the document may name, checked as each one closes.
+    max_hosts: u128,
 }
 
 impl State {
+    /// A walk bounded by how many hosts the document may name.
+    fn new(max_hosts: u128) -> Self {
+        Self {
+            max_hosts,
+            ..Self::default()
+        }
+    }
+
     /// Takes one opening element and folds what it carries in.
     ///
     /// `self_closing` is here because an element with no content opens nothing:
@@ -338,14 +360,16 @@ impl State {
     }
 
     /// Takes one closing element.
-    fn on_end(&mut self, tag: Tag, parser: &mut Parser<'_>) {
+    fn on_end(&mut self, tag: Tag, parser: &mut Parser<'_>) -> Result<(), ImportError> {
         match tag {
             Tag::ExtraPorts => self.bulk = None,
-            Tag::Host | Tag::Port => self.close_element(tag),
-            Tag::Cpe => self.record_cpe(parser.take_text()),
+            Tag::Host | Tag::Port => self.close_element(tag)?,
+            Tag::Cpe => self.record_cpe(parser.take_text()?),
             Tag::Service | Tag::OsMatch => self.inside = Inside::Nothing,
             _ => {}
         }
+
+        Ok(())
     }
 
     /// Folds a finished element into what holds it: a `<host>` into the run, a
@@ -353,9 +377,20 @@ impl State {
     ///
     /// A port found outside a host is dropped, since there is nothing to record
     /// it against.
-    fn close_element(&mut self, tag: Tag) {
+    fn close_element(&mut self, tag: Tag) -> Result<(), ImportError> {
         match tag {
-            Tag::Host => self.run.close(self.host.take()),
+            Tag::Host => {
+                self.run.close(self.host.take());
+                // Checked as the host closes rather than over the finished list:
+                // the document decides how many of these there are, and a
+                // ceiling that reports the overrun afterwards has already paid
+                // for it.
+                if self.run.hosts.len() as u128 > self.max_hosts {
+                    return Err(ImportError::TooManyHosts {
+                        limit: self.max_hosts,
+                    });
+                }
+            }
             Tag::Port => {
                 if let (Some(host), Some(port)) = (self.host.as_mut(), self.port.take()) {
                     host.ports.push(port.into_port());
@@ -363,6 +398,8 @@ impl State {
             }
             _ => {}
         }
+
+        Ok(())
     }
 
     /// Records what an `<address>` names on the host being read.

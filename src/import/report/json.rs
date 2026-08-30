@@ -45,7 +45,7 @@
 //!
 //! ## What the document cannot give back
 //!
-//! Two things, and the export is right about both.
+//! Three things, and the export is right about all of them.
 //!
 //! **Round-trip samples.** The document carries the summary statistics — least,
 //! median, mean, greatest, jitter — and not the measurements they were computed
@@ -61,18 +61,40 @@
 //! Neither is compared by [`diff`](crate::diff), which reads verdicts and not the
 //! evidence behind them, so neither costs a comparison anything.
 //!
-//! ## Streaming
+//! **Where the machine that scanned was plugged in.** A phase's
+//! [`attachments`](crate::report::Attachment) are dropped rather than rebuilt.
+//! They name a switch port on the network the scan ran *from*, so a document
+//! read on another machine describes a place this process was never standing,
+//! and inventing that is worse than leaving it empty.
+//!
+//! ## Streaming, and the ceiling on it
 //!
 //! Hosts are converted one at a time as the array is parsed, so a report of a
 //! /16 costs one host's worth of document on top of the report being built — the
 //! same bargain the exporter makes writing it.
+//!
+//! [`ImportLimits::max_addresses`](crate::import::ImportLimits::max_addresses)
+//! is counted against as they arrive rather than against the finished list. A
+//! ceiling on what a document may make the process allocate has to be checked
+//! before the allocation happens, or it reports the overrun from the far side of
+//! it.
+//!
+//! ## Both shapes, one mapping
+//!
+//! [`JsonReportReader`] reads the single document and
+//! [`JsonLinesReportReader`] the record-per-line one. They share every record
+//! type below, because a `host` line is the document's host object with a `type`
+//! field added and nothing else. What differs is only how the records are found
+//! in the bytes.
 
 use std::fmt;
 use std::io::BufRead;
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
 
-use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use std::cell::Cell;
+
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use crate::config::{OsDetection, ScanEffort, ServiceDetection};
@@ -97,6 +119,13 @@ use crate::transport::probe::SendMode;
 /// The format's name in errors.
 const FORMAT: &str = "JSON";
 
+/// The format's name in errors, for the record-per-line reader.
+const LINES_FORMAT: &str = "JSON Lines";
+
+/// What a record-per-line document calls its header record. Compact JSON has no
+/// spaces in it, so this is exactly how the exporter writes it.
+const REPORT_RECORD: &str = "report";
+
 /// Reads this engine's exported JSON report back as the report it was written
 /// from.
 #[derive(Debug, Clone, Copy, Default)]
@@ -113,18 +142,169 @@ impl JsonReportReader {
 
 impl ReportReader for JsonReportReader {
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
-        let mut deserializer = serde_json::Deserializer::from_reader(input);
-        let document =
-            Document::deserialize(&mut deserializer).map_err(|error| malformed(&error))?;
+        let max_hosts = self.options.limits.max_addresses;
+        let overrun = Cell::new(false);
 
-        document.into_report(self.options.limits.max_addresses)
+        let mut deserializer = serde_json::Deserializer::from_reader(input);
+        let document = DocumentSeed {
+            max_hosts,
+            overrun: &overrun,
+        }
+        .deserialize(&mut deserializer);
+
+        // The real error is the one the host count produced; serde's is only the
+        // vehicle that carried the stop signal out.
+        if overrun.get() {
+            return Err(ImportError::TooManyHosts { limit: max_hosts });
+        }
+        let document = document.map_err(|error| malformed(FORMAT, &error))?;
+
+        document.into_report(FORMAT)
     }
 }
 
+/// Reads this engine's record-per-line export back as the report it was written
+/// from.
+///
+/// The format exists because a JSON document is only valid when it is complete,
+/// and a scan killed half way through a `/16` should leave something readable
+/// behind. A reader that could not take advantage of that would be a poor one:
+/// a file whose last line is truncated reads here as the hosts before it, and
+/// the truncated line is what refuses.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JsonLinesReportReader {
+    options: ReportOptions,
+}
+
+impl JsonLinesReportReader {
+    /// A reader bounded by `options`.
+    pub fn new(options: ReportOptions) -> Self {
+        Self { options }
+    }
+}
+
+impl ReportReader for JsonLinesReportReader {
+    fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
+        let max_hosts = self.options.limits.max_addresses;
+        let mut buffer = Vec::new();
+        let mut line_number = 0u64;
+        let mut header: Option<HeaderDto> = None;
+        let mut hosts: Vec<Host> = Vec::new();
+
+        loop {
+            buffer.clear();
+            line_number += 1;
+            let origin = ImportOrigin::line(line_number);
+
+            if !crate::import::list::read_line(
+                input,
+                &mut buffer,
+                self.options.limits.max_line_bytes,
+                origin,
+            )? {
+                break;
+            }
+
+            let text =
+                std::str::from_utf8(&buffer).map_err(|_| ImportError::InvalidUtf8 { origin })?;
+            if text.trim().is_empty() {
+                continue;
+            }
+
+            let record: LineRecord =
+                serde_json::from_str(text).map_err(|error| ImportError::Malformed {
+                    format: LINES_FORMAT,
+                    origin,
+                    message: error.to_string(),
+                })?;
+
+            match record {
+                // Wherever it appears, not necessarily first: the whole point of
+                // the format is that a record means the same thing wherever it
+                // sits, so that these files split, filter and concatenate. Two
+                // of them is different, and is refused: they describe one scan
+                // and cannot both be it.
+                LineRecord::Report(next) => {
+                    if header.is_some() {
+                        return Err(ImportError::Malformed {
+                            format: LINES_FORMAT,
+                            origin,
+                            message: format!(
+                                "a second '{REPORT_RECORD}' record; one file describes one scan"
+                            ),
+                        });
+                    }
+                    header = Some(*next);
+                }
+                LineRecord::Host(dto) => {
+                    if hosts.len() as u128 >= max_hosts {
+                        return Err(ImportError::TooManyHosts { limit: max_hosts });
+                    }
+                    let record = dto.record().map_err(|message| ImportError::Malformed {
+                        format: LINES_FORMAT,
+                        origin,
+                        message,
+                    })?;
+                    hosts.push(Host::from(&record));
+                }
+                // A record kind this build does not know, skipped so a newer
+                // engine's output stays readable.
+                LineRecord::Unknown => {}
+            }
+        }
+
+        let Some(header) = header else {
+            return Err(ImportError::Malformed {
+                format: LINES_FORMAT,
+                origin: ImportOrigin::unknown(),
+                message: format!(
+                    "no '{REPORT_RECORD}' record: this is not output {ENGINE_NAME} wrote"
+                ),
+            });
+        };
+
+        Document {
+            schema_version: header.schema_version,
+            engine: header.engine,
+            produced_by: header.produced_by,
+            phases: header.phases,
+            hosts,
+        }
+        .into_report(LINES_FORMAT)
+    }
+}
+
+/// One line of a record-per-line document, told apart by its `type`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum LineRecord {
+    /// The header, which carries everything the document says about the scan.
+    #[serde(rename = "report")]
+    Report(Box<HeaderDto>),
+    /// One host, whose fields are the document's host object exactly.
+    #[serde(rename = "host")]
+    Host(Box<HostDto>),
+    /// A record kind this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a record-per-line document states once, in its `report` record: every
+/// field of the single document except the hosts.
+#[derive(Debug, Deserialize)]
+struct HeaderDto {
+    schema_version: u32,
+    engine: EngineDto,
+    #[serde(default)]
+    produced_by: Option<String>,
+    #[serde(default)]
+    phases: Vec<PhaseDto>,
+}
+
 /// A parse failure, placed in the file where `serde_json` says it happened.
-fn malformed(error: &serde_json::Error) -> ImportError {
+fn malformed(format: &'static str, error: &serde_json::Error) -> ImportError {
     ImportError::Malformed {
-        format: FORMAT,
+        format,
         origin: ImportOrigin::line(error.line() as u64),
         message: error.to_string(),
     }
@@ -152,24 +332,26 @@ struct Document {
 
 impl Document {
     /// The report this document describes.
-    fn into_report(self, max_hosts: u128) -> Result<ScanReport, ImportError> {
-        if self.hosts.len() as u128 > max_hosts {
-            return Err(ImportError::TooManyHosts { limit: max_hosts });
-        }
-
+    fn into_report(self, format: &'static str) -> Result<ScanReport, ImportError> {
         if self.schema_version > SCHEMA_VERSION {
-            return Err(refuse(format!(
-                "schema version {} is past version {SCHEMA_VERSION}, which is the highest this \
-                 build understands; its fields may mean something else",
-                self.schema_version
-            )));
+            return Err(refuse(
+                format,
+                format!(
+                    "schema version {} is past version {SCHEMA_VERSION}, which is the highest \
+                     this build understands; its fields may mean something else",
+                    self.schema_version
+                ),
+            ));
         }
 
         if self.engine.name != ENGINE_NAME {
-            return Err(refuse(format!(
-                "the document names engine '{}' rather than '{ENGINE_NAME}'",
-                self.engine.name
-            )));
+            return Err(refuse(
+                format,
+                format!(
+                    "the document names engine '{}' rather than '{ENGINE_NAME}'",
+                    self.engine.name
+                ),
+            ));
         }
 
         let phases: Vec<ScanPhase> = self
@@ -177,7 +359,7 @@ impl Document {
             .into_iter()
             .map(|phase| phase.record().map(|record| ScanPhase::from(&record)))
             .collect::<Result<_, _>>()
-            .map_err(refuse)?;
+            .map_err(|message| refuse(format, message))?;
 
         // `produced_by` where the document has one. A document written before
         // that field existed put the same value in `engine.version`, which is
@@ -191,23 +373,36 @@ impl Document {
 }
 
 /// A refusal about the document as a whole, which has no one line to point at.
-fn refuse(message: String) -> ImportError {
+fn refuse(format: &'static str, message: String) -> ImportError {
     ImportError::Malformed {
-        format: FORMAT,
+        format,
         origin: ImportOrigin::unknown(),
         message,
     }
 }
 
-impl<'de> Deserialize<'de> for Document {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_map(DocumentVisitor)
+/// Reads the document under a ceiling on how many hosts it may name.
+///
+/// A seed rather than a [`Deserialize`] impl because the ceiling has to reach
+/// the `hosts` array while it is being walked. Checking it afterwards would
+/// report the overrun from the far side of the allocation the ceiling exists to
+/// bound.
+struct DocumentSeed<'a> {
+    max_hosts: u128,
+    /// Set when the ceiling was passed, so the real error survives the trip out
+    /// through `serde`'s error type.
+    overrun: &'a Cell<bool>,
+}
+
+impl<'de> DeserializeSeed<'de> for DocumentSeed<'_> {
+    type Value = Document;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Document, D::Error> {
+        deserializer.deserialize_map(self)
     }
 }
 
-struct DocumentVisitor;
-
-impl<'de> Visitor<'de> for DocumentVisitor {
+impl<'de> Visitor<'de> for DocumentSeed<'_> {
     type Value = Document;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -219,7 +414,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
         let mut engine = None;
         let mut produced_by = None;
         let mut phases = Vec::new();
-        let mut hosts = Vec::new();
+        let mut hosts = None;
 
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -229,7 +424,12 @@ impl<'de> Visitor<'de> for DocumentVisitor {
                 "phases" => phases = map.next_value()?,
                 // The one array worth streaming: every other key is a handful
                 // of values whatever the size of the scan.
-                "hosts" => hosts = map.next_value::<Hosts>()?.0,
+                "hosts" => {
+                    hosts = Some(map.next_value_seed(HostsSeed {
+                        max_hosts: self.max_hosts,
+                        overrun: self.overrun,
+                    })?);
+                }
                 // Everything else in the document is derived from what is read
                 // here — the summary, the totals, whether the run was partial —
                 // and a reader that trusted them could report counts its own
@@ -246,36 +446,55 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             engine: engine.ok_or_else(|| de::Error::missing_field("engine"))?,
             produced_by,
             phases,
-            hosts,
+            // Required, and it is what tells this document from one *record* of
+            // a record-per-line file. That file's first line is a complete
+            // object carrying `schema_version` and `engine` and nothing else, so
+            // a reader that let `hosts` default would parse it, never look at
+            // the lines holding the hosts, and hand back a correctly attributed
+            // report of a scan that found nothing. An empty scan writes
+            // `"hosts": []`, so present-and-empty is the shape that means it.
+            hosts: hosts.ok_or_else(|| de::Error::missing_field("hosts"))?,
         })
     }
 }
 
-/// The hosts array, rebuilt one element at a time.
-struct Hosts(Vec<Host>);
+/// The hosts array, rebuilt one element at a time and bounded as it goes.
+struct HostsSeed<'a> {
+    max_hosts: u128,
+    overrun: &'a Cell<bool>,
+}
 
-impl<'de> Deserialize<'de> for Hosts {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct HostsVisitor;
+impl<'de> DeserializeSeed<'de> for HostsSeed<'_> {
+    type Value = Vec<Host>;
 
-        impl<'de> Visitor<'de> for HostsVisitor {
-            type Value = Hosts;
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Vec<Host>, D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
 
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("an array of hosts")
+impl<'de> Visitor<'de> for HostsSeed<'_> {
+    type Value = Vec<Host>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an array of hosts")
+    }
+
+    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Vec<Host>, S::Error> {
+        // No `with_capacity` from the sequence's own hint: for a document being
+        // read from anywhere untrusted, that is a length the document chooses
+        // and this reader allocates.
+        let mut hosts: Vec<Host> = Vec::new();
+
+        while let Some(dto) = seq.next_element::<HostDto>()? {
+            if hosts.len() as u128 >= self.max_hosts {
+                self.overrun.set(true);
+                return Err(de::Error::custom("more hosts than the limit allows"));
             }
-
-            fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
-                let mut hosts = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(dto) = seq.next_element::<HostDto>()? {
-                    let record = dto.record().map_err(de::Error::custom)?;
-                    hosts.push(Host::from(&record));
-                }
-                Ok(Hosts(hosts))
-            }
+            let record = dto.record().map_err(de::Error::custom)?;
+            hosts.push(Host::from(&record));
         }
 
-        deserializer.deserialize_seq(HostsVisitor)
+        Ok(hosts)
     }
 }
 
@@ -560,6 +779,19 @@ impl SettingsDto {
             "a service detection level",
             &self.service_detection,
         )?;
+        // Absent from a document written before this field existed, where an
+        // empty string is what `serde(default)` leaves behind and the record
+        // reads as the default envelope. A value that is *present* and
+        // unrecognised is a different thing: this field states the ceiling on
+        // what the scan was permitted to do, so reading it down to the default
+        // would understate a document that was claiming more.
+        if !self.detection.is_empty() {
+            known(
+                wire::detection_class(&self.detection),
+                "a detection class",
+                &self.detection,
+            )?;
+        }
 
         Ok(SettingsRecord {
             send_mode: self.send_mode,
@@ -811,7 +1043,11 @@ impl HostDto {
                 .into_iter()
                 .map(PortDto::record)
                 .collect::<Result<_, _>>()?,
-            findings: self.findings.into_iter().map(FindingDto::record).collect(),
+            findings: self
+                .findings
+                .into_iter()
+                .map(FindingDto::record)
+                .collect::<Result<_, _>>()?,
         })
     }
 }
@@ -961,7 +1197,11 @@ impl PortDto {
             service: self.service.map(ServiceDto::record),
             security: maybe(self.security, SecurityDto::record)?,
             discovery: maybe(self.discovery, DiscoveryDto::record)?,
-            findings: self.findings.into_iter().map(FindingDto::record).collect(),
+            findings: self
+                .findings
+                .into_iter()
+                .map(FindingDto::record)
+                .collect::<Result<_, _>>()?,
         })
     }
 }
@@ -1012,8 +1252,29 @@ struct FindingDto {
 }
 
 impl FindingDto {
-    fn record(self) -> FindingRecord {
-        FindingRecord {
+    /// Rebuilds one finding, refusing a severity, confidence or class this build
+    /// does not know.
+    ///
+    /// [`FindingRecord::rebuild`](crate::record::FindingRecord::rebuild) reads
+    /// all three *downward* on an unknown name, which is right for a journal
+    /// this engine wrote and wrong here for the reason [`known`] gives. It is
+    /// worse than a wrong port state: a `critical` finding whose severity word
+    /// this build cannot name would arrive as `info`, and a comparison would
+    /// then report it as having been reassessed down.
+    fn record(self) -> Result<FindingRecord, String> {
+        known(wire::severity(&self.severity), "a severity", &self.severity)?;
+        known(
+            wire::confidence(&self.confidence),
+            "a confidence",
+            &self.confidence,
+        )?;
+        known(
+            wire::detection_class(&self.class),
+            "a detection class",
+            &self.class,
+        )?;
+
+        Ok(FindingRecord {
             detection: DetectionIdRecord {
                 id: self.id,
                 version: self.version,
@@ -1030,7 +1291,7 @@ impl FindingDto {
                 .map(ReferenceDto::record)
                 .collect(),
             remediation: self.remediation,
-        }
+        })
     }
 }
 
@@ -1043,6 +1304,15 @@ struct ReferenceDto {
 }
 
 impl ReferenceDto {
+    /// A reference is *not* checked against what this build knows, unlike every
+    /// other named value here.
+    ///
+    /// [`ReferenceRecord::rebuild`](crate::record::ReferenceRecord::rebuild)
+    /// drops a reference it cannot rebuild and keeps the finding, and that trade
+    /// is right for an unrecognised kind as much as for a malformed value:
+    /// losing a citation costs a reader one link, where refusing the document
+    /// costs them the finding. Nothing is read down into a claim the document
+    /// did not make, which is what the checks above exist to prevent.
     fn record(self) -> ReferenceRecord {
         ReferenceRecord {
             kind: self.kind,
@@ -1172,6 +1442,210 @@ mod tests {
 
     fn read(document: &str) -> Result<ScanReport, ImportError> {
         JsonReportReader::default().read(&mut Cursor::new(document))
+    }
+
+    fn read_lines(document: &str) -> Result<ScanReport, ImportError> {
+        JsonLinesReportReader::default().read(&mut Cursor::new(document))
+    }
+
+    /// The intrusiveness ceiling the fixture's settings record, spelled as the
+    /// document spells it.
+    fn fixture_detection_ceiling() -> String {
+        crate::record::wire::detection_class_name(
+            crate::export::fixture::report().phases()[0]
+                .settings()
+                .detection
+                .ceiling(),
+        )
+        .to_owned()
+    }
+
+    /// Replaces one value in the exported document, to see what the reader does
+    /// with a name it cannot place.
+    fn with_value(document: &str, from: &str, to: &str) -> String {
+        assert!(document.contains(from), "the fixture does not carry {from}");
+        document.replacen(from, to, 1)
+    }
+
+    // ─── Names this build cannot place ───────────────────────────────────────
+
+    /// A severity, confidence or class this build does not recognise refuses the
+    /// document rather than reading as the least it could have meant.
+    ///
+    /// [`FindingRecord::rebuild`](crate::record::FindingRecord::rebuild) reads
+    /// all three downward, which is right for a journal this engine wrote and
+    /// wrong for a file somebody handed over: a `critical` finding whose word
+    /// this build cannot name would arrive as `info`, and a comparison would
+    /// then report a severity that dropped on its own.
+    #[test]
+    fn a_finding_naming_a_severity_this_build_cannot_place_is_refused() {
+        let document = exported();
+
+        for (from, to, what) in [
+            (
+                r#""severity":"critical""#,
+                r#""severity":"catastrophic""#,
+                "a severity",
+            ),
+            (
+                r#""confidence":"probable""#,
+                r#""confidence":"settled""#,
+                "a confidence",
+            ),
+            (
+                r#""class":"passive""#,
+                r#""class":"active_reckless""#,
+                "a detection class",
+            ),
+        ] {
+            let broken = with_value(&document, from, to);
+            let error = read(&broken).expect_err("the name is not one this build knows");
+
+            match error {
+                ImportError::Malformed { message, .. } => assert!(
+                    message.contains(what),
+                    "the refusal has to say what it could not place, said: {message}"
+                ),
+                other => panic!("expected a malformed document, got {other:?}"),
+            }
+        }
+    }
+
+    /// The ceiling a phase ran under is a name like any other, and was the one
+    /// this reader let through. Reading it down to the default understates a
+    /// document that was claiming more.
+    #[test]
+    fn a_phase_naming_a_detection_ceiling_this_build_cannot_place_is_refused() {
+        let document = exported();
+        let ceiling = fixture_detection_ceiling();
+        let broken = with_value(
+            &document,
+            &format!(r#""detection":"{ceiling}""#),
+            r#""detection":"active_reckless""#,
+        );
+
+        assert!(matches!(read(&broken), Err(ImportError::Malformed { .. })));
+    }
+
+    /// An absent `detection` is not an unknown one: a document written before
+    /// the field existed carries no name at all, and reads as the default.
+    #[test]
+    fn a_document_predating_the_detection_ceiling_still_reads() {
+        let ceiling = fixture_detection_ceiling();
+        let document = exported().replacen(&format!(r#""detection":"{ceiling}","#), "", 1);
+
+        let _ = read(&document).expect("an older document is not a broken one");
+    }
+
+    // ─── The record-per-line shape ───────────────────────────────────────────
+
+    /// A record-per-line export read back as the report it was written from.
+    ///
+    /// The reader this exercises did not exist: `export-jsonl` wrote a complete
+    /// report and nothing read one back, so the format's own argument for
+    /// existing — a scan cut short still leaves a readable file — stopped at the
+    /// file.
+    #[test]
+    fn a_record_per_line_export_reads_back_as_the_scan_it_records() {
+        use crate::export::JsonLinesExporter;
+
+        let original = crate::export::fixture::report();
+        let mut out = Vec::new();
+        JsonLinesExporter::default()
+            .export(&original, &mut out)
+            .expect("the fixture exports");
+        let document = String::from_utf8(out).expect("valid UTF-8");
+
+        let restored = read_lines(&document).expect("a readable document");
+
+        assert_eq!(restored.host_count(), original.host_count());
+        assert_eq!(restored.phases().len(), original.phases().len());
+        assert_eq!(restored.engine_version(), original.engine_version());
+        assert!(
+            ScanDiff::between(&original, &restored).is_empty(),
+            "a record-per-line round trip has to describe the same network"
+        );
+    }
+
+    /// The failure that made the reader worth writing: the single-document
+    /// reader has to refuse a record-per-line file rather than parse its first
+    /// line and hand back a well-attributed report of a scan that found nothing.
+    #[test]
+    fn the_document_reader_refuses_a_record_per_line_file() {
+        use crate::export::JsonLinesExporter;
+
+        let mut out = Vec::new();
+        JsonLinesExporter::default()
+            .export(&crate::export::fixture::report(), &mut out)
+            .expect("the fixture exports");
+        let document = String::from_utf8(out).expect("valid UTF-8");
+
+        match read(&document) {
+            Err(ImportError::Malformed { message, .. }) => assert!(
+                message.contains("hosts"),
+                "the refusal should name what was missing, said: {message}"
+            ),
+            Ok(report) => panic!(
+                "read a record-per-line file as a document of {} hosts",
+                report.host_count()
+            ),
+            other => panic!("expected a malformed document, got {other:?}"),
+        }
+    }
+
+    /// A file that names no scan is not a report, whichever shape it arrives in.
+    #[test]
+    fn a_record_per_line_file_with_no_report_record_is_refused() {
+        let error = read_lines(r#"{"type":"host","primary_ip":"10.0.0.1"}"#)
+            .expect_err("a file of hosts alone describes no scan");
+
+        assert!(matches!(error, ImportError::Malformed { .. }));
+    }
+
+    /// One file describes one scan, so a second header is a contradiction rather
+    /// than a later word on the subject.
+    #[test]
+    fn a_second_report_record_is_refused() {
+        use crate::export::JsonLinesExporter;
+
+        let mut out = Vec::new();
+        JsonLinesExporter::default()
+            .export(&crate::export::fixture::report(), &mut out)
+            .expect("the fixture exports");
+        let document = String::from_utf8(out).expect("valid UTF-8");
+        let header = document.lines().next().expect("a header").to_string();
+
+        let doubled = format!("{document}{header}\n");
+        let error = read_lines(&doubled).expect_err("two headers describe two scans");
+
+        match error {
+            ImportError::Malformed { message, .. } => {
+                assert!(message.contains("second"), "said: {message}");
+            }
+            other => panic!("expected a malformed document, got {other:?}"),
+        }
+    }
+
+    /// A record kind this build does not know is skipped, so a newer engine's
+    /// output stays readable. That is the same bargain the document offers with
+    /// unknown fields.
+    #[test]
+    fn a_record_kind_this_build_does_not_know_is_skipped() {
+        use crate::export::JsonLinesExporter;
+
+        let mut out = Vec::new();
+        JsonLinesExporter::default()
+            .export(&crate::export::fixture::report(), &mut out)
+            .expect("the fixture exports");
+        let document = String::from_utf8(out).expect("valid UTF-8");
+
+        let extended = format!("{document}{{\"type\":\"annotation\",\"note\":\"hello\"}}\n");
+        let restored = read_lines(&extended).expect("an unknown record is not a broken file");
+
+        assert_eq!(
+            restored.host_count(),
+            crate::export::fixture::report().host_count()
+        );
     }
 
     /// The one property that matters: a report written out and read back

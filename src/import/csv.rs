@@ -26,9 +26,11 @@
 //! this importer understands.** Otherwise there is no header, and the first
 //! field of every record is the address.
 //!
-//! Under a header, `ip`, `address`, `host` and `target` are read as addresses -
-//! `ip` first, which is what a report this engine wrote calls it - along with
-//! `port` and `protocol` where they are present. A caller who knows better says
+//! Under a header, `ip`, `ipaddress`, `address`, `host` and `target` are read as
+//! addresses - `ip` first, which is what a report this engine wrote calls it -
+//! along with `port` and `protocol` where they are present. Names are compared
+//! case-insensitively and ignoring anything that is not a letter or a digit, so
+//! `IP Address` and `ip_address` reach `ipaddress`. A caller who knows better says
 //! so with [`CsvImporter::with_address_column`], and one whose header this
 //! importer cannot recognise says so with [`CsvImporter::with_header`].
 //!
@@ -56,6 +58,12 @@
 //! the file, and choosing which rows to keep is what a spreadsheet is for -
 //! reading a report back and silently dropping the closed ports would make
 //! "rescan what I found" mean something other than what it says.
+//!
+//! Nor does it drop a row whose address column is empty or missing. That row is
+//! refused, under whichever [`OnRefusal`](crate::import::OnRefusal) policy the
+//! caller set, and the refusal names the line. A blank row is different and is
+//! skipped: it says nothing, where a row with data in every other column and a
+//! gap in this one is a row somebody meant something by.
 
 use std::io::BufRead;
 
@@ -191,10 +199,15 @@ impl Importer for CsvImporter {
                 }
             };
 
+            // A row with nothing in its address column is handed on as it
+            // stands rather than skipped. The grammar refuses it, and what
+            // happens next is the caller's `OnRefusal` to decide: a spreadsheet
+            // with a gap in it is either one row to go and look at or four
+            // thousand nine hundred and ninety-nine good ones, and dropping it
+            // here would answer that question for them, silently, in a count
+            // that never mentions the row. A row that is blank all the way
+            // across is not this; `is_blank` has already skipped it.
             let address = record.field(layout.addresses, origin)?.unwrap_or("");
-            if address.is_empty() {
-                continue;
-            }
 
             let port = match layout.ports {
                 Some(column) => record.field(column, origin)?.filter(|s| !s.is_empty()),
@@ -563,7 +576,7 @@ fn begin_field(fields: &mut Vec<Vec<u8>>, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::import::{ImportFormat, ImportOptions, Imported, TargetCollector};
+    use crate::import::{ImportFormat, ImportOptions, ImportOrigin, Imported, TargetCollector};
     use crate::model::port::PortSet;
     use std::io::Cursor;
 
@@ -581,6 +594,54 @@ mod tests {
         let mut collector = TargetCollector::new(options());
         importer.import(&mut Cursor::new(input), &mut collector)?;
         Ok(collector.finish())
+    }
+
+    /// A row whose address column is empty or missing is refused rather than
+    /// skipped, so the caller ends up holding what it lost.
+    ///
+    /// Dropping it was silent in every direction: nothing counted the row,
+    /// nothing refused it, and `tokens` reported the survivors as though they
+    /// were the file. A spreadsheet with a gap in it then imported as a scan of
+    /// less than the operator handed over, and nothing said so.
+    #[test]
+    fn a_row_with_no_address_is_refused_rather_than_dropped() {
+        let file = "ip,port\n10.0.0.1,80\n\n,443\n10.0.0.2,80\n";
+
+        let aborted = ImportFormat::Csv
+            .read(&mut Cursor::new(file), &options())
+            .expect_err("the third row names no address");
+        match aborted {
+            ImportError::Target { origin, .. } => {
+                assert_eq!(origin, ImportOrigin::line(4), "the blank row is line 3");
+            }
+            other => panic!("expected a refused target, got {other:?}"),
+        }
+
+        let collected = ImportFormat::Csv
+            .read(
+                &mut Cursor::new(file),
+                &options().with_refusal_policy(crate::import::OnRefusal::Collect),
+            )
+            .expect("collecting carries on past it");
+
+        assert_eq!(collected.addresses, 2, "both good rows survived");
+        assert_eq!(collected.refusals.len(), 1, "and the bad one came back");
+        assert_eq!(
+            collected.tokens, 3,
+            "a refused row is still a row that was read"
+        );
+    }
+
+    /// A row that is blank all the way across is not that, and stays silent: it
+    /// says nothing, where a row with a gap in one column was meant to say
+    /// something.
+    #[test]
+    fn a_blank_row_is_still_skipped_without_a_word() {
+        let imported = read("ip,port\n10.0.0.1,80\n\n   \n10.0.0.2,80\n");
+
+        assert_eq!(imported.addresses, 2);
+        assert_eq!(imported.refusals.len(), 0);
+        assert_eq!(imported.tokens, 2);
     }
 
     /// The round trip this format exists for: a report this engine wrote, read

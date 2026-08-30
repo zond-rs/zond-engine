@@ -87,6 +87,18 @@ pub enum Protocol {
     Udp,
 }
 
+impl Protocol {
+    /// Every transport this build can probe, in declaration order.
+    ///
+    /// The enum is `#[non_exhaustive]`, so nothing outside the crate can write
+    /// an exhaustive list of its own and nothing inside should: a transport
+    /// added without a name on the wire, or without a place in the exported
+    /// schema, is a port that survives a scan and cannot be written down. The
+    /// export conformance suite reads this and the schema's own list and fails
+    /// unless they hold the same names.
+    pub const ALL: [Protocol; 2] = [Self::Tcp, Self::Udp];
+}
+
 /// What a scan established about a port.
 ///
 /// Ordered from least definitive to most, so that [`Port::merge`] promotes by an
@@ -142,6 +154,23 @@ pub enum PortState {
     /// apart, and it is worth reading before acting on an open port from a
     /// merged report.
     Open,
+}
+
+impl PortState {
+    /// Every verdict a probe can reach, in declaration order, which is least
+    /// definitive first.
+    ///
+    /// Here for the reason [`Protocol::ALL`] gives, and used by everything that
+    /// has to name all six at once: a summary's distribution, a legend, and the
+    /// gate holding the exported schema to what this build can write.
+    pub const ALL: [PortState; 6] = [
+        Self::Filtered,
+        Self::ClosedFiltered,
+        Self::Closed,
+        Self::Unfiltered,
+        Self::OpenFiltered,
+        Self::Open,
+    ];
 }
 
 /// One transport endpoint on one host, and everything a scan learned about it.
