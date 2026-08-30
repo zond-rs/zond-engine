@@ -17,7 +17,6 @@ on:
     paths:
       - "src/**"
       - "tests/**"
-      - "benches/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "clippy.toml"
@@ -27,7 +26,6 @@ on:
     paths:
       - "src/**"
       - "tests/**"
-      - "benches/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "clippy.toml"

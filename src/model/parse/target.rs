@@ -422,8 +422,8 @@ const GROUPING_SAMPLE: usize = 1_024;
 /// that already existed.
 ///
 /// Grouping trades a lookup on every expression against the number of units the
-/// map ends up with. On `benches/import_bench.rs` the two paths cross somewhere
-/// between four and eight lines to each port specification, and a file naming a
+/// map ends up with. Measured, the two paths cross somewhere between four and
+/// eight lines to each port specification, and a file naming a
 /// distinct specification on every line has lost outright, taking 22.0 ms where
 /// the direct path takes 12.7 ms for the same units.
 ///
@@ -662,7 +662,7 @@ impl TargetMapBuilder {
     /// the file. Walking the accumulated ranges here made importing a 65 536
     /// line list take 3.2 seconds against 6.9 milliseconds for the same file
     /// through [`push`](Self::push) alone, and the cost grew with the square of
-    /// the line count. Measured; see `benches/import_bench.rs`.
+    /// the line count. Measured.
     ///
     /// Never lower than the true count, so a budget checked against it refuses
     /// early rather than late.

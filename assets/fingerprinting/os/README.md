@@ -2,7 +2,7 @@
 
 Rules matched against a `StackObservation` — a typed feature vector read off one
 TCP reply — rather than against text. The schema is
-`src/fingerprinting/os/signature.rs`, shared verbatim with `build.rs`.
+`src/fingerprint/os/signature.rs`, shared verbatim with `build.rs`.
 
 ## Two kinds of rule, and why both belong
 
@@ -111,10 +111,11 @@ timestamp.
 
 ### Measuring one before authoring it
 
-`benches/os_sample.rs` is the instrument. It takes the samples, prints the class
-each series was read as with the raw values beside it, and — in its last block —
-says whether the extra samples actually split hosts that a single reply reported
-as identical. A feature that never refines that partition cannot change a
+This wants an instrument that takes the samples, prints the class each series
+was read as with the raw values beside it, and says whether the extra samples
+actually split hosts that a single reply reported as identical. The engine
+carried one until 2026-08-30; the numbers it produced are recorded in the doc
+comments of whatever they sized. A feature that never refines that partition cannot change a
 verdict, whatever else it reveals.
 
 ```
@@ -135,9 +136,9 @@ predicates on, so what you see there is what you write into `[match]`.
 
 Use `aggressive` when the machine's operating system is already known from
 outside: it takes twice the samples and follows hosts even once they are named,
-which is the case authoring a rule always is. `benches/os_detect.rs` shows the
-whole `Host` record instead, for when a field is missing and the question is
-whether nothing found it or nothing carried it through.
+which is the case authoring a rule always is. Reading the whole `Host` record
+is the other half, for when a field is missing and the question is whether
+nothing found it or nothing carried it through.
 
 **Label the hosts from outside.** Two machines running one operating system can
 differ here for reasons that are not the stack: uptime moves a clock's offset
@@ -157,7 +158,7 @@ somebody's network, is of no use to anyone reading the rule, and cannot be taken
 back once published. This engine ships a redaction policy for exactly this class
 of detail in its reports; its own corpus should not be the leak.
 
-`no_rule_names_a_real_address_or_host` in `src/fingerprinting/os/corpus.rs`
+`no_rule_names_a_real_address_or_host` in `src/fingerprint/os/corpus.rs`
 fails the build on anything address-shaped outside the documentation ranges.
 
 ## Before adding a rule: check what already exists

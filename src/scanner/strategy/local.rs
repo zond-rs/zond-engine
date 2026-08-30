@@ -237,8 +237,8 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 /// bought at several times the scan duration — the send phase drags the
 /// adaptive deadline along behind it, so the cost compounds rather than adds.
 ///
-/// `benches/ndp_pace.rs` measures the trade if it is revisited. Two cautions
-/// from the last attempt: the run-to-run variance on a segment of sleeping
+/// Two cautions from the last attempt, for whoever revisits it: the run-to-run
+/// variance on a segment of sleeping
 /// wireless devices is large enough to swamp small differences, so arms are
 /// only comparable within one block; and the number to judge it on is hosts
 /// found and hosts timed *per second of scan*, not first-attempt rate.

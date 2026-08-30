@@ -102,7 +102,7 @@ jobs:
       - name: Check
         run: cargo check --lib --all-features
 
-      # `--all-targets` so the tests and benches are linted too: they are the
+      # `--all-targets` so the tests and examples are linted too: they are the
       # part most likely to reach for something Unix-only, and they compile for
       # this platform even though they are not run here.
       - name: Clippy

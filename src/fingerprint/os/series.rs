@@ -16,9 +16,8 @@
 //! are an algorithm.
 //!
 //! The classifiers here are the measurement half. They were written and tested
-//! in `benches/os_sample.rs` first, against real hosts, and moved here once
-//! rules needed to predicate on what they read — the same graduation the
-//! recorded option layouts took from `os_observe` into
+//! against real hosts first, and moved here once rules needed to predicate on
+//! what they read — the same graduation the recorded option layouts took into
 //! [`StackObservation`](super::StackObservation). A rule that wants to say
 //! "Linux 5.x has a hashed ISN generator" needs this vocabulary to say it with.
 //!

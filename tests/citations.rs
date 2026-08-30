@@ -19,10 +19,15 @@
 //!
 //! ## What counts
 //!
-//! A backticked path to a Markdown file under a directory this repository owns.
-//! `docs/`, `audit/` and `assets/` are the ones that have been cited; the test
-//! takes any of them and does not care which, so a new directory needs no
-//! change here.
+//! A backticked path carrying a directory and ending in `.md` or `.rs`. That
+//! covers both kinds this repository has lost: documents deleted with the
+//! references left behind, and source files cited as the evidence for a number.
+//!
+//! The second kind arrived on 2026-08-30, when `benches/` was removed and
+//! thirteen doc comments went on pointing at the instruments that had measured
+//! their constants. The numbers were kept and the pointers dropped, which is the
+//! right trade, and this check is what makes the next one fail loudly rather
+//! than rot quietly.
 //!
 //! Two things are deliberately out of scope. A URL is somebody else's promise
 //! and cannot be checked from here. A path inside a fenced code block or a
@@ -32,7 +37,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The trees whose comments are read.
-const ROOTS: &[&str] = &["src", "tests", "benches", "examples", ".github", "build.rs"];
+const ROOTS: &[&str] = &["src", "tests", "examples", ".github", "build.rs", "assets"];
 
 /// A cited path, and where it was cited from.
 #[derive(Debug)]
@@ -60,7 +65,7 @@ fn citations_in(path: &Path, text: &str) -> Vec<Citation> {
             let quoted = &after[..close];
             rest = &after[close + 1..];
 
-            if !quoted.ends_with(".md") {
+            if !quoted.ends_with(".md") && !quoted.ends_with(".rs") {
                 continue;
             }
             // A citation names a directory this repository owns. Anything else
@@ -89,7 +94,7 @@ fn sources(dir: &Path, into: &mut Vec<PathBuf>) {
             sources(&path, into);
         } else if path
             .extension()
-            .is_some_and(|e| e == "rs" || e == "yml" || e == "yaml")
+            .is_some_and(|e| e == "rs" || e == "yml" || e == "yaml" || e == "md")
         {
             into.push(path);
         }
@@ -121,8 +126,15 @@ fn every_cited_document_is_in_the_repository() {
         let Ok(text) = fs::read_to_string(file) else {
             continue;
         };
+        // A citation resolves against the repository root, or against the
+        // directory of the file doing the citing. `tests/README.md` naming
+        // `common/mod.rs` means the one beside it, and is not wrong for saying
+        // so the way a reader of that file would.
+        let beside = file.parent().unwrap_or(root);
         for citation in citations_in(file, &text) {
-            if !root.join(&citation.target).exists() {
+            let anywhere =
+                root.join(&citation.target).exists() || beside.join(&citation.target).exists();
+            if !anywhere {
                 dangling.push(citation);
             }
         }

@@ -44,7 +44,7 @@ pub(super) type PacketIter = Box<dyn Iterator<Item = (Bytes, IpAddr)> + Send>;
 /// the whole point of the shape. Chained, all 254 ARP requests go out first and
 /// the neighbor solicitations follow as one unbroken block at the tail - which
 /// is exactly where they are least likely to be answered. Measured on a wifi
-/// segment with `benches/ndp_pace.rs`: solicitations one millisecond apart
+/// segment: solicitations one millisecond apart
 /// under the broadcast the ARP half is generating had **1 of 27** first
 /// attempts answered, against 13 of 27 for the same addresses spaced out on a
 /// quiet link. Every one of those unanswered first attempts costs either a host

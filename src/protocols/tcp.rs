@@ -175,7 +175,6 @@ const fn nonce_field(flags: u8) -> NonceField {
 /// Measured rather than assumed: against a labelled segment, every host with an
 /// open port named four more options when asked about four more, and not one
 /// port on any host changed its verdict between the two option lists.
-/// `benches/os_observe.rs` is the experiment.
 ///
 /// It costs one packet, the same one, twenty bytes longer. If anything it is
 /// *less* remarkable on the wire than the bare version, since a real connection

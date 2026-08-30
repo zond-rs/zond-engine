@@ -56,7 +56,7 @@
 //!
 //! ## Two ports per host, and the reason is a measurement
 //!
-//! `benches/os_sample.rs` followed one port per host, preferring an open one,
+//! An earlier sampling run followed one port per host, preferring an open one,
 //! and reported "identifiers zero throughout" for every host that answered — no
 //! discrimination at all. The same run's *closed* ports, on the same hosts in
 //! the same sweep, separated three of them three ways: one counting, one

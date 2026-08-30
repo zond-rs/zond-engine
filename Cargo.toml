@@ -236,58 +236,6 @@ tracing-subscriber = "0.3"
 # feature stays off for every downstream consumer.
 zond-engine = { path = ".", features = ["test-support", "export-all", "import-all"] }
 
-# The measurement instruments. Benches rather than examples because they are not
-# examples: they take a network, sometimes root, and arguments, and they exist to
-# answer a question about this engine rather than to show a consumer how to use
-# it. `harness = false` because each is an ordinary program with its own `main`,
-# not a set of `#[bench]` functions.
-#
-# Each is cited from the doc comment of whatever value it measured, so they are
-# part of the record rather than scaffolding.
-[[bench]]
-name = "discovery_bench"
-harness = false
-
-[[bench]]
-name = "icmp_reach"
-harness = false
-
-[[bench]]
-name = "import_bench"
-harness = false
-
-[[bench]]
-name = "ndp_pace"
-harness = false
-
-[[bench]]
-name = "os_detect"
-harness = false
-
-[[bench]]
-name = "os_observe"
-harness = false
-
-[[bench]]
-name = "os_rules"
-harness = false
-
-[[bench]]
-name = "os_sample"
-harness = false
-
-[[bench]]
-name = "resolve"
-harness = false
-
-[[bench]]
-name = "technique_sweep"
-harness = false
-
-[[bench]]
-name = "verify_scan"
-harness = false
-
 [build-dependencies]
 bincode = "1.3.3"
 dns-parser = "0.8"

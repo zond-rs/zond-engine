@@ -732,7 +732,7 @@ mod tests {
     const RST_ACK: u8 = 0b0001_0100; // RST | ACK
 
     /// The option bytes three real hosts answered a negotiating SYN with,
-    /// recorded off the wire by `benches/os_observe.rs`. A fixture written to
+    /// recorded off the wire. A fixture written to
     /// match what this parser currently accepts would pass forever whatever the
     /// parser did; these are what arrived.
     mod recorded {
