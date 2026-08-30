@@ -80,7 +80,7 @@ targets.apply_to(&mut cfg);
 
 let (mut session, task) = discover(targets.into_ips(), &cfg).await?;
 
-// Hosts arrive as they are found, rather than all at the end.
+// Hosts arrive as they are found.
 while let Some(event) = session.events().recv().await {
     if let ScanEvent::HostUpdated(address) = event
         && let Some(host) = session.hosts().get(&address)
@@ -89,6 +89,7 @@ while let Some(event) = session.events().recv().await {
     }
 }
 
+// And the record of the sweep once it is over.
 let report = task.join().await?;
 println!("{} hosts up", report.summary().hosts_alive);
 ```
@@ -162,6 +163,8 @@ wrong answer rather than a missing one.
 ports are known, and only against hosts that answered something:
 
 ```rust
+use zond_engine::ZondConfig;
+
 let mut cfg = ZondConfig::default();
 cfg.traceroute = true;
 ```
@@ -202,12 +205,12 @@ grammar targets are written in:
 ```rust
 use zond_engine::{Resolver, ZondConfig, resolve};
 
-let resolver = Resolver::from_system();
 let mut cfg = ZondConfig::default();
+// ... a settings document has already contributed its own ...
 
-// Layered, never assigned: a settings file may already have contributed its own.
-cfg.exclusions
-    .extend(&resolve::for_exclusion(&["10.0.5.0/24"], Some(&resolver)).await?);
+let resolver = Resolver::from_system();
+let from_arguments = resolve::for_exclusion(&["10.0.5.0/24"], Some(&resolver)).await?;
+cfg.exclusions.extend(&from_arguments);
 ```
 
 It is enforced twice. The target list is narrowed before anything is opened, so

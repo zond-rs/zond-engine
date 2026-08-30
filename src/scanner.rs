@@ -164,9 +164,23 @@ mod vantage;
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
-    /// The scan task panicked or was aborted before it finished.
-    #[error("scan task terminated abnormally")]
-    TaskFailed,
+    /// The scan task did not run to completion.
+    ///
+    /// Reached on a panic inside the engine or on the runtime shutting down
+    /// under it. Not on a stop:
+    /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) winds the
+    /// scan down and still yields its report.
+    ///
+    /// The two are told apart, and a panic carries what it said, because this
+    /// happened in the caller's process and "terminated abnormally" leaves them
+    /// nothing to report upstream.
+    #[error("the scan task {}: {detail}", if *.panicked { "panicked" } else { "was cancelled" })]
+    TaskFailed {
+        /// Whether the task panicked, as against being cancelled by the runtime.
+        panicked: bool,
+        /// What the panic said, or why the task was cancelled.
+        detail: String,
+    },
 
     /// The journal handed to a scan records the engine's other phase.
     ///
@@ -222,6 +236,32 @@ fn under_the_recorded_policy(
 
     manifest.covers(&this_run, manifest.privilege)?;
     Ok(())
+}
+
+/// What a `JoinError` was, in a form a consumer can act on.
+///
+/// `tokio` hands back the panic payload as `Box<dyn Any>`, which is where a
+/// message goes to be lost. The two shapes a `panic!` produces are read out and
+/// anything else is named as such rather than dropped.
+fn panic_or_cancellation(error: tokio::task::JoinError) -> ScanError {
+    if !error.is_panic() {
+        return ScanError::TaskFailed {
+            panicked: false,
+            detail: "the runtime shut down before the scan finished".to_string(),
+        };
+    }
+
+    let payload = error.into_panic();
+    let detail = payload
+        .downcast_ref::<&'static str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic carrying no message".to_string());
+
+    ScanError::TaskFailed {
+        panicked: true,
+        detail,
+    }
 }
 
 /// A handle to a running scan.
@@ -283,7 +323,7 @@ impl ScanTask {
     /// event stream, because whatever the surviving strategies found is still
     /// worth having.
     pub async fn join(self) -> Result<ScanReport, ScanError> {
-        let report = self.handle.await.map_err(|_| ScanError::TaskFailed);
+        let report = self.handle.await.map_err(panic_or_cancellation);
 
         // After the scan, so the last checkpoint sees everything it settled, and
         // the phases recorded are this sitting's own. A scan that failed gets a
@@ -912,4 +952,53 @@ fn spawn_scan(
             None => report,
         }
     })
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panic inside the engine happened in the caller's process, so what it
+    /// said is the one thing they can act on. Both shapes `panic!` produces are
+    /// read, because which one a call site produces is not a choice anybody
+    /// makes deliberately.
+    #[tokio::test]
+    async fn a_panicking_scan_reports_what_the_panic_said() {
+        for spawned in [
+            tokio::spawn(async { panic!("a literal message") }),
+            tokio::spawn(async { panic!("a formatted {}", "message") }),
+        ] {
+            let error = panic_or_cancellation(spawned.await.expect_err("the task panicked"));
+
+            let ScanError::TaskFailed { panicked, detail } = error else {
+                unreachable!("a panic is a TaskFailed")
+            };
+            assert!(panicked);
+            assert!(detail.contains("message"), "the payload was lost: {detail}");
+        }
+    }
+
+    /// And a task the runtime took away is told apart from one that broke, so a
+    /// consumer does not go looking for a bug in a shutdown.
+    #[tokio::test]
+    async fn a_cancelled_scan_is_not_reported_as_a_panic() {
+        let spawned = tokio::spawn(std::future::pending::<()>());
+        spawned.abort();
+
+        let error = panic_or_cancellation(spawned.await.expect_err("the task was cancelled"));
+
+        let ScanError::TaskFailed { panicked, .. } = error else {
+            unreachable!("a cancellation is a TaskFailed")
+        };
+        assert!(!panicked);
+    }
 }

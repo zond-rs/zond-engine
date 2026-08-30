@@ -52,12 +52,31 @@ allow = [
 ]
 confidence-threshold = 0.9
 
+# `mac_oui` declares `license-file` rather than an SPDX expression, so cargo-deny
+# emits `no-license-field` for it. That is a note about the manifest and not a
+# gap: the licence is read out of the file and checked like any other, which
+# `cargo deny check licenses` says in as many words when it rejects it against a
+# narrowed allow list ("license expression retrieved via license files: LICENSE").
+#
+# Written down because it is the obvious thing to mistake for a hole, and for
+# this crate the licence gate is not hygiene: the engine is AGPL with dual
+# licensing offered to enterprises, so whether the tree can be relicensed is a
+# question somebody will ask with money attached.
+
 [bans]
-# Duplicate major versions are recorded rather than refused. The tree carries
-# six today (three of `getrandom`, two each of `rand`, `bitflags`, `errno`,
-# `syn`, `system-configuration`), all pulled transitively. Resolving them is its
-# own piece of work; failing the build until then would only teach everyone to
-# ignore this job.
+# Duplicate major versions are recorded rather than refused, and every one of
+# them is pulled transitively. Resolving them is its own piece of work; failing
+# the build until then would only teach everyone to ignore this job.
+#
+# The count is deliberately not written down here. It moved from six to
+# seventeen without anybody noticing, because a comment that counts things is a
+# comment somebody has to re-count. The job prints the list, which is the copy
+# that cannot go stale.
+#
+# The one worth a look while Windows is being brought up: `pcap` pulls
+# `windows-sys 0.36`, four major versions behind the `0.61` this crate declares
+# for itself, and it arrives through a direct dependency rather than deep in the
+# tree.
 multiple-versions = "warn"
 wildcards = "deny"
 

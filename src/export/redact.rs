@@ -6,20 +6,34 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Utilities for privacy-preserving output.
+//! # The masking [`Redaction::Standard`](super::Redaction::Standard) applies
 //!
-//! Provides functions to mask personally identifiable information (PII) from scan results,
-//! such as hardware MAC addresses and IPv6 Interface Identifiers, while preserving
-//! network-level routing information for diagnostic utility.
+//! One function per thing a report carries that names a person or a device: a
+//! hostname, a hardware address, the interface identifier an IPv6 address may
+//! have been built from one.
+//!
+//! [`Redaction`](super::Redaction) is where the policy is stated and where its
+//! limits are, and it is the doc to read first. These are the mechanics.
+//!
+//! **The goal is not anonymity.** A masked hostname stays distinguishable from
+//! the next one so a reader can still follow a host through a report, and that
+//! is the whole of what is promised. Nothing here defeats somebody who knows the
+//! network.
 
 use std::net::Ipv6Addr;
 
 use crate::model::mac::MacAddr;
 
-/// Redacts a hostname to protect privacy while maintaining some recognizability.
+/// Masks a hostname, keeping its first and last two characters so two masked
+/// names still read as two names.
 ///
-/// It preserves the first 2 and last 2 characters, replacing the middle with a fixed
-/// number of 'X's. For very short hostnames (<= 4 chars), it redacts the entire string.
+/// The middle becomes a fixed run of `X`, which hides the length as well as the
+/// content: a five-character name and a fifty-character one mask to the same
+/// width.
+///
+/// A name with fewer than six characters is masked whole. Keeping two at each
+/// end of a five-character name would leave four of its five, which is not a
+/// masked name at all.
 ///
 /// # Examples
 /// ```
@@ -27,13 +41,17 @@ use crate::model::mac::MacAddr;
 ///
 /// assert_eq!(redact::hostname("kabelbox.local"), "kaXXXXXal");
 /// assert_eq!(redact::hostname("workstation"), "woXXXXXon");
+/// assert_eq!(redact::hostname("router"), "roXXXXXer");
+/// assert_eq!(redact::hostname("modem"), "XXXXX");
 /// assert_eq!(redact::hostname("pc"), "XXXXX");
 /// ```
 pub fn hostname(name: &str) -> String {
+    /// Below this, the two kept at each end are most of the name.
+    const SHORTEST_WORTH_KEEPING_ENDS_OF: usize = 6;
+
     let char_count = name.chars().count();
 
-    // If the name is too short to leave 2 chars on each side, just redact it fully
-    if char_count <= 4 {
+    if char_count < SHORTEST_WORTH_KEEPING_ENDS_OF {
         return "XXXXX".to_string();
     }
 
@@ -207,20 +225,24 @@ mod property_tests {
     use proptest::prelude::*;
 
     proptest::proptest! {
-        /// Verify that any hostname over 4 characters never leaks its middle content.
+        /// A masked name keeps its two ends and nothing between them, whatever
+        /// was there and however much of it.
         #[test]
-        fn hostname_privacy_preserving(name in "[a-zA-Z0-9.-]{5,64}") {
+        fn a_masked_hostname_keeps_its_ends_and_loses_its_middle(
+            name in "[a-zA-Z0-9.-]{6,64}"
+        ) {
             let redacted = hostname(&name);
             prop_assert!(redacted.contains("XXXXX"));
             prop_assert!(redacted.starts_with(&name[..2]));
-            prop_assert!(redacted.ends_with(&name[name.len()-2..]));
+            prop_assert!(redacted.ends_with(&name[name.len() - 2..]));
+            prop_assert_eq!(redacted.len(), 9, "every masked name is one width");
         }
 
-        /// Verify that short hostnames are always fully masked to a fixed constant.
+        /// And a name short enough that its ends would be most of it keeps
+        /// neither.
         #[test]
-        fn short_hostname_fully_masked(name in "[a-zA-Z0-9.-]{0,4}") {
-            let redacted = hostname(&name);
-            prop_assert_eq!(redacted, "XXXXX");
+        fn a_short_hostname_is_masked_whole(name in "[a-zA-Z0-9.-]{0,5}") {
+            prop_assert_eq!(hostname(&name), "XXXXX");
         }
 
         /// Verify that MAC redaction always preserves only the first 3 octets (OUI).

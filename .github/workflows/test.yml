@@ -75,13 +75,16 @@ jobs:
       - name: Run tests
         run: cargo test --all-features
 
-      # Tier 2 marks work the engine does not do yet with `#[ignore]`. Those are
-      # claims, not switched-off tests: each one runs, fails for the reason it
-      # states, and removing the attribute is the definition of done. This step
-      # confirms they still fail for that reason, and does not gate the build.
-      - name: Check the ignored tests still fail as claimed
-        continue-on-error: true
-        run: cargo test --all-features -- --ignored
+      # There is deliberately no step running the ignored tests here.
+      #
+      # There used to be, from when `#[ignore]` marked work the engine did not do
+      # yet: each one ran, failed for the reason it stated, and removing the
+      # attribute was the definition of done. That is over — `retransmission.rs`
+      # says so itself, in the past tense — and every `#[ignore]` left is an
+      # environment gate: one needs a document nmap wrote, two need capture
+      # access. On this runner they fail for reasons the `privileged` job below
+      # handles properly, so the step reported a known failure and checked
+      # nothing.
 
   # Tier 3, which `tests/README.md` describes and until now nothing ran: the
   # tests that need a real kernel, and the one that needs a document this project

@@ -367,8 +367,15 @@ impl Excerpt {
 /// The `id` is **untrusted input**: an author chose it, and it reaches exported
 /// reports, so a consumer escapes it exactly as it escapes a scanned host's own
 /// banner. The reservation of the `zond:` prefix for the engine's own built-in
-/// detections is enforced where detections are loaded, not here, because the
-/// built-in correlator's own id lives in that namespace.
+/// detections is enforced where detections are *authored* — `build.rs` for the
+/// ones this project ships, [`detect::flow::validate`](crate::detect::flow) for
+/// the ones an operator writes — and not here, because the built-in correlator's
+/// own id lives in that namespace.
+///
+/// It is not enforced on a report read back either, and that is not a gap in the
+/// reservation so much as a fact about the document: everything in an imported
+/// report is the document's claim, the host list included. Checking one prefix
+/// there would suggest the rest had been verified.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DetectionId {
     id: String,

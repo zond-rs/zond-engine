@@ -12300,6 +12300,8 @@ pub fn zond_engine::scanner::strategy::routed::UdpPortScanner::supported_protoco
 #[non_exhaustive] pub enum zond_engine::scanner::ScanError
 pub zond_engine::scanner::ScanError::PlanChanged(zond_engine::journal::manifest::PlanChanged)
 pub zond_engine::scanner::ScanError::TaskFailed
+pub zond_engine::scanner::ScanError::TaskFailed::detail: alloc::string::String
+pub zond_engine::scanner::ScanError::TaskFailed::panicked: bool
 pub zond_engine::scanner::ScanError::WrongPhase
 impl core::convert::From<zond_engine::journal::manifest::PlanChanged> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::PlanChanged) -> Self
@@ -13287,6 +13289,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ScanEffort
 #[non_exhaustive] pub enum zond_engine::ScanError
 pub zond_engine::ScanError::PlanChanged(zond_engine::journal::manifest::PlanChanged)
 pub zond_engine::ScanError::TaskFailed
+pub zond_engine::ScanError::TaskFailed::detail: alloc::string::String
+pub zond_engine::ScanError::TaskFailed::panicked: bool
 pub zond_engine::ScanError::WrongPhase
 impl core::convert::From<zond_engine::journal::manifest::PlanChanged> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::PlanChanged) -> Self
