@@ -27,6 +27,7 @@ mod probe_scan;
 pub mod traceroute;
 mod udp_scan;
 
+use std::num::NonZeroU32;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::IpAddr,
@@ -167,7 +168,7 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// a /22 leaves in a quarter of a second, a /16 in sixteen. That is the trade,
 /// and it is the right way round - a probe not yet sent and a probe dropped by a
 /// policer are equally invisible, and only the first is under our control.
-const PROBE_RATE_PER_SEC: u32 = 4_000;
+const PROBE_RATE_PER_SEC: NonZeroU32 = NonZeroU32::new(4_000).expect("a non-zero rate");
 
 /// How a **port scan's** probes are retransmitted.
 ///
@@ -258,7 +259,7 @@ const TCP_PORT_UNRESOLVED: usize = 8_192;
 /// thousand-port scan emits in fifty milliseconds, which is already faster than
 /// the round trips it is waiting on. A caller who wants a real rate limit sets
 /// `--max-probe-rate`, which replaces this.
-const TCP_PORT_RATE_CEILING: u32 = 20_000;
+const TCP_PORT_RATE_CEILING: NonZeroU32 = NonZeroU32::new(20_000).expect("a non-zero rate");
 
 /// The fastest a **UDP** port scan puts probes on the wire, in probes per
 /// second.
@@ -282,7 +283,7 @@ const TCP_PORT_RATE_CEILING: u32 = 20_000;
 /// was measured; this is set an order of magnitude below it because the
 /// per-target load is an order of magnitude higher, and that is an argument
 /// rather than an experiment.
-const UDP_PORT_RATE_PER_SEC: u32 = 400;
+const UDP_PORT_RATE_PER_SEC: NonZeroU32 = NonZeroU32::new(400).expect("a non-zero rate");
 
 /// The shortest interval the send ticker is asked to keep.
 ///
@@ -301,8 +302,17 @@ const MIN_SEND_TICK: Duration = Duration::from_millis(1);
 /// it is wrong in a way nothing reports: a batch cannot be less than one probe,
 /// so every rate below one probe per tick collapses to the same value and a
 /// sweep configured for 500 probes a second quietly runs at 1000.
-pub(super) fn pacing_for(rate_per_sec: u32) -> (Duration, usize) {
-    let rate = f64::from(rate_per_sec.max(1));
+/// The rate a scan runs at, given what the caller asked for.
+///
+/// A configured zero is a caller error rather than an instruction to stall, and
+/// falls back to the engine's own rate the same way an unset one does. Pacing at
+/// one probe a second would honour the number and not the intent.
+pub(super) fn rate_or(configured: Option<u32>, default: NonZeroU32) -> NonZeroU32 {
+    configured.and_then(NonZeroU32::new).unwrap_or(default)
+}
+
+pub(super) fn pacing_for(rate_per_sec: NonZeroU32) -> (Duration, usize) {
+    let rate = f64::from(rate_per_sec.get());
     let batch = (rate * MIN_SEND_TICK.as_secs_f64()).round().max(1.0);
 
     (Duration::from_secs_f64(batch / rate), batch as usize)
@@ -923,7 +933,7 @@ impl RoutedScanner {
             tuning.evasion.segment_shaping(),
             tuning.evasion.decoys.clone(),
             RETRY_POLICY.configured(tuning.retry),
-            tuning.max_probe_rate.unwrap_or(PROBE_RATE_PER_SEC).max(1),
+            rate_or(tuning.max_probe_rate, PROBE_RATE_PER_SEC),
         ))
     }
 
@@ -974,7 +984,7 @@ impl RoutedScanner {
         shaping: SegmentShaping,
         decoys: Vec<IpAddr>,
         retry: RetryPolicy,
-        rate_per_sec: u32,
+        rate_per_sec: NonZeroU32,
     ) -> Self {
         let mut ips = IpSet::new();
         let mut order = Vec::with_capacity(targets.len());
@@ -996,7 +1006,8 @@ impl RoutedScanner {
         // from one with nothing on it - which is why it is derived here rather
         // than left to a constant that has to be remembered.
         let (send_tick, batch) = pacing_for(rate_per_sec);
-        let send_duration = Duration::from_secs_f64(target_count as f64 / f64::from(rate_per_sec));
+        let send_duration =
+            Duration::from_secs_f64(target_count as f64 / f64::from(rate_per_sec.get()));
         let deadline_config =
             DEADLINE_CONFIG.allowing_for(retry.worst_case_probe_lifetime() + send_duration);
 
@@ -1352,14 +1363,20 @@ mod tests {
     /// The rate a sweep actually paces itself at, which is what the pair has
     /// to reproduce however it is split between the two.
     fn effective_rate(rate_per_sec: u32) -> f64 {
-        let (tick, batch) = pacing_for(rate_per_sec);
+        let (tick, batch) = pacing_for(NonZeroU32::new(rate_per_sec).expect("a non-zero rate"));
         batch as f64 / tick.as_secs_f64()
     }
 
     #[test]
     fn a_fast_rate_is_expressed_as_a_batch_on_the_shortest_tick() {
-        assert_eq!(pacing_for(2_000), (MIN_SEND_TICK, 2));
-        assert_eq!(pacing_for(100_000), (MIN_SEND_TICK, 100));
+        assert_eq!(
+            pacing_for(NonZeroU32::new(2_000).unwrap()),
+            (MIN_SEND_TICK, 2)
+        );
+        assert_eq!(
+            pacing_for(NonZeroU32::new(100_000).unwrap()),
+            (MIN_SEND_TICK, 100)
+        );
     }
 
     /// The failure this pair exists to prevent. A batch cannot be less than one
@@ -1368,8 +1385,14 @@ mod tests {
     /// at 1000 without saying so.
     #[test]
     fn a_slow_rate_lengthens_the_tick_rather_than_doubling_the_rate() {
-        assert_eq!(pacing_for(500), (Duration::from_millis(2), 1));
-        assert_eq!(pacing_for(100), (Duration::from_millis(10), 1));
+        assert_eq!(
+            pacing_for(NonZeroU32::new(500).unwrap()),
+            (Duration::from_millis(2), 1)
+        );
+        assert_eq!(
+            pacing_for(NonZeroU32::new(100).unwrap()),
+            (Duration::from_millis(10), 1)
+        );
     }
 
     #[test]
@@ -1386,10 +1409,19 @@ mod tests {
     }
 
     /// A rate of zero is a caller error, not an instruction to stall forever.
+    ///
+    /// `pacing_for` can no longer be asked: its argument is a [`NonZeroU32`].
+    /// The question survives one level up, where a caller's `Some(0)` still
+    /// arrives, and it resolves to the engine's own rate rather than to one
+    /// probe a second.
     #[test]
-    fn a_zero_rate_still_sends() {
-        let (tick, batch) = pacing_for(0);
-        assert_eq!(batch, 1);
-        assert!(tick <= Duration::from_secs(1));
+    fn a_configured_rate_of_zero_falls_back_to_the_default() {
+        assert_eq!(rate_or(Some(0), PROBE_RATE_PER_SEC), PROBE_RATE_PER_SEC);
+        assert_eq!(rate_or(None, PROBE_RATE_PER_SEC), PROBE_RATE_PER_SEC);
+        assert_eq!(
+            rate_or(Some(500), PROBE_RATE_PER_SEC).get(),
+            500,
+            "a rate the caller meant is the rate they get"
+        );
     }
 }

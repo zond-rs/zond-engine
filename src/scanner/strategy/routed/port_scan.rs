@@ -44,6 +44,7 @@
 //! [`icmp_error`](super::icmp_error).
 
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -66,9 +67,6 @@ use crate::model::target::PlannedTarget;
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols::tcp;
 use crate::report::ScannerKind;
-use crate::scanner::pacing::congestion::CongestionWindow;
-use crate::scanner::pacing::deadline::AdaptiveDeadline;
-use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::service;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{PortScanner, StrategyError};
@@ -82,10 +80,9 @@ use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
 // rather than keeping two copies in step. They do *not* share a retry schedule:
 // a sweep's probes are lost to what the path is doing, and a port scan's to the
 // burst it is itself making at one stack. See `PORT_RETRY_POLICY`.
+use super::PORT_RETRY_POLICY;
 use super::icmp_error::{self, Unreachable};
-use super::probe_scan::{self, AuditLabels, ProbeTarget, RawPortScan, RawProbeScan};
-use super::{DEADLINE_CONFIG, PORT_RETRY_POLICY};
-use crate::scanner::audit::ProbeAudit;
+use super::probe_scan::{self, AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
 
 /// What identifies one attempt of a probe on the wire.
 ///
@@ -100,9 +97,6 @@ use crate::scanner::audit::ProbeAudit;
 pub struct TcpToken {
     nonce: u32,
 }
-
-/// Outstanding probes and the schedule they are retried on.
-type Ledger = ProbeLedger<ProbeTarget, TcpToken, u64>;
 
 /// Probes specific `(address, port)` pairs with raw TCP segments, using
 /// whichever [`TcpScanTechnique`] it was built for.
@@ -159,9 +153,6 @@ impl TcpPortScanner {
         let src_port: u16 = tuning
             .evasion
             .source_port_or(rand::random_range(50_000..u16::MAX));
-        let emission = tuning.evasion.emission();
-        let shaping = tuning.evasion.segment_shaping();
-        let decoys = tuning.evasion.decoys.clone();
         let flags_override = tuning.evasion.flags;
         let transport = ProbeTransport::open_with(
             ProbeKind::TcpProbe {
@@ -175,23 +166,11 @@ impl TcpPortScanner {
         )?;
 
         Ok(Self::build(
-            resolver,
-            ctx,
+            Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
             technique,
             flags_override,
-            transport,
-            target_count,
-            src_port,
-            emission,
-            shaping,
-            decoys,
-            PORT_RETRY_POLICY.configured(tuning.retry),
             tuning.os_detection,
             tuning.service_detection,
-            tuning
-                .max_probe_rate
-                .unwrap_or(super::TCP_PORT_RATE_CEILING)
-                .max(1),
         ))
     }
 
@@ -215,87 +194,76 @@ impl TcpPortScanner {
         transport: ProbeTransport,
         target_count: usize,
     ) -> Self {
+        let tuning = ProbeTuning::default();
         Self::build(
-            resolver,
-            ctx,
+            Self::core(
+                resolver,
+                ctx,
+                transport,
+                &tuning,
+                rand::random_range(50_000..u16::MAX),
+                target_count,
+            ),
             technique,
             None,
-            transport,
-            target_count,
-            rand::random_range(50_000..u16::MAX),
-            Emission::routed(),
-            SegmentShaping::default(),
-            Vec::new(),
-            PORT_RETRY_POLICY,
             OsDetection::default(),
             ServiceDetection::default(),
-            super::TCP_PORT_RATE_CEILING,
         )
     }
 
-    /// The common constructor, taking the retry schedule as an argument because
-    /// it is the one thing the two public ones disagree about - and because the
-    /// scan's own deadline is derived from it, so it has to be settled before
-    /// anything is built rather than patched in afterwards.
-    #[allow(clippy::too_many_arguments)]
+    /// The common constructor.
+    ///
+    /// Takes a finished core so the two public constructors share one place that
+    /// knows how a raw scan is set up, and adds only what a TCP scan decides for
+    /// itself.
     fn build(
-        resolver: SourceResolver,
-        ctx: ScanContext,
+        core: RawProbeScan<TcpToken>,
         technique: TcpScanTechnique,
         flags_override: Option<u8>,
-        transport: ProbeTransport,
-        target_count: usize,
-        src_port: u16,
-        emission: Emission,
-        shaping: SegmentShaping,
-        decoys: Vec<IpAddr>,
-        retry: RetryPolicy,
         os_detection: OsDetection,
         service_detection: ServiceDetection,
-        rate_per_sec: u32,
     ) -> Self {
-        // The rate is the backstop; `window` below is what actually paces the
-        // scan. See `RawProbeScan::window`.
-        let (send_tick, batch) = super::pacing_for(rate_per_sec);
-
-        // The scan has to outlive its own retry schedule, or probes are written
-        // off as unanswered having never been fully asked — and it has to
-        // outlive the slowest pace its own window may settle at, or the pacing
-        // working as designed is what ends the scan early.
-        let deadline_config = DEADLINE_CONFIG
-            .allowing_for(retry.worst_case_probe_lifetime())
-            .allowing_pace_of(retry.min_rto / super::TCP_PORT_WINDOW.floor, target_count);
-
-        let mut scanner = Self {
+        Self {
             technique,
             flags_override,
             os_detection,
             service_detection,
-            core: RawProbeScan {
-                resolver,
-                ctx,
-                transport,
-                deadline: AdaptiveDeadline::new(deadline_config, target_count),
-                ledger: Ledger::new(retry, target_count.min(super::TCP_PORT_UNRESOLVED)),
-                due: Vec::new(),
-                src_port,
-                emission,
-                shaping,
-                decoys,
-                send_failure: None,
-                audit: ProbeAudit::new(),
-                window: CongestionWindow::new(super::TCP_PORT_WINDOW),
-                send_tick,
-                batch,
-                max_unresolved: super::TCP_PORT_UNRESOLVED,
-            },
-        };
+            core,
+        }
+    }
 
-        // What the liveness phase already learned about these hosts, so the
-        // first wave of probes is timed against a measurement rather than
-        // against a guess. See `RawProbeScan::seed_timing`.
-        scanner.core.seed_timing();
-        scanner
+    /// The core a TCP port scan runs on.
+    ///
+    /// The pace it must outlive is the slowest its congestion window may settle
+    /// at, which is the retry floor stretched by the window's own floor.
+    fn core(
+        resolver: SourceResolver,
+        ctx: ScanContext,
+        transport: ProbeTransport,
+        tuning: &ProbeTuning,
+        src_port: u16,
+        target_count: usize,
+    ) -> RawProbeScan<TcpToken> {
+        let retry = PORT_RETRY_POLICY.configured(tuning.retry);
+        let rate = tuning
+            .max_probe_rate
+            .and_then(NonZeroU32::new)
+            .unwrap_or(super::TCP_PORT_RATE_CEILING);
+
+        RawProbeScan::new(CoreParts {
+            resolver,
+            ctx,
+            transport,
+            tuning,
+            src_port,
+            target_count,
+            retry,
+            rate,
+            deadline: super::DEADLINE_CONFIG,
+            pace: retry.min_rto / super::TCP_PORT_WINDOW.floor,
+            window: super::TCP_PORT_WINDOW,
+            max_unresolved: super::TCP_PORT_UNRESOLVED,
+        })
     }
 
     /// Matches a TCP segment against an outstanding probe and, if it answers
@@ -579,14 +547,6 @@ impl RawPortScan for TcpPortScanner {
     /// be: the packet is built afresh from the target, which is both cheaper
     /// than buffering it and required, since every attempt must carry its own
     /// nonce.
-    fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant) {
-        self.send(ip, port, Some(position), now);
-    }
-
-    fn reprobe(&mut self, ip: IpAddr, port: u16, now: Instant) {
-        self.send(ip, port, None, now);
-    }
-
     /// Routes one captured reply to whichever half of the classification can
     /// read it.
     ///
@@ -634,6 +594,43 @@ impl RawPortScan for TcpPortScanner {
             },
             None,
         );
+    }
+
+    /// One send, first attempt or retry. `position` is `Some` only for a probe
+    /// that has never gone out, since the ledger keeps it thereafter.
+    fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
+        let Some(src_addr) = self.core.resolver.resolve(ip) else {
+            error!(verbosity = 2, "no route to {ip}; skipping {ip}:{port}");
+            return;
+        };
+
+        // Whether this send takes a slot in the congestion window. A retry does
+        // not: the slot went back when the question it repeats ran out of
+        // round-trip budget. The ledger is what knows, since it is what holds
+        // the probe between attempts.
+        let first_attempt = !self.core.ledger.contains(&(ip, port));
+
+        let token = send_tcp_probe(
+            self.core.transport.tx.as_ref(),
+            self.technique,
+            self.effective_flags(),
+            self.core.src_port,
+            src_addr,
+            ip,
+            port,
+            self.core.emission,
+            self.core.shaping,
+            &self.core.decoys,
+            &mut self.core.send_failure,
+        );
+        self.core.record_send(token.is_some(), first_attempt);
+
+        if let Some(token) = token {
+            match position {
+                Some(position) => self.core.ledger.arm(ip, (ip, port), token, position, now),
+                None => self.core.ledger.rearm(ip, (ip, port), token, now),
+            }
+        }
     }
 }
 
@@ -960,44 +957,7 @@ impl PortScanner for TcpPortScanner {
     }
 }
 
-impl TcpPortScanner {
-    /// One send, first attempt or retry. `position` is `Some` only for a probe
-    /// that has never gone out, since the ledger keeps it thereafter.
-    fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
-        let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(verbosity = 2, "no route to {ip}; skipping {ip}:{port}");
-            return;
-        };
-
-        // Whether this send takes a slot in the congestion window. A retry does
-        // not: the slot went back when the question it repeats ran out of
-        // round-trip budget. The ledger is what knows, since it is what holds
-        // the probe between attempts.
-        let first_attempt = !self.core.ledger.contains(&(ip, port));
-
-        let token = send_tcp_probe(
-            self.core.transport.tx.as_ref(),
-            self.technique,
-            self.effective_flags(),
-            self.core.src_port,
-            src_addr,
-            ip,
-            port,
-            self.core.emission,
-            self.core.shaping,
-            &self.core.decoys,
-            &mut self.core.send_failure,
-        );
-        self.core.record_send(token.is_some(), first_attempt);
-
-        if let Some(token) = token {
-            match position {
-                Some(position) => self.core.ledger.arm(ip, (ip, port), token, position, now),
-                None => self.core.ledger.rearm(ip, (ip, port), token, now),
-            }
-        }
-    }
-}
+impl TcpPortScanner {}
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -1843,7 +1803,7 @@ mod tests {
     #[test]
     fn the_scan_budget_covers_the_whole_retry_schedule() {
         let lifetime = PORT_RETRY_POLICY.worst_case_probe_lifetime();
-        let budget = DEADLINE_CONFIG
+        let budget = crate::scanner::strategy::routed::DEADLINE_CONFIG
             .allowing_for(lifetime)
             .max_budget
             .for_target_count(1);

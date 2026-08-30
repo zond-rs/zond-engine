@@ -42,6 +42,7 @@
 //! probe it refers to was aimed at the host behind it.
 
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -51,7 +52,6 @@ use tokio::sync::mpsc;
 
 use crate::config::ProbeTuning;
 use crate::error;
-use crate::evasion::SegmentShaping;
 use crate::journal::settle::Outcome;
 use crate::model::capture::IpObservation;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
@@ -60,30 +60,20 @@ use crate::model::port::{PortState, Protocol};
 use crate::model::target::PlannedTarget;
 use crate::protocols::sizes::UDP_HDR_LEN;
 use crate::report::ScannerKind;
-use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
-use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy, SilentHostPolicy};
+use crate::scanner::pacing::congestion::WindowLimits;
+use crate::scanner::pacing::deadline::AdaptiveDeadlineConfig;
+use crate::scanner::pacing::retry::{RetryPolicy, SilentHostPolicy};
 use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::payload;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
+use crate::transport::probe::{ProbeKind, ProbeTransport};
 
 use super::icmp_error::{self, Unreachable};
-use super::probe_scan::{self, AuditLabels, ProbeTarget, RawPortScan, RawProbeScan};
+use super::probe_scan::{self, AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
 use super::{EvasionParts, send_udp};
-use crate::scanner::audit::ProbeAudit;
-
-/// Outstanding probes and the schedule they are retried on.
-///
-/// The attempt token is `()`: a UDP scan sends every probe from one fixed source
-/// port, and an ICMP error is only guaranteed to quote the first eight bytes of
-/// the datagram, so nothing on the wire distinguishes one attempt from another.
-/// The ledger applies Karn's rule on that basis, declining to measure a round
-/// trip it cannot attribute.
-type Ledger = ProbeLedger<ProbeTarget, (), u64>;
 
 /// How long this scan runs and how it adapts.
 ///
@@ -202,9 +192,6 @@ impl UdpPortScanner {
         let src_port: u16 = tuning
             .evasion
             .source_port_or(rand::random_range(50_000..u16::MAX));
-        let emission = tuning.evasion.emission();
-        let shaping = tuning.evasion.segment_shaping();
-        let decoys = tuning.evasion.decoys.clone();
         let transport = ProbeTransport::open_with(
             ProbeKind::UdpProbe {
                 reply_port: src_port,
@@ -212,21 +199,9 @@ impl UdpPortScanner {
             tuning.evasion.effective_send_mode(tuning.send_mode),
         )?;
 
-        Ok(Self::build(
-            resolver,
-            ctx,
-            transport,
-            target_count,
-            src_port,
-            emission,
-            shaping,
-            decoys,
-            RETRY_POLICY.configured(tuning.retry),
-            tuning
-                .max_probe_rate
-                .unwrap_or(super::UDP_PORT_RATE_PER_SEC)
-                .max(1),
-        ))
+        Ok(Self {
+            core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
+        })
     }
 
     /// Builds a scanner around an already-opened transport, so the caller
@@ -245,74 +220,44 @@ impl UdpPortScanner {
         target_count: usize,
         src_port: u16,
     ) -> Self {
-        Self::build(
-            resolver,
-            ctx,
-            transport,
-            target_count,
-            src_port,
-            Emission::routed(),
-            SegmentShaping::default(),
-            Vec::new(),
-            RETRY_POLICY,
-            super::UDP_PORT_RATE_PER_SEC,
-        )
+        let tuning = ProbeTuning::default();
+        Self {
+            core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
+        }
     }
 
-    /// The common constructor, taking the retry schedule as an argument because
-    /// the scan's own deadline is derived from it and so has to be settled
-    /// before anything is built.
-    #[allow(clippy::too_many_arguments)]
-    fn build(
+    /// The core a UDP port scan runs on.
+    ///
+    /// The pace it must outlive is the send rate itself: a UDP scan has no
+    /// evidence to run a congestion window on, so the rate is the pacing rather
+    /// than a backstop and is the slowest thing about the scan.
+    fn core(
         resolver: SourceResolver,
         ctx: ScanContext,
         transport: ProbeTransport,
-        target_count: usize,
+        tuning: &ProbeTuning,
         src_port: u16,
-        emission: Emission,
-        shaping: SegmentShaping,
-        decoys: Vec<IpAddr>,
-        retry: RetryPolicy,
-        rate_per_sec: u32,
-    ) -> Self {
-        // Here the rate is the pacing rather than a backstop, because a UDP scan
-        // has no evidence to run a window on. See `UDP_PORT_RATE_PER_SEC`.
-        let (send_tick, batch) = super::pacing_for(rate_per_sec);
+        target_count: usize,
+    ) -> RawProbeScan<()> {
+        let rate = tuning
+            .max_probe_rate
+            .and_then(NonZeroU32::new)
+            .unwrap_or(super::UDP_PORT_RATE_PER_SEC);
 
-        // The scan has to outlive its own retry schedule, or probes are written
-        // off as unanswered having never been fully asked — and it has to
-        // outlive its own send rate, which here is the pacing rather than a
-        // backstop and is the slowest thing about the scan.
-        let deadline_config = DEADLINE_CONFIG
-            .allowing_for(retry.worst_case_probe_lifetime())
-            .allowing_pace_of(Duration::from_secs(1) / rate_per_sec.max(1), target_count);
-
-        let mut scanner = Self {
-            core: RawProbeScan {
-                resolver,
-                ctx,
-                transport,
-                deadline: AdaptiveDeadline::new(deadline_config, target_count),
-                ledger: Ledger::new(retry, target_count.min(MAX_IN_FLIGHT as usize)),
-                due: Vec::new(),
-                src_port,
-                emission,
-                shaping,
-                decoys,
-                send_failure: None,
-                audit: ProbeAudit::new(),
-                window: CongestionWindow::new(WindowLimits::fixed(MAX_IN_FLIGHT)),
-                send_tick,
-                batch,
-                max_unresolved: MAX_IN_FLIGHT as usize,
-            },
-        };
-
-        // What the liveness phase already learned about these hosts, so the
-        // first wave of probes is timed against a measurement rather than
-        // against a guess. See `RawProbeScan::seed_timing`.
-        scanner.core.seed_timing();
-        scanner
+        RawProbeScan::new(CoreParts {
+            resolver,
+            ctx,
+            transport,
+            tuning,
+            src_port,
+            target_count,
+            retry: RETRY_POLICY.configured(tuning.retry),
+            rate,
+            deadline: DEADLINE_CONFIG,
+            pace: Duration::from_secs(1) / rate.get(),
+            window: WindowLimits::fixed(MAX_IN_FLIGHT),
+            max_unresolved: MAX_IN_FLIGHT as usize,
+        })
     }
 
     /// A reply that matches no outstanding probe is dropped: it is a duplicate
@@ -456,14 +401,6 @@ impl RawPortScan for UdpPortScanner {
     /// byte-for-byte the probe that preceded it: the payload is what makes an
     /// open port answer at all, and the source port is the scan's identity on
     /// the wire, so neither may vary between attempts.
-    fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant) {
-        self.send(ip, port, Some(position), now);
-    }
-
-    fn reprobe(&mut self, ip: IpAddr, port: u16, now: Instant) {
-        self.send(ip, port, None, now);
-    }
-
     /// Classifies one captured reply and, if it answers an outstanding probe,
     /// resolves that probe.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
@@ -544,6 +481,46 @@ impl RawPortScan for UdpPortScanner {
         // Nothing answered, so there is no header to read and no round trip to
         // credit. The fuller form below is for the paths that had a reply.
         self.record_port_answered_by(ip, port_num, state, sender, None, None);
+    }
+
+    /// One send, first attempt or retry. `position` is `Some` only for a probe
+    /// that has never gone out, since the ledger keeps it thereafter.
+    fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
+        let Some(src_addr) = self.core.resolver.resolve(ip) else {
+            error!(
+                verbosity = 2,
+                "no route to {ip}; skipping UDP probe to {ip}:{port}"
+            );
+            return;
+        };
+
+        // Whether this send takes a slot in the congestion window. A retry does
+        // not: the slot went back when the question it repeats ran out of
+        // round-trip budget. The ledger is what knows, since it is what holds
+        // the probe between attempts.
+        let first_attempt = !self.core.ledger.contains(&(ip, port));
+
+        let sent = send_udp(
+            self.core.transport.tx.as_ref(),
+            self.core.src_port,
+            src_addr,
+            ip,
+            port,
+            EvasionParts {
+                emission: self.core.emission,
+                shaping: self.core.shaping,
+                decoys: &self.core.decoys,
+            },
+            &mut self.core.send_failure,
+        );
+        self.core.record_send(sent.is_some(), first_attempt);
+
+        if sent.is_some() {
+            match position {
+                Some(position) => self.core.ledger.arm(ip, (ip, port), (), position, now),
+                None => self.core.ledger.rearm(ip, (ip, port), (), now),
+            }
+        }
     }
 }
 
@@ -683,47 +660,7 @@ impl PortScanner for UdpPortScanner {
     // trait's no-op default is the honest implementation.
 }
 
-impl UdpPortScanner {
-    /// One send, first attempt or retry. `position` is `Some` only for a probe
-    /// that has never gone out, since the ledger keeps it thereafter.
-    fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
-        let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            error!(
-                verbosity = 2,
-                "no route to {ip}; skipping UDP probe to {ip}:{port}"
-            );
-            return;
-        };
-
-        // Whether this send takes a slot in the congestion window. A retry does
-        // not: the slot went back when the question it repeats ran out of
-        // round-trip budget. The ledger is what knows, since it is what holds
-        // the probe between attempts.
-        let first_attempt = !self.core.ledger.contains(&(ip, port));
-
-        let sent = send_udp(
-            self.core.transport.tx.as_ref(),
-            self.core.src_port,
-            src_addr,
-            ip,
-            port,
-            EvasionParts {
-                emission: self.core.emission,
-                shaping: self.core.shaping,
-                decoys: &self.core.decoys,
-            },
-            &mut self.core.send_failure,
-        );
-        self.core.record_send(sent.is_some(), first_attempt);
-
-        if sent.is_some() {
-            match position {
-                Some(position) => self.core.ledger.arm(ip, (ip, port), (), position, now),
-                None => self.core.ledger.rearm(ip, (ip, port), (), now),
-            }
-        }
-    }
-}
+impl UdpPortScanner {}
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║

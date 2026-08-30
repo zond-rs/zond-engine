@@ -59,10 +59,12 @@
 //! code to write is the part that is actually about the protocol.
 
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
+use crate::config::ProbeTuning;
 use crate::evasion::SegmentShaping;
 use crate::journal::settle::Outcome;
 use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
@@ -71,9 +73,9 @@ use crate::model::target::PlannedTarget;
 use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
-use crate::scanner::pacing::congestion::CongestionWindow;
-use crate::scanner::pacing::deadline::AdaptiveDeadline;
-use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution};
+use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
+use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::PortScanner;
 use crate::system::interface::SourceResolver;
@@ -185,7 +187,93 @@ pub struct RawProbeScan<T> {
     pub max_unresolved: usize,
 }
 
+/// What a [`RawProbeScan`] is built from.
+///
+/// A plain struct rather than positional arguments. Both raw port scanners
+/// build the same core and disagree about four values, and passing fourteen
+/// arguments through two constructors apiece is how the two came to share a
+/// hundred and fifty lines of identical setup.
+pub(super) struct CoreParts<'a> {
+    /// Resolves the source address each target's probe leaves from.
+    pub resolver: SourceResolver,
+    /// The scan this prober is part of.
+    pub ctx: ScanContext,
+    /// Where probes go and replies come from.
+    pub transport: ProbeTransport,
+    /// What the caller asked for, which is where the evasion settings and the
+    /// source port come from.
+    pub tuning: &'a ProbeTuning,
+    /// The port every probe in this scan leaves from.
+    pub src_port: u16,
+    /// How many endpoints the scan will ask about.
+    pub target_count: usize,
+    /// The retry schedule, which the deadline is derived from.
+    pub retry: RetryPolicy,
+    /// The send rate. Non-zero because the pacing divides by it.
+    pub rate: NonZeroU32,
+    /// The budgets the scan runs against. The two scanners differ here: a UDP
+    /// scan is inherently slower and needs a silence floor above the ICMP
+    /// rate-limit interval before quiet means anything.
+    pub deadline: AdaptiveDeadlineConfig,
+    /// The slowest pace the scan may settle at, which its deadline must outlive.
+    /// The two scanners derive this differently: a TCP scan paces on its
+    /// congestion window, a UDP scan on the rate itself.
+    pub pace: Duration,
+    /// The in-flight window.
+    pub window: WindowLimits,
+    /// The most probes that may be outstanding at once.
+    pub max_unresolved: usize,
+}
+
 impl<T: Copy + PartialEq> RawProbeScan<T> {
+    /// The core both raw port scanners run on.
+    ///
+    /// Seeds its timing from what the liveness phase already learned about these
+    /// hosts, so the first wave of probes is timed against a measurement rather
+    /// than a guess.
+    pub(super) fn new(parts: CoreParts<'_>) -> Self {
+        let CoreParts {
+            resolver,
+            ctx,
+            transport,
+            tuning,
+            src_port,
+            target_count,
+            retry,
+            rate,
+            deadline,
+            pace,
+            window,
+            max_unresolved,
+        } = parts;
+
+        let (send_tick, batch) = super::pacing_for(rate);
+        let deadline = deadline
+            .allowing_for(retry.worst_case_probe_lifetime())
+            .allowing_pace_of(pace, target_count);
+
+        let mut core = Self {
+            resolver,
+            ctx,
+            transport,
+            deadline: AdaptiveDeadline::new(deadline, target_count),
+            ledger: ProbeLedger::new(retry, target_count.min(max_unresolved)),
+            due: Vec::new(),
+            src_port,
+            emission: tuning.evasion.emission(),
+            shaping: tuning.evasion.segment_shaping(),
+            decoys: tuning.evasion.decoys.clone(),
+            send_failure: None,
+            audit: ProbeAudit::new(),
+            window: CongestionWindow::new(window),
+            send_tick,
+            batch,
+            max_unresolved,
+        };
+        core.seed_timing();
+        core
+    }
+
     /// Whether the loop should keep going, and if not, why it stopped.
     ///
     /// The four conditions in the order that makes each one's answer mean
@@ -477,10 +565,20 @@ pub trait RawPortScan: PortScanner {
     /// of attempts on schedule rather than waiting outstanding forever.
     /// Sends one probe. `position` is the target's place in the plan, kept by
     /// the ledger so it comes back when the probe retires.
-    fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant);
+    fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant) {
+        self.send(ip, port, Some(position), now);
+    }
 
     /// Resends a probe already outstanding. The ledger keeps its position.
-    fn reprobe(&mut self, ip: IpAddr, port: u16, now: Instant);
+    fn reprobe(&mut self, ip: IpAddr, port: u16, now: Instant) {
+        self.send(ip, port, None, now);
+    }
+
+    /// Puts one probe on the wire.
+    ///
+    /// `position` is the target's place in the plan for a first attempt, and
+    /// [`None`] for a retry, which keeps the position the ledger already holds.
+    fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant);
 
     /// Reads one captured reply and resolves whatever probe it answers.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant);
