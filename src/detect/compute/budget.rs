@@ -126,4 +126,12 @@ pub enum RunOutcome {
     Denied(Denial),
     /// The module broke.
     Faulted(ModuleFault),
+    /// A [`Capabilities`](super::Capabilities) implementation re-entered the
+    /// runtime while it was serving a run.
+    ///
+    /// Not the module's doing, and not a bound it hit. The trait forbids it
+    /// because two runs on one thread would hold live `&mut` to one value, and
+    /// the runtime refuses the second rather than taking the implementation at
+    /// its word.
+    HostReentered,
 }

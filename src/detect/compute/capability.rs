@@ -60,7 +60,11 @@ use super::budget::Budget;
 /// kind: it would work on the machine it was written on.
 ///
 /// Nothing in the signature stops it, so it is stated here, where somebody
-/// adding a fourth verb will read it. In debug builds a runtime asserts it.
+/// adding a fourth verb will read it. A runtime also checks it, in every build:
+/// the second run is refused with
+/// [`RunOutcome::HostReentered`](super::RunOutcome::HostReentered) rather than
+/// allowed to alias, because this is a rule kept by code the crate will never
+/// see and an assertion compiled out of a release is no rule at all.
 pub trait Capabilities: Send {
     /// Exchange bytes with the one socket the scan already holds open to this
     /// port, and return the reply. There is no address to name and none in the

@@ -500,6 +500,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::Modu
 pub zond_engine::detect::compute::RunOutcome::BudgetExceeded(zond_engine::detect::compute::BudgetTrap)
 pub zond_engine::detect::compute::RunOutcome::Denied(zond_engine::detect::compute::Denial)
 pub zond_engine::detect::compute::RunOutcome::Faulted(zond_engine::detect::compute::ModuleFault)
+pub zond_engine::detect::compute::RunOutcome::HostReentered
 impl core::clone::Clone for zond_engine::detect::compute::RunOutcome
 pub fn zond_engine::detect::compute::RunOutcome::clone(&self) -> zond_engine::detect::compute::RunOutcome
 impl core::cmp::Eq for zond_engine::detect::compute::RunOutcome
@@ -12644,6 +12645,9 @@ pub mod zond_engine::transport
 pub mod zond_engine::transport::capture
 #[non_exhaustive] pub enum zond_engine::transport::capture::CaptureError
 pub zond_engine::transport::capture::CaptureError::NoInterface
+pub zond_engine::transport::capture::CaptureError::NoReader
+pub zond_engine::transport::capture::CaptureError::NoReader::opened: usize
+pub zond_engine::transport::capture::CaptureError::NoReader::source: core::io::error::Error
 pub zond_engine::transport::capture::CaptureError::Open
 pub zond_engine::transport::capture::CaptureError::Open::interface: alloc::string::String
 pub zond_engine::transport::capture::CaptureError::Open::source: pcap::Error
@@ -12660,8 +12664,8 @@ impl core::marker::Send for zond_engine::transport::capture::CaptureError
 impl core::marker::Sync for zond_engine::transport::capture::CaptureError
 impl core::marker::Unpin for zond_engine::transport::capture::CaptureError
 impl core::marker::UnsafeUnpin for zond_engine::transport::capture::CaptureError
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::CaptureError
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::CaptureError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::CaptureError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::CaptureError
 pub struct zond_engine::transport::capture::CaptureGuard
 impl zond_engine::transport::capture::CaptureGuard
 pub fn zond_engine::transport::capture::CaptureGuard::counts(&self) -> core::option::Option<zond_engine::model::capture::CaptureCounts>
@@ -13029,8 +13033,8 @@ impl core::marker::Send for zond_engine::transport::probe::TransportError
 impl core::marker::Sync for zond_engine::transport::probe::TransportError
 impl core::marker::Unpin for zond_engine::transport::probe::TransportError
 impl core::marker::UnsafeUnpin for zond_engine::transport::probe::TransportError
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::TransportError
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::TransportError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::TransportError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::TransportError
 pub struct zond_engine::transport::probe::Emission
 pub zond_engine::transport::probe::Emission::fragment: core::option::Option<u16>
 pub zond_engine::transport::probe::Emission::hop_limit: u8

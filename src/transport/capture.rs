@@ -365,6 +365,13 @@ impl CaptureStats {
 /// dropped while a consumer still holds the receiver and has stopped draining
 /// it comes back on the same schedule as any other.
 ///
+/// A guard is normally dropped inside the scan task, which is to say on a
+/// runtime worker, so on a multi-threaded runtime the wait is handed to
+/// [`block_in_place`](tokio::task::block_in_place) and the worker is released to
+/// run other tasks meanwhile. A single-threaded runtime has no other worker to
+/// hand it to, and a caller outside a runtime is simply blocking their own
+/// thread.
+///
 /// This is deliberately separate from the [`CaptureStream`] it feeds, so a
 /// consumer can own the receiver directly (borrowing it mutably in a
 /// `select!`) while the guard sits beside it keeping the threads alive.
@@ -378,8 +385,17 @@ pub struct CaptureGuard {
 impl Drop for CaptureGuard {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        for handle in self.handles.drain(..) {
-            let _ = handle.join();
+
+        let handles = std::mem::take(&mut self.handles);
+        let wait = move || {
+            for handle in handles {
+                let _ = handle.join();
+            }
+        };
+
+        match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
+            _ => wait(),
         }
     }
 }
@@ -441,6 +457,20 @@ pub enum CaptureError {
          (opening a capture needs root)"
     )]
     NoInterface,
+    /// Every link opened and not one of them could be given a reader thread.
+    ///
+    /// A runtime condition rather than a mistake: a process near its thread
+    /// limit, or a cgroup that caps them. Separate from
+    /// [`NoInterface`](Self::NoInterface) because the remedy is different and
+    /// naming privileges here would send a reader looking in the wrong place.
+    #[error("captured {opened} link(s) but could not start a reader for any of them: {source}")]
+    NoReader {
+        /// How many links opened before the threads were asked for.
+        opened: usize,
+        /// What the last spawn refused with.
+        #[source]
+        source: std::io::Error,
+    },
     /// One named link could not be opened for sending. Unlike `NoInterface`
     /// this names the link, because a caller asked for that one in particular
     /// and there is nothing else to fall back to.
@@ -626,6 +656,8 @@ where
     // roughly the right number of things"); which interface got which filter is
     // a question for `-vvv`, and it is still there when asked.
     let mut opened = 0usize;
+    // Why the last reader thread refused to start, for the case where none did.
+    let mut unstarted: Option<std::io::Error> = None;
 
     for zone in links {
         let name = zone.name();
@@ -640,19 +672,30 @@ where
                 stats.push(counters.clone());
                 let name = name.to_owned();
 
-                handles.push(
-                    thread::Builder::new()
-                        .name(format!("capture-{name}"))
-                        .spawn(move || reader_loop(capture, &stop, &name, &counters, deliver))
-                        .expect("spawning capture thread"),
-                );
+                match thread::Builder::new()
+                    .name(format!("capture-{name}"))
+                    .spawn(move || reader_loop(capture, &stop, &name, &counters, deliver))
+                {
+                    Ok(handle) => handles.push(handle),
+                    // The same trade the open failure above takes. A host near
+                    // its thread limit still captures on the links it managed,
+                    // and only losing every one of them is an error.
+                    Err(e) => {
+                        warn!("no reader thread for {}: {e}", zone.name());
+                        stats.pop();
+                        unstarted = Some(e);
+                    }
+                }
             }
             Err(e) => warn!("skipping capture on {name}: {e}"),
         }
     }
 
     if handles.is_empty() {
-        return Err(CaptureError::NoInterface);
+        return Err(match unstarted {
+            Some(source) => CaptureError::NoReader { opened, source },
+            None => CaptureError::NoInterface,
+        });
     }
 
     info!(

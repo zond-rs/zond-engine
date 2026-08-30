@@ -43,6 +43,28 @@ and macOS. When the process happens to be running as root, `scan` takes its raw
 socket path instead of the connect fallback, and the assertions that depend on
 the fallback call `is_privileged()` and skip rather than flake.
 
+## The wire parsers, against bytes nobody wrote
+
+File: `wire_parsers.rs`.
+
+Sits beside Tier 1 and needs even less: no socket, no temporary directory,
+nothing but the crate. It drives every public parser that reads bytes off a wire
+over `proptest`-generated input and asserts that each one returns.
+
+It belongs here rather than beside each parser because the interesting inputs are
+whole frames, and building one means reaching across `protocols::craft`,
+`protocols::ethernet` and the reader under test at once.
+
+**The generators are shaped, and their shape is checked.** Uniform random bytes
+are refused at the first length check, so most of these build a well-formed
+frame and vary what the reader actually walks: LLDP TLVs with their seven-bit
+type and nine-bit length, CDP records whose length counts its own header, an
+ICMPv6 message behind a real IPv6 header, BOOTP options behind a real magic
+cookie. `the_generators_reach_the_parsers_they_are_written_for` measures how
+often each one gets through and fails if it stops, because a property that says
+"the parser returns" is satisfied perfectly by input the parser never reads. The
+first draft of the file was in exactly that state.
+
 ## Tier 2: the simulated network
 
 Harnesses: `common/fake_net.rs` simulates a Layer 4 network, `common/fake_lan.rs`
