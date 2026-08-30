@@ -32,7 +32,6 @@
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::Context;
 use pnet_packet::{Packet, ip::IpNextHeaderProtocols};
 use pnet_transport::{
     self as transport, TransportChannelType, TransportProtocol, TransportReceiver, TransportSender,
@@ -114,6 +113,71 @@ impl Socket {
     }
 }
 
+/// Why a raw socket could not be opened, or a write through one failed.
+///
+/// Every variant here is an answer from the operating system rather than a
+/// mistake in what was asked, [`NoSocket`](Self::NoSocket) aside. That matters
+/// for what a caller does next: a scan meeting [`Open`](Self::Open) has no raw
+/// path at all and falls back, and one meeting [`Send`](Self::Send) has a
+/// transport that works and a destination that did not.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum RawSocketError {
+    /// A raw socket could not be opened.
+    ///
+    /// Almost always a privilege refusal. `CAP_NET_RAW` on Linux, root
+    /// elsewhere; see [`can_send_raw`](crate::system::privilege::can_send_raw),
+    /// which asks this question by asking for the socket.
+    #[error("a raw socket could not be opened: {source}")]
+    Open {
+        /// What the operating system said.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// No socket is open for the address family a destination named.
+    ///
+    /// A handle opens what it can, and a host with IPv6 raw sockets disabled
+    /// gets an IPv4-only one rather than nothing. This is what a v6 destination
+    /// then meets, and it is a narrower transport rather than a broken one.
+    #[error(
+        "no open raw socket for {destination}, whose address family this handle does not carry"
+    )]
+    NoSocket {
+        /// The destination that had nowhere to go.
+        destination: IpAddr,
+    },
+
+    /// The hop limit could not be set on the socket.
+    #[error("a hop limit of {hop_limit} could not be set: {source}")]
+    HopLimit {
+        /// The hop limit that was asked for.
+        hop_limit: u8,
+        /// What the operating system said.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The packet could not be written.
+    #[error("sending to {destination} failed: {source}")]
+    Send {
+        /// Where it was going.
+        destination: IpAddr,
+        /// What the operating system said.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The socket's lock was poisoned by another thread's panic.
+    ///
+    /// One socket is shared across a scan's senders, so a panic while it was
+    /// held leaves it unusable rather than merely unlocked. Named rather than
+    /// unwrapped, because this happened in the caller's process and taking it
+    /// down twice helps nobody.
+    #[error("the raw socket lock was poisoned by another thread's panic")]
+    Poisoned,
+}
+
 impl TransportSenderHandle {
     /// Sends `packet` to `destination`, expiring after `hop_limit` routers.
     ///
@@ -127,29 +191,30 @@ impl TransportSenderHandle {
         packet: T,
         destination: IpAddr,
         hop_limit: u8,
-    ) -> anyhow::Result<usize> {
+    ) -> Result<usize, RawSocketError> {
         let socket = match destination {
             IpAddr::V4(_) => self.v4.as_ref(),
             IpAddr::V6(_) => self.v6.as_ref(),
         }
-        .with_context(|| format!("no open transport socket for {destination}'s address family"))?;
+        .ok_or(RawSocketError::NoSocket { destination })?;
 
-        let mut socket = socket.lock().map_err(|_| {
-            anyhow::anyhow!("the raw socket lock was poisoned by another thread's panic")
-        })?;
+        let mut socket = socket.lock().map_err(|_| RawSocketError::Poisoned)?;
 
         if socket.hop_limit != Some(hop_limit) {
             socket
                 .sender
                 .set_ttl(hop_limit)
-                .with_context(|| format!("failed to set a hop limit of {hop_limit}"))?;
+                .map_err(|source| RawSocketError::HopLimit { hop_limit, source })?;
             socket.hop_limit = Some(hop_limit);
         }
 
         socket
             .sender
             .send_to(packet, destination)
-            .with_context(|| format!("failed to send to {destination}"))
+            .map_err(|source| RawSocketError::Send {
+                destination,
+                source,
+            })
     }
 }
 
@@ -161,7 +226,7 @@ impl TransportSenderHandle {
 /// [`RawIpSender`](crate::transport::probe::RawIpSender) pairs this send-only
 /// handle with a `libpcap` capture for replies instead of the (silently dead
 /// on macOS) raw-socket receiver.
-pub fn open_sender(transport_type: TransportType) -> anyhow::Result<TransportSenderHandle> {
+pub fn open_sender(transport_type: TransportType) -> Result<TransportSenderHandle, RawSocketError> {
     match transport_type {
         TransportType::TcpLayer4 => {
             let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_TCP_V4)?;
@@ -200,7 +265,7 @@ pub fn open_sender(transport_type: TransportType) -> anyhow::Result<TransportSen
 
 fn open_channel(
     channel_type: TransportChannelType,
-) -> anyhow::Result<(TransportSender, TransportReceiver)> {
-    let (tx, rx) = transport::transport_channel(TRANSPORT_BUFFER_SIZE, channel_type)?;
-    Ok((tx, rx))
+) -> Result<(TransportSender, TransportReceiver), RawSocketError> {
+    transport::transport_channel(TRANSPORT_BUFFER_SIZE, channel_type)
+        .map_err(|source| RawSocketError::Open { source })
 }

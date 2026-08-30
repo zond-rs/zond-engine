@@ -112,6 +112,36 @@ pub enum PacketError {
     #[error("nothing here reads ethertype {0:#06x}")]
     UnsupportedEtherType(u16),
 
+    /// Bytes that are not the message they were read as.
+    ///
+    /// Distinct from [`Truncated`](Self::Truncated), which is a message that
+    /// stopped early. This is one whose structure never held: a length pointing
+    /// past its own record, a label the name grammar does not allow, a field
+    /// carrying a value its type has no room for. Whatever the reader that
+    /// found it says goes in `detail`, because that reader knows and this type
+    /// does not.
+    #[error("{what} could not be read: {detail}")]
+    Unreadable {
+        /// What was being read, such as `"a DNS response"`.
+        what: &'static str,
+        /// What the reader said about it.
+        detail: String,
+    },
+
+    /// A message of the right protocol and the wrong kind.
+    ///
+    /// Not malformed and not truncated: it parsed, and it is not what was
+    /// asked for. A DNS query arriving where a response was expected is the
+    /// case this exists for, and it is worth telling apart because a query on
+    /// that socket means something (somebody is asking) rather than nothing.
+    #[error("expected {expected} and got {got}")]
+    UnexpectedMessage {
+        /// What the reader was looking for, such as `"a DNS response"`.
+        expected: &'static str,
+        /// What arrived instead, such as `"a query"`.
+        got: &'static str,
+    },
+
     /// A buffer held too few bytes to read the header it was supposed to
     /// contain.
     ///
@@ -142,6 +172,15 @@ impl PacketError {
     /// The error for reading `what` out of a buffer that is too short.
     pub(crate) fn truncated(what: &'static str, needed: usize, got: usize) -> Self {
         Self::Truncated { what, needed, got }
+    }
+
+    /// The error for `what` whose structure did not hold, carrying whatever the
+    /// reader that found it said.
+    pub(crate) fn unreadable(what: &'static str, detail: impl std::fmt::Display) -> Self {
+        Self::Unreadable {
+            what,
+            detail: detail.to_string(),
+        }
     }
 }
 

@@ -34,7 +34,6 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
 use pnet_base::MacAddr;
 use pnet_packet::Packet;
 use pnet_packet::arp::{ArpOperations, ArpPacket};
@@ -101,7 +100,7 @@ impl EthernetSender {
 
     /// Determines the next-hop MAC for `route`, performing (and caching) an
     /// ARP exchange if it's an on-link target we haven't learned yet.
-    fn next_hop_mac(&self, route: &LinkRoute) -> anyhow::Result<MacAddr> {
+    fn next_hop_mac(&self, route: &LinkRoute) -> Result<MacAddr, SendError> {
         if let Some(mac) = route.next_hop_mac {
             return Ok(mac);
         }
@@ -109,12 +108,18 @@ impl EthernetSender {
         let target_v4 = match route.next_hop {
             IpAddr::V4(v4) => v4,
             IpAddr::V6(_) => {
-                anyhow::bail!("on-link IPv6 next-hop resolution (NDP) is not yet implemented")
+                return Err(SendError::Unsupported(
+                    "on-link IPv6 next-hop resolution (NDP) is not yet implemented",
+                ));
             }
         };
         let src_v4 = match route.src_ip {
             IpAddr::V4(v4) => v4,
-            IpAddr::V6(_) => anyhow::bail!("IPv4 target with IPv6 source is invalid"),
+            IpAddr::V6(_) => {
+                return Err(SendError::Unsupported(
+                    "an IPv4 target cannot be reached from an IPv6 source",
+                ));
+            }
         };
 
         let mac = self.arp_resolve(&route.interface, route.src_mac, src_v4, target_v4)?;
@@ -134,7 +139,7 @@ impl EthernetSender {
         src_mac: MacAddr,
         src_ip: Ipv4Addr,
         target: Ipv4Addr,
-    ) -> anyhow::Result<MacAddr> {
+    ) -> Result<MacAddr, SendError> {
         let mut channels = self
             .channels
             .lock()
@@ -145,7 +150,7 @@ impl EthernetSender {
         channel
             .channel
             .send_frame(&request)
-            .map_err(|reason| anyhow::anyhow!("sending ARP request: {reason}"))?;
+            .map_err(|reason| SendError::Refused(format!("sending an ARP request: {reason}")))?;
 
         let deadline = Instant::now() + ARP_TIMEOUT;
         while Instant::now() < deadline {
@@ -156,7 +161,9 @@ impl EthernetSender {
                 return Ok(mac);
             }
         }
-        anyhow::bail!("ARP timed out resolving {target} on {interface}")
+        Err(SendError::Unroutable(format!(
+            "no ARP reply for {target} on {interface} within {ARP_TIMEOUT:?}"
+        )))
     }
 
     /// Returns the datalink channel for `interface`, opening it on first use.
@@ -164,11 +171,14 @@ impl EthernetSender {
         &self,
         channels: &'a mut HashMap<String, InterfaceChannel>,
         interface: &str,
-    ) -> anyhow::Result<&'a mut InterfaceChannel> {
+    ) -> Result<&'a mut InterfaceChannel, SendError> {
         if !channels.contains_key(interface) {
             // ARP alone: this channel exists to resolve a next hop, and every
             // other frame on the segment is somebody else's business.
-            let channel = capture::FrameChannel::open(interface, "arp", CHANNEL_READ_TIMEOUT)?;
+            let channel = capture::FrameChannel::open(interface, "arp", CHANNEL_READ_TIMEOUT)
+                .map_err(|error| {
+                    SendError::Refused(format!("no datalink channel on {interface}: {error}"))
+                })?;
             channels.insert(interface.to_string(), InterfaceChannel { channel });
         }
         Ok(channels.get_mut(interface).unwrap())
@@ -187,13 +197,13 @@ impl ProbeSender for EthernetSender {
         // a neighbour that never answered our ARP, an interface that went down
         // mid-scan - so they are all refusals carrying the cause, not claims
         // that the transport is incapable.
-        (|| -> anyhow::Result<()> {
+        (|| -> Result<(), SendError> {
             let route = self
                 .resolver
                 .lock()
                 .map_err(|_| poisoned("route resolver"))?
                 .resolve(dst)
-                .with_context(|| format!("no Ethernet route to {dst}"))?;
+                .ok_or_else(|| SendError::Unroutable(format!("no Ethernet route to {dst}")))?;
 
             let dst_mac = self.next_hop_mac(&route)?;
             let src_mac = spoofed_source_mac(route.src_mac, emission.source_mac);
@@ -211,10 +221,16 @@ impl ProbeSender for EthernetSender {
                 protocol,
                 hop_limit: emission.hop_limit,
             };
+            // A packet this transport cannot express, as against a network that
+            // would not take it: the caller asked for something the framing
+            // cannot carry, and asking again changes nothing.
             let frames = match emission.fragment {
-                Some(mtu) => frame::build_fragmented_ethernet_frames(&spec, segment, mtu)?,
-                None => vec![frame::build_ethernet_frame(&spec, segment)?],
-            };
+                Some(mtu) => frame::build_fragmented_ethernet_frames(&spec, segment, mtu),
+                None => frame::build_ethernet_frame(&spec, segment).map(|frame| vec![frame]),
+            }
+            .map_err(|error| {
+                SendError::Refused(format!("the frame could not be built: {error}"))
+            })?;
 
             let mut channels = self
                 .channels
@@ -222,14 +238,12 @@ impl ProbeSender for EthernetSender {
                 .map_err(|_| poisoned("datalink channel"))?;
             let channel = self.channel_for(&mut channels, &route.interface)?;
             for frame in &frames {
-                channel
-                    .channel
-                    .send_frame(frame)
-                    .map_err(|reason| anyhow::anyhow!("sending frame: {reason}"))?;
+                channel.channel.send_frame(frame).map_err(|reason| {
+                    SendError::Refused(format!("the frame could not be sent: {reason}"))
+                })?;
             }
             Ok(())
         })()
-        .map_err(SendError::from_io)
     }
 }
 
@@ -241,8 +255,10 @@ impl ProbeSender for EthernetSender {
 /// turn one thread's panic into a permanent failure of the consumer's send path,
 /// with every later probe panicking and nothing they could catch, retry, or read
 /// a cause from.
-fn poisoned(what: &str) -> anyhow::Error {
-    anyhow::anyhow!("the {what} lock was poisoned by another thread's panic")
+fn poisoned(what: &str) -> SendError {
+    SendError::Refused(format!(
+        "the {what} lock was poisoned by another thread's panic"
+    ))
 }
 
 /// The source hardware address a frame should carry: the caller's spoofed one

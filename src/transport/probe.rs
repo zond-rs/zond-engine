@@ -347,17 +347,21 @@ pub enum SendError {
 impl SendError {
     /// Classifies a failure from a lower layer, keeping its whole cause chain.
     ///
-    /// `{e:#}` rather than `{e}`: the outer message says which probe failed and
-    /// the chain is the operating system's own explanation, which is the half
-    /// that says what to do about it.
+    /// Walks `source()` rather than a single message, so a wrapper naming which
+    /// probe failed does not hide the operating system's own explanation
+    /// underneath it. `thiserror`'s `#[error]` strings already interpolate their
+    /// source, so the text is the whole chain.
     ///
     /// Reads the operating system's own error kind rather than matching on the
     /// text of its message, which differs per platform and per locale. Only the
     /// two unreachable kinds are singled out; everything else stays a refusal,
     /// including the ones that look similar — a full send buffer or a permission
     /// failure says nothing about whether the destination exists.
-    pub(crate) fn from_io(error: anyhow::Error) -> Self {
-        let unroutable = error.chain().any(|cause| {
+    pub(crate) fn from_io<E: std::error::Error + 'static>(error: E) -> Self {
+        let unroutable = std::iter::successors(Some(&error as &dyn std::error::Error), |cause| {
+            cause.source()
+        })
+        .any(|cause| {
             cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
                 matches!(
                     io.kind(),
@@ -367,9 +371,9 @@ impl SendError {
         });
 
         if unroutable {
-            Self::Unroutable(format!("{error:#}"))
+            Self::Unroutable(error.to_string())
         } else {
-            Self::Refused(format!("{error:#}"))
+            Self::Refused(error.to_string())
         }
     }
 
@@ -1069,10 +1073,10 @@ mod filter_conformance {
         use std::io::{Error, ErrorKind};
 
         for kind in [ErrorKind::HostUnreachable, ErrorKind::NetworkUnreachable] {
-            let error = SendError::from_io(
-                anyhow::Error::new(Error::new(kind, "No route to host"))
-                    .context("failed to send to 2001:db8::1"),
-            );
+            let error = SendError::from_io(Error::new(
+                kind,
+                "failed to send to 2001:db8::1: No route to host",
+            ));
             assert!(error.is_unroutable(), "{kind:?} is about the destination");
             assert!(
                 error.to_string().contains("2001:db8::1"),
@@ -1085,7 +1089,7 @@ mod filter_conformance {
             ErrorKind::WouldBlock,
             ErrorKind::BrokenPipe,
         ] {
-            let error = SendError::from_io(anyhow::Error::new(Error::new(kind, "nope")));
+            let error = SendError::from_io(Error::new(kind, "nope"));
             assert!(
                 !error.is_unroutable(),
                 "{kind:?} is about this host, not the destination"

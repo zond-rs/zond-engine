@@ -149,8 +149,6 @@ pub fn for_listening_on<S: AsRef<str>>(
             // link carrying the default route, which is a routing question and
             // not a naming one.
             interface::lan_link()
-                .ok()
-                .flatten()
                 .map(|lan| lan.link.zone())
                 .ok_or(LinkError::NoLan)?
         } else {

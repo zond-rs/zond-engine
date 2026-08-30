@@ -63,13 +63,12 @@ use crate::protocols::{
 };
 use crate::scanner::session::ScanContext;
 use crate::{error, info, model::ip, warn};
-use anyhow::Context;
 use pnet_packet::{Packet, udp::UdpPacket};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::transport::probe::{ProbeKind, ProbeTransport};
+use crate::transport::probe::{ProbeKind, ProbeTransport, TransportError};
 
 const DNS_PORT: u16 = 53;
 use crate::protocols::mdns::PORT as MDNS_PORT;
@@ -130,13 +129,35 @@ pub struct HostnameResolver {
     id_counter: AtomicU16,
 }
 
+/// Why a [`HostnameResolver`] could not be built.
+///
+/// Two ways, and they want different answers from a caller. Nothing to ask means
+/// this host has no resolver a reverse query could reach, and a scan carries on
+/// reporting addresses without names. A receive path that will not open is a
+/// privilege problem, and it is the same one every raw path here has.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum ResolverError {
+    /// No resolver could be reached, so there is nothing to ask.
+    ///
+    /// Either the host is configured with none, or every socket that would
+    /// carry a query refused to bind. Each refusal is warned about as it
+    /// happens; this is what is left when none succeeded.
+    #[error("no reachable DNS server to send reverse queries to")]
+    NoServer,
+
+    /// The capture the sniffing half reads through could not be opened.
+    #[error("the resolver's receive path could not be opened: {0}")]
+    Transport(#[from] TransportError),
+}
+
 impl HostnameResolver {
     /// Builds a resolver that reads IPs to resolve from `dns_rx`.
     ///
     /// It works out which resolvers can answer for the hosts being scanned
     /// (`dns_server_candidates`), binds a query socket for each address family
     /// they span, and opens the raw receiver used to sniff DNS and mDNS traffic.
-    pub fn new(dns_rx: UnboundedReceiver<IpAddr>) -> anyhow::Result<Self> {
+    pub fn new(dns_rx: UnboundedReceiver<IpAddr>) -> Result<Self, ResolverError> {
         let dns_servers = dns_server_candidates();
         let transport = ProbeTransport::open_receiver(ProbeKind::UdpResolve)?;
         Self::with_transport(dns_rx, transport, dns_servers)
@@ -161,7 +182,7 @@ impl HostnameResolver {
         dns_rx: UnboundedReceiver<IpAddr>,
         transport: ProbeTransport,
         dns_servers: Vec<SocketAddr>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, ResolverError> {
         let query_targets = bind_query_targets(&dns_servers)?;
 
         Ok(Self {
@@ -268,23 +289,30 @@ impl HostnameResolver {
     /// that declines to serve a reverse zone (see [`dns_server_candidates`])
     /// answers exactly as fast, and exactly as confidently, as one that has
     /// looked and found nothing.
-    async fn send_dns_query(&mut self, ip: &IpAddr) -> anyhow::Result<usize> {
+    async fn send_dns_query(&mut self, ip: &IpAddr) -> std::io::Result<usize> {
         let mut sent = Vec::with_capacity(self.query_targets.len());
         let mut last_error = None;
 
         for target in &self.query_targets {
             let id = self.get_next_trans_id();
-            match dns::build_ptr_packet(ip, id) {
-                Ok(packet) => match target.socket.send_to(&packet, target.server).await {
-                    Ok(_) => sent.push(id),
-                    Err(e) => last_error = Some(anyhow::Error::from(e).context(target.server)),
-                },
-                Err(e) => last_error = Some(e),
+            let packet = dns::build_ptr_packet(ip, id);
+            match target.socket.send_to(&packet, target.server).await {
+                Ok(_) => sent.push(id),
+                // The server is named here because the error will not say which
+                // of several this was.
+                Err(error) => {
+                    last_error = Some(std::io::Error::new(
+                        error.kind(),
+                        format!("{}: {error}", target.server),
+                    ));
+                }
             }
         }
 
         if sent.is_empty() {
-            return Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no resolver to query")));
+            return Err(last_error.unwrap_or_else(|| {
+                std::io::Error::other("no resolver to send a reverse query to")
+            }));
         }
 
         for id in sent.iter().copied() {
@@ -542,7 +570,7 @@ fn preferred_ip(host: &MdnsHost) -> Option<IpAddr> {
 /// A family whose socket will not bind - a host with IPv6 disabled, say - loses
 /// its servers rather than taking the whole resolver down with it. Only having
 /// no reachable server at all is fatal, since there is then nothing to ask.
-fn bind_query_targets(servers: &[SocketAddr]) -> anyhow::Result<Vec<QueryTarget>> {
+fn bind_query_targets(servers: &[SocketAddr]) -> Result<Vec<QueryTarget>, ResolverError> {
     let v4 = bind_family(servers, SocketAddr::is_ipv4, "0.0.0.0:0");
     let v6 = bind_family(servers, SocketAddr::is_ipv6, "[::]:0");
 
@@ -558,7 +586,7 @@ fn bind_query_targets(servers: &[SocketAddr]) -> anyhow::Result<Vec<QueryTarget>
         .collect();
 
     if targets.is_empty() {
-        anyhow::bail!("no reachable DNS server to send reverse queries to");
+        return Err(ResolverError::NoServer);
     }
 
     info!(
@@ -594,11 +622,10 @@ fn bind_family(
     }
 }
 
-fn bind_ephemeral(bind_addr: &str) -> anyhow::Result<UdpSocket> {
-    let socket =
-        std::net::UdpSocket::bind(bind_addr).with_context(|| format!("binding {bind_addr}"))?;
+fn bind_ephemeral(bind_addr: &str) -> std::io::Result<UdpSocket> {
+    let socket = std::net::UdpSocket::bind(bind_addr)?;
     socket.set_nonblocking(true)?;
-    Ok(UdpSocket::from_std(socket)?)
+    UdpSocket::from_std(socket)
 }
 
 /// Every resolver a reverse query is worth sending to: the ones the host is
@@ -980,7 +1007,7 @@ mod tests {
     /// It carries no answer, which is deliberate: a server that has no name for
     /// an address, or declines to look, has still answered in DNS.
     fn dns_response(subject: IpAddr) -> Vec<u8> {
-        let mut message = dns::build_ptr_packet(&subject, 0x1234).expect("a query");
+        let mut message = dns::build_ptr_packet(&subject, 0x1234);
         message[2] |= 0b1000_0000; // QR: this is a response
         message
     }

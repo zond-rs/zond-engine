@@ -18,7 +18,7 @@
 //! addressed to someone else, while the question name means the same thing in
 //! every packet that carries it.
 
-use anyhow::{Context, Result, anyhow};
+use crate::protocols::error::{PacketError, Result};
 use dns_parser::{Builder, Packet, QueryClass, QueryType, RData};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -53,10 +53,14 @@ pub struct PtrResponse {
 /// Only bytes that are not a DNS message at all, or that are a query rather
 /// than a response, are rejected.
 pub fn parse_ptr_response(payload: &[u8]) -> Result<PtrResponse> {
-    let packet = Packet::parse(payload).context("not a parseable DNS message")?;
+    let packet =
+        Packet::parse(payload).map_err(|error| PacketError::unreadable("a DNS response", error))?;
 
     if packet.header.query {
-        return Err(anyhow!("DNS message is a query, not a response"));
+        return Err(PacketError::UnexpectedMessage {
+            expected: "a DNS response",
+            got: "a query",
+        });
     }
 
     let subject = packet
@@ -188,18 +192,23 @@ fn hex_nibble(label: &str) -> Option<u8> {
 }
 
 /// Builds a reverse (PTR) query for `ip_addr`, tagged with transaction ID `id`.
-pub fn build_ptr_packet(ip_addr: &IpAddr, id: u16) -> Result<Vec<u8>> {
-    let ptr_name: String = reverse_pointer_name(ip_addr);
-
+///
+/// Returns the query rather than a `Result` because there is no failure to
+/// report. The builder refuses a message over 512 bytes, and a header and one
+/// reverse name cannot reach it: the longest is IPv6's `ip6.arpa` form at one
+/// label per nibble, which is 74 bytes.
+pub fn build_ptr_packet(ip_addr: &IpAddr, id: u16) -> Vec<u8> {
     let mut builder: Builder = Builder::new_query(id, true);
+    builder.add_question(
+        &reverse_pointer_name(ip_addr),
+        false,
+        QueryType::PTR,
+        QueryClass::IN,
+    );
 
-    builder.add_question(&ptr_name, false, QueryType::PTR, QueryClass::IN);
-
-    let packet_bytes: Vec<u8> = builder
+    builder
         .build()
-        .map_err(|e| anyhow!("Failed to build DNS packet: {:?}", e))?;
-
-    Ok(packet_bytes)
+        .expect("a header and one reverse name are far under the 512-byte bound")
 }
 
 // ╔════════════════════════════════════════════╗
@@ -338,7 +347,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_query_is_not_a_response() {
-        let query = build_ptr_packet(&ip("192.168.0.1"), 9).unwrap();
+        let query = build_ptr_packet(&ip("192.168.0.1"), 9);
         assert!(parse_ptr_response(&query).is_err());
     }
 

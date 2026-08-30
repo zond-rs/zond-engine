@@ -9033,9 +9033,9 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::dns::PtrResponse
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::dns::PtrResponse
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::dns::PtrResponse
 pub fn zond_engine::protocols::dns::address_from_pointer_name(&str) -> core::option::Option<core::net::ip_addr::IpAddr>
-pub fn zond_engine::protocols::dns::build_ptr_packet(&core::net::ip_addr::IpAddr, u16) -> anyhow::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::dns::build_ptr_packet(&core::net::ip_addr::IpAddr, u16) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::dns::is_response(&[u8]) -> bool
-pub fn zond_engine::protocols::dns::parse_ptr_response(&[u8]) -> anyhow::Result<zond_engine::protocols::dns::PtrResponse>
+pub fn zond_engine::protocols::dns::parse_ptr_response(&[u8]) -> zond_engine::protocols::error::Result<zond_engine::protocols::dns::PtrResponse>
 pub fn zond_engine::protocols::dns::reverse_pointer_name(&core::net::ip_addr::IpAddr) -> alloc::string::String
 pub mod zond_engine::protocols::error
 #[non_exhaustive] pub enum zond_engine::protocols::error::PacketError
@@ -9055,6 +9055,12 @@ pub zond_engine::protocols::error::PacketError::Truncated
 pub zond_engine::protocols::error::PacketError::Truncated::got: usize
 pub zond_engine::protocols::error::PacketError::Truncated::needed: usize
 pub zond_engine::protocols::error::PacketError::Truncated::what: &'static str
+pub zond_engine::protocols::error::PacketError::UnexpectedMessage
+pub zond_engine::protocols::error::PacketError::UnexpectedMessage::expected: &'static str
+pub zond_engine::protocols::error::PacketError::UnexpectedMessage::got: &'static str
+pub zond_engine::protocols::error::PacketError::Unreadable
+pub zond_engine::protocols::error::PacketError::Unreadable::detail: alloc::string::String
+pub zond_engine::protocols::error::PacketError::Unreadable::what: &'static str
 pub zond_engine::protocols::error::PacketError::UnsupportedEtherType(u16)
 pub zond_engine::protocols::error::PacketError::UnsupportedFragmentation
 pub zond_engine::protocols::error::PacketError::UnsupportedFragmentation::dst: core::net::ip_addr::IpAddr
@@ -9275,8 +9281,8 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::mdns::MdnsHost
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::mdns::MdnsHost
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::mdns::MdnsHost
 pub const zond_engine::protocols::mdns::PORT: u16
-pub fn zond_engine::protocols::mdns::build_query(&str) -> anyhow::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::mdns::extract_hosts(&[u8]) -> anyhow::Result<alloc::vec::Vec<zond_engine::protocols::mdns::MdnsHost>>
+pub fn zond_engine::protocols::mdns::build_query(&str) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::mdns::extract_hosts(&[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<zond_engine::protocols::mdns::MdnsHost>>
 pub mod zond_engine::protocols::ndp
 pub struct zond_engine::protocols::ndp::Advertisement
 pub zond_engine::protocols::ndp::Advertisement::router: bool
@@ -11550,12 +11556,30 @@ impl<R, F> core::marker::UnsafeUnpin for zond_engine::scanner::pool::ProbePool<R
 impl<R, F> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::pool::ProbePool<R, F>
 impl<R, F> !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::pool::ProbePool<R, F>
 pub mod zond_engine::scanner::rdns
+#[non_exhaustive] pub enum zond_engine::scanner::rdns::ResolverError
+pub zond_engine::scanner::rdns::ResolverError::NoServer
+pub zond_engine::scanner::rdns::ResolverError::Transport(zond_engine::transport::probe::TransportError)
+impl core::convert::From<zond_engine::transport::probe::TransportError> for zond_engine::scanner::rdns::ResolverError
+pub fn zond_engine::scanner::rdns::ResolverError::from(zond_engine::transport::probe::TransportError) -> Self
+impl core::error::Error for zond_engine::scanner::rdns::ResolverError
+pub fn zond_engine::scanner::rdns::ResolverError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::scanner::rdns::ResolverError
+pub fn zond_engine::scanner::rdns::ResolverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::scanner::rdns::ResolverError
+pub fn zond_engine::scanner::rdns::ResolverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::scanner::rdns::ResolverError
+impl core::marker::Send for zond_engine::scanner::rdns::ResolverError
+impl core::marker::Sync for zond_engine::scanner::rdns::ResolverError
+impl core::marker::Unpin for zond_engine::scanner::rdns::ResolverError
+impl core::marker::UnsafeUnpin for zond_engine::scanner::rdns::ResolverError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::rdns::ResolverError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::rdns::ResolverError
 pub struct zond_engine::scanner::rdns::HostnameResolver
 impl zond_engine::scanner::rdns::HostnameResolver
-pub fn zond_engine::scanner::rdns::HostnameResolver::new(tokio::sync::mpsc::unbounded::UnboundedReceiver<core::net::ip_addr::IpAddr>) -> anyhow::Result<Self>
+pub fn zond_engine::scanner::rdns::HostnameResolver::new(tokio::sync::mpsc::unbounded::UnboundedReceiver<core::net::ip_addr::IpAddr>) -> core::result::Result<Self, zond_engine::scanner::rdns::ResolverError>
 pub fn zond_engine::scanner::rdns::HostnameResolver::resolve_hosts(&mut self, &zond_engine::scanner::session::ScanContext)
 pub async fn zond_engine::scanner::rdns::HostnameResolver::run(self) -> Self
-pub fn zond_engine::scanner::rdns::HostnameResolver::with_transport(tokio::sync::mpsc::unbounded::UnboundedReceiver<core::net::ip_addr::IpAddr>, zond_engine::transport::probe::ProbeTransport, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> anyhow::Result<Self>
+pub fn zond_engine::scanner::rdns::HostnameResolver::with_transport(tokio::sync::mpsc::unbounded::UnboundedReceiver<core::net::ip_addr::IpAddr>, zond_engine::transport::probe::ProbeTransport, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> core::result::Result<Self, zond_engine::scanner::rdns::ResolverError>
 impl !core::marker::Freeze for zond_engine::scanner::rdns::HostnameResolver
 impl core::marker::Send for zond_engine::scanner::rdns::HostnameResolver
 impl core::marker::Sync for zond_engine::scanner::rdns::HostnameResolver
@@ -12634,8 +12658,8 @@ pub fn zond_engine::system::interface::interfaces() -> alloc::vec::Vec<zond_engi
 pub fn zond_engine::system::interface::is_enumerable(&zond_engine::model::ip::range::Ipv6Range) -> bool
 pub fn zond_engine::system::interface::is_layer_2_capable(&zond_engine::system::interface::Link) -> bool
 pub fn zond_engine::system::interface::is_on_link(&zond_engine::system::interface::Link, &mut zond_engine::model::ip::set::IpSet) -> bool
-pub fn zond_engine::system::interface::lan_link() -> anyhow::Result<core::option::Option<zond_engine::system::interface::LanLink>>
-pub fn zond_engine::system::interface::lan_network() -> anyhow::Result<core::option::Option<zond_engine::system::interface::LinkAddress>>
+pub fn zond_engine::system::interface::lan_link() -> core::option::Option<zond_engine::system::interface::LanLink>
+pub fn zond_engine::system::interface::lan_network() -> core::option::Option<zond_engine::system::interface::LinkAddress>
 pub fn zond_engine::system::interface::map_ips_to_interfaces(zond_engine::model::ip::set::IpSet) -> zond_engine::system::interface::RoutedTargets
 pub fn zond_engine::system::interface::prioritized_interfaces(usize) -> alloc::vec::Vec<zond_engine::system::interface::Link>
 pub fn zond_engine::system::interface::resolve_keyword(zond_engine::model::parse::ip::Keyword, &mut zond_engine::model::ip::set::IpSet) -> core::result::Result<(), zond_engine::model::parse::ip::IpParseError>
@@ -12690,6 +12714,9 @@ pub fn zond_engine::system::privilege::is_elevated() -> bool
 pub mod zond_engine::transport
 pub mod zond_engine::transport::capture
 #[non_exhaustive] pub enum zond_engine::transport::capture::CaptureError
+pub zond_engine::transport::capture::CaptureError::Filter
+pub zond_engine::transport::capture::CaptureError::Filter::filter: alloc::string::String
+pub zond_engine::transport::capture::CaptureError::Filter::source: pcap::Error
 pub zond_engine::transport::capture::CaptureError::NoInterface
 pub zond_engine::transport::capture::CaptureError::NoReader
 pub zond_engine::transport::capture::CaptureError::NoReader::opened: usize
@@ -12697,6 +12724,9 @@ pub zond_engine::transport::capture::CaptureError::NoReader::source: core::io::e
 pub zond_engine::transport::capture::CaptureError::Open
 pub zond_engine::transport::capture::CaptureError::Open::interface: alloc::string::String
 pub zond_engine::transport::capture::CaptureError::Open::source: pcap::Error
+pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType
+pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType::dlt: i32
+pub zond_engine::transport::capture::CaptureError::UnsupportedLinkType::interface: alloc::string::String
 impl core::convert::From<zond_engine::transport::capture::CaptureError> for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::from(zond_engine::transport::capture::CaptureError) -> Self
 impl core::error::Error for zond_engine::transport::capture::CaptureError
@@ -13066,6 +13096,8 @@ pub zond_engine::transport::probe::TransportError::NoEthernetInterface(alloc::st
 pub zond_engine::transport::probe::TransportError::RawSocket(alloc::string::String)
 impl core::convert::From<zond_engine::transport::capture::CaptureError> for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::from(zond_engine::transport::capture::CaptureError) -> Self
+impl core::convert::From<zond_engine::transport::probe::TransportError> for zond_engine::scanner::rdns::ResolverError
+pub fn zond_engine::scanner::rdns::ResolverError::from(zond_engine::transport::probe::TransportError) -> Self
 impl core::convert::From<zond_engine::transport::probe::TransportError> for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::from(zond_engine::transport::probe::TransportError) -> Self
 impl core::error::Error for zond_engine::transport::probe::TransportError
@@ -13187,6 +13219,31 @@ pub fn zond_engine::transport::link::EthernetSender::send(&self, &[u8], core::ne
 impl zond_engine::transport::probe::ProbeSender for zond_engine::transport::probe::RawIpSender
 pub fn zond_engine::transport::probe::RawIpSender::send(&self, &[u8], core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, zond_engine::transport::probe::Emission) -> core::result::Result<(), zond_engine::transport::probe::SendError>
 pub mod zond_engine::transport::raw
+#[non_exhaustive] pub enum zond_engine::transport::raw::RawSocketError
+pub zond_engine::transport::raw::RawSocketError::HopLimit
+pub zond_engine::transport::raw::RawSocketError::HopLimit::hop_limit: u8
+pub zond_engine::transport::raw::RawSocketError::HopLimit::source: core::io::error::Error
+pub zond_engine::transport::raw::RawSocketError::NoSocket
+pub zond_engine::transport::raw::RawSocketError::NoSocket::destination: core::net::ip_addr::IpAddr
+pub zond_engine::transport::raw::RawSocketError::Open
+pub zond_engine::transport::raw::RawSocketError::Open::source: core::io::error::Error
+pub zond_engine::transport::raw::RawSocketError::Poisoned
+pub zond_engine::transport::raw::RawSocketError::Send
+pub zond_engine::transport::raw::RawSocketError::Send::destination: core::net::ip_addr::IpAddr
+pub zond_engine::transport::raw::RawSocketError::Send::source: core::io::error::Error
+impl core::error::Error for zond_engine::transport::raw::RawSocketError
+pub fn zond_engine::transport::raw::RawSocketError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::transport::raw::RawSocketError
+pub fn zond_engine::transport::raw::RawSocketError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::transport::raw::RawSocketError
+pub fn zond_engine::transport::raw::RawSocketError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::transport::raw::RawSocketError
+impl core::marker::Send for zond_engine::transport::raw::RawSocketError
+impl core::marker::Sync for zond_engine::transport::raw::RawSocketError
+impl core::marker::Unpin for zond_engine::transport::raw::RawSocketError
+impl core::marker::UnsafeUnpin for zond_engine::transport::raw::RawSocketError
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::RawSocketError
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::RawSocketError
 #[non_exhaustive] pub enum zond_engine::transport::raw::TransportType
 pub zond_engine::transport::raw::TransportType::IcmpLayer4
 pub zond_engine::transport::raw::TransportType::TcpLayer4
@@ -13205,7 +13262,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::Tr
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::TransportType
 pub struct zond_engine::transport::raw::TransportSenderHandle
 impl zond_engine::transport::raw::TransportSenderHandle
-pub fn zond_engine::transport::raw::TransportSenderHandle::send_to<T: pnet_macros_support::packet::Packet>(&self, T, core::net::ip_addr::IpAddr, u8) -> anyhow::Result<usize>
+pub fn zond_engine::transport::raw::TransportSenderHandle::send_to<T: pnet_macros_support::packet::Packet>(&self, T, core::net::ip_addr::IpAddr, u8) -> core::result::Result<usize, zond_engine::transport::raw::RawSocketError>
 impl core::marker::Freeze for zond_engine::transport::raw::TransportSenderHandle
 impl core::marker::Send for zond_engine::transport::raw::TransportSenderHandle
 impl core::marker::Sync for zond_engine::transport::raw::TransportSenderHandle
@@ -13213,7 +13270,7 @@ impl core::marker::Unpin for zond_engine::transport::raw::TransportSenderHandle
 impl core::marker::UnsafeUnpin for zond_engine::transport::raw::TransportSenderHandle
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::TransportSenderHandle
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::TransportSenderHandle
-pub fn zond_engine::transport::raw::open_sender(zond_engine::transport::raw::TransportType) -> anyhow::Result<zond_engine::transport::raw::TransportSenderHandle>
+pub fn zond_engine::transport::raw::open_sender(zond_engine::transport::raw::TransportType) -> core::result::Result<zond_engine::transport::raw::TransportSenderHandle, zond_engine::transport::raw::RawSocketError>
 #[non_exhaustive] pub enum zond_engine::HostStatus
 pub zond_engine::HostStatus::Down
 pub zond_engine::HostStatus::Filtered

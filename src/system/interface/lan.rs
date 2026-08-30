@@ -66,10 +66,19 @@ impl LanLink {
     }
 }
 
-/// Identifies the best local area network (LAN) connected to the current host context.
+/// The best local network this host is attached to, or `None` if it is attached
+/// to none.
 ///
-/// Under the hood, this iterates over `pnet::datalink::interfaces()` directly.
-pub fn lan_link() -> anyhow::Result<Option<LanLink>> {
+/// Reads the host's own interface table and picks among the links that could
+/// carry a sweep: up, physical, not loopback, holding a hardware address,
+/// broadcast-capable and not point-to-point. [`ViabilityError`] names each of
+/// those the other way round.
+///
+/// **`None` rather than an error, because there is no error to report.** A
+/// machine with nothing but loopback and a VPN tunnel is a machine with no LAN,
+/// which is an answer about the host and not a failure to find one out. Every
+/// caller of this treated the two the same way when they were separate.
+pub fn lan_link() -> Option<LanLink> {
     lan_link_with(crate::system::interface::interfaces())
 }
 
@@ -78,8 +87,8 @@ pub fn lan_link() -> anyhow::Result<Option<LanLink>> {
 /// Kept because it is the engine's published surface and a front end builds
 /// against it; new work inside the engine wants the link, since half of what a
 /// LAN scan now does is IPv6.
-pub fn lan_network() -> anyhow::Result<Option<LinkAddress>> {
-    Ok(lan_link()?.and_then(|link| link.ipv4))
+pub fn lan_network() -> Option<LinkAddress> {
+    lan_link()?.ipv4
 }
 
 /// Core LAN selection logic, decoupled from OS interface dependencies for testing.
@@ -89,7 +98,7 @@ pub fn lan_network() -> anyhow::Result<Option<LinkAddress>> {
 /// which interfaces are hardware, and a hand-built interface is not one — so
 /// without the seam this function can only be exercised against whatever the
 /// machine running the tests happens to have plugged in.
-pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> anyhow::Result<Option<LanLink>> {
+pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
     let interfaces_str: &str = match interfaces.len() {
         1 => "interface",
         _ => "interfaces",
@@ -107,9 +116,7 @@ pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> anyhow::Result<Option<LanL
         .filter(|link| is_viable_lan_interface(link).is_ok())
         .collect();
 
-    let Some(link) = select_best_lan_interface(viable) else {
-        anyhow::bail!("No interfaces available for LAN discovery");
-    };
+    let link = select_best_lan_interface(viable)?;
     info!(
         verbosity = 1,
         "performing LAN scan on interface {}",
@@ -128,7 +135,7 @@ pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> anyhow::Result<Option<LanL
         .filter(|held| held.address().is_ipv6())
         .collect();
 
-    Ok(Some(LanLink { link, ipv4, ipv6 }))
+    Some(LanLink { link, ipv4, ipv6 })
 }
 
 fn is_viable_lan_interface(link: &Link) -> Result<(), ViabilityError> {
@@ -259,9 +266,7 @@ mod tests {
 
         assert_eq!(is_viable_lan_interface(&intf), Ok(()));
 
-        let link = lan_link_with(vec![intf])
-            .expect("selection succeeds")
-            .expect("a viable link is selected");
+        let link = lan_link_with(vec![intf]).expect("a viable link is selected");
 
         assert!(
             link.ipv4.is_none(),
@@ -288,9 +293,7 @@ mod tests {
         ));
         let intf = mock_interface(true, true, true, false, false, true).with_addresses(held);
 
-        let link = lan_link_with(vec![intf])
-            .expect("selection succeeds")
-            .expect("a viable link is selected");
+        let link = lan_link_with(vec![intf]).expect("a viable link is selected");
 
         assert_eq!(
             link.ipv4.map(|held| held.address()),
@@ -305,9 +308,7 @@ mod tests {
     fn the_ipv4_view_of_a_link_is_unchanged() {
         let intf = mock_interface(true, true, true, false, false, true);
 
-        let link = lan_link_with(vec![intf])
-            .expect("selection succeeds")
-            .expect("a viable link is selected");
+        let link = lan_link_with(vec![intf]).expect("a viable link is selected");
 
         let held = link.ipv4.expect("the link has a private IPv4 network");
         assert_eq!(held.address(), IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));

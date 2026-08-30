@@ -1343,13 +1343,10 @@ mod tests {
     #[test]
     fn a_missing_route_is_counted_apart_from_a_broken_send_path() {
         let unreachable = |address: &str| {
-            SendError::from_io(
-                anyhow::Error::new(std::io::Error::new(
-                    std::io::ErrorKind::HostUnreachable,
-                    "No route to host",
-                ))
-                .context(format!("failed to send to {address}")),
-            )
+            SendError::from_io(std::io::Error::new(
+                std::io::ErrorKind::HostUnreachable,
+                format!("failed to send to {address}: No route to host"),
+            ))
         };
 
         let mut faults = SendFaults::default();
@@ -1372,10 +1369,10 @@ mod tests {
 
         faults.record(
             first,
-            &SendError::from_io(anyhow::Error::new(std::io::Error::new(
+            &SendError::from_io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "Operation not permitted",
-            ))),
+            )),
         );
 
         assert!(faults.broken.is_some(), "and this one is");

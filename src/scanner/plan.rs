@@ -646,7 +646,7 @@ impl PortScanPlan {
 /// read the platform's interface list, but a `NetworkInterface` compares on
 /// every field, and being wrong here means scanning one link twice.
 fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
-    let Ok(Some(link)) = interface::lan_link() else {
+    let Some(link) = interface::lan_link() else {
         return;
     };
 

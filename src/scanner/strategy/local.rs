@@ -194,6 +194,14 @@ pub(crate) enum FrameRejected {
     AddressOutOfRange(IpAddr),
     #[error("the frame came off a link that prepends no Ethernet header")]
     UnreadableLink,
+    /// The bytes did not hold the headers they were read for.
+    ///
+    /// A promiscuous capture admits whatever the filter let through, so a frame
+    /// that stops mid-header is an ordinary arrival rather than a fault. Named
+    /// with the parser's own reason, since which header ran out is the thing
+    /// worth knowing.
+    #[error("{0}")]
+    Malformed(#[from] crate::protocols::error::PacketError),
 }
 
 /// How long a discovery sweep runs and how it adapts. The base and per-target
@@ -1252,7 +1260,11 @@ impl LocalScanner {
 
     /// Validates an incoming frame, then handles a discovery reply in two steps:
     /// working out what it means, and recording that in shared scan state.
-    fn process_eth_packet(&mut self, frame: &CapturedFrame, now: Instant) -> anyhow::Result<()> {
+    fn process_eth_packet(
+        &mut self,
+        frame: &CapturedFrame,
+        now: Instant,
+    ) -> Result<(), FrameRejected> {
         // Every probe this sweep sends is an Ethernet frame and every reading it
         // takes starts from an Ethernet header, so a link that prepends
         // something else carries nothing this can read. `start_capture` refuses
@@ -1261,7 +1273,7 @@ impl LocalScanner {
         // address rather than fail.
         if frame.link != LinkType::Ethernet {
             self.audit.record_off_target();
-            return Err(FrameRejected::UnreadableLink.into());
+            return Err(FrameRejected::UnreadableLink);
         }
 
         let eth_frame: Frame<'_> = ethernet::parse(&frame.bytes)?;
@@ -1269,7 +1281,7 @@ impl LocalScanner {
         let source_mac = eth_frame.source();
         if source_mac == self.identity.mac {
             self.audit.record_off_target();
-            return Err(FrameRejected::SelfSourcedPacket.into());
+            return Err(FrameRejected::SelfSourcedPacket);
         }
 
         // Before the address is read, because neither of these frames has one.
@@ -1323,7 +1335,7 @@ impl LocalScanner {
             }
 
             self.audit.record_off_target();
-            return Err(FrameRejected::AddressOutOfRange(subject).into());
+            return Err(FrameRejected::AddressOutOfRange(subject));
         }
 
         if subject != source_addr {
@@ -1476,9 +1488,9 @@ impl LocalScanner {
         identifier: u16,
         sequence: u16,
         now: Instant,
-    ) -> anyhow::Result<Option<(Duration, RttSource)>> {
+    ) -> Result<Option<(Duration, RttSource)>, FrameRejected> {
         if self.ipv6.solicitation().nothing_sent() {
-            return Err(FrameRejected::UnmappedRttSource(subject).into());
+            return Err(FrameRejected::UnmappedRttSource(subject));
         }
 
         let rtt = match self.ipv6.solicitation().sent_at(identifier, sequence) {

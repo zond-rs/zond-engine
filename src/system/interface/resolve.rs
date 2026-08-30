@@ -55,7 +55,6 @@ pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpPar
 /// addressed publicly.
 fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
     let link = interface::lan_link()
-        .map_err(|e| IpParseError::LanError(e.to_string()))?
         .ok_or_else(|| IpParseError::LanError("No active network interface found".into()))?;
 
     let Some(net) = link.ipv4 else {

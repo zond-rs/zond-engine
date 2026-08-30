@@ -471,10 +471,36 @@ pub enum CaptureError {
         #[source]
         source: std::io::Error,
     },
-    /// One named link could not be opened for sending. Unlike `NoInterface`
-    /// this names the link, because a caller asked for that one in particular
-    /// and there is nothing else to fall back to.
-    #[error("{interface} could not be opened to send on: {source}")]
+    /// A link carries frames this crate cannot strip down to an IP packet.
+    ///
+    /// Not a failure to open it: the capture came up and its data-link type is
+    /// one nothing here parses. Skipped rather than misread, because guessing at
+    /// a framing is how a scanner reports a network that is not there.
+    #[error("{interface} carries data-link type {dlt}, which nothing here parses")]
+    UnsupportedLinkType {
+        /// The link that was opened.
+        interface: String,
+        /// The `libpcap` data-link type it reported.
+        dlt: i32,
+    },
+
+    /// The filter expression would not compile to a BPF program.
+    ///
+    /// A mistake in the expression rather than anything about the host, and the
+    /// expression is named because it is the thing to look at.
+    #[error("the filter `{filter}` would not compile: {source}")]
+    Filter {
+        /// The expression that was rejected.
+        filter: String,
+        /// What `libpcap` said.
+        #[source]
+        source: pcap::Error,
+    },
+
+    /// One named link could not be opened. Unlike `NoInterface` this names the
+    /// link, because a caller asked for that one in particular and there is
+    /// nothing else to fall back to.
+    #[error("{interface} could not be opened: {source}")]
     Open {
         /// The link that refused.
         interface: String,
@@ -733,9 +759,15 @@ fn timestamp_of(packet: &pcap::Packet<'_>) -> SystemTime {
 /// caller, so a blocking read on an interface seeing no matching frames never
 /// returns and the stop flag is never observed. BSD's `BPF` (macOS) does return
 /// on timeout, but relying on that would leave Linux broken.
-fn open(name: &str, options: &CaptureOptions) -> anyhow::Result<(Capture<Active>, LinkType)> {
+fn open(name: &str, options: &CaptureOptions) -> Result<(Capture<Active>, LinkType), CaptureError> {
+    let refused = |source: pcap::Error| CaptureError::Open {
+        interface: name.to_owned(),
+        source,
+    };
+
     let device = Device::from(name);
-    let mut inactive = Capture::from_device(device)?
+    let mut inactive = Capture::from_device(device)
+        .map_err(refused)?
         .immediate_mode(true)
         .promisc(options.promiscuous)
         .snaplen(saturating_i32(options.snaplen))
@@ -748,20 +780,26 @@ fn open(name: &str, options: &CaptureOptions) -> anyhow::Result<(Capture<Active>
         inactive = inactive.buffer_size(saturating_i32(bytes));
     }
 
-    let capture = inactive.open()?;
+    let capture = inactive.open().map_err(refused)?;
 
     #[cfg(not(windows))]
-    let capture = capture.setnonblock()?;
+    let capture = capture.setnonblock().map_err(refused)?;
 
     let mut capture = capture;
     let link = LinkType::from_dlt(capture.get_datalink().0);
     if let LinkType::Unsupported(dlt) = link {
-        anyhow::bail!("unsupported data-link type {dlt}");
+        return Err(CaptureError::UnsupportedLinkType {
+            interface: name.to_owned(),
+            dlt,
+        });
     }
 
     capture
         .filter(&options.filter, true)
-        .map_err(|e| anyhow::anyhow!("compiling BPF filter `{}`: {e}", options.filter))?;
+        .map_err(|source| CaptureError::Filter {
+            filter: options.filter.clone(),
+            source,
+        })?;
 
     Ok((capture, link))
 }

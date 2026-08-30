@@ -57,7 +57,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tokio::task::JoinSet;
@@ -107,13 +106,15 @@ pub async fn resolve(name: &str, timeout_after: Duration) -> Vec<IpAddr> {
 /// whose socket will not open, or whose send fails, is logged and dropped rather
 /// than failing the lookup — another interface may still carry it. Only a run in
 /// which no interface could be queried at all is an error.
-async fn query(name: &str, timeout_after: Duration) -> Result<Vec<IpAddr>> {
+async fn query(name: &str, timeout_after: Duration) -> std::io::Result<Vec<IpAddr>> {
     let interfaces = multicast_interfaces();
     if interfaces.is_empty() {
-        anyhow::bail!("no interface holds an IPv4 address to query the mDNS group on");
+        return Err(std::io::Error::other(
+            "no interface holds an IPv4 address to query the mDNS group on",
+        ));
     }
 
-    let packet = mdns::build_query(name)?;
+    let packet = mdns::build_query(name).map_err(std::io::Error::other)?;
     let wanted = name.trim_end_matches('.').to_string();
     let deadline = Instant::now() + timeout_after;
     let target = SocketAddr::V4(SocketAddrV4::new(GROUP_V4, PORT));
@@ -137,7 +138,9 @@ async fn query(name: &str, timeout_after: Duration) -> Result<Vec<IpAddr>> {
     }
 
     if listeners.is_empty() {
-        anyhow::bail!("no interface accepted the mDNS query");
+        return Err(std::io::Error::other(
+            "no interface accepted the mDNS query",
+        ));
     }
 
     let mut found = Vec::new();
@@ -190,9 +193,8 @@ async fn listen(socket: UdpSocket, wanted: String, deadline: Instant) -> Vec<IpA
 /// whichever one the host would otherwise default to, and the group is joined on
 /// the same interface so the answers arriving there are delivered. Once bound and
 /// joined it is an ordinary UDP socket, handed to tokio for the send and receive.
-fn open_group_socket(interface: Ipv4Addr) -> Result<UdpSocket> {
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
-        .context("creating the mDNS socket")?;
+fn open_group_socket(interface: Ipv4Addr) -> std::io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
     socket.set_reuse_address(true)?;
     // Unix only, and both supported platforms are: without it a second socket on
@@ -204,15 +206,23 @@ fn open_group_socket(interface: Ipv4Addr) -> Result<UdpSocket> {
     socket.set_multicast_if_v4(&interface)?;
 
     let bind_addr: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT));
-    socket
-        .bind(&bind_addr.into())
-        .with_context(|| format!("binding {bind_addr} for {interface}"))?;
+    socket.bind(&bind_addr.into()).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("binding {bind_addr} for {interface}: {error}"),
+        )
+    })?;
     socket
         .join_multicast_v4(&GROUP_V4, &interface)
-        .with_context(|| format!("joining the mDNS group on {interface}"))?;
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("joining the mDNS group on {interface}: {error}"),
+            )
+        })?;
 
     socket.set_nonblocking(true)?;
-    Ok(UdpSocket::from_std(StdUdpSocket::from(socket))?)
+    UdpSocket::from_std(StdUdpSocket::from(socket))
 }
 
 /// One IPv4 address per interface worth sending an mDNS query from: up, not

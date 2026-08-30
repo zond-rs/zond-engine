@@ -30,7 +30,12 @@
 //! grouped by owner, and each group comes back as its own [`MdnsHost`], so a
 //! name is never paired with an address that belongs to a different machine.
 
-use anyhow::{Context, Result, anyhow};
+use crate::protocols::error::{PacketError, Result};
+
+/// The largest message `dns-parser`'s builder will emit, past which it hands
+/// back what it had and refuses. Not a limit this crate chose, and named so the
+/// error can say what the number is.
+const MAX_MESSAGE_BYTES: usize = 512;
 use dns_parser::{Builder, Packet, QueryClass, QueryType, RData};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -64,9 +69,14 @@ pub fn build_query(name: &str) -> Result<Vec<u8>> {
     builder.add_question(name, false, QueryType::A, QueryClass::IN);
     builder.add_question(name, false, QueryType::AAAA, QueryClass::IN);
 
-    builder
-        .build()
-        .map_err(|partial| anyhow!("failed to build mDNS query ({} bytes)", partial.len()))
+    // The builder refuses a message over 512 bytes, and `name` is the only part
+    // a caller decides the length of. Two questions carrying a long enough one
+    // reach it, which is the whole of what can fail here.
+    builder.build().map_err(|partial| PacketError::TooLong {
+        field: "an mDNS query",
+        actual: partial.len(),
+        limit: MAX_MESSAGE_BYTES,
+    })
 }
 
 /// One host as an mDNS message described it.
@@ -84,7 +94,8 @@ pub struct MdnsHost {
 /// records - yields an empty list rather than an error. Only bytes that are not
 /// a DNS message at all are rejected.
 pub fn extract_hosts(data: &[u8]) -> Result<Vec<MdnsHost>> {
-    let packet = Packet::parse(data).context("not a parseable mDNS message")?;
+    let packet =
+        Packet::parse(data).map_err(|error| PacketError::unreadable("an mDNS message", error))?;
     let mut by_hostname: BTreeMap<String, HashSet<IpAddr>> = BTreeMap::new();
 
     for record in packet.answers.iter().chain(packet.additional.iter()) {
