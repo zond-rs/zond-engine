@@ -283,6 +283,7 @@ pub enum OnRefusal {
 }
 
 /// A target expression that was refused, and where it was.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct RejectedTarget {
     /// Where the expression came from.
@@ -524,6 +525,41 @@ pub trait TargetSink {
     fn accept(&mut self, token: &str, origin: ImportOrigin) -> Result<(), ImportError>;
 }
 
+/// Writes the target expression naming `address` on `ports` into `token`.
+///
+/// The one place the bracketing rule is written down. Every format that arrives
+/// holding an address and its ports as separate fields has to hand the grammar
+/// one expression, and each of them was assembling it, with a paragraph each
+/// explaining the same thing.
+///
+/// **The address is bracketed whenever ports follow it.** An IPv6 address must
+/// be, to carry ports at all. An IPv4 one need not be and is anyway:
+/// `10.0.0.1:u:53` is a token with two colons in it, which the grammar reads as
+/// an IPv6 address. Two characters remove the only reading in which that goes
+/// wrong, and bracketing unconditionally means no reader has to work out which
+/// family it is holding.
+///
+/// An empty `ports` names no ports, so the expression is the bare address and
+/// the scan uses [`ImportOptions::default_ports`].
+#[cfg(any(
+    feature = "import-csv",
+    feature = "import-json",
+    feature = "import-nmap"
+))]
+pub(crate) fn expression(token: &mut String, address: &str, ports: &str) {
+    token.clear();
+
+    if ports.is_empty() {
+        token.push_str(address);
+        return;
+    }
+
+    token.push('[');
+    token.push_str(address);
+    token.push_str("]:");
+    token.push_str(ports);
+}
+
 /// One input format.
 ///
 /// The single method is deliberate, for the reason [`crate::export::Exporter`]
@@ -713,16 +749,16 @@ impl ImportFormat {
     /// A caller who knows what it has should name the format and skip all of
     /// this.
     pub fn sniff(input: &mut dyn BufRead) -> Result<Self, ImportError> {
-        /// Excel's mark, which says nothing about the format behind it.
-        const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
-
         /// What a record-per-line report calls its header record. Compact JSON
         /// has no spaces in it, so this is exactly how the exporter writes it.
         #[cfg(feature = "import-json")]
         const REPORT_TAG: &[u8] = br#""type":"report""#;
 
         let buffered = input.fill_buf()?;
-        let prefix = buffered.strip_prefix(&UTF8_BOM).unwrap_or(buffered);
+        // Excel's mark, which says nothing about the format behind it.
+        let prefix = buffered
+            .strip_prefix(&crate::format::UTF8_BOM)
+            .unwrap_or(buffered);
         let prefix = prefix.trim_ascii_start();
 
         // Bound before the arms, because a build with no structured format

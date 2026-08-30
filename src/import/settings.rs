@@ -132,6 +132,10 @@
 //! opened, and no key naming a command. A file synced from a team repository is
 //! input nobody vouches for, and the way to keep that safe is for there to be
 //! nothing in the grammar worth attacking.
+//!
+//! Nor may it be enormous. [`read`] and [`load`] refuse a document past
+//! [`MAX_DOCUMENT_BYTES`], which is a constant rather than a parameter because
+//! there is nothing here anybody has a reason to tune; see that constant.
 
 pub mod paths;
 
@@ -152,6 +156,22 @@ use crate::transport::probe::SendMode;
 
 /// The name a settings document is expected to have on disk.
 pub const FILE_NAME: &str = "engine.toml";
+
+/// The most bytes a settings document may be read from.
+///
+/// A constant rather than a parameter, unlike
+/// [`ImportLimits`](crate::import::ImportLimits) on a target list. A target list
+/// is a file whose size is the caller's business: a scope document may name a
+/// million addresses and a caller who has vetted it lifts the bound. A settings
+/// file is a handful of keys somebody typed, [`TEMPLATE`] is under four
+/// kilobytes with every key in it, and no caller has a reason to want a larger
+/// one. There is nothing here to tune.
+///
+/// What it stops is the one thing that could happen by accident or on purpose:
+/// [`read`] and [`load`] hold the whole document, and [`parse`] then holds two
+/// parsed copies of it, so an enormous file costs several times its own size in
+/// memory before anything reads a key.
+pub const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
 
 /// The template [`provision`] writes.
 ///
@@ -178,6 +198,15 @@ pub enum SettingsError {
     /// The document was not valid TOML, or a value was not of the right shape.
     #[error("settings are malformed: {0}")]
     Malformed(String),
+
+    /// The document was longer than [`MAX_DOCUMENT_BYTES`].
+    #[error("{path}: settings longer than the {limit} byte limit")]
+    TooLarge {
+        /// What was being read.
+        path: PathBuf,
+        /// The limit it passed.
+        limit: u64,
+    },
 
     /// A profile was asked for that the document does not define.
     #[error("no profile named '{wanted}'; this document defines: {}",
@@ -221,6 +250,7 @@ impl Provisioned {
 ///
 /// So the caller is handed these and decides. A CLI prints them; a CI harness
 /// treats them as failures.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsWarning {
     /// The key, qualified by the table it appeared in.
@@ -246,6 +276,7 @@ impl fmt::Display for SettingsWarning {
 }
 
 /// A settings document, and everything in it this build did not recognise.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Loaded {
     /// The document.
@@ -257,6 +288,7 @@ pub struct Loaded {
 
 /// A whole settings document: the defaults, and the profiles that override
 /// them.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SettingsDocument {
     /// Applied to every scan, before any profile.
@@ -504,13 +536,34 @@ const KNOWN_KEYS: [&str; 11] = [
 /// Opens nothing. A front end whose settings live in a database, an upload or a
 /// string hands the bytes over and gets the same parsing a file would.
 pub fn read(input: &mut dyn BufRead) -> Result<Loaded, SettingsError> {
+    read_bounded(input, &PathBuf::from("<reader>"))
+}
+
+/// Reads at most [`MAX_DOCUMENT_BYTES`] from `input`, naming `path` if it
+/// refuses.
+///
+/// Bounded before the read rather than measured after it, for the reason
+/// [`crate::import::list`] bounds a line the same way: a document with no end to
+/// it must not be held in memory to discover that it is too long. One byte past
+/// the ceiling is read so that a document exactly at it is still accepted.
+fn read_bounded(input: &mut dyn BufRead, path: &Path) -> Result<Loaded, SettingsError> {
+    use std::io::Read as _;
+
     let mut text = String::new();
-    input
+    let read = std::io::Read::take(input, MAX_DOCUMENT_BYTES.saturating_add(1))
         .read_to_string(&mut text)
         .map_err(|source| SettingsError::Io {
-            path: PathBuf::from("<reader>"),
+            path: path.to_path_buf(),
             source,
         })?;
+
+    if read as u64 > MAX_DOCUMENT_BYTES {
+        return Err(SettingsError::TooLarge {
+            path: path.to_path_buf(),
+            limit: MAX_DOCUMENT_BYTES,
+        });
+    }
+
     parse(&text)
 }
 
@@ -520,11 +573,12 @@ pub fn read(input: &mut dyn BufRead) -> Result<Loaded, SettingsError> {
 /// was handed. See the module documentation for why that distinction is the
 /// whole design.
 pub fn load(path: &Path) -> Result<Loaded, SettingsError> {
-    let text = std::fs::read_to_string(path).map_err(|source| SettingsError::Io {
+    let file = std::fs::File::open(path).map_err(|source| SettingsError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    parse(&text)
+
+    read_bounded(&mut std::io::BufReader::new(file), path)
 }
 
 /// Parses a document and collects the keys this build does not know.

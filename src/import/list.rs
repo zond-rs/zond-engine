@@ -47,11 +47,8 @@
 
 use std::io::BufRead;
 
+use crate::format::UTF8_BOM_CHAR;
 use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
-
-/// The UTF-8 byte-order mark, which a Windows editor writes at the start of a
-/// file and nothing else in a target list ever means.
-const BYTE_ORDER_MARK: &str = "\u{feff}";
 
 /// The character that starts a comment, to the end of its line.
 ///
@@ -107,7 +104,7 @@ impl Importer for ListImporter {
             // would silently accept a file that is not what it claims to be.
             let text = if first_line {
                 first_line = false;
-                text.strip_prefix(BYTE_ORDER_MARK).unwrap_or(text)
+                text.strip_prefix(UTF8_BOM_CHAR).unwrap_or(text)
             } else {
                 text
             };

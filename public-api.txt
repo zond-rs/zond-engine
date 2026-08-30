@@ -2064,7 +2064,7 @@ impl core::marker::UnsafeUnpin for zond_engine::export::diff::json::JsonDiffExpo
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::json::JsonDiffExporter
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::json::JsonDiffExporter
 pub mod zond_engine::export::diff::schema
-pub struct zond_engine::export::diff::schema::ChangeDto
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::ChangeDto
 pub zond_engine::export::diff::schema::ChangeDto::after: core::option::Option<alloc::string::String>
 pub zond_engine::export::diff::schema::ChangeDto::before: core::option::Option<alloc::string::String>
 pub zond_engine::export::diff::schema::ChangeDto::kind: &'static str
@@ -2088,7 +2088,7 @@ impl core::marker::Unpin for zond_engine::export::diff::schema::ChangeDto
 impl core::marker::UnsafeUnpin for zond_engine::export::diff::schema::ChangeDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::schema::ChangeDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::schema::ChangeDto
-pub struct zond_engine::export::diff::schema::ConfirmedDto
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::ConfirmedDto
 pub zond_engine::export::diff::schema::ConfirmedDto::confirmed: usize
 pub zond_engine::export::diff::schema::ConfirmedDto::total: usize
 impl zond_engine::export::diff::schema::ConfirmedDto
@@ -2104,17 +2104,17 @@ impl core::marker::Unpin for zond_engine::export::diff::schema::ConfirmedDto
 impl core::marker::UnsafeUnpin for zond_engine::export::diff::schema::ConfirmedDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::schema::ConfirmedDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::schema::ConfirmedDto
-pub struct zond_engine::export::diff::schema::DiffDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::DiffDto<'a>
 pub zond_engine::export::diff::schema::DiffDto::baseline: zond_engine::export::diff::schema::ProvenanceDto
 pub zond_engine::export::diff::schema::DiffDto::current: zond_engine::export::diff::schema::ProvenanceDto
 pub zond_engine::export::diff::schema::DiffDto::engine: zond_engine::export::schema::EngineDto
 pub zond_engine::export::diff::schema::DiffDto::generated_at: alloc::string::String
-pub zond_engine::export::diff::schema::DiffDto::hosts: alloc::vec::Vec<zond_engine::export::diff::schema::HostDeltaDto<'a>>
+pub zond_engine::export::diff::schema::DiffDto::hosts: zond_engine::export::diff::schema::HostDeltasDto<'a>
 pub zond_engine::export::diff::schema::DiffDto::schema_version: u32
 pub zond_engine::export::diff::schema::DiffDto::summary: zond_engine::export::diff::schema::SummaryDto
 pub zond_engine::export::diff::schema::DiffDto::unchanged: bool
 impl<'a> zond_engine::export::diff::schema::DiffDto<'a>
-pub fn zond_engine::export::diff::schema::DiffDto<'a>::new(&'a zond_engine::diff::ScanDiff, &zond_engine::export::ExportOptions) -> Self
+pub fn zond_engine::export::diff::schema::DiffDto<'a>::new(&'a zond_engine::diff::ScanDiff, &'a zond_engine::export::ExportOptions) -> Self
 impl<'a> core::fmt::Debug for zond_engine::export::diff::schema::DiffDto<'a>
 pub fn zond_engine::export::diff::schema::DiffDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> serde_core::ser::Serialize for zond_engine::export::diff::schema::DiffDto<'a>
@@ -2126,7 +2126,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::diff::schema::DiffDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::diff::schema::DiffDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::schema::DiffDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::schema::DiffDto<'a>
-pub struct zond_engine::export::diff::schema::HostDeltaDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::HostDeltaDto<'a>
 pub zond_engine::export::diff::schema::HostDeltaDto::address: alloc::string::String
 pub zond_engine::export::diff::schema::HostDeltaDto::baseline: core::option::Option<zond_engine::export::schema::HostDto<'a>>
 pub zond_engine::export::diff::schema::HostDeltaDto::changes: alloc::vec::Vec<zond_engine::export::diff::schema::ChangeDto>
@@ -2150,7 +2150,23 @@ impl<'a> core::marker::Unpin for zond_engine::export::diff::schema::HostDeltaDto
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::diff::schema::HostDeltaDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::schema::HostDeltaDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::schema::HostDeltaDto<'a>
-pub struct zond_engine::export::diff::schema::PortDeltaDto
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::HostDeltasDto<'a>
+impl<'a> zond_engine::export::diff::schema::HostDeltasDto<'a>
+pub fn zond_engine::export::diff::schema::HostDeltasDto<'a>::deltas(&self) -> &'a [zond_engine::diff::host::HostDelta]
+pub fn zond_engine::export::diff::schema::HostDeltasDto<'a>::is_empty(&self) -> bool
+pub fn zond_engine::export::diff::schema::HostDeltasDto<'a>::len(&self) -> usize
+impl serde_core::ser::Serialize for zond_engine::export::diff::schema::HostDeltasDto<'_>
+pub fn zond_engine::export::diff::schema::HostDeltasDto<'_>::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'a> core::fmt::Debug for zond_engine::export::diff::schema::HostDeltasDto<'a>
+pub fn zond_engine::export::diff::schema::HostDeltasDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Freeze for zond_engine::export::diff::schema::HostDeltasDto<'a>
+impl<'a> core::marker::Send for zond_engine::export::diff::schema::HostDeltasDto<'a>
+impl<'a> core::marker::Sync for zond_engine::export::diff::schema::HostDeltasDto<'a>
+impl<'a> core::marker::Unpin for zond_engine::export::diff::schema::HostDeltasDto<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::export::diff::schema::HostDeltasDto<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::schema::HostDeltasDto<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::schema::HostDeltasDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::PortDeltaDto
 pub zond_engine::export::diff::schema::PortDeltaDto::changes: alloc::vec::Vec<zond_engine::export::diff::schema::ChangeDto>
 pub zond_engine::export::diff::schema::PortDeltaDto::closed: bool
 pub zond_engine::export::diff::schema::PortDeltaDto::confirmed: bool
@@ -2172,7 +2188,7 @@ impl core::marker::Unpin for zond_engine::export::diff::schema::PortDeltaDto
 impl core::marker::UnsafeUnpin for zond_engine::export::diff::schema::PortDeltaDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::schema::PortDeltaDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::schema::PortDeltaDto
-pub struct zond_engine::export::diff::schema::ProvenanceDto
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::ProvenanceDto
 pub zond_engine::export::diff::schema::ProvenanceDto::at: alloc::string::String
 pub zond_engine::export::diff::schema::ProvenanceDto::engine_version: alloc::string::String
 pub zond_engine::export::diff::schema::ProvenanceDto::hosts: usize
@@ -2191,7 +2207,7 @@ impl core::marker::Unpin for zond_engine::export::diff::schema::ProvenanceDto
 impl core::marker::UnsafeUnpin for zond_engine::export::diff::schema::ProvenanceDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::schema::ProvenanceDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::schema::ProvenanceDto
-pub struct zond_engine::export::diff::schema::RecordsDto
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::RecordsDto
 pub zond_engine::export::diff::schema::RecordsDto::baseline: usize
 pub zond_engine::export::diff::schema::RecordsDto::current: usize
 impl core::fmt::Debug for zond_engine::export::diff::schema::RecordsDto
@@ -2205,7 +2221,7 @@ impl core::marker::Unpin for zond_engine::export::diff::schema::RecordsDto
 impl core::marker::UnsafeUnpin for zond_engine::export::diff::schema::RecordsDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::schema::RecordsDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::schema::RecordsDto
-pub struct zond_engine::export::diff::schema::SummaryDto
+#[non_exhaustive] pub struct zond_engine::export::diff::schema::SummaryDto
 pub zond_engine::export::diff::schema::SummaryDto::certificates_expired: usize
 pub zond_engine::export::diff::schema::SummaryDto::certificates_expiring: usize
 pub zond_engine::export::diff::schema::SummaryDto::certificates_rotated: usize
@@ -2233,6 +2249,35 @@ pub const zond_engine::export::diff::schema::DIFF_SCHEMA_VERSION: u32
 pub const zond_engine::export::diff::schema::ENGINE_NAME: &str
 pub fn zond_engine::export::diff::schema::coverage_name(zond_engine::diff::change::Coverage) -> &'static str
 pub fn zond_engine::export::diff::schema::presence_name(zond_engine::diff::change::Presence) -> &'static str
+#[non_exhaustive] pub enum zond_engine::export::diff::DiffFormat
+pub zond_engine::export::diff::DiffFormat::Html
+pub zond_engine::export::diff::DiffFormat::Json
+impl zond_engine::export::diff::DiffFormat
+pub fn zond_engine::export::diff::DiffFormat::all() -> &'static [zond_engine::export::diff::DiffFormat]
+pub fn zond_engine::export::diff::DiffFormat::exporter(self, zond_engine::export::ExportOptions) -> alloc::boxed::Box<dyn zond_engine::export::diff::DiffExporter>
+pub fn zond_engine::export::diff::DiffFormat::extension(self) -> &'static str
+pub fn zond_engine::export::diff::DiffFormat::from_extension(&str) -> core::option::Option<Self>
+pub fn zond_engine::export::diff::DiffFormat::from_path(&std::path::Path) -> core::option::Option<Self>
+impl core::clone::Clone for zond_engine::export::diff::DiffFormat
+pub fn zond_engine::export::diff::DiffFormat::clone(&self) -> zond_engine::export::diff::DiffFormat
+impl core::cmp::Eq for zond_engine::export::diff::DiffFormat
+impl core::cmp::PartialEq for zond_engine::export::diff::DiffFormat
+pub fn zond_engine::export::diff::DiffFormat::eq(&self, &zond_engine::export::diff::DiffFormat) -> bool
+impl core::fmt::Debug for zond_engine::export::diff::DiffFormat
+pub fn zond_engine::export::diff::DiffFormat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::export::diff::DiffFormat
+pub fn zond_engine::export::diff::DiffFormat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::export::diff::DiffFormat
+pub fn zond_engine::export::diff::DiffFormat::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::export::diff::DiffFormat
+impl core::marker::StructuralPartialEq for zond_engine::export::diff::DiffFormat
+impl core::marker::Freeze for zond_engine::export::diff::DiffFormat
+impl core::marker::Send for zond_engine::export::diff::DiffFormat
+impl core::marker::Sync for zond_engine::export::diff::DiffFormat
+impl core::marker::Unpin for zond_engine::export::diff::DiffFormat
+impl core::marker::UnsafeUnpin for zond_engine::export::diff::DiffFormat
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::diff::DiffFormat
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::diff::DiffFormat
 pub struct zond_engine::export::diff::HtmlDiffExporter
 impl zond_engine::export::diff::html::HtmlDiffExporter
 pub fn zond_engine::export::diff::html::HtmlDiffExporter::new(zond_engine::export::ExportOptions) -> Self
@@ -2280,6 +2325,7 @@ impl zond_engine::export::diff::DiffExporter for zond_engine::export::diff::html
 pub fn zond_engine::export::diff::html::HtmlDiffExporter::export(&self, &zond_engine::diff::ScanDiff, &mut dyn core::io::write::Write) -> core::result::Result<(), zond_engine::export::ExportError>
 impl zond_engine::export::diff::DiffExporter for zond_engine::export::diff::json::JsonDiffExporter
 pub fn zond_engine::export::diff::json::JsonDiffExporter::export(&self, &zond_engine::diff::ScanDiff, &mut dyn core::io::write::Write) -> core::result::Result<(), zond_engine::export::ExportError>
+pub fn zond_engine::export::diff::export_to(&std::path::Path, &zond_engine::diff::ScanDiff, &mut dyn core::io::write::Write, zond_engine::export::ExportOptions) -> core::option::Option<core::result::Result<(), zond_engine::export::ExportError>>
 pub mod zond_engine::export::html
 pub struct zond_engine::export::html::HtmlExporter
 impl zond_engine::export::html::HtmlExporter
@@ -2369,7 +2415,7 @@ pub mod zond_engine::export::redact
 pub fn zond_engine::export::redact::hostname(&str) -> alloc::string::String
 pub fn zond_engine::export::redact::mac_addr(&zond_engine::model::mac::MacAddr) -> alloc::string::String
 pub mod zond_engine::export::schema
-pub struct zond_engine::export::schema::AttachmentDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::AttachmentDto<'a>
 pub zond_engine::export::schema::AttachmentDto::device_mac: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::AttachmentDto::device_name: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::AttachmentDto::link: &'a str
@@ -2391,7 +2437,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::AttachmentDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::AttachmentDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::AttachmentDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::AttachmentDto<'a>
-pub struct zond_engine::export::schema::AttemptCountDto
+#[non_exhaustive] pub struct zond_engine::export::schema::AttemptCountDto
 pub zond_engine::export::schema::AttemptCountDto::attempt: u32
 pub zond_engine::export::schema::AttemptCountDto::count: u64
 pub zond_engine::export::schema::AttemptCountDto::or_later: bool
@@ -2408,7 +2454,7 @@ impl core::marker::Unpin for zond_engine::export::schema::AttemptCountDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::AttemptCountDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::AttemptCountDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::AttemptCountDto
-pub struct zond_engine::export::schema::BucketDto
+#[non_exhaustive] pub struct zond_engine::export::schema::BucketDto
 pub zond_engine::export::schema::BucketDto::count: u64
 pub zond_engine::export::schema::BucketDto::le_ms: core::option::Option<u64>
 impl core::clone::Clone for zond_engine::export::schema::BucketDto
@@ -2424,7 +2470,7 @@ impl core::marker::Unpin for zond_engine::export::schema::BucketDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::BucketDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::BucketDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::BucketDto
-pub struct zond_engine::export::schema::CaptureDto
+#[non_exhaustive] pub struct zond_engine::export::schema::CaptureDto
 pub zond_engine::export::schema::CaptureDto::dropped: u64
 pub zond_engine::export::schema::CaptureDto::if_dropped: u64
 pub zond_engine::export::schema::CaptureDto::received: u64
@@ -2443,7 +2489,7 @@ impl core::marker::Unpin for zond_engine::export::schema::CaptureDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::CaptureDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::CaptureDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::CaptureDto
-pub struct zond_engine::export::schema::CertificateDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::CertificateDto<'a>
 pub zond_engine::export::schema::CertificateDto::common_name: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::CertificateDto::fingerprint_sha256: &'a str
 pub zond_engine::export::schema::CertificateDto::issuer: &'a str
@@ -2467,7 +2513,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::CertificateDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::CertificateDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::CertificateDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::CertificateDto<'a>
-pub struct zond_engine::export::schema::DiscoveryDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::DiscoveryDto<'a>
 pub zond_engine::export::schema::DiscoveryDto::reason: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::DiscoveryDto::rtt_us: core::option::Option<u64>
 pub zond_engine::export::schema::DiscoveryDto::source_ip: core::option::Option<alloc::string::String>
@@ -2488,7 +2534,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::DiscoveryDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::DiscoveryDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::DiscoveryDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::DiscoveryDto<'a>
-pub struct zond_engine::export::schema::EngineDto
+#[non_exhaustive] pub struct zond_engine::export::schema::EngineDto
 pub zond_engine::export::schema::EngineDto::name: &'static str
 pub zond_engine::export::schema::EngineDto::version: &'static str
 impl core::clone::Clone for zond_engine::export::schema::EngineDto
@@ -2504,7 +2550,7 @@ impl core::marker::Unpin for zond_engine::export::schema::EngineDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::EngineDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::EngineDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::EngineDto
-pub struct zond_engine::export::schema::EvasionDto
+#[non_exhaustive] pub struct zond_engine::export::schema::EvasionDto
 pub zond_engine::export::schema::EvasionDto::bad_tcp_checksum: bool
 pub zond_engine::export::schema::EvasionDto::decoys: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::export::schema::EvasionDto::flags: core::option::Option<alloc::string::String>
@@ -2528,7 +2574,7 @@ impl core::marker::Unpin for zond_engine::export::schema::EvasionDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::EvasionDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::EvasionDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::EvasionDto
-pub struct zond_engine::export::schema::FailureDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::FailureDto<'a>
 pub zond_engine::export::schema::FailureDto::at: alloc::string::String
 pub zond_engine::export::schema::FailureDto::reason: &'a str
 pub zond_engine::export::schema::FailureDto::scanner: &'static str
@@ -2547,7 +2593,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::FailureDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::FailureDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::FailureDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::FailureDto<'a>
-pub struct zond_engine::export::schema::FamilyCounts
+#[non_exhaustive] pub struct zond_engine::export::schema::FamilyCounts
 pub zond_engine::export::schema::FamilyCounts::dual_stack: usize
 pub zond_engine::export::schema::FamilyCounts::ipv4: usize
 pub zond_engine::export::schema::FamilyCounts::ipv6: usize
@@ -2565,7 +2611,7 @@ impl core::marker::Unpin for zond_engine::export::schema::FamilyCounts
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::FamilyCounts
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::FamilyCounts
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::FamilyCounts
-pub struct zond_engine::export::schema::FindingDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::FindingDto<'a>
 pub zond_engine::export::schema::FindingDto::class: &'static str
 pub zond_engine::export::schema::FindingDto::confidence: &'static str
 pub zond_engine::export::schema::FindingDto::content_hash: &'a str
@@ -2591,7 +2637,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::FindingDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::FindingDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::FindingDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::FindingDto<'a>
-pub struct zond_engine::export::schema::HardwareDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::HardwareDto<'a>
 pub zond_engine::export::schema::HardwareDto::mac: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::HardwareDto::macs: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::export::schema::HardwareDto::vendor: core::option::Option<&'a str>
@@ -2610,7 +2656,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::HardwareDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::HardwareDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::HardwareDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::HardwareDto<'a>
-pub struct zond_engine::export::schema::HopDto
+#[non_exhaustive] pub struct zond_engine::export::schema::HopDto
 pub zond_engine::export::schema::HopDto::address: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::HopDto::distance: u8
 pub zond_engine::export::schema::HopDto::inferred: bool
@@ -2630,7 +2676,7 @@ impl core::marker::Unpin for zond_engine::export::schema::HopDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::HopDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::HopDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::HopDto
-pub struct zond_engine::export::schema::HostDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::HostDto<'a>
 pub zond_engine::export::schema::HostDto::alive: bool
 pub zond_engine::export::schema::HostDto::families: alloc::vec::Vec<&'static str>
 pub zond_engine::export::schema::HostDto::filtering: alloc::vec::Vec<&'static str>
@@ -2664,7 +2710,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::HostDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::HostDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::HostDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::HostDto<'a>
-pub struct zond_engine::export::schema::HostStatusCounts
+#[non_exhaustive] pub struct zond_engine::export::schema::HostStatusCounts
 pub zond_engine::export::schema::HostStatusCounts::down: usize
 pub zond_engine::export::schema::HostStatusCounts::filtered: usize
 pub zond_engine::export::schema::HostStatusCounts::unknown: usize
@@ -2682,7 +2728,7 @@ impl core::marker::Unpin for zond_engine::export::schema::HostStatusCounts
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::HostStatusCounts
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::HostStatusCounts
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::HostStatusCounts
-pub struct zond_engine::export::schema::IdleScanDto
+#[non_exhaustive] pub struct zond_engine::export::schema::IdleScanDto
 pub zond_engine::export::schema::IdleScanDto::zombie: alloc::string::String
 pub zond_engine::export::schema::IdleScanDto::zombie_port: core::option::Option<u16>
 impl core::clone::Clone for zond_engine::export::schema::IdleScanDto
@@ -2698,7 +2744,7 @@ impl core::marker::Unpin for zond_engine::export::schema::IdleScanDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::IdleScanDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::IdleScanDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::IdleScanDto
-pub struct zond_engine::export::schema::OsDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::OsDto<'a>
 pub zond_engine::export::schema::OsDto::accuracy: u8
 pub zond_engine::export::schema::OsDto::cpes: alloc::vec::Vec<&'a str>
 pub zond_engine::export::schema::OsDto::detail_accuracy: core::option::Option<u8>
@@ -2724,7 +2770,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::OsDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::OsDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::OsDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::OsDto<'a>
-pub struct zond_engine::export::schema::PhaseDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::PhaseDto<'a>
 pub zond_engine::export::schema::PhaseDto::attachments: alloc::vec::Vec<zond_engine::export::schema::AttachmentDto<'a>>
 pub zond_engine::export::schema::PhaseDto::elapsed_us: u64
 pub zond_engine::export::schema::PhaseDto::failures: alloc::vec::Vec<zond_engine::export::schema::FailureDto<'a>>
@@ -2751,7 +2797,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::PhaseDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::PhaseDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::PhaseDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::PhaseDto<'a>
-pub struct zond_engine::export::schema::PhaseOriginDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::PhaseOriginDto<'a>
 pub zond_engine::export::schema::PhaseOriginDto::engine_version: &'a str
 pub zond_engine::export::schema::PhaseOriginDto::label: core::option::Option<&'a str>
 impl<'a> core::clone::Clone for zond_engine::export::schema::PhaseOriginDto<'a>
@@ -2767,7 +2813,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::PhaseOriginDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::PhaseOriginDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::PhaseOriginDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::PhaseOriginDto<'a>
-pub struct zond_engine::export::schema::PortDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::PortDto<'a>
 pub zond_engine::export::schema::PortDto::discovery: core::option::Option<zond_engine::export::schema::DiscoveryDto<'a>>
 pub zond_engine::export::schema::PortDto::findings: alloc::vec::Vec<zond_engine::export::schema::FindingDto<'a>>
 pub zond_engine::export::schema::PortDto::port: u16
@@ -2790,7 +2836,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::PortDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::PortDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::PortDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::PortDto<'a>
-pub struct zond_engine::export::schema::PortScopeDto
+#[non_exhaustive] pub struct zond_engine::export::schema::PortScopeDto
 pub zond_engine::export::schema::PortScopeDto::kind: &'static str
 pub zond_engine::export::schema::PortScopeDto::spec: alloc::string::String
 impl zond_engine::export::schema::PortScopeDto
@@ -2808,7 +2854,7 @@ impl core::marker::Unpin for zond_engine::export::schema::PortScopeDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::PortScopeDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::PortScopeDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::PortScopeDto
-pub struct zond_engine::export::schema::PortStateCounts
+#[non_exhaustive] pub struct zond_engine::export::schema::PortStateCounts
 pub zond_engine::export::schema::PortStateCounts::closed: usize
 pub zond_engine::export::schema::PortStateCounts::closed_filtered: usize
 pub zond_engine::export::schema::PortStateCounts::filtered: usize
@@ -2828,7 +2874,7 @@ impl core::marker::Unpin for zond_engine::export::schema::PortStateCounts
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::PortStateCounts
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::PortStateCounts
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::PortStateCounts
-pub struct zond_engine::export::schema::ProbeStatsDto
+#[non_exhaustive] pub struct zond_engine::export::schema::ProbeStatsDto
 pub zond_engine::export::schema::ProbeStatsDto::answered_on: alloc::vec::Vec<zond_engine::export::schema::AttemptCountDto>
 pub zond_engine::export::schema::ProbeStatsDto::answered_unattributed: u64
 pub zond_engine::export::schema::ProbeStatsDto::capture: core::option::Option<zond_engine::export::schema::CaptureDto>
@@ -2862,7 +2908,7 @@ impl core::marker::Unpin for zond_engine::export::schema::ProbeStatsDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::ProbeStatsDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ProbeStatsDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ProbeStatsDto
-pub struct zond_engine::export::schema::RangeDto
+#[non_exhaustive] pub struct zond_engine::export::schema::RangeDto
 pub zond_engine::export::schema::RangeDto::end: alloc::string::String
 pub zond_engine::export::schema::RangeDto::family: &'static str
 pub zond_engine::export::schema::RangeDto::start: alloc::string::String
@@ -2881,7 +2927,7 @@ impl core::marker::Unpin for zond_engine::export::schema::RangeDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::RangeDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::RangeDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::RangeDto
-pub struct zond_engine::export::schema::ReasonDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::ReasonDto<'a>
 pub zond_engine::export::schema::ReasonDto::details: core::option::Option<&'a str>
 pub zond_engine::export::schema::ReasonDto::protocol: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::ReasonDto::source_ip: core::option::Option<alloc::string::String>
@@ -2900,7 +2946,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::ReasonDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::ReasonDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ReasonDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ReasonDto<'a>
-pub struct zond_engine::export::schema::ReferenceDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::ReferenceDto<'a>
 pub zond_engine::export::schema::ReferenceDto::kind: &'static str
 pub zond_engine::export::schema::ReferenceDto::value: alloc::borrow::Cow<'a, str>
 impl<'a> zond_engine::export::schema::ReferenceDto<'a>
@@ -2918,7 +2964,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::ReferenceDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::ReferenceDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ReferenceDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ReferenceDto<'a>
-pub struct zond_engine::export::schema::ReportDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::ReportDto<'a>
 impl<'a> zond_engine::export::schema::ReportDto<'a>
 pub fn zond_engine::export::schema::ReportDto<'a>::generated_at(&'a zond_engine::report::ScanReport, &'a zond_engine::export::ExportOptions, std::time::SystemTime) -> Self
 pub fn zond_engine::export::schema::ReportDto<'a>::new(&'a zond_engine::report::ScanReport, &'a zond_engine::export::ExportOptions) -> Self
@@ -2935,7 +2981,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::ReportDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::ReportDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ReportDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ReportDto<'a>
-pub struct zond_engine::export::schema::ReportHeaderDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::ReportHeaderDto<'a>
 impl<'a> zond_engine::export::schema::ReportHeaderDto<'a>
 pub fn zond_engine::export::schema::ReportHeaderDto<'a>::generated_at(&'a zond_engine::report::ScanReport, &'a zond_engine::export::ExportOptions, std::time::SystemTime) -> Self
 pub fn zond_engine::export::schema::ReportHeaderDto<'a>::new(&'a zond_engine::report::ScanReport, &'a zond_engine::export::ExportOptions) -> Self
@@ -2950,7 +2996,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::ReportHeaderDto<'a
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::ReportHeaderDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ReportHeaderDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ReportHeaderDto<'a>
-pub struct zond_engine::export::schema::RetryDto
+#[non_exhaustive] pub struct zond_engine::export::schema::RetryDto
 pub zond_engine::export::schema::RetryDto::dampen_silent_hosts: bool
 pub zond_engine::export::schema::RetryDto::effort: &'static str
 pub zond_engine::export::schema::RetryDto::max_attempts: core::option::Option<u8>
@@ -2970,7 +3016,7 @@ impl core::marker::Unpin for zond_engine::export::schema::RetryDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::RetryDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::RetryDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::RetryDto
-pub struct zond_engine::export::schema::ScopeDto
+#[non_exhaustive] pub struct zond_engine::export::schema::ScopeDto
 pub zond_engine::export::schema::ScopeDto::addresses: alloc::string::String
 pub zond_engine::export::schema::ScopeDto::excluded: alloc::vec::Vec<zond_engine::export::schema::RangeDto>
 pub zond_engine::export::schema::ScopeDto::links: alloc::vec::Vec<alloc::string::String>
@@ -2995,7 +3041,7 @@ impl core::marker::Unpin for zond_engine::export::schema::ScopeDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::ScopeDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ScopeDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ScopeDto
-pub struct zond_engine::export::schema::SecurityDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::SecurityDto<'a>
 pub zond_engine::export::schema::SecurityDto::alpn: alloc::vec::Vec<&'a str>
 pub zond_engine::export::schema::SecurityDto::certificate: core::option::Option<zond_engine::export::schema::CertificateDto<'a>>
 pub zond_engine::export::schema::SecurityDto::cipher_suite: core::option::Option<&'a str>
@@ -3015,7 +3061,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::SecurityDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::SecurityDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::SecurityDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::SecurityDto<'a>
-pub struct zond_engine::export::schema::ServiceDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::ServiceDto<'a>
 pub zond_engine::export::schema::ServiceDto::confidence: u8
 pub zond_engine::export::schema::ServiceDto::cpes: alloc::vec::Vec<&'a str>
 pub zond_engine::export::schema::ServiceDto::extrainfo: core::option::Option<&'a str>
@@ -3038,7 +3084,7 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::ServiceDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::ServiceDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ServiceDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ServiceDto<'a>
-pub struct zond_engine::export::schema::SettingsDto
+#[non_exhaustive] pub struct zond_engine::export::schema::SettingsDto
 pub zond_engine::export::schema::SettingsDto::characterise: bool
 pub zond_engine::export::schema::SettingsDto::detection: &'static str
 pub zond_engine::export::schema::SettingsDto::dns_enabled: bool
@@ -3067,7 +3113,7 @@ impl core::marker::Unpin for zond_engine::export::schema::SettingsDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::SettingsDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::SettingsDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::SettingsDto
-pub struct zond_engine::export::schema::SummaryDto
+#[non_exhaustive] pub struct zond_engine::export::schema::SummaryDto
 pub zond_engine::export::schema::SummaryDto::hosts_alive: usize
 pub zond_engine::export::schema::SummaryDto::hosts_by_family: zond_engine::export::schema::FamilyCounts
 pub zond_engine::export::schema::SummaryDto::hosts_by_status: zond_engine::export::schema::HostStatusCounts
@@ -3091,7 +3137,7 @@ impl core::marker::Unpin for zond_engine::export::schema::SummaryDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::SummaryDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::SummaryDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::SummaryDto
-pub struct zond_engine::export::schema::TelemetryDto
+#[non_exhaustive] pub struct zond_engine::export::schema::TelemetryDto
 pub zond_engine::export::schema::TelemetryDto::jitter_us: core::option::Option<u64>
 pub zond_engine::export::schema::TelemetryDto::rtt_avg_us: core::option::Option<u64>
 pub zond_engine::export::schema::TelemetryDto::rtt_max_us: core::option::Option<u64>
@@ -3113,7 +3159,7 @@ impl core::marker::Unpin for zond_engine::export::schema::TelemetryDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::TelemetryDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::TelemetryDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::TelemetryDto
-pub struct zond_engine::export::schema::WindowDto
+#[non_exhaustive] pub struct zond_engine::export::schema::WindowDto
 pub zond_engine::export::schema::WindowDto::adaptive: bool
 pub zond_engine::export::schema::WindowDto::at_floor: bool
 pub zond_engine::export::schema::WindowDto::capacity: u64
@@ -4434,6 +4480,7 @@ pub fn zond_engine::fingerprint::reads_replies(u16, zond_engine::model::port::Pr
 pub mod zond_engine::format
 pub mod zond_engine::format::csv
 pub const zond_engine::format::csv::COLUMNS: [&str; 25]
+pub const zond_engine::format::csv::FORMULA_LEADERS: [char; 6]
 pub const zond_engine::format::csv::PORT_COLUMNS: usize
 pub mod zond_engine::format::time
 pub fn zond_engine::format::time::local(std::time::SystemTime) -> alloc::string::String
@@ -4442,6 +4489,8 @@ pub fn zond_engine::format::time::rfc3339(std::time::SystemTime) -> alloc::strin
 pub const zond_engine::format::DIFF_SCHEMA_VERSION: u32
 pub const zond_engine::format::ENGINE_NAME: &str
 pub const zond_engine::format::SCHEMA_VERSION: u32
+pub const zond_engine::format::UTF8_BOM: [u8; 3]
+pub const zond_engine::format::UTF8_BOM_CHAR: char
 pub mod zond_engine::import
 pub mod zond_engine::import::csv
 #[non_exhaustive] pub enum zond_engine::import::csv::CsvColumn
@@ -4468,6 +4517,7 @@ pub fn zond_engine::import::csv::CsvImporter::new(zond_engine::import::ImportLim
 pub fn zond_engine::import::csv::CsvImporter::with_address_column(self, zond_engine::import::csv::CsvColumn) -> Self
 pub fn zond_engine::import::csv::CsvImporter::with_header(self, bool) -> Self
 pub fn zond_engine::import::csv::CsvImporter::with_port_column(self, zond_engine::import::csv::CsvColumn) -> Self
+pub fn zond_engine::import::csv::CsvImporter::with_protocol_column(self, zond_engine::import::csv::CsvColumn) -> Self
 impl core::clone::Clone for zond_engine::import::csv::CsvImporter
 pub fn zond_engine::import::csv::CsvImporter::clone(&self) -> zond_engine::import::csv::CsvImporter
 impl core::default::Default for zond_engine::import::csv::CsvImporter
@@ -4652,7 +4702,7 @@ impl core::marker::Unpin for zond_engine::import::report::ReportFormat
 impl core::marker::UnsafeUnpin for zond_engine::import::report::ReportFormat
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::report::ReportFormat
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::report::ReportFormat
-pub struct zond_engine::import::report::ReportOptions
+#[non_exhaustive] pub struct zond_engine::import::report::ReportOptions
 pub zond_engine::import::report::ReportOptions::limits: zond_engine::import::ImportLimits
 pub zond_engine::import::report::ReportOptions::max_document_bytes: u64
 impl zond_engine::import::report::ReportOptions
@@ -4720,6 +4770,9 @@ pub zond_engine::import::settings::SettingsError::Io::path: std::path::PathBuf
 pub zond_engine::import::settings::SettingsError::Io::source: core::io::error::Error
 pub zond_engine::import::settings::SettingsError::Malformed(alloc::string::String)
 pub zond_engine::import::settings::SettingsError::NoPath
+pub zond_engine::import::settings::SettingsError::TooLarge
+pub zond_engine::import::settings::SettingsError::TooLarge::limit: u64
+pub zond_engine::import::settings::SettingsError::TooLarge::path: std::path::PathBuf
 pub zond_engine::import::settings::SettingsError::UnknownProfile
 pub zond_engine::import::settings::SettingsError::UnknownProfile::available: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::import::settings::SettingsError::UnknownProfile::wanted: alloc::string::String
@@ -4736,7 +4789,7 @@ impl core::marker::Unpin for zond_engine::import::settings::SettingsError
 impl core::marker::UnsafeUnpin for zond_engine::import::settings::SettingsError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::settings::SettingsError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::import::settings::SettingsError
-pub struct zond_engine::import::settings::Loaded
+#[non_exhaustive] pub struct zond_engine::import::settings::Loaded
 pub zond_engine::import::settings::Loaded::document: zond_engine::import::settings::SettingsDocument
 pub zond_engine::import::settings::Loaded::warnings: alloc::vec::Vec<zond_engine::import::settings::SettingsWarning>
 impl core::clone::Clone for zond_engine::import::settings::Loaded
@@ -4785,7 +4838,7 @@ impl core::marker::Unpin for zond_engine::import::settings::Settings
 impl core::marker::UnsafeUnpin for zond_engine::import::settings::Settings
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::settings::Settings
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::settings::Settings
-pub struct zond_engine::import::settings::SettingsDocument
+#[non_exhaustive] pub struct zond_engine::import::settings::SettingsDocument
 pub zond_engine::import::settings::SettingsDocument::defaults: zond_engine::import::settings::Settings
 pub zond_engine::import::settings::SettingsDocument::profiles: alloc::collections::btree::map::BTreeMap<alloc::string::String, zond_engine::import::settings::Settings>
 impl zond_engine::import::settings::SettingsDocument
@@ -4806,7 +4859,7 @@ impl core::marker::Unpin for zond_engine::import::settings::SettingsDocument
 impl core::marker::UnsafeUnpin for zond_engine::import::settings::SettingsDocument
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::settings::SettingsDocument
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::settings::SettingsDocument
-pub struct zond_engine::import::settings::SettingsWarning
+#[non_exhaustive] pub struct zond_engine::import::settings::SettingsWarning
 pub zond_engine::import::settings::SettingsWarning::key: alloc::string::String
 pub zond_engine::import::settings::SettingsWarning::suggestion: core::option::Option<&'static str>
 impl core::clone::Clone for zond_engine::import::settings::SettingsWarning
@@ -4827,6 +4880,7 @@ impl core::marker::UnsafeUnpin for zond_engine::import::settings::SettingsWarnin
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::settings::SettingsWarning
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::settings::SettingsWarning
 pub const zond_engine::import::settings::FILE_NAME: &str
+pub const zond_engine::import::settings::MAX_DOCUMENT_BYTES: u64
 pub const zond_engine::import::settings::TEMPLATE: &str
 pub fn zond_engine::import::settings::load(&std::path::Path) -> core::result::Result<zond_engine::import::settings::Loaded, zond_engine::import::settings::SettingsError>
 pub fn zond_engine::import::settings::parse(&str) -> core::result::Result<zond_engine::import::settings::Loaded, zond_engine::import::settings::SettingsError>
@@ -4956,6 +5010,9 @@ pub zond_engine::import::SettingsError::Io::path: std::path::PathBuf
 pub zond_engine::import::SettingsError::Io::source: core::io::error::Error
 pub zond_engine::import::SettingsError::Malformed(alloc::string::String)
 pub zond_engine::import::SettingsError::NoPath
+pub zond_engine::import::SettingsError::TooLarge
+pub zond_engine::import::SettingsError::TooLarge::limit: u64
+pub zond_engine::import::SettingsError::TooLarge::path: std::path::PathBuf
 pub zond_engine::import::SettingsError::UnknownProfile
 pub zond_engine::import::SettingsError::UnknownProfile::available: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::import::SettingsError::UnknownProfile::wanted: alloc::string::String
@@ -4978,6 +5035,7 @@ pub fn zond_engine::import::csv::CsvImporter::new(zond_engine::import::ImportLim
 pub fn zond_engine::import::csv::CsvImporter::with_address_column(self, zond_engine::import::csv::CsvColumn) -> Self
 pub fn zond_engine::import::csv::CsvImporter::with_header(self, bool) -> Self
 pub fn zond_engine::import::csv::CsvImporter::with_port_column(self, zond_engine::import::csv::CsvColumn) -> Self
+pub fn zond_engine::import::csv::CsvImporter::with_protocol_column(self, zond_engine::import::csv::CsvColumn) -> Self
 impl core::clone::Clone for zond_engine::import::csv::CsvImporter
 pub fn zond_engine::import::csv::CsvImporter::clone(&self) -> zond_engine::import::csv::CsvImporter
 impl core::default::Default for zond_engine::import::csv::CsvImporter
@@ -5163,7 +5221,7 @@ impl core::marker::Unpin for zond_engine::import::nmap::NmapXmlImporter
 impl core::marker::UnsafeUnpin for zond_engine::import::nmap::NmapXmlImporter
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::nmap::NmapXmlImporter
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::nmap::NmapXmlImporter
-pub struct zond_engine::import::RejectedTarget
+#[non_exhaustive] pub struct zond_engine::import::RejectedTarget
 pub zond_engine::import::RejectedTarget::origin: zond_engine::import::ImportOrigin
 pub zond_engine::import::RejectedTarget::reason: zond_engine::model::parse::target::TargetParseError
 pub zond_engine::import::RejectedTarget::token: alloc::string::String
@@ -5213,7 +5271,7 @@ impl core::marker::Unpin for zond_engine::import::settings::Settings
 impl core::marker::UnsafeUnpin for zond_engine::import::settings::Settings
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::settings::Settings
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::settings::Settings
-pub struct zond_engine::import::SettingsDocument
+#[non_exhaustive] pub struct zond_engine::import::SettingsDocument
 pub zond_engine::import::SettingsDocument::defaults: zond_engine::import::settings::Settings
 pub zond_engine::import::SettingsDocument::profiles: alloc::collections::btree::map::BTreeMap<alloc::string::String, zond_engine::import::settings::Settings>
 impl zond_engine::import::settings::SettingsDocument
@@ -5234,7 +5292,7 @@ impl core::marker::Unpin for zond_engine::import::settings::SettingsDocument
 impl core::marker::UnsafeUnpin for zond_engine::import::settings::SettingsDocument
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::settings::SettingsDocument
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::settings::SettingsDocument
-pub struct zond_engine::import::SettingsWarning
+#[non_exhaustive] pub struct zond_engine::import::SettingsWarning
 pub zond_engine::import::SettingsWarning::key: alloc::string::String
 pub zond_engine::import::SettingsWarning::suggestion: core::option::Option<&'static str>
 impl core::clone::Clone for zond_engine::import::settings::SettingsWarning
@@ -10502,6 +10560,8 @@ pub mod zond_engine::report
 #[non_exhaustive] pub enum zond_engine::report::AttachmentSource
 pub zond_engine::report::AttachmentSource::Cdp
 pub zond_engine::report::AttachmentSource::Lldp
+impl zond_engine::report::AttachmentSource
+pub const zond_engine::report::AttachmentSource::ALL: [zond_engine::report::AttachmentSource; 2]
 impl core::clone::Clone for zond_engine::report::AttachmentSource
 pub fn zond_engine::report::AttachmentSource::clone(&self) -> zond_engine::report::AttachmentSource
 impl core::cmp::Eq for zond_engine::report::AttachmentSource
@@ -10553,6 +10613,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::PortScope
 pub zond_engine::report::ScanKind::Discovery
 pub zond_engine::report::ScanKind::Listen
 pub zond_engine::report::ScanKind::PortScan
+impl zond_engine::report::ScanKind
+pub const zond_engine::report::ScanKind::ALL: [zond_engine::report::ScanKind; 3]
 impl core::clone::Clone for zond_engine::report::ScanKind
 pub fn zond_engine::report::ScanKind::clone(&self) -> zond_engine::report::ScanKind
 impl core::cmp::Eq for zond_engine::report::ScanKind
@@ -10592,6 +10654,7 @@ pub zond_engine::report::ScannerKind::SynPort
 pub zond_engine::report::ScannerKind::TcpPort
 pub zond_engine::report::ScannerKind::UdpPort
 impl zond_engine::report::ScannerKind
+pub const zond_engine::report::ScannerKind::ALL: [zond_engine::report::ScannerKind; 13]
 pub const fn zond_engine::report::ScannerKind::for_raw_tcp(zond_engine::model::technique::TcpScanTechnique) -> Self
 impl core::clone::Clone for zond_engine::report::ScannerKind
 pub fn zond_engine::report::ScannerKind::clone(&self) -> zond_engine::report::ScannerKind
@@ -10616,6 +10679,7 @@ pub zond_engine::report::StopReason::AttemptsSpent
 pub zond_engine::report::StopReason::DeadlineExpired
 pub zond_engine::report::StopReason::StreamClosed
 impl zond_engine::report::StopReason
+pub const zond_engine::report::StopReason::ALL: [zond_engine::report::StopReason; 5]
 pub fn zond_engine::report::StopReason::is_complete(&self) -> bool
 impl core::clone::Clone for zond_engine::report::StopReason
 pub fn zond_engine::report::StopReason::clone(&self) -> zond_engine::report::StopReason

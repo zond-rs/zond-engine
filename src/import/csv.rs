@@ -30,9 +30,13 @@
 //! addresses - `ip` first, which is what a report this engine wrote calls it -
 //! along with `port` and `protocol` where they are present. Names are compared
 //! case-insensitively and ignoring anything that is not a letter or a digit, so
-//! `IP Address` and `ip_address` reach `ipaddress`. A caller who knows better says
-//! so with [`CsvImporter::with_address_column`], and one whose header this
-//! importer cannot recognise says so with [`CsvImporter::with_header`].
+//! `IP Address` and `ip_address` reach `ipaddress`. A caller who knows better
+//! names the column it means, with
+//! [`with_address_column`](CsvImporter::with_address_column),
+//! [`with_port_column`](CsvImporter::with_port_column) or
+//! [`with_protocol_column`](CsvImporter::with_protocol_column), and one whose
+//! header this importer cannot recognise at all says so with
+//! [`CsvImporter::with_header`].
 //!
 //! Nothing here guesses from the values. A file whose first row is
 //! `Server,Location` has no recognised name in it, so it has no header, and
@@ -67,17 +71,12 @@
 
 use std::io::BufRead;
 
+use crate::format::UTF8_BOM;
+use crate::format::csv::FORMULA_LEADERS;
 use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
 
 /// The format's name in errors.
 const FORMAT: &str = "CSV";
-
-/// The UTF-8 byte-order mark, which Excel writes and everything else trips on.
-const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
-
-/// Characters a spreadsheet reads as the start of a formula, which the exporter
-/// hides behind an apostrophe. Kept in step with `export::csv`.
-const FORMULA_LEADERS: [char; 5] = ['=', '+', '-', '@', '\t'];
 
 /// Header names read as the address column, in the order they are preferred.
 ///
@@ -120,6 +119,7 @@ pub struct CsvImporter {
     limits: ImportLimits,
     addresses: Option<CsvColumn>,
     ports: Option<CsvColumn>,
+    protocols: Option<CsvColumn>,
     has_header: Option<bool>,
 }
 
@@ -130,6 +130,7 @@ impl CsvImporter {
             limits,
             addresses: None,
             ports: None,
+            protocols: None,
             has_header: None,
         }
     }
@@ -147,6 +148,18 @@ impl CsvImporter {
     /// back as a plain list of hosts.
     pub fn with_port_column(mut self, column: CsvColumn) -> Self {
         self.ports = Some(column);
+        self
+    }
+
+    /// Reads the transport from a column of the caller's choosing.
+    ///
+    /// The same reason [`with_port_column`](Self::with_port_column) exists: the
+    /// automatic rule looks for `protocol` and `proto`, and a spreadsheet that
+    /// calls the column something else is a spreadsheet whose UDP rows would
+    /// otherwise all be read as TCP. A row whose transport field is empty, or
+    /// names anything but UDP, takes the TCP half of the port set.
+    pub fn with_protocol_column(mut self, column: CsvColumn) -> Self {
+        self.protocols = Some(column);
         self
     }
 
@@ -178,6 +191,7 @@ impl Importer for CsvImporter {
         let mut line = 1u64;
         let mut layout: Option<Layout> = None;
         let mut token = String::new();
+        let mut ports = String::new();
 
         while let Some(origin) = record.read(input, self.limits.max_line_bytes, &mut line)? {
             if record.is_blank() {
@@ -218,7 +232,7 @@ impl Importer for CsvImporter {
                 None => None,
             };
 
-            build_token(&mut token, address, port, protocol);
+            build_token(&mut token, &mut ports, address, port, protocol);
             sink.accept(&token, origin)?;
         }
 
@@ -260,7 +274,8 @@ impl Layout {
         // Naming a column by name is itself a statement that there is a header
         // to find it in.
         let named_by_name = matches!(importer.addresses, Some(CsvColumn::Named(_)))
-            || matches!(importer.ports, Some(CsvColumn::Named(_)));
+            || matches!(importer.ports, Some(CsvColumn::Named(_)))
+            || matches!(importer.protocols, Some(CsvColumn::Named(_)));
         let is_header = importer
             .has_header
             .unwrap_or_else(|| named_by_name || names.iter().any(recognised));
@@ -315,14 +330,16 @@ impl Layout {
             None => None,
         };
 
+        let protocols = match &importer.protocols {
+            Some(column) => Some(resolve_column(column)?),
+            None if is_header => find(&PROTOCOL_NAMES),
+            None => None,
+        };
+
         Ok(Self {
             addresses,
             ports,
-            protocols: if is_header {
-                find(&PROTOCOL_NAMES)
-            } else {
-                None
-            },
+            protocols,
             is_header,
         })
     }
@@ -337,31 +354,29 @@ fn normalize(name: &str) -> String {
         .collect()
 }
 
-/// Assembles the target expression a row describes.
+/// Assembles the target expression a row describes, through
+/// [`expression`](crate::import::expression), which owns the bracketing rule.
 ///
-/// The address is always bracketed when ports are present. An IPv6 address must
-/// be, and bracketing an IPv4 one costs two characters and removes the only
-/// place this could go wrong: `10.0.0.1:u:53` would otherwise be a token with
-/// two colons in it, which the grammar reads as an IPv6 address, which it is
-/// not.
-fn build_token(token: &mut String, address: &str, port: Option<&str>, protocol: Option<&str>) {
-    token.clear();
+/// What is this format's own is the transport column: anything that is not UDP
+/// is read as TCP, which is what the port grammar means by an unprefixed port.
+/// SCTP has no spelling in a `PortSet` at all.
+fn build_token(
+    token: &mut String,
+    ports: &mut String,
+    address: &str,
+    port: Option<&str>,
+    protocol: Option<&str>,
+) {
+    ports.clear();
 
-    let Some(port) = port else {
-        token.push_str(address);
-        return;
-    };
-
-    token.push('[');
-    token.push_str(address);
-    token.push_str("]:");
-
-    // Anything that is not UDP is read as TCP, which is what the port grammar
-    // means by an unprefixed port. SCTP has no spelling in a `PortSet` at all.
-    if protocol.is_some_and(|protocol| protocol.eq_ignore_ascii_case("udp")) {
-        token.push_str("u:");
+    if let Some(port) = port {
+        if protocol.is_some_and(|protocol| protocol.eq_ignore_ascii_case("udp")) {
+            ports.push_str("u:");
+        }
+        ports.push_str(port);
     }
-    token.push_str(port);
+
+    crate::import::expression(token, address, ports);
 }
 
 /// Takes back off the apostrophe the exporter puts in front of a field starting
@@ -642,6 +657,38 @@ mod tests {
         assert_eq!(imported.addresses, 2);
         assert_eq!(imported.refusals.len(), 0);
         assert_eq!(imported.tokens, 2);
+    }
+
+    /// A caller can name every column the layout has, not just two of them. A
+    /// spreadsheet that calls its transport column something this importer does
+    /// not know would otherwise read every UDP row as TCP, silently.
+    #[test]
+    fn a_caller_can_name_the_transport_column() {
+        let file = "Node,Service,Transport\n10.0.0.1,53,UDP\n10.0.0.2,80,tcp\n";
+
+        let importer = CsvImporter::new(ImportLimits::default())
+            .with_address_column(CsvColumn::Named("Node".to_string()))
+            .with_port_column(CsvColumn::Named("Service".to_string()))
+            .with_protocol_column(CsvColumn::Named("Transport".to_string()));
+
+        let imported = read_with(file, &importer).expect("the table imports");
+
+        assert_eq!(imported.addresses, 2);
+        assert!(
+            imported
+                .map
+                .units
+                .iter()
+                .any(|unit| unit.ports().has_udp(53)),
+            "the named transport column has to decide which half of the set a port lands in"
+        );
+        assert!(
+            imported
+                .map
+                .units
+                .iter()
+                .any(|unit| unit.ports().has_tcp(80))
+        );
     }
 
     /// The round trip this format exists for: a report this engine wrote, read

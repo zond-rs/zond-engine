@@ -46,6 +46,21 @@ pub const COLUMNS: [&str; 25] = [
     "findings",
 ];
 
+/// The characters that make a spreadsheet read a cell as a formula, which the
+/// writer hides behind an apostrophe and the reader takes back off.
+///
+/// Here rather than in either direction for the reason [`COLUMNS`] is: a
+/// character one side guards and the other does not know to unguard is a cell
+/// that reads back with a stray apostrophe in it, and nothing errors. The two
+/// lists had already drifted while each carried a comment claiming they were
+/// kept in step.
+///
+/// A carriage return is in the list and is not a formula character. It belongs
+/// here anyway, because it is guarded for the same reason and by the same
+/// apostrophe: a cell beginning with one is a cell a spreadsheet mangles.
+#[cfg(any(feature = "export-csv", feature = "import-csv"))]
+pub const FORMULA_LEADERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
 /// How many of [`COLUMNS`] describe the port rather than the host.
 ///
 /// A count, not a second list and not an index: the port columns are the last

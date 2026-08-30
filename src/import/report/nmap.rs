@@ -593,7 +593,12 @@ impl Run {
             _ => None,
         };
         if let Some(protocol) = protocol {
-            self.protocols.push(protocol);
+            // Nmap writes one `<scaninfo>` per scan type, so `-sS -sA` names TCP
+            // twice. The scope is a set of transports and the document says it is
+            // ascending, so the second mention adds nothing.
+            if !self.protocols.contains(&protocol) {
+                self.protocols.push(protocol);
+            }
 
             // The resolved port set, which nmap applies to every host it scans.
             if let Some(ports) = element

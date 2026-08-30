@@ -20,6 +20,7 @@
 //! See [`export::schema`](crate::export::schema) for the whole of them.
 
 use serde::Serialize;
+use serde::ser::{SerializeSeq, Serializer};
 
 use crate::diff::host::Reassessment;
 use crate::diff::{
@@ -67,8 +68,11 @@ pub fn coverage_name(coverage: Coverage) -> &'static str {
 
 /// The root of a comparison document.
 ///
-/// Borrows the comparison rather than copying it, and serializes host deltas
-/// from an iterator, so one delta exists at a time however large the comparison.
+/// Borrows the comparison rather than copying it, and hands its host deltas to
+/// [`HostDeltasDto`], which renders one at a time. A delta carries both sides'
+/// whole records, so collecting them would hold a second copy of both reports on
+/// top of the comparison they came from.
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct DiffDto<'a> {
     /// The version of this document's shape. Counted apart from the report's.
@@ -91,12 +95,54 @@ pub struct DiffDto<'a> {
     pub summary: SummaryDto,
     /// Every host that differs, ascending by address. Hosts that did not are
     /// not here.
-    pub hosts: Vec<HostDeltaDto<'a>>,
+    pub hosts: HostDeltasDto<'a>,
+}
+
+/// The comparison's host deltas, serialized one at a time.
+///
+/// The counterpart of the report document's host array, and for the same reason.
+/// Each delta carries the whole record from each side that has one, so a
+/// comparison where every host moved would otherwise hold a second copy of both
+/// reports at once, on top of the comparison it was built from. One is rendered,
+/// written and dropped before the next is built.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct HostDeltasDto<'a> {
+    deltas: &'a [HostDelta],
+    options: &'a ExportOptions,
+}
+
+impl<'a> HostDeltasDto<'a> {
+    /// The deltas this will render, for a caller that wants them typed rather
+    /// than serialized.
+    pub fn deltas(&self) -> &'a [HostDelta] {
+        self.deltas
+    }
+
+    /// How many hosts differ.
+    pub fn len(&self) -> usize {
+        self.deltas.len()
+    }
+
+    /// Whether the two scans describe the same network.
+    pub fn is_empty(&self) -> bool {
+        self.deltas.is_empty()
+    }
+}
+
+impl Serialize for HostDeltasDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.deltas.len()))?;
+        for delta in self.deltas {
+            seq.serialize_element(&HostDeltaDto::new(delta, self.options))?;
+        }
+        seq.end()
+    }
 }
 
 impl<'a> DiffDto<'a> {
     /// Renders a comparison, applying the redaction policy in `options`.
-    pub fn new(diff: &'a ScanDiff, options: &ExportOptions) -> Self {
+    pub fn new(diff: &'a ScanDiff, options: &'a ExportOptions) -> Self {
         Self {
             schema_version: DIFF_SCHEMA_VERSION,
             engine: EngineDto {
@@ -108,16 +154,16 @@ impl<'a> DiffDto<'a> {
             current: ProvenanceDto::new(diff.current()),
             unchanged: diff.is_empty(),
             summary: SummaryDto::new(&diff.summary()),
-            hosts: diff
-                .hosts()
-                .iter()
-                .map(|host| HostDeltaDto::new(host, options))
-                .collect(),
+            hosts: HostDeltasDto {
+                deltas: diff.hosts(),
+                options,
+            },
         }
     }
 }
 
 /// Which scan one side of the comparison was.
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct ProvenanceDto {
     /// The engine that produced the report, as it attributed itself. A report
@@ -157,6 +203,7 @@ impl ProvenanceDto {
 }
 
 /// A count, and how much of it the other scan is known to have looked for.
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct ConfirmedDto {
     /// How many, whatever the other scan covered.
@@ -177,6 +224,7 @@ impl ConfirmedDto {
 }
 
 /// Counts over the whole comparison.
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct SummaryDto {
     /// Hosts only the later scan has a record for.
@@ -222,6 +270,7 @@ impl SummaryDto {
 }
 
 /// One host, as the two scans between them hold it.
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct HostDeltaDto<'a> {
     /// The address the host is reported under: the later scan's primary where it
@@ -286,6 +335,7 @@ impl<'a> HostDeltaDto<'a> {
 }
 
 /// How many records each scan held for one host.
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct RecordsDto {
     /// The earlier scan's count.
@@ -295,6 +345,7 @@ pub struct RecordsDto {
 }
 
 /// One endpoint, as the two scans between them hold it.
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct PortDeltaDto {
     /// The port number, the same in both scans.
@@ -341,6 +392,7 @@ impl PortDeltaDto {
 /// The document's unit of change, and the vocabulary a rule keys on. A set that
 /// gained two members produces two of these rather than one carrying a list; see
 /// the [module documentation](super) for why.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChangeDto {
     /// Which field moved, by wire name. The whole list is in
@@ -515,6 +567,16 @@ impl ChangeDto {
     /// | `alpn_gained`, `alpn_lost` | one application protocol each |
     /// | `certificate_presented`, `certificate_withdrawn`, `certificate_rotated` | by SHA-256 fingerprint |
     /// | `certificate_expiring`, `certificate_expired` | a threshold crossed since the earlier scan; `after` is the validity end |
+    ///
+    /// **`options` is not read, and the parameter stays.** Nothing an endpoint
+    /// change carries is what [`Redaction`](crate::export::Redaction) masks: a
+    /// certificate change is rendered by fingerprint, never by subject, and a
+    /// service's name and version identify software rather than a person or a
+    /// device. The two sides' whole host records travel on the
+    /// [`HostDeltaDto`] above and are masked there. Taking the parameter away
+    /// would make a caller reading these two functions side by side wonder which
+    /// of them forgot, and would have to come back the first time a change
+    /// carries a subject.
     pub fn of_port(change: &PortChange, _options: &ExportOptions) -> Vec<Self> {
         match change {
             PortChange::State(state) => vec![Self::between(

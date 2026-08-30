@@ -1240,6 +1240,7 @@
         "os_echo",
         "os_series",
         "os_snmp",
+        "idle",
         "composite"
       ]
     },

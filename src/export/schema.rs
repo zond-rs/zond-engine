@@ -50,6 +50,20 @@
 //! - **Unknown fields may appear.** Additive changes do not bump
 //!   [`SCHEMA_VERSION`]; a consumer must ignore what it does not recognise.
 //!
+//! ## Every type here is `#[non_exhaustive]`
+//!
+//! That rule is what the attribute is for. Adding a field to the document is
+//! additive for a consumer parsing JSON and would be a breaking change for one
+//! writing Rust, because a struct with public fields can be built by name from
+//! outside this crate and the next field breaks every such expression. The two
+//! halves of the same contract would then disagree about what an addition
+//! costs.
+//!
+//! Nothing is lost by it. Every field stays public and readable, which is what a
+//! consumer rendering a report in their own format does; what stops is
+//! constructing one by name, and each of these already has a constructor that
+//! takes the engine value it describes.
+//!
 //! ## Streaming
 //!
 //! [`ReportDto`] borrows the report rather than copying it, and serializes hosts
@@ -167,6 +181,7 @@ fn micros_opt(duration: Option<Duration>) -> Option<u64> {
 /// # Ok(())
 /// # }
 /// ```
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct ReportDto<'a> {
     report: &'a ScanReport,
@@ -234,6 +249,7 @@ impl Serialize for ReportDto<'_> {
 /// order. A record-per-line format writes this once and then the hosts one at a
 /// time; splitting the document that way must not change what the header says,
 /// so both are rendered by the same code.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct ReportHeaderDto<'a> {
     report: &'a ScanReport,
@@ -353,6 +369,7 @@ impl Serialize for HostsDto<'_> {
 /// it produced `zond-engine` paired with `nmap 7.94`, which named no build that
 /// ever existed. What produced the *findings* is `produced_by`, which is a
 /// different question and now has a different field.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct EngineDto {
     /// Always [`ENGINE_NAME`]. Present so a document carrying a report can be
@@ -374,6 +391,7 @@ pub struct EngineDto {
 /// every category is always present, in severity order, whether or not anything
 /// landed in it. A consumer reading `filtered: 0` learns something; one that has
 /// to decide what a missing key means does not.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct SummaryDto {
     /// Hosts recorded, whatever their status.
@@ -399,6 +417,7 @@ pub struct SummaryDto {
 /// A dual-stack host is counted in all three, so these do not partition
 /// `hosts_total`. The question a consumer asks of them is "how much of this
 /// network did I see over IPv6", and a partition would answer something else.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct FamilyCounts {
     /// Hosts with at least one IPv4 address.
@@ -457,6 +476,7 @@ impl SummaryDto {
 }
 
 /// How many hosts fell into each reachability status.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct HostStatusCounts {
     /// Online and responding.
@@ -470,6 +490,7 @@ pub struct HostStatusCounts {
 }
 
 /// How many ports fell into each state.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct PortStateCounts {
     /// Accepting connections.
@@ -492,6 +513,7 @@ pub struct PortStateCounts {
 
 /// One call into the engine: what it was asked to do, how it was configured,
 /// how long it took, and what it observed about itself.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct PhaseDto<'a> {
     /// `discovery` or `port_scan`.
@@ -547,6 +569,7 @@ pub struct PhaseDto<'a> {
 }
 
 /// Where the machine running a phase was plugged in.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct AttachmentDto<'a> {
     /// Which of the scanning machine's interfaces the announcement arrived on.
@@ -575,6 +598,7 @@ pub struct AttachmentDto<'a> {
 }
 
 /// Which document a phase came from, for a merged report.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct PhaseOriginDto<'a> {
     /// What the caller called the document it was read from. `null` where it
@@ -638,6 +662,7 @@ impl<'a> PhaseDto<'a> {
 }
 
 /// What a phase was asked to cover.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct ScopeDto {
     /// The merged ranges the sweep actually iterated, ascending. Overlapping
@@ -710,6 +735,7 @@ pub struct ScopeDto {
 ///
 /// Two fields rather than one, because a set of ports on its own does not say
 /// what may be concluded from it. `kind` is what does.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct PortScopeDto {
     /// `none` for a phase that walked no ports, `every` where each address was
@@ -779,6 +805,7 @@ impl ScopeDto {
 }
 
 /// One inclusive address range.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct RangeDto {
     /// `ipv4` or `ipv6`.
@@ -808,6 +835,7 @@ impl RangeDto {
 /// A deliberate subset of the engine's configuration: what changed the packets
 /// and how long the engine waited for answers. Presentation settings are not
 /// here, so a quieter terminal never reads as a different scan.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsDto {
     /// How raw probes were placed on the wire.
@@ -871,6 +899,7 @@ pub struct SettingsDto {
 /// What a scan changed about the packets it sent, as it appears in the report.
 /// Each field is present only for a technique the scan used. The serialized form
 /// of [`EvasionRecord`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct EvasionDto {
     /// The source port every probe left from.
@@ -904,6 +933,7 @@ pub struct EvasionDto {
 /// report. Present only for an idle scan; its presence is what says the port
 /// states were inferred through a third party rather than seen directly. The
 /// serialized form of [`IdleScan`](crate::config::IdleScan).
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct IdleScanDto {
     /// The zombie's address.
@@ -962,6 +992,7 @@ impl SettingsDto {
 }
 
 /// The retransmission budget a phase ran under.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct RetryDto {
     /// The effort level: `single`, `fast`, `balanced` or `thorough`.
@@ -991,6 +1022,7 @@ impl RetryDto {
 }
 
 /// A strategy that did not run to completion.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct FailureDto<'a> {
     /// The strategy that failed.
@@ -1022,6 +1054,7 @@ impl<'a> FailureDto<'a> {
 /// to bound how much the findings can be trusted: a sweep that stopped on
 /// `deadline_expired` with `last_reply_us` close to `elapsed_us` was still
 /// finding hosts when it ran out of time, and nothing in the host list says so.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct ProbeStatsDto {
     /// The strategy these counters belong to.
@@ -1082,6 +1115,7 @@ pub struct ProbeStatsDto {
 }
 
 /// What a scan's congestion window did over one run.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct WindowDto {
     /// Probes it was willing to have outstanding when the run ended.
@@ -1155,6 +1189,7 @@ impl ProbeStatsDto {
 }
 
 /// How many hosts a given attempt revealed.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct AttemptCountDto {
     /// The attempt number, counting from one.
@@ -1167,6 +1202,7 @@ pub struct AttemptCountDto {
 }
 
 /// One bucket of a discovery-time histogram.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct BucketDto {
     /// The bucket's inclusive upper bound in milliseconds, or `null` for the
@@ -1181,6 +1217,7 @@ pub struct BucketDto {
 /// The only place where loss on the receive path is distinguishable from loss
 /// on the network. A reply the kernel discards because the buffer was full
 /// reaches no other counter in this document.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct CaptureDto {
     /// Frames the capture accepted and handed to the process.
@@ -1209,6 +1246,7 @@ impl CaptureDto {
 // ---------------------------------------------------------------------------
 
 /// Everything the scan established about one host.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct HostDto<'a> {
     /// The address the host is keyed by. Stable across a merge, so two phases
@@ -1333,6 +1371,7 @@ impl<'a> HostDto<'a> {
 }
 
 /// One router on the way to a host.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct HopDto {
     /// How many routers from the scanning host this one sits.
@@ -1381,6 +1420,7 @@ impl HopDto {
 }
 
 /// One piece of evidence for a host's status.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct ReasonDto<'a> {
     /// The protocol event that produced the evidence.
@@ -1408,6 +1448,7 @@ impl<'a> ReasonDto<'a> {
 }
 
 /// An identified operating system.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct OsDto<'a> {
     /// The primary OS name.
@@ -1476,6 +1517,7 @@ impl<'a> OsDto<'a> {
 /// The last-seen timestamps the engine keeps per address are not exported: they
 /// are monotonic readings, which have no meaning outside the process that took
 /// them.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct HardwareDto<'a> {
     /// The most recently observed address, which is the one currently on the
@@ -1520,6 +1562,7 @@ impl<'a> HardwareDto<'a> {
 /// The individual samples are not exported. They are timestamped with monotonic
 /// readings that mean nothing outside the scanning process, and the aggregates
 /// below are what the samples were being kept for.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct TelemetryDto {
     /// The fastest round trip observed.
@@ -1557,6 +1600,7 @@ impl TelemetryDto {
 // ---------------------------------------------------------------------------
 
 /// One discovered port.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct PortDto<'a> {
     /// The port number.
@@ -1608,6 +1652,7 @@ fn findings_dto<'a>(findings: impl Iterator<Item = &'a Finding>) -> Vec<FindingD
 }
 
 /// One finding, for a report a consumer parses.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct FindingDto<'a> {
     /// The detection that produced it. Author-chosen and untrusted; an exporter
@@ -1657,6 +1702,7 @@ impl<'a> FindingDto<'a> {
 }
 
 /// One external reference: a typed kind and the value it carries.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct ReferenceDto<'a> {
     /// `cve`, `cwe`, or `url`.
@@ -1696,6 +1742,7 @@ pub(crate) fn reference_text(reference: &Reference) -> String {
 }
 
 /// What is running on a port.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct ServiceDto<'a> {
     /// The high-level protocol name, such as `ssh` or `http`.
@@ -1731,6 +1778,7 @@ impl<'a> ServiceDto<'a> {
 }
 
 /// Transport security negotiated on a port.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct SecurityDto<'a> {
     /// The negotiated TLS version.
@@ -1758,6 +1806,7 @@ impl<'a> SecurityDto<'a> {
 }
 
 /// A presented X.509 certificate.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct CertificateDto<'a> {
     /// The subject Common Name, masked under redaction: an internal CA issues
@@ -1802,6 +1851,7 @@ impl<'a> CertificateDto<'a> {
 }
 
 /// How a port's state was established.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveryDto<'a> {
     /// The packet response that decided the state.

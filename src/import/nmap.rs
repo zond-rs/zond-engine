@@ -211,18 +211,7 @@ fn emit(
     }
 
     for address in &host.addresses {
-        token.clear();
-        if ports.is_empty() {
-            token.push_str(address);
-        } else {
-            // Bracketed unconditionally, for the reason the CSV and JSON
-            // readers give: `10.0.0.1:u:53` is a token with two colons in it,
-            // which the grammar reads as an IPv6 address.
-            token.push('[');
-            token.push_str(address);
-            token.push_str("]:");
-            token.push_str(&ports);
-        }
+        crate::import::expression(token, address, &ports);
         sink.accept(token, origin)?;
     }
 

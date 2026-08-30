@@ -64,6 +64,21 @@ pub const DIFF_SCHEMA_VERSION: u32 = 1;
 /// checks to decide whether a document is one this engine wrote.
 pub const ENGINE_NAME: &str = "zond-engine";
 
+/// The mark a Windows editor leaves at the start of a file, as UTF-8.
+///
+/// Every reader in [`crate::import`] strips it from the first thing it reads and
+/// nowhere else, and the CSV writer emits it on request. It is here rather than
+/// in each of them because it was written down four times, and a byte sequence
+/// spelled out per file is a byte sequence one file eventually spells wrong.
+///
+/// Compiled in unconditionally, like [`time`]: the list reader is always
+/// present and always strips one.
+pub const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+
+/// [`UTF8_BOM`] as the character it encodes, for a reader holding text rather
+/// than bytes.
+pub const UTF8_BOM_CHAR: char = '\u{feff}';
+
 pub mod time;
 
 /// The header row of this engine's CSV, which the writer emits and the reader

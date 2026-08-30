@@ -84,6 +84,7 @@ pub trait ReportReader {
 /// and the target side does not stays an additive change.
 /// [`max_document_bytes`](Self::max_document_bytes) is the first such policy.
 #[must_use]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReportOptions {
     /// The bounds shared with the target readers.
@@ -229,8 +230,8 @@ impl BufRead for Bounded<'_> {
 /// direction, and shorter: a report is a document some scanner wrote, and only
 /// the formats that carry findings appear here. There is no list format, because
 /// a list of addresses is not a report of anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReportFormat {
     /// This engine's own exported JSON, as a single document.
     #[cfg(feature = "import-json")]

@@ -106,6 +106,17 @@ pub enum ScanKind {
     Listen,
 }
 
+impl ScanKind {
+    /// Every phase kind this build knows, in declaration order.
+    ///
+    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
+    /// gives: the enum is `#[non_exhaustive]`, and the export conformance suite
+    /// reads this list against the published schema's own and fails unless they hold
+    /// the same names. A variant added without a place in the schema is a value this
+    /// engine writes and no consumer's validator accepts.
+    pub const ALL: [ScanKind; 3] = [Self::Discovery, Self::PortScan, Self::Listen];
+}
+
 impl fmt::Display for ScanKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -726,6 +737,21 @@ pub enum StopReason {
 }
 
 impl StopReason {
+    /// Every reason a receive loop stops this build knows, in declaration order.
+    ///
+    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
+    /// gives: the enum is `#[non_exhaustive]`, and the export conformance suite
+    /// reads this list against the published schema's own and fails unless they hold
+    /// the same names. A variant added without a place in the schema is a value this
+    /// engine writes and no consumer's validator accepts.
+    pub const ALL: [StopReason; 5] = [
+        Self::Aborted,
+        Self::AllResponded,
+        Self::AttemptsSpent,
+        Self::DeadlineExpired,
+        Self::StreamClosed,
+    ];
+
     /// Whether the loop stopped because it had nothing left to do, rather than
     /// because something cut it short.
     ///
@@ -1145,6 +1171,17 @@ pub enum AttachmentSource {
     Lldp,
     /// Cisco Discovery Protocol.
     Cdp,
+}
+
+impl AttachmentSource {
+    /// Every announcement protocol this build knows, in declaration order.
+    ///
+    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
+    /// gives: the enum is `#[non_exhaustive]`, and the export conformance suite
+    /// reads this list against the published schema's own and fails unless they hold
+    /// the same names. A variant added without a place in the schema is a value this
+    /// engine writes and no consumer's validator accepts.
+    pub const ALL: [AttachmentSource; 2] = [Self::Lldp, Self::Cdp];
 }
 
 impl Attachment {
@@ -2065,6 +2102,29 @@ pub struct WindowSummary {
 }
 
 impl ScannerKind {
+    /// Every strategy this build knows, in declaration order.
+    ///
+    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
+    /// gives: the enum is `#[non_exhaustive]`, and the export conformance suite
+    /// reads this list against the published schema's own and fails unless they hold
+    /// the same names. A variant added without a place in the schema is a value this
+    /// engine writes and no consumer's validator accepts.
+    pub const ALL: [ScannerKind; 13] = [
+        Self::Local,
+        Self::Passive,
+        Self::Routed,
+        Self::SynPort,
+        Self::TcpPort,
+        Self::Connect,
+        Self::ConnectUdp,
+        Self::UdpPort,
+        Self::OsEcho,
+        Self::OsSeries,
+        Self::OsSnmp,
+        Self::Idle,
+        Self::Composite,
+    ];
+
     /// What a raw TCP scan carrying `technique` reports itself as.
     ///
     /// One function because the answer has to be the same everywhere it is

@@ -69,11 +69,21 @@
 //! protocols and stop reasons keep their wire spelling - a reader who greps the
 //! JSON for what they saw in the browser finds it.
 //!
-//! It parts company with the document in one way, deliberately: **a field with
-//! no value is not shown.** The JSON keeps every field so a parser never has to
-//! tell absent from empty from unknown; a page has a different scarce resource,
-//! which is the reader's attention, and a host described by fourteen empty rows
-//! is a host nobody reads.
+//! It parts company with the document in two ways, both deliberate.
+//!
+//! **A field with no value is not shown.** The JSON keeps every field so a
+//! parser never has to tell absent from empty from unknown; a page has a
+//! different scarce resource, which is the reader's attention, and a host
+//! described by fourteen empty rows is a host nobody reads.
+//!
+//! **Not everything with a value is shown either.** What earns a place is what
+//! changes how the rest of the page should be read: an idle scan, because the
+//! port states were inferred through a third party rather than seen; an evasion
+//! profile, because the target answered an unusual packet; what the phase
+//! covered and what it could not route to; and which document a phase was folded
+//! in from. Instrumentation a consumer would graph rather than read stays in the
+//! document. When a field is added to [`schema`](super::schema), the question to
+//! ask is that one, and the answer may be no.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -266,11 +276,13 @@ fn write_masthead(
     write::masthead(out, heading, &subtitle)
 }
 
-/// The three things that change how the rest of the page should be read.
+/// The things that change how the rest of the page should be read.
 ///
 /// Each is a fact about the report rather than about the network, and each makes
-/// the findings narrower than they look: a partial scan did not finish, an
-/// unprivileged one saw less, a redacted one is not showing everything it knows.
+/// the findings mean something other than they appear to: a partial scan did not
+/// finish, an unprivileged one saw less, an idle scan never saw a verdict at
+/// all, an evasion profile asked the question differently, and a redacted one is
+/// not showing everything it knows.
 fn write_notices(
     out: &mut dyn Write,
     report: &ScanReport,
@@ -285,12 +297,38 @@ fn write_notices(
         .iter()
         .filter(|phase| phase.privileged == Some(false))
         .count();
+    let idle = phases
+        .iter()
+        .any(|phase| phase.settings.idle_scan.is_some());
+    let evaded = phases.iter().any(|phase| phase.settings.evasion.is_some());
 
-    if !report.is_partial() && unprivileged == 0 && !options.redaction.is_active() {
+    if !report.is_partial()
+        && unprivileged == 0
+        && !idle
+        && !evaded
+        && !options.redaction.is_active()
+    {
         return Ok(());
     }
 
     writeln!(out, "<p class=\"notices\">")?;
+
+    if idle {
+        write::notice(
+            out,
+            true,
+            "idle scan",
+            "no port state here was seen directly; each was inferred from a third party's IP identification counter, which a busy zombie makes unreliable",
+        )?;
+    }
+    if evaded {
+        write::notice(
+            out,
+            true,
+            "evasion",
+            "the probes were altered before they went out, so a state here says how the target answered an unusual packet rather than an ordinary one",
+        )?;
+    }
 
     if report.is_partial() {
         write::notice(
@@ -927,6 +965,39 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         .collect();
     fact(out, "ranges", &ranges.join("<br>"))?;
 
+    // A sweep of a segment reaches every host on it, which is coverage no range
+    // expresses. Listening reaches nothing: a machine that stayed quiet during
+    // the window is indistinguishable from one that is not there, so the two are
+    // separate rows and the second says what it is not.
+    if !scope.links.is_empty() {
+        let links: Vec<String> = scope.links.iter().map(|name| esc(name)).collect();
+        fact(out, "links swept", &links.join(", "))?;
+    }
+    if !scope.listened.is_empty() {
+        let listened: Vec<String> = scope.listened.iter().map(|name| esc(name)).collect();
+        fact(
+            out,
+            "links listened on",
+            &format!(
+                "{}{}",
+                listened.join(", "),
+                dim(&[esc("not coverage: silence here is not absence")])
+            ),
+        )?;
+    }
+
+    // Which ports were walked, and whether the same ones for every address.
+    // Without it, a port absent from a host is a port that was closed and a port
+    // nobody asked about at once.
+    if let Some(ports) = &scope.ports {
+        let spec = if ports.spec.is_empty() {
+            String::new()
+        } else {
+            dim(&[esc(&ports.spec)])
+        };
+        fact(out, "ports", &format!("{}{spec}", esc(ports.kind)))?;
+    }
+
     // Only when a policy was set. "excluded: nothing" on every report of every
     // scan that never configured one is noise, and worse, it trains a reader to
     // skip the row on the one report where it says something.
@@ -978,15 +1049,68 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         out,
         "wire",
         &format!(
-            "{} · send {} · {rate} · {dns} · os {} · service {}",
+            "{} · send {} · {rate} · {dns} · os {} · service {} · detection {}",
             esc(settings.tcp_technique),
             esc(settings.send_mode),
             esc(settings.os_detection),
-            esc(settings.service_detection)
+            esc(settings.service_detection),
+            esc(settings.detection),
         ),
     )?;
 
+    // The two settings that change what a state on this page means, spelled out
+    // rather than left to the notice at the top: a reader who has scrolled this
+    // far is looking at one phase, and the notice was about all of them.
+    if let Some(idle) = &settings.idle_scan {
+        let port = idle
+            .zombie_port
+            .map(|port| format!("port {port}"))
+            .unwrap_or_default();
+        fact(
+            out,
+            "idle scan",
+            &format!(
+                "{}{}",
+                esc(&idle.zombie),
+                dim(&[port, esc("states inferred, not seen")])
+            ),
+        )?;
+    }
+    if let Some(evasion) = &settings.evasion {
+        fact(out, "evasion", &evasion_detail(evasion))?;
+    }
+
+    // Addresses the caller named that nothing was sent to. Not a failure and not
+    // a filtered host: no probe left this machine for them, so the report says
+    // nothing about what is there.
+    if !phase.unroutable.is_empty() {
+        let addresses: Vec<String> = phase.unroutable.iter().map(|ip| esc(ip)).collect();
+        fact(
+            out,
+            "no route",
+            &format!(
+                "{}{}",
+                addresses.join(", "),
+                dim(&[esc("named, never probed")])
+            ),
+        )?;
+    }
+
+    // For a merged report: which document this phase came out of. Without it a
+    // page shows one scan's phases beside another's with nothing to tell them
+    // apart.
+    if let Some(origin) = &phase.origin {
+        let label = origin.label.map(esc).into_iter().collect::<Vec<_>>();
+        fact(
+            out,
+            "read from",
+            &format!("{}{}", esc(origin.engine_version), dim(&label)),
+        )?;
+    }
+
     writeln!(out, "</dl>")?;
+
+    write_attachments(out, &phase.attachments)?;
 
     if !phase.failures.is_empty() {
         writeln!(
@@ -1010,6 +1134,88 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     }
 
     writeln!(out, "</article>")?;
+    Ok(())
+}
+
+/// What a scan changed about the packets it sent, as one line.
+///
+/// Every field is present only for a technique the scan used, so what this
+/// renders is the profile and nothing about the ones it did not touch.
+fn evasion_detail(evasion: &crate::export::schema::EvasionDto) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(port) = evasion.source_port {
+        parts.push(format!("from port {port}"));
+    }
+    if let Some(ttl) = evasion.ttl {
+        parts.push(format!("ttl {ttl}"));
+    }
+    if let Some(padding) = evasion.padding {
+        parts.push(format!("{padding} bytes of padding"));
+    }
+    if evasion.bad_tcp_checksum {
+        parts.push("wrong TCP checksum".to_string());
+    }
+    if let Some(mac) = &evasion.spoof_mac {
+        parts.push(format!("spoofing {}", esc(mac)));
+    }
+    if let Some(bytes) = evasion.fragment {
+        parts.push(format!("fragmented to {bytes} bytes"));
+    }
+    if let Some(flags) = &evasion.flags {
+        parts.push(format!("flags {}", esc(flags)));
+    }
+    if !evasion.decoys.is_empty() {
+        let decoys: Vec<String> = evasion.decoys.iter().map(|ip| esc(ip)).collect();
+        parts.push(format!("decoys {}", decoys.join(", ")));
+    }
+
+    parts.join(" · ")
+}
+
+/// Where the machine that ran this phase was plugged in.
+///
+/// A finding of its own rather than a row among the settings: it says nothing
+/// about any host in the report and everything about where the scan was standing
+/// when it looked, which is the one question the host list cannot answer. Empty
+/// on every unmanaged network, and never a claim that the machine is attached to
+/// nothing.
+fn write_attachments(
+    out: &mut dyn Write,
+    attachments: &[crate::export::schema::AttachmentDto<'_>],
+) -> Result<(), ExportError> {
+    if attachments.is_empty() {
+        return Ok(());
+    }
+
+    writeln!(
+        out,
+        "<div class=\"block\">\n<div class=\"block-title\">where this ran from</div>\n<div class=\"scroll\">\n<table class=\"table\">\n<thead><tr><th>link</th><th>device</th><th>port</th><th>vlan</th><th>seen</th></tr></thead>\n<tbody>"
+    )?;
+
+    for attachment in attachments {
+        let device = match (&attachment.device_name, &attachment.device_mac) {
+            (Some(name), Some(mac)) => format!("{}{}", Text(name), dim(&[esc(mac)])),
+            (Some(name), None) => Text(name).to_string(),
+            (None, Some(mac)) => esc(mac),
+            (None, None) => String::new(),
+        };
+
+        writeln!(
+            out,
+            "<tr><td class=\"mono\">{link}</td><td>{device}{source}</td><td class=\"mono\">{port}</td><td class=\"num\">{vlan}</td><td class=\"mono\">{seen}</td></tr>",
+            link = Text(attachment.link),
+            source = dim(&[esc(attachment.source)]),
+            port = attachment.port.map(esc).unwrap_or_default(),
+            vlan = attachment
+                .native_vlan
+                .map(|vlan| vlan.to_string())
+                .unwrap_or_default(),
+            seen = Text(&attachment.observed_at),
+        )?;
+    }
+
+    writeln!(out, "</tbody>\n</table>\n</div>\n</div>")?;
     Ok(())
 }
 
@@ -1401,6 +1607,47 @@ mod tests {
 
     /// A report that is narrower than the scan asked for has to say so where
     /// somebody will see it, which means above the findings.
+    /// The facts that change what a state on this page means have to be on the
+    /// page.
+    ///
+    /// The page renders a subset of the document on purpose, and the subset was
+    /// drawn before several of these fields existed: an idle scan and an evasion
+    /// profile both change what every port state underneath them says, and
+    /// neither reached the page at all. A reader cannot ask a question they
+    /// cannot see.
+    #[test]
+    fn what_changes_the_meaning_of_a_state_reaches_the_page() {
+        let page = default_page();
+
+        for expected in [
+            // The two notices, at the top where they are read first.
+            "idle scan",
+            "evasion",
+            "inferred from a third party",
+            "altered before they went out",
+            // And the per-phase detail, for a reader who has scrolled to one.
+            "detection ",
+            "where this ran from",
+        ] {
+            assert!(page.contains(expected), "the page never says {expected:?}");
+        }
+    }
+
+    /// A phase that did none of it says none of it, or the notices become a band
+    /// every report carries and nobody reads.
+    #[test]
+    fn an_ordinary_scan_carries_none_of_those_notices() {
+        let mut plain = Vec::new();
+        HtmlExporter::new(ExportOptions::new())
+            .export(&crate::export::fixture::compared().0, &mut plain)
+            .expect("the page writes");
+        let page = String::from_utf8(plain).expect("valid UTF-8");
+
+        assert!(!page.contains("idle scan"));
+        assert!(!page.contains("altered before they went out"));
+        assert!(!page.contains("where this ran from"));
+    }
+
     #[test]
     fn a_narrowed_report_says_so_before_the_findings() {
         let page = default_page();

@@ -32,9 +32,12 @@
 //! `+`, `-`, `@`, a tab or a carriage return as a formula to execute. A device
 //! named `=cmd|'/c calc'!A1` is a working attack on whoever opens the report.
 //!
-//! Every field is therefore checked and, where it starts with one of those,
-//! prefixed with an apostrophe, which is the escape spreadsheets themselves use
-//! for "this is text". It is unconditional. There is no option to turn it off,
+//! Every field is therefore checked against
+//! [`crate::format::csv::FORMULA_LEADERS`] and, where it starts
+//! with one of those, prefixed with an apostrophe, which is the escape
+//! spreadsheets themselves use for "this is text". The list lives beside the
+//! header rather than here, because the reader has to take back off exactly what
+//! this puts on. It is unconditional. There is no option to turn it off,
 //! because the person who would turn it off is not the person who opens the
 //! file, and a consumer who needs the bytes exactly as the scanner saw them has
 //! JSON.
@@ -62,18 +65,12 @@ use crate::export::schema::{
     scan_response_name, severity_name,
 };
 use crate::export::{ExportError, ExportOptions, Exporter};
-use crate::format::csv::{COLUMNS, PORT_COLUMNS};
+use crate::format::csv::{COLUMNS, FORMULA_LEADERS, PORT_COLUMNS};
 use crate::format::time::rfc3339;
 use crate::model::finding::Finding;
 use crate::model::host::Host;
 use crate::model::port::Port;
 use crate::report::ScanReport;
-
-/// Characters that make a spreadsheet read a cell as a formula.
-const FORMULA_LEADERS: [char; 5] = ['=', '+', '-', '@', '\t'];
-
-/// The byte-order mark Excel on Windows wants in front of UTF-8.
-const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 
 /// Writes a report as one row per host and port.
 ///
@@ -124,7 +121,7 @@ impl CsvExporter {
 impl Exporter for CsvExporter {
     fn export(&self, report: &ScanReport, out: &mut dyn Write) -> Result<(), ExportError> {
         if self.excel_bom {
-            out.write_all(UTF8_BOM)?;
+            out.write_all(&crate::format::UTF8_BOM)?;
         }
 
         let mut row = Row::new();
@@ -356,7 +353,7 @@ impl Row {
         self.fields += 1;
 
         let field = field.as_ref();
-        let needs_formula_guard = field.starts_with(FORMULA_LEADERS) || field.starts_with('\r');
+        let needs_formula_guard = field.starts_with(FORMULA_LEADERS);
         // A `;` is quoted alongside the delimiters proper because a spreadsheet
         // in a comma-for-decimal locale reads `;` as the column separator, and a
         // quoted field survives that reading — which is what lets the findings
@@ -620,8 +617,8 @@ mod tests {
             &CsvExporter::new(ExportOptions::new()).with_excel_bom(),
             &report,
         );
-        assert!(with.starts_with(UTF8_BOM));
-        assert_eq!(&with[UTF8_BOM.len()..], &without[..]);
+        assert!(with.starts_with(&crate::format::UTF8_BOM));
+        assert_eq!(&with[crate::format::UTF8_BOM.len()..], &without[..]);
     }
 
     #[test]

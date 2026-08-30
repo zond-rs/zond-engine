@@ -151,6 +151,13 @@ struct Emitter<'a> {
     failure: Option<ImportError>,
     /// Whether a `schema_version` has been seen and accepted.
     versioned: bool,
+    /// The most addresses one host record may name.
+    ///
+    /// The sink counts the running total across the whole import, which is the
+    /// bound that matters for a scan. This one is about the document: a record
+    /// naming more addresses than the whole import may cover is a record nothing
+    /// good comes of building the rest of.
+    max_addresses: u128,
     /// Whether the document carried a `hosts` array at all.
     ///
     /// Required, and it is what tells a document from one *record* of a
@@ -163,12 +170,13 @@ struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
-    fn new(sink: &'a mut dyn TargetSink) -> Self {
+    fn new(sink: &'a mut dyn TargetSink, limits: ImportLimits) -> Self {
         Self {
             sink,
             token: String::new(),
             ports: String::new(),
             failure: None,
+            max_addresses: limits.max_addresses,
             versioned: false,
             hosted: false,
         }
@@ -228,9 +236,16 @@ impl<'a> Emitter<'a> {
             &host.ips
         };
 
-        for address in addresses {
-            self.token.clear();
+        if addresses.len() as u128 > self.max_addresses {
+            self.failure = Some(ImportError::TooManyAddresses {
+                origin,
+                token: host.primary_ip.clone(),
+                limit: self.max_addresses,
+            });
+            return false;
+        }
 
+        for address in addresses {
             let scoped = host
                 .zone
                 .as_deref()
@@ -238,17 +253,7 @@ impl<'a> Emitter<'a> {
                 .map(|zone| format!("{address}%{zone}"));
             let address = scoped.as_deref().unwrap_or(address);
 
-            if self.ports.is_empty() {
-                self.token.push_str(address);
-            } else {
-                // Bracketed unconditionally: an IPv6 address must be, and
-                // bracketing an IPv4 one removes the only reading in which
-                // `10.0.0.1:u:53` is an address with two colons in it.
-                self.token.push('[');
-                self.token.push_str(address);
-                self.token.push_str("]:");
-                self.token.push_str(&self.ports);
-            }
+            crate::import::expression(&mut self.token, address, &self.ports);
 
             if let Err(error) = self.sink.accept(&self.token, origin) {
                 self.failure = Some(error);
@@ -274,17 +279,25 @@ fn is_link_local(address: &str) -> bool {
 /// Reads a report written as a single JSON document.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsonImporter {
-    _limits: ImportLimits,
+    limits: ImportLimits,
 }
 
 impl JsonImporter {
     /// A reader bounded by `limits`.
     ///
-    /// The line and record bounds do not apply to a JSON document, which has no
-    /// lines; the counts that do apply are enforced by the sink, which sees
-    /// every target regardless of the format that produced it.
+    /// Which of them bind here, since a document is not a stream of lines:
+    ///
+    /// - [`max_line_bytes`](ImportLimits::max_line_bytes) does not. A JSON
+    ///   document has no lines, and nothing here reads one.
+    /// - [`max_tokens`](ImportLimits::max_tokens) binds, through the sink, which
+    ///   counts every expression whatever produced it.
+    /// - [`max_addresses`](ImportLimits::max_addresses) binds twice: through the
+    ///   sink as the running total, and here as the most addresses one host
+    ///   record may name. The second is what stops a document with one host and
+    ///   ten million addresses in it from being assembled before the sink has
+    ///   seen a single one.
     pub fn new(limits: ImportLimits) -> Self {
-        Self { _limits: limits }
+        Self { limits }
     }
 }
 
@@ -294,7 +307,7 @@ impl Importer for JsonImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
-        let mut emitter = Emitter::new(sink);
+        let mut emitter = Emitter::new(sink, self.limits);
         let mut deserializer = serde_json::Deserializer::from_reader(input);
 
         let outcome = Document {
@@ -446,7 +459,7 @@ impl Importer for JsonLinesImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
-        let mut emitter = Emitter::new(sink);
+        let mut emitter = Emitter::new(sink, self.limits);
         let mut buffer = Vec::new();
         let mut line_number = 0u64;
 

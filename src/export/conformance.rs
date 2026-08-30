@@ -33,9 +33,11 @@ use crate::model::host::{Filtering, HostStatus, NetworkRole};
 use crate::model::port::{PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
 use crate::record::wire::{
-    confidence_name, detection_class_name, filtering_name, host_status_name, network_role_name,
-    port_state_name, protocol_name, severity_name,
+    attachment_source_name, confidence_name, detection_class_name, filtering_name,
+    host_status_name, network_role_name, port_state_name, protocol_name, scan_kind_name,
+    scanner_kind_name, severity_name, stop_reason_name,
 };
+use crate::report::{AttachmentSource, ScanKind, ScannerKind, StopReason};
 use crate::transport::probe::SendMode;
 
 /// The published schemas, compiled into the test binary so a test cannot pass
@@ -157,9 +159,12 @@ fn the_schema_pins_the_version_the_code_emits() {
 /// engine cannot produce is a promise to a third party writing this format that
 /// both report readers then refuse. Nothing else in this crate looks at it.
 ///
-/// Only the enums whose type publishes an `ALL` are here. That is not a
-/// shortcut: an exhaustive list written out in this file would be a third copy
-/// of the variants, which is the arrangement this test exists to catch.
+/// Only the enums whose type publishes an `ALL` are here, and every closed enum
+/// in the schema now has one except `port_scope`, whose variants carry data. That
+/// is not a shortcut: an exhaustive list written out in this file would be a
+/// third copy of the variants, which is the arrangement this test exists to
+/// catch. Adding a variant somewhere and an `ALL` nowhere is what leaves a gap,
+/// so a new enum in the document should arrive with one.
 fn enumerations() -> Vec<(&'static str, Vec<String>)> {
     let named = |names: Vec<&'static str>| names.into_iter().map(str::to_owned).collect();
 
@@ -259,6 +264,40 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
                     .iter()
                     .copied()
                     .map(detection_class_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/phase/properties/kind/enum",
+            named(ScanKind::ALL.iter().copied().map(scan_kind_name).collect()),
+        ),
+        (
+            "/$defs/scanner_kind/enum",
+            named(
+                ScannerKind::ALL
+                    .iter()
+                    .copied()
+                    .map(scanner_kind_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/probe_stats/properties/stop_reason/enum",
+            named(
+                StopReason::ALL
+                    .iter()
+                    .copied()
+                    .map(stop_reason_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/attachment/properties/source/enum",
+            named(
+                AttachmentSource::ALL
+                    .iter()
+                    .copied()
+                    .map(attachment_source_name)
                     .collect(),
             ),
         ),

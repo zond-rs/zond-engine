@@ -107,7 +107,7 @@ impl DiffExporter for HtmlDiffExporter {
         write_masthead(out, heading, &document)?;
         write_notices(out, diff, &document)?;
         write_tiles(out, &document)?;
-        write_hosts(out, diff, &document)?;
+        write_hosts(out, diff, &self.options)?;
         write_colophon(out, &document)?;
 
         write::foot(out)?;
@@ -247,9 +247,11 @@ fn write_tiles(out: &mut dyn Write, document: &DiffDto<'_>) -> Result<(), Export
 fn write_hosts(
     out: &mut dyn Write,
     diff: &ScanDiff,
-    document: &DiffDto<'_>,
+    options: &ExportOptions,
 ) -> Result<(), ExportError> {
-    if document.hosts.is_empty() {
+    let deltas = diff.hosts();
+
+    if deltas.is_empty() {
         writeln!(
             out,
             "<section class=\"section\"><p class=\"empty\">Nothing changed between these two scans.</p></section>"
@@ -260,11 +262,14 @@ fn write_hosts(
     writeln!(
         out,
         "<section class=\"section\">\n<h2 class=\"section-title\">Hosts <span class=\"section-count\">{}</span></h2>",
-        document.hosts.len()
+        deltas.len()
     )?;
 
-    for (delta, dto) in diff.hosts().iter().zip(&document.hosts) {
-        write_host(out, delta, dto)?;
+    // One delta is rendered, written and dropped before the next is built, for
+    // the reason the report page gives: each carries both sides' whole records,
+    // and holding every one of them at once is a second copy of both scans.
+    for delta in deltas {
+        write_host(out, delta, &HostDeltaDto::new(delta, options))?;
     }
 
     writeln!(out, "</section>")?;
