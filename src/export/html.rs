@@ -866,7 +866,7 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
     write_finding_facts(&mut facts, &dto.findings);
 
     if let Some(service) = &dto.service {
-        let cpes: Vec<String> = service.cpe.iter().map(|cpe| esc(cpe)).collect();
+        let cpes: Vec<String> = service.cpes.iter().map(|cpe| esc(cpe)).collect();
         let _ = write!(
             facts,
             "<dt>service</dt><dd>{}% confidence{}</dd>",

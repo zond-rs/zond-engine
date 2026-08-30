@@ -603,7 +603,7 @@
         "kernel",
         "accuracy",
         "detail_accuracy",
-        "cpe",
+        "cpes",
         "evidence"
       ],
       "properties": {
@@ -657,7 +657,7 @@
             }
           ]
         },
-        "cpe": {
+        "cpes": {
           "type": "array",
           "items": {
             "type": "string"
@@ -1375,7 +1375,7 @@
         "vendor",
         "version",
         "extrainfo",
-        "cpe"
+        "cpes"
       ],
       "properties": {
         "name": {
@@ -1410,7 +1410,7 @@
             "null"
           ]
         },
-        "cpe": {
+        "cpes": {
           "type": "array",
           "items": {
             "type": "string"

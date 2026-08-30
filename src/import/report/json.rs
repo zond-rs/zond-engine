@@ -388,7 +388,7 @@ impl PhaseDto {
                 .iter()
                 .map(|ip| address(ip))
                 .collect::<Result<_, _>>()?,
-            probes: self
+            probe_stats: self
                 .probe_stats
                 .into_iter()
                 .map(ProbeStatsDto::record)
@@ -799,7 +799,7 @@ impl HostDto {
                 .into_iter()
                 .map(HopDto::record)
                 .collect::<Result<_, _>>()?,
-            network_roles: self.roles,
+            roles: self.roles,
             filtering: self.filtering,
             first_seen,
             last_seen,
@@ -848,7 +848,7 @@ struct OsDto {
     kernel: Option<String>,
     accuracy: u8,
     detail_accuracy: Option<u8>,
-    cpe: Vec<String>,
+    cpes: Vec<String>,
     evidence: Option<String>,
 }
 
@@ -864,7 +864,7 @@ impl OsDto {
             kernel: self.kernel,
             detail_accuracy: self.detail_accuracy,
             evidence: self.evidence,
-            cpes: self.cpe,
+            cpes: self.cpes,
         }
     }
 }
@@ -952,7 +952,7 @@ impl PortDto {
         known(wire::port_state(&self.state), "a port state", &self.state)?;
 
         Ok(PortRecord {
-            number: self.port,
+            port: self.port,
             protocol: self.protocol,
             state: self.state,
             service: self.service.map(ServiceDto::record),
@@ -972,7 +972,7 @@ struct ServiceDto {
     vendor: Option<String>,
     version: Option<String>,
     extrainfo: Option<String>,
-    cpe: Vec<String>,
+    cpes: Vec<String>,
 }
 
 impl ServiceDto {
@@ -984,7 +984,7 @@ impl ServiceDto {
             vendor: self.vendor,
             version: self.version,
             extrainfo: self.extrainfo,
-            cpes: self.cpe,
+            cpes: self.cpes,
         }
     }
 }
@@ -1089,7 +1089,7 @@ impl CertificateDto {
             common_name: self.common_name,
             sans: self.sans,
             issuer: self.issuer,
-            fingerprint: self.fingerprint_sha256,
+            fingerprint_sha256: self.fingerprint_sha256,
             pubkey_type: self.pubkey_type,
             pubkey_bits: self.pubkey_bits,
         })

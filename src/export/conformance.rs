@@ -20,7 +20,9 @@
 //! under which the schema stays true.
 
 use boon::{Compiler, Schemas};
+use regex::Regex;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 use crate::config::{OsDetection, ServiceDetection};
 use crate::export::schema::SCHEMA_VERSION;
@@ -510,4 +512,206 @@ fn every_change_the_fixtures_produce_is_a_token_the_schema_accepts() {
     }
 
     assert!(seen > 0, "the fixtures produced no changes to check");
+}
+
+/// The change kinds the comparison exporter emits, read out of its own source.
+///
+/// Every kind reaches the document through one of these constructors, and
+/// [`ChangeDto::set`] names two. Reading the source rather than driving every
+/// variant keeps this from needing one of every change constructed by hand,
+/// which is a thing that rots faster than the list it would be checking.
+fn emitted_change_kinds() -> BTreeSet<String> {
+    const SOURCE: &str = include_str!("diff/schema.rs");
+
+    let pattern = Regex::new(
+        r#"Self::(?:between|gained|lost|optional|set)\(\s*"([a-z_]+)"(?:\s*,\s*"([a-z_]+)")?"#,
+    )
+    .expect("a valid pattern");
+
+    let mut kinds = BTreeSet::new();
+    for captures in pattern.captures_iter(SOURCE) {
+        for group in [1, 2] {
+            if let Some(kind) = captures.get(group) {
+                kinds.insert(kind.as_str().to_string());
+            }
+        }
+    }
+    kinds
+}
+
+/// The kinds the published schema will accept.
+fn accepted_change_kinds() -> BTreeSet<String> {
+    let schema: Value = serde_json::from_str(DIFF_SCHEMA).expect("the schema parses");
+    schema["$defs"]["change"]["properties"]["kind"]["enum"]
+        .as_array()
+        .expect("the kind enum is a list")
+        .iter()
+        .map(|kind| kind.as_str().expect("every kind is a string").to_string())
+        .collect()
+}
+
+/// The exporter and the schema name the same set of change kinds.
+///
+/// `a_comparison_matches_the_published_schema` only sees the kinds the fixture
+/// happens to produce, so a kind the fixture omits is a kind nothing checks.
+/// That is not hypothetical: `finding_appeared` and `finding_resolved` were
+/// emitted for a while by code the schema would have rejected, and the
+/// conformance suite stayed green. This compares the two lists directly.
+#[test]
+fn the_schema_accepts_exactly_the_change_kinds_the_exporter_emits() {
+    let emitted = emitted_change_kinds();
+    let accepted = accepted_change_kinds();
+
+    assert!(
+        !emitted.is_empty(),
+        "the source scan found no change kinds, so it is checking nothing"
+    );
+
+    let unlisted: Vec<&String> = emitted.difference(&accepted).collect();
+    let unemitted: Vec<&String> = accepted.difference(&emitted).collect();
+
+    assert!(
+        unlisted.is_empty(),
+        "the exporter emits kinds the published schema rejects: {unlisted:?}"
+    );
+    assert!(
+        unemitted.is_empty(),
+        "the schema lists kinds nothing emits: {unemitted:?}"
+    );
+}
+
+/// The two JSON encodings of a host name their fields the same way.
+///
+/// A `Host` reaches a file twice: as a [`HostRecord`](crate::record::HostRecord)
+/// in the journal, and as a `HostDto` in an exported report. They differ in
+/// encoding on purpose — a duration is a `Duration` in one and an integer of
+/// microseconds in the other, and the exported document carries derived fields
+/// the journal has no reason to store — but where both name the same thing they
+/// must spell it the same way. Otherwise a consumer who reads both learns two
+/// vocabularies for one domain, and the two drift apart a field at a time.
+///
+/// This compares the field names the two actually emit. Encoding differences are
+/// listed below and are the only permitted divergence; anything else is a
+/// vocabulary that has started to drift.
+#[test]
+fn the_journal_and_the_report_spell_a_host_the_same_way() {
+    use crate::record::HostRecord;
+
+    /// Fields one side carries and the other has no reason to.
+    ///
+    /// Each is a decision rather than an oversight, and each is named here so
+    /// that adding a field to one side without the other fails this test until
+    /// somebody says which it is.
+    const RECORD_ONLY: &[&str] = &[
+        // The document carries the OS verdict and not the sources behind it.
+        "os_evidence",
+        // Round-trip samples, which the report renders as statistics instead.
+        "rtts",
+        "hop_counter",
+        // Durations, which the report writes as integers of microseconds.
+        "rtt",
+        "elapsed",
+        "first_reply",
+        "last_reply",
+        // The interface a link-local range is valid on. See ZA-4-009.
+        "zone",
+        // The retry policy, flattened here and nested under `retry` there.
+        "retry_effort",
+        "retry_max_attempts",
+        "retry_timeout_scale",
+        "retry_dampen_silent_hosts",
+        // serde's own encoding of `SystemTime` and `Duration`. The report writes
+        // an RFC 3339 string and an integer of microseconds instead, both of
+        // which a person can read.
+        "secs_since_epoch",
+        "nanos_since_epoch",
+        "secs",
+        "nanos",
+        // A finding's detection identity, nested here and flattened into
+        // `id`, `version` and `content_hash` there.
+        "detection",
+        // Part of `os_evidence`, which the report does not carry.
+        "source",
+    ];
+
+    /// Fields the report derives for a reader that the journal does not store.
+    const REPORT_ONLY: &[&str] = &[
+        "alive",
+        "families",
+        "at",
+        "decoration",
+        "fe80",
+        "mac",
+        "vendor",
+        "redaction",
+        "family",
+        "complete",
+        "kind",
+        "position",
+        "data",
+        "trip",
+        "samples",
+        "jitter_us",
+        "rtt_avg_us",
+        "rtt_max_us",
+        "rtt_median_us",
+        "rtt_min_us",
+        "rtt_us",
+        "elapsed_us",
+        "first_reply_us",
+        "last_reply_us",
+        "probe_stats",
+        "retry",
+        "services",
+        "systems",
+    ];
+
+    let report = fixture::report();
+    let host = report.hosts().next().expect("the fixture has a host");
+
+    let recorded: Value =
+        serde_json::to_value(HostRecord::from(host)).expect("a host records as JSON");
+    let exported = &document(ExportOptions::new())["hosts"][0];
+
+    let record_names = field_names(&recorded);
+    let export_names = field_names(exported);
+
+    let unmatched_record: Vec<&String> = record_names
+        .difference(&export_names)
+        .filter(|name| !RECORD_ONLY.contains(&name.as_str()))
+        .collect();
+    let unmatched_export: Vec<&String> = export_names
+        .difference(&record_names)
+        .filter(|name| !REPORT_ONLY.contains(&name.as_str()))
+        .collect();
+
+    assert!(
+        unmatched_record.is_empty(),
+        "the journal names fields the report does not, and they are not listed as \
+         journal-only: {unmatched_record:?}"
+    );
+    assert!(
+        unmatched_export.is_empty(),
+        "the report names fields the journal does not, and they are not listed as \
+         report-only: {unmatched_export:?}"
+    );
+}
+
+/// Every field name in a JSON value, at any depth.
+fn field_names(value: &Value) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    fn walk(value: &Value, names: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    names.insert(key.clone());
+                    walk(child, names);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(item, names)),
+            _ => {}
+        }
+    }
+    walk(value, &mut names);
+    names
 }

@@ -210,3 +210,101 @@ impl fmt::Display for Coverage {
         }
     }
 }
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗██║  ██║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The invariant the rest of the module rests on: a delta's change list
+    /// holds only changes.
+    #[test]
+    fn a_value_that_did_not_move_is_not_a_change() {
+        assert!(Change::between(1, 1).is_none());
+        assert!(Change::between(Some("ssh"), Some("ssh")).is_none());
+        assert!(Change::between(None::<&str>, None).is_none());
+    }
+
+    #[test]
+    fn a_value_that_moved_carries_both_sides() {
+        let change = Change::between(1, 2).expect("a change");
+        assert_eq!(change.before, 1);
+        assert_eq!(change.after, 2);
+    }
+
+    #[test]
+    fn an_optional_field_reads_as_gain_loss_or_replacement() {
+        let gained = Change::new(None, Some("ssh"));
+        assert!(gained.is_gain() && !gained.is_loss() && !gained.is_replacement());
+
+        let lost = Change::new(Some("ssh"), None);
+        assert!(lost.is_loss() && !lost.is_gain() && !lost.is_replacement());
+
+        let replaced = Change::new(Some("ssh"), Some("http"));
+        assert!(replaced.is_replacement() && !replaced.is_gain() && !replaced.is_loss());
+    }
+
+    #[test]
+    fn mapping_a_change_keeps_both_sides_in_place() {
+        let mapped = Change::new(1u8, 2u8).map(|n| n * 10);
+        assert_eq!((mapped.before, mapped.after), (10, 20));
+    }
+
+    #[test]
+    fn a_record_in_both_scans_raises_no_coverage_question() {
+        assert!(Presence::Both.is_in_both());
+        assert_eq!(Presence::Both.counterpart_coverage(), None);
+        assert!(Presence::Both.is_confirmed());
+    }
+
+    /// An appearance is a finding about the network only when the scan that
+    /// lacked the record is known to have looked.
+    #[test]
+    fn an_appearance_is_confirmed_only_where_the_baseline_covered_the_target() {
+        let looked = Presence::Added {
+            before: Coverage::Covered,
+        };
+        assert!(looked.is_added() && looked.is_confirmed());
+
+        for unconfirmed in [Coverage::Withheld, Coverage::OutOfScope, Coverage::Unstated] {
+            let presence = Presence::Added {
+                before: unconfirmed,
+            };
+            assert!(
+                !presence.is_confirmed(),
+                "{unconfirmed:?} does not confirm an appearance"
+            );
+        }
+    }
+
+    #[test]
+    fn a_disappearance_asks_the_same_question_of_the_later_scan() {
+        let looked = Presence::Removed {
+            after: Coverage::Covered,
+        };
+        assert!(looked.is_removed() && looked.is_confirmed());
+
+        let did_not = Presence::Removed {
+            after: Coverage::OutOfScope,
+        };
+        assert!(!did_not.is_confirmed());
+    }
+
+    #[test]
+    fn only_covered_ground_counts_as_covered() {
+        assert!(Coverage::Covered.is_covered());
+        for other in [Coverage::Withheld, Coverage::OutOfScope, Coverage::Unstated] {
+            assert!(!other.is_covered(), "{other:?} is not coverage");
+        }
+        assert!(Coverage::Withheld.is_excluded());
+        assert!(!Coverage::Unstated.is_excluded());
+    }
+}

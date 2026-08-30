@@ -154,3 +154,122 @@ impl ScopeIndex {
         }
     }
 }
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗██║  ██║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+    use std::time::{Duration, SystemTime};
+
+    use super::*;
+    use crate::config::ZondConfig;
+    use crate::model::exclusion::Exclusions;
+    use crate::model::ip::set::IpSet;
+    use crate::model::parse::ip::to_set;
+    use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings, ScopeParts};
+
+    fn ip(last: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+    }
+
+    /// A report stating what it walked and what its policy withheld.
+    ///
+    /// Built through [`TargetScope::from_ip_set`] with real [`Exclusions`], so
+    /// the withheld ranges are subtracted from the walked ones the way a scan
+    /// subtracts them. Listing a range as both walked and excluded would make a
+    /// fixture no scan can produce.
+    fn report(covered: &[&str], excluded: &[&str], ports: PortScope) -> ScanReport {
+        let exclusions = if excluded.is_empty() {
+            Exclusions::none()
+        } else {
+            Exclusions::new(to_set(excluded, None, None).expect("parseable ranges"))
+        };
+
+        let mut targets = if covered.is_empty() {
+            IpSet::new()
+        } else {
+            to_set(covered, None, None).expect("parseable ranges")
+        };
+        let walked = TargetScope::from_ip_set(&mut targets, &exclusions);
+
+        let scope = TargetScope::from_parts(ScopeParts {
+            listened: Vec::new(),
+            ranges: walked.ranges().to_vec(),
+            links: Vec::new(),
+            addresses: walked.addresses(),
+            probes: None,
+            ports,
+            protocols: Vec::new(),
+            excluded: walked.excluded().to_vec(),
+            withheld: walked.withheld(),
+        });
+
+        let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::Discovery,
+            started_at: SystemTime::UNIX_EPOCH,
+            elapsed: Duration::from_secs(1),
+            privileged: Some(true),
+            targets: scope,
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            unroutable: Vec::new(),
+            probes: Vec::new(),
+            origin: None,
+        });
+
+        ScanReport::recorded("test", vec![phase], Vec::new())
+    }
+
+    #[test]
+    fn an_address_inside_a_walked_range_is_covered() {
+        let index = ScopeIndex::of(&report(&["192.168.0.0/24"], &[], PortScope::NoPorts));
+        assert_eq!(index.address(&ip(7)), Coverage::Covered);
+    }
+
+    /// A range the policy withheld is not the same as one the scan never named:
+    /// the report says it was told not to look.
+    #[test]
+    fn an_address_the_policy_withheld_is_reported_as_withheld() {
+        let index = ScopeIndex::of(&report(
+            &["192.168.0.0/24"],
+            &["192.168.0.64/26"],
+            PortScope::NoPorts,
+        ));
+        assert_eq!(index.address(&ip(100)), Coverage::Withheld);
+        assert_eq!(index.address(&ip(7)), Coverage::Covered);
+    }
+
+    #[test]
+    fn an_address_outside_a_stated_scope_is_out_of_scope() {
+        let index = ScopeIndex::of(&report(&["192.168.0.0/25"], &[], PortScope::NoPorts));
+        assert_eq!(index.address(&ip(200)), Coverage::OutOfScope);
+    }
+
+    /// A report that states no scope cannot answer the question, and says so
+    /// rather than guessing.
+    #[test]
+    fn a_report_that_states_no_scope_answers_unstated() {
+        let index = ScopeIndex::of(&report(&[], &[], PortScope::NoPorts));
+        assert!(!index.states_scope());
+        assert_eq!(index.address(&ip(7)), Coverage::Unstated);
+    }
+
+    #[test]
+    fn an_endpoint_is_no_better_covered_than_its_address() {
+        let index = ScopeIndex::of(&report(&["192.168.0.0/24"], &[], PortScope::NoPorts));
+        assert_eq!(
+            index.endpoint(Coverage::OutOfScope, 22, Protocol::Tcp),
+            Coverage::OutOfScope,
+            "a port on an address nobody walked is not covered"
+        );
+    }
+}

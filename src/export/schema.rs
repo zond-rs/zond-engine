@@ -1420,7 +1420,7 @@ pub struct OsDto<'a> {
     /// Confidence in this identification, 0 to 100.
     pub accuracy: u8,
     /// CPE identifiers, sorted.
-    pub cpe: Vec<&'a str>,
+    pub cpes: Vec<&'a str>,
     /// What this identification was read off, in one line, or `null` where the
     /// technique that produced it recorded nothing.
     ///
@@ -1461,7 +1461,7 @@ impl<'a> OsDto<'a> {
             generation: os.generation(),
             vendor: os.vendor(),
             accuracy: os.accuracy(),
-            cpe: os.cpes().iter().map(|cpe| &**cpe).collect(),
+            cpes: os.cpes().iter().map(|cpe| &**cpe).collect(),
             evidence: os.evidence(),
             kernel: os.kernel(),
             detail_accuracy: os.detail_accuracy(),
@@ -1711,7 +1711,7 @@ pub struct ServiceDto<'a> {
     /// Additional metadata or environment hints.
     pub extrainfo: Option<&'a str>,
     /// CPE identifiers, in the order they were established.
-    pub cpe: Vec<&'a str>,
+    pub cpes: Vec<&'a str>,
 }
 
 impl<'a> ServiceDto<'a> {
@@ -1724,7 +1724,7 @@ impl<'a> ServiceDto<'a> {
             vendor: service.vendor(),
             version: service.version(),
             extrainfo: service.extrainfo(),
-            cpe: service.cpes().iter().map(AsRef::as_ref).collect(),
+            cpes: service.cpes().iter().map(AsRef::as_ref).collect(),
         }
     }
 }

@@ -120,7 +120,7 @@ pub struct HostRecord {
     pub path: Vec<HopRecord>,
     /// Roles inferred from where it sits or what it runs, by wire name.
     #[serde(default)]
-    pub network_roles: Vec<String>,
+    pub roles: Vec<String>,
     /// What the filter in front of the host was shown to be doing, by wire name.
     #[serde(default)]
     pub filtering: Vec<String>,
@@ -162,7 +162,7 @@ impl From<&Host> for HostRecord {
             zone: host.zone().map(ZoneRecord::from),
             telemetry: TelemetryRecord::from(host.telemetry()),
             path: host.path().hops().iter().map(HopRecord::from).collect(),
-            network_roles: {
+            roles: {
                 let mut roles: Vec<_> = host
                     .network_roles()
                     .iter()
@@ -223,11 +223,7 @@ impl From<&HostRecord> for Host {
         for hop in &record.path {
             host.record_hop(hop.into());
         }
-        for role in record
-            .network_roles
-            .iter()
-            .filter_map(|r| wire::network_role(r))
-        {
+        for role in record.roles.iter().filter_map(|r| wire::network_role(r)) {
             host.add_network_role(role);
         }
         for filtering in record.filtering.iter().filter_map(|f| wire::filtering(f)) {
@@ -606,7 +602,7 @@ impl From<&HopRecord> for Hop {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortRecord {
     /// The port number.
-    pub number: u16,
+    pub port: u16,
     /// The transport it was reached over, by wire name.
     pub protocol: String,
     /// What a probe established, by wire name.
@@ -629,7 +625,7 @@ pub struct PortRecord {
 impl From<&Port> for PortRecord {
     fn from(port: &Port) -> Self {
         Self {
-            number: port.number(),
+            port: port.number(),
             protocol: wire::protocol_name(port.protocol()).to_owned(),
             state: wire::port_state_name(port.state()).to_owned(),
             service: port.service().map(ServiceRecord::from),
@@ -648,7 +644,7 @@ impl From<&PortRecord> for Port {
         let protocol = wire::protocol(&record.protocol).unwrap_or(Protocol::Tcp);
         let state = wire::port_state(&record.state).unwrap_or(PortState::Filtered);
 
-        let mut port = Port::new(record.number, protocol, state);
+        let mut port = Port::new(record.port, protocol, state);
         if let Some(service) = &record.service {
             port = port.with_service(service.into());
         }
@@ -922,7 +918,7 @@ pub struct CertificateRecord {
     /// When it stops being valid.
     pub validity_end: SystemTime,
     /// The SHA-256 of the certificate.
-    pub fingerprint: String,
+    pub fingerprint_sha256: String,
     /// The public key's algorithm, or `unknown` where it was not read.
     #[serde(default)]
     pub pubkey_type: String,
@@ -939,7 +935,7 @@ impl From<&CertificateInfo> for CertificateRecord {
             issuer: certificate.issuer().to_owned(),
             validity_start: certificate.validity_start(),
             validity_end: certificate.validity_end(),
-            fingerprint: certificate.fingerprint_sha256().to_owned(),
+            fingerprint_sha256: certificate.fingerprint_sha256().to_owned(),
             pubkey_type: certificate.pubkey_type().to_owned(),
             pubkey_bits: certificate.pubkey_bits(),
         }
@@ -953,7 +949,7 @@ impl From<&CertificateRecord> for CertificateInfo {
             record.issuer.clone(),
             record.validity_start,
             record.validity_end,
-            record.fingerprint.clone(),
+            record.fingerprint_sha256.clone(),
         )
         .with_sans(record.sans.iter().map(|s| s.as_str().into()))
         .with_public_key(record.pubkey_type.clone(), record.pubkey_bits)
@@ -1037,7 +1033,7 @@ pub struct PhaseRecord {
     pub unroutable: Vec<IpAddr>,
     /// What each strategy recorded about its own run.
     #[serde(default)]
-    pub probes: Vec<ProbeStatsRecord>,
+    pub probe_stats: Vec<ProbeStatsRecord>,
     /// Which document this sitting was folded in from, for a merged report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<OriginRecord>,
@@ -1168,7 +1164,7 @@ impl From<&ScanPhase> for PhaseRecord {
             settings: SettingsRecord::from(phase.settings()),
             failures: phase.failures().iter().map(FailureRecord::from).collect(),
             unroutable: phase.unroutable().to_vec(),
-            probes: phase
+            probe_stats: phase
                 .probe_stats()
                 .iter()
                 .map(ProbeStatsRecord::from)
@@ -1199,7 +1195,7 @@ impl From<&PhaseRecord> for ScanPhase {
             settings: ScanSettings::from(&record.settings),
             failures: record.failures.iter().map(ScannerFailure::from).collect(),
             unroutable: record.unroutable.clone(),
-            probes: record.probes.iter().map(ProbeStats::from).collect(),
+            probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(Origin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),
         })

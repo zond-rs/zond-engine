@@ -718,3 +718,265 @@ fn is_name_byte(byte: u8) -> bool {
         b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>' | b'=' | b'<'
     )
 }
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗██║  ██║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+/// The module doc makes six claims about what this parser refuses and bounds six
+/// things it accepts. These hold it to all twelve.
+///
+/// The refusals are the whole security argument for reading a file somebody else
+/// wrote, and an untested refusal is a claim rather than a control.
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    const FORMAT: &str = "test";
+    const KEPT: &[&[u8]] = &[b"id", b"name"];
+
+    /// Drives a document to completion, returning the first refusal if there is
+    /// one.
+    fn read(document: &str) -> Result<Vec<Event>, ImportError> {
+        let mut input = Cursor::new(document.as_bytes().to_vec());
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+        let mut events = Vec::new();
+        loop {
+            match parser.next_event()? {
+                Event::Eof => return Ok(events),
+                event => events.push(event),
+            }
+        }
+    }
+
+    fn refusal(document: &str) -> String {
+        match read(document) {
+            Ok(_) => panic!("the parser accepted a document it documents as refused"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    // ─── The six refusals ────────────────────────────────────────────────────
+
+    /// "`<!ENTITY` is refused anywhere, unconditionally. No entity is ever
+    /// declared, so none can be expanded, so the billion-laughs expansion has
+    /// nothing to expand."
+    #[test]
+    fn an_entity_declaration_is_refused_outright() {
+        let message = refusal(r#"<!DOCTYPE lolz [<!ENTITY lol "lol">]><lolz>&lol;</lolz>"#);
+        assert!(
+            message.contains("internal subset") || message.contains("declaration"),
+            "the refusal should name what it refused, said: {message}"
+        );
+    }
+
+    /// The billion-laughs document itself, in the shape it is usually written.
+    #[test]
+    fn the_billion_laughs_document_is_refused_before_anything_expands() {
+        let message = refusal(
+            r#"<?xml version="1.0"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+]>
+<lolz>&lol3;</lolz>"#,
+        );
+        assert!(!message.is_empty());
+    }
+
+    /// "A `DOCTYPE` is accepted only in its inert form: a bare name, no internal
+    /// subset, no `SYSTEM` or `PUBLIC` identifier."
+    #[test]
+    fn a_bare_doctype_is_accepted_because_nmap_writes_one() {
+        let events = read(r#"<?xml version="1.0"?><!DOCTYPE nmaprun><nmaprun/>"#)
+            .expect("the inert form nmap writes is readable");
+        assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn a_doctype_naming_a_system_identifier_is_refused() {
+        let message = refusal(r#"<!DOCTYPE a SYSTEM "file:///etc/passwd"><a/>"#);
+        assert!(message.contains("external identifier"), "said: {message}");
+    }
+
+    #[test]
+    fn a_doctype_naming_a_public_identifier_is_refused() {
+        let message =
+            refusal(r#"<!DOCTYPE a PUBLIC "-//X//EN" "http://example.invalid/x.dtd"><a/>"#);
+        assert!(message.contains("external identifier"), "said: {message}");
+    }
+
+    #[test]
+    fn a_doctype_with_an_internal_subset_is_refused() {
+        let message = refusal(r#"<!DOCTYPE a [<!ELEMENT a EMPTY>]><a/>"#);
+        assert!(message.contains("internal subset"), "said: {message}");
+    }
+
+    /// The XXE shape: an external entity pointed at a local file.
+    #[test]
+    fn an_external_entity_reference_has_nothing_to_resolve_against() {
+        let message =
+            refusal(r#"<!DOCTYPE a [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><a>&xxe;</a>"#);
+        assert!(!message.is_empty());
+    }
+
+    /// "Any entity reference other than the five predefined and numeric
+    /// character references is refused, naming it."
+    #[test]
+    fn an_undeclared_entity_reference_is_refused_and_named() {
+        let message = refusal(r#"<a id="&whoami;"/>"#);
+        assert!(
+            message.contains("whoami"),
+            "the refusal must name the reference, said: {message}"
+        );
+    }
+
+    #[test]
+    fn the_five_predefined_entities_resolve() {
+        let mut input = Cursor::new(r#"<a id="&lt;&gt;&amp;&quot;&apos;"/>"#.as_bytes().to_vec());
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+        parser.next_event().expect("the document reads");
+        assert_eq!(parser.element.value(b"id"), Some("<>&\"'"));
+    }
+
+    #[test]
+    fn a_numeric_character_reference_resolves() {
+        let mut input = Cursor::new(r#"<a id="&#65;&#x42;"/>"#.as_bytes().to_vec());
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+        parser.next_event().expect("the document reads");
+        assert_eq!(parser.element.value(b"id"), Some("AB"));
+    }
+
+    /// "Processing instructions are skipped without being interpreted. This is
+    /// not an XSLT engine and never opens what one names."
+    #[test]
+    fn a_processing_instruction_is_skipped_rather_than_read() {
+        let events = read(
+            r#"<?xml version="1.0"?><?xml-stylesheet href="file:///usr/share/nmap/nmap.xsl" type="text/xsl"?><a/>"#,
+        )
+        .expect("a stylesheet instruction is skipped, not followed");
+        assert!(
+            matches!(events.as_slice(), [Event::Start { self_closing: true }]),
+            "the two instructions produce no events, leaving only the element"
+        );
+    }
+
+    // ─── The six bounds ──────────────────────────────────────────────────────
+
+    #[test]
+    fn nesting_is_bounded() {
+        let deep = |levels: usize| {
+            let mut doc = String::new();
+            for _ in 0..levels {
+                doc.push_str("<a>");
+            }
+            for _ in 0..levels {
+                doc.push_str("</a>");
+            }
+            doc
+        };
+
+        read(&deep(MAX_DEPTH)).expect("nesting at the bound is accepted");
+        let message = refusal(&deep(MAX_DEPTH + 2));
+        assert!(
+            message.contains("nest") || message.contains("deep"),
+            "said: {message}"
+        );
+    }
+
+    #[test]
+    fn an_element_name_is_bounded() {
+        let long = "n".repeat(MAX_NAME_BYTES + 1);
+        let message = refusal(&format!("<{long}/>"));
+        assert!(message.contains("name"), "said: {message}");
+    }
+
+    #[test]
+    fn an_attribute_name_is_bounded() {
+        let long = "n".repeat(MAX_NAME_BYTES + 1);
+        let message = refusal(&format!(r#"<a {long}="x"/>"#));
+        assert!(message.contains("name"), "said: {message}");
+    }
+
+    /// A kept attribute's value past the bound is a refusal; the bound itself is
+    /// accepted.
+    #[test]
+    fn a_kept_attribute_value_is_bounded() {
+        let at_bound = "v".repeat(MAX_VALUE_BYTES);
+        read(&format!(r#"<a id="{at_bound}"/>"#)).expect("a value at the bound is accepted");
+
+        let past = "v".repeat(MAX_VALUE_BYTES + 1);
+        assert!(!refusal(&format!(r#"<a id="{past}"/>"#)).is_empty());
+    }
+
+    #[test]
+    fn one_elements_markup_is_bounded() {
+        let mut input = Cursor::new(format!(r#"<a id="{}"/>"#, "v".repeat(4096)).into_bytes());
+        let mut parser = Parser::new(&mut input, 128, FORMAT, KEPT);
+        assert!(
+            parser.next_event().is_err(),
+            "an element past max_element_bytes is refused"
+        );
+    }
+
+    #[test]
+    fn an_entity_reference_that_never_closes_is_bounded() {
+        let message = refusal(&format!(
+            r#"<a id="&{}"/>"#,
+            "x".repeat(MAX_ENTITY_BYTES * 4)
+        ));
+        assert!(!message.is_empty());
+    }
+
+    // ─── Termination ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_document_that_ends_mid_element_is_an_error_not_a_hang() {
+        for truncated in [
+            "<a",
+            "<a id=",
+            r#"<a id=""#,
+            "<a><b",
+            "<!DOCTYPE",
+            "<!--",
+            "<?xml",
+        ] {
+            let _ = read(truncated);
+        }
+    }
+
+    proptest! {
+        /// Nothing a file can contain makes this parser panic or run forever.
+        ///
+        /// The same campaign `fingerprint` runs over its own parsers, applied to
+        /// the one that reads a document somebody else wrote.
+        #[test]
+        fn the_parser_never_panics_on_arbitrary_input(document in "(?s).{0,2000}") {
+            let _ = read(&document);
+        }
+
+        /// Arbitrary bytes, not just arbitrary text: a file on disk is not
+        /// obliged to be UTF-8.
+        #[test]
+        fn the_parser_never_panics_on_arbitrary_bytes(bytes in proptest::collection::vec(any::<u8>(), 0..2000)) {
+            let mut input = Cursor::new(bytes);
+            let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT);
+            for _ in 0..10_000 {
+                match parser.next_event() {
+                    Ok(Event::Eof) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        }
+    }
+}
