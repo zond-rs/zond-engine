@@ -783,6 +783,30 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
     strategy::routed::traceroute::trace(ctx, alive).await;
 }
 
+/// Joins what the scan identified against the embedded vulnerability database,
+/// recording a [`Finding`](crate::model::finding::Finding) on every port whose
+/// software a known vulnerability names at an affected version.
+///
+/// A sibling of the passes above and a step of its own, rather than something a
+/// report builder does on the way past. It sends nothing: everything it needs
+/// is already in the store, which is also why it correlates in place there
+/// instead of over the copies a report is built from.
+///
+/// Gated on [`ServiceDetection`], because the join is on the CPE a service
+/// identification produces and a scan that named no software has nothing to
+/// match. That gate reads oddly at first sight, since it makes a *service*
+/// setting decide whether a report carries vulnerability findings, and it is
+/// the honest one: with the pass off there is no CPE anywhere to join on.
+pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
+    if detection == ServiceDetection::Off {
+        return;
+    }
+
+    for key in ctx.host_addresses() {
+        ctx.update_host(key, crate::cve::correlate);
+    }
+}
+
 /// Characterises the filter in front of each host that answered, if asked.
 ///
 /// A sibling of [`run_traceroute`]: it runs last, only against hosts that
@@ -1695,5 +1719,67 @@ mod tests {
         let (_session, ctx) = store_holding(Vec::new());
 
         assert!(live_addresses(&ctx).is_empty());
+    }
+
+    /// A scan that identified software carries the vulnerabilities that
+    /// identification implies, with no second pass a caller has to remember.
+    ///
+    /// Moved here from `PhaseRecorder::finish` with W10. The behaviour is the
+    /// same and the step that performs it is now named.
+    #[test]
+    fn correlation_records_a_known_vulnerability_against_the_software_it_names() {
+        use crate::model::ip::scoped::ScopedIp;
+        use crate::model::port::{Port, PortState, Protocol, Service};
+
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        let ip: std::net::IpAddr = "192.168.0.1".parse().expect("literal");
+        ctx.write_host(ScopedIp::unscoped(ip), |host| {
+            let service = Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49");
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(service));
+            true
+        });
+
+        run_correlation(&ctx, ServiceDetection::Probe);
+
+        let host = session.hosts().get(ip).expect("the scanned host");
+        let port = host
+            .ports()
+            .find(|port| port.number() == 80)
+            .expect("port 80");
+        assert_eq!(
+            port.findings().count(),
+            1,
+            "the vulnerable Apache build should have been correlated"
+        );
+        assert!(
+            port.findings()
+                .any(|f| f.detection().id() == "zond:cve-kev")
+        );
+    }
+
+    /// At [`ServiceDetection::Off`] nothing asked a port what it was, so there
+    /// is nothing to join on, and the step does not run even where a CPE is
+    /// somehow present.
+    #[test]
+    fn correlation_does_not_run_when_no_service_pass_did() {
+        use crate::model::ip::scoped::ScopedIp;
+        use crate::model::port::{Port, PortState, Protocol, Service};
+
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        let ip: std::net::IpAddr = "192.168.0.1".parse().expect("literal");
+        ctx.write_host(ScopedIp::unscoped(ip), |host| {
+            let service = Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49");
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(service));
+            true
+        });
+
+        run_correlation(&ctx, ServiceDetection::Off);
+
+        let host = session.hosts().get(ip).expect("the scanned host");
+        let port = host
+            .ports()
+            .find(|port| port.number() == 80)
+            .expect("port 80");
+        assert_eq!(port.findings().count(), 0);
     }
 }

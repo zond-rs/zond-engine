@@ -285,6 +285,13 @@ pub(crate) fn report() -> ScanReport {
         ctx.store.insert(host.scoped_ip(), host);
     }
 
+    // Correlated explicitly, as a scan does since W10 made this a step rather
+    // than something `finish` did on the way past. The fixture wants a report
+    // carrying a vulnerability finding, and it now has to say so.
+    for mut entry in ctx.store.iter_mut() {
+        crate::cve::correlate(entry.value_mut());
+    }
+
     recorder.finish(&ctx)
 }
 

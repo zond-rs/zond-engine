@@ -461,6 +461,7 @@ fn spawn_discovery(
         // Last, and after every strategy that could add an address: what this
         // machine's own interfaces and routes say about what was found.
         vantage::attribute(&ctx);
+        orchestrator::run_correlation(&ctx, cfg.service_detection);
         recorder.finish(&ctx)
     })
 }
@@ -738,6 +739,7 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         // What this machine's own interfaces say about what was heard. The same
         // pass a scan ends with, and it sends nothing either.
         vantage::attribute(&ctx);
+        orchestrator::run_correlation(&ctx, cfg.service_detection);
         recorder.finish(&ctx)
     })
 }
@@ -858,6 +860,7 @@ fn spawn_scan(
             // not about the network around them.
             run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx).await;
 
+            orchestrator::run_correlation(&ctx, cfg.service_detection);
             let report = recorder.finish(&ctx);
             (Some(report), Some(live_addresses(&ctx)))
         };
@@ -892,6 +895,7 @@ fn spawn_scan(
         orchestrator::run_traceroute(&ctx, &cfg).await;
         orchestrator::run_characterise(&ctx, &cfg).await;
         vantage::attribute(&ctx);
+        orchestrator::run_correlation(&ctx, cfg.service_detection);
         let report = recorder.finish(&ctx);
 
         match liveness {

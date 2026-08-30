@@ -72,6 +72,26 @@ const DATASET_HASH: &str = "seed";
 /// Reads each port's service CPE, matches vendor, product and version against the
 /// dataset, and hands each match back to the port it concerns. Idempotent: a
 /// finding deduplicates by claim, so a re-run corroborates rather than doubles.
+///
+/// A scan runs this as its own step, after the service pass and before the
+/// report is built. It is public because it is worth running anywhere a host
+/// carries a CPE, which includes a host that came out of a file rather than off
+/// a network: an archived report correlates against today's dataset without
+/// rescanning anything.
+///
+/// ```
+/// use zond_engine::model::host::Host;
+/// use zond_engine::model::port::{Port, PortState, Protocol, Service};
+///
+/// let mut host = Host::new("192.0.2.1".parse().unwrap());
+/// let service = Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49");
+/// host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(service));
+///
+/// zond_engine::cve::correlate(&mut host);
+///
+/// let port = host.ports().find(|port| port.number() == 80).unwrap();
+/// assert!(port.findings().any(|finding| finding.detection().id() == "zond:cve-kev"));
+/// ```
 pub fn correlate(host: &mut Host) {
     let dataset = dataset();
 

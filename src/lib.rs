@@ -195,6 +195,10 @@
 //!   network, compared against a file from last year, merged with an nmap
 //!   document somebody else wrote, and exported in five formats, and only the
 //!   first of those involves a scanner at all.
+//! - [`cve`] — joining what a scan identified against known vulnerabilities.
+//!   A step rather than a phase: it sends nothing, and everything it needs is
+//!   already in hand, so it runs equally well over a host read back out of a
+//!   file as over one a scan just found.
 //! - [`record`] — the same information in a shape that survives a file.
 //! - [`scanner`] — the two entry points, the [`plan`](scanner::plan) behind
 //!   them, and the [`strategy`](scanner::strategy) implementations behind that,
