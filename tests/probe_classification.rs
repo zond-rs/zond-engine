@@ -652,11 +652,15 @@ async fn every_udp_probe_leaves_from_the_scan_source_port() {
     )
     .await;
 
-    assert_eq!(
-        net.probes().len(),
-        3,
-        "each target should have been probed exactly once"
-    );
+    let probes = net.probes();
+    assert_eq!(probes.len(), 3, "each target should have been probed once");
+    for probe in &probes {
+        assert_eq!(
+            probe.source_port, UDP_SRC_PORT,
+            "port {} was probed from {} instead",
+            probe.port, probe.source_port
+        );
+    }
 }
 
 /// A host already in the store is still credited to the sweep that found it.

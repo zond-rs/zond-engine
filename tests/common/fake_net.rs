@@ -392,12 +392,33 @@ impl Policy {
 }
 
 /// One probe as the network saw it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {
     /// The host it was addressed to.
     pub target: IpAddr,
     /// The port on that host.
     pub port: u16,
+    /// The address it claimed to come from.
+    ///
+    /// Ordinarily this host's own, and the reason it is recorded is the case
+    /// where it is not: a scan sending among decoys emits one probe per decoy
+    /// source alongside the real one, and the source address is the only thing
+    /// that tells them apart.
+    pub source: IpAddr,
+    /// The port it left from, which its replies must come back to.
+    pub source_port: u16,
+    /// The TCP flags it carried. Zero for UDP, which has none.
+    pub flags: u8,
+    /// What the sender was told about the IP header it would build: the hop
+    /// limit, a spoofed hardware address, a fragment size.
+    ///
+    /// This is the instruction, not the result. The seam sits above IP, so no
+    /// header is ever built here and nothing can be asserted about the packet
+    /// one would have produced. What a test can say is that the scanner asked
+    /// for it, on every probe.
+    pub emission: Emission,
+    /// The Layer 4 segment as it went out, header and payload.
+    pub bytes: Vec<u8>,
     /// When it was sent, for asserting on retry spacing and backoff.
     pub at: Instant,
     /// Whether the link swallowed it instead of delivering it.
@@ -558,7 +579,7 @@ impl ProbeSender for FakeLink {
         segment: &[u8],
         src: IpAddr,
         dst: IpAddr,
-        _emission: Emission,
+        emission: Emission,
     ) -> Result<(), SendError> {
         let Some(probe) = self.parse(segment) else {
             return Err(SendError::Refused(format!(
@@ -573,7 +594,7 @@ impl ProbeSender for FakeLink {
             .copied()
             .unwrap_or(self.fallback);
 
-        let dropped = self.admit(dst, probe.port, policy.loss);
+        let dropped = self.admit(&probe, src, dst, emission, policy.loss);
         if dropped {
             return Ok(());
         }
@@ -643,12 +664,6 @@ impl FakeLink {
         }
     }
 
-    /// Records the probe and decides whether the link swallows it, returning
-    /// true if it did.
-    ///
-    /// Counting and the coin flip happen together under one lock, so probes
-    /// racing in from a concurrent scan still consume the generator in a single
-    /// well-defined order.
     /// Whether the answer this probe drew is swallowed on the way back.
     ///
     /// Counted separately from [`admit`](Self::admit), against its own tally, so
@@ -672,10 +687,23 @@ impl FakeLink {
         }
     }
 
-    fn admit(&self, target: IpAddr, port: u16, loss: Loss) -> bool {
+    /// Records the probe and decides whether the link swallows it, returning
+    /// true if it did.
+    ///
+    /// Counting and the coin flip happen together under one lock, so probes
+    /// racing in from a concurrent scan still consume the generator in a single
+    /// well-defined order.
+    fn admit(
+        &self,
+        probe: &ParsedProbe,
+        source: IpAddr,
+        target: IpAddr,
+        emission: Emission,
+        loss: Loss,
+    ) -> bool {
         let mut state = self.state.lock().expect("fake net state");
 
-        let attempts = state.attempts.entry((target, port)).or_insert(0);
+        let attempts = state.attempts.entry((target, probe.port)).or_insert(0);
         *attempts += 1;
         let attempt = *attempts;
 
@@ -687,7 +715,12 @@ impl FakeLink {
 
         state.log.push(Probe {
             target,
-            port,
+            port: probe.port,
+            source,
+            source_port: probe.reply_port,
+            flags: probe.flags,
+            emission,
+            bytes: probe.bytes.clone(),
             at: Instant::now(),
             dropped,
         });

@@ -25,7 +25,11 @@ than in any of the tiers below.
 ## Tier 1: portable integration tests
 
 Files: `discovery.rs`, `lifecycle.rs`, `port_states.rs`, `service_fingerprint.rs`,
-with shared helpers in `common/mod.rs`.
+`detections.rs`, `import.rs`, with shared helpers in `common/mod.rs`.
+
+`import.rs` is the odd one: it binds no socket at all, because the surface it
+covers reads files. It sits here because it needs nothing but a temporary
+directory, which is the property this tier is defined by.
 
 These drive the public API, `scanner::scan` and `scanner::discover`, end to end
 against real servers on loopback. Nothing is faked: a real TCP listener is bound,
@@ -46,7 +50,7 @@ simulates an Ethernet segment, and the fixtures at the bottom of `common/mod.rs`
 stand up the host they are probed from.
 
 Files: `probe_classification.rs`, `lan_discovery.rs`, `retransmission.rs`,
-`listening.rs`.
+`listening.rs`, `evasion.rs`, `comparison.rs`.
 
 This is where the behaviour that actually distinguishes a scanner gets tested:
 what it does when probes are lost, answered late, answered twice, answered by a
@@ -96,8 +100,10 @@ not a test that is switched off. It runs, it fails for the reason it says, and
 removing the attribute is the definition of done.
 
 `retransmission.rs` was written this way against a feature the engine did not
-have, and every test in it now runs. **Nothing in `tests/` is currently ignored**,
-so the convention has no live claim under it right now.
+have, and every test in it now runs. One live claim stands under the convention
+today: `detections.rs` asserts that a whole scan hands a passive detection the
+responses it already drew, which the unprivileged connect path does not, because
+it fingerprints inline through the wrapper that discards them.
 
 The four `#[ignore]`d tests in the crate are a different thing entirely — they
 are gated on an environment rather than on a missing feature, and each says so in
@@ -142,6 +148,13 @@ The second half of that matters as much as the first. Retransmission is only
 visible in the probe log, since a scan that retries and one that got lucky the
 first time produce the same result.
 
+Each `Probe` in that log carries more than the target it was aimed at. It also
+holds the Layer 4 segment as it went out, the source address and source port it
+left from, its TCP flags, and the `Emission` the sender was handed. That is what
+lets a test assert on the packet a scanner emitted rather than only on how many
+it sent, which is what `evasion.rs` needed: every knob on an `EvasionProfile`
+changes a probe and nothing outside the crate was reading one.
+
 Policies start from the reply and layer conditions on top: `Policy::open()`,
 `closed()`, `silent()`, `admin_prohibited()` and `truncated()`, combined with
 `drop_first(n)`, `loss_rate(p)`, `delay(d)` and `duplicated()`. Any target with
@@ -172,6 +185,15 @@ and NDP. Those belong to Tier 3.
 
 `Policy::truncated()` is the one gesture in that direction, and it only checks
 that a scanner survives a reply it cannot parse.
+
+One qualification, and it is what `evasion.rs` runs on. A scanner does not only
+hand down a segment: it also names the source address the segment was built
+against and passes an `Emission`, which is what it wants the IP header to say.
+Both reach `Probe`, so a test can assert that a scan asked for a hop limit, a
+spoofed hardware address, a fragment size or a decoy source, on every probe it
+sent. What it still cannot see is the packet that would have come out, because
+none is built here. Asserting the instruction is honest at this tier; asserting
+the result is Tier 3's.
 
 One more gap worth knowing about: `LocalScanner`, which does ARP and NDP
 discovery on the local segment, does not use `ProbeTransport` at all. It holds an
