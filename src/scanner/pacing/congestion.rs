@@ -202,6 +202,9 @@ pub struct WindowLimits {
 }
 
 impl WindowLimits {
+    /// Bounds counted in probes: the window opens at `initial`, is never cut
+    /// below `floor` or grown past `ceiling`, and doubles only while it is
+    /// under `slow_start_threshold`.
     pub const fn new(initial: u32, floor: u32, ceiling: u32, slow_start_threshold: u32) -> Self {
         Self {
             initial,

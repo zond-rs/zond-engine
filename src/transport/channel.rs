@@ -50,7 +50,10 @@ const QUEUE_DEPTH: usize = 1024;
 /// Local discovery needs the whole frame: it identifies a neighbour by the
 /// Ethernet source MAC, and reads ARP, which has no Layer-4 segment to strip to.
 pub struct EthernetHandle {
+    /// Where a frame goes to reach the wire, link header included.
     pub tx: Box<dyn FrameSink>,
+    /// The frames the capture admitted, in arrival order, each possibly
+    /// truncated to the snaplen the capture was opened with.
     pub rx: FrameStream,
     /// Keeps the capture thread alive for this handle's lifetime, and holds the
     /// counters it publishes.

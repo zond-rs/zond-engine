@@ -30,10 +30,19 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
+    /// Not a weakness, a fact: a version banner, a management interface
+    /// answering where a reader should know it answers.
     Info,
+    /// Small on its own. A hardening step skipped, or a disclosure a determined
+    /// attacker reaches by other means anyway.
     Low,
+    /// A weakness worth scheduling work for, but not worth waking anyone.
     Medium,
+    /// Directly exploitable, or it hands an attacker materially more than they
+    /// arrived with.
     High,
+    /// Assume compromise: remote code execution, an authentication bypass, or a
+    /// hole that needs no foothold first.
     Critical,
 }
 
@@ -44,7 +53,14 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Reference {
+    /// A CVE identifier: `{ cve = "CVE-2021-43798" }`. Only the `CVE-YYYY-N`
+    /// shape survives the lowering; a malformed one is dropped rather than
+    /// carried into the finding, and the build warns about it.
     Cve(String),
+    /// The bare CWE number, `{ cwe = 306 }`. MITRE's canonical link is built
+    /// from it.
     Cwe(u32),
+    /// Anything else worth citing, `{ url = "https://…" }`: an advisory, a
+    /// vendor bulletin, a write-up.
     Url(String),
 }

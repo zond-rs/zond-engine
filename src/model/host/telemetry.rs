@@ -230,7 +230,6 @@ impl HostTelemetry {
         }
     }
 
-    /// Returns the minimum (fastest) RTT recorded in the current window.
     /// Records the hop counter a reply from this host arrived with.
     ///
     /// See [`hop_counter`](Self::hop_counter) for what the value is and is not.
@@ -243,6 +242,13 @@ impl HostTelemetry {
         self.hop_counter
     }
 
+    /// The fastest round trip in the window, and the closest this type comes to
+    /// a measurement of the path alone.
+    ///
+    /// Taken over the [`RttSource::Direct`] samples where the window holds any.
+    /// Where it holds only [`RttSource::SegmentWide`] ones, the smallest of
+    /// those is the tightest bound they support and is what comes back. `None`
+    /// until something has answered.
     pub fn min_rtt(&self) -> Option<Duration> {
         if self.has_direct() {
             self.direct().min()

@@ -39,12 +39,12 @@
 
 use serde::Deserialize;
 
-use super::manifest::Manifest;
+use super::manifest::DetectionManifest;
 
 /// A whole compute-detection file: the shared manifest, then its body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ComputeDetection {
-    pub detection: Manifest,
+    pub detection: DetectionManifest,
     pub compute: ComputeSection,
 }
 

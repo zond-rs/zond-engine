@@ -79,7 +79,7 @@ use pnet_packet::arp::{ArpOperations, ArpPacket};
 use pnet_packet::ethernet::EtherTypes;
 use zond_engine::protocols::ethernet::Frame;
 use zond_engine::protocols::{arp, ethernet, ndp};
-use zond_engine::system::interface::{Link, get_prioritized_interfaces};
+use zond_engine::system::interface::{Link, prioritized_interfaces};
 use zond_engine::system::neighbors;
 use zond_engine::transport::channel;
 use zond_engine::transport::mac::IntoPnetMac;
@@ -147,7 +147,7 @@ fn flags<T: std::str::FromStr>(args: &[String], name: &str) -> Vec<T> {
 /// The interface to probe from: the one named, or the best-ranked one that has
 /// a link-local address to solicit from.
 fn choose_interface(name: Option<String>) -> Link {
-    let interfaces = get_prioritized_interfaces(usize::MAX);
+    let interfaces = prioritized_interfaces(usize::MAX);
 
     match name {
         Some(name) => interfaces
@@ -323,7 +323,7 @@ async fn main() {
                     continue;
                 };
 
-                let packet = ndp::create_neighbor_solicitation(&mac.into_pnet(), &source, target);
+                let packet = ndp::build_neighbor_solicitation(&mac.into_pnet(), &source, target);
                 let now = Instant::now();
 
                 // Recorded only if the frame actually left. A probe the channel
@@ -353,7 +353,7 @@ async fn main() {
                 if target == from {
                     continue;
                 }
-                let packet = arp::create_request(&mac.into_pnet(), &from, target);
+                let packet = arp::build_request(&mac.into_pnet(), &from, target);
                 let now = Instant::now();
 
                 // Same rule as the solicitation above: a request that never

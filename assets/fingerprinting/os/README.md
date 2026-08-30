@@ -29,7 +29,7 @@ it. A layout recorded against one probe describes nothing when a different probe
 is sent — it matches no host at all, from every stack at once, while looking
 perfectly correct.
 
-Every rule here is written against the option set `tcp::create_probe` sends. A
+Every rule here is written against the option set `tcp::build_probe` sends. A
 rule taken from elsewhere has to be checked against that, not assumed onto it,
 which is what `published` records and what confirming one promotes.
 

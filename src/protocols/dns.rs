@@ -188,7 +188,7 @@ fn hex_nibble(label: &str) -> Option<u8> {
 }
 
 /// Builds a reverse (PTR) query for `ip_addr`, tagged with transaction ID `id`.
-pub fn create_ptr_packet(ip_addr: &IpAddr, id: u16) -> Result<Vec<u8>> {
+pub fn build_ptr_packet(ip_addr: &IpAddr, id: u16) -> Result<Vec<u8>> {
     let ptr_name: String = reverse_pointer_name(ip_addr);
 
     let mut builder: Builder = Builder::new_query(id, true);
@@ -338,7 +338,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_query_is_not_a_response() {
-        let query = create_ptr_packet(&ip("192.168.0.1"), 9).unwrap();
+        let query = build_ptr_packet(&ip("192.168.0.1"), 9).unwrap();
         assert!(parse_ptr_response(&query).is_err());
     }
 

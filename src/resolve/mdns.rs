@@ -113,7 +113,7 @@ async fn query(name: &str, timeout_after: Duration) -> Result<Vec<IpAddr>> {
         anyhow::bail!("no interface holds an IPv4 address to query the mDNS group on");
     }
 
-    let packet = mdns::create_query(name)?;
+    let packet = mdns::build_query(name)?;
     let wanted = name.trim_end_matches('.').to_string();
     let deadline = Instant::now() + timeout_after;
     let target = SocketAddr::V4(SocketAddrV4::new(GROUP_V4, PORT));

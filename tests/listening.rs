@@ -77,7 +77,7 @@ fn tcp_frame(mac: MacAddr, from: Ipv4Addr, sport: u16, dport: u16, flags: u8) ->
         zone: zone(),
         link: LinkType::Ethernet,
         bytes: [
-            ethernet::create_header(mac, PEER, EtherTypes::Ipv4),
+            ethernet::build_header(mac, PEER, EtherTypes::Ipv4),
             datagram,
         ]
         .concat(),

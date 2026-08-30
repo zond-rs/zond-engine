@@ -74,6 +74,14 @@ pub fn user_directory() -> Option<PathBuf> {
         .map(|path| path.join(DIRECTORY))
 }
 
+/// Where this user's settings *directory* would be: `$XDG_CONFIG_HOME/zond`
+/// where that variable names an absolute path, and `$HOME/.config/zond`
+/// otherwise.
+///
+/// `None` when neither variable holds an absolute path, which is what a
+/// container or a daemon with a cleared environment looks like. macOS lands
+/// here rather than under `~/Library/Application Support`; the module note says
+/// why.
 #[cfg(not(windows))]
 pub fn user_directory() -> Option<PathBuf> {
     // Only an absolute value counts, as the specification requires. A relative
@@ -104,6 +112,11 @@ pub fn system() -> Option<PathBuf> {
         .map(|path| path.join(DIRECTORY).join(FILE_NAME))
 }
 
+/// Where a host-wide settings file would be: `/etc/zond/engine.toml`.
+///
+/// Read before the user's file, so an administrator can set a floor a user then
+/// adjusts. Never `None` here; the [`Option`] is for Windows, where the
+/// location comes from `%PROGRAMDATA%` and that can be unset.
 #[cfg(not(windows))]
 pub fn system() -> Option<PathBuf> {
     Some(PathBuf::from("/etc").join(DIRECTORY).join(FILE_NAME))

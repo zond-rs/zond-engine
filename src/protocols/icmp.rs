@@ -26,7 +26,7 @@
 //!
 //! ## One to everybody, or one to somebody
 //!
-//! [`create_all_nodes_echo_request_v6`] asks a whole segment at once and is
+//! [`build_all_nodes_echo_request_v6`] asks a whole segment at once and is
 //! what a sweep sends. The unicast forms ask one host, which is what a targeted
 //! run wants and what an IPv4 sweep has no alternative to, there being no
 //! all-nodes group to ask.
@@ -72,7 +72,7 @@ const ALL_NODES_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 ///
 /// See the [module documentation](self) for what `identifier` and `sequence`
 /// are for.
-pub fn create_all_nodes_echo_request_v6(
+pub fn build_all_nodes_echo_request_v6(
     src_mac: &MacAddr,
     src_addr: &Ipv6Addr,
     identifier: u16,
@@ -91,7 +91,7 @@ pub fn create_all_nodes_echo_request_v6(
 
 /// Builds an echo request aimed at one IPv6 host.
 ///
-/// The counterpart of [`create_all_nodes_echo_request_v6`] for a run that knows
+/// The counterpart of [`build_all_nodes_echo_request_v6`] for a run that knows
 /// which host it is asking, and so does not need to wake the rest of the
 /// segment to ask it.
 ///
@@ -99,7 +99,7 @@ pub fn create_all_nodes_echo_request_v6(
 /// is: [`HOP_LIMIT_ON_LINK`](super::ip::HOP_LIMIT_ON_LINK) for a neighbour, and
 /// [`HOP_LIMIT_ROUTED`](super::ip::HOP_LIMIT_ROUTED) for anything past the
 /// first router.
-pub fn create_echo_request_v6(
+pub fn build_echo_request_v6(
     src_mac: &MacAddr,
     dst_mac: MacAddr,
     src_addr: &Ipv6Addr,
@@ -117,7 +117,7 @@ pub fn create_echo_request_v6(
 ///
 /// IPv4 has no all-nodes group to ask, so every echo it sends is a unicast one.
 /// A sweep that wants to ping a range sends one of these per address.
-pub fn create_echo_request_v4(
+pub fn build_echo_request_v4(
     src_mac: &MacAddr,
     dst_mac: MacAddr,
     src_addr: &Ipv4Addr,
@@ -178,7 +178,7 @@ fn echo_frame_v6(
 /// when the two addresses are not of the same family, and
 /// [`PacketError`](super::error::PacketError) from the IPv6 checksum for a
 /// payload too large to be counted.
-pub fn create_echo_request_message(
+pub fn build_echo_request_message(
     src_addr: IpAddr,
     dst_addr: IpAddr,
     code: u8,
@@ -213,7 +213,11 @@ pub fn create_echo_request_message(
 pub enum EchoReply {
     /// An echo reply carrying back the identifier this scan sent, and the
     /// sequence number naming which request it answers.
-    Ours { sequence: u16 },
+    Ours {
+        /// The sequence number the request went out with, which is what ties
+        /// the reply to one attempt and so lets it be timed.
+        sequence: u16,
+    },
     /// An echo reply, but to somebody else's ping.
     ///
     /// Not folded in with the message below. A capture this wide sees every ping
@@ -225,7 +229,11 @@ pub enum EchoReply {
     ///
     /// The type is carried rather than named because the two families number
     /// their messages differently and a name would have to say which.
-    Other { icmp_type: u8 },
+    Other {
+        /// The type byte, read under the family the message arrived over:
+        /// destination unreachable is 3 over IPv4 and 1 over IPv6.
+        icmp_type: u8,
+    },
     /// Too few bytes to be an ICMP message.
     Truncated,
 }
@@ -286,7 +294,7 @@ pub fn echo_token(message: &[u8]) -> Result<(u16, u16)> {
 ///
 /// A convenience for a caller holding an [`IpAddr`] rather than a decided
 /// family, which is the ordinary case once targets have been parsed.
-pub fn create_echo_request(
+pub fn build_echo_request(
     src_mac: &MacAddr,
     dst_mac: MacAddr,
     src_addr: IpAddr,
@@ -296,10 +304,10 @@ pub fn create_echo_request(
     sequence: u16,
 ) -> Result<Vec<u8>> {
     match (src_addr, dst_addr) {
-        (IpAddr::V4(src), IpAddr::V4(dst)) => Ok(create_echo_request_v4(
+        (IpAddr::V4(src), IpAddr::V4(dst)) => Ok(build_echo_request_v4(
             src_mac, dst_mac, &src, dst, identifier, sequence,
         )),
-        (IpAddr::V6(src), IpAddr::V6(dst)) => Ok(create_echo_request_v6(
+        (IpAddr::V6(src), IpAddr::V6(dst)) => Ok(build_echo_request_v6(
             src_mac, dst_mac, &src, dst, hop_limit, identifier, sequence,
         )),
         (src, dst) => Err(super::error::PacketError::FamilyMismatch { src, dst }),
@@ -338,7 +346,7 @@ mod tests {
     /// segment.
     #[test]
     fn the_all_nodes_request_is_addressed_to_the_whole_segment_and_stays_on_it() {
-        let frame = create_all_nodes_echo_request_v6(&SRC_MAC, &v6("fe80::1"), ID, SEQ);
+        let frame = build_all_nodes_echo_request_v6(&SRC_MAC, &v6("fe80::1"), ID, SEQ);
 
         let eth = super::super::ethernet::parse(&frame).expect("a frame");
         assert_eq!(eth.destination(), ALL_NODES_MAC);
@@ -362,7 +370,7 @@ mod tests {
     /// and a checksummed message.
     #[test]
     fn an_ipv4_echo_request_is_a_complete_pingable_frame() {
-        let frame = create_echo_request_v4(
+        let frame = build_echo_request_v4(
             &SRC_MAC,
             DST_MAC,
             &Ipv4Addr::new(192, 0, 2, 1),
@@ -392,7 +400,7 @@ mod tests {
     /// sender exists; with them it also says which question was asked.
     #[test]
     fn an_echo_carries_back_the_token_that_names_the_request() {
-        let v4 = create_echo_request_v4(
+        let v4 = build_echo_request_v4(
             &SRC_MAC,
             DST_MAC,
             &Ipv4Addr::new(192, 0, 2, 1),
@@ -403,7 +411,7 @@ mod tests {
         let v4_message = &v4[crate::protocols::sizes::ETH_HDR_LEN + 20..];
         assert_eq!(echo_token(v4_message).expect("a token"), (ID, SEQ));
 
-        let v6_frame = create_echo_request_v6(
+        let v6_frame = build_echo_request_v6(
             &SRC_MAC,
             DST_MAC,
             &v6("fe80::1"),
@@ -421,7 +429,7 @@ mod tests {
     /// every neighbour.
     #[test]
     fn a_unicast_request_wakes_only_the_host_it_names() {
-        let frame = create_echo_request_v6(
+        let frame = build_echo_request_v6(
             &SRC_MAC,
             DST_MAC,
             &v6("fe80::1"),
@@ -447,7 +455,7 @@ mod tests {
     /// had already decided.
     #[test]
     fn the_dispatching_form_builds_what_the_family_specific_ones_do() {
-        let v4 = create_echo_request(
+        let v4 = build_echo_request(
             &SRC_MAC,
             DST_MAC,
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
@@ -458,7 +466,7 @@ mod tests {
         )
         .expect("one family");
 
-        let direct = create_echo_request_v4(
+        let direct = build_echo_request_v4(
             &SRC_MAC,
             DST_MAC,
             &Ipv4Addr::new(192, 0, 2, 1),
@@ -485,7 +493,7 @@ mod tests {
         };
         assert_eq!(read(&v4), read(&direct));
 
-        let mismatched = create_echo_request(
+        let mismatched = build_echo_request(
             &SRC_MAC,
             DST_MAC,
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
@@ -507,7 +515,7 @@ mod tests {
     /// bytes is the cheapest way to say "this begins where it claims to".
     #[test]
     fn the_message_form_carries_no_headers_of_its_own() {
-        let message = create_echo_request_message(
+        let message = build_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
             0,
@@ -532,7 +540,7 @@ mod tests {
     /// never discriminated anything.
     #[test]
     fn the_probe_code_is_written_into_the_message() {
-        let probe = create_echo_request_message(
+        let probe = build_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
             ECHO_PROBE_CODE,
@@ -545,7 +553,7 @@ mod tests {
         assert_ne!(ECHO_PROBE_CODE, 0, "a zero code asks nothing");
 
         // And over IPv6, where the code is also covered by the checksum.
-        let v6_probe = create_echo_request_message(
+        let v6_probe = build_echo_request_message(
             IpAddr::V6(v6("2001:db8::1")),
             IpAddr::V6(v6("2001:db8::9")),
             ECHO_PROBE_CODE,
@@ -561,7 +569,7 @@ mod tests {
     /// contents are part of the question a probe asks.
     #[test]
     fn a_payload_is_carried_verbatim_and_may_be_empty() {
-        let empty = create_echo_request_message(
+        let empty = build_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
             0,
@@ -572,7 +580,7 @@ mod tests {
         .expect("one family");
         assert_eq!(empty.len(), 8);
 
-        let long = create_echo_request_message(
+        let long = build_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
             0,
@@ -590,7 +598,7 @@ mod tests {
     /// unanswered, and a scan reads that as a silent host.
     #[test]
     fn each_family_gets_its_own_message_type() {
-        let v4 = create_echo_request_message(
+        let v4 = build_echo_request_message(
             IpAddr::from([192, 0, 2, 1]),
             IpAddr::from([192, 0, 2, 9]),
             0,
@@ -601,7 +609,7 @@ mod tests {
         .expect("one family");
         assert_eq!(v4[0], 8);
 
-        let v6_message = create_echo_request_message(
+        let v6_message = build_echo_request_message(
             IpAddr::V6(v6("2001:db8::1")),
             IpAddr::V6(v6("2001:db8::9")),
             0,
@@ -624,7 +632,7 @@ mod tests {
     /// a builder that dropped them would produce a message nothing ever answers.
     #[test]
     fn an_ipv6_message_is_checksummed_against_its_addresses() {
-        let message = create_echo_request_message(
+        let message = build_echo_request_message(
             IpAddr::V6(v6("2001:db8::1")),
             IpAddr::V6(v6("2001:db8::9")),
             0,
@@ -639,7 +647,7 @@ mod tests {
         // A different destination is a different pseudo-header and so a
         // different checksum. Without this the test above passes for a builder
         // that computes over the message alone, which is the ICMPv4 rule.
-        let elsewhere = create_echo_request_message(
+        let elsewhere = build_echo_request_message(
             IpAddr::V6(v6("2001:db8::1")),
             IpAddr::V6(v6("2001:db8::a")),
             0,
@@ -659,7 +667,7 @@ mod tests {
     #[test]
     fn a_mixed_pair_of_addresses_is_refused() {
         assert!(
-            create_echo_request_message(
+            build_echo_request_message(
                 IpAddr::from([192, 0, 2, 1]),
                 IpAddr::V6(v6("2001:db8::9")),
                 0,

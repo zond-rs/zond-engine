@@ -59,7 +59,7 @@
 
 use std::io::BufRead;
 
-use crate::import::{ImportError, ImportLimits, Importer, Origin, TargetSink};
+use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
 
 /// The format's name in errors.
 const FORMAT: &str = "CSV";
@@ -227,7 +227,7 @@ impl Layout {
     fn resolve(
         record: &Record,
         importer: &CsvImporter,
-        origin: Origin,
+        origin: ImportOrigin,
     ) -> Result<Self, ImportError> {
         let names: Vec<String> = (0..record.count)
             .map(|index| match record.field(index, origin) {
@@ -389,7 +389,7 @@ impl Record {
     ///
     /// Decoded on demand rather than all at once, so a twenty-five column report
     /// costs the two or three fields a target is built from.
-    fn field(&self, column: usize, origin: Origin) -> Result<Option<&str>, ImportError> {
+    fn field(&self, column: usize, origin: ImportOrigin) -> Result<Option<&str>, ImportError> {
         let Some(field) = self.fields[..self.count].get(column) else {
             return Ok(None);
         };
@@ -409,8 +409,8 @@ impl Record {
         input: &mut dyn BufRead,
         max_bytes: usize,
         line: &mut u64,
-    ) -> Result<Option<Origin>, ImportError> {
-        let origin = Origin::line(*line);
+    ) -> Result<Option<ImportOrigin>, ImportError> {
+        let origin = ImportOrigin::line(*line);
         let first_record = !self.started;
         let fields = &mut self.fields;
 
@@ -646,7 +646,7 @@ mod tests {
 
         match err {
             ImportError::Target { origin, token, .. } => {
-                assert_eq!(origin, Origin::line(1));
+                assert_eq!(origin, ImportOrigin::line(1));
                 assert_eq!(token, "Server");
             }
             other => panic!("expected the first field to be refused, got {other:?}"),
@@ -715,7 +715,7 @@ mod tests {
             .expect_err("the last row is not a target");
 
         match err {
-            ImportError::Target { origin, .. } => assert_eq!(origin, Origin::line(4)),
+            ImportError::Target { origin, .. } => assert_eq!(origin, ImportOrigin::line(4)),
             other => panic!("expected a refused target, got {other:?}"),
         }
     }

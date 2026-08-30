@@ -215,8 +215,12 @@ impl DetectionClass {
 /// which is exactly the intended precedence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version {
+    /// The leading component, and the one that settles a comparison whenever
+    /// two versions differ in it.
     pub major: u16,
+    /// Breaks a tie on `major`.
     pub minor: u16,
+    /// The last word, reached only where `major` and `minor` both agree.
     pub patch: u16,
 }
 
@@ -621,6 +625,7 @@ impl Finding {
 ///
 /// Both cases are an empty identifier or title — a finding must be able to say
 /// what produced it and what it claims, and a blank string says neither.
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq, Clone, Copy)]
 pub enum FindingError {
     /// A [`DetectionId`] was given a blank `id`.

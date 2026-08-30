@@ -275,17 +275,6 @@ impl Port {
         self
     }
 
-    /// Folds another probe's account of this same endpoint into this one.
-    ///
-    /// The state is promoted to whichever is more definitive; `Service` and
-    /// `Security` merge by their own rules; the telemetry follows the state.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, if `other` describes a different endpoint. A number
-    /// names one endpoint per transport, so merging TCP/53 into UDP/53 produces
-    /// a record of neither. [`Host`](crate::model::host::Host) keys on both and
-    /// cannot reach this; a caller merging by hand can.
     /// This port's findings, in a stable order.
     ///
     /// What is wrong with the service listening here. Ordered by claim, so two
@@ -316,6 +305,21 @@ impl Port {
         }
     }
 
+    /// Folds another probe's account of this same endpoint into this one.
+    ///
+    /// The state rises to whichever of the two is the more definitive and never
+    /// falls. Service and security details fold by their own confidence rules,
+    /// and findings accumulate, a claim on both sides corroborating rather than
+    /// landing twice. The discovery record follows the state: only a probe that
+    /// raised the verdict replaces it, so a tie leaves the account already on
+    /// record in place.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `other` describes a different endpoint. A number
+    /// names one endpoint per transport, so merging TCP/53 into UDP/53 produces
+    /// a record of neither. [`Host`](crate::model::host::Host) keys on both and
+    /// cannot reach this; a caller merging by hand can.
     pub fn merge(&mut self, other: Port) {
         debug_assert_eq!(
             (self.number, self.protocol),

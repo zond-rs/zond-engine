@@ -106,19 +106,19 @@ const INBOUND_STREAMS: u16 = 65_535;
 /// **`initiate_tag` must be non-zero** (RFC 4960 §3.3.2); a random tag per probe
 /// is both the requirement and what makes correlation trustworthy. A zero tag is
 /// left to the caller to avoid rather than silently rewritten, on the same
-/// reasoning [`tcp::create_probe`](super::tcp::create_probe) does not police its
+/// reasoning [`tcp::build_probe`](super::tcp::build_probe) does not police its
 /// nonce.
 ///
 /// Infallible, unlike its TCP and UDP counterparts: an SCTP checksum covers no
 /// pseudo-header, so there are no addresses to reconcile, and the INIT chunk is
 /// a fixed size that no length field can fail to describe.
-pub fn create_init_probe(src_port: u16, dst_port: u16, initiate_tag: u32) -> Vec<u8> {
+pub fn build_init_probe(src_port: u16, dst_port: u16, initiate_tag: u32) -> Vec<u8> {
     craft::Sctp::new(src_port, dst_port)
         .with_chunks(init_chunk(initiate_tag))
         .to_bytes()
 }
 
-/// The INIT chunk an [`create_init_probe`] carries, twenty bytes with no
+/// The INIT chunk [`build_init_probe`] carries, twenty bytes with no
 /// optional parameters.
 fn init_chunk(initiate_tag: u32) -> Vec<u8> {
     let mut value = Vec::with_capacity(16);
@@ -412,7 +412,7 @@ mod tests {
     /// where a reply will echo it from.
     #[test]
     fn an_init_probe_is_framed_the_way_a_peer_expects() {
-        let bytes = create_init_probe(SRC_PORT, DST_PORT, NONCE);
+        let bytes = build_init_probe(SRC_PORT, DST_PORT, NONCE);
         let segment = parse(&bytes).expect("the probe parses");
 
         assert_eq!(segment.source_port(), SRC_PORT);
@@ -441,7 +441,7 @@ mod tests {
     /// written little-endian. Recomputed here the way a receiver would.
     #[test]
     fn an_init_probe_carries_a_valid_crc32c() {
-        let bytes = create_init_probe(SRC_PORT, DST_PORT, NONCE);
+        let bytes = build_init_probe(SRC_PORT, DST_PORT, NONCE);
 
         let mut zeroed = bytes.clone();
         zeroed[8..12].copy_from_slice(&[0; 4]);
@@ -516,7 +516,7 @@ mod tests {
     /// TCP probe.
     #[test]
     fn a_quoted_probe_needs_a_generous_quotation_to_name_its_attempt() {
-        let bytes = create_init_probe(SRC_PORT, DST_PORT, NONCE);
+        let bytes = build_init_probe(SRC_PORT, DST_PORT, NONCE);
 
         let quoted = quoted_probe(&bytes[..8]).expect("eight bytes are enough");
         assert_eq!(quoted.source, SRC_PORT);
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn a_quotation_too_short_for_the_common_header_names_nothing() {
-        let bytes = create_init_probe(SRC_PORT, DST_PORT, NONCE);
+        let bytes = build_init_probe(SRC_PORT, DST_PORT, NONCE);
         assert_eq!(quoted_probe(&bytes[..7]), None);
     }
 

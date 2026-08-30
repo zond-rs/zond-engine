@@ -501,7 +501,7 @@ pub(crate) mod tests {
 
     /// An LLDP frame carrying `tlvs`, terminated as the standard requires.
     fn frame_of(tlvs: &[Vec<u8>]) -> Vec<u8> {
-        let mut bytes = ethernet::create_header(SWITCH_MAC, NEAREST_BRIDGE, ETHERTYPE);
+        let mut bytes = ethernet::build_header(SWITCH_MAC, NEAREST_BRIDGE, ETHERTYPE);
         for tlv in tlvs {
             bytes.extend_from_slice(tlv);
         }
@@ -794,7 +794,7 @@ pub(crate) mod tests {
     /// any capture wide enough to see one.
     #[test]
     fn a_frame_of_another_protocol_is_declined() {
-        let bytes = ethernet::create_header(
+        let bytes = ethernet::build_header(
             SWITCH_MAC,
             NEAREST_BRIDGE,
             pnet_packet::ethernet::EtherTypes::Ipv4,

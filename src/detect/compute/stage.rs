@@ -33,7 +33,7 @@
 use tracing::debug;
 
 use crate::config::DetectionEnvelope;
-use crate::detect::manifest::Manifest;
+use crate::detect::manifest::DetectionManifest;
 use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;
 use crate::model::port::Protocol;
@@ -42,11 +42,11 @@ use super::capability::{Capabilities, Grant};
 use super::replay::{CapTape, RecordedCapabilities, RecordingCapabilities};
 use super::runtime::ComputeRuntime;
 
-/// A compute detection compiled and ready to run: its [`Manifest`], its compiled
-/// module, and the content hash of the body it came from, which its findings are
-/// stamped with as provenance.
+/// A compute detection compiled and ready to run: its [`DetectionManifest`],
+/// its compiled module, and the content hash of the body it came from, which
+/// its findings are stamped with as provenance.
 pub struct LoadedDetection<M> {
-    manifest: Manifest,
+    manifest: DetectionManifest,
     module: M,
     content_hash: String,
 }
@@ -54,7 +54,7 @@ pub struct LoadedDetection<M> {
 impl<M> LoadedDetection<M> {
     /// A loaded detection from its parts. The `content_hash` is the body's content
     /// address, computed by whatever sourced it.
-    pub fn new(manifest: Manifest, module: M, content_hash: impl Into<String>) -> Self {
+    pub fn new(manifest: DetectionManifest, module: M, content_hash: impl Into<String>) -> Self {
         Self {
             manifest,
             module,
@@ -71,7 +71,7 @@ impl<M> LoadedDetection<M> {
     /// What the detection declares. Used by tests to find a shipped detection by
     /// name; the live path matches a run to its detection by content hash instead.
     #[cfg(test)]
-    pub(crate) fn manifest(&self) -> &Manifest {
+    pub(crate) fn manifest(&self) -> &DetectionManifest {
         &self.manifest
     }
 }
@@ -226,7 +226,7 @@ mod tests {
         class: Class,
         source: &str,
     ) -> LoadedDetection<<RhaiRuntime as ComputeRuntime>::Module> {
-        let manifest = Manifest {
+        let manifest = DetectionManifest {
             id: id.to_string(),
             version: "1.0.0".to_string(),
             title: id.to_string(),

@@ -1356,7 +1356,7 @@ mod tests {
             .compile(&filter, true)
             .unwrap_or_else(|e| panic!("the listen filter `{filter}` does not compile: {e}"));
 
-        let lldp = crate::protocols::ethernet::create_header(
+        let lldp = crate::protocols::ethernet::build_header(
             PEER_MAC,
             pnet_base::MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
             lldp::ETHERTYPE,
@@ -1388,7 +1388,7 @@ mod tests {
                         .build()
                         .expect("a test segment");
                     [
-                        crate::protocols::ethernet::create_header(
+                        crate::protocols::ethernet::build_header(
                             PEER_MAC,
                             PEER_MAC,
                             pnet_packet::ethernet::EtherTypes::Ipv4,
@@ -1494,7 +1494,7 @@ mod tests {
             .expect("a test datagram");
 
         [
-            crate::protocols::ethernet::create_header(
+            crate::protocols::ethernet::build_header(
                 mac,
                 PEER_MAC,
                 pnet_packet::ethernet::EtherTypes::Ipv4,
@@ -1791,7 +1791,7 @@ mod tests {
     #[test]
     fn a_stack_is_read_from_a_reply_that_was_arriving_anyway() {
         let frame = || {
-            let mut bytes = crate::protocols::ethernet::create_header(
+            let mut bytes = crate::protocols::ethernet::build_header(
                 PEER_MAC,
                 PEER_MAC,
                 pnet_packet::ethernet::EtherTypes::Ipv4,

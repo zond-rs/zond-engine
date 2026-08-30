@@ -57,6 +57,7 @@ pub enum ModuleBody {
 /// A failure *before any port is touched* — a refusal with a cause, never a run
 /// that is quietly clamped. A body that will not compile, or one a given backend
 /// cannot serve, is rejected here.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LoadError {
     /// The body did not compile. Carries the backend's own diagnostic.

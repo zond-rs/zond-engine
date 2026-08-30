@@ -56,11 +56,11 @@ use crate::model::{
 };
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
-use crate::scanner::resolver::HostnameResolver;
+use crate::scanner::rdns::HostnameResolver;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::local::Scope;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
-use crate::scanner::{plan, resolver, strategy};
+use crate::scanner::{plan, rdns, strategy};
 use crate::system::interface;
 use crate::system::privilege::is_elevated;
 use crate::{error, info, success, warn};
@@ -107,7 +107,7 @@ pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
     kept.canonicalize();
 
     for range in &refused {
-        let refusal = plan::Refusal::unprivileged_range_not_enumerable(range);
+        let refusal = plan::RefusedStep::unprivileged_range_not_enumerable(range);
         ctx.record_failure(refusal.scanner, refusal.reason);
     }
 
@@ -333,7 +333,7 @@ pub(super) fn build_port_scanner(
 ///
 /// **`intended` is what keeps this from repeating the plan.** A protocol the
 /// plan never meant to cover was already refused, in the words
-/// [`Refusal::technique_needs_raw_sockets`](plan::Refusal::technique_needs_raw_sockets)
+/// [`plan::RefusedStep::technique_needs_raw_sockets`]
 /// supplies, and saying it again puts one cause in the report twice. What is
 /// left for this function is the narrower case the plan could not foresee: a
 /// protocol it did intend, whose socket would not open.
@@ -361,7 +361,7 @@ pub(super) fn ensure_coverage(
                 evasion,
             )));
         } else {
-            let refusal = plan::Refusal::technique_needs_raw_sockets(technique);
+            let refusal = plan::RefusedStep::technique_needs_raw_sockets(technique);
             ctx.record_failure(refusal.scanner, refusal.reason);
         }
     }
@@ -447,7 +447,7 @@ pub(super) async fn finish_enrichment(
 ) {
     match enrichment {
         Some(enrichment) => enrichment.finish(ctx).await,
-        None if caps.dns => resolver::resolve_hosts_async(ctx).await,
+        None if caps.dns => rdns::resolve_hosts_async(ctx).await,
         None => {}
     }
 }
@@ -797,7 +797,7 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
         return;
     }
 
-    let mut targets: Vec<strategy::routed::characterise::Target> = Vec::new();
+    let mut subjects: Vec<strategy::routed::characterise::Subject> = Vec::new();
     for key in ctx.host_addresses() {
         // One open port to send the middlebox probe at, and one the scan found
         // filtered to aim the comparative probes at — a filter is doing
@@ -819,7 +819,7 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
             continue;
         }
         if let Some(host) = routable(key) {
-            targets.push(strategy::routed::characterise::Target {
+            subjects.push(strategy::routed::characterise::Subject {
                 host,
                 open_port,
                 filtered_port,
@@ -827,11 +827,11 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
         }
     }
 
-    if targets.is_empty() {
+    if subjects.is_empty() {
         return;
     }
 
-    strategy::routed::characterise::characterise(ctx, targets).await;
+    strategy::routed::characterise::characterise(ctx, subjects).await;
 }
 
 pub(super) async fn run_active_os_probe(

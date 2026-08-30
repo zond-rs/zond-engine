@@ -249,7 +249,7 @@ impl IdlePortScanner {
     async fn read_counter(&mut self, source: IpAddr) -> Option<Reading> {
         for _ in 0..ZOMBIE_READ_ATTEMPTS {
             let nonce: u32 = rand::random();
-            let Ok(probe) = tcp::create_probe_with_flags(
+            let Ok(probe) = tcp::build_probe_with_flags(
                 flags::SYN | flags::ACK,
                 &source,
                 &self.zombie,
@@ -373,7 +373,7 @@ impl IdlePortScanner {
         for _ in 0..SPOOFED_PROBES {
             let nonce: u32 = rand::random();
             let spoofed_port: u16 = rand::random_range(50_000..u16::MAX);
-            let Ok(probe) = tcp::create_probe(
+            let Ok(probe) = tcp::build_probe(
                 TcpScanTechnique::Syn,
                 &self.zombie,
                 &target,

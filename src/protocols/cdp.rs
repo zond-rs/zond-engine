@@ -550,7 +550,7 @@ pub(crate) mod tests {
     /// on any capture wide enough to see one.
     #[test]
     fn a_frame_of_another_protocol_is_declined() {
-        let bytes = ethernet::create_header(
+        let bytes = ethernet::build_header(
             SWITCH_MAC,
             GROUP_ADDRESS,
             pnet_packet::ethernet::EtherTypes::Ipv4,

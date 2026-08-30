@@ -116,8 +116,8 @@ impl Dispatcher {
     /// Skips what `settled` accounts for, for a scan continuing an earlier one.
     ///
     /// The checkpoint must have been written against this exact plan; see
-    /// [`Manifest::covers`](crate::journal::manifest::Manifest::covers), which
-    /// is what refuses one that was not.
+    /// [`JournalManifest::covers`](crate::journal::manifest::JournalManifest::covers),
+    /// which is what refuses one that was not.
     pub fn resuming(mut self, settled: Checkpoint) -> Self {
         self.settled = settled;
         self

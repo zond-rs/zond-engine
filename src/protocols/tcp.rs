@@ -33,7 +33,7 @@
 //! occupy: one for SYN or FIN, none for a bare ACK-less segment with no flags
 //! at all.
 //!
-//! [`create_probe`] and [`echoed_nonce`] are the two halves of that rule, and
+//! [`build_probe`] and [`echoed_nonce`] are the two halves of that rule, and
 //! both derive it from the probe's flags rather than from a table kept per
 //! technique, so a technique added later inherits it by construction.
 
@@ -48,11 +48,29 @@ use crate::protocols::sizes::TCP_HDR_LEN;
 
 /// TCP header flag bits, in the order they sit in the header.
 pub mod flags {
+    /// Ends a sender's half of a connection. Sent alone it is the FIN scan: a
+    /// closed port answers RST and a listener is required to say nothing. It is
+    /// also one of the three bits an Xmas probe sets, and half of a Maimon one.
     pub const FIN: u8 = 1;
+    /// Opens a connection, and occupies one octet of sequence space doing it.
+    /// The whole of a SYN scan's probe, and the only bit that draws a SYN+ACK
+    /// back and so names a listener outright.
     pub const SYN: u8 = 1 << 1;
+    /// Aborts a connection, or refuses a segment for one that does not exist.
+    /// No technique sends it: it is what comes back, and what every flag scan
+    /// reads its verdict from.
     pub const RST: u8 = 1 << 2;
+    /// Asks the receiver to hand buffered data up rather than wait for more.
+    /// Nothing acts on it for a port holding no connection, so on a probe it
+    /// only makes the segment strange, which is its job in an Xmas scan.
     pub const PSH: u8 = 1 << 3;
+    /// Marks the acknowledgement field significant. Alone it is the ACK scan,
+    /// which maps the filter in front of a port rather than the port itself;
+    /// beside FIN it is a Maimon probe. Setting it also moves a probe's nonce
+    /// into the acknowledgement field, for the reason the module note gives.
     pub const ACK: u8 = 1 << 4;
+    /// Marks the urgent pointer significant. Ordinary traffic almost never
+    /// sets it, and an Xmas probe sets it beside FIN and PSH for that reason.
     pub const URG: u8 = 1 << 5;
 }
 
@@ -162,7 +180,7 @@ const fn nonce_field(flags: u8) -> NonceField {
 /// It costs one packet, the same one, twenty bytes longer. If anything it is
 /// *less* remarkable on the wire than the bare version, since a real connection
 /// attempt looks like this and an MSS-only SYN does not.
-pub fn create_probe(
+pub fn build_probe(
     technique: TcpScanTechnique,
     src_addr: &IpAddr,
     dst_addr: &IpAddr,
@@ -170,15 +188,15 @@ pub fn create_probe(
     dst_port: u16,
     nonce: u32,
 ) -> Result<Vec<u8>> {
-    create_probe_shaped(
+    build_probe_shaped(
         technique, src_addr, dst_addr, src_port, dst_port, nonce, None, false,
     )
 }
 
-/// [`create_probe`] with the segment-level evasion an
+/// [`build_probe`] with the segment-level evasion an
 /// [`EvasionProfile`](crate::evasion::EvasionProfile) applies: `padding` random
 /// bytes appended to the payload, and a deliberately wrong checksum when
-/// `bad_checksum` is set. With `None` and `false` it is `create_probe` exactly,
+/// `bad_checksum` is set. With `None` and `false` it is `build_probe` exactly,
 /// so an ordinary scan's probe is byte-for-byte unchanged.
 ///
 /// The padding is appended before the checksum is computed, so the checksum a
@@ -186,7 +204,7 @@ pub fn create_probe(
 /// perturbed (see [`craft::Tcp::corrupt_checksum`]) rather than an arbitrary
 /// wrong number a middlebox might read as valid by chance.
 #[allow(clippy::too_many_arguments)]
-pub fn create_probe_shaped(
+pub fn build_probe_shaped(
     technique: TcpScanTechnique,
     src_addr: &IpAddr,
     dst_addr: &IpAddr,
@@ -196,7 +214,7 @@ pub fn create_probe_shaped(
     padding: Option<u16>,
     bad_checksum: bool,
 ) -> Result<Vec<u8>> {
-    create_probe_with_flags(
+    build_probe_with_flags(
         probe_flags(technique),
         src_addr,
         dst_addr,
@@ -208,7 +226,7 @@ pub fn create_probe_shaped(
     )
 }
 
-/// [`create_probe_shaped`] over an explicit TCP flag byte rather than a
+/// [`build_probe_shaped`] over an explicit TCP flag byte rather than a
 /// technique's own, for the evasion path that sends an arbitrary combination
 /// (see [`EvasionProfile::flags`](crate::evasion::EvasionProfile::flags)).
 ///
@@ -216,7 +234,7 @@ pub fn create_probe_shaped(
 /// whether the SYN options belong — follows from the flags, so any combination
 /// is crafted and its reply read back consistently.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn create_probe_with_flags(
+pub(crate) fn build_probe_with_flags(
     flags: u8,
     src_addr: &IpAddr,
     dst_addr: &IpAddr,
@@ -335,6 +353,9 @@ pub struct QuotedProbe {
     pub source: u16,
     /// The port it was aimed at.
     pub destination: u16,
+    /// The sequence number it carried, which is where four of the six
+    /// techniques put their nonce. Always readable: it is the last of the eight
+    /// bytes an error is obliged to quote.
     pub sequence: u32,
     /// Present only where the quotation ran past the guaranteed eight bytes.
     pub acknowledgement: Option<u32>,
@@ -451,7 +472,7 @@ mod tests {
     }
 
     fn probe(technique: TcpScanTechnique) -> Vec<u8> {
-        create_probe(technique, &SRC, &DST, 50_000, 80, NONCE).expect("probe builds")
+        build_probe(technique, &SRC, &DST, 50_000, 80, NONCE).expect("probe builds")
     }
 
     /// The RST a conformant stack sends back, built here from RFC 793 §3.4
@@ -573,7 +594,7 @@ mod tests {
     #[test]
     fn a_probe_across_address_families_is_refused_rather_than_mis_checksummed() {
         let v6: IpAddr = "2001:db8::1".parse().unwrap();
-        assert!(create_probe(TcpScanTechnique::Syn, &SRC, &v6, 50_000, 80, NONCE).is_err());
+        assert!(build_probe(TcpScanTechnique::Syn, &SRC, &v6, 50_000, 80, NONCE).is_err());
     }
 
     // ── Correlation ──────────────────────────────────────────────────────────
@@ -610,7 +631,7 @@ mod tests {
     fn an_arbitrary_flag_combination_is_sent_and_read_back() {
         const MASK: u8 = flags::SYN | flags::FIN;
 
-        let sent = create_probe_with_flags(MASK, &SRC, &DST, 50_000, 80, NONCE, None, false)
+        let sent = build_probe_with_flags(MASK, &SRC, &DST, 50_000, 80, NONCE, None, false)
             .expect("probe builds");
         let parsed = TcpPacket::new(&sent).unwrap();
         assert_eq!(
@@ -628,7 +649,7 @@ mod tests {
     #[test]
     fn a_reset_answering_a_different_probe_yields_a_different_nonce() {
         let ours = probe(TcpScanTechnique::Fin);
-        let theirs = create_probe(
+        let theirs = build_probe(
             TcpScanTechnique::Fin,
             &SRC,
             &DST,
@@ -656,7 +677,7 @@ mod tests {
     fn a_padded_probe_reads_its_nonce_back_from_either_answer() {
         const PADDING: u16 = 24;
 
-        let padded = create_probe_shaped(
+        let padded = build_probe_shaped(
             TcpScanTechnique::Syn,
             &SRC,
             &DST,
@@ -709,9 +730,9 @@ mod tests {
             TcpScanTechnique::Null,
             TcpScanTechnique::Xmas,
         ] {
-            let plain = create_probe(technique, &SRC, &DST, 50_000, 80, NONCE).unwrap();
+            let plain = build_probe(technique, &SRC, &DST, 50_000, 80, NONCE).unwrap();
             let shaped =
-                create_probe_shaped(technique, &SRC, &DST, 50_000, 80, NONCE, None, false).unwrap();
+                build_probe_shaped(technique, &SRC, &DST, 50_000, 80, NONCE, None, false).unwrap();
             assert_eq!(
                 plain, shaped,
                 "{technique} shaped with nothing must not differ"
@@ -725,8 +746,8 @@ mod tests {
     #[test]
     fn padding_lengthens_the_probe_and_the_checksum_covers_it() {
         const LEN: u16 = 20;
-        let bare = create_probe(TcpScanTechnique::Fin, &SRC, &DST, 50_000, 80, NONCE).unwrap();
-        let padded = create_probe_shaped(
+        let bare = build_probe(TcpScanTechnique::Fin, &SRC, &DST, 50_000, 80, NONCE).unwrap();
+        let padded = build_probe_shaped(
             TcpScanTechnique::Fin,
             &SRC,
             &DST,
@@ -756,7 +777,7 @@ mod tests {
     /// host reads as valid.
     #[test]
     fn a_bad_checksum_probe_carries_a_checksum_the_host_rejects() {
-        let bad = create_probe_shaped(
+        let bad = build_probe_shaped(
             TcpScanTechnique::Syn,
             &SRC,
             &DST,

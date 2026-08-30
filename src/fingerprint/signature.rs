@@ -83,18 +83,51 @@ pub fn unescape(payload: &str) -> Vec<u8> {
     out
 }
 
+/// The `[service]` table: who a signature file is about, and where that service
+/// is expected to be found.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceSignature {
+    /// The service's canonical name, the one a report prints and every rule and
+    /// probe in the file registers under.
     pub name: String,
+    /// The ports this service claims. Each one indexes the file's rules and
+    /// probes under that number in
+    /// [`SignatureDb`](crate::fingerprint::SignatureDb), and the first service
+    /// to claim a number is the one that gives it its primary name.
+    ///
+    /// An empty list is a finished definition rather than an omission: a file
+    /// with no ports holds banner rules reached by global matching, where the
+    /// text decides what the service is and the number never enters into it.
     pub default_ports: Vec<u16>,
+    /// A line of prose naming the service, for whoever reads the corpus.
     pub description: Option<String>,
+    /// Where the definition came from, when it was not authored here. The
+    /// files under `assets/fingerprinting/imported` set it (`"Rapid7 Recog"`)
+    /// and name the upstream licence they arrived under in their own header.
     pub attribution: Option<String>,
 }
 
+/// Something to send to a port to make it answer.
+///
+/// Sent to every port the owning service registers; a probe marked
+/// [`generic`](Self::generic) also goes to open ports that register none of
+/// their own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Probe {
+    /// A name for the probe, for authors and for the build's diagnostics.
     pub name: Option<String>,
+    /// The bytes to send, authored as a TOML literal string. The escapes `\r`,
+    /// `\n`, `\t`, `\0`, `\xHH` and `\\` are decoded to the bytes they denote
+    /// before the probe goes on the wire.
+    ///
+    /// A UDP payload is held to [`MAX_UDP_PROBE_BYTES`] and parsed at build
+    /// time the way the target service would parse it, because a malformed
+    /// datagram is dropped in silence and a scan reads that silence as a
+    /// filtered port.
     pub payload: String,
+    /// The transport carrying the payload: `"tcp"` or `"udp"`. Anything else
+    /// warns at build time, and the loader drops the probe rather than guess
+    /// which transport was meant.
     pub protocol: String,
     /// How aggressive/uncommon this probe is, `0..=9`, on the rarity scale the
     /// imported signature corpora use. A probe is sent only when its rarity is
@@ -133,23 +166,66 @@ pub struct Probe {
     pub generic: bool,
 }
 
+/// One `[[match]]` rule: a pattern to run against a response, and what a match
+/// on it says about the service behind that response. Each rule becomes one
+/// signature in the flat, globally indexed set the engine matches against.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchRule {
+    /// A name for the rule, such as `"nginx_server_header"`, for authors and
+    /// for reading a diff of the corpus.
     pub name: Option<String>,
+    /// The regex a response is matched against.
+    ///
+    /// Compiled by the linear engine where it can be, and by a bounded
+    /// backtracking engine when it uses backreferences or lookaround, under the
+    /// [`MAX_COMPILED_REGEX_BYTES`] size cap. A pattern neither engine accepts
+    /// fails the build instead of going missing from a scan.
     pub pattern: String,
+    /// The 1-based capture group holding the version string, where the pattern
+    /// captures one. A number the pattern has no group for fails the build.
     pub version_group: Option<u8>,
+    /// Who publishes the product, spelled as a report should print it:
+    /// `"Apache Software Foundation"`, `"NGINX"`. It counts with `product`
+    /// toward how specific a match is when several rules fire on one response.
     pub vendor: Option<String>,
+    /// The software a match identifies: `"nginx"`, `"Apache HTTP Server"`. A
+    /// rule that names none leaves the field empty rather than repeating the
+    /// service name back.
     pub product: Option<String>,
+    /// The field the pattern is written against: `ssh.banner`,
+    /// `http_header.server`, `snmp.sys_description`, `favicon.md5`. Imported
+    /// with the rule as a record of what it reads; the runtime matches every
+    /// text a response yields and does not select on it.
     pub context: Option<String>,
+    /// A response this rule is meant to match, recorded beside it. The corpus
+    /// test runs every example through its own signature, which is what catches
+    /// a pattern that quietly stopped matching what it was written for.
     pub example: Option<String>,
+    /// Everything else the rule states, keyed as the corpus keys it. The engine
+    /// reads `service.cpe23`, `service.version`, and the `os.*` and `hw.device`
+    /// keys that make up
+    /// [`OsMetadata`](crate::fingerprint::os::OsMetadata).
+    ///
+    /// Values may be templates. An `os.*` value written `{capture:1}` is filled
+    /// from the pattern's first capture group when the rule fires, and a
+    /// `service.cpe23` naming `{service.version}` is filled from the version
+    /// the match found. A template with nothing to fill it resolves to nothing
+    /// at all, rather than to a half-built value a consumer would try to match
+    /// on.
     pub metadata: Option<HashMap<String, String>>,
 }
 
+/// One `assets/fingerprinting` file, whole: the service it describes, what to
+/// send that service, and what to make of the answer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDefinition {
+    /// The service this file is about, and the ports it registers.
     pub service: ServiceSignature,
+    /// What to send to draw a response. A service that announces itself
+    /// unprompted needs none.
     #[serde(default)]
     pub probe: Vec<Probe>,
+    /// The rules run against whatever comes back.
     #[serde(default)]
     pub r#match: Vec<MatchRule>,
 }

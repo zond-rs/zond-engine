@@ -333,7 +333,10 @@ type SeqNum = u32;
 /// new sequence number every time, so the reply names the attempt it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SynToken {
+    /// The sequence number this attempt carried, returned in the
+    /// acknowledgement of whatever answers it.
     pub seq: SeqNum,
+    /// The port this attempt left from, and so where its reply is addressed.
     pub src_port: u16,
 }
 
@@ -421,7 +424,7 @@ fn send_syn(
     let src_port: u16 = src_port_override.unwrap_or_else(|| rand::random_range(50_000..u16::MAX));
     let seq_num: u32 = rand::random_range(0..=u32::MAX);
 
-    let packet = match protocol::tcp::create_probe_shaped(
+    let packet = match protocol::tcp::build_probe_shaped(
         TcpScanTechnique::Syn,
         &src_addr,
         &dst_addr,
@@ -448,7 +451,7 @@ fn send_syn(
         .iter()
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
         .filter_map(|&decoy| {
-            protocol::tcp::create_probe_shaped(
+            protocol::tcp::build_probe_shaped(
                 TcpScanTechnique::Syn,
                 &decoy,
                 &dst_addr,
@@ -545,7 +548,7 @@ fn send_udp(
     // application itself has to recognize the request. See [`payload`].
     let payload = payload::for_port(dst_port).to_vec();
 
-    let packet = match crate::protocols::udp::create_packet_shaped(
+    let packet = match crate::protocols::udp::build_packet_shaped(
         &src_addr,
         &dst_addr,
         src_port,
@@ -570,7 +573,7 @@ fn send_udp(
         .iter()
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
         .filter_map(|&decoy| {
-            crate::protocols::udp::create_packet_shaped(
+            crate::protocols::udp::build_packet_shaped(
                 &decoy,
                 &dst_addr,
                 rand::random_range(50_000..u16::MAX),
@@ -637,6 +640,14 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
         .is_some_and(|reply| !matches!(reply, TcpReply::ChallengeAck))
 }
 
+/// Checks whether addresses behind a gateway are alive, putting one raw TCP SYN
+/// to each and crediting whatever comes back.
+///
+/// The handshake is never completed, so an address answers whether or not the
+/// port it was asked about is open, and every probe leaves from the source
+/// address its route named. [`new`](Self::new) opens the raw transport it
+/// sends through, which takes root; [`with_transport`](Self::with_transport)
+/// takes one the caller opened.
 pub struct RoutedScanner {
     /// Shared state (host store, event channel, abort signal) for the scan
     /// this explorer is part of.
@@ -913,6 +924,17 @@ impl HostScanner for RoutedScanner {
 }
 
 impl RoutedScanner {
+    /// A sweep of `targets`, each already paired with the source address to
+    /// probe it from, over a transport this constructor opens.
+    ///
+    /// Hosts land in `ctx`, which is also where an abort is read from, and
+    /// every address found is posted to `dns_tx` for a reverse lookup; pass
+    /// `None` to resolve no hostnames. `tuning` supplies the retry schedule,
+    /// the probe rate the sweep paces itself to, and the evasion profile that
+    /// shapes each packet and decides how the transport is opened.
+    ///
+    /// Fails when that transport cannot be opened, which is what happens
+    /// without root.
     pub fn new(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,

@@ -992,7 +992,7 @@ impl FakeLink {
         target: IpAddr,
     ) -> Option<CapturedSegment> {
         let bytes =
-            udp::create_packet(&target, &scanner, probe.port, probe.reply_port, Vec::new()).ok()?;
+            udp::build_packet(&target, &scanner, probe.port, probe.reply_port, Vec::new()).ok()?;
 
         Some(CapturedSegment::synthetic(
             target,
@@ -1098,9 +1098,9 @@ fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8], layer4: Layer4) -> Optio
     };
     let header = match (scanner, target) {
         (IpAddr::V4(s), IpAddr::V4(d)) => {
-            ip::create_ipv4_header(s, d, len, protocol, ip::HOP_LIMIT_ROUTED).ok()?
+            ip::build_ipv4_header(s, d, len, protocol, ip::HOP_LIMIT_ROUTED).ok()?
         }
-        (IpAddr::V6(s), IpAddr::V6(d)) => ip::create_ipv6_header(s, d, len, protocol, HOP_LIMIT),
+        (IpAddr::V6(s), IpAddr::V6(d)) => ip::build_ipv6_header(s, d, len, protocol, HOP_LIMIT),
         _ => return None,
     };
 

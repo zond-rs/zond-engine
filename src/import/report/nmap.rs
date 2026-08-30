@@ -83,7 +83,7 @@ use std::time::{Duration, SystemTime};
 use crate::config::{OsDetection, ServiceDetection, ZondConfig};
 use crate::import::report::{ReportOptions, ReportReader};
 use crate::import::xml::{Element, Event, Parser};
-use crate::import::{ImportError, Origin};
+use crate::import::{ImportError, ImportOrigin};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::{Host, HostStatus, StatusProtocol, StatusReason};
@@ -348,7 +348,7 @@ impl ReportReader for NmapXmlReportReader {
         if !run.saw_root {
             return Err(ImportError::Malformed {
                 format: FORMAT,
-                origin: Origin::unknown(),
+                origin: ImportOrigin::unknown(),
                 message: "no <nmaprun> element: this is not an nmap document".to_string(),
             });
         }

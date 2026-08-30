@@ -30,6 +30,13 @@ pub fn resolve_zone(name: &str) -> Option<u32> {
         .map(|link| link.index())
 }
 
+/// Expands a [`Keyword`] into the addresses it stands for and adds them to
+/// `ip_set`, leaving whatever the set already held.
+///
+/// [`Keyword::Lan`] is the only word so far. It adds the IPv4 network of the
+/// interface [`lan_link`](interface::lan_link) chose, less the network and
+/// broadcast addresses, which no host answers on. A subnet with nothing left
+/// after that is added whole.
 pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
     match keyword {
         Keyword::Lan => resolve_lan(ip_set),
@@ -47,7 +54,7 @@ pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpPar
 /// on any segment whose IPv4 is not RFC1918: carrier-grade NAT, or a network
 /// addressed publicly.
 fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
-    let link = interface::get_lan_link()
+    let link = interface::lan_link()
         .map_err(|e| IpParseError::LanError(e.to_string()))?
         .ok_or_else(|| IpParseError::LanError("No active network interface found".into()))?;
 

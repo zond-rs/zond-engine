@@ -80,7 +80,7 @@
 //!
 //! ## Where a merged report says its findings came from
 //!
-//! Every phase folded in carries an [`Origin`]: what the caller called the
+//! Every phase folded in carries a [`PhaseOrigin`]: what the caller called the
 //! document, and what produced it as that scanner attributed itself. A merged
 //! report therefore states what each of its sources covered, when, and on whose
 //! word.
@@ -125,7 +125,7 @@ use crate::model::host::hardware::HardwareInfo;
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, Protocol, Security, Service};
-use crate::report::{Origin, ScanPhase, ScanReport};
+use crate::report::{PhaseOrigin, ScanPhase, ScanReport};
 
 /// What a merge is allowed to assume.
 ///
@@ -199,7 +199,7 @@ impl Merge {
     /// The label is whatever the caller calls it — a path, a record id, a bucket
     /// key. The engine opens nothing and has no word for one.
     ///
-    /// A phase that already carries an [`Origin`] keeps it, so merging a report
+    /// A phase that already carries a [`PhaseOrigin`] keeps it, so merging a report
     /// that is itself a merge keeps the names its own sources were given rather
     /// than relabelling them all with this one.
     pub fn add_from(&mut self, label: impl Into<Arc<str>>, report: ScanReport) -> &mut Self {
@@ -284,7 +284,7 @@ impl Merge {
 
         let mut phases = Vec::new();
         for (_, source) in sources {
-            let attribution = Origin::new(source.report.engine_version());
+            let attribution = PhaseOrigin::new(source.report.engine_version());
             let attribution = match &source.label {
                 Some(label) => attribution.with_label(Arc::clone(label)),
                 None => attribution,
@@ -1366,7 +1366,7 @@ mod tests {
         let labels: Vec<&str> = merged
             .phases()
             .iter()
-            .filter_map(|phase| phase.origin().and_then(Origin::label))
+            .filter_map(|phase| phase.origin().and_then(PhaseOrigin::label))
             .collect();
 
         assert_eq!(labels, ["q1.xml", "q2.xml", "q3.xml"]);

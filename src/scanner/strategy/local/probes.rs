@@ -62,7 +62,7 @@ pub fn eth_packet_iter(
 ) -> PacketIter {
     let arp_iter = src_v4
         .as_ref()
-        .map(|v4| create_arp_iter(local_mac, v4, ip_set))
+        .map(|v4| build_arp_iter(local_mac, v4, ip_set))
         .into_iter()
         .flatten();
 
@@ -73,7 +73,7 @@ pub fn eth_packet_iter(
     // possible at all.
     let ndp_iter = link_local
         .as_ref()
-        .map(|v6| create_ndp_iter(local_mac, v6, ip_set))
+        .map(|v6| build_ndp_iter(local_mac, v6, ip_set))
         .into_iter()
         .flatten();
 
@@ -141,7 +141,7 @@ impl Iterator for Interleave {
 /// Ranges are expanded the same way ARP's are, and bounded the same way: the
 /// classifier refuses an IPv6 range too large to walk long before it reaches
 /// here, so an unbounded expansion is not reachable through the scan path.
-fn create_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> PacketIter {
+fn build_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> PacketIter {
     let local_mac = *local_mac;
     let src_addr = *src_addr;
     let ranges: Vec<Ipv6Range> = ip_set.v6().to_vec();
@@ -154,7 +154,7 @@ fn create_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> 
             (start..=end).map(Ipv6Addr::from)
         })
         .map(move |target| {
-            let packet = ndp::create_neighbor_solicitation(&local_mac, &src_addr, target);
+            let packet = ndp::build_neighbor_solicitation(&local_mac, &src_addr, target);
             (packet, IpAddr::V6(target))
         });
 
@@ -162,7 +162,7 @@ fn create_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> 
 }
 
 /// One ARP request per IPv4 address in `ip_set`.
-pub fn create_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) -> PacketIter {
+pub fn build_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) -> PacketIter {
     let local_mac = *local_mac;
     let src_ip = *src_ip;
 
@@ -176,7 +176,7 @@ pub fn create_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) -
             (start..=end).map(Ipv4Addr::from)
         })
         .map(move |dst_addr| {
-            let packet = arp::create_request(&local_mac, &src_ip, dst_addr);
+            let packet = arp::build_request(&local_mac, &src_ip, dst_addr);
             (packet, IpAddr::V4(dst_addr))
         });
 

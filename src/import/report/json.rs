@@ -79,15 +79,15 @@ use crate::config::{OsDetection, ScanEffort, ServiceDetection};
 use crate::format::time::parse_rfc3339;
 use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
 use crate::import::report::{ReportOptions, ReportReader};
-use crate::import::{ImportError, Origin};
+use crate::import::{ImportError, ImportOrigin};
 use crate::model::host::Host;
 use crate::model::port::PortSet;
 use crate::model::technique::TcpScanTechnique;
 use crate::record::wire;
 use crate::record::{
     CaptureRecord, CertificateRecord, DetectionIdRecord, DiscoveryRecord, EvasionSettingsRecord,
-    FailureRecord, FindingRecord, HardwareRecord, HopRecord, HostRecord, IdleScanRecord,
-    OriginRecord, OsRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord,
+    FailureRecord, FindingRecord, HardwareRecord, HopRecord, HostRecord, IdleScanRecord, OsRecord,
+    PhaseOriginRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord,
     ReferenceRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord,
     StatusReasonRecord, TelemetryRecord, WindowRecord,
 };
@@ -126,7 +126,7 @@ impl ReportReader for JsonReportReader {
 fn malformed(error: &serde_json::Error) -> ImportError {
     ImportError::Malformed {
         format: FORMAT,
-        origin: Origin::line(error.line() as u64),
+        origin: ImportOrigin::line(error.line() as u64),
         message: error.to_string(),
     }
 }
@@ -191,7 +191,7 @@ impl Document {
 fn refuse(message: String) -> ImportError {
     ImportError::Malformed {
         format: FORMAT,
-        origin: Origin::unknown(),
+        origin: ImportOrigin::unknown(),
         message,
     }
 }
@@ -352,13 +352,13 @@ struct PhaseDto {
     failures: Vec<FailureDto>,
     probe_stats: Vec<ProbeStatsDto>,
     unroutable: Vec<String>,
-    origin: Option<OriginDto>,
+    origin: Option<PhaseOriginDto>,
 }
 
 /// Which document a phase came from, for a report merged out of several.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct OriginDto {
+struct PhaseOriginDto {
     label: Option<String>,
     engine_version: String,
 }
@@ -393,7 +393,7 @@ impl PhaseDto {
                 .into_iter()
                 .map(ProbeStatsDto::record)
                 .collect::<Result<_, _>>()?,
-            origin: self.origin.map(|origin| OriginRecord {
+            origin: self.origin.map(|origin| PhaseOriginRecord {
                 label: origin.label,
                 engine_version: origin.engine_version,
             }),

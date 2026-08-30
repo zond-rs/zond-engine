@@ -11,8 +11,8 @@ use crate::system::interface::Link;
 use crate::system::interface::source::viable_interfaces;
 
 /// The links most likely to be worth scanning from, best first.
-pub fn get_prioritized_interfaces(limit: usize) -> Vec<Link> {
-    get_prioritized_interfaces_with(limit, viable_interfaces())
+pub fn prioritized_interfaces(limit: usize) -> Vec<Link> {
+    prioritized_interfaces_with(limit, viable_interfaces())
 }
 
 /// The ordering, decoupled from the host so it can be tested.
@@ -22,7 +22,7 @@ pub fn get_prioritized_interfaces(limit: usize) -> Vec<Link> {
 /// nothing at all on Windows, where an adapter is named by its GUID. It also
 /// ranked `en1` above `wlan0` on a machine where `en1` *is* the Wi-Fi, which is
 /// this laptop. A link now says what it is, so the sort asks it.
-pub(crate) fn get_prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) -> Vec<Link> {
+pub(crate) fn prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) -> Vec<Link> {
     links.sort_by_key(|link| if link.is_wireless() { 1 } else { 0 });
     links.into_iter().take(limit).collect()
 }
@@ -95,7 +95,7 @@ mod tests {
     /// nothing to say on Windows, where an adapter is named by a GUID.
     #[test]
     fn a_wired_link_is_preferred_however_the_platform_names_it() {
-        let ordered = get_prioritized_interfaces_with(
+        let ordered = prioritized_interfaces_with(
             10,
             vec![
                 link("en1", LinkKind::Wireless),
@@ -116,8 +116,8 @@ mod tests {
             link("en2", LinkKind::Wired),
         ];
 
-        assert_eq!(get_prioritized_interfaces_with(2, links.clone()).len(), 2);
-        assert_eq!(get_prioritized_interfaces_with(0, links).len(), 0);
+        assert_eq!(prioritized_interfaces_with(2, links.clone()).len(), 2);
+        assert_eq!(prioritized_interfaces_with(0, links).len(), 0);
     }
 
     /// A range wholly inside the link's network is on it; one that leaves is

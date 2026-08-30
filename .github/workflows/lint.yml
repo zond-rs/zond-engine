@@ -1,5 +1,5 @@
 # Formatting, lints, the documentation build, the feature matrix, the minimum
-# toolchain, and the dependency audit.
+# toolchain, the dependency audit, and the public API surface.
 #
 # Everything here runs on every branch, not just `main`. A gate that only sees
 # the default branch sees the work after it has landed, which is how four
@@ -21,6 +21,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "clippy.toml"
+      - "public-api.txt"
       - ".github/workflows/lint.yml"
   pull_request:
     paths:
@@ -30,6 +31,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "clippy.toml"
+      - "public-api.txt"
       - ".github/workflows/lint.yml"
 
 jobs:
@@ -155,6 +157,54 @@ jobs:
       # the library, and the suite's dev-dependencies are free to want newer.
       - name: Check on the minimum supported toolchain
         run: cargo check --all-features
+
+  # The crate promises semver, and for a library the public surface *is* the
+  # promise. `public-api.txt` is that surface written down. This job regenerates
+  # it and fails when the two disagree, so an item leaving the API, or an
+  # argument changing type, has to be a decision somebody wrote into the diff
+  # rather than something noticed after a release.
+  #
+  # Blanket impls are omitted because every type carries the same dozen and they
+  # say nothing about this crate. Auto-trait impls are kept: a type that quietly
+  # stops being `Send` is exactly what this file exists to catch.
+  #
+  # The toolchain is pinned because `cargo public-api` reads rustdoc's JSON,
+  # which is nightly-only and whose shape moves between nightlies. An unpinned
+  # job would rewrite the baseline on somebody else's schedule and report it as
+  # an API change. Bumping the pin is deliberate, and it may legitimately
+  # regenerate the file.
+  public-api:
+    name: Public API surface
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-13
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-public-api
+        uses: taiki-e/install-action@cargo-public-api
+
+      - name: Regenerate the surface and compare it against the baseline
+        run: |
+          cargo public-api --all-features --simplified > /tmp/public-api.txt
+          diff -u public-api.txt /tmp/public-api.txt || {
+            echo
+            echo "The public API has changed. If that was intended, run"
+            echo "  cargo public-api --all-features --simplified > public-api.txt"
+            echo "and commit the result alongside the change that caused it."
+            exit 1
+          }
 
   # A scanner opens raw sockets, parses files it did not write, and embeds a
   # scripting interpreter. Knowing when something in that tree is withdrawn or

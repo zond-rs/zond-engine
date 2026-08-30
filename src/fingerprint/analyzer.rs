@@ -47,6 +47,9 @@ use crate::model::port::Protocol;
 /// Deliberately small; it grows as analyzers need more context (prior evidence,
 /// transport hints) without changing the trait.
 pub struct PortContext {
+    /// The port being examined. It selects the signatures registered for that
+    /// port, and it is what an analyzer bound to particular ports (SSH on 22)
+    /// gates on in [`interested`](Analyzer::interested).
     pub port: u16,
     /// The transport the responses were read over.
     ///

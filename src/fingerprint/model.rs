@@ -73,9 +73,17 @@ impl Tunnel {
 /// should be claimed to share.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Evidence {
+    /// The protocol the port was speaking, in the corpus's vocabulary: `http`,
+    /// `ssh`, `postgresql`. Bare even when it was read through a tunnel, which
+    /// [`tunnel`](Self::tunnel) records separately.
     pub service: Option<String>,
+    /// The software behind the protocol, where the observation named it:
+    /// `nginx`, `OpenSSH`. Empty when all that was established is which
+    /// protocol answered.
     pub product: Option<String>,
+    /// The product's version, as the response stated it.
     pub version: Option<String>,
+    /// Who publishes the product, such as `Apache Software Foundation`.
     pub vendor: Option<String>,
     /// Supplementary detail that is not the product itself: an environment hint
     /// or a *secondary* technology (an HTTP `X-Powered-By` value like `PHP/8.2`,
@@ -95,7 +103,11 @@ pub struct Evidence {
     /// global-only match of equal confidence. Analyzers that do not consult the
     /// port-signature index leave it `false`.
     pub port_confirmed: bool,
+    /// How strongly this observation identifies what is running. The
+    /// resolver's primary ranking key, and the strongest observation's value
+    /// becomes the verdict's own confidence.
     pub confidence: Confidence,
+    /// The detector that made the observation, kept on it for provenance.
     pub source: SourceId,
     /// What this observation said about the *machine*, as distinct from the
     /// service.
@@ -129,26 +141,33 @@ impl Evidence {
         }
     }
 
+    /// Names the protocol this observation identified, returning `self`.
     pub fn with_service(mut self, service: impl Into<String>) -> Self {
         self.service = Some(service.into());
         self
     }
 
+    /// Names the software behind the protocol, returning `self`.
     pub fn with_product(mut self, product: impl Into<String>) -> Self {
         self.product = Some(product.into());
         self
     }
 
+    /// Sets the version the response stated, returning `self`.
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
         self
     }
 
+    /// Sets the product's publisher, returning `self`.
     pub fn with_vendor(mut self, vendor: impl Into<String>) -> Self {
         self.vendor = Some(vendor.into());
         self
     }
 
+    /// Sets the supplementary detail described on
+    /// [`extrainfo`](Self::extrainfo), returning `self`. It never becomes the
+    /// product.
     pub fn with_extrainfo(mut self, extrainfo: impl Into<String>) -> Self {
         self.extrainfo = Some(extrainfo.into());
         self
@@ -171,16 +190,36 @@ impl Evidence {
 /// verdicts should be claimed to share exactly.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ServiceVerdict {
+    /// The protocol the port is speaking, from the strongest observation that
+    /// named one. Bare, as on [`Evidence`]: the `ssl/…` label belongs to
+    /// [`to_service`](Self::to_service).
     pub service: Option<String>,
+    /// The software behind the protocol. A product that only repeats the
+    /// service name is dropped in resolution, so this is empty unless something
+    /// identified the software itself.
     pub product: Option<String>,
+    /// The version, which need not have come from the same observation as the
+    /// product: a TLS certificate can name the software while a banner states
+    /// its release.
     pub version: Option<String>,
+    /// Who publishes the product.
     pub vendor: Option<String>,
+    /// Supplementary detail beside the product, merged from the evidence: an
+    /// environment hint, or a secondary technology such as `PHP/8.2`.
     pub extrainfo: Option<String>,
+    /// The platform identifier, with any `{service.version}` template already
+    /// resolved against the version found. This is what CVE correlation joins
+    /// on.
     pub cpe: Option<String>,
     /// The tunnel the winning `service` was observed through, if any. Drives the
     /// `ssl/…` label in [`ServiceVerdict::to_service`].
     pub tunnel: Option<Tunnel>,
+    /// The confidence of the strongest observation, and
+    /// [`Confidence::Heuristic`] where there was no observation at all.
     pub confidence: Confidence,
+    /// Everything that contributed, strongest first, including observations
+    /// none of the fields above were taken from. A caller reads it to explain a
+    /// verdict, or to see what disagreed with it.
     pub evidence: Vec<Evidence>,
 }
 

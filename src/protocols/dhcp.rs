@@ -24,7 +24,7 @@
 //!
 //! ## Which message, and why it is the safe one
 //!
-//! [`create_inform`] builds a `DHCPINFORM` (§3.4): the message a client with an
+//! [`build_inform`] builds a `DHCPINFORM` (§3.4): the message a client with an
 //! address already sends to ask for the *rest* of its configuration — routers,
 //! name servers, a domain. It allocates nothing. A `DHCPDISCOVER` would find
 //! the same servers and would also make each of them reserve an address for a
@@ -227,7 +227,7 @@ pub struct ClientRequest<'a> {
 /// drawn at random, because nothing correlates on it. A server's reply is
 /// evidence about the server whether it answers this probe or a real client's,
 /// so the field only has to be ours and stable.
-pub fn create_inform(src_mac: &MacAddr, src_addr: &Ipv4Addr) -> Vec<u8> {
+pub fn build_inform(src_mac: &MacAddr, src_addr: &Ipv4Addr) -> Vec<u8> {
     let mut message = Vec::with_capacity(MIN_MESSAGE_LEN);
     let mac = src_mac.octets();
 
@@ -532,7 +532,7 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            ethernet::create_header(SERVER_MAC, SRC_MAC, EtherTypes::Ipv4),
+            ethernet::build_header(SERVER_MAC, SRC_MAC, EtherTypes::Ipv4),
             datagram,
         ]
         .concat()
@@ -544,7 +544,7 @@ pub(crate) mod tests {
     /// claim that we have one and where the answer is sent.
     #[test]
     fn an_inform_is_broadcast_and_asks_for_nothing_it_would_have_to_be_given() {
-        let bytes = create_inform(&SRC_MAC, &src_addr());
+        let bytes = build_inform(&SRC_MAC, &src_addr());
         let frame = super::super::ethernet::parse(&bytes).expect("an ethernet frame");
 
         assert_eq!(frame.destination(), MacAddr::broadcast());
@@ -707,7 +707,7 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            super::super::ethernet::create_header(
+            super::super::ethernet::build_header(
                 MacAddr(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33),
                 MacAddr::broadcast(),
                 EtherTypes::Ipv4,

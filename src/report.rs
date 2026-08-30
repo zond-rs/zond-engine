@@ -388,9 +388,6 @@ impl TargetScope {
         self.probes
     }
 
-    /// The transport protocols in scope, in ascending order. Empty for a
-    /// discovery sweep, whose probes are chosen by the strategy rather than by
-    /// the caller.
     /// The links this phase swept whole, by the interface each is on.
     ///
     /// [`ranges`](Self::ranges) is what a target set named, and for a sweep of a
@@ -463,6 +460,11 @@ impl TargetScope {
         &self.ports
     }
 
+    /// The transport protocols the phase was asked about, deduplicated and in
+    /// ascending [`Protocol`] order, which puts TCP before UDP.
+    ///
+    /// Empty for a discovery sweep, whose probes are the strategy's choice
+    /// rather than the caller's.
     pub fn protocols(&self) -> &[Protocol] {
         &self.protocols
     }
@@ -1102,7 +1104,7 @@ impl ProbeStats {
 ///
 /// # Why it hangs on the phase
 ///
-/// For the reason [`Origin`] does. A [`merge`](crate::merge) folds phases
+/// For the reason [`PhaseOrigin`] does. A [`merge`](crate::merge) folds phases
 /// measured from several vantage points into one report, and each of them ran
 /// somewhere different. Recorded once for the whole report, two machines'
 /// attachments would have to be arbitrated — a contest with no right answer,
@@ -1249,15 +1251,15 @@ impl Attachment {
 /// **The label is the caller's.** The engine opens no files and has no word for
 /// one, so whoever read the document passes the name it used for it — a path, a
 /// record id, a bucket key. [`merge`](crate::merge) is the only thing that
-/// writes an `Origin`, and it takes the version from the source report's own
+/// writes a `PhaseOrigin`, and it takes the version from the source report's own
 /// attribution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Origin {
+pub struct PhaseOrigin {
     label: Option<Arc<str>>,
     engine_version: Arc<str>,
 }
 
-impl Origin {
+impl PhaseOrigin {
     /// An origin attributing a phase to `engine_version`, unnamed.
     pub fn new(engine_version: impl Into<Arc<str>>) -> Self {
         Self {
@@ -1313,7 +1315,7 @@ pub struct PhaseParts {
     /// What each strategy recorded about its own run.
     pub probes: Vec<ProbeStats>,
     /// Which document the phase came from, for one folded in from elsewhere.
-    pub origin: Option<Origin>,
+    pub origin: Option<PhaseOrigin>,
     /// Which switch ports the machine running the phase was plugged into.
     pub attachments: Vec<Attachment>,
 }
@@ -1345,7 +1347,7 @@ impl ScanPhase {
     ///
     /// Used by [`merge`](crate::merge) as it folds a source in, which is the one
     /// place that knows both the document's name and what produced it.
-    pub fn attribute(&mut self, origin: Origin) {
+    pub fn attribute(&mut self, origin: PhaseOrigin) {
         self.origin = Some(origin);
     }
 }
@@ -1370,7 +1372,7 @@ pub struct ScanPhase {
     unroutable: Vec<IpAddr>,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
-    origin: Option<Origin>,
+    origin: Option<PhaseOrigin>,
     /// Which switch ports the machine running this phase was plugged into.
     attachments: Vec<Attachment>,
 }
@@ -1378,7 +1380,7 @@ pub struct ScanPhase {
 impl ScanPhase {
     /// Which document this phase came from, for one folded into a merged report
     /// from elsewhere. `None` for a phase this process measured.
-    pub fn origin(&self) -> Option<&Origin> {
+    pub fn origin(&self) -> Option<&PhaseOrigin> {
         self.origin.as_ref()
     }
 
@@ -1612,7 +1614,7 @@ impl ScanReport {
     /// Whether this report was folded out of documents rather than measured by
     /// one run.
     ///
-    /// True when any phase carries an [`Origin`], which is what
+    /// True when any phase carries a [`PhaseOrigin`], which is what
     /// [`merge`](crate::merge) stamps on every phase it folds in and what
     /// nothing else writes.
     ///

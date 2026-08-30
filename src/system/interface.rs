@@ -27,11 +27,11 @@ mod routing;
 mod source;
 mod utils;
 
-pub use lan::{LanLink, ViabilityError, get_lan_link, get_lan_network};
+pub use lan::{LanLink, ViabilityError, lan_link, lan_network};
 pub use link::{Link, LinkAddress, LinkKind, interfaces};
 pub use resolve::{resolve_keyword, resolve_zone};
 pub use routing::{
     MAX_ENUMERABLE_ADDRESSES, RoutedTarget, RoutedTargets, is_enumerable, map_ips_to_interfaces,
 };
 pub use source::SourceResolver;
-pub use utils::{get_prioritized_interfaces, is_layer_2_capable, is_on_link};
+pub use utils::{is_layer_2_capable, is_on_link, prioritized_interfaces};

@@ -338,6 +338,14 @@ impl SourceIdentity {
     }
 }
 
+/// Finds the hosts sharing one Ethernet segment, asking IPv4 addresses by ARP
+/// and the IPv6 half of the segment by all-nodes solicitation.
+///
+/// Frames are built and read directly rather than through this host's IP
+/// stack, so a run takes root and reaches only the segment its [`Link`] is
+/// attached to. What a given reply proves is left to the [`DiscoveryProtocol`]
+/// implementations in [`discovery`], and [`Scope`] decides whether a run probes
+/// the whole segment or only the addresses it was handed.
 pub struct LocalScanner {
     /// Shared state (host store, event channel, abort signal) for the scan
     /// this explorer is part of.
@@ -619,6 +627,17 @@ impl HostScanner for LocalScanner {
 }
 
 impl LocalScanner {
+    /// A sweep for `ip_set` across the segment `link` is attached to, over a
+    /// capture this constructor opens on that interface.
+    ///
+    /// `scope` decides whether the whole segment is invited to answer or only
+    /// the addresses given are asked. Whatever is found is written to `ctx`,
+    /// and each address goes to `dns_tx` for a reverse lookup unless that is
+    /// `None`. `retry` scales how often an unanswered ARP request is repeated,
+    /// and with it how long the sweep is prepared to run.
+    ///
+    /// Fails when the capture cannot be opened, and when `link` has no MAC
+    /// address to send from.
     pub fn new(
         link: Link,
         ip_set: IpSet,
@@ -802,7 +821,7 @@ impl LocalScanner {
         };
 
         let packet =
-            protocol::ndp::create_neighbor_solicitation(&self.identity.mac, &source_v6, target_v6);
+            protocol::ndp::build_neighbor_solicitation(&self.identity.mac, &source_v6, target_v6);
         self.emit(&packet, "confirming solicitation");
         self.ipv6.record_confirmation_sent(target, now);
         info!(
@@ -837,7 +856,7 @@ impl LocalScanner {
             return;
         };
 
-        let packet = protocol::ndp::create_router_solicitation(&self.identity.mac, &link_local);
+        let packet = protocol::ndp::build_router_solicitation(&self.identity.mac, &link_local);
         self.emit(&packet, "router solicitation");
     }
 
@@ -869,7 +888,7 @@ impl LocalScanner {
             return;
         };
 
-        let packet = protocol::dhcp::create_inform(&self.identity.mac, &source);
+        let packet = protocol::dhcp::build_inform(&self.identity.mac, &source);
         self.emit(&packet, "dhcp inform");
     }
 
@@ -883,7 +902,7 @@ impl LocalScanner {
             return;
         };
 
-        let packet = protocol::icmp::create_all_nodes_echo_request_v6(
+        let packet = protocol::icmp::build_all_nodes_echo_request_v6(
             &self.identity.mac,
             &link_local,
             self.ipv6.solicitation().identifier,
@@ -906,13 +925,13 @@ impl LocalScanner {
                 let Some(source_v4) = self.identity.ipv4 else {
                     return;
                 };
-                protocol::arp::create_request(&self.identity.mac, &source_v4, target_v4)
+                protocol::arp::build_request(&self.identity.mac, &source_v4, target_v4)
             }
             IpAddr::V6(target_v6) => {
                 let Some(source_v6) = self.identity.link_local_ipv6 else {
                     return;
                 };
-                protocol::ndp::create_neighbor_solicitation(
+                protocol::ndp::build_neighbor_solicitation(
                     &self.identity.mac,
                     &source_v6,
                     target_v6,
@@ -1653,7 +1672,7 @@ mod tests {
         // The two announcement frames need only their framing: the filter reads
         // the EtherType and the destination address, and what the sender put
         // behind them is the reader's business rather than the kernel's.
-        let lldp = ethernet::create_header(
+        let lldp = ethernet::build_header(
             PEER_MAC,
             MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
             crate::protocols::lldp::ETHERTYPE,
@@ -1723,7 +1742,7 @@ mod tests {
                 .expect("a test datagram");
 
             [
-                ethernet::create_header(
+                ethernet::build_header(
                     PEER_MAC,
                     LOCAL_MAC,
                     pnet_packet::ethernet::EtherTypes::Ipv4,

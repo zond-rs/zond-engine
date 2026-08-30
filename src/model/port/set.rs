@@ -263,6 +263,9 @@ impl PortSet {
         }
     }
 
+    /// Whether `port` is in the TCP half of the set. A binary search over the
+    /// merged ranges, so the cost follows how many ranges were written rather
+    /// than how many ports they cover.
     pub fn has_tcp(&self, port: u16) -> bool {
         self.tcp
             .binary_search_by(|range| {

@@ -231,7 +231,7 @@ impl OsEchoScanner {
         };
 
         let sequence = self.next_sequence;
-        let message = match icmp::create_echo_request_message(
+        let message = match icmp::build_echo_request_message(
             source,
             target,
             icmp::ECHO_PROBE_CODE,

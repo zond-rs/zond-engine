@@ -26,13 +26,13 @@
 //! three. The cause is not the hosts. TCP option negotiation is **reciprocal**:
 //! RFC 7323 §2.2 permits a window scale in a SYN+ACK only if the SYN carried
 //! one, §3.2 says the same of timestamps, and RFC 2018 §2 of SACK-permitted. A
-//! peer reports the options it was *asked* about. `tcp::create_probe` offers MSS
+//! peer reports the options it was *asked* about. `tcp::build_probe` offers MSS
 //! and nothing else, so the option layout — the strongest single feature in the
 //! design — was being suppressed by this engine's own probe.
 //!
 //! So there are two arms, one SYN each:
 //!
-//! * **mss-only** — `tcp::create_probe` verbatim, which is what the SYN port
+//! * **mss-only** — `tcp::build_probe` verbatim, which is what the SYN port
 //!   scanner sends today. Not a reproduction of it; the actual function.
 //! * **negotiating** — the same segment field for field, same window, same MSS,
 //!   nonce in the same place, offering the option set an ordinary client offers.
@@ -247,11 +247,11 @@ const DEFAULT_RATE: u32 = 5_000;
 type Outcomes = BTreeMap<(IpAddr, u16), &'static str>;
 
 /// The maximum segment size both arms advertise, matching what
-/// `tcp::create_probe` sends so the *only* difference between them is the
+/// `tcp::build_probe` sends so the *only* difference between them is the
 /// options offered alongside it.
 const PROBE_MSS: u16 = 1412;
 
-/// The receive window both arms advertise, matching `tcp::create_probe` for the
+/// The receive window both arms advertise, matching `tcp::build_probe` for the
 /// same reason.
 const PROBE_WINDOW: u16 = 1024;
 
@@ -292,7 +292,7 @@ impl ProbeVariant {
 
     /// Builds this arm's SYN.
     ///
-    /// [`MssOnly`](Self::MssOnly) goes through `tcp::create_probe`, so it is the
+    /// [`MssOnly`](Self::MssOnly) goes through `tcp::build_probe`, so it is the
     /// engine's own probe rather than a reproduction of it. The other arm is
     /// built here and mirrors it field for field — same window, same MSS, nonce
     /// in the same place — so the two differ in the options and in nothing else.
@@ -305,7 +305,7 @@ impl ProbeVariant {
         nonce: u32,
     ) -> anyhow::Result<Vec<u8>> {
         match self {
-            ProbeVariant::MssOnly => Ok(tcp::create_probe(
+            ProbeVariant::MssOnly => Ok(tcp::build_probe(
                 TcpScanTechnique::Syn,
                 source,
                 target,

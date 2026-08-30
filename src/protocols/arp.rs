@@ -37,7 +37,7 @@ use std::net::Ipv4Addr;
 /// probe but an invisible one.
 ///
 /// Infallible: nothing here is derived from a length.
-pub fn create_request(src_mac: &MacAddr, src_addr: &Ipv4Addr, dst_addr: Ipv4Addr) -> Vec<u8> {
+pub fn build_request(src_mac: &MacAddr, src_addr: &Ipv4Addr, dst_addr: Ipv4Addr) -> Vec<u8> {
     frame(
         *src_mac,
         MacAddr::broadcast(),
@@ -51,10 +51,10 @@ pub fn create_request(src_mac: &MacAddr, src_addr: &Ipv4Addr, dst_addr: Ipv4Addr
 /// `dst_mac`, and this asks it directly. Every other neighbour's hardware
 /// discards the frame, so it costs the segment nothing.
 ///
-/// Unreachable through [`create_request`] on purpose. The two differ in who
+/// Unreachable through [`build_request`] on purpose. The two differ in who
 /// sees the frame, which is a decision worth making by choosing a function
 /// rather than by passing a different argument to one.
-pub fn create_unicast_request(
+pub fn build_unicast_request(
     src_mac: &MacAddr,
     dst_mac: MacAddr,
     src_addr: &Ipv4Addr,
@@ -151,7 +151,7 @@ mod tests {
         let src_addr = Ipv4Addr::new(192, 168, 1, 10);
         let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
 
-        let buffer = create_request(&src_mac, &src_addr, dst_addr);
+        let buffer = build_request(&src_mac, &src_addr, dst_addr);
         assert_eq!(buffer.len(), MIN_ETH_FRAME_NO_FCS);
 
         let eth_packet =
@@ -191,7 +191,7 @@ mod tests {
         let src_addr = Ipv4Addr::new(192, 168, 1, 10);
         let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
 
-        let unicast = create_unicast_request(&src_mac, dst_mac, &src_addr, dst_addr);
+        let unicast = build_unicast_request(&src_mac, dst_mac, &src_addr, dst_addr);
         let eth = super::super::ethernet::parse(&unicast).expect("a frame");
         assert_eq!(eth.destination(), dst_mac, "only that host's card wakes");
 

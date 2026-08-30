@@ -52,7 +52,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer};
 
-use super::manifest::Manifest;
+use super::manifest::DetectionManifest;
 
 /// The most steps a flow may have. The whole point of a fixed ceiling is that a
 /// flow's cost is knowable before it runs; the validator rejects a longer one.
@@ -66,7 +66,11 @@ pub const MAX_LOOP_ITEMS: usize = 64;
 /// A whole flow file: one detection, then its steps.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FlowDetection {
-    pub detection: Manifest,
+    /// The `[detection]` table: identity, the port gate, and what the flow asks
+    /// to be handed.
+    pub detection: DetectionManifest,
+    /// The `[[step]]` array, run top to bottom. At most [`MAX_FLOW_STEPS`] of
+    /// them.
     #[serde(default)]
     pub step: Vec<Step>,
 }
@@ -96,6 +100,9 @@ pub struct Step {
     /// step's binds left unbound.
     #[serde(default)]
     pub on_no_match: OnNoMatch,
+    /// `[[step.finding]]`: what the step may emit once it has run. Each is
+    /// considered in order, and each guard reads `matched` alongside every
+    /// variable bound so far.
     #[serde(default, rename = "finding")]
     pub finding: Vec<FindingSpec>,
 }
@@ -105,7 +112,10 @@ pub struct Step {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum MatchSpec {
+    /// The shorthand, `expect = "# Server"`: a pattern and nothing else.
     Pattern(String),
+    /// The table form, `{ pattern = "Server: nginx", product = "nginx" }`,
+    /// which carries the fields the shorthand has no room for.
     Rule(Box<MatchDetail>),
 }
 
@@ -139,11 +149,19 @@ impl MatchSpec {
 /// and `version_group`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MatchDetail {
+    /// The regular expression run against the reply.
     pub pattern: String,
+    /// The 1-based numbered capture group holding the version, for a pattern
+    /// imported from a corpus that numbers its group rather than naming it. A
+    /// `bind` looks for a group named after the variable first and falls back
+    /// to this.
     #[serde(default)]
     pub version_group: Option<u8>,
+    /// The product a match identifies, `nginx` for a `Server:` header that
+    /// names it.
     #[serde(default)]
     pub product: Option<String>,
+    /// The vendor behind the product, where the pattern pins one.
     #[serde(default)]
     pub vendor: Option<String>,
 }
@@ -177,8 +195,10 @@ pub struct FindingSpec {
     /// Emit only if this holds. Absent = emit whenever reached.
     #[serde(default)]
     pub when: Option<String>,
+    /// How bad the finding is if it holds.
     pub severity: Severity,
-    /// Overrides [`Manifest::title`] for this finding; most flows omit it.
+    /// The finding's one-line title. Falls back to [`summary`](Self::summary)
+    /// when a flow omits it, which most do. `{var}`-interpolated.
     #[serde(default)]
     pub title: Option<String>,
     /// `{var}`-interpolated.
@@ -189,8 +209,11 @@ pub struct FindingSpec {
     /// A confidence wire name; absent defaults to `certain` for a matched check.
     #[serde(default)]
     pub confidence: Option<String>,
+    /// What to cite: `[{ cve = "CVE-2021-43798" }, { cwe = 22 }]`.
     #[serde(default)]
     pub references: Vec<Reference>,
+    /// What an operator should do about it. Literal text: unlike `summary` and
+    /// `detail`, this is not `{var}`-interpolated.
     #[serde(default)]
     pub remediation: Option<String>,
     /// Which variable (or `$response`) supplies the finding's evidence excerpt.

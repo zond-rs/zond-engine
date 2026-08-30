@@ -49,7 +49,7 @@
 use std::io::BufRead;
 
 use crate::import::xml::{Element, Event, Parser};
-use crate::import::{ImportError, ImportLimits, Importer, Origin, TargetSink};
+use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
 
 /// The format's name in errors.
 const FORMAT: &str = "nmap XML";
@@ -123,7 +123,7 @@ impl Importer for NmapXmlImporter {
         if !saw_root {
             return Err(ImportError::Malformed {
                 format: FORMAT,
-                origin: Origin::unknown(),
+                origin: ImportOrigin::unknown(),
                 message: "no <nmaprun> element: this is not an nmap document".to_string(),
             });
         }
@@ -193,7 +193,7 @@ fn emit(
     host: Option<Accumulator>,
     sink: &mut dyn TargetSink,
     token: &mut String,
-    origin: Origin,
+    origin: ImportOrigin,
 ) -> Result<(), ImportError> {
     let Some(host) = host else {
         return Ok(());

@@ -35,15 +35,26 @@ use super::timer::{ScanBudget, ScanTimer};
 /// exactly how the latter three combine.
 #[derive(Debug, Clone, Copy)]
 pub struct AdaptiveDeadlineConfig {
+    /// The hard deadline, past which the scan stops with whatever it has.
     pub max_budget: ScanBudget,
+    /// How long the scan runs before silence is allowed to end it.
     pub min_budget: ScanBudget,
+    /// The shortest silence that may end a scan, whatever the round trips
+    /// suggest. Also the tolerance in force before anything has been measured.
     pub silence_floor: Duration,
+    /// The longest silence the scan will wait through, so one slow responder
+    /// cannot hold it open on the strength of its own latency.
     pub silence_ceiling: Duration,
+    /// How many multiples of the recent jitter are added to the mean round trip
+    /// to reach the tolerance. Around `4.0` is the margin TCP allows its own
+    /// retransmission timeout.
     pub jitter_multiplier: f64,
+    /// How many recent round-trip samples that mean and jitter are taken over.
     pub rtt_window_capacity: usize,
 }
 
 impl AdaptiveDeadlineConfig {
+    /// A configuration from the six values described on the fields above.
     pub const fn new(
         max_budget: ScanBudget,
         min_budget: ScanBudget,

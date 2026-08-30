@@ -6,6 +6,50 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # What a scan is asked to do
+//!
+//! [`ZondConfig`] is the whole of it: one value, built once, handed to
+//! [`scan`](crate::scanner::scan) or [`discover`](crate::scanner::discover), and
+//! read by every strategy the run assembles. A caller that changes nothing gets
+//! the default, which is a scan that sends what it must and no more.
+//!
+//! ## Effort levels, not timing numbers
+//!
+//! Most of what a person wants to say about a scan is how hard it should try,
+//! and the levels here are the vocabulary for that. [`ScanEffort`] sets how many
+//! attempts a probe gets and how long each one waits. [`OsDetection`] and
+//! [`ServiceDetection`] set how far a run may go to name what it found. Each is
+//! an ordered scale with a default in the middle, each parses from a word or a
+//! number so a front end can accept either, and each is carried into the report
+//! so a result says what was asked of it.
+//!
+//! Below those sit the numbers a strategy actually paces by, and they are not
+//! here to be set. A raw scanner measures its own round trips and sizes its
+//! patience from them; the connect paths, which cannot measure anything, run
+//! against the shared constants in [`limits`]. What a caller supplies is a
+//! ceiling and a preference, and the engine decides the rest against the network
+//! in front of it.
+//!
+//! ## Two things that are not effort
+//!
+//! [`EvasionProfile`] changes the shape of what goes on the wire rather than how
+//! much of it does, and it is inert by default: a strategy handed a default
+//! profile sends exactly what it would have sent without one.
+//!
+//! [`DetectionEnvelope`] is a permission rather than a setting. A detection
+//! declares how intrusive it is and runs only where the envelope allows that
+//! class, so raising it is an operator's decision and not a tuning knob. See
+//! [`envelope`] for the ordering.
+//!
+//! ## Nothing about output
+//!
+//! No verbosity, no colour, no format. The engine emits `tracing` events and
+//! installs no subscriber, so what a run looks like belongs entirely to whoever
+//! embeds the crate. The boundary earns its keep because this type is also the
+//! record of how a scan was run: [`ScanSettings`](crate::report::ScanSettings)
+//! is derived from it into every report, and a field that cannot change a
+//! finding has no business in the record of one.
+
 pub mod envelope;
 pub mod limits;
 
@@ -40,6 +84,9 @@ pub enum ScanEffort {
     /// healthy, where a missed host is cheaper than the time spent confirming
     /// one is absent.
     Fast,
+    /// The level a scan runs at when nobody chose one. Enough attempts to
+    /// ride out ordinary loss, and enough patience for a host on the far side
+    /// of a slow link.
     #[default]
     Balanced,
     /// More attempts, more patience, and no shortcuts on hosts that stay
@@ -527,6 +574,7 @@ impl FromStr for ServiceDetection {
 /// down exactly is not a scale two runs should be claimed to share.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryConfig {
+    /// How hard the scan tries before the fields below override any part of it.
     pub effort: ScanEffort,
     /// Replaces the attempt budget outright, whatever `effort` implies. One
     /// disables retransmission.
@@ -568,9 +616,18 @@ impl Default for RetryConfig {
 /// concurrency instead.
 #[derive(Debug, Clone, Default)]
 pub struct ProbeTuning {
+    /// Which layer a strategy puts its probes on the wire through, where it has
+    /// the choice.
     pub send_mode: SendMode,
+
+    /// How many attempts a probe gets and how long each waits, as an effort
+    /// level with optional overrides.
     pub retry: RetryConfig,
+
+    /// The most probes per second a strategy may emit, or `None` for the pacing
+    /// each one arrives at on its own.
     pub max_probe_rate: Option<u32>,
+
     /// Which segment a TCP port probe carries. Read only by the raw TCP port
     /// scanner: host discovery asks whether anything is there, which every one
     /// of these techniques answers equally badly, so it stays on SYN.

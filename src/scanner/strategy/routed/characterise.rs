@@ -63,7 +63,7 @@ const TRUSTED_SOURCE_PORT: u16 = 53;
 const STATELESS_FRAGMENT_MTU: u16 = 28;
 
 /// One host and the ports the pass aims its diagnostic probes at.
-pub struct Target {
+pub struct Subject {
     /// The host to characterise.
     pub host: IpAddr,
     /// An open TCP port, for the bad-checksum middlebox probe. `None` skips it —
@@ -77,8 +77,8 @@ pub struct Target {
 
 /// Sends each host's diagnostic probes and records what the filter in front of
 /// it demonstrably did.
-pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
-    if targets.is_empty() {
+pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
+    if subjects.is_empty() {
         return;
     }
 
@@ -105,31 +105,31 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
 
     info!(
         "characterising the filter in front of {} host(s)",
-        targets.len()
+        subjects.len()
     );
 
     // Each probe carries a nonce that maps back to the host and the conclusion a
     // reply to it would prove. A reply that echoes no nonce here is somebody
     // else's traffic and settles nothing.
     let mut awaiting: HashMap<u32, (IpAddr, Filtering)> = HashMap::new();
-    for target in &targets {
-        let Some(source) = resolver.resolve(target.host) else {
+    for subject in &subjects {
+        let Some(source) = resolver.resolve(subject.host) else {
             continue;
         };
 
-        if let Some(port) = target.open_port {
+        if let Some(port) = subject.open_port {
             let nonce: u32 = rand::random();
             let src_port: u16 = rand::random_range(50_000..u16::MAX);
             send_diagnostic(
                 transport.tx.as_ref(),
                 &mut awaiting,
                 source,
-                target.host,
+                subject.host,
                 nonce,
-                tcp::create_probe_shaped(
+                tcp::build_probe_shaped(
                     TcpScanTechnique::Syn,
                     &source,
-                    &target.host,
+                    &subject.host,
                     src_port,
                     port,
                     nonce,
@@ -141,19 +141,19 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
             );
         }
 
-        if let Some(port) = target.filtered_port {
+        if let Some(port) = subject.filtered_port {
             let nonce: u32 = rand::random();
             let src_port: u16 = rand::random_range(50_000..u16::MAX);
             send_diagnostic(
                 transport.tx.as_ref(),
                 &mut awaiting,
                 source,
-                target.host,
+                subject.host,
                 nonce,
-                tcp::create_probe(
+                tcp::build_probe(
                     TcpScanTechnique::Ack,
                     &source,
-                    &target.host,
+                    &subject.host,
                     src_port,
                     port,
                     nonce,
@@ -167,12 +167,12 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
                 transport.tx.as_ref(),
                 &mut awaiting,
                 source,
-                target.host,
+                subject.host,
                 nonce,
-                tcp::create_probe(
+                tcp::build_probe(
                     TcpScanTechnique::Syn,
                     &source,
-                    &target.host,
+                    &subject.host,
                     TRUSTED_SOURCE_PORT,
                     port,
                     nonce,
@@ -192,12 +192,12 @@ pub async fn characterise(ctx: &ScanContext, targets: Vec<Target>) {
                     ethernet,
                     &mut awaiting,
                     source,
-                    target.host,
+                    subject.host,
                     nonce,
-                    tcp::create_probe(
+                    tcp::build_probe(
                         TcpScanTechnique::Syn,
                         &source,
-                        &target.host,
+                        &subject.host,
                         src_port,
                         port,
                         nonce,

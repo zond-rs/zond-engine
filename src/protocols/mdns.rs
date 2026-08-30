@@ -10,12 +10,12 @@
 //!
 //! Builds a forward mDNS query, and reads the hosts an mDNS message names.
 //!
-//! [`create_query`] asks for a `.local` name's addresses; [`extract_hosts`]
+//! [`build_query`] asks for a `.local` name's addresses; [`extract_hosts`]
 //! reads the addresses out of the answer. The two are the wire-format half of
 //! resolution and know nothing about sockets: sending the query on the multicast
 //! group and reading the reply belong to [`crate::resolve`], the same way
 //! [`crate::protocols::dns`] leaves the query socket to
-//! [`crate::scanner::resolver`].
+//! [`crate::scanner::rdns`].
 //!
 //! A hostname comes from the *owner* of an address record: `raspberrypi.local.
 //! A 192.168.0.150` says that this address belongs to that name, and says it
@@ -57,7 +57,7 @@ pub const PORT: u16 = 5353;
 /// plain one — the unicast-response bit is not set — because the resolver sends
 /// it from an ephemeral port, and a responder seeing a query from any port other
 /// than 5353 must answer it directly under the legacy rule of RFC 6762 §6.7.
-pub fn create_query(name: &str) -> Result<Vec<u8>> {
+pub fn build_query(name: &str) -> Result<Vec<u8>> {
     let name = name.trim_end_matches('.');
 
     let mut builder = Builder::new_query(0, false);
@@ -224,7 +224,7 @@ mod tests {
     /// network that never answers.
     #[test]
     fn a_forward_query_asks_for_the_name_in_both_families() {
-        let query = create_query("raspberrypi.local").expect("the query builds");
+        let query = build_query("raspberrypi.local").expect("the query builds");
         let packet = Packet::parse(&query).expect("a responder can parse it");
 
         assert!(packet.header.query, "it is a query, not a response");
@@ -249,7 +249,7 @@ mod tests {
     /// something one label longer than the host.
     #[test]
     fn a_trailing_dot_is_stripped_from_the_question() {
-        let query = create_query("printer.local.").expect("the query builds");
+        let query = build_query("printer.local.").expect("the query builds");
         let packet = Packet::parse(&query).expect("parses");
 
         assert_eq!(

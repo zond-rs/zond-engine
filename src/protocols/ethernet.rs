@@ -223,7 +223,7 @@ impl<'a> Frame<'a> {
 }
 
 /// Builds the Ethernet header carrying `et` from `src_mac` to `dst_mac`.
-pub fn create_header(src_mac: MacAddr, dst_mac: MacAddr, et: EtherType) -> Vec<u8> {
+pub fn build_header(src_mac: MacAddr, dst_mac: MacAddr, et: EtherType) -> Vec<u8> {
     craft::Ethernet::new(src_mac, dst_mac)
         .with_ethertype(et)
         .header_bytes()

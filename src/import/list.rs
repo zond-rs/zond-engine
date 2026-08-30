@@ -47,7 +47,7 @@
 
 use std::io::BufRead;
 
-use crate::import::{ImportError, ImportLimits, Importer, Origin, TargetSink};
+use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
 
 /// The UTF-8 byte-order mark, which a Windows editor writes at the start of a
 /// file and nothing else in a target list ever means.
@@ -94,7 +94,7 @@ impl Importer for ListImporter {
         loop {
             buffer.clear();
             line_number += 1;
-            let origin = Origin::line(line_number);
+            let origin = ImportOrigin::line(line_number);
 
             if !read_line(input, &mut buffer, self.limits.max_line_bytes, origin)? {
                 return Ok(());
@@ -136,7 +136,7 @@ pub(crate) fn read_line(
     input: &mut dyn BufRead,
     buffer: &mut Vec<u8>,
     max_line_bytes: usize,
-    origin: Origin,
+    origin: ImportOrigin,
 ) -> Result<bool, ImportError> {
     // Two bytes past the limit, which is the longest terminator there is. A
     // line at exactly the limit has to be readable whole however it ends, and
@@ -325,7 +325,7 @@ mod tests {
         assert!(matches!(
             err,
             ImportError::InvalidUtf8 {
-                origin: Origin { line: Some(2), .. }
+                origin: ImportOrigin { line: Some(2), .. }
             }
         ));
     }

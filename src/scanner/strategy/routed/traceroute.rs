@@ -277,7 +277,7 @@ impl Tracer {
                 // this is the last field a router can be relied on to hand back,
                 // and the only one with room to spare.
                 let sequence = (u32::from(self.marker) << 8) | u32::from(distance);
-                match tcp::create_probe(
+                match tcp::build_probe(
                     crate::model::technique::TcpScanTechnique::Syn,
                     &source,
                     &target,
@@ -298,7 +298,7 @@ impl Tracer {
             TraceProbe::Echo => {
                 // The echo sequence field, for the same reason: it sits inside
                 // the eight bytes a quotation guarantees.
-                match icmp::create_echo_request_message(
+                match icmp::build_echo_request_message(
                     source,
                     target,
                     icmp::ECHO_PROBE_CODE,
@@ -1059,7 +1059,7 @@ mod tests {
                 let (IpAddr::V4(s), IpAddr::V4(d)) = (src, dst) else {
                     unreachable!("the fixture is IPv4")
                 };
-                let header = crate::protocols::ip::create_ipv4_header(
+                let header = crate::protocols::ip::build_ipv4_header(
                     s,
                     d,
                     segment.len() as u16,
@@ -1287,7 +1287,7 @@ mod tests {
         let source = ip(200);
         let (segment, protocol) = match probe {
             TraceProbe::Syn { port } => (
-                tcp::create_probe(
+                tcp::build_probe(
                     crate::model::technique::TcpScanTechnique::Syn,
                     &source,
                     &target,
@@ -1299,7 +1299,7 @@ mod tests {
                 IpNextHeaderProtocols::Tcp,
             ),
             TraceProbe::Echo => (
-                icmp::create_echo_request_message(
+                icmp::build_echo_request_message(
                     source,
                     target,
                     icmp::ECHO_PROBE_CODE,
@@ -1315,14 +1315,9 @@ mod tests {
         let (IpAddr::V4(s), IpAddr::V4(d)) = (source, target) else {
             unreachable!("the fixture is IPv4")
         };
-        let header = crate::protocols::ip::create_ipv4_header(
-            s,
-            d,
-            segment.len() as u16,
-            protocol,
-            distance,
-        )
-        .expect("a header builds");
+        let header =
+            crate::protocols::ip::build_ipv4_header(s, d, segment.len() as u16, protocol, distance)
+                .expect("a header builds");
 
         header.into_iter().chain(segment).collect()
     }

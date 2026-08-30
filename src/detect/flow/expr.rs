@@ -154,6 +154,7 @@ impl Expr {
 
 /// Why a guard string is not a valid expression. Its [`Display`](fmt::Display)
 /// form is the message the build reports beside the offending flow file.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// The guard is empty or all whitespace.

@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Hostname Resolution
+//! # Reverse name resolution
 //!
 //! Attaches hostnames to discovered hosts without holding up the scan that found
 //! them. Two independent paths live here, chosen by whether the scan is privileged.
@@ -274,7 +274,7 @@ impl HostnameResolver {
 
         for target in &self.query_targets {
             let id = self.get_next_trans_id();
-            match dns::create_ptr_packet(ip, id) {
+            match dns::build_ptr_packet(ip, id) {
                 Ok(packet) => match target.socket.send_to(&packet, target.server).await {
                     Ok(_) => sent.push(id),
                     Err(e) => last_error = Some(anyhow::Error::from(e).context(target.server)),
@@ -980,7 +980,7 @@ mod tests {
     /// It carries no answer, which is deliberate: a server that has no name for
     /// an address, or declines to look, has still answered in DNS.
     fn dns_response(subject: IpAddr) -> Vec<u8> {
-        let mut message = dns::create_ptr_packet(&subject, 0x1234).expect("a query");
+        let mut message = dns::build_ptr_packet(&subject, 0x1234).expect("a query");
         message[2] |= 0b1000_0000; // QR: this is a response
         message
     }

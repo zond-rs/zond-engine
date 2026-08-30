@@ -140,12 +140,12 @@ pub use settings::{Settings, SettingsDocument, SettingsError, SettingsWarning};
 /// only says what.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct Origin {
+pub struct ImportOrigin {
     /// The 1-based line the token was read from, for formats that have lines.
     pub line: Option<u64>,
 }
 
-impl Origin {
+impl ImportOrigin {
     /// An origin naming a 1-based line.
     pub fn line(line: u64) -> Self {
         Self { line: Some(line) }
@@ -157,7 +157,7 @@ impl Origin {
     }
 }
 
-impl fmt::Display for Origin {
+impl fmt::Display for ImportOrigin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.line {
             Some(line) => write!(f, "line {line}"),
@@ -283,9 +283,9 @@ pub enum OnRefusal {
 
 /// A target expression that was refused, and where it was.
 #[derive(Debug)]
-pub struct Refusal {
+pub struct RejectedTarget {
     /// Where the expression came from.
-    pub origin: Origin,
+    pub origin: ImportOrigin,
     /// The expression, as written.
     pub token: String,
     /// Why it was refused.
@@ -330,7 +330,7 @@ impl Imported {
     }
 }
 
-impl fmt::Display for Refusal {
+impl fmt::Display for RejectedTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.origin, self.reason)
     }
@@ -394,7 +394,7 @@ pub struct Imported {
     /// Expressions that were refused, present only under
     /// [`OnRefusal::Collect`] - [`OnRefusal::Abort`] returns the first one as an
     /// error instead, so this is empty whenever the import succeeded under it.
-    pub refusals: Vec<Refusal>,
+    pub refusals: Vec<RejectedTarget>,
     /// How many expressions were read, refused ones included.
     pub tokens: u64,
     /// How many addresses the targets cover, counted after overlapping
@@ -422,7 +422,7 @@ pub enum ImportError {
     #[error("{origin}: longer than the {limit} byte line limit")]
     LineTooLong {
         /// Where the line started.
-        origin: Origin,
+        origin: ImportOrigin,
         /// The limit it passed.
         limit: usize,
     },
@@ -431,7 +431,7 @@ pub enum ImportError {
     #[error("{origin}: not valid UTF-8")]
     InvalidUtf8 {
         /// Where the bytes were.
-        origin: Origin,
+        origin: ImportOrigin,
     },
 
     /// The input held more expressions than [`ImportLimits::max_tokens`].
@@ -445,7 +445,7 @@ pub enum ImportError {
     #[error("{origin}: '{token}' takes the scan past {limit} addresses")]
     TooManyAddresses {
         /// Where the expression that passed the limit was.
-        origin: Origin,
+        origin: ImportOrigin,
         /// The expression that passed it.
         token: String,
         /// The limit it passed.
@@ -460,7 +460,7 @@ pub enum ImportError {
     #[error("{origin}: {source}")]
     Target {
         /// Where the expression was.
-        origin: Origin,
+        origin: ImportOrigin,
         /// The expression, as written.
         token: String,
         /// Why the grammar refused it.
@@ -478,7 +478,7 @@ pub enum ImportError {
         /// The format it was read as.
         format: &'static str,
         /// Where the document stopped making sense.
-        origin: Origin,
+        origin: ImportOrigin,
         /// What was wrong with it.
         message: String,
     },
@@ -497,7 +497,7 @@ pub trait TargetSink {
     /// Returning an error stops the import. A sink that would rather collect
     /// than stop returns `Ok` and keeps its own record - which is what
     /// [`TargetCollector`] does under [`OnRefusal::Collect`].
-    fn accept(&mut self, token: &str, origin: Origin) -> Result<(), ImportError>;
+    fn accept(&mut self, token: &str, origin: ImportOrigin) -> Result<(), ImportError>;
 }
 
 /// One input format.
@@ -524,7 +524,7 @@ pub trait Importer {
 pub struct TargetCollector<'a> {
     builder: TargetMapBuilder,
     options: ImportOptions<'a>,
-    refusals: Vec<Refusal>,
+    refusals: Vec<RejectedTarget>,
     tokens: u64,
     /// Addresses named so far, before overlapping expressions are merged.
     ///
@@ -559,7 +559,7 @@ impl<'a> TargetCollector<'a> {
 }
 
 impl TargetSink for TargetCollector<'_> {
-    fn accept(&mut self, token: &str, origin: Origin) -> Result<(), ImportError> {
+    fn accept(&mut self, token: &str, origin: ImportOrigin) -> Result<(), ImportError> {
         self.tokens = self.tokens.saturating_add(1);
         if self.tokens > self.options.limits.max_tokens {
             return Err(ImportError::TooManyTokens {
@@ -581,7 +581,7 @@ impl TargetSink for TargetCollector<'_> {
                         source: reason,
                     }),
                     OnRefusal::Collect => {
-                        self.refusals.push(Refusal {
+                        self.refusals.push(RejectedTarget {
                             origin,
                             token: token.trim().to_string(),
                             reason,
@@ -931,7 +931,7 @@ mod tests {
 
         match err {
             ImportError::Target { origin, token, .. } => {
-                assert_eq!(origin, Origin::line(2));
+                assert_eq!(origin, ImportOrigin::line(2));
                 assert_eq!(token, "10.0.0.300");
             }
             other => panic!("expected a refused target, got {other:?}"),
@@ -950,7 +950,7 @@ mod tests {
 
         assert_eq!(imported.addresses, 2, "both good targets survived");
         assert_eq!(imported.refusals.len(), 2);
-        assert_eq!(imported.refusals[0].origin, Origin::line(2));
+        assert_eq!(imported.refusals[0].origin, ImportOrigin::line(2));
         assert_eq!(imported.refusals[1].token, "not-an-address");
         assert_eq!(imported.tokens, 4, "refused expressions are still counted");
     }

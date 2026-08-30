@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::detect::manifest::{Class, Manifest};
+use crate::detect::manifest::{Class, DetectionManifest};
 use crate::model::finding::{DetectionClass, DetectionId, Version};
 
 use super::budget::Budget;
@@ -129,6 +129,7 @@ pub enum Capability {
 /// the run stops with the matching [`RunOutcome`](super::RunOutcome). An ordinary
 /// I/O failure is instead handed *back to the module*, which may catch it and try
 /// another approach the way any network client does.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CapError {
     /// The byte budget is spent; this exchange would exceed it. A hard end.
@@ -203,12 +204,13 @@ const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
 const DEFAULT_MAX_CONNECTIONS: u32 = 64;
 
 impl Grant {
-    /// The grant a [`Manifest`] and the content hash of its body resolve into: its
-    /// identity and class stamped on for provenance, its declared budget filled
-    /// out with defaults for whatever it left open, and its capability verbs
-    /// exposed per the class. [`None`] only if the manifest's id is empty, which a
-    /// corpus refuses at build, so a loaded detection always resolves.
-    pub fn from_manifest(manifest: &Manifest, content_hash: &str) -> Option<Self> {
+    /// The grant a [`DetectionManifest`] and the content hash of its body
+    /// resolve into: its identity and class stamped on for provenance, its
+    /// declared budget filled out with defaults for whatever it left open, and
+    /// its capability verbs exposed per the class. [`None`] only if the
+    /// manifest's id is empty, which a corpus refuses at build, so a loaded
+    /// detection always resolves.
+    pub fn from_manifest(manifest: &DetectionManifest, content_hash: &str) -> Option<Self> {
         let version = Version::parse(&manifest.version).unwrap_or(Version::new(0, 0, 0));
         let detection = DetectionId::new(manifest.id.clone(), version, content_hash).ok()?;
         let caps = &manifest.capabilities;
@@ -241,8 +243,8 @@ mod tests {
     use super::*;
     use crate::detect::manifest::{CapabilitySpec, Rule, Speak};
 
-    fn manifest(class: Class, speak: bool, resolve: bool) -> Manifest {
-        Manifest {
+    fn manifest(class: Class, speak: bool, resolve: bool) -> DetectionManifest {
+        DetectionManifest {
             id: "test".into(),
             version: "2.1.0".into(),
             title: "test".into(),

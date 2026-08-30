@@ -245,14 +245,6 @@ pub enum NetworkRole {
 }
 
 impl NetworkRole {
-    /// Every role this build knows, in declaration order.
-    ///
-    /// The enum is `#[non_exhaustive]`, so nothing outside the crate can write
-    /// an exhaustive list of its own and nothing inside should: a role added
-    /// without a name on the wire, or without a place in the schema, is a
-    /// finding that survives a scan and disappears on the way to the report.
-    /// Every round trip through [`wire`](crate::record::wire) is tested over
-    /// this, so a new variant fails those tests until it is spelled everywhere.
     /// How a role is written for a person to read.
     ///
     /// Separate from [`network_role_name`](crate::record::wire::network_role_name),
@@ -281,6 +273,15 @@ impl NetworkRole {
         }
     }
 
+    /// Every role this build knows, in declaration order, which is the order
+    /// [`label`](Self::label) spells them in.
+    ///
+    /// The enum is `#[non_exhaustive]`, so nothing outside the crate can write
+    /// an exhaustive list of its own and nothing inside should: a role added
+    /// without a name on the wire, or without a place in the schema, is a
+    /// finding that survives a scan and disappears on the way to the report.
+    /// Every round trip through [`wire`](crate::record::wire) is tested over
+    /// this, so a new variant fails those tests until it is spelled everywhere.
     pub const ALL: [NetworkRole; 9] = [
         Self::Router,
         Self::DnsServer,
@@ -958,6 +959,12 @@ impl Host {
             .is_some_and(|port| port.add_finding(finding))
     }
 
+    /// Replaces this host's operating-system fingerprint outright, whatever was
+    /// there before, and stamps the host as seen now.
+    ///
+    /// For a caller holding a complete [`OsFingerprint`], such as one read back
+    /// from a report. Folding a second opinion into what is on record is what
+    /// [`merge`](Self::merge) does instead.
     pub fn set_os(&mut self, os: OsFingerprint) {
         self.os = Some(Box::new(os));
         self.last_seen = SystemTime::now();

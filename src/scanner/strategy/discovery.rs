@@ -75,7 +75,13 @@ pub enum ProtocolMatch {
     /// names exactly which of the scan's echo requests was answered, and the
     /// round trip follows. Karn's rule costs NDP its measurement because two
     /// solicitations are identical on the wire; two echo requests are not.
-    AllNodes { identifier: u16, sequence: u16 },
+    AllNodes {
+        /// The identifier echoed back, which is one value for a whole run, so a
+        /// stranger's ping is not read as an answer to ours.
+        identifier: u16,
+        /// The sequence number echoed back, which names the attempt.
+        sequence: u16,
+    },
 }
 
 /// Everything one frame turned out to say.
@@ -133,6 +139,13 @@ impl Reading {
 /// the scan) before a protocol ever sees the frame, so an implementation is a
 /// pure function of the bytes in front of it.
 pub trait DiscoveryProtocol: Send {
+    /// Reads one frame: what it answers, and what its sender claimed about
+    /// itself while answering.
+    ///
+    /// Return [`ProtocolMatch::Unhandled`] for a frame that belongs to some
+    /// other protocol, and the sweep offers it to the next reader. An error is
+    /// for a frame this protocol owns and could not parse, which ends the
+    /// reading: the frame is credited to nobody.
     fn interpret(&self, frame: &Frame<'_>) -> anyhow::Result<Reading>;
 
     /// The evidence this protocol produces, for the liveness record of whichever
@@ -467,7 +480,7 @@ pub(crate) mod tests {
     pub(crate) const ICMPV6_ECHO_LEN: usize = 8;
 
     pub(crate) fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
-        arp::create_request(&PEER_MAC, &sender_ip, Ipv4Addr::new(10, 0, 0, 1))
+        arp::build_request(&PEER_MAC, &sender_ip, Ipv4Addr::new(10, 0, 0, 1))
     }
 
     /// An Ethernet-framed IPv6 packet to `destination`, carrying `body` as
@@ -479,8 +492,8 @@ pub(crate) mod tests {
     ) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
         let eth_header =
-            ethernet::create_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv6);
-        let ip_header = ip_protocol::create_ipv6_header(
+            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv6);
+        let ip_header = ip_protocol::build_ipv6_header(
             source,
             destination,
             body.len() as u16,
@@ -642,8 +655,8 @@ pub(crate) mod tests {
     pub(crate) fn ndp_frame(body: &[u8]) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
         let eth_header =
-            ethernet::create_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv6);
-        let ip_header = ip_protocol::create_ipv6_header(
+            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv6);
+        let ip_header = ip_protocol::build_ipv6_header(
             source,
             Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1),
             body.len() as u16,
@@ -786,7 +799,7 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            ethernet::create_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv4),
+            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv4),
             datagram,
         ]
         .concat()
@@ -811,7 +824,7 @@ pub(crate) mod tests {
             .expect("a test datagram");
 
         [
-            ethernet::create_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv4),
+            ethernet::build_header(PEER_MAC, LOCAL_MAC, pnet_packet::ethernet::EtherTypes::Ipv4),
             datagram,
         ]
         .concat()

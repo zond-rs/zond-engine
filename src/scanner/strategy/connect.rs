@@ -105,6 +105,13 @@ pub struct ConnectScanner {
 }
 
 impl ConnectScanner {
+    /// Checks each of `ips` for a pulse, connecting to a handful of common
+    /// infrastructure ports and taking any TCP-layer answer, an accept or a
+    /// refusal alike, as proof that something is there.
+    ///
+    /// Hosts are filed through `ctx`. Of `evasion`, only the source port and
+    /// the hop limit reach the wire; the kernel builds the rest of what a
+    /// connect sends.
     pub fn new(ips: IpSet, ctx: ScanContext, evasion: &EvasionProfile) -> Self {
         Self {
             ips,
@@ -203,6 +210,13 @@ pub struct ConnectPortScanner {
 }
 
 impl ConnectPortScanner {
+    /// Settles each `(address, port)` it is fed with a full handshake, holding
+    /// at most `concurrency` connections open and recording verdicts through
+    /// `ctx`.
+    ///
+    /// `detection` decides how far the conversation goes once a port answers,
+    /// not whether the connection is made: the connection is what establishes
+    /// the state. `evasion` contributes the source port and the hop limit.
     pub fn new(
         ctx: ScanContext,
         concurrency: usize,
@@ -250,6 +264,15 @@ pub struct ConnectUdpPortScanner {
 }
 
 impl ConnectUdpPortScanner {
+    /// Sends one datagram per `(address, port)` it is fed, `concurrency` of
+    /// them in flight at a time, and files what came back through `ctx`. As on
+    /// the TCP path, `evasion` reaches the wire as a source port and a hop
+    /// limit and no further.
+    ///
+    /// A closed verdict here proves nothing about the host. It comes from an
+    /// ICMP error the kernel matched to the socket, and the error's own source,
+    /// a router as easily as the target, is not surfaced through this API. Only
+    /// a datagram coming back proves the port and the host at once.
     pub fn new(ctx: ScanContext, concurrency: usize, evasion: &EvasionProfile) -> Self {
         Self {
             ctx,

@@ -158,7 +158,7 @@ impl ReportFormat {
             Some(b'<') => Ok(ReportFormat::Nmap),
             _ => Err(ImportError::Malformed {
                 format: "report",
-                origin: crate::import::Origin::unknown(),
+                origin: crate::import::ImportOrigin::unknown(),
                 message: "the input begins as neither a JSON document nor an XML one".to_string(),
             }),
         }

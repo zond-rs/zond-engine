@@ -535,7 +535,7 @@ pub struct PhaseDto<'a> {
     /// `null` on a phase the engine that wrote this document measured itself,
     /// where the report's own `engine` is the attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<OriginDto<'a>>,
+    pub origin: Option<PhaseOriginDto<'a>>,
     /// Which switch ports the machine running this phase was plugged into, as
     /// the equipment on the far end announced itself.
     ///
@@ -575,7 +575,7 @@ pub struct AttachmentDto<'a> {
 
 /// Which document a phase came from, for a merged report.
 #[derive(Debug, Clone, Serialize)]
-pub struct OriginDto<'a> {
+pub struct PhaseOriginDto<'a> {
     /// What the caller called the document it was read from. `null` where it
     /// gave no name.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -608,7 +608,7 @@ impl<'a> PhaseDto<'a> {
                 .map(std::string::ToString::to_string)
                 .collect(),
             probe_stats: phase.probe_stats().iter().map(ProbeStatsDto::new).collect(),
-            origin: phase.origin().map(|origin| OriginDto {
+            origin: phase.origin().map(|origin| PhaseOriginDto {
                 label: origin.label(),
                 engine_version: origin.engine_version(),
             }),

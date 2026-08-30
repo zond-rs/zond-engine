@@ -384,17 +384,17 @@ pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> anyhow::Result<
     let (ethertype, ip_header) = match (src, dst) {
         (IpAddr::V4(s), IpAddr::V4(d)) => (
             EtherTypes::Ipv4,
-            ip::create_ipv4_header(s, d, payload_len, protocol, hop_limit)?,
+            ip::build_ipv4_header(s, d, payload_len, protocol, hop_limit)?,
         ),
         (IpAddr::V6(s), IpAddr::V6(d)) => (
             EtherTypes::Ipv6,
-            ip::create_ipv6_header(s, d, payload_len, protocol, hop_limit),
+            ip::build_ipv6_header(s, d, payload_len, protocol, hop_limit),
         ),
         _ => anyhow::bail!("IP version mismatch between {src} and {dst}"),
     };
 
     let mut frame = Vec::with_capacity(ETH_HDR_LEN + ip_header.len() + segment.len());
-    frame.extend_from_slice(&ethernet::create_header(src_mac, dst_mac, ethertype));
+    frame.extend_from_slice(&ethernet::build_header(src_mac, dst_mac, ethertype));
     frame.extend_from_slice(&ip_header);
     frame.extend_from_slice(segment);
     Ok(frame)
@@ -449,7 +449,7 @@ pub fn build_fragmented_ethernet_frames(
         .into_iter()
         .map(|packet| {
             let mut frame = Vec::with_capacity(ETH_HDR_LEN + packet.len());
-            frame.extend_from_slice(&ethernet::create_header(src_mac, dst_mac, EtherTypes::Ipv4));
+            frame.extend_from_slice(&ethernet::build_header(src_mac, dst_mac, EtherTypes::Ipv4));
             frame.extend_from_slice(&packet);
             frame
         })
@@ -486,7 +486,7 @@ mod tests {
 
     /// Builds a minimal IPv4 packet carrying `payload` as its (opaque) L4.
     fn ipv4_packet(src: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
-        ip::create_ipv4_header(
+        ip::build_ipv4_header(
             src,
             Ipv4Addr::LOCALHOST,
             payload.len() as u16,
@@ -516,7 +516,7 @@ mod tests {
     fn parses_endpoints_protocol_and_segment_from_ipv6() {
         let payload = [1, 2, 3, 4];
         let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
-        let header = ip::create_ipv6_header(
+        let header = ip::build_ipv6_header(
             src,
             Ipv6Addr::LOCALHOST,
             payload.len() as u16,
@@ -831,7 +831,7 @@ mod tests {
     /// (already-encoded extension headers) and then `segment`.
     fn ipv6_chain(first: IpNextHeaderProtocol, chain: &[u8], segment: &[u8]) -> Vec<u8> {
         let payload_len = (chain.len() + segment.len()) as u16;
-        ip::create_ipv6_header(
+        ip::build_ipv6_header(
             Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
             Ipv6Addr::LOCALHOST,
             payload_len,

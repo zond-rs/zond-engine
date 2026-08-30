@@ -257,12 +257,15 @@ impl fmt::Display for ScopedIp {
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ScopedIpError {
+    /// What sits before the `%`, or the whole string where there is none, is
+    /// not an address in either family. Carries the input as it was written.
     #[error("not an IP address: {0}")]
     NotAnAddress(String),
     /// A zone was written on an address that has no use for one. Accepting it
     /// silently would let two spellings of the same address compare unequal.
     #[error("{0} is not a link-local address, so `%{1}` means nothing")]
     ZoneOnUnscopedAddress(IpAddr, String),
+    /// The string ended at its `%`, so no interface was named for the zone.
     #[error("`%` with no interface after it")]
     EmptyZone,
 }

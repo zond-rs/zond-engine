@@ -180,7 +180,7 @@ pub struct MatchRule {
     /// **Only comparable between observations that asked the same question.**
     /// Option negotiation is reciprocal, so this is a joint fact about the peer
     /// and the probe. Every rule shipped here is written against the option set
-    /// `tcp::create_probe` sends.
+    /// `tcp::build_probe` sends.
     ///
     /// [`StackObservation::layout_string`]: super::StackObservation::layout_string
     pub option_layout: Option<Predicate<String>>,

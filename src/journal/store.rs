@@ -37,7 +37,7 @@ use super::cursor::Checkpoint;
 use super::file::{claim_for_invoking_user, create_private as create_private_file};
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
-use super::manifest::{Manifest, Plan, PlanChanged};
+use super::manifest::{JournalManifest, Plan, PlanChanged};
 use super::settle::Settlements;
 use crate::detect::compute::DetectionRunRecord;
 use crate::model::host::Host;
@@ -99,7 +99,7 @@ impl From<LockRefused> for OpenError {
 #[derive(Debug)]
 pub struct Journal {
     directory: PathBuf,
-    manifest: Manifest,
+    manifest: JournalManifest,
     lock: Lock,
     resume_point: Checkpoint,
     restored: Vec<Host>,
@@ -121,7 +121,7 @@ impl Journal {
         summary: impl Into<String>,
     ) -> Result<Self, OpenError> {
         let (id, directory) = claim_directory(root)?;
-        let manifest = Manifest::new(id, plan, privileged, summary);
+        let manifest = JournalManifest::new(id, plan, privileged, summary);
         write_private(&directory.join(MANIFEST), &serde_json::to_vec(&manifest)?)?;
 
         let lock = match Lock::acquire(&directory.join(LOCK)) {
@@ -389,7 +389,7 @@ impl Journal {
     }
 
     /// What this journal is a journal of.
-    pub fn manifest(&self) -> &Manifest {
+    pub fn manifest(&self) -> &JournalManifest {
         &self.manifest
     }
 
@@ -411,7 +411,7 @@ pub struct Entry {
     /// Where it lives.
     pub directory: PathBuf,
     /// What it is a journal of.
-    pub manifest: Manifest,
+    pub manifest: JournalManifest,
     /// How far it got, or `None` where that could not be read.
     ///
     /// A journal that never checkpointed carries a fresh cursor rather than
@@ -734,9 +734,9 @@ pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, Jour
     Ok(runs)
 }
 
-fn read_manifest(directory: &Path) -> Result<Manifest, JournalError> {
+fn read_manifest(directory: &Path) -> Result<JournalManifest, JournalError> {
     let text = fs::read_to_string(directory.join(MANIFEST))?;
-    let manifest: Manifest = serde_json::from_str(&text)?;
+    let manifest: JournalManifest = serde_json::from_str(&text)?;
 
     if manifest.journal_version > super::JOURNAL_VERSION {
         return Err(JournalError::VersionTooNew {
@@ -1611,7 +1611,7 @@ mod tests {
 
         // The manifest as a build before this one would have left it.
         let path = directory.join(MANIFEST);
-        let mut manifest: Manifest =
+        let mut manifest: JournalManifest =
             serde_json::from_str(&fs::read_to_string(&path).expect("reads")).expect("parses");
         manifest.engine_version = "0.1.0".to_string();
         fs::write(&path, serde_json::to_vec(&manifest).expect("encodes")).expect("writes");
@@ -1739,7 +1739,7 @@ mod tests {
     fn aged(id: &str, created_at: SystemTime, settled: u64, total: u128) -> Entry {
         Entry {
             directory: PathBuf::from(id),
-            manifest: Manifest {
+            manifest: JournalManifest {
                 links: Vec::new(),
                 journal_version: crate::journal::JOURNAL_VERSION,
                 id: id.to_string(),

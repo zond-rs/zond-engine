@@ -94,6 +94,8 @@ pub struct SilentHostPolicy {
 }
 
 impl SilentHostPolicy {
+    /// Cuts a host to `reduced_attempts` once `threshold` of its probes have
+    /// spent their whole budget without it ever answering anything.
     pub const fn new(threshold: u16, reduced_attempts: u8) -> Self {
         Self {
             threshold,
@@ -158,6 +160,15 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// A schedule of at most `max_attempts` sends per probe: the first timed at
+    /// `initial_rto`, each later one backed off by `backoff`, every deadline
+    /// held within `min_rto` and `max_rto` and spread by `jitter`. Pass a
+    /// `silent_host` policy to cut the budget of an address that answers
+    /// nothing at all.
+    ///
+    /// A target with no measurement of its own inherits the scan's. Where the
+    /// responder rather than the path decides the timing, chain
+    /// [`without_cross_host_estimate`](Self::without_cross_host_estimate).
     pub const fn new(
         max_attempts: u8,
         initial_rto: Duration,
@@ -346,6 +357,8 @@ impl RttEstimator {
             .map(|smoothed| smoothed.saturating_add(self.variation * 4))
     }
 
+    /// Whether nothing has been recorded yet, which is when
+    /// [`timeout`](Self::timeout) has no answer to give.
     pub fn is_empty(&self) -> bool {
         self.smoothed.is_none()
     }
@@ -518,6 +531,7 @@ pub enum Due<K, P = ()> {
     /// counted the attempt, so a caller that cannot send - no route, a refused
     /// socket - may simply do nothing and let it exhaust on its own.
     Retry {
+        /// Which probe to send again.
         key: K,
         /// Which attempt this is, counting the first send as one.
         attempt: u8,
@@ -525,6 +539,7 @@ pub enum Due<K, P = ()> {
     /// The budget is spent and the probe is no longer outstanding. This is the
     /// moment a verdict of "filtered" is earned rather than assumed.
     Exhausted {
+        /// The probe being retired.
         key: K,
         /// Whatever the caller armed this probe with.
         payload: P,
@@ -808,6 +823,8 @@ where
         self.records.len()
     }
 
+    /// Whether no probe is outstanding. Once a scan has admitted its last
+    /// target, this is what tells its loop there is nothing left to wait for.
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }

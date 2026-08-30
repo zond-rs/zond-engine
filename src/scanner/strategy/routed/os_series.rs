@@ -31,7 +31,7 @@
 //! ## The probe is the one the scanner already sends
 //!
 //! There is no new packet shape here: every probe is
-//! [`tcp::create_probe`](crate::protocols::tcp::create_probe) for
+//! [`tcp::build_probe`](crate::protocols::tcp::build_probe) for
 //! [`TcpScanTechnique::Syn`], the same segment an ordinary SYN scan sends. What
 //! differs is only that each target is asked more than once.
 //!
@@ -420,7 +420,7 @@ impl OsSeriesScanner {
         // changes, these readings change with it rather than quietly describing
         // a packet the scanner no longer sends — and the rules, which are
         // authored against that same segment, stay applicable.
-        let segment = match tcp::create_probe(
+        let segment = match tcp::build_probe(
             TcpScanTechnique::Syn,
             &source,
             &address,

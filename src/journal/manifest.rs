@@ -383,7 +383,7 @@ fn hash_addresses(ips: &IpSet, hasher: &mut impl Hasher) {
 /// makes it safe to read without a lock: nothing that reads a manifest can race
 /// a writer changing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Manifest {
+pub struct JournalManifest {
     /// The journal format this was written under, so a reader that predates it
     /// refuses rather than guessing. Mirrors the header on every journal file;
     /// carried here too because a manifest is the first thing read and should
@@ -448,7 +448,7 @@ pub struct Manifest {
     pub summary: String,
 }
 
-impl Manifest {
+impl JournalManifest {
     /// Describes a scan about to start.
     pub fn new(
         id: impl Into<String>,
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn a_manifest_covers_its_own_plan_and_refuses_another() {
         let original = plan(&[("192.0.2.1-192.0.2.10", "80,443")]);
-        let manifest = Manifest::new(
+        let manifest = JournalManifest::new(
             "01J8Z5Q7VN",
             &ports(&original),
             true,
@@ -789,7 +789,7 @@ mod tests {
             "the same ten addresses, asked two different questions"
         );
 
-        let manifest = Manifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
         assert_eq!(manifest.kind(), ScanKind::Discovery);
         assert_eq!(manifest.total_targets, 10, "a sweep counts addresses");
         assert!(
@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn a_sweeps_addresses_survive_the_round_trip() {
         let ips = addresses("192.0.2.1-192.0.2.10,2001:db8::1");
-        let manifest = Manifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
 
         assert_eq!(
             manifest.recorded().addresses().map(IpSet::len),
@@ -854,7 +854,7 @@ mod tests {
         }
         ips.canonicalize();
 
-        let manifest = Manifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &sweeping(&ips, false), true, "");
         let recovered = manifest
             .recorded()
             .addresses()
@@ -877,7 +877,7 @@ mod tests {
     #[test]
     fn a_refusal_over_an_equal_count_says_so_rather_than_reporting_a_change() {
         let map = plan(&[("192.0.2.1-192.0.2.10", "80,443")]);
-        let manifest = Manifest::new("01J8Z5Q7VN", &ports(&map), true, "");
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &ports(&map), true, "");
 
         let refused = manifest
             .covers(
@@ -988,7 +988,7 @@ mod tests {
     #[test]
     fn a_watch_reads_back_as_the_links_it_was_written_with() {
         let plan = Plan::listen(vec![Zone::new(3, "en0"), Zone::new(4, "en1")]);
-        let manifest = Manifest::new("id", &plan, true, "listening");
+        let manifest = JournalManifest::new("id", &plan, true, "listening");
 
         let recorded = manifest.recorded();
         assert_eq!(recorded.kind(), ScanKind::Listen);

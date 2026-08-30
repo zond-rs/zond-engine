@@ -23,7 +23,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 use zond_engine::model::host::Host;
-use zond_engine::scanner::resolver::HostnameResolver;
+use zond_engine::scanner::rdns::HostnameResolver;
 use zond_engine::scanner::session::{HostStore, ScanSession};
 use zond_engine::transport::capture::CapturedSegment;
 use zond_engine::transport::probe::{Emission, ProbeSender, ProbeTransport, SendError};

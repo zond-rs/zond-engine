@@ -829,7 +829,7 @@ fn lldp_advertisement(switch: Switch) -> Vec<u8> {
     let mut vlan = vec![0x00, 0x80, 0xC2, 0x01];
     vlan.extend_from_slice(&switch.native_vlan.to_be_bytes());
 
-    let mut frame = ethernet::create_header(
+    let mut frame = ethernet::build_header(
         switch.mac,
         NEAREST_BRIDGE,
         zond_engine::protocols::lldp::ETHERTYPE,
@@ -851,7 +851,7 @@ fn arp_reply(
     scanner_mac: MacAddr,
     scanner_ip: Ipv4Addr,
 ) -> Option<Vec<u8>> {
-    let header = ethernet::create_header(host_mac, scanner_mac, EtherTypes::Arp);
+    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Arp);
 
     let mut payload = [0u8; ARP_LEN];
     {
@@ -900,8 +900,8 @@ fn neighbor_advertisement(
         advert.set_target_addr(target);
     }
 
-    let header = ethernet::create_header(host_mac, scanner_mac, EtherTypes::Ipv6);
-    let ipv6 = ip::create_ipv6_header(
+    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Ipv6);
+    let ipv6 = ip::build_ipv6_header(
         from,
         scanner_ip,
         body.len() as u16,
@@ -966,8 +966,8 @@ fn mdns_response(
         datagram.set_checksum(sum);
     }
 
-    let header = ethernet::create_header(announcer, scanner_mac, EtherTypes::Ipv6);
-    let ipv6 = ip::create_ipv6_header(
+    let header = ethernet::build_header(announcer, scanner_mac, EtherTypes::Ipv6);
+    let ipv6 = ip::build_ipv6_header(
         source,
         scanner_ip,
         u16::try_from(udp.len()).ok()?,
@@ -1024,8 +1024,8 @@ fn icmpv6_echo_reply(
         echo.set_sequence_number(sequence);
     }
 
-    let header = ethernet::create_header(host_mac, scanner_mac, EtherTypes::Ipv6);
-    let ipv6 = ip::create_ipv6_header(
+    let header = ethernet::build_header(host_mac, scanner_mac, EtherTypes::Ipv6);
+    let ipv6 = ip::build_ipv6_header(
         host_ip,
         scanner_ip,
         body.len() as u16,
@@ -1076,7 +1076,7 @@ fn dhcp_ack(server: Server, scanner_mac: MacAddr, scanner_ip: Ipv4Addr) -> Optio
         .build()
         .ok()?;
 
-    let mut frame = ethernet::create_header(server.mac, scanner_mac, EtherTypes::Ipv4);
+    let mut frame = ethernet::build_header(server.mac, scanner_mac, EtherTypes::Ipv4);
     frame.extend_from_slice(&datagram);
     pad_to_min_frame(&mut frame);
     Some(frame)
@@ -1111,7 +1111,7 @@ fn router_advertisement(router: Router, scanner_mac: MacAddr) -> Option<Vec<u8>>
         .build()
         .ok()?;
 
-    let mut frame = ethernet::create_header(router.mac, scanner_mac, EtherTypes::Ipv6);
+    let mut frame = ethernet::build_header(router.mac, scanner_mac, EtherTypes::Ipv6);
     frame.extend_from_slice(&packet);
     pad_to_min_frame(&mut frame);
     Some(frame)

@@ -71,7 +71,7 @@
 
 use std::io::BufRead;
 
-use crate::import::{ImportError, Origin};
+use crate::import::{ImportError, ImportOrigin};
 
 /// How deeply elements may nest.
 ///
@@ -249,8 +249,8 @@ impl<'a> Parser<'a> {
         String::from_utf8_lossy(&text).trim().to_string()
     }
 
-    pub(crate) fn origin(&self) -> Origin {
-        Origin::line(self.line)
+    pub(crate) fn origin(&self) -> ImportOrigin {
+        ImportOrigin::line(self.line)
     }
 
     pub(crate) fn malformed(&self, message: String) -> ImportError {

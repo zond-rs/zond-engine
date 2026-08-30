@@ -98,9 +98,10 @@ pub enum Outcome {
     /// host answers next time. A resume continues one job, and that job's
     /// finding about the host was that it was down; asking again is a new scan,
     /// which is the same argument
-    /// [`Manifest`](crate::journal::manifest::Manifest) makes about a plan that
-    /// has moved. [`ZondConfig::assume_up`](crate::config::ZondConfig::assume_up)
-    /// is how a caller declines the whole bargain.
+    /// [`JournalManifest`](crate::journal::manifest::JournalManifest) makes about
+    /// a plan that has moved.
+    /// [`ZondConfig::assume_up`](crate::config::ZondConfig::assume_up) is how a
+    /// caller declines the whole bargain.
     Skipped {
         /// Its position in the plan.
         position: u64,

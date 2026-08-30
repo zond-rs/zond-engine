@@ -24,7 +24,7 @@
 //!
 //! ## The probe is the one the scanner already sends
 //!
-//! There is no new packet shape here. Every probe is `tcp::create_probe` for
+//! There is no new packet shape here. Every probe is `tcp::build_probe` for
 //! `TcpScanTechnique::Syn` — the engine's own function, not a reproduction of it
 //! — and the only thing that differs from an ordinary SYN scan is that each
 //! target is asked more than once.
@@ -564,7 +564,7 @@ async fn sweep(
         // The engine's own probe, not a reproduction of it. If the shipped SYN
         // changes, this measurement changes with it rather than quietly
         // describing a packet the scanner no longer sends.
-        let segment = match tcp::create_probe(
+        let segment = match tcp::build_probe(
             TcpScanTechnique::Syn,
             &source,
             &address,

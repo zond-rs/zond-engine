@@ -12,7 +12,7 @@
 //! — into the addresses a scan can probe. This is the half of resolution that
 //! runs *before* a scan, deciding what it will cover; the reverse half, which
 //! attaches names to hosts a scan has already found, lives in
-//! [`crate::scanner::resolver`] and answers the opposite question.
+//! [`crate::scanner::rdns`] and answers the opposite question.
 //!
 //! ## Three kinds of name, one entry point
 //!

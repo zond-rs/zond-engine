@@ -35,7 +35,7 @@
 //!
 //! | Shape | Means | Example |
 //! |---|---|---|
-//! | `create_*` | builds bytes to send | [`arp::create_request`] |
+//! | `build_*` | builds bytes to send | [`arp::build_request`] |
 //! | `parse` | reads bytes into a view of them | [`tcp::parse`] |
 //! | a plain noun | reads one thing out of a frame | [`ip::ipv6_source`] |
 //! | `classify_*` | says which of a few answers arrived | [`tcp::classify_probe_response`] |

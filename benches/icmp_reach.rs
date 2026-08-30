@@ -111,7 +111,7 @@ async fn main() {
             println!("{address}: no source address reaches it");
             continue;
         };
-        let message = match icmp::create_echo_request_message(
+        let message = match icmp::build_echo_request_message(
             source,
             address,
             icmp::ECHO_PROBE_CODE,

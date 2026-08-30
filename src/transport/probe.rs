@@ -481,6 +481,11 @@ impl Default for Emission {
 /// caller decides about that header; see [`Emission`]. Implementations must be
 /// safe to share across threads.
 pub trait ProbeSender: Send + Sync {
+    /// Emits one probe, or names why it did not leave.
+    ///
+    /// [`SendError::Unroutable`] says something about `dst` rather than about
+    /// this sender: that address was asked about and not covered, while the
+    /// sender itself is still working.
     fn send(
         &self,
         segment: &[u8],
@@ -773,6 +778,8 @@ pub type SentProbe = (Vec<u8>, IpAddr, IpAddr);
 #[cfg(test)]
 #[derive(Clone, Default)]
 pub struct MockSender {
+    /// Every probe handed to [`send`](ProbeSender::send), oldest first. Shared,
+    /// so a clone of the sender given to a scanner reads the same list.
     pub sent: std::sync::Arc<std::sync::Mutex<Vec<SentProbe>>>,
 }
 
@@ -993,7 +1000,7 @@ mod filter_conformance {
 
     /// An Ethernet-framed UDP datagram between the given ports.
     fn udp_frame(src: IpAddr, dst: IpAddr, src_port: u16, dst_port: u16) -> Vec<u8> {
-        let segment = udp::create_packet(&src, &dst, src_port, dst_port, vec![0u8; 4])
+        let segment = udp::build_packet(&src, &dst, src_port, dst_port, vec![0u8; 4])
             .expect("building a UDP datagram");
         frame(src, dst, IpNextHeaderProtocols::Udp, &segment)
     }

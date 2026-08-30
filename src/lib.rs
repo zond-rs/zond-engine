@@ -182,7 +182,7 @@
 //! - [`resolve`] — turning the names a person writes into the addresses a scan
 //!   probes, over unicast DNS and multicast DNS. It runs before a scan, deciding
 //!   what it covers; the reverse direction, naming hosts a scan has found, is the
-//!   scanner's own [`resolver`](scanner::resolver).
+//!   scanner's own [`rdns`](scanner::rdns).
 //!   [`resolve::for_discovery`] is the one call a front end makes: it is where
 //!   the grammar, this host's interface table, hostname lookup and the
 //!   segment-sweep question are answered together, rather than being four things
@@ -218,6 +218,10 @@
 //! # Platforms
 //!
 //! Linux and macOS. Windows is not currently supported.
+
+// A public item without a doc comment is a gap in this crate's contract, so the
+// standard is enforced rather than kept by hand.
+#![warn(missing_docs)]
 
 pub mod config;
 pub mod cve;

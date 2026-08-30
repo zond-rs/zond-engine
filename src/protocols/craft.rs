@@ -8,7 +8,7 @@
 
 //! # Building a packet field by field
 //!
-//! The other half of this module. [`tcp::create_probe`](super::tcp::create_probe)
+//! The other half of this module. [`tcp::build_probe`](super::tcp::build_probe)
 //! and its neighbours build the handful of packets a scan needs, correctly and
 //! with nothing to decide. This is for everything else: a packet you describe
 //! yourself, layer by layer, including one that is deliberately wrong.

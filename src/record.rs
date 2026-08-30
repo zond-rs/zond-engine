@@ -78,7 +78,7 @@ use crate::model::target::{TargetMap, TargetSet};
 use crate::report::ScannerKind;
 use crate::report::WindowSummary;
 use crate::report::{
-    Attachment, AttachmentSource, EvasionRecord, Origin, PhaseParts, PortScope, ProbeStats,
+    Attachment, AttachmentSource, EvasionRecord, PhaseOrigin, PhaseParts, PortScope, ProbeStats,
     ProbeStatsParts, ScanKind, ScanPhase, ScanSettings, ScannerFailure, ScopeParts, StopReason,
     TargetScope,
 };
@@ -1036,7 +1036,7 @@ pub struct PhaseRecord {
     pub probe_stats: Vec<ProbeStatsRecord>,
     /// Which document this sitting was folded in from, for a merged report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<OriginRecord>,
+    pub origin: Option<PhaseOriginRecord>,
     /// Which switch ports the machine running this sitting was plugged into.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AttachmentRecord>,
@@ -1126,7 +1126,7 @@ impl From<&AttachmentRecord> for Attachment {
 
 /// Which document a sitting came from, as a file holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OriginRecord {
+pub struct PhaseOriginRecord {
     /// What the caller called the document it was read from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -1134,8 +1134,8 @@ pub struct OriginRecord {
     pub engine_version: String,
 }
 
-impl From<&Origin> for OriginRecord {
-    fn from(origin: &Origin) -> Self {
+impl From<&PhaseOrigin> for PhaseOriginRecord {
+    fn from(origin: &PhaseOrigin) -> Self {
         Self {
             label: origin.label().map(str::to_owned),
             engine_version: origin.engine_version().to_owned(),
@@ -1143,9 +1143,9 @@ impl From<&Origin> for OriginRecord {
     }
 }
 
-impl From<&OriginRecord> for Origin {
-    fn from(record: &OriginRecord) -> Self {
-        let origin = Origin::new(record.engine_version.as_str());
+impl From<&PhaseOriginRecord> for PhaseOrigin {
+    fn from(record: &PhaseOriginRecord) -> Self {
+        let origin = PhaseOrigin::new(record.engine_version.as_str());
         match &record.label {
             Some(label) => origin.with_label(label.as_str()),
             None => origin,
@@ -1169,7 +1169,7 @@ impl From<&ScanPhase> for PhaseRecord {
                 .iter()
                 .map(ProbeStatsRecord::from)
                 .collect(),
-            origin: phase.origin().map(OriginRecord::from),
+            origin: phase.origin().map(PhaseOriginRecord::from),
             attachments: phase
                 .attachments()
                 .iter()
@@ -1196,7 +1196,7 @@ impl From<&PhaseRecord> for ScanPhase {
             failures: record.failures.iter().map(ScannerFailure::from).collect(),
             unroutable: record.unroutable.clone(),
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
-            origin: record.origin.as_ref().map(Origin::from),
+            origin: record.origin.as_ref().map(PhaseOrigin::from),
             attachments: record.attachments.iter().map(Attachment::from).collect(),
         })
     }

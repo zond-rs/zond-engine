@@ -182,6 +182,8 @@ impl IdClass {
 pub enum IsnClass {
     /// A reset carries no generator to read.
     NotRead,
+    /// Fewer than three handshake answers, which cannot show whether the
+    /// differences between them repeat.
     TooFew,
     /// Zero throughout — a stack that generates no initial sequence numbers,
     /// which is a quirk worth a rule of its own.
@@ -236,6 +238,9 @@ pub enum ClockClass {
     /// It sent the option and left the value at zero, which is a stack policy
     /// rather than a clock.
     Zero,
+    /// Fewer than two timestamps to compare, or samples more than half a
+    /// second apart, past which a tick and a coincidence read the same. Both
+    /// come to the same answer: no rate can be taken from this series.
     TooFew,
     /// The values move, but not as one clock read repeatedly does.
     ///

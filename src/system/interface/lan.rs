@@ -11,6 +11,7 @@ use crate::system::interface::{Link, LinkAddress};
 use std::net::Ipv6Addr;
 
 /// Errors arising from network validation constraints during LAN interface selection.
+#[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ViabilityError {
     /// The interface is operationally down.
@@ -43,6 +44,8 @@ pub enum ViabilityError {
 /// network found" is what the shape of the old return value forced.
 #[derive(Debug, Clone)]
 pub struct LanLink {
+    /// The interface the sweep runs on, carrying the name and index a zone is
+    /// built from and the hardware address probes leave from.
     pub link: Link,
     /// The private IPv4 network to sweep, when the link has one.
     pub ipv4: Option<LinkAddress>,
@@ -66,17 +69,17 @@ impl LanLink {
 /// Identifies the best local area network (LAN) connected to the current host context.
 ///
 /// Under the hood, this iterates over `pnet::datalink::interfaces()` directly.
-pub fn get_lan_link() -> anyhow::Result<Option<LanLink>> {
-    get_lan_link_with(crate::system::interface::interfaces())
+pub fn lan_link() -> anyhow::Result<Option<LanLink>> {
+    lan_link_with(crate::system::interface::interfaces())
 }
 
-/// The IPv4 half of [`get_lan_link`], for callers that only sweep IPv4.
+/// The IPv4 half of [`lan_link`], for callers that only sweep IPv4.
 ///
 /// Kept because it is the engine's published surface and a front end builds
 /// against it; new work inside the engine wants the link, since half of what a
 /// LAN scan now does is IPv6.
-pub fn get_lan_network() -> anyhow::Result<Option<LinkAddress>> {
-    Ok(get_lan_link()?.and_then(|link| link.ipv4))
+pub fn lan_network() -> anyhow::Result<Option<LinkAddress>> {
+    Ok(lan_link()?.and_then(|link| link.ipv4))
 }
 
 /// Core LAN selection logic, decoupled from OS interface dependencies for testing.
@@ -86,7 +89,7 @@ pub fn get_lan_network() -> anyhow::Result<Option<LinkAddress>> {
 /// which interfaces are hardware, and a hand-built interface is not one — so
 /// without the seam this function can only be exercised against whatever the
 /// machine running the tests happens to have plugged in.
-pub(crate) fn get_lan_link_with(interfaces: Vec<Link>) -> anyhow::Result<Option<LanLink>> {
+pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> anyhow::Result<Option<LanLink>> {
     let interfaces_str: &str = match interfaces.len() {
         1 => "interface",
         _ => "interfaces",
@@ -255,7 +258,7 @@ mod tests {
 
         assert_eq!(is_viable_lan_interface(&intf), Ok(()));
 
-        let link = get_lan_link_with(vec![intf])
+        let link = lan_link_with(vec![intf])
             .expect("selection succeeds")
             .expect("a viable link is selected");
 
@@ -284,7 +287,7 @@ mod tests {
         ));
         let intf = mock_interface(true, true, true, false, false, true).with_addresses(held);
 
-        let link = get_lan_link_with(vec![intf])
+        let link = lan_link_with(vec![intf])
             .expect("selection succeeds")
             .expect("a viable link is selected");
 
@@ -301,7 +304,7 @@ mod tests {
     fn the_ipv4_view_of_a_link_is_unchanged() {
         let intf = mock_interface(true, true, true, false, false, true);
 
-        let link = get_lan_link_with(vec![intf])
+        let link = lan_link_with(vec![intf])
             .expect("selection succeeds")
             .expect("a viable link is selected");
 

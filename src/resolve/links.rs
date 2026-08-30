@@ -148,7 +148,7 @@ pub fn for_listening_on<S: AsRef<str>>(
             // Asked of the machine rather than matched by name: `lan` means the
             // link carrying the default route, which is a routing question and
             // not a naming one.
-            interface::get_lan_link()
+            interface::lan_link()
                 .ok()
                 .flatten()
                 .map(|lan| lan.link.zone())

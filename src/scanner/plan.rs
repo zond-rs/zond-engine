@@ -86,14 +86,14 @@ use crate::{info, warn};
 /// caller has to be able to tell "nothing is there" from "nobody looked", and
 /// only one of those is visible in a host count.
 #[derive(Debug, Clone)]
-pub struct Refusal {
+pub struct RefusedStep {
     /// The strategy that would have taken this work.
     pub scanner: ScannerKind,
     /// What cannot be done, and what the caller could write instead.
     pub reason: String,
 }
 
-impl Refusal {
+impl RefusedStep {
     /// The TCP half left undone because `technique` cannot be expressed without
     /// raw sockets.
     ///
@@ -289,7 +289,7 @@ impl DiscoveryStep {
 #[derive(Debug, Clone)]
 pub struct DiscoveryPlan {
     steps: Vec<DiscoveryStep>,
-    refusals: Vec<Refusal>,
+    refusals: Vec<RefusedStep>,
 }
 
 impl DiscoveryPlan {
@@ -319,7 +319,7 @@ impl DiscoveryPlan {
         // matches would scan an arbitrary segment and report the address absent
         // when it is present on another.
         for range in &ambiguous {
-            refusals.push(Refusal {
+            refusals.push(RefusedStep {
                 scanner: ScannerKind::Local,
                 reason: format!(
                     "{} is link-local, so it names a different machine on every \
@@ -335,7 +335,7 @@ impl DiscoveryPlan {
         // that searches a scope instead of a list, saying so is the whole of
         // what the engine can honestly do with one.
         for range in &unenumerable {
-            refusals.push(Refusal::routed_range_not_enumerable(range));
+            refusals.push(RefusedStep::routed_range_not_enumerable(range));
         }
 
         // A sweep may probe addresses nobody named, so it may also take leads
@@ -380,7 +380,7 @@ impl DiscoveryPlan {
     }
 
     /// Ground this plan will not cover, and why.
-    pub fn refusals(&self) -> &[Refusal] {
+    pub fn refusals(&self) -> &[RefusedStep] {
         &self.refusals
     }
 
@@ -510,7 +510,7 @@ impl PortScanStep {
 #[derive(Debug, Clone)]
 pub struct PortScanPlan {
     steps: Vec<PortScanStep>,
-    refusals: Vec<Refusal>,
+    refusals: Vec<RefusedStep>,
     technique: TcpScanTechnique,
 }
 
@@ -556,7 +556,7 @@ impl PortScanPlan {
                     zombie_port: idle.zombie_port,
                 });
             } else {
-                refusals.push(Refusal::idle_needs_privilege());
+                refusals.push(RefusedStep::idle_needs_privilege());
             }
             return Self {
                 steps,
@@ -580,7 +580,7 @@ impl PortScanPlan {
             steps.push(PortScanStep::ConnectTcp);
             steps.push(PortScanStep::ConnectUdp);
         } else {
-            refusals.push(Refusal::technique_needs_raw_sockets(cfg.tcp_technique));
+            refusals.push(RefusedStep::technique_needs_raw_sockets(cfg.tcp_technique));
             steps.push(PortScanStep::ConnectUdp);
         }
 
@@ -611,7 +611,7 @@ impl PortScanPlan {
     }
 
     /// Ports this plan will not probe, and why.
-    pub fn refusals(&self) -> &[Refusal] {
+    pub fn refusals(&self) -> &[RefusedStep] {
         &self.refusals
     }
 
@@ -645,7 +645,7 @@ impl PortScanPlan {
 /// read the platform's interface list, but a `NetworkInterface` compares on
 /// every field, and being wrong here means scanning one link twice.
 fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
-    let Ok(Some(link)) = interface::get_lan_link() else {
+    let Ok(Some(link)) = interface::lan_link() else {
         return;
     };
 

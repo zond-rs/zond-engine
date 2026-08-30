@@ -67,7 +67,7 @@ const FRAGMENT_UNIT: usize = 8;
 /// what the 16-bit total-length field can describe, which is 65 515 bytes of
 /// payload. Refused rather than truncated: a wrapped value describes a packet
 /// shorter than its own header, and every receiver drops it.
-pub fn create_ipv4_header(
+pub fn build_ipv4_header(
     src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
     payload_length: u16,
@@ -120,7 +120,7 @@ pub fn create_ipv4_header(
 /// progress, and refusing is the only alternative to an unbounded run of them.
 ///
 /// [`PacketError::TooLong`] when the datagram is larger than the 16-bit
-/// total-length field can describe, the same limit [`create_ipv4_header`]
+/// total-length field can describe, the same limit [`build_ipv4_header`]
 /// refuses at. Past it the last fragment's start would also overflow the
 /// thirteen-bit fragment-offset field, so the two limits are really one.
 pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<Vec<Vec<u8>>> {
@@ -240,7 +240,7 @@ pub const HOP_LIMIT_ROUTED: u8 = 64;
 /// Infallible, unlike its IPv4 counterpart: the payload length is its own
 /// field here rather than a total that has to include the header, so every
 /// `u16` a caller can pass is one the field can hold.
-pub fn create_ipv6_header(
+pub fn build_ipv6_header(
     src_addr: Ipv6Addr,
     dst_addr: Ipv6Addr,
     payload_length: u16,
@@ -401,7 +401,7 @@ mod tests {
     fn a_payload_too_large_for_the_length_field_is_refused_rather_than_wrapped() {
         let largest = u16::MAX as usize - IP_V4_HDR_LEN;
 
-        let header = create_ipv4_header(
+        let header = build_ipv4_header(
             V4,
             V4,
             largest as u16,
@@ -415,7 +415,7 @@ mod tests {
         );
 
         for oversize in [largest + 1, u16::MAX as usize] {
-            let refused = create_ipv4_header(
+            let refused = build_ipv4_header(
                 V4,
                 V4,
                 oversize as u16,

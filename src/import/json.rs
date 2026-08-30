@@ -69,7 +69,7 @@ use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor
 use serde::{Deserialize, Deserializer};
 
 use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
-use crate::import::{ImportError, ImportLimits, Importer, Origin, TargetSink};
+use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
 
 /// The format's name in errors.
 const FORMAT: &str = "JSON";
@@ -165,7 +165,7 @@ impl<'a> Emitter<'a> {
     }
 
     /// Checks a document's schema version against the one this build writes.
-    fn accept_version(&mut self, version: u32, format: &'static str, origin: Origin) -> bool {
+    fn accept_version(&mut self, version: u32, format: &'static str, origin: ImportOrigin) -> bool {
         if version > SCHEMA_VERSION {
             self.failure = Some(ImportError::Malformed {
                 format,
@@ -182,7 +182,7 @@ impl<'a> Emitter<'a> {
     }
 
     /// Turns one host into targets.
-    fn emit(&mut self, host: &HostRecord, format: &'static str, origin: Origin) -> bool {
+    fn emit(&mut self, host: &HostRecord, format: &'static str, origin: ImportOrigin) -> bool {
         self.ports.clear();
         for port in &host.ports {
             let prefix = match port.protocol.to_ascii_lowercase().as_str() {
@@ -300,14 +300,14 @@ impl Importer for JsonImporter {
 
         outcome.map_err(|error| ImportError::Malformed {
             format: FORMAT,
-            origin: Origin::unknown(),
+            origin: ImportOrigin::unknown(),
             message: error.to_string(),
         })?;
 
         if !emitter.versioned {
             return Err(ImportError::Malformed {
                 format: FORMAT,
-                origin: Origin::unknown(),
+                origin: ImportOrigin::unknown(),
                 message: format!("no 'schema_version': this is not a document {ENGINE_NAME} wrote"),
             });
         }
@@ -343,7 +343,7 @@ impl<'de, 'a, 'e> Visitor<'de> for Document<'a, 'e> {
                     let version: u32 = map.next_value()?;
                     if !self
                         .emitter
-                        .accept_version(version, FORMAT, Origin::unknown())
+                        .accept_version(version, FORMAT, ImportOrigin::unknown())
                     {
                         return Err(de::Error::custom("unsupported schema version"));
                     }
@@ -389,7 +389,7 @@ impl<'de, 'a, 'e> Visitor<'de> for Hosts<'a, 'e> {
         // One host is parsed, turned into targets and dropped before the next
         // is read, so the array never exists in memory.
         while let Some(host) = seq.next_element::<HostRecord>()? {
-            if !self.emitter.emit(&host, FORMAT, Origin::unknown()) {
+            if !self.emitter.emit(&host, FORMAT, ImportOrigin::unknown()) {
                 return Err(de::Error::custom("import stopped"));
             }
         }
@@ -432,7 +432,7 @@ impl Importer for JsonLinesImporter {
         loop {
             buffer.clear();
             line_number += 1;
-            let origin = Origin::line(line_number);
+            let origin = ImportOrigin::line(line_number);
 
             if !crate::import::list::read_line(
                 input,
@@ -472,7 +472,7 @@ impl Importer for JsonLinesImporter {
         if !emitter.versioned {
             return Err(ImportError::Malformed {
                 format: LINES_FORMAT,
-                origin: Origin::unknown(),
+                origin: ImportOrigin::unknown(),
                 message: format!("no 'report' record: this is not output {ENGINE_NAME} wrote"),
             });
         }
@@ -793,7 +793,7 @@ mod tests {
         );
 
         match read(ImportFormat::JsonLines, file).expect_err("line 2 is not a record") {
-            ImportError::Malformed { origin, .. } => assert_eq!(origin, Origin::line(2)),
+            ImportError::Malformed { origin, .. } => assert_eq!(origin, ImportOrigin::line(2)),
             other => panic!("expected a malformed record, got {other:?}"),
         }
     }

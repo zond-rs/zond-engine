@@ -37,7 +37,7 @@
 //! intends to run, worked out from the targets and this host's configuration,
 //! with nothing opened and nothing sent. Print it instead of running it and you
 //! have a dry run; drop the steps for three of your five links and run the rest.
-//! Its [refusals](plan::Refusal) say what a scan will not cover before it
+//! Its [refusals](plan::RefusedStep) say what a scan will not cover before it
 //! starts.
 //!
 //! **Build one strategy and drive it yourself.** Everything in [`strategy`] is
@@ -104,7 +104,7 @@
 //! strategies be driven through one loop. Discovered hosts land in a shared,
 //! thread-safe store as they are found, and each update fires an event, so a
 //! caller can watch a scan in progress instead of waiting for it to finish. When
-//! DNS resolution is enabled, the [`resolver`] module looks up hostnames in the
+//! DNS resolution is enabled, the [`rdns`] module looks up hostnames in the
 //! background without blocking discovery.
 
 use std::pin::Pin;
@@ -140,7 +140,7 @@ pub mod plan;
 pub mod strategy;
 
 // What a strategy needs, and what reads its output. `dispatcher` feeds targets
-// to a `PortScanner`, `audit` records how a run went, `resolver` is the hostname
+// to a `PortScanner`, `audit` records how a run went, `rdns` is the hostname
 // tail, `service` identifies what is behind an open port, and `pool` and
 // `payload` are shared probe machinery.
 pub mod audit;
@@ -148,7 +148,7 @@ pub mod detect;
 pub mod dispatcher;
 pub mod payload;
 pub mod pool;
-pub mod resolver;
+pub mod rdns;
 pub mod service;
 
 // How the entry points below assemble a scan. Private, because it is one

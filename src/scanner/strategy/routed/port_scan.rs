@@ -826,7 +826,7 @@ fn send_tcp_probe(
 ) -> Option<TcpToken> {
     let nonce: u32 = rand::random();
 
-    let packet = match tcp::create_probe_with_flags(
+    let packet = match tcp::build_probe_with_flags(
         flags,
         &src_addr,
         &dst_addr,
@@ -853,7 +853,7 @@ fn send_tcp_probe(
         .iter()
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
         .filter_map(|&decoy| {
-            tcp::create_probe_with_flags(
+            tcp::build_probe_with_flags(
                 flags,
                 &decoy,
                 &dst_addr,
@@ -1491,7 +1491,7 @@ mod tests {
 
     /// The probe under the IP header a router would have echoed back with it.
     fn quote(probe: &[u8]) -> Vec<u8> {
-        let header = ip::create_ipv4_header(
+        let header = ip::build_ipv4_header(
             LOCAL,
             match TARGET {
                 IpAddr::V4(v4) => v4,
@@ -1620,7 +1620,7 @@ mod tests {
         probe(&mut scanner, &sent, 80);
 
         // Same shape, but sent from a port this scan never used.
-        let theirs = tcp::create_probe(
+        let theirs = tcp::build_probe(
             TcpScanTechnique::Fin,
             &LOCAL_IP,
             &TARGET,
