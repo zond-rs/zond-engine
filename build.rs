@@ -120,7 +120,68 @@ fn main() {
     fs::write(&dest_path, encoded).expect("failed to write fingerprint database");
 
     compile_os_rules(Path::new(&out_dir));
-    compile_detections(Path::new(&out_dir));
+    compile_detections(Path::new(&out_dir), &corpus_service_names(&services));
+}
+
+/// Every service name the fingerprint corpus can put on a port.
+///
+/// A `[service]` name is what a match rule owned by that file reports, and what
+/// the runtime's port-to-name index is built from, so this is the whole
+/// vocabulary the corpus contributes to a detection gate.
+fn corpus_service_names(defs: &[ServiceDefinition]) -> BTreeSet<String> {
+    defs.iter().map(|def| def.service.name.clone()).collect()
+}
+
+/// Service names the fingerprint analyzers state outright rather than drawing
+/// from the corpus: `src/fingerprint/http.rs` says `http`,
+/// `src/fingerprint/ssh.rs` says `ssh`, and `src/fingerprint/tls_cert.rs` says
+/// `ssl`. The first two are corpus names as well; `ssl` is not.
+const ANALYZER_SERVICE_NAMES: &[&str] = &["http", "ssh", "ssl"];
+
+/// The scheme a service identified through a tunnel is labelled with, as
+/// `ServiceVerdict::to_service` writes it. A port speaking HTTP inside TLS is
+/// named `ssl/http`, so a gate may reasonably name one.
+const TUNNEL_PREFIX: &str = "ssl/";
+
+/// Warns about a gate naming a service nothing this engine runs can produce.
+///
+/// Such a gate fits no port, ever. The detection is in the binary and in the
+/// corpus listing and never runs, which is the failure ZA-4-012 recorded and is
+/// invisible without a check here.
+///
+/// A warning rather than a refusal, because the corpus is not the only place a
+/// service name is minted. Three analyzers state one in Rust, and a tunnelled
+/// service is labelled with its scheme rather than by the corpus. Both are
+/// accounted for below, but by a list kept here rather than derived from those
+/// files, so a fourth name added there would make a refusal here reject a valid
+/// detection. This reports what it is sure of and leaves the build to the
+/// author.
+fn warn_unknown_gate_services<'a>(
+    path: &Path,
+    id: &str,
+    gated: impl Iterator<Item = &'a str>,
+    known: &BTreeSet<String>,
+) {
+    let file = path.display();
+    for name in gated {
+        let bare = name.strip_prefix(TUNNEL_PREFIX).unwrap_or(name);
+        if known.contains(bare) || ANALYZER_SERVICE_NAMES.contains(&bare) {
+            continue;
+        }
+        println!(
+            "cargo:warning={file}: '{id}' gates on service '{name}', which no \
+             fingerprint in assets/fingerprinting names; the detection can never \
+             fit a port"
+        );
+    }
+}
+
+/// The service names a `[detection.when]` gate gives, both spellings together.
+fn gated_services(when: &manifest::Rule) -> impl Iterator<Item = &str> {
+    when.service
+        .as_deref()
+        .into_iter()
+        .chain(when.services.iter().map(String::as_str))
 }
 
 /// Validates the detection corpus in `assets/detect` and compiles each tier into
@@ -136,7 +197,7 @@ fn main() {
 /// hash taken over the body: a module has no `untagged` rule, so it is embedded as
 /// text with any file reference resolved away, and the hash is the provenance a
 /// finding records.
-fn compile_detections(out_dir: &Path) {
+fn compile_detections(out_dir: &Path, known_services: &BTreeSet<String>) {
     let mut toml_files = Vec::new();
     collect_toml_files(Path::new("assets/detect"), &mut toml_files);
     // Sort for a deterministic, reproducible artifact.
@@ -155,11 +216,11 @@ fn compile_detections(out_dir: &Path) {
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
 
         if value.get("detection").and_then(|d| d.get("host")).is_some() {
-            compile_host(path, &content, &mut ids, &mut hosts);
+            compile_host(path, &content, &mut ids, &mut hosts, known_services);
         } else if value.get("compute").is_some() {
-            compile_module(path, &content, &mut ids, &mut modules);
+            compile_module(path, &content, &mut ids, &mut modules, known_services);
         } else {
-            compile_flow(path, &content, &mut ids, &mut flows);
+            compile_flow(path, &content, &mut ids, &mut flows, known_services);
         }
     }
 
@@ -175,6 +236,7 @@ fn compile_flow(
     content: &str,
     ids: &mut BTreeSet<String>,
     flows: &mut Vec<(String, String)>,
+    known_services: &BTreeSet<String>,
 ) {
     let flow: schema::FlowDetection = toml::from_str(content)
         .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
@@ -192,6 +254,12 @@ fn compile_flow(
     validate_flow_patterns(&flow, path);
     validate_flow_budget(&flow, path);
     warn_flow_soft(&flow, path);
+    warn_unknown_gate_services(
+        path,
+        &flow.detection.id,
+        gated_services(&flow.detection.when),
+        known_services,
+    );
 
     flows.push((sha256_hex(content.as_bytes()), content.to_string()));
 }
@@ -203,12 +271,19 @@ fn compile_module(
     content: &str,
     ids: &mut BTreeSet<String>,
     modules: &mut Vec<(String, String)>,
+    known_services: &BTreeSet<String>,
 ) {
     let detection: compute_schema::ComputeDetection = toml::from_str(content)
         .unwrap_or_else(|e| panic!("{}: not a valid compute detection: {e}", path.display()));
 
     validate_module(&detection, path);
     claim_id(ids, &detection.detection.id, path);
+    warn_unknown_gate_services(
+        path,
+        &detection.detection.id,
+        gated_services(&detection.detection.when),
+        known_services,
+    );
 
     let source = resolve_module_source(&detection.compute, path);
 
@@ -306,7 +381,6 @@ fn resolve_module_source(compute: &compute_schema::ComputeSection, path: &Path) 
     })
 }
 
-/// Serialises `entries` to `bincode` and writes them to `dest`.
 /// Validates one host-level detection and appends its source and content hash. A
 /// host detection is embedded as text, like a flow, and re-parsed at runtime.
 fn compile_host(
@@ -314,12 +388,19 @@ fn compile_host(
     content: &str,
     ids: &mut BTreeSet<String>,
     hosts: &mut Vec<(String, String)>,
+    known_services: &BTreeSet<String>,
 ) {
     let detection: host_schema::HostDetection = toml::from_str(content)
         .unwrap_or_else(|e| panic!("{}: not a valid host detection: {e}", path.display()));
 
     validate_host(&detection, path);
     claim_id(ids, &detection.detection.id, path);
+    warn_unknown_gate_services(
+        path,
+        &detection.detection.id,
+        detection.detection.host.services.iter().map(String::as_str),
+        known_services,
+    );
 
     hosts.push((sha256_hex(content.as_bytes()), content.to_string()));
 }
@@ -360,6 +441,7 @@ fn validate_host(detection: &host_schema::HostDetection, path: &Path) {
     }
 }
 
+/// Serialises `entries` to `bincode` and writes them to `dest`.
 fn write_database(dest: &Path, entries: &[(String, String)], kind: &str) {
     let encoded = bincode::serialize(entries)
         .unwrap_or_else(|e| panic!("failed to serialize the {kind} database: {e}"));

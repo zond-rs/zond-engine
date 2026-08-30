@@ -178,7 +178,7 @@ pub fn baseline_service(port: u16, protocol: Protocol) -> Option<Service> {
 /// This is the shape every discovery path records before (and if) a full
 /// fingerprint refines it: the SYN and filtered/closed paths stop here, while
 /// the connect and service-detection paths hand the result to
-/// [`fingerprint_tcp`] to upgrade in place.
+/// [`fingerprint_tcp_detailed`] to upgrade in place.
 pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
     let mut classified = Port::new(port, protocol, state);
     if let Some(service) = baseline_service(port, protocol) {

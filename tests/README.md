@@ -100,10 +100,10 @@ not a test that is switched off. It runs, it fails for the reason it says, and
 removing the attribute is the definition of done.
 
 `retransmission.rs` was written this way against a feature the engine did not
-have, and every test in it now runs. One live claim stands under the convention
-today: `detections.rs` asserts that a whole scan hands a passive detection the
-responses it already drew, which the unprivileged connect path does not, because
-it fingerprints inline through the wrapper that discards them.
+have, and every test in it now runs. So does the one claim `detections.rs`
+carried, that a whole scan hands a passive detection the responses it already
+drew: the connect path now keeps what its inline fingerprint read instead of
+discarding it. No live claim stands under the convention today.
 
 The four `#[ignore]`d tests in the crate are a different thing entirely — they
 are gated on an environment rather than on a missing feature, and each says so in

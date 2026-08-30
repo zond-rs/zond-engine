@@ -22,10 +22,12 @@
 //! Both tiers run on the blocking pool for each interested port. A compute module
 //! is served through [`LiveCapabilities`] — the same socket-backed budget a flow's
 //! probe enforces — when it *speaks*, and reads the port's gathered responses when
-//! it is *passive*. Those responses are what the [service
-//! phase](crate::scanner::service) drew to name the service and
-//! [kept](crate::scanner::session) for this phase, so a passive module adds no
-//! traffic of its own: it reads what the scan already had.
+//! it is *passive*. Those responses are what the pass that named the service
+//! drew and [kept](crate::scanner::session) for this phase: the [service
+//! phase](crate::scanner::service) after a raw scan, the [connect
+//! scanner](crate::scanner::strategy::connect) inline while it still held the
+//! stream. Either way a passive module adds no traffic of its own: it reads
+//! what the scan already had.
 //!
 //! ## The socket a flow speaks through
 //!

@@ -73,7 +73,8 @@
 use dashmap::DashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tracing::error;
 
 use crate::detect::compute::DetectionRunRecord;
@@ -110,6 +111,17 @@ pub enum ScanEvent {
         scanner: ScannerKind,
         /// A human-readable description of the failure.
         reason: String,
+    },
+
+    /// The stream ran ahead of this consumer, and `count` events were dropped
+    /// to make room for newer ones.
+    ///
+    /// Delivered in the position the missing events would have had, so a
+    /// consumer knows where its picture went incomplete rather than only that
+    /// it did. [`ScanEvents`] says what the gap costs and what to do about it.
+    EventsDropped {
+        /// How many events were dropped.
+        count: u64,
     },
 }
 
@@ -224,25 +236,63 @@ impl HostStore {
 ///
 /// Each event says that something changed; the detail is read back from the
 /// [`HostStore`]. See [`ScanEvent`].
+///
+/// **The stream is bounded, and the oldest events are the ones that go.** It
+/// holds [`CAPACITY`](Self::CAPACITY) events, and a scan that fills it
+/// overwrites what has waited longest rather than growing or pausing. A caller
+/// who never reads this costs the scan one fixed buffer, and a caller who reads
+/// it slowly never holds the scan up.
+///
+/// **A gap is announced where it happened.** The read that follows one answers
+/// [`ScanEvent::EventsDropped`], carrying how many events went missing, so a
+/// consumer is never quietly out of date.
+///
+/// What a gap costs is the notice and not the finding. A dropped
+/// [`HostUpdated`](ScanEvent::HostUpdated) named a host whose current state is
+/// in the [`HostStore`], so the answer to a gap is to re-read the store rather
+/// than to try to replay the stream. A dropped
+/// [`ScannerFailed`](ScanEvent::ScannerFailed) still reaches the
+/// [`ScanReport`](crate::report::ScanReport), which carries every failure
+/// whether or not anybody was listening.
 #[derive(Debug)]
 pub struct ScanEvents {
-    rx: mpsc::UnboundedReceiver<ScanEvent>,
+    rx: broadcast::Receiver<ScanEvent>,
 }
 
 impl ScanEvents {
+    /// How many events the stream holds for a consumer that has not caught up.
+    ///
+    /// The buffer is allocated when the scan starts, so an event stream costs
+    /// the same whether or not anything reads it.
+    pub const CAPACITY: usize = 1024;
+
     /// Waits for the next event. `None` once the scan has ended and every event
     /// it emitted has been taken, which is the definitive end of the stream.
+    ///
+    /// Falling behind is not an error here: a gap arrives as
+    /// [`ScanEvent::EventsDropped`], in the position the missing events would
+    /// have had, and the stream carries on with the oldest event it still
+    /// holds.
     pub async fn recv(&mut self) -> Option<ScanEvent> {
-        self.rx.recv().await
+        match self.rx.recv().await {
+            Ok(event) => Some(event),
+            Err(RecvError::Lagged(count)) => Some(ScanEvent::EventsDropped { count }),
+            Err(RecvError::Closed) => None,
+        }
     }
 
     /// The next event if one is already queued, without waiting.
     ///
     /// `None` covers both "nothing queued right now" and "the scan is over", so
     /// it drains a finished scan but cannot detect the end of a running one. Use
-    /// [`recv`](Self::recv) for that.
+    /// [`recv`](Self::recv) for that. A gap reads the same way it does through
+    /// [`recv`](Self::recv), as [`ScanEvent::EventsDropped`].
     pub fn try_recv(&mut self) -> Option<ScanEvent> {
-        self.rx.try_recv().ok()
+        match self.rx.try_recv() {
+            Ok(event) => Some(event),
+            Err(TryRecvError::Lagged(count)) => Some(ScanEvent::EventsDropped { count }),
+            Err(TryRecvError::Empty | TryRecvError::Closed) => None,
+        }
     }
 }
 
@@ -281,6 +331,9 @@ impl ScanSession {
     }
 
     /// The live event stream.
+    ///
+    /// Bounded: a consumer that reads it slowly, or not at all, loses the
+    /// oldest events rather than accumulating them. See [`ScanEvents`].
     pub fn events(&mut self) -> &mut ScanEvents {
         &mut self.events
     }
@@ -606,7 +659,7 @@ impl FailureLog {
 pub struct ScanContext {
     pub(crate) handle: ScanHandle,
     pub(crate) store: Arc<DashMap<ScopedIp, Host>>,
-    pub(crate) events_tx: mpsc::UnboundedSender<ScanEvent>,
+    pub(crate) events_tx: broadcast::Sender<ScanEvent>,
     pub(crate) failures: Arc<FailureLog>,
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
     /// Addresses this host has no route to, so nothing could be sent to them.
@@ -1125,7 +1178,7 @@ impl ScanSession {
     ) -> (Self, ScanContext) {
         let store = Arc::new(DashMap::new());
         let handle = ScanHandle::new();
-        let (events_tx, rx) = mpsc::unbounded_channel();
+        let (events_tx, rx) = broadcast::channel(ScanEvents::CAPACITY);
 
         let session = Self {
             store: HostStore::new(store.clone()),
@@ -1434,6 +1487,60 @@ mod tests {
         assert!(
             session.events().try_recv().is_none(),
             "a host already announced is not announced again"
+        );
+    }
+
+    /// The bound, at the size the stream is built with.
+    ///
+    /// A scan emits an event per meaningful change, so a host with a thousand
+    /// open ports announces itself a thousand times. Nothing here reads the
+    /// stream until the writing is over, which is the case the bound exists
+    /// for: the scan runs to the end, the store holds everything it found, and
+    /// what the buffer could not keep is declared rather than dropped in
+    /// silence.
+    #[test]
+    fn a_stream_nobody_reads_drops_the_oldest_and_says_how_many() {
+        let flooded: IpAddr = "192.0.2.1".parse().expect("literal");
+        let last: IpAddr = "192.0.2.2".parse().expect("literal");
+        let (mut session, ctx) = ScanSession::new();
+
+        let overflow = 64;
+        let sent = ScanEvents::CAPACITY + overflow;
+        for _ in 0..sent - 1 {
+            ctx.update_host(flooded, |host| host.set_status(HostStatus::Up));
+        }
+        ctx.update_host(last, |host| host.set_status(HostStatus::Up));
+
+        assert_eq!(
+            ctx.store.len(),
+            2,
+            "a full event buffer does not stop the scan writing findings"
+        );
+
+        let mut dropped = 0u64;
+        let mut delivered = Vec::new();
+        while let Some(event) = session.events().try_recv() {
+            match event {
+                ScanEvent::EventsDropped { count } => dropped += count,
+                ScanEvent::HostUpdated(ip) => delivered.push(ip),
+                other => panic!("unexpected event {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            delivered.len(),
+            ScanEvents::CAPACITY,
+            "the stream holds its stated capacity and no more"
+        );
+        assert_eq!(
+            dropped as usize + delivered.len(),
+            sent,
+            "every event is either delivered or declared missing"
+        );
+        assert_eq!(
+            delivered.last(),
+            Some(&ScopedIp::unscoped(last)),
+            "the newest event survives, which is what drop-oldest means"
         );
     }
 }

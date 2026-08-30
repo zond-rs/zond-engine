@@ -31,11 +31,10 @@
 //! binary and `FlowDb`/`ComputeDb` are crate-private, so a test cannot add a
 //! detection to what a scan will run. Everything below is provoked out of the
 //! real corpus: the Grafana flow for Tier 1 and the missing-headers module for
-//! Tier 2, both of which gate on `http`, the one service a loopback listener on
-//! an ephemeral port can be identified as. A server whose *root* names Grafana
-//! is fingerprinted as `grafana` rather than `http` and fits neither gate, so
-//! the version banner is served from `/login`, which is where the flow asks for
-//! it anyway.
+//! Tier 2. A loopback listener on an ephemeral port is identified as `http`
+//! while its root page names no product, and as `grafana` once that page says
+//! so, which is the two halves of the Grafana flow's gate. The missing-headers
+//! module gates on `http` alone, so its server keeps the quiet root page.
 //!
 //! The two refusal tests near the bottom drive the public compute seam directly
 //! rather than a scan, because refusing a detection happens before a scan would
@@ -99,16 +98,38 @@ impl Server {
 /// appended to the `/login` reply, which is how a test makes one response
 /// larger than the flow's declared byte budget.
 async fn spawn_web_server(login_padding: usize) -> Server {
-    spawn_server(None, login_padding).await
+    spawn_server(None, login_padding, RootPage::Plain).await
+}
+
+/// Stands a web server up whose *root page* names Grafana, which is what a real
+/// Grafana does. The service pass identifies such a port as `grafana` rather
+/// than `http`.
+async fn spawn_grafana_server() -> Server {
+    spawn_server(None, 0, RootPage::NamesGrafana).await
 }
 
 /// Stands a speak-first server up on an ephemeral port. It greets and answers
 /// nothing, and keeps whatever was said to it.
 async fn spawn_greeting_server(greeting: &'static [u8]) -> Server {
-    spawn_server(Some(greeting), 0).await
+    spawn_server(Some(greeting), 0, RootPage::Plain).await
 }
 
-async fn spawn_server(greeting: Option<&'static [u8]>, login_padding: usize) -> Server {
+/// What the server's root page says about itself, which is what decides the
+/// name the service pass puts on the port.
+#[derive(Clone, Copy)]
+enum RootPage {
+    /// An unremarkable page naming no product: the port is identified as `http`.
+    Plain,
+    /// A page carrying the product's own name: the port is identified as
+    /// `grafana`.
+    NamesGrafana,
+}
+
+async fn spawn_server(
+    greeting: Option<&'static [u8]>,
+    login_padding: usize,
+    root: RootPage,
+) -> Server {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("bind loopback server");
@@ -137,7 +158,9 @@ async fn spawn_server(greeting: Option<&'static [u8]>, login_padding: usize) -> 
                 let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
                 log.lock().expect("the request log").push(request.clone());
                 if greeting.is_none() {
-                    let _ = sock.write_all(&web_reply(&request, login_padding)).await;
+                    let _ = sock
+                        .write_all(&web_reply(&request, login_padding, root))
+                        .await;
                     let _ = sock.flush().await;
                 }
             });
@@ -155,7 +178,7 @@ async fn spawn_server(greeting: Option<&'static [u8]>, login_padding: usize) -> 
 /// the Grafana flow binds on, the traversal path carries the passwd line its
 /// `expect` confirms on, and everything else is the plain response the service
 /// pass reads and the compute module grades.
-fn web_reply(request: &str, login_padding: usize) -> Vec<u8> {
+fn web_reply(request: &str, login_padding: usize, root: RootPage) -> Vec<u8> {
     if request.contains("/login") {
         let mut reply = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
              <title>Dashboard</title> Grafana v8.2.0\n"
@@ -167,9 +190,14 @@ fn web_reply(request: &str, login_padding: usize) -> Vec<u8> {
           root:x:0:0:root:/root:/bin/bash\n"
             .to_vec()
     } else {
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
-          <html><body>ok</body></html>\n"
-            .to_vec()
+        match root {
+            RootPage::Plain => b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+                 <html><body>ok</body></html>\n"
+                .to_vec(),
+            RootPage::NamesGrafana => b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+                 <html><head><title>Grafana</title></head><body>ok</body></html>\n"
+                .to_vec(),
+        }
     }
 }
 
@@ -255,6 +283,39 @@ async fn a_flow_probes_a_live_service_and_files_what_it_confirmed() {
     );
 }
 
+/// The gate fits the name the fingerprint corpus actually produces.
+///
+/// A real Grafana names itself on its root page, so the service pass calls the
+/// port `grafana`, not `http`. A gate naming only `http` skipped every such
+/// port, which is the whole detection silently not running against the software
+/// it was written for. Both names are asserted here: the identification, so the
+/// test cannot pass because the port was called `http` after all, and the
+/// finding, so it cannot pass because the flow never ran.
+#[tokio::test]
+async fn a_flow_fires_against_the_service_name_its_own_fingerprint_produces() {
+    if skip_when_privileged() {
+        return;
+    }
+
+    let server = spawn_grafana_server().await;
+    let outcome = run_scan(
+        target_map(LOOPBACK, &server.port.to_string()),
+        &test_config(),
+    )
+    .await;
+
+    let scanned = port(&outcome.report, server.port).expect("the port was scanned");
+    assert_eq!(
+        scanned.service().map(|service| service.name()),
+        Some("grafana"),
+        "the corpus names a port that says Grafana for the product, not for http"
+    );
+
+    let finding = finding(&outcome.report, server.port, "grafana-path-traversal")
+        .expect("the grafana flow fired against a port named grafana");
+    assert_eq!(finding.severity(), Severity::Critical);
+}
+
 /// A Tier-2 module reaches a verdict over the response the service pass already
 /// drew, and adds no traffic of its own.
 ///
@@ -263,10 +324,11 @@ async fn a_flow_probes_a_live_service_and_files_what_it_confirmed() {
 /// be `low`.
 ///
 /// The phases are assembled here rather than taken from `scanner::scan`, which
-/// is the second of the three altitudes the `scanner` module documents. That is
-/// the only way this runs today: the connect scanner fingerprints inline and
-/// drops the responses it drew, so nothing reaches a passive detection on the
-/// unprivileged path. See the ignored claim at the bottom of this file.
+/// is the second of the three altitudes the `scanner` module documents. It is
+/// the raw path's arrangement, where discovery settles port state and a
+/// separate `service::detect` names the service and keeps what it read. The
+/// test at the bottom of this file runs the whole scan instead, which is the
+/// unprivileged path fingerprinting inline.
 #[tokio::test]
 async fn a_compute_module_grades_the_response_the_scan_already_gathered() {
     if skip_when_privileged() {
@@ -553,16 +615,13 @@ fn a_passive_detection_that_asks_to_speak_is_handed_no_socket_at_all() {
 
 /// A whole scan hands a passive detection the bytes it already drew.
 ///
-/// A claim, not a switched-off test. `scanner::detect` says a passive module
-/// reads the responses the service phase gathered, and on the raw path it does:
-/// the SYN scanner runs `service::detect`, which records them. The connect
-/// scanner fingerprints inline through `fingerprint_tcp`, the wrapper that
-/// discards the third value `fingerprint_tcp_detailed` returns precisely so a
-/// later detection can read it, so on the unprivileged path the store is
-/// always empty and every passive detection reads nothing. Carrying those
-/// responses out of the inline pass is what removing this attribute means.
+/// The unprivileged path end to end, which is the one with no second
+/// identification pass: the connect scanner fingerprints inline and carries the
+/// responses out of that exchange itself, so a passive module reads them
+/// without a byte being drawn twice. A raw scan reaches the same place through
+/// `service::detect`, which is the arrangement
+/// `a_compute_module_grades_the_response_the_scan_already_gathered` assembles.
 #[tokio::test]
-#[ignore = "the connect path discards the responses it gathered"]
 async fn a_scan_hands_a_passive_detection_the_responses_it_already_drew() {
     if skip_when_privileged() {
         return;

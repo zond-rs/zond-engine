@@ -49,6 +49,18 @@ use super::budget::Budget;
 /// implementation that serves it — a live socket, a recorded tape — moves there
 /// with it. It is deliberately *not* `Sync`: one run owns its capabilities, and a
 /// live one drives a single socket that no second thread may touch.
+///
+/// # An implementation must not re-enter a compute runtime
+///
+/// No method here may run a compute module, directly or through anything it
+/// calls. A runtime serves these verbs by holding a pointer to the
+/// implementation for the span of one run and handing out a `&mut` to it each
+/// time a verb is called, so a verb that started a second run would produce two
+/// live `&mut` to one value. That is undefined behaviour, and it is the quiet
+/// kind: it would work on the machine it was written on.
+///
+/// Nothing in the signature stops it, so it is stated here, where somebody
+/// adding a fourth verb will read it. In debug builds a runtime asserts it.
 pub trait Capabilities: Send {
     /// Exchange bytes with the one socket the scan already holds open to this
     /// port, and return the reply. There is no address to name and none in the
@@ -250,6 +262,7 @@ mod tests {
             title: "test".into(),
             when: Rule {
                 service: None,
+                services: Vec::new(),
                 port: None,
                 ports: Vec::new(),
                 protocol: None,

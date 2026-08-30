@@ -101,7 +101,6 @@ const FORMAT: &str = "JSON";
 /// from.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsonReportReader {
-    #[allow(dead_code)]
     options: ReportOptions,
 }
 
@@ -118,7 +117,7 @@ impl ReportReader for JsonReportReader {
         let document =
             Document::deserialize(&mut deserializer).map_err(|error| malformed(&error))?;
 
-        document.into_report()
+        document.into_report(self.options.limits.max_addresses)
     }
 }
 
@@ -153,7 +152,11 @@ struct Document {
 
 impl Document {
     /// The report this document describes.
-    fn into_report(self) -> Result<ScanReport, ImportError> {
+    fn into_report(self, max_hosts: u128) -> Result<ScanReport, ImportError> {
+        if self.hosts.len() as u128 > max_hosts {
+            return Err(ImportError::TooManyHosts { limit: max_hosts });
+        }
+
         if self.schema_version > SCHEMA_VERSION {
             return Err(refuse(format!(
                 "schema version {} is past version {SCHEMA_VERSION}, which is the highest this \

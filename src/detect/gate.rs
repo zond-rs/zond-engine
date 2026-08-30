@@ -24,15 +24,20 @@ use super::manifest::Rule;
 
 impl Rule {
     /// Whether this gate fits a port's facts. Every set field must hold, and an
-    /// empty gate fits any open port. A `service` names the identified service, a
-    /// `port`/`ports` the number, and a `protocol` the transport — the last of
-    /// which decides whether a UDP or a TCP socket serves the detection, so a
-    /// wrong one probes a service nobody asked about.
+    /// empty gate fits any open port. A `service`/`services` names the identified
+    /// service, a `port`/`ports` the number, and a `protocol` the transport — the
+    /// last of which decides whether a UDP or a TCP socket serves the detection,
+    /// so a wrong one probes a service nobody asked about.
     pub(crate) fn applies(&self, service: Option<&str>, number: u16, protocol: Protocol) -> bool {
         let service_ok = self
             .service
             .as_deref()
-            .is_none_or(|name| service == Some(name));
+            .is_none_or(|name| service == Some(name))
+            && (self.services.is_empty()
+                || self
+                    .services
+                    .iter()
+                    .any(|wanted| service == Some(wanted.as_str())));
         let number_ok = self.port.is_none_or(|wanted| wanted == number)
             && (self.ports.is_empty() || self.ports.contains(&number));
         let protocol_ok = self
@@ -52,6 +57,7 @@ mod tests {
     fn rule(service: Option<&str>, port: Option<u16>, protocol: Option<&str>) -> Rule {
         Rule {
             service: service.map(str::to_owned),
+            services: Vec::new(),
             port,
             ports: Vec::new(),
             protocol: protocol.map(str::to_owned),
@@ -79,11 +85,28 @@ mod tests {
     fn a_ports_list_admits_only_its_members() {
         let gate = Rule {
             service: None,
+            services: Vec::new(),
             port: None,
             ports: vec![80, 443],
             protocol: None,
         };
         assert!(gate.applies(None, 443, Protocol::Tcp));
+        assert!(!gate.applies(None, 8080, Protocol::Tcp));
+    }
+
+    /// One piece of software the corpus names two ways fits a gate naming both.
+    #[test]
+    fn a_services_list_admits_any_of_its_members() {
+        let gate = Rule {
+            service: None,
+            services: vec!["http".to_string(), "grafana".to_string()],
+            port: None,
+            ports: Vec::new(),
+            protocol: None,
+        };
+        assert!(gate.applies(Some("http"), 8080, Protocol::Tcp));
+        assert!(gate.applies(Some("grafana"), 3000, Protocol::Tcp));
+        assert!(!gate.applies(Some("redis"), 6379, Protocol::Tcp));
         assert!(!gate.applies(None, 8080, Protocol::Tcp));
     }
 }

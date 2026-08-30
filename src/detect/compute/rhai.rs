@@ -84,7 +84,21 @@ impl ActiveRun {
     /// Installs `caps` as the active capabilities. The pointer must stay valid —
     /// its referent unmoved and untouched by any other path — until this guard is
     /// dropped, which the sole caller ([`run`](RhaiRuntime::run)) guarantees.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if a run is already active on this thread. That can only
+    /// happen if a [`Capabilities`] implementation re-entered the runtime, which
+    /// [the trait](Capabilities) forbids because the two runs would hold live
+    /// `&mut` to one value. The check turns an unsoundness that works by
+    /// accident into a test that fails.
     fn new(caps: *mut dyn Capabilities) -> Self {
+        debug_assert!(
+            ACTIVE_CAPS.with(|cell| cell.get().is_none()),
+            "a Capabilities implementation re-entered the compute runtime; see the \
+             Capabilities trait for why that cannot be allowed"
+        );
+
         let previous_caps = ACTIVE_CAPS.with(|cell| cell.replace(NonNull::new(caps)));
         let previous_abort = ABORT.with(|cell| cell.borrow_mut().take());
         Self {
@@ -511,6 +525,24 @@ mod tests {
 
     /// A capabilities implementation that serves canned replies and records what
     /// the module did — the offline path that is also the replay path.
+    /// The debug guard that makes ZA-4-005's invariant checkable rather than
+    /// merely written down.
+    ///
+    /// Two guards are installed and no verb is ever called, so no `&mut` is
+    /// reconstituted from either pointer and the test is sound even as it
+    /// stages the thing the assertion exists to catch. A real re-entry would
+    /// reach this same assertion one frame deeper.
+    #[test]
+    #[should_panic(expected = "re-entered the compute runtime")]
+    #[cfg(debug_assertions)]
+    fn a_second_run_on_one_thread_is_refused_before_it_can_alias() {
+        let mut caps = RecordedCaps::new(Vec::new());
+        let pointer: *mut dyn Capabilities = &mut caps;
+
+        let _outer = ActiveRun::new(pointer);
+        let _inner = ActiveRun::new(pointer);
+    }
+
     struct RecordedCaps {
         replies: VecDeque<Result<Vec<u8>, CapError>>,
         sent: Vec<Vec<u8>>,

@@ -1131,6 +1131,7 @@ pub zond_engine::detect::manifest::Rule::port: core::option::Option<u16>
 pub zond_engine::detect::manifest::Rule::ports: alloc::vec::Vec<u16>
 pub zond_engine::detect::manifest::Rule::protocol: core::option::Option<alloc::string::String>
 pub zond_engine::detect::manifest::Rule::service: core::option::Option<alloc::string::String>
+pub zond_engine::detect::manifest::Rule::services: alloc::vec::Vec<alloc::string::String>
 impl core::clone::Clone for zond_engine::detect::manifest::Rule
 pub fn zond_engine::detect::manifest::Rule::clone(&self) -> zond_engine::detect::manifest::Rule
 impl core::default::Default for zond_engine::detect::manifest::Rule
@@ -4557,16 +4558,18 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::report::Re
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::report::ReportFormat
 pub struct zond_engine::import::report::ReportOptions
 pub zond_engine::import::report::ReportOptions::limits: zond_engine::import::ImportLimits
+pub zond_engine::import::report::ReportOptions::max_document_bytes: u64
 impl zond_engine::import::report::ReportOptions
 pub fn zond_engine::import::report::ReportOptions::new() -> Self
 pub fn zond_engine::import::report::ReportOptions::with_limits(self, zond_engine::import::ImportLimits) -> Self
+pub fn zond_engine::import::report::ReportOptions::with_max_document_bytes(self, u64) -> Self
 impl core::clone::Clone for zond_engine::import::report::ReportOptions
 pub fn zond_engine::import::report::ReportOptions::clone(&self) -> zond_engine::import::report::ReportOptions
 impl core::cmp::Eq for zond_engine::import::report::ReportOptions
 impl core::cmp::PartialEq for zond_engine::import::report::ReportOptions
 pub fn zond_engine::import::report::ReportOptions::eq(&self, &zond_engine::import::report::ReportOptions) -> bool
 impl core::default::Default for zond_engine::import::report::ReportOptions
-pub fn zond_engine::import::report::ReportOptions::default() -> zond_engine::import::report::ReportOptions
+pub fn zond_engine::import::report::ReportOptions::default() -> Self
 impl core::fmt::Debug for zond_engine::import::report::ReportOptions
 pub fn zond_engine::import::report::ReportOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for zond_engine::import::report::ReportOptions
@@ -4752,6 +4755,8 @@ impl core::marker::UnsafeUnpin for zond_engine::import::csv::CsvColumn
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::csv::CsvColumn
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::csv::CsvColumn
 #[non_exhaustive] pub enum zond_engine::import::ImportError
+pub zond_engine::import::ImportError::DocumentTooLarge
+pub zond_engine::import::ImportError::DocumentTooLarge::limit: u64
 pub zond_engine::import::ImportError::InvalidUtf8
 pub zond_engine::import::ImportError::InvalidUtf8::origin: zond_engine::import::ImportOrigin
 pub zond_engine::import::ImportError::Io(core::io::error::Error)
@@ -4770,6 +4775,8 @@ pub zond_engine::import::ImportError::TooManyAddresses
 pub zond_engine::import::ImportError::TooManyAddresses::limit: u128
 pub zond_engine::import::ImportError::TooManyAddresses::origin: zond_engine::import::ImportOrigin
 pub zond_engine::import::ImportError::TooManyAddresses::token: alloc::string::String
+pub zond_engine::import::ImportError::TooManyHosts
+pub zond_engine::import::ImportError::TooManyHosts::limit: u128
 pub zond_engine::import::ImportError::TooManyTokens
 pub zond_engine::import::ImportError::TooManyTokens::limit: u64
 impl core::convert::From<core::io::error::Error> for zond_engine::import::ImportError
@@ -11522,6 +11529,8 @@ pub mod zond_engine::scanner::service
 pub async fn zond_engine::scanner::service::detect(&zond_engine::scanner::session::ScanContext, zond_engine::config::ServiceDetection)
 pub mod zond_engine::scanner::session
 #[non_exhaustive] pub enum zond_engine::scanner::session::ScanEvent
+pub zond_engine::scanner::session::ScanEvent::EventsDropped
+pub zond_engine::scanner::session::ScanEvent::EventsDropped::count: u64
 pub zond_engine::scanner::session::ScanEvent::HostUpdated(zond_engine::model::ip::scoped::ScopedIp)
 pub zond_engine::scanner::session::ScanEvent::ScannerFailed
 pub zond_engine::scanner::session::ScanEvent::ScannerFailed::reason: alloc::string::String
@@ -11592,6 +11601,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session:
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanContext
 pub struct zond_engine::scanner::session::ScanEvents
 impl zond_engine::scanner::session::ScanEvents
+pub const zond_engine::scanner::session::ScanEvents::CAPACITY: usize
 pub async fn zond_engine::scanner::session::ScanEvents::recv(&mut self) -> core::option::Option<zond_engine::scanner::session::ScanEvent>
 pub fn zond_engine::scanner::session::ScanEvents::try_recv(&mut self) -> core::option::Option<zond_engine::scanner::session::ScanEvent>
 impl core::fmt::Debug for zond_engine::scanner::session::ScanEvents
@@ -11601,8 +11611,8 @@ impl core::marker::Send for zond_engine::scanner::session::ScanEvents
 impl core::marker::Sync for zond_engine::scanner::session::ScanEvents
 impl core::marker::Unpin for zond_engine::scanner::session::ScanEvents
 impl core::marker::UnsafeUnpin for zond_engine::scanner::session::ScanEvents
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::ScanEvents
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanEvents
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::ScanEvents
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanEvents
 pub struct zond_engine::scanner::session::ScanProgress
 impl zond_engine::scanner::session::ScanProgress
 pub fn zond_engine::scanner::session::ScanProgress::host_count(&self) -> usize
@@ -13238,6 +13248,8 @@ impl core::marker::UnsafeUnpin for zond_engine::scanner::ScanError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::ScanError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::ScanError
 #[non_exhaustive] pub enum zond_engine::ScanEvent
+pub zond_engine::ScanEvent::EventsDropped
+pub zond_engine::ScanEvent::EventsDropped::count: u64
 pub zond_engine::ScanEvent::HostUpdated(zond_engine::model::ip::scoped::ScopedIp)
 pub zond_engine::ScanEvent::ScannerFailed
 pub zond_engine::ScanEvent::ScannerFailed::reason: alloc::string::String
@@ -13762,6 +13774,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::RetryConfi
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::RetryConfig
 pub struct zond_engine::ScanEvents
 impl zond_engine::scanner::session::ScanEvents
+pub const zond_engine::scanner::session::ScanEvents::CAPACITY: usize
 pub async fn zond_engine::scanner::session::ScanEvents::recv(&mut self) -> core::option::Option<zond_engine::scanner::session::ScanEvent>
 pub fn zond_engine::scanner::session::ScanEvents::try_recv(&mut self) -> core::option::Option<zond_engine::scanner::session::ScanEvent>
 impl core::fmt::Debug for zond_engine::scanner::session::ScanEvents
@@ -13771,8 +13784,8 @@ impl core::marker::Send for zond_engine::scanner::session::ScanEvents
 impl core::marker::Sync for zond_engine::scanner::session::ScanEvents
 impl core::marker::Unpin for zond_engine::scanner::session::ScanEvents
 impl core::marker::UnsafeUnpin for zond_engine::scanner::session::ScanEvents
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::ScanEvents
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanEvents
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::ScanEvents
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanEvents
 pub struct zond_engine::ScanHandle
 impl zond_engine::scanner::handle::ScanHandle
 pub fn zond_engine::scanner::handle::ScanHandle::abort(&self)

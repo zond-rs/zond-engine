@@ -922,3 +922,180 @@ fn an_nmap_report_with_an_address_nmap_could_not_have_written_names_its_line() {
         other => panic!("expected a malformed document, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// What a whole-document reader is allowed to spend
+//
+// A report reader parses the entire document before it returns one, so the
+// bound that matters is on what an untrusted file can make the process hold.
+// Both readers here go through `ReportFormat::read`, which is the only place a
+// caller outside the crate can reach either.
+// ---------------------------------------------------------------------------
+
+/// A JSON report naming `count` hosts, written by this engine's own exporter so
+/// the document is one the reader is actually meant to accept.
+fn json_report_of(count: usize) -> String {
+    let hosts: Vec<Host> = (0..count)
+        .map(|n| {
+            let mut host = Host::new(
+                format!("10.{}.{}.{}", n / 65_536, (n / 256) % 256, n % 256)
+                    .parse::<IpAddr>()
+                    .expect("an address"),
+            );
+            host.set_status(HostStatus::Up);
+            host
+        })
+        .collect();
+
+    exported(&ScanReport::recorded("zond-test 1.2.3", Vec::new(), hosts))
+}
+
+/// An nmap report naming `count` hosts.
+fn nmap_report_of(count: usize) -> String {
+    let hosts: Vec<String> = (0..count)
+        .map(|n| {
+            format!(
+                concat!(
+                    "<host><status state=\"up\" reason=\"echo-reply\"/>",
+                    "<address addr=\"10.{}.{}.{}\" addrtype=\"ipv4\"/></host>"
+                ),
+                n / 65_536,
+                (n / 256) % 256,
+                n % 256
+            )
+        })
+        .collect();
+
+    format!(
+        "<nmaprun scanner=\"nmap\" version=\"7.94\">{}</nmaprun>",
+        hosts.join("")
+    )
+}
+
+/// `max_addresses` is documented as the most addresses one import may name, and
+/// a report names one per host it claims was found. Three hosts under a limit
+/// of three read; the same document under a limit of two does not.
+#[test]
+fn a_json_report_naming_more_hosts_than_the_limit_allows_is_refused() {
+    let document = json_report_of(3);
+
+    let report = read_report(
+        "report-hosts-at-limit",
+        ReportFormat::Json,
+        &document,
+        ReportOptions::new().with_limits(ImportLimits::new().with_max_addresses(3)),
+    )
+    .expect("three hosts under a limit of three");
+    assert_eq!(report.host_count(), 3);
+
+    let error = read_report(
+        "report-hosts-past-limit",
+        ReportFormat::Json,
+        &document,
+        ReportOptions::new().with_limits(ImportLimits::new().with_max_addresses(2)),
+    )
+    .expect_err("three hosts under a limit of two");
+
+    assert!(
+        matches!(error, ImportError::TooManyHosts { limit: 2 }),
+        "{error:?}"
+    );
+}
+
+/// The same bound, through the other reader. A limit the caller sets has to
+/// mean the same thing whichever document they happen to hand over, since the
+/// document is the part they did not write.
+#[test]
+fn an_nmap_report_naming_more_hosts_than_the_limit_allows_is_refused() {
+    let document = nmap_report_of(3);
+
+    let report = read_report(
+        "nmap-hosts-at-limit",
+        ReportFormat::Nmap,
+        &document,
+        ReportOptions::new().with_limits(ImportLimits::new().with_max_addresses(3)),
+    )
+    .expect("three hosts under a limit of three");
+    assert_eq!(report.host_count(), 3);
+
+    let error = read_report(
+        "nmap-hosts-past-limit",
+        ReportFormat::Nmap,
+        &document,
+        ReportOptions::new().with_limits(ImportLimits::new().with_max_addresses(2)),
+    )
+    .expect_err("three hosts under a limit of two");
+
+    assert!(
+        matches!(error, ImportError::TooManyHosts { limit: 2 }),
+        "{error:?}"
+    );
+}
+
+/// The ceiling counts bytes consumed, not the size of the file, so the value is
+/// measured against its own length rather than the trailing whitespace after
+/// it. A reader that stops as soon as the value is complete never spends the
+/// rest, and a ceiling that refused it would be refusing something nobody read.
+#[test]
+fn a_json_document_past_the_byte_ceiling_is_refused() {
+    let document = json_report_of(64);
+    let value = document.trim_end().len() as u64;
+
+    let report = read_report(
+        "report-bytes-at-ceiling",
+        ReportFormat::Json,
+        &document,
+        ReportOptions::new().with_max_document_bytes(value),
+    )
+    .expect("a value exactly as long as the ceiling allows");
+    assert_eq!(report.host_count(), 64);
+
+    let error = read_report(
+        "report-bytes-past-ceiling",
+        ReportFormat::Json,
+        &document,
+        ReportOptions::new().with_max_document_bytes(value - 1),
+    )
+    .expect_err("one byte past the ceiling");
+
+    match error {
+        ImportError::DocumentTooLarge { limit } => assert_eq!(limit, value - 1),
+        other => panic!("expected the document ceiling, got {other:?}"),
+    }
+}
+
+/// The ceiling lives at the dispatch rather than inside a reader, so a format
+/// added later inherits it. Both formats this build reads are held to it.
+#[test]
+fn an_nmap_document_past_the_byte_ceiling_is_refused() {
+    let document = nmap_report_of(64);
+    let length = document.len() as u64;
+
+    let error = read_report(
+        "nmap-bytes-past-ceiling",
+        ReportFormat::Nmap,
+        &document,
+        ReportOptions::new().with_max_document_bytes(length / 2),
+    )
+    .expect_err("half a document is not a document");
+
+    assert!(
+        matches!(error, ImportError::DocumentTooLarge { .. }),
+        "{error:?}"
+    );
+}
+
+/// The defaults refuse nothing an honest report does, which is the property
+/// that makes the ceiling safe to have on by default.
+#[test]
+fn the_default_ceiling_reads_a_report_of_a_thousand_hosts() {
+    let report = read_report(
+        "report-default-ceiling",
+        ReportFormat::Json,
+        &json_report_of(1_000),
+        ReportOptions::new(),
+    )
+    .expect("a thousand hosts is an ordinary engagement");
+
+    assert_eq!(report.host_count(), 1_000);
+}

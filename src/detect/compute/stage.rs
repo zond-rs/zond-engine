@@ -232,6 +232,7 @@ mod tests {
             title: id.to_string(),
             when: Rule {
                 service: Some(service.to_string()),
+                services: Vec::new(),
                 port: None,
                 ports: Vec::new(),
                 protocol: None,

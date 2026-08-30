@@ -82,10 +82,47 @@ pub trait ReportReader {
 ///
 /// A struct rather than a bare [`ImportLimits`] so that a policy this side needs
 /// and the target side does not stays an additive change.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// [`max_document_bytes`](Self::max_document_bytes) is the first such policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReportOptions {
-    /// The bounds every reader here obeys.
+    /// The bounds shared with the target readers.
+    ///
+    /// Not every one of them means something to every reader here, because a
+    /// report is a document with a shape and a target list is a stream of
+    /// expressions. [`max_addresses`](ImportLimits::max_addresses) bounds the
+    /// hosts a document may name and binds both readers.
+    /// [`max_line_bytes`](ImportLimits::max_line_bytes) binds the line-oriented
+    /// nmap reader; a JSON document is one value and has no lines to bound, so
+    /// [`max_document_bytes`](Self::max_document_bytes) is what stands in its
+    /// place. [`max_tokens`](ImportLimits::max_tokens) counts target
+    /// expressions and a report holds none, so nothing here reads it.
     pub limits: ImportLimits,
+
+    /// The most bytes one document may be read from.
+    ///
+    /// Every reader here parses a whole document before it returns one, so this
+    /// is the ceiling on what an untrusted file may make the process allocate.
+    /// It is checked as the bytes are consumed, so a document past the ceiling
+    /// is refused on the way in rather than after it has been held.
+    ///
+    /// The default is 256 MiB. An exported report of a hundred thousand hosts
+    /// with their services and findings runs to a few tens of megabytes, so the
+    /// ceiling is several times past anything a scan produces and still a
+    /// bound. Raise it with [`with_max_document_bytes`](Self::with_max_document_bytes)
+    /// for a document that has been vetted, or pass [`u64::MAX`] to lift it.
+    pub max_document_bytes: u64,
+}
+
+/// 256 MiB. See [`ReportOptions::max_document_bytes`].
+const DEFAULT_MAX_DOCUMENT_BYTES: u64 = 256 * 1024 * 1024;
+
+impl Default for ReportOptions {
+    fn default() -> Self {
+        Self {
+            limits: ImportLimits::default(),
+            max_document_bytes: DEFAULT_MAX_DOCUMENT_BYTES,
+        }
+    }
 }
 
 impl ReportOptions {
@@ -98,6 +135,75 @@ impl ReportOptions {
     pub fn with_limits(mut self, limits: ImportLimits) -> Self {
         self.limits = limits;
         self
+    }
+
+    /// Sets the whole-document ceiling.
+    pub fn with_max_document_bytes(mut self, bytes: u64) -> Self {
+        self.max_document_bytes = bytes;
+        self
+    }
+}
+
+/// A reader that refuses to hand out more than `limit` bytes.
+///
+/// Wrapped around the caller's input at the dispatch rather than inside each
+/// reader, so the ceiling holds for every format and a format added later
+/// inherits it instead of having to remember it.
+struct Bounded<'a> {
+    inner: &'a mut dyn BufRead,
+    left: u64,
+    /// Whether the budget ran out, which is the only thing the dispatch needs
+    /// back. A flag rather than a distinguishable error, because the refusal
+    /// travels out through `serde_json` and `quick-xml`, and both rewrite an
+    /// I/O failure into an error of their own. Asking this afterwards is exact
+    /// where reading the message that came back would be a guess.
+    exhausted: bool,
+}
+
+impl<'a> Bounded<'a> {
+    fn new(inner: &'a mut dyn BufRead, limit: u64) -> Self {
+        Self {
+            inner,
+            left: limit,
+            exhausted: false,
+        }
+    }
+
+    fn over_budget(&mut self) -> std::io::Error {
+        self.exhausted = true;
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the document is past its byte ceiling",
+        )
+    }
+}
+
+impl std::io::Read for Bounded<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.left == 0 {
+            return Err(self.over_budget());
+        }
+        let ceiling = usize::try_from(self.left).unwrap_or(usize::MAX);
+        let take = buf.len().min(ceiling);
+        let read = self.inner.read(&mut buf[..take])?;
+        self.left -= read as u64;
+        Ok(read)
+    }
+}
+
+impl BufRead for Bounded<'_> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.left == 0 {
+            return Err(self.over_budget());
+        }
+        let available = self.inner.fill_buf()?;
+        let ceiling = usize::try_from(self.left).unwrap_or(usize::MAX);
+        Ok(&available[..available.len().min(ceiling)])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.left = self.left.saturating_sub(amount as u64);
+        self.inner.consume(amount);
     }
 }
 
@@ -176,16 +282,29 @@ impl ReportFormat {
     }
 
     /// Reads `input` as a report in this format.
+    ///
+    /// Refuses a document past
+    /// [`ReportOptions::max_document_bytes`] before any reader sees the whole of
+    /// it, and refuses one naming more hosts than
+    /// [`ImportLimits::max_addresses`] allows.
     pub fn read(
         self,
         input: &mut dyn BufRead,
         options: ReportOptions,
     ) -> Result<ScanReport, ImportError> {
-        match self {
+        let limit = options.max_document_bytes;
+        let mut bounded = Bounded::new(input, limit);
+
+        let read = match self {
             #[cfg(feature = "import-json")]
-            ReportFormat::Json => json::JsonReportReader::new(options).read(input),
+            ReportFormat::Json => json::JsonReportReader::new(options).read(&mut bounded),
             #[cfg(feature = "import-nmap")]
-            ReportFormat::Nmap => nmap::NmapXmlReportReader::new(options).read(input),
+            ReportFormat::Nmap => nmap::NmapXmlReportReader::new(options).read(&mut bounded),
+        };
+
+        match read {
+            Err(_) if bounded.exhausted => Err(ImportError::DocumentTooLarge { limit }),
+            other => other,
         }
     }
 }

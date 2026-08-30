@@ -70,6 +70,17 @@ pub struct Rule {
     /// scan could not name never fits a rule that names one.
     #[serde(default)]
     pub service: Option<String>,
+    /// A set of service names, any of which fits. Empty leaves the service
+    /// unconstrained, and this and [`service`](Self::service) set together admit
+    /// only a name satisfying both.
+    ///
+    /// What a detection reaches for when the software it is written about
+    /// answers to more than one name. The fingerprint corpus gives a product its
+    /// own service name, so a server that says `Grafana` is identified as
+    /// `grafana` and a quieter one on the same software as `http`. A gate naming
+    /// one of those runs against half the population it was written for.
+    #[serde(default)]
+    pub services: Vec<String>,
     /// A single port number. Every field of the gate ANDs, so this and
     /// [`ports`](Self::ports) set together admit only a number satisfying both.
     #[serde(default)]

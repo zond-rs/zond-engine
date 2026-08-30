@@ -434,6 +434,28 @@ pub enum ImportError {
         origin: ImportOrigin,
     },
 
+    /// A document ran past
+    /// [`ReportOptions::max_document_bytes`](crate::import::report::ReportOptions::max_document_bytes).
+    ///
+    /// A whole-document reader holds the parsed document in memory, so this is
+    /// the ceiling on that allocation rather than a statement about the file.
+    #[error("the document is longer than the {limit} byte limit")]
+    DocumentTooLarge {
+        /// The limit it passed.
+        limit: u64,
+    },
+
+    /// A report named more hosts than [`ImportLimits::max_addresses`] allows.
+    ///
+    /// The target side counts the addresses a scan would probe; here the same
+    /// bound counts the hosts a document claims were found, which is the
+    /// quantity a reader has to allocate for.
+    #[error("the report names more than {limit} hosts")]
+    TooManyHosts {
+        /// The limit it passed.
+        limit: u128,
+    },
+
     /// The input held more expressions than [`ImportLimits::max_tokens`].
     #[error("more than {limit} target expressions; use a range instead of a list")]
     TooManyTokens {

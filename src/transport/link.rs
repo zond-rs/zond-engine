@@ -120,7 +120,7 @@ impl EthernetSender {
         let mac = self.arp_resolve(&route.interface, route.src_mac, src_v4, target_v4)?;
         self.resolver
             .lock()
-            .unwrap()
+            .map_err(|_| poisoned("route resolver"))?
             .remember(&route.interface, route.next_hop, mac);
         Ok(mac)
     }
@@ -135,7 +135,10 @@ impl EthernetSender {
         src_ip: Ipv4Addr,
         target: Ipv4Addr,
     ) -> anyhow::Result<MacAddr> {
-        let mut channels = self.channels.lock().unwrap();
+        let mut channels = self
+            .channels
+            .lock()
+            .map_err(|_| poisoned("datalink channel"))?;
         let channel = self.channel_for(&mut channels, interface)?;
 
         let request = arp::build_request(&src_mac, &src_ip, target);
@@ -188,7 +191,7 @@ impl ProbeSender for EthernetSender {
             let route = self
                 .resolver
                 .lock()
-                .unwrap()
+                .map_err(|_| poisoned("route resolver"))?
                 .resolve(dst)
                 .with_context(|| format!("no Ethernet route to {dst}"))?;
 
@@ -213,7 +216,10 @@ impl ProbeSender for EthernetSender {
                 None => vec![frame::build_ethernet_frame(&spec, segment)?],
             };
 
-            let mut channels = self.channels.lock().unwrap();
+            let mut channels = self
+                .channels
+                .lock()
+                .map_err(|_| poisoned("datalink channel"))?;
             let channel = self.channel_for(&mut channels, &route.interface)?;
             for frame in &frames {
                 channel
@@ -225,6 +231,18 @@ impl ProbeSender for EthernetSender {
         })()
         .map_err(SendError::from_io)
     }
+}
+
+/// A poisoned lock, carried as a refusal rather than taken as a panic.
+///
+/// Reachable only when another thread panicked while holding the lock, which no
+/// critical section in this module can do: each is a few statements over data it
+/// owns. It is carried anyway because this is a library. `unwrap` here would
+/// turn one thread's panic into a permanent failure of the consumer's send path,
+/// with every later probe panicking and nothing they could catch, retry, or read
+/// a cause from.
+fn poisoned(what: &str) -> anyhow::Error {
+    anyhow::anyhow!("the {what} lock was poisoned by another thread's panic")
 }
 
 /// The source hardware address a frame should carry: the caller's spoofed one

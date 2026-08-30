@@ -218,15 +218,27 @@ pub async fn run_discover(targets: IpSet, cfg: &ZondConfig) -> Outcome {
     drive(session, task).await
 }
 
-/// Awaits the task, then snapshots the store and drains the (unbounded) event
-/// channel. Because the task has finished, every event has already been sent, so
-/// a non-blocking drain captures all of them.
+/// Awaits the task, then snapshots the store and drains the event channel.
+/// Because the task has finished, every event has already been sent, so a
+/// non-blocking drain captures whatever the channel still holds.
+///
+/// The channel is bounded and drops its oldest events, so this only collects
+/// everything for a scan that stayed inside `ScanEvents::CAPACITY`. Every scan
+/// in this suite is far smaller than that, and a gap is failed rather than
+/// absorbed: an `Outcome` that quietly held half the events would answer
+/// `Outcome::saw_host_update` with a `false` about the harness rather than
+/// about the scan.
 async fn drive(mut session: ScanSession, task: ScanTask) -> Outcome {
     let report = task.join().await.expect("scan task runs to completion");
 
     let store = session.hosts().clone();
     let mut events = Vec::new();
     while let Some(event) = session.events().try_recv() {
+        assert!(
+            !matches!(event, ScanEvent::EventsDropped { .. }),
+            "this scan outran the event buffer; a test that needs every event \
+             has to read the stream while the scan runs"
+        );
         events.push(event);
     }
 

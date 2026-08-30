@@ -133,7 +133,9 @@ impl TransportSenderHandle {
         }
         .with_context(|| format!("no open transport socket for {destination}'s address family"))?;
 
-        let mut socket = socket.lock().unwrap();
+        let mut socket = socket.lock().map_err(|_| {
+            anyhow::anyhow!("the raw socket lock was poisoned by another thread's panic")
+        })?;
 
         if socket.hop_limit != Some(hop_limit) {
             socket

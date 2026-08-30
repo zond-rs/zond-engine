@@ -156,7 +156,8 @@ const LOSSY: &[&[u8]] = &[b"services", b"ports"];
 /// reported about itself and runs to a few dozen bytes. The element's whole
 /// markup is still bounded by
 /// [`ImportLimits::max_line_bytes`](crate::import::ImportLimits::max_line_bytes),
-/// which is where an unbounded document is actually stopped.
+/// and the document by [`ReportOptions::max_document_bytes`], which is where an
+/// unbounded one is actually stopped.
 const MAX_VALUE_BYTES: usize = 16 * 1024;
 
 /// nmap's `conf` runs 0 to 10, and this engine's confidence runs 0 to 100.
@@ -351,6 +352,11 @@ impl ReportReader for NmapXmlReportReader {
                 origin: ImportOrigin::unknown(),
                 message: "no <nmaprun> element: this is not an nmap document".to_string(),
             });
+        }
+
+        let max_hosts = self.options.limits.max_addresses;
+        if run.hosts.len() as u128 > max_hosts {
+            return Err(ImportError::TooManyHosts { limit: max_hosts });
         }
 
         Ok(run.into_report())

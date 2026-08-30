@@ -14,8 +14,12 @@ id      = "grafana-path-traversal"
 version = "1.0.0"
 title   = "Grafana plugin path traversal (CVE-2021-43798)"
 
+# Both names, because the fingerprint corpus produces both for one server. A
+# Grafana whose response says so is identified as `grafana`, and one that stays
+# quiet is only ever `http`; a gate naming a single name runs against half of
+# them. See `assets/fingerprinting/monitoring/grafana.toml`.
 [detection.when]
-service  = "http"
+services = ["http", "grafana"]
 protocol = "tcp"
 
 [detection.capabilities]

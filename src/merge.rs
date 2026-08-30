@@ -452,6 +452,17 @@ fn fold_host(accounts: &[&Host]) -> Host {
         host.add_port(port);
     }
 
+    // Oldest account first, because `Finding::corroborate` takes the incoming
+    // severity, title and class, so the last one applied is the one that
+    // stands. `add_finding` is what decides whether two accounts of a claim are
+    // one finding, and it is the same rule a single scan reaching a claim twice
+    // goes through.
+    for account in accounts {
+        for finding in account.findings() {
+            host.add_finding(finding.clone());
+        }
+    }
+
     // Last, because every mutator above stamps `last_seen` with the moment it
     // ran. A fold is not a sighting.
     let first_seen = accounts
@@ -545,6 +556,13 @@ fn fold_port(accounts: &[&Port]) -> Port {
     }
     if let Some(security) = security {
         port.set_security(security);
+    }
+
+    // As on the host, and for the same reason.
+    for account in accounts {
+        for finding in account.findings() {
+            port.add_finding(finding.clone());
+        }
     }
 
     port
@@ -866,6 +884,21 @@ mod tests {
             .find(|port| port.number() == number)?
             .service()
             .cloned()
+    }
+
+    /// A finding, so that a fold asserted through [`ScanDiff`] has one to lose.
+    fn finding(id: &str, title: &str) -> crate::model::finding::Finding {
+        use crate::model::confidence::Confidence;
+        use crate::model::finding::{DetectionClass, DetectionId, Finding, Severity, Version};
+
+        Finding::new(
+            DetectionId::new(id, Version::new(1, 0, 0), "hash").expect("a valid detection id"),
+            title,
+            Severity::Medium,
+            Confidence::Certain,
+            DetectionClass::Passive,
+        )
+        .expect("a titled finding")
     }
 
     fn with_port(mut host: Host, port: Port) -> Host {
@@ -1226,18 +1259,17 @@ mod tests {
     /// already knows every finding worth comparing.
     #[test]
     fn folding_a_report_leaves_its_findings_alone() {
-        let source = report(
-            "test",
-            day(0),
-            vec![with_port(
-                host(1),
-                Port::new(443, TCP, PortState::Open).with_service(
-                    Service::new("https", 90)
-                        .with_product("nginx")
-                        .with_version("1.24.0"),
-                ),
-            )],
+        let mut port = Port::new(443, TCP, PortState::Open).with_service(
+            Service::new("https", 90)
+                .with_product("nginx")
+                .with_version("1.24.0"),
         );
+        port.add_finding(finding("tls-weak-cipher", "a weak cipher is offered"));
+
+        let mut carrier = host(1);
+        carrier.add_finding(finding("ssh-old", "an outdated SSH server"));
+
+        let source = report("test", day(0), vec![with_port(carrier, port)]);
 
         let once = merged(vec![source.clone()]);
         assert!(
@@ -1249,6 +1281,61 @@ mod tests {
         assert!(
             ScanDiff::between(&source, &twice).is_empty(),
             "and folding it into itself adds nothing"
+        );
+    }
+
+    /// Two sources that found different things about one host hold both, and two
+    /// that reached the same claim hold one, graded as the later scan graded it.
+    ///
+    /// Which is [`Host::add_finding`]'s rule, not a second one written here: a
+    /// merge reaching a claim twice and a single scan reaching it twice are the
+    /// same question.
+    #[test]
+    fn two_accounts_of_one_host_keep_every_claim_and_grade_it_as_the_newer_did() {
+        use crate::model::confidence::Confidence;
+        use crate::model::finding::{DetectionClass, DetectionId, Finding, Severity, Version};
+
+        let graded = |severity| {
+            Finding::new(
+                DetectionId::new("tls-weak-cipher", Version::new(1, 0, 0), "hash")
+                    .expect("a valid detection id"),
+                "a weak cipher is offered",
+                severity,
+                Confidence::Certain,
+                DetectionClass::Passive,
+            )
+            .expect("a titled finding")
+        };
+
+        let mut january = host(1);
+        january.add_finding(graded(Severity::Low));
+        january.add_finding(finding("ssh-old", "an outdated SSH server"));
+
+        let mut june = host(1);
+        june.add_finding(graded(Severity::Critical));
+
+        let folded = merged(vec![
+            report("older", day(0), vec![january]),
+            report("newer", day(30), vec![june]),
+        ]);
+
+        let host = folded.hosts().next().expect("the one host");
+        let findings: Vec<_> = host.findings().collect();
+
+        assert_eq!(
+            findings.len(),
+            2,
+            "the claim only the older scan made is still a claim"
+        );
+
+        let cipher = findings
+            .iter()
+            .find(|finding| finding.detection().id() == "tls-weak-cipher")
+            .expect("the claim both scans made");
+        assert_eq!(
+            cipher.severity(),
+            Severity::Critical,
+            "the later scan graded it, so the later grade stands"
         );
     }
 
