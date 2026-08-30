@@ -7438,6 +7438,7 @@ pub fn zond_engine::model::ip::set::Positions::is_empty(&self) -> bool
 pub fn zond_engine::model::ip::set::Positions::of(&zond_engine::model::ip::set::IpSet) -> Self
 pub fn zond_engine::model::ip::set::Positions::ranges_in(&self, core::ops::range::Range<u64>) -> alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
 pub fn zond_engine::model::ip::set::Positions::total(&self) -> u64
+pub fn zond_engine::model::ip::set::Positions::unnumbered(&self) -> &[zond_engine::model::ip::range::IpRange]
 impl core::clone::Clone for zond_engine::model::ip::set::Positions
 pub fn zond_engine::model::ip::set::Positions::clone(&self) -> zond_engine::model::ip::set::Positions
 impl core::default::Default for zond_engine::model::ip::set::Positions
@@ -12635,6 +12636,7 @@ impl core::marker::Unpin for zond_engine::system::privilege::Privilege
 impl core::marker::UnsafeUnpin for zond_engine::system::privilege::Privilege
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::privilege::Privilege
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::privilege::Privilege
+pub fn zond_engine::system::privilege::can_send_raw() -> bool
 pub fn zond_engine::system::privilege::is_elevated() -> bool
 pub mod zond_engine::transport
 pub mod zond_engine::transport::capture
@@ -12764,8 +12766,8 @@ pub fn zond_engine::transport::capture::FrameChannel::send_frame(&mut self, &[u8
 impl zond_engine::transport::capture::FrameSink for zond_engine::transport::capture::FrameSender
 pub fn zond_engine::transport::capture::FrameSender::send_frame(&mut self, &[u8]) -> core::result::Result<(), alloc::string::String>
 pub fn zond_engine::transport::capture::frames(&[zond_engine::model::ip::scoped::Zone], &zond_engine::transport::capture::CaptureOptions, usize) -> core::result::Result<(zond_engine::transport::capture::FrameStream, zond_engine::transport::capture::CaptureGuard), zond_engine::transport::capture::CaptureError>
-pub fn zond_engine::transport::capture::segments(&[zond_engine::model::ip::scoped::Zone], &zond_engine::transport::capture::CaptureOptions) -> core::result::Result<(zond_engine::transport::capture::CaptureStream, zond_engine::transport::capture::CaptureGuard), zond_engine::transport::capture::CaptureError>
-pub type zond_engine::transport::capture::CaptureStream = tokio::sync::mpsc::unbounded::UnboundedReceiver<zond_engine::transport::capture::CapturedSegment>
+pub fn zond_engine::transport::capture::segments(&[zond_engine::model::ip::scoped::Zone], &zond_engine::transport::capture::CaptureOptions, usize) -> core::result::Result<(zond_engine::transport::capture::CaptureStream, zond_engine::transport::capture::CaptureGuard), zond_engine::transport::capture::CaptureError>
+pub type zond_engine::transport::capture::CaptureStream = tokio::sync::mpsc::bounded::Receiver<zond_engine::transport::capture::CapturedSegment>
 pub type zond_engine::transport::capture::FrameStream = tokio::sync::mpsc::bounded::Receiver<zond_engine::transport::capture::CapturedFrame>
 pub mod zond_engine::transport::channel
 #[non_exhaustive] pub enum zond_engine::transport::channel::ChannelError

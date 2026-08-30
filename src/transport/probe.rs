@@ -45,6 +45,15 @@ use crate::transport::capture::{self, CaptureGuard, CaptureOptions, CaptureStrea
 use crate::transport::link::EthernetSender;
 use crate::transport::raw::{self, TransportSenderHandle, TransportType};
 
+/// How many captured segments may wait for a scanner to read them.
+///
+/// Deep enough that a burst of genuine replies is never what stalls the reader,
+/// and shallow enough that traffic the filter could not narrow cannot grow
+/// without bound: at [`REPLY_SNAP_LEN`](capture::REPLY_SNAP_LEN) a full queue is
+/// a bounded number of megabytes rather than however much the network sends.
+/// See [`capture::segments`] for which filters leave that possible and why.
+const REPLY_QUEUE_DEPTH: usize = 4096;
+
 /// The error [`SendMode::from_str`] returns, carrying the names that would have
 /// worked so a front end can print it verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -685,7 +694,11 @@ impl ProbeTransport {
 
     /// [`open`](Self::open) against an explicit list of links.
     pub fn open_on(kind: ProbeKind, links: &[Zone]) -> Result<Self, TransportError> {
-        let (rx, capture) = capture::segments(links, &CaptureOptions::for_replies(kind.filter()))?;
+        let (rx, capture) = capture::segments(
+            links,
+            &CaptureOptions::for_replies(kind.filter()),
+            REPLY_QUEUE_DEPTH,
+        )?;
         let tx: Box<dyn ProbeSender> = Box::new(RawIpSender::open(kind)?);
         Ok(Self { tx, rx, capture })
     }
@@ -706,6 +719,7 @@ impl ProbeTransport {
         let (rx, capture) = capture::segments(
             &capturable_interfaces(),
             &CaptureOptions::for_replies(kind.filter()),
+            REPLY_QUEUE_DEPTH,
         )?;
         Ok(Self {
             tx: Box::new(sender),
@@ -725,6 +739,7 @@ impl ProbeTransport {
         let (rx, capture) = capture::segments(
             &capturable_interfaces(),
             &CaptureOptions::for_replies(kind.filter()),
+            REPLY_QUEUE_DEPTH,
         )?;
         Ok(Self {
             tx: Box::new(NoopSender),
@@ -817,7 +832,7 @@ mod tests {
 
         let mock = MockSender::default();
         let recorded = mock.sent.clone();
-        let (reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         let mut transport = ProbeTransport::from_parts(Box::new(mock), reply_rx);
 
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -836,7 +851,7 @@ mod tests {
             pnet_packet::ip::IpNextHeaderProtocols::Udp,
             vec![1, 2, 3],
         );
-        reply_tx.send(reply.clone()).unwrap();
+        reply_tx.send(reply.clone()).await.unwrap();
         assert_eq!(transport.rx.recv().await, Some(reply));
     }
 

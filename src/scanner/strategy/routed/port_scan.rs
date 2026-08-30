@@ -1074,7 +1074,7 @@ mod tests {
     /// [`scanner_with_mock`] for an explicit technique.
     fn scanner_for(technique: TcpScanTechnique) -> (TcpPortScanner, ScanSession, SentProbes) {
         let (session, ctx) = ScanSession::new();
-        let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         let sender = MockSender::default();
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);

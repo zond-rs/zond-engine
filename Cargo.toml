@@ -24,6 +24,29 @@ categories = ["network-programming", "asynchronous"]
 # signatures out of it, so a package without it does not build at all.
 exclude = ["audit/", "docs/", ".github/", "deny.toml"]
 
+# What docs.rs is asked to build, which is not what it builds by default.
+#
+# Its default is this crate's default features, which are `export-json` and
+# `journal-format` — so every import format, four of the five export formats,
+# `ImportError`, `Settings` and `ReportReader` would be absent from the page
+# `documentation` above points a stranger at. The lint workflow builds
+# `--all-features` and so cannot see that; this is the line that makes the two
+# agree.
+#
+# `--cfg docsrs` turns on the `doc_cfg` feature in `lib.rs`, which is what puts
+# "Available on crate feature `export-csv` only" beside an item. Without it a
+# reader who finds `CsvExporter` has no way to learn from the documentation that
+# it needs a feature at all. Nightly-only, and gated on `docsrs` so no other
+# build is asked for it; `doc_auto_cfg` was the name until 1.92 merged it here.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+# `docsrs` is set by the stanza above and by nothing else, so every other build
+# has to be told it is a name this crate expects rather than a typo.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
+
 [features]
 default = ["export-json", "journal-format"]
 

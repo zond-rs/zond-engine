@@ -479,13 +479,15 @@ impl PartialEq for IpSet {
 /// # A set larger than a position can count
 ///
 /// A position is a `u64`, and an IPv6 range can hold more addresses than that.
-/// Ranges are numbered in order until one would not fit, and everything from
-/// there on is **unnumbered**: [`find`](Self::find) answers `None` for it.
+/// A `/64` is the first size that does not fit, being one address past what a
+/// `u64` counts. Ranges are numbered in order until one would not fit, and
+/// everything from there on is **unnumbered**: [`find`](Self::find) answers
+/// `None` for it and [`unnumbered`](Self::unnumbered) hands it back whole.
 ///
 /// An unnumbered address can never settle, so it is asked again on every
-/// sitting — the same fail-safe an unreported outcome takes. IPv4 is numbered
-/// first and so is never the half that is lost, which matters because it is the
-/// half that is walked address by address.
+/// sitting, which is the fail-safe an unreported outcome also takes. IPv4 is
+/// numbered first and so is never the half that is lost, which matters because
+/// it is the half that is walked address by address.
 #[derive(Debug, Clone, Default)]
 pub struct Positions {
     /// The ranges in enumeration order, each with the position of its first
@@ -501,6 +503,8 @@ pub struct Positions {
     runs: Vec<Run>,
     /// How many addresses are numbered, which is every address of every span.
     total: u64,
+    /// The ranges the numbering could not reach, in enumeration order.
+    unnumbered: Vec<IpRange>,
 }
 
 /// One stretch of [`Positions::spans`] that a binary search may be run over.
@@ -551,16 +555,24 @@ impl Positions {
         let mut runs: Vec<Run> = Vec::new();
         let mut total: u64 = 0;
         let mut group: Option<(bool, Option<u32>)> = None;
+        let mut unnumbered = Vec::new();
 
         for range in ranges {
             // The first range that will not fit ends the numbering, and so does
             // every range after it: positions have to stay contiguous, or the
-            // ones already handed out would move.
+            // ones already handed out would move. What is left is kept rather
+            // than dropped, so a resumed sitting still asks about it.
+            if !unnumbered.is_empty() {
+                unnumbered.push(range);
+                continue;
+            }
             let Ok(len) = u64::try_from(range.len()) else {
-                break;
+                unnumbered.push(range);
+                continue;
             };
             let Some(next) = total.checked_add(len) else {
-                break;
+                unnumbered.push(range);
+                continue;
             };
 
             let here = match range {
@@ -585,7 +597,12 @@ impl Positions {
             total = next;
         }
 
-        Self { spans, runs, total }
+        Self {
+            spans,
+            runs,
+            total,
+            unnumbered,
+        }
     }
 
     /// How many addresses are numbered.
@@ -594,8 +611,23 @@ impl Positions {
     }
 
     /// Whether nothing is numbered at all.
+    ///
+    /// A plan whose first range is already too large is empty by this and still
+    /// holds every address it was built from; see
+    /// [`unnumbered`](Self::unnumbered).
     pub fn is_empty(&self) -> bool {
         self.total == 0
+    }
+
+    /// The ranges the numbering could not reach, in enumeration order.
+    ///
+    /// Empty for every plan that fits, which is every IPv4 plan and every IPv6
+    /// one written narrower than a `/64`. A resumed sweep asks about these
+    /// alongside whatever its checkpoint says is left, because a range with no
+    /// positions has nothing recorded against it and asking again is the only
+    /// reading that cannot skip an address.
+    pub fn unnumbered(&self) -> &[IpRange] {
+        &self.unnumbered
     }
 
     /// Where `ip` falls in the enumeration, or `None` when the set does not hold
@@ -1319,13 +1351,28 @@ mod tests {
         let set = set("192.0.2.1-192.0.2.10,198.51.100.0/30,2001:db8::1-2001:db8::5");
         let positions = set.positions();
 
-        assert_eq!(positions.total(), set.len() as u64);
+        // `try_from` rather than `as`: the cast truncates a count too large to
+        // number down to a total that matches the truncated numbering, so the
+        // assertion held for exactly the sets it exists to catch.
+        assert_eq!(positions.total(), u64::try_from(set.len()).unwrap());
+        assert!(positions.unnumbered().is_empty());
 
         for (index, ip) in set.iter().enumerate() {
             let index = index as u64;
             assert_eq!(positions.find(ip), Some(index), "{ip} is not at {index}");
             assert_eq!(positions.address_at(index), Some(ip), "{index} is not {ip}");
         }
+    }
+
+    /// A `/64` holds one address more than a `u64` counts, so it is the first
+    /// prefix the numbering cannot reach, and it is also the ordinary size of
+    /// an IPv6 subnet.
+    #[test]
+    fn a_range_too_large_to_number_is_kept_rather_than_dropped() {
+        let positions = set("2001:db8::/64").positions();
+
+        assert_eq!(positions.total(), 0);
+        assert_eq!(positions.unnumbered().len(), 1);
     }
 
     /// A sweep finds neighbours it was never asked about. They are findings,
@@ -1405,8 +1452,8 @@ mod tests {
     }
 
     /// An IPv6 range can hold more addresses than a position can count. The
-    /// numbering stops there rather than wrapping, and IPv4 — the half that is
-    /// actually walked address by address — keeps its positions.
+    /// numbering stops there rather than wrapping, and IPv4, the half that is
+    /// actually walked address by address, keeps its positions.
     #[test]
     fn a_range_too_large_to_number_ends_the_numbering_without_losing_ipv4() {
         let set = set("192.0.2.1-192.0.2.4,2001:db8::/64,2001:db9::1");
@@ -1426,6 +1473,11 @@ mod tests {
             positions.find("2001:db9::1".parse().expect("an address")),
             None,
             "and so is everything after it: positions have to stay contiguous"
+        );
+        assert_eq!(
+            positions.unnumbered().len(),
+            2,
+            "both are kept, or a resumed sweep would never ask about them"
         );
     }
 

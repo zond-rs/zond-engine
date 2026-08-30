@@ -59,7 +59,7 @@ use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, MutableIcmpv6Pa
 use pnet_packet::ip::IpNextHeaderProtocols;
 use pnet_packet::tcp::{MutableTcpPacket, TcpPacket};
 use pnet_packet::udp::UdpPacket;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self, Sender};
 
 use zond_engine::model::capture::{IpObservation, Ipv4Observation};
 use zond_engine::protocols::{ip, tcp, udp};
@@ -527,7 +527,7 @@ impl FakeNet {
     /// and generator, so two scanners on one net are still jointly
     /// reproducible.
     pub fn transport(&self) -> ProbeTransport {
-        let (replies, rx) = mpsc::unbounded_channel();
+        let (replies, rx) = mpsc::channel(1024);
         let link = FakeLink {
             layer4: self.layer4,
             stack: self.stack,
@@ -564,7 +564,7 @@ struct FakeLink {
     policies: HashMap<(IpAddr, u16), Policy>,
     fallback: Policy,
     state: Arc<Mutex<State>>,
-    replies: UnboundedSender<CapturedSegment>,
+    replies: Sender<CapturedSegment>,
 }
 
 impl ProbeSender for FakeLink {
@@ -1094,7 +1094,7 @@ impl FakeLink {
 
         if policy.delay.is_zero() {
             for _ in 0..copies {
-                let _ = self.replies.send(segment.clone());
+                let _ = self.replies.try_send(segment.clone());
             }
             return;
         }
@@ -1106,7 +1106,7 @@ impl FakeLink {
             for _ in 0..copies {
                 // The receiver is gone once the scan ends, which is the normal
                 // way a delayed reply that arrived too late is discarded.
-                let _ = replies.send(segment.clone());
+                let _ = replies.try_send(segment.clone());
             }
         });
     }
@@ -1171,7 +1171,7 @@ pub fn unsendable_transport(reason: &'static str) -> ProbeTransport {
     /// its capture dying and stops - before it has tried to send anything, so
     /// the very failure this exists to produce would never happen. A real
     /// capture is kept alive by its reader threads.
-    struct Refuses(&'static str, UnboundedSender<CapturedSegment>);
+    struct Refuses(&'static str, Sender<CapturedSegment>);
 
     impl ProbeSender for Refuses {
         fn send(
@@ -1188,7 +1188,7 @@ pub fn unsendable_transport(reason: &'static str) -> ProbeTransport {
         }
     }
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(1024);
     ProbeTransport::from_parts(Box::new(Refuses(reason, tx)), rx)
 }
 

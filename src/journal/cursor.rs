@@ -191,7 +191,8 @@ impl Checkpoint {
     /// Computed from the ranges, so continuing a sweep of a `/8` costs what
     /// continuing a sweep of a `/24` does. Everything below the watermark is one
     /// span to drop; above it, only the few positions that settled out of order
-    /// are taken out individually.
+    /// are taken out individually. Anything the plan was too large to number
+    /// comes back whole, since no checkpoint can have accounted for it.
     ///
     /// **`positions` must number the plan this checkpoint was written against.**
     /// A position is an index into one enumeration, and the manifest's plan
@@ -220,6 +221,12 @@ impl Checkpoint {
 
         for range in positions.ranges_in(from..total) {
             remaining.insert_range(range);
+        }
+
+        // A range too large to number holds no position, so nothing can ever
+        // have been recorded against it. Every sitting asks about it again.
+        for range in positions.unnumbered() {
+            remaining.insert_range(*range);
         }
 
         remaining.canonicalize();
@@ -263,7 +270,7 @@ mod persistence {
     use std::path::Path;
 
     use super::Checkpoint;
-    use crate::journal::file::{claim_for_invoking_user, create_private};
+    use crate::journal::file::create_private;
     use crate::journal::format::JournalError;
 
     impl Checkpoint {
@@ -293,13 +300,9 @@ mod persistence {
                 file.write_all(serde_json::to_string(self)?.as_bytes())?;
             }
 
+            // The destination becomes the temporary's inode, which already
+            // carries the mode and the ownership `create_private` gave it.
             fs::rename(&temporary, path)?;
-
-            // The rename carries the temporary file's ownership to the
-            // destination, so this is only for the case where the destination
-            // already existed and the rename replaced it — and it is cheap
-            // enough not to reason about which happened.
-            claim_for_invoking_user(path);
             Ok(())
         }
 
@@ -379,6 +382,28 @@ mod tests {
         let remaining = Checkpoint::default().remaining_addresses(&plan.positions());
 
         assert_eq!(remaining, plan);
+    }
+
+    /// A plan holding a range too large to number comes back whole, however far
+    /// the numbered part of it got. Anything else resumes a sweep of an IPv6
+    /// subnet by asking about nothing and reporting that it finished.
+    #[test]
+    fn a_sweep_of_an_unnumberable_plan_resumes_over_all_of_it() {
+        let plan = addresses("192.0.2.0/30,2001:db8::/64");
+        let positions = plan.positions();
+
+        let checkpoint = Checkpoint {
+            watermark: 4,
+            settled_above: Vec::new(),
+        };
+        let remaining = checkpoint.remaining_addresses(&positions);
+
+        assert!(
+            !remaining.is_empty(),
+            "the /64 was never numbered and so was never settled"
+        );
+        assert_eq!(remaining.v4(), &[], "the numbered half did settle");
+        assert_eq!(remaining.v6(), plan.v6());
     }
 
     /// And a sweep that settled everything has nothing left to ask.

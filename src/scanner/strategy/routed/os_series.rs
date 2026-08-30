@@ -788,7 +788,7 @@ mod tests {
     /// identifier zero — RFC 6864 §4.1 permits it on a datagram that cannot be
     /// fragmented — while the refusal runs a counter the whole host shares.
     struct Linux {
-        replies: mpsc::UnboundedSender<CapturedSegment>,
+        replies: mpsc::Sender<CapturedSegment>,
         /// The host's shared identifier counter, read by its reset path.
         identifier: Arc<AtomicU16>,
         /// When this host booted, so its timestamp clock can tick at a rate
@@ -846,7 +846,9 @@ mod tests {
             } else {
                 self.identifier.fetch_add(1, Ordering::Relaxed)
             };
-            let _ = self.replies.send(captured(reply.bytes(), identification));
+            let _ = self
+                .replies
+                .try_send(captured(reply.bytes(), identification));
             Ok(())
         }
     }
@@ -858,7 +860,7 @@ mod tests {
         samples: usize,
         refuses: bool,
     ) -> OsSeriesScanner {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         let link = Linux {
             replies: tx,
             identifier: Arc::new(AtomicU16::new(1000)),
@@ -1022,7 +1024,7 @@ mod tests {
         let (_session, ctx) = ScanSession::new();
         let mock = MockSender::default();
         let recorded = mock.sent.clone();
-        let (_tx, rx) = mpsc::unbounded_channel();
+        let (_tx, rx) = mpsc::channel(1024);
         let transport = ProbeTransport::from_parts(Box::new(mock), rx as CaptureStream);
 
         let samples = 4;
@@ -1075,7 +1077,7 @@ mod tests {
         }
 
         let (session, ctx) = ScanSession::new();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         let transport = ProbeTransport::from_parts(Box::new(Silent), rx as CaptureStream);
         let mut scanner = OsSeriesScanner::with_transport(
             ctx.clone(),
@@ -1098,7 +1100,7 @@ mod tests {
         };
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            let _ = tx.send(captured(theirs.bytes(), 0));
+            let _ = tx.try_send(captured(theirs.bytes(), 0));
         });
 
         scanner.discover_hosts().await.expect("the phase runs");

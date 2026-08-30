@@ -970,7 +970,7 @@ mod tests {
         reply_ttl: u8,
         /// Distances whose router refuses to identify itself.
         silent: Vec<u8>,
-        replies: mpsc::UnboundedSender<CapturedSegment>,
+        replies: mpsc::Sender<CapturedSegment>,
     }
 
     /// The SYN+ACK a listening port answers `probe` with.
@@ -1045,7 +1045,7 @@ mod tests {
                     syn_ack_to(segment),
                     self.reply_ttl,
                 );
-                let _ = self.replies.send(reply);
+                let _ = self.replies.try_send(reply);
                 return Ok(());
             }
 
@@ -1077,7 +1077,7 @@ mod tests {
             bytes[0] = pnet_packet::icmp::IcmpTypes::TimeExceeded.0;
             bytes.extend_from_slice(&quoted);
 
-            let _ = self.replies.send(Network::observed(
+            let _ = self.replies.try_send(Network::observed(
                 router_at(emission.hop_limit),
                 IpNextHeaderProtocols::Icmp,
                 bytes,
@@ -1090,7 +1090,7 @@ mod tests {
     /// A tracer wired to `network`, with the store it writes into.
     fn tracer_against(network: Network) -> (ScanContext, Tracer) {
         let (_session, ctx) = ScanSession::new();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         let network = Network {
             replies: tx,
             ..network
@@ -1130,7 +1130,7 @@ mod tests {
             distance: 4,
             reply_ttl: 60,
             silent: vec![2],
-            replies: mpsc::unbounded_channel().0,
+            replies: mpsc::channel(1024).0,
         });
 
         tracer.run(vec![target]).await;
@@ -1196,7 +1196,7 @@ mod tests {
                 // 64 - 59 = five hops back, against seven going out.
                 reply_ttl: 59,
                 silent: vec![2],
-                replies: mpsc::unbounded_channel().0,
+                replies: mpsc::channel(1024).0,
             },
             target,
         )
@@ -1231,7 +1231,7 @@ mod tests {
                 // 64 - 56 = eight hops back, against five going out.
                 reply_ttl: 56,
                 silent: vec![],
-                replies: mpsc::unbounded_channel().0,
+                replies: mpsc::channel(1024).0,
             },
             target,
         )
@@ -1263,7 +1263,7 @@ mod tests {
                 reply_ttl: 58,
                 // Not one router identifies itself.
                 silent: (1..=6).collect(),
-                replies: mpsc::unbounded_channel().0,
+                replies: mpsc::channel(1024).0,
             },
             target,
         )

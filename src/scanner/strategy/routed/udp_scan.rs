@@ -718,7 +718,7 @@ mod tests {
     /// what actually reached the wire rather than only on what was recorded.
     fn scanner_with_recorder() -> (UdpPortScanner, ScanSession, SentProbes) {
         let (session, ctx) = ScanSession::new();
-        let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         let sender = MockSender::default();
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
@@ -733,7 +733,7 @@ mod tests {
 
     fn scanner_with_mock() -> (UdpPortScanner, ScanSession) {
         let (session, ctx) = ScanSession::new();
-        let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         let transport = ProbeTransport::from_parts(Box::new(MockSender::default()), reply_rx);
         let resolver = SourceResolver::from_links(&[on_link_interface()]);
 
@@ -1380,7 +1380,8 @@ mod tests {
         let filter = format!("icmp or icmp6 or (udp and dst port {src_port})");
         let link = loopback.zone();
         let (mut rx, _capture) =
-            capture::segments(&[link], &capture::CaptureOptions::for_replies(filter)).unwrap();
+            capture::segments(&[link], &capture::CaptureOptions::for_replies(filter), 1024)
+                .unwrap();
         // The capture threads open their devices asynchronously; a probe sent
         // before they are listening would simply not be seen.
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1441,7 +1442,8 @@ mod tests {
         let filter = format!("icmp or icmp6 or (udp and dst port {src_port})");
         let link = loopback.zone();
         let (mut rx, _capture) =
-            capture::segments(&[link], &capture::CaptureOptions::for_replies(filter)).unwrap();
+            capture::segments(&[link], &capture::CaptureOptions::for_replies(filter), 1024)
+                .unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         socket
@@ -1600,7 +1602,7 @@ mod tests {
     #[test]
     fn every_probe_is_sent_from_the_scan_source_port() {
         let (_session, ctx) = ScanSession::new();
-        let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         let sender = MockSender::default();
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);

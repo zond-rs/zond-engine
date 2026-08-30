@@ -905,7 +905,7 @@ mod tests {
     /// only thing that moves a verdict is what the test puts in the ledger.
     fn core() -> (RawProbeScan<()>, ScanSession) {
         let (session, ctx) = ScanSession::new();
-        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_tx, rx) = tokio::sync::mpsc::channel(1024);
         let core = RawProbeScan {
             resolver: SourceResolver::from_links(&[]),
             ctx,

@@ -164,7 +164,7 @@ async fn resolve(
     sniffed: Vec<CapturedSegment>,
 ) -> HostStore {
     let (dns_tx, dns_rx) = mpsc::unbounded_channel();
-    let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+    let (capture_tx, capture_rx) = mpsc::channel(1024);
     let transport = ProbeTransport::from_parts(Box::new(SilentSender), capture_rx);
 
     let resolver = HostnameResolver::with_transport(dns_rx, transport, servers)
@@ -176,7 +176,10 @@ async fn resolve(
     }
 
     for segment in sniffed {
-        capture_tx.send(segment).expect("queueing sniffed traffic");
+        capture_tx
+            .send(segment)
+            .await
+            .expect("queueing sniffed traffic");
     }
     for target in targets {
         dns_tx.send(*target).expect("queueing a target");

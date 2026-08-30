@@ -226,6 +226,11 @@
 // A public item without a doc comment is a gap in this crate's contract, so the
 // standard is enforced rather than kept by hand.
 #![warn(missing_docs)]
+// Most of this crate's public surface sits behind a cargo feature, and a
+// rendered page that does not say which one leaves a reader to find out by
+// compiling. Nightly-only, so it is set for the docs.rs build alone; see
+// `Cargo.toml`.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod config;
 pub mod cve;

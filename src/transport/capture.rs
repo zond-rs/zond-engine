@@ -270,7 +270,10 @@ impl CapturedSegment {
 
 /// The parsed receive stream produced by a running capture: [`CapturedSegment`]s
 /// from every captured interface, interleaved in arrival order.
-pub type CaptureStream = mpsc::UnboundedReceiver<CapturedSegment>;
+///
+/// Bounded, as [`FrameStream`] is and for the same reason. [`segments`]
+/// documents where the traffic that fills it comes from.
+pub type CaptureStream = mpsc::Receiver<CapturedSegment>;
 
 /// One frame as it came off a link, with nothing stripped.
 ///
@@ -353,8 +356,13 @@ impl CaptureStats {
 }
 
 /// Keeps a set of live per-interface captures running for as long as it's
-/// held. Dropping it signals every reader thread to stop; each exits at its
-/// next read timeout, so no capture thread outlives the guard.
+/// held. Dropping it signals every reader thread to stop and waits for each,
+/// so no capture thread outlives the guard.
+///
+/// **Dropping blocks**, for one read timeout, and the flag is what bounds it. A
+/// thread waiting for room in a full queue reads the flag too, so a guard
+/// dropped while a consumer still holds the receiver and has stopped draining
+/// it comes back on the same schedule as any other.
 ///
 /// This is deliberately separate from the [`CaptureStream`] it feeds, so a
 /// consumer can own the receiver directly (borrowing it mutably in a
@@ -453,37 +461,60 @@ pub enum CaptureError {
 /// those is asking a different question and wants the whole frame — see
 /// [`frames`], which this is otherwise the twin of.
 ///
-/// # The stream is unbounded, and may be
+/// # The stream is bounded, and has to be
 ///
-/// What arrives here is bounded by what this host sent: a reply exists because a
-/// probe was emitted, and the scanner emitting them is the same task reading
-/// this. There is no rate at which the network can fill this faster than the
-/// scan chooses to. [`frames`] has no such guarantee and is bounded for it.
+/// Most of what arrives is bounded by what this host sent: a reply exists
+/// because a probe was emitted, and the scanner emitting them is the same task
+/// reading this. The rest is not, and the filters say so themselves. Only
+/// [`ProbeKind::UdpResolve`](crate::transport::probe::ProbeKind) narrows to this
+/// scan in both address families. A SYN sweep admits every IPv6 TCP segment
+/// because `tcp[tcpflags]` will not compile over a next-header chain, and the
+/// three kinds that read ICMP errors admit `icmp or icmp6` whole because an
+/// error names no ports of its own. Each of those is the right trade and each
+/// leaves a rate the network sets rather than the scan.
+///
+/// So `queue_depth` bounds what may wait, exactly as it does for [`frames`], and
+/// a full queue stalls the reader rather than discarding: the kernel buffer
+/// takes up the slack, `libpcap` counts what it drops, and the loss lands in
+/// [`CaptureCounts::dropped`] where a report already carries it.
 pub fn segments(
     links: &[Zone],
     options: &CaptureOptions,
+    queue_depth: usize,
 ) -> Result<(CaptureStream, CaptureGuard), CaptureError> {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(queue_depth);
 
-    let guard = spawn_captures(links, options, move |_zone, link| {
+    let guard = spawn_captures(links, options, move |_zone, link, stop| {
         let tx = tx.clone();
         move |packet: &pcap::Packet<'_>| {
             let Some(parsed) = frame::parse_captured_segment(link, packet.data) else {
                 return ControlFlow::Continue(());
             };
 
-            let sent = tx.send(CapturedSegment {
+            let mut segment = CapturedSegment {
                 source: parsed.source,
                 protocol: parsed.protocol,
                 bytes: parsed.payload.to_vec(),
                 observation: Some(parsed.observation),
                 source_mac: frame::source_mac(link, packet.data),
-            });
+            };
 
-            if sent.is_err() {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
+            // Waits rather than drops, for the reason `frames` gives.
+            loop {
+                match tx.try_send(segment) {
+                    Ok(()) => return ControlFlow::Continue(()),
+                    Err(mpsc::error::TrySendError::Closed(_)) => return ControlFlow::Break(()),
+                    Err(mpsc::error::TrySendError::Full(returned)) => {
+                        // A guard being dropped is not a reason to keep waiting
+                        // for room, and the join it is about to do would wait
+                        // on this thread. See `CaptureGuard`.
+                        if stop.load(Ordering::Relaxed) {
+                            return ControlFlow::Break(());
+                        }
+                        segment = returned;
+                        thread::sleep(QUEUE_FULL_PAUSE);
+                    }
+                }
             }
         }
     })?;
@@ -523,7 +554,7 @@ pub fn frames(
 ) -> Result<(FrameStream, CaptureGuard), CaptureError> {
     let (tx, rx) = mpsc::channel(queue_depth);
 
-    let guard = spawn_captures(links, options, move |zone, link| {
+    let guard = spawn_captures(links, options, move |zone, link, stop| {
         let tx = tx.clone();
         let zone = zone.clone();
         move |packet: &pcap::Packet<'_>| {
@@ -541,6 +572,12 @@ pub fn frames(
                     Ok(()) => return ControlFlow::Continue(()),
                     Err(mpsc::error::TrySendError::Closed(_)) => return ControlFlow::Break(()),
                     Err(mpsc::error::TrySendError::Full(returned)) => {
+                        // A guard being dropped is not a reason to keep waiting
+                        // for room, and the join it is about to do would wait
+                        // on this thread. See `CaptureGuard`.
+                        if stop.load(Ordering::Relaxed) {
+                            return ControlFlow::Break(());
+                        }
                         frame = returned;
                         thread::sleep(QUEUE_FULL_PAUSE);
                     }
@@ -570,7 +607,7 @@ pub fn frames(
 fn spawn_captures<D>(
     links: &[Zone],
     options: &CaptureOptions,
-    mut deliver_for: impl FnMut(&Zone, LinkType) -> D,
+    mut deliver_for: impl FnMut(&Zone, LinkType, Arc<AtomicBool>) -> D,
 ) -> Result<CaptureGuard, CaptureError>
 where
     D: FnMut(&pcap::Packet<'_>) -> ControlFlow<()> + Send + 'static,
@@ -596,8 +633,8 @@ where
                 info!(verbosity = 3, "capturing on {name} (link type {link:?})");
                 opened += 1;
 
-                let deliver = deliver_for(zone, link);
                 let stop = stop.clone();
+                let deliver = deliver_for(zone, link, stop.clone());
                 let counters = Arc::new(CaptureStats::default());
                 stats.push(counters.clone());
                 let name = name.to_owned();

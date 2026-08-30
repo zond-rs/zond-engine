@@ -596,7 +596,7 @@ mod tests {
     /// by hand, so a shared misreading of a TCP header cannot pass for agreement
     /// between the scanner and its test.
     struct Zombie {
-        replies: mpsc::UnboundedSender<CapturedSegment>,
+        replies: mpsc::Sender<CapturedSegment>,
         counter: AtomicU16,
         kind: Counter,
         open_ports: Vec<u16>,
@@ -633,7 +633,7 @@ mod tests {
                     tcp.get_source(),
                     tcp.get_acknowledgement(),
                 );
-                let _ = self.replies.send(captured(reset, self.next_id()));
+                let _ = self.replies.try_send(captured(reset, self.next_id()));
             } else if dst == TARGET && self.open_ports.contains(&tcp.get_destination()) {
                 // An open target bounced a SYN+ACK off the zombie, which reset it
                 // and advanced the counter — a step this scan reads but never sees.
@@ -674,7 +674,7 @@ mod tests {
 
     /// A scanner pointed at the synthetic [`Zombie`], over a synthetic transport.
     fn scanner(ctx: &ScanContext, kind: Counter, open_ports: Vec<u16>) -> IdlePortScanner {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         let zombie = Zombie {
             replies: tx,
             counter: AtomicU16::new(1000),

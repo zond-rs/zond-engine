@@ -489,7 +489,7 @@ mod tests {
     /// counter starts at `hops` sends, and records nothing else.
     struct Echoing {
         hops: u8,
-        replies: mpsc::UnboundedSender<CapturedSegment>,
+        replies: mpsc::Sender<CapturedSegment>,
     }
 
     impl ProbeSender for Echoing {
@@ -500,16 +500,13 @@ mod tests {
             _dst: IpAddr,
             _emission: Emission,
         ) -> Result<(), SendError> {
-            let _ = self.replies.send(echo_reply(segment, self.hops));
+            let _ = self.replies.try_send(echo_reply(segment, self.hops));
             Ok(())
         }
     }
 
-    fn scanner(
-        ctx: &ScanContext,
-        hops: u8,
-    ) -> (OsEchoScanner, mpsc::UnboundedSender<CapturedSegment>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    fn scanner(ctx: &ScanContext, hops: u8) -> (OsEchoScanner, mpsc::Sender<CapturedSegment>) {
+        let (tx, rx) = mpsc::channel(1024);
         let link = Echoing {
             hops,
             replies: tx.clone(),
@@ -589,7 +586,7 @@ mod tests {
         }
 
         let (session, ctx) = ScanSession::new();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         let transport = ProbeTransport::from_parts(Box::new(Silent), rx);
         let mut scanner = OsEchoScanner::with_transport(ctx.clone(), vec![TARGET], transport);
 
@@ -616,7 +613,7 @@ mod tests {
         };
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            let _ = tx.send(theirs);
+            let _ = tx.try_send(theirs);
         });
 
         scanner.discover_hosts().await.expect("the phase runs");

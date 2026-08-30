@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use super::cursor::Checkpoint;
-use super::file::{claim_for_invoking_user, create_private as create_private_file};
+use super::file::{
+    append_existing, claim_directory_for_invoking_user, create_private as create_private_file,
+};
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
 use super::manifest::{JournalManifest, Plan, PlanChanged};
@@ -259,7 +261,7 @@ impl Journal {
 
         let path = self.directory.join(DETECTIONS);
         let mut writer = if path.exists() {
-            let file = fs::OpenOptions::new().append(true).open(&path)?;
+            let file = append_existing(&path)?;
             crate::journal::format::Writer::append(std::io::BufWriter::new(file))
         } else {
             let file = create_private_file(&path)?;
@@ -310,8 +312,8 @@ impl Journal {
             writer.flush()?;
         }
 
+        // The destination becomes the temporary's inode, ownership and all.
         fs::rename(&temporary, &destination)?;
-        claim_for_invoking_user(&destination);
         self.appended = all.len();
         Ok(())
     }
@@ -349,7 +351,6 @@ impl Journal {
             let path = self.directory.join(name);
             let file = create_private_file(&path)?;
             crate::journal::format::Writer::create(std::io::BufWriter::new(file))?.flush()?;
-            claim_for_invoking_user(&path);
         }
         Ok(())
     }
@@ -510,9 +511,9 @@ pub fn prepare_root(root: &Path) -> std::io::Result<()> {
     if super::paths::root().as_deref() == Some(root)
         && let Some(above) = root.parent()
     {
-        claim_for_invoking_user(above);
+        claim_directory_for_invoking_user(above);
     }
-    claim_for_invoking_user(root);
+    claim_directory_for_invoking_user(root);
 
     Ok(())
 }
@@ -832,7 +833,7 @@ fn claim_directory(root: &Path) -> Result<(String, PathBuf), JournalError> {
         match fs::create_dir(&directory) {
             Ok(()) => {
                 restrict(&directory, 0o700)?;
-                claim_for_invoking_user(&directory);
+                claim_directory_for_invoking_user(&directory);
                 return Ok((id, directory));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

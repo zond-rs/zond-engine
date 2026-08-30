@@ -63,21 +63,18 @@ pub fn test_config() -> ZondConfig {
     }
 }
 
-/// True when the process is running as root and would therefore take the raw
-/// ARP/SYN scan paths rather than the portable TCP-connect fallback.
+/// True when the process would take the raw ARP/SYN scan paths rather than the
+/// portable TCP-connect fallback.
 ///
 /// The connect-fallback assertions are only deterministic unprivileged, so they
 /// use this to skip cleanly instead of flaking under a privileged test run.
+///
+/// Asks the engine's own question rather than restating it. A uid check answers
+/// differently on a binary carrying `cap_net_raw`, and a suite that skipped the
+/// wrong assertions there would be testing the fallback against a run that never
+/// took it.
 pub fn is_privileged() -> bool {
-    #[cfg(unix)]
-    {
-        // geteuid has no preconditions and cannot fail.
-        unsafe { libc::geteuid() == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
+    zond_engine::system::privilege::can_send_raw()
 }
 
 /// A running loopback server bound to an ephemeral port. The port stays open for

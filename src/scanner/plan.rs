@@ -886,7 +886,7 @@ mod tests {
 
         let (_session, ctx) = ScanSession::new();
         for technique in TcpScanTechnique::ALL {
-            let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let (_tx, rx) = tokio::sync::mpsc::channel(1024);
             let scanner = TcpPortScanner::with_transport(
                 interface::SourceResolver::from_links(&[]),
                 ctx.clone(),

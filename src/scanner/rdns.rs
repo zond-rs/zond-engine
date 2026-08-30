@@ -954,7 +954,7 @@ mod tests {
     /// behind it.
     fn resolver_asking(servers: Vec<SocketAddr>) -> HostnameResolver {
         let (_tx, dns_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (_reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         HostnameResolver::with_transport(
             dns_rx,
             ProbeTransport::from_parts(Box::new(Silent), reply_rx),

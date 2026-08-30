@@ -343,7 +343,7 @@ mod persistence {
     use std::time::SystemTime;
 
     use super::{HEARTBEAT_STALE_AFTER, LockRecord, LockState, boot_identity, classify};
-    use crate::journal::file::{claim_for_invoking_user, create_exclusive, create_private};
+    use crate::journal::file::{create_exclusive, create_private};
     use crate::journal::format::JournalError;
 
     /// Reads a lock file and says what it means.
@@ -483,11 +483,8 @@ mod persistence {
                         .as_bytes(),
                 )?;
             }
+            // The lock becomes the temporary's inode, ownership and all.
             fs::rename(&temporary, path)?;
-
-            // The rename carries the temporary file's ownership over, so this
-            // covers only the case where it replaced an existing lock.
-            claim_for_invoking_user(path);
             Ok(())
         }
     }
