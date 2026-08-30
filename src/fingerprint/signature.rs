@@ -153,8 +153,8 @@ pub struct Probe {
     /// intensity level (`rarity <= intensity`), so low-rarity probes go out on
     /// every scan and high-rarity ones only when explicitly asked for.
     ///
-    /// Reserved ahead of the intensity/softmatch work (see
-    /// `docs/fingerprinting-redesign.md`): the runtime does not yet gate on it.
+    /// Reserved ahead of the intensity and softmatch work: the runtime does not
+    /// yet gate on it.
     /// `#[serde(default)]` makes it backward-compatible — every existing probe
     /// deserializes at rarity `0` (common, always sent), so current behaviour is
     /// unchanged until an intensity cap is wired in.

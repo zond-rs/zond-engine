@@ -790,8 +790,8 @@ async fn a_scan_names_no_operating_system_from_a_closed_port_alone() {
 
 /// An open port whose first answer never arrived is still reported open.
 ///
-/// The defect this covers, recorded in `docs/bugs.md` and found while measuring
-/// something else. The sequence is ordinary and the failure was silent:
+/// The defect this covers was found while measuring something else. The
+/// sequence is ordinary and the failure was silent:
 ///
 /// 1. A SYN reaches an open port, which accepts and holds the connection.
 /// 2. The SYN+ACK is lost. This host never sees it, so it never resets it, and

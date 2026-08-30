@@ -7,8 +7,14 @@
 # a statement about what is supported, and this file stays a statement about how
 # far along the port is.
 #
-# The plan it is measured against is `audit/2026-08-27-windows-support.md`, whose
-# tiers are named below. Today this covers Tier 0 and Tier 1.
+# The ladder it is measured against, so the criterion lives where the job does:
+#
+# * **Tier 0** — it compiles. `cargo check` on Windows.
+# * **Tier 1** — it lints and it links. Clippy, plus building the test binary,
+#   which is what exercises every native dependency the crate has here.
+# * **Tier 2** — it runs the suite. Blocked below, and on the interface layer.
+#
+# Today this covers Tier 0 and Tier 1.
 #
 # ## What this deliberately does not do, and why
 #
@@ -21,10 +27,10 @@
 #
 # **And neither would tell the truth yet.** `pnet_datalink` reports `flags: 0`
 # for every Windows interface, so `is_up()` is false everywhere and each of this
-# engine's entry points returns an empty network without erroring — see §5 of the
-# audit. A green suite on top of that would be a suite asserting that a machine
-# has no network, which is worse than no suite. Running tests here is Tier 2's
-# to switch on, once the interface layer no longer lies.
+# engine's entry points returns an empty network without erroring. A green suite
+# on top of that would be a suite asserting that a machine has no network, which
+# is worse than no suite. Running tests here is Tier 2's to switch on, once the
+# interface layer no longer lies.
 #
 # So what is here is the thing that is both honest and useful today: it compiles,
 # it lints, and it links. That is the whole of what stops Windows silently

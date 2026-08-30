@@ -35,8 +35,6 @@
 //! the async reactor; all `analyze` (CPU) work is handed to the blocking pool.
 //! Nothing in this module compiles a regex on a reactor thread — see
 //! `SignatureDb` for why that matters.
-//!
-//! The design and roadmap live in `docs/fingerprinting.md`.
 
 pub mod model;
 

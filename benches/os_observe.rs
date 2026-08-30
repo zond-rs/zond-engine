@@ -8,8 +8,8 @@
 
 //! Prints everything a single TCP reply says about the stack that sent it.
 //!
-//! This is the instrument phase 1 of `docs/os-fingerprinting.md` exists to
-//! produce, and it comes before any classifier on purpose. The features that
+//! This is the instrument the OS-fingerprinting work needs before any
+//! classifier, and it comes first on purpose. The features that
 //! separate one operating system from another are widely published, widely
 //! repeated, and routinely wrong — a stack's defaults change between releases, a
 //! tunnel rewrites them, and a middlebox normalises them away. Authoring rules
@@ -61,8 +61,8 @@
 //!
 //! Each arm therefore runs as a complete pass of its own, with its own source
 //! port and its own transport, separated by a settle period. This is the lesson
-//! `docs/os-fingerprinting.md` §7 records from the NDP work restated: when two
-//! probes look alike on the wire, build the arm that sends only one.
+//! the NDP work paid for, restated: when two probes look alike on the wire,
+//! build the arm that sends only one.
 //!
 //! ## Running it
 //!
@@ -420,8 +420,9 @@ fn flag_letters(flags: u8) -> String {
 ///
 /// Three outcomes, and the third is not a catch-all for noise: a segment with
 /// ACK alone is a *challenge ACK*, which only a host already holding a half-open
-/// connection sends, and which therefore says a listener is there. The engine's
-/// `tcp::classify_probe_response` discards it; see `docs/bugs.md`.
+/// connection sends, and which therefore says a listener is there.
+/// `tcp::classify_probe_response` once discarded it, which lost open ports on
+/// exactly the paths retransmission exists for; it classifies one now.
 fn kind(flags: u8) -> &'static str {
     if flags & tcp::flags::RST != 0 {
         "RST"

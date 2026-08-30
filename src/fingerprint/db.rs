@@ -31,7 +31,7 @@
 //! Today the artifact is the `bincode` blob embedded at build time from
 //! `assets/fingerprinting/`. [`SignatureDb::global`] is the single seam where
 //! disk/mmap loading of a versioned, integrity-checked artifact will slot in
-//! (see `docs/fingerprinting-redesign.md`, phase 2) without touching callers.
+//! without touching callers.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};

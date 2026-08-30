@@ -8,8 +8,8 @@
 
 //! Does the ICMP transport reach a host, and does a routed one answer?
 //!
-//! A functional check, not a study. Phase 6 of `docs/os-fingerprinting.md` needs
-//! to ask a host something its TCP stack cannot be made to answer — a machine
+//! A functional check, not a study. Reading a stack's timing from ICMP needs to
+//! ask a host something its TCP stack cannot be made to answer — a machine
 //! with no open and no closed port still answers a ping — and until this work
 //! there was no way to send one anywhere but the local segment: the echo
 //! builders in `protocols::icmp` produce whole Ethernet frames, which need a

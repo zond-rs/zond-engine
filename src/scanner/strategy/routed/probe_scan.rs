@@ -45,8 +45,8 @@
 //! least visible when wrong. Each one is a claim about what silence means, and
 //! stopping on the wrong one does not fail — it returns a smaller answer that
 //! looks exactly like a quiet network. This engine has already paid for that
-//! once: `docs/bugs.md` records a stop condition fixed in one discovery scanner
-//! and left standing in its twin, because nothing tied the two together. One
+//! once: a stop condition was fixed in one discovery scanner and left standing
+//! in its twin, because nothing tied the two together. One
 //! copy is what makes that class of divergence impossible rather than merely
 //! unlikely.
 //!

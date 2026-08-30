@@ -35,8 +35,8 @@
 //! Active probing is gated to the well-known SSH ports (a fresh connection is
 //! not free, so we do not dial every port). SSH on a non-standard port is still
 //! identified from its banner by the banner analyzer; driving the active probe
-//! from an accumulating service guess is the ProbePlanner's job (see
-//! `docs/fingerprinting.md`, §D), not a port list here.
+//! from an accumulating service guess belongs to whatever plans probes, not to a
+//! port list here.
 //!
 //! [`Strong`]: super::model::Confidence::Strong
 

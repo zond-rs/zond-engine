@@ -26,8 +26,7 @@
 //! walks a flow against a [`Probe`], asking the `eval` module whether each guard
 //! holds and the `convert` module to lower its authored types onto the model. The
 //! `db` module holds the compiled corpus the build emits, and `stage` runs that
-//! corpus's applicable flows over a host to produce findings. See the design
-//! record in `audit/2026-08-28-scripting-engine-spec.md`, Part II.
+//! corpus's applicable flows over a host to produce findings.
 //!
 //! ## Shared with the build
 //!

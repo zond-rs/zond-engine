@@ -9,8 +9,7 @@
 //! Reads the counters a stack keeps, by asking the same host more than once.
 //!
 //! Everything the passive path knows comes from **one** reply, and three of the
-//! features `docs/os-fingerprinting.md` §3.2 names cannot be read from one reply
-//! at all. The IP identification field is interesting for how it *changes* —
+//! features worth having cannot be read from one reply at all. The IP identification field is interesting for how it *changes* —
 //! zero, per-socket, globally incrementing and random are four different stack
 //! policies and a single value is consistent with all four. The initial sequence
 //! number is the same: one is a number, several are a generation algorithm. And
@@ -43,9 +42,9 @@
 //! Two SYNs to one host and port from one source port are the same 4-tuple, so
 //! the second is not a second connection attempt: the first has already put the
 //! peer in SYN-RECEIVED, and what comes back describes that state rather than
-//! the stack holding it. `benches/os_observe.rs` has the full account, and
-//! `docs/os-fingerprinting.md` §7 records the two earlier measurements this
-//! project lost to probes that looked alike on the wire.
+//! the stack holding it. `benches/os_observe.rs` has the full account, and this
+//! project has lost two earlier measurements to probes that looked alike on the
+//! wire.
 //!
 //! So each sample uses a fresh source port. That also makes each sample a
 //! genuine new connection attempt, which is what the sequence-number question
@@ -85,8 +84,8 @@
 //! — a SYN+ACK where there was one, a reset otherwise — and says which, because
 //! the two are not equivalent evidence.
 //!
-//! **Read a reset-derived series against the retraction in
-//! `docs/os-fingerprinting.md`.** The identifier and don't-fragment values that
+//! **Read a reset-derived series against the retraction below.** The identifier
+//! and don't-fragment values that
 //! six labelled Apple devices put in their resets changed when the same targets
 //! were measured from a different machine on the same segment, and the feature
 //! built on them was withdrawn. Nothing about that is explained yet. A series
@@ -130,9 +129,8 @@
 //! which is everything phases 1 to 5 can see — and then asks whether the series
 //! tells any two hosts in one group apart. A probe that never refines that
 //! partition cannot change a verdict, whatever else it reveals, and should not
-//! ship: that is the acceptance test `docs/os-fingerprinting.md` sets for phase
-//! 6, and it is the ndp_pace lesson restated — measure the number a user sees,
-//! not a proxy for it.
+//! ship. That is the acceptance test for any new probe here, and it is the
+//! ndp_pace lesson restated: measure the number a user sees, not a proxy for it.
 //!
 //! A split is necessary, not sufficient. Two hosts running the same operating
 //! system can differ here for reasons that are not the stack: uptime moves a

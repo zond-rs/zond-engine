@@ -894,7 +894,8 @@ mod tests {
     ///
     /// It is the reply a *retransmitted* SYN draws when the first SYN+ACK was
     /// lost, which is why discarding it lost open ports on exactly the paths
-    /// retransmission exists for. See `docs/bugs.md`.
+    /// retransmission exists for. That is the defect this test was written
+    /// against, and the reason it is worth keeping.
     #[test]
     fn classifies_a_bare_ack_as_a_challenge() {
         let bytes = packet_with_flags(flags::ACK);

@@ -22,8 +22,8 @@
 # reports no interface flags on Windows, so every entry point finds an empty
 # network and says so without erroring. Until that is fixed the tests here would
 # pass by asserting nothing, which is the failure the paragraph above was written
-# against. This matrix gains Windows when `audit/2026-08-27-windows-support.md`
-# reaches Tier 2, and not before.
+# against. This matrix gains Windows when the Windows workflow reaches its Tier 2
+# (it runs the suite, and the interface layer no longer lies), and not before.
 name: Test
 
 on:

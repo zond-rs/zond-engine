@@ -655,8 +655,7 @@ impl PortScanner for UdpPortScanner {
     // port, so it identifies nothing this scanner found - and running it here
     // as well as from the SYN scanner beside us would fingerprint every open
     // *TCP* port twice, once per composite member. Identifying a UDP service
-    // needs a UDP conversation, which is tracked separately (see
-    // `docs/fingerprinting.md`, "UDP fingerprinting"); until that exists the
+    // needs a UDP conversation, and the engine has none yet; until it does, the
     // trait's no-op default is the honest implementation.
 }
 
