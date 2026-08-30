@@ -17,10 +17,44 @@
 //! A default profile changes nothing — a scan configured with one puts the same
 //! packets on the wire, byte for byte, as a scan configured without it — so
 //! evasion is never something a scan does by accident.
+//!
+//! ```
+//! use zond_engine::{EvasionProfile, ZondConfig};
+//!
+//! // A probe from the port a filter trusts for returning DNS, padded off the
+//! // size a signature keys on, expiring two hops past where the target is.
+//! let profile = EvasionProfile::default()
+//!     .with_source_port(53)
+//!     .with_padding(24)
+//!     .with_ttl(12);
+//!
+//! // What the profile alone can be wrong about, answered before a scan runs
+//! // rather than on every probe it sends.
+//! profile.validate()?;
+//!
+//! let mut cfg = ZondConfig::default();
+//! cfg.evasion = profile;
+//! # Ok::<(), zond_engine::evasion::EvasionError>(())
+//! ```
+//!
+//! ## Some techniques cost a send path
+//!
+//! Spoofing a hardware address, spoofing a source address for decoys, and
+//! choosing the fragments yourself are all things a raw socket cannot do,
+//! because the kernel builds the header. Setting any of them makes a scan open
+//! the link-layer path instead; [`EvasionProfile::effective_send_mode`] is where
+//! that is decided and [`requires_link_layer`](EvasionProfile::requires_link_layer)
+//! is how to ask.
+//!
+//! That path cannot reach loopback or a tunnel, so it is a real cost rather
+//! than a detail. A profile that sets none of the three leaves the send path
+//! exactly as it was.
 
 use std::net::IpAddr;
 
 use crate::model::mac::MacAddr;
+use crate::protocols::ip::SMALLEST_FRAGMENT_MTU;
+use crate::protocols::sizes::{IP_V4_HDR_LEN, TCP_HDR_LEN};
 use crate::transport::probe::Emission;
 use crate::transport::probe::SendMode;
 
@@ -29,6 +63,21 @@ use crate::transport::probe::SendMode;
 /// A default profile is inert — see the [module documentation](self). Set a
 /// field for each technique you want; [`is_active`](Self::is_active) reports
 /// whether any is set.
+///
+/// The fields are public and the `with_` methods chain, so either reads:
+///
+/// ```
+/// use zond_engine::EvasionProfile;
+///
+/// let chained = EvasionProfile::default().with_source_port(53).with_ttl(12);
+///
+/// let mut assigned = EvasionProfile::default();
+/// assigned.source_port = Some(53);
+/// assigned.ttl = Some(12);
+///
+/// assert_eq!(chained, assigned);
+/// assert!(chained.is_active());
+/// ```
 #[must_use]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EvasionProfile {
@@ -147,7 +196,115 @@ pub struct EvasionProfile {
     pub flags: Option<u8>,
 }
 
+/// The largest payload a probe can carry once its own headers are counted.
+///
+/// Both length fields that bound it are sixteen bits: IPv4's counts the header
+/// as well, and IPv6's counts the payload alone against a fixed 40-byte header.
+/// A TCP probe over IPv4 is the tightest of the shapes this engine sends, so it
+/// is the one the bound is taken from.
+const LARGEST_PAYLOAD: u16 = u16::MAX - (IP_V4_HDR_LEN + TCP_HDR_LEN) as u16;
+
+/// Why a profile could not be honoured.
+///
+/// Only what the profile alone decides. Whether a fragment size suits the
+/// targets, or a decoy address survives the network's egress filtering, are
+/// questions about a scan rather than about a profile, and they are answered
+/// where they are asked: per probe, against the destination in hand.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EvasionError {
+    /// The fragment size cannot carry an IPv4 header and one unit of payload.
+    ///
+    /// A fragment smaller than this makes no forward progress, so the
+    /// fragmenter refuses it rather than emitting headers for ever. See
+    /// [`SMALLEST_FRAGMENT_MTU`].
+    #[error(
+        "a fragment size of {mtu} cannot carry a header and one eight-byte unit; {minimum} is the smallest that can"
+    )]
+    FragmentTooSmall {
+        /// The size that was asked for.
+        mtu: u16,
+        /// The smallest that would work.
+        minimum: u16,
+    },
+
+    /// Zero is not a port a probe can leave from.
+    ///
+    /// It is a valid `u16` and not a valid source port: a reply to a probe sent
+    /// from it has nowhere to come back to, so every port would read as silent.
+    #[error("a source port of zero is not one a probe can leave from")]
+    SourcePortZero,
+
+    /// The padding is larger than a probe carrying it could describe.
+    #[error(
+        "{padding} bytes of padding is more than a probe's length field can describe; {limit} is the most"
+    )]
+    PaddingTooLarge {
+        /// The padding that was asked for.
+        padding: u16,
+        /// The most that would fit.
+        limit: u16,
+    },
+}
+
 impl EvasionProfile {
+    /// Whether this profile is one a scan could actually put on the wire.
+    ///
+    /// **What it checks is what a profile alone can be wrong about**, which is
+    /// three things: a fragment size below what a datagram can be split to, a
+    /// source port of zero, and padding past what a length field describes.
+    /// Each is refused deeper down anyway, on every probe, and finding out then
+    /// means a scan that sends nothing and reports a silent network.
+    ///
+    /// It is deliberately not a check that a scan will work. Whether the
+    /// link-layer path can reach these targets, whether decoys survive egress
+    /// filtering, whether a fragment size suits an IPv6 destination — those are
+    /// questions about a scan and are answered against the destination in hand.
+    ///
+    /// ```
+    /// use zond_engine::EvasionProfile;
+    /// use zond_engine::evasion::EvasionError;
+    ///
+    /// // Twenty bytes cannot hold an IPv4 header, let alone a fragment of one.
+    /// let refused = EvasionProfile::default().with_fragment(20);
+    /// assert!(matches!(
+    ///     refused.validate(),
+    ///     Err(EvasionError::FragmentTooSmall { .. })
+    /// ));
+    ///
+    /// assert!(EvasionProfile::default().with_fragment(576).validate().is_ok());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// One [`EvasionError`] per thing a profile can be wrong about, the first
+    /// one found.
+    pub fn validate(&self) -> Result<(), EvasionError> {
+        if let Some(mtu) = self.fragment
+            && mtu < SMALLEST_FRAGMENT_MTU
+        {
+            return Err(EvasionError::FragmentTooSmall {
+                mtu,
+                minimum: SMALLEST_FRAGMENT_MTU,
+            });
+        }
+
+        if self.source_port == Some(0) {
+            return Err(EvasionError::SourcePortZero);
+        }
+
+        if let Some(padding) = self.padding
+            && padding > LARGEST_PAYLOAD
+        {
+            return Err(EvasionError::PaddingTooLarge {
+                padding,
+                limit: LARGEST_PAYLOAD,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Whether this profile changes anything — `false` for a default profile.
     #[must_use]
     pub fn is_active(&self) -> bool {
@@ -170,6 +327,25 @@ impl EvasionProfile {
     /// sets one. Every explicit choice is left as the caller made it: a raw
     /// socket that cannot carry the technique is refused per probe rather than
     /// silently overridden.
+    ///
+    /// ```
+    /// use zond_engine::EvasionProfile;
+    /// use zond_engine::transport::probe::SendMode;
+    ///
+    /// let plain = EvasionProfile::default().with_ttl(64);
+    /// assert_eq!(plain.effective_send_mode(SendMode::Auto), SendMode::Auto);
+    ///
+    /// // Fragments this engine chose cannot leave through a raw socket, so
+    /// // `Auto` resolves to the path that can carry them.
+    /// let framed = EvasionProfile::default().with_fragment(576);
+    /// assert_eq!(framed.effective_send_mode(SendMode::Auto), SendMode::Ethernet);
+    ///
+    /// // And a caller who named a path keeps it, whatever the profile wants.
+    /// assert_eq!(
+    ///     framed.effective_send_mode(SendMode::RawSocket),
+    ///     SendMode::RawSocket
+    /// );
+    /// ```
     #[must_use]
     pub fn effective_send_mode(&self, requested: SendMode) -> SendMode {
         if self.requires_link_layer() && matches!(requested, SendMode::Auto) {
@@ -212,6 +388,7 @@ impl EvasionProfile {
     /// would have the engine reading its own evasion back instead of the host.
     /// So the framing state a full [`emission`](Self::emission) carries — the
     /// spoofed hardware address and the fragmentation — is deliberately left off.
+    #[must_use]
     pub fn hop_limited_emission(&self) -> Emission {
         match self.ttl {
             Some(hop_limit) => Emission::routed().with_hop_limit(hop_limit),
@@ -439,6 +616,96 @@ mod tests {
             !emission.requires_link_layer(),
             "so a measurement probe stays on whatever path its phase opened"
         );
+    }
+
+    /// The three the profile alone can settle, and the boundary each sits on.
+    ///
+    /// Each is refused deeper down on every probe anyway. Catching them here is
+    /// what stops a scan sending nothing and reporting a silent network, which
+    /// is indistinguishable from a network that had nothing to say.
+    #[test]
+    fn validate_refuses_what_a_profile_alone_can_be_wrong_about() {
+        let refused = |profile: EvasionProfile| profile.validate().expect_err("refused");
+
+        assert_eq!(
+            refused(EvasionProfile::default().with_fragment(SMALLEST_FRAGMENT_MTU - 1)),
+            EvasionError::FragmentTooSmall {
+                mtu: SMALLEST_FRAGMENT_MTU - 1,
+                minimum: SMALLEST_FRAGMENT_MTU,
+            }
+        );
+        assert_eq!(
+            refused(EvasionProfile::default().with_source_port(0)),
+            EvasionError::SourcePortZero
+        );
+        assert_eq!(
+            refused(EvasionProfile::default().with_padding(u16::MAX)),
+            EvasionError::PaddingTooLarge {
+                padding: u16::MAX,
+                limit: LARGEST_PAYLOAD,
+            }
+        );
+
+        // And each one's neighbour on the legal side.
+        for allowed in [
+            EvasionProfile::default().with_fragment(SMALLEST_FRAGMENT_MTU),
+            EvasionProfile::default().with_source_port(1),
+            EvasionProfile::default().with_padding(LARGEST_PAYLOAD),
+        ] {
+            assert_eq!(allowed.validate(), Ok(()), "{allowed:?}");
+        }
+    }
+
+    /// The bound `validate` reads is the bound the fragmenter enforces, not a
+    /// second copy of it. A number written down twice is a number that drifts.
+    #[test]
+    fn the_fragment_bound_is_the_one_the_fragmenter_refuses_at() {
+        use crate::protocols::craft;
+        use crate::protocols::error::PacketError;
+
+        let header = craft::Ipv4::new(
+            "192.0.2.1".parse().expect("literal"),
+            "192.0.2.2".parse().expect("literal"),
+        );
+        // A SYN-sized payload, which is larger than any MTU near the bound, so
+        // the whole-datagram-fits path is not what answers.
+        let payload = vec![0u8; 40];
+
+        assert!(
+            matches!(
+                crate::protocols::ip::fragment_ipv4(&header, &payload, SMALLEST_FRAGMENT_MTU - 1),
+                Err(PacketError::MtuTooSmall { .. })
+            ),
+            "one below the published bound is refused"
+        );
+        assert!(
+            crate::protocols::ip::fragment_ipv4(&header, &payload, SMALLEST_FRAGMENT_MTU).is_ok(),
+            "and the bound itself is not"
+        );
+    }
+
+    /// Every profile a caller can reach through the builder is one `validate`
+    /// has an answer for, and it never panics on any of them.
+    #[test]
+    fn every_builder_setting_validates_or_refuses_without_panicking() {
+        let mac = MacAddr::new(0x02, 0, 0, 0, 0, 1);
+        let decoy: IpAddr = "192.0.2.9".parse().expect("literal");
+
+        for profile in [
+            EvasionProfile::default(),
+            EvasionProfile::default().with_source_port(u16::MAX),
+            EvasionProfile::default().with_ttl(0),
+            EvasionProfile::default().with_ttl(u8::MAX),
+            EvasionProfile::default().with_padding(0),
+            EvasionProfile::default().with_bad_tcp_checksum(true),
+            EvasionProfile::default().with_spoof_mac(mac),
+            EvasionProfile::default().with_fragment(u16::MAX),
+            EvasionProfile::default().with_decoys(vec![decoy]),
+            EvasionProfile::default().with_flags(0),
+            EvasionProfile::default().with_flags(u8::MAX),
+        ] {
+            let _ = profile.validate();
+        }
     }
 
     #[test]

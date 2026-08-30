@@ -1905,6 +1905,34 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::ScanDiff
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::ScanDiff
 pub const zond_engine::diff::DEFAULT_EXPIRY_THRESHOLD: core::time::Duration
 pub mod zond_engine::evasion
+#[non_exhaustive] pub enum zond_engine::evasion::EvasionError
+pub zond_engine::evasion::EvasionError::FragmentTooSmall
+pub zond_engine::evasion::EvasionError::FragmentTooSmall::minimum: u16
+pub zond_engine::evasion::EvasionError::FragmentTooSmall::mtu: u16
+pub zond_engine::evasion::EvasionError::PaddingTooLarge
+pub zond_engine::evasion::EvasionError::PaddingTooLarge::limit: u16
+pub zond_engine::evasion::EvasionError::PaddingTooLarge::padding: u16
+pub zond_engine::evasion::EvasionError::SourcePortZero
+impl core::clone::Clone for zond_engine::evasion::EvasionError
+pub fn zond_engine::evasion::EvasionError::clone(&self) -> zond_engine::evasion::EvasionError
+impl core::cmp::Eq for zond_engine::evasion::EvasionError
+impl core::cmp::PartialEq for zond_engine::evasion::EvasionError
+pub fn zond_engine::evasion::EvasionError::eq(&self, &zond_engine::evasion::EvasionError) -> bool
+impl core::convert::From<zond_engine::evasion::EvasionError> for zond_engine::scanner::ScanError
+pub fn zond_engine::scanner::ScanError::from(zond_engine::evasion::EvasionError) -> Self
+impl core::error::Error for zond_engine::evasion::EvasionError
+impl core::fmt::Debug for zond_engine::evasion::EvasionError
+pub fn zond_engine::evasion::EvasionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::evasion::EvasionError
+pub fn zond_engine::evasion::EvasionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::evasion::EvasionError
+impl core::marker::Freeze for zond_engine::evasion::EvasionError
+impl core::marker::Send for zond_engine::evasion::EvasionError
+impl core::marker::Sync for zond_engine::evasion::EvasionError
+impl core::marker::Unpin for zond_engine::evasion::EvasionError
+impl core::marker::UnsafeUnpin for zond_engine::evasion::EvasionError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::evasion::EvasionError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::evasion::EvasionError
 pub struct zond_engine::evasion::EvasionProfile
 pub zond_engine::evasion::EvasionProfile::bad_tcp_checksum: bool
 pub zond_engine::evasion::EvasionProfile::decoys: alloc::vec::Vec<core::net::ip_addr::IpAddr>
@@ -1922,6 +1950,7 @@ pub fn zond_engine::evasion::EvasionProfile::is_active(&self) -> bool
 pub fn zond_engine::evasion::EvasionProfile::requires_link_layer(&self) -> bool
 pub fn zond_engine::evasion::EvasionProfile::segment_shaping(&self) -> zond_engine::evasion::SegmentShaping
 pub fn zond_engine::evasion::EvasionProfile::source_port_or(&self, u16) -> u16
+pub fn zond_engine::evasion::EvasionProfile::validate(&self) -> core::result::Result<(), zond_engine::evasion::EvasionError>
 pub fn zond_engine::evasion::EvasionProfile::with_bad_tcp_checksum(self, bool) -> Self
 pub fn zond_engine::evasion::EvasionProfile::with_decoys(self, alloc::vec::Vec<core::net::ip_addr::IpAddr>) -> Self
 pub fn zond_engine::evasion::EvasionProfile::with_flags(self, u8) -> Self
@@ -9173,6 +9202,7 @@ pub mod zond_engine::protocols::ip
 pub const zond_engine::protocols::ip::HOP_LIMIT_NDP: u8
 pub const zond_engine::protocols::ip::HOP_LIMIT_ON_LINK: u8
 pub const zond_engine::protocols::ip::HOP_LIMIT_ROUTED: u8
+pub const zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU: u16
 pub fn zond_engine::protocols::ip::build_ipv4_header(core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, pnet_packet::ip::IpNextHeaderProtocol, u8) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::ip::build_ipv6_header(core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u16, pnet_packet::ip::IpNextHeaderProtocol, u8) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::ip::fragment_ipv4(&zond_engine::protocols::craft::Ipv4, &[u8], u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>>
@@ -12366,11 +12396,14 @@ pub fn zond_engine::scanner::strategy::routed::UdpPortScanner::kind(&self) -> zo
 pub fn zond_engine::scanner::strategy::routed::UdpPortScanner::scan<'life0, 'async_trait>(&'life0 mut self, tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn zond_engine::scanner::strategy::routed::UdpPortScanner::supported_protocols(&self) -> alloc::vec::Vec<zond_engine::model::port::Protocol>
 #[non_exhaustive] pub enum zond_engine::scanner::ScanError
+pub zond_engine::scanner::ScanError::Evasion(zond_engine::evasion::EvasionError)
 pub zond_engine::scanner::ScanError::PlanChanged(zond_engine::journal::manifest::PlanChanged)
 pub zond_engine::scanner::ScanError::TaskFailed
 pub zond_engine::scanner::ScanError::TaskFailed::detail: alloc::string::String
 pub zond_engine::scanner::ScanError::TaskFailed::panicked: bool
 pub zond_engine::scanner::ScanError::WrongPhase
+impl core::convert::From<zond_engine::evasion::EvasionError> for zond_engine::scanner::ScanError
+pub fn zond_engine::scanner::ScanError::from(zond_engine::evasion::EvasionError) -> Self
 impl core::convert::From<zond_engine::journal::manifest::PlanChanged> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::PlanChanged) -> Self
 impl core::error::Error for zond_engine::scanner::ScanError
@@ -13388,11 +13421,14 @@ impl core::marker::UnsafeUnpin for zond_engine::config::ScanEffort
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ScanEffort
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ScanEffort
 #[non_exhaustive] pub enum zond_engine::ScanError
+pub zond_engine::ScanError::Evasion(zond_engine::evasion::EvasionError)
 pub zond_engine::ScanError::PlanChanged(zond_engine::journal::manifest::PlanChanged)
 pub zond_engine::ScanError::TaskFailed
 pub zond_engine::ScanError::TaskFailed::detail: alloc::string::String
 pub zond_engine::ScanError::TaskFailed::panicked: bool
 pub zond_engine::ScanError::WrongPhase
+impl core::convert::From<zond_engine::evasion::EvasionError> for zond_engine::scanner::ScanError
+pub fn zond_engine::scanner::ScanError::from(zond_engine::evasion::EvasionError) -> Self
 impl core::convert::From<zond_engine::journal::manifest::PlanChanged> for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::from(zond_engine::journal::manifest::PlanChanged) -> Self
 impl core::error::Error for zond_engine::scanner::ScanError
@@ -13565,6 +13601,7 @@ pub fn zond_engine::evasion::EvasionProfile::is_active(&self) -> bool
 pub fn zond_engine::evasion::EvasionProfile::requires_link_layer(&self) -> bool
 pub fn zond_engine::evasion::EvasionProfile::segment_shaping(&self) -> zond_engine::evasion::SegmentShaping
 pub fn zond_engine::evasion::EvasionProfile::source_port_or(&self, u16) -> u16
+pub fn zond_engine::evasion::EvasionProfile::validate(&self) -> core::result::Result<(), zond_engine::evasion::EvasionError>
 pub fn zond_engine::evasion::EvasionProfile::with_bad_tcp_checksum(self, bool) -> Self
 pub fn zond_engine::evasion::EvasionProfile::with_decoys(self, alloc::vec::Vec<core::net::ip_addr::IpAddr>) -> Self
 pub fn zond_engine::evasion::EvasionProfile::with_flags(self, u8) -> Self

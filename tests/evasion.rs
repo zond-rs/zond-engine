@@ -626,3 +626,52 @@ async fn udp_scan_without_a_profile(ports: &[(u16, Policy)]) -> (ScanSession, Fa
 
     (session, net)
 }
+
+/// A profile a scan cannot put on the wire is refused when the scan is asked
+/// for, not on the probes it would then fail to send.
+///
+/// The failure this closes: every probe refusing looks exactly like a network
+/// with nothing on it. The scan returned a session, the session found no hosts,
+/// and nothing anywhere said the fragment size was the reason.
+#[tokio::test]
+async fn a_scan_refuses_an_evasion_profile_it_could_never_honour() {
+    use zond_engine::evasion::EvasionError;
+    use zond_engine::protocols::ip::SMALLEST_FRAGMENT_MTU;
+    use zond_engine::{ScanError, discover, scan};
+
+    let mut cfg = common::test_config();
+    cfg.evasion = EvasionProfile::default().with_fragment(SMALLEST_FRAGMENT_MTU - 1);
+
+    let refused = discover(common::ip_set(common::LOOPBACK), &cfg)
+        .await
+        .err()
+        .expect("the sweep is refused before it starts");
+    assert!(
+        matches!(
+            refused,
+            ScanError::Evasion(EvasionError::FragmentTooSmall { .. })
+        ),
+        "got {refused:?}"
+    );
+
+    let refused = scan(common::target_map(common::LOOPBACK, "80"), &cfg)
+        .await
+        .err()
+        .expect("and so is the port scan");
+    assert!(
+        matches!(
+            refused,
+            ScanError::Evasion(EvasionError::FragmentTooSmall { .. })
+        ),
+        "got {refused:?}"
+    );
+
+    // And a profile that is merely unusual still runs.
+    cfg.evasion = EvasionProfile::default().with_ttl(12).with_padding(8);
+    assert!(
+        discover(common::ip_set(common::LOOPBACK), &cfg)
+            .await
+            .is_ok(),
+        "a valid profile is not refused"
+    );
+}

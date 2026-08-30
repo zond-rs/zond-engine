@@ -193,6 +193,15 @@ pub enum ScanError {
     #[cfg(feature = "journal-format")]
     #[error("{0}")]
     PlanChanged(#[from] crate::journal::manifest::PlanChanged),
+
+    /// The evasion profile is not one a scan could put on the wire.
+    ///
+    /// Checked before a probe leaves rather than on each one, because every
+    /// probe refusing is a scan that sends nothing and reports a network with
+    /// nothing on it. See [`EvasionProfile::validate`](crate::EvasionProfile::validate)
+    /// for what that check covers and what it deliberately does not.
+    #[error("{0}")]
+    Evasion(#[from] crate::evasion::EvasionError),
 }
 
 /// Refuses a scan whose exclusion policy is not the one its journal was counted
@@ -387,6 +396,8 @@ pub async fn discover(
     targets: IpSet,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
+    cfg.evasion.validate()?;
+
     let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
     let handle = spawn_discovery(targets, cfg, ctx);
     Ok((session, ScanTask::new(handle)))
@@ -436,6 +447,8 @@ pub async fn discover_with_journal(
     cfg: &ZondConfig,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
+    cfg.evasion.validate()?;
+
     let recorded = journal.manifest().recorded();
     let Some(addresses) = recorded.addresses() else {
         return Err(ScanError::WrongPhase);
@@ -818,6 +831,8 @@ pub async fn scan(
     target_map: TargetMap,
     cfg: &ZondConfig,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
+    cfg.evasion.validate()?;
+
     let (session, ctx) = ScanSession::with_exclusions(cfg.exclusions.clone());
     let handle = spawn_scan(target_map, cfg, ctx, Checkpoint::default());
     Ok((session, ScanTask::new(handle)))
@@ -851,6 +866,7 @@ pub async fn scan_with_journal(
     cfg: &ZondConfig,
     journal: crate::journal::Journal,
 ) -> Result<(ScanSession, ScanTask), ScanError> {
+    cfg.evasion.validate()?;
     under_the_recorded_policy(&journal, cfg)?;
 
     let (session, ctx) = ScanSession::resuming(cfg.exclusions.clone(), journal.resume_point());

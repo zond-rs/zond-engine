@@ -49,6 +49,17 @@ const WORD_LEN: usize = 4;
 /// fragment that is not the last must carry a whole number of these.
 const FRAGMENT_UNIT: usize = 8;
 
+/// The smallest MTU [`fragment_ipv4`] will split a datagram to: a header and one
+/// whole eight-byte unit.
+///
+/// Public because a caller choosing a fragment size can be told before a scan
+/// runs rather than on every probe it sends, and because two numbers for one
+/// bound is how they come to disagree. [`EvasionProfile::validate`] is the
+/// caller that reads it.
+///
+/// [`EvasionProfile::validate`]: crate::evasion::EvasionProfile::validate
+pub const SMALLEST_FRAGMENT_MTU: u16 = (IP_V4_HDR_LEN + FRAGMENT_UNIT) as u16;
+
 /// Builds a 20-byte IPv4 header (no options) for a packet carrying
 /// `payload_length` bytes of `next_protocol` from `src_addr` to `dst_addr`.
 ///
@@ -158,7 +169,7 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
     if max_chunk == 0 {
         return Err(PacketError::MtuTooSmall {
             mtu,
-            minimum: header_len + FRAGMENT_UNIT,
+            minimum: SMALLEST_FRAGMENT_MTU as usize,
         });
     }
 
