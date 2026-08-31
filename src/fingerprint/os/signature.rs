@@ -30,7 +30,18 @@ use serde::{Deserialize, Serialize};
 /// probability and it is not an accuracy. Bounding it keeps one authored value
 /// from dominating every other piece of evidence about a host, which is the same
 /// reasoning that clamps `OsFingerprint::accuracy` at construction.
-pub const MAX_RULE_WEIGHT: f32 = 10.0;
+///
+/// **Two, because that is where the knob stops turning.** A verdict's accuracy
+/// is a base worth times this, clamped at
+/// [`MAX_STACK_ACCURACY`](super::MAX_STACK_ACCURACY), so a measured rule
+/// saturates at about 1.08 and a published one at about 1.4. This was ten, and
+/// measured, every weight from 1.08 to 10 produced the identical answer: nine
+/// tenths of the range an author could reach for did nothing, and the build
+/// validated against the end of it where nothing happens.
+///
+/// Two leaves headroom above both saturation points without pretending to an
+/// authority the arithmetic does not give it.
+pub const MAX_RULE_WEIGHT: f32 = 2.0;
 
 /// A test against one field of an observation.
 ///
@@ -130,15 +141,40 @@ pub enum Provenance {
 
 /// Who a rule says the host is, as much of the path as the evidence supports.
 ///
-/// A path rather than a name: `family` is the only required part, and a rule
-/// that cannot honestly say more stops there. That is what lets a first
-/// iteration ship family-level rules and a later one add versions without the
-/// schema, the matcher or the resolver changing.
+/// A path rather than a name: a rule that cannot honestly say more than the
+/// broadest part stops there. That is what lets a first iteration ship
+/// family-level rules and a later one add versions without the schema, the
+/// matcher or the resolver changing.
+///
+/// # Two axes, and a rule must reach one of them
+///
+/// [`family`](Self::family) is what the machine *runs* and
+/// [`device`](Self::device) is what it *is*, and neither stands in for the
+/// other. A rule must name at least one; `build.rs` refuses one that names
+/// neither, since it would identify nothing.
+///
+/// The distinction is not decoration, and getting it wrong has a specific cost.
+/// [`resolve`](super::resolve) settles the family by vote, so a device class
+/// written into the family field runs against the real families on the ballot
+/// and both lose. That is measured, not hypothetical: a Linux-based router
+/// announcing `Debian 12` over SSH resolved to nothing at all while a rule
+/// reading its hop counter called it a `Network device` in the family field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OsIdentity {
-    /// The broad family, such as `"Linux"`. Required.
-    pub family: String,
+    /// The broad family the host runs, such as `"Linux"`.
+    ///
+    /// `None` for a rule that establishes what kind of box this is and cannot
+    /// say what is on it, which is the ordinary case for a rule reading a hop
+    /// counter.
+    pub family: Option<String>,
+    /// What kind of box this is, such as `"Network device"` or `"Printer"`.
+    ///
+    /// Orthogonal to [`family`](Self::family) and never a substitute for it: a
+    /// great many network devices run Linux, and a rule that establishes only
+    /// the first says so here and abstains from the second.
+    #[serde(default)]
+    pub device: Option<String>,
     /// The vendor, such as `"Canonical"`.
     pub vendor: Option<String>,
     /// The product, such as `"Ubuntu"`.
@@ -147,6 +183,22 @@ pub struct OsIdentity {
     pub version: Option<String>,
     /// A Common Platform Enumeration identifier, if one applies exactly.
     pub cpe: Option<String>,
+}
+
+impl OsIdentity {
+    /// The name this identity goes by in a diagnostic: the family where it names
+    /// one, and the device class otherwise.
+    ///
+    /// Every rule reaches one of the two, which `build.rs` enforces, so this
+    /// always names something. It is for messages and for grouping rules that
+    /// describe the same thing; a consumer deciding what a host *is* reads the
+    /// two fields, which say different things on purpose.
+    pub fn label(&self) -> &str {
+        self.family
+            .as_deref()
+            .or(self.device.as_deref())
+            .unwrap_or("unnamed")
+    }
 }
 
 /// The predicates a rule tests, all optional: a field not named is not tested.
@@ -338,6 +390,40 @@ pub struct Example {
     /// an example recording the conformant case should not have to say so.
     #[serde(default = "yes")]
     pub echo_payload_intact: bool,
+
+    /// What the identifier series read, as
+    /// [`IdClass::name`](super::IdClass::name) renders it.
+    ///
+    /// **A series rule could be matched and could not be exampled**, and the two
+    /// corpus tests that catch a rule which stopped matching, or started
+    /// matching the wrong family, run off examples. So the first rule to
+    /// predicate on a series shipped with nothing checking it, at the moment the
+    /// classifier behind it was least proven. `linux.toml` records having hit
+    /// exactly that and declining to write the rule.
+    #[serde(default)]
+    pub identifier_class: Option<String>,
+
+    /// What the initial-sequence-number series read, as
+    /// [`IsnClass::name`](super::IsnClass::name) renders it.
+    #[serde(default)]
+    pub sequence_class: Option<String>,
+
+    /// What the timestamp series read, as
+    /// [`ClockClass::name`](super::ClockClass::name) renders it.
+    #[serde(default)]
+    pub clock_class: Option<String>,
+}
+
+impl Example {
+    /// Whether this example recorded what a series read.
+    ///
+    /// An example that states none is a single-reply measurement, and a rule
+    /// predicating on a series cannot be checked against one.
+    pub fn records_a_series(&self) -> bool {
+        self.identifier_class.is_some()
+            || self.sequence_class.is_some()
+            || self.clock_class.is_some()
+    }
 }
 
 fn yes() -> bool {
@@ -370,4 +456,237 @@ pub struct OsDefinition {
 
 fn default_weight() -> f32 {
     1.0
+}
+
+/// Why one predicate could never do its job.
+///
+/// Each of these is an authoring mistake whose failure mode is silence: the rule
+/// parses, ships, and matches nothing or everything. Naming them is what lets
+/// both the build and a caller supplying their own corpus refuse the same rule
+/// for the same stated reason.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PredicateDefect {
+    /// None of `equals`, `any_of` or `range` is set, so nothing satisfies it.
+    NoForm,
+    /// Several are set. Exactly one is allowed, and which would win is not
+    /// something an author should have to know.
+    SeveralForms(usize),
+    /// `any_of` is present and empty, so no value is in it.
+    EmptyAnyOf,
+    /// `range`'s low bound is above its high bound, so the interval is empty.
+    BackwardsRange,
+}
+
+impl std::fmt::Display for PredicateDefect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PredicateDefect::NoForm => {
+                f.write_str("sets none of equals/any_of/range, so it can never match")
+            }
+            PredicateDefect::SeveralForms(count) => write!(
+                f,
+                "sets {count} of equals/any_of/range; exactly one is allowed"
+            ),
+            PredicateDefect::EmptyAnyOf => {
+                f.write_str("has an empty any_of, so it can never match")
+            }
+            PredicateDefect::BackwardsRange => f.write_str(
+                "has a range whose low bound is above its high bound, so it can never match",
+            ),
+        }
+    }
+}
+
+/// Why an authored rule cannot be used.
+///
+/// **Every variant is a defect whose cost is invisible at runtime.** A rule with
+/// no predicates matches every reply of its kind and names every host that ever
+/// answers; one with a backwards range matches nothing while looking perfectly
+/// correct. Neither is distinguishable downstream from detection that worked,
+/// which is why they are refused rather than warned about.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuleError {
+    /// The rule names neither a family nor a device class, so it identifies
+    /// nothing.
+    Unidentified,
+    /// The rule states a version with no product to version.
+    VersionWithoutProduct,
+    /// The weight is outside `0.0..=`[`MAX_RULE_WEIGHT`], or is not finite.
+    Weight(f32),
+    /// One of the rule's predicates could never do its job.
+    Predicate {
+        /// The observation field it tests, such as `"initial_hops"`.
+        field: &'static str,
+        /// What is wrong with it.
+        defect: PredicateDefect,
+    },
+    /// The rule tests nothing at all, so it matches every reply of its kind.
+    NoPredicates,
+    /// A rule reads a series and an example recorded none, so nothing can check
+    /// the rule against it.
+    ExampleWithoutSeries(String),
+    /// A TCP example records no advertised window.
+    ///
+    /// The schema cannot require one, because an echo reply has no window; the
+    /// requirement is per reply kind and lives here. An example that omits it
+    /// records nothing about the field its rule most likely keys on.
+    ExampleWithoutWindow(ReplyKind),
+}
+
+impl std::fmt::Display for RuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuleError::Unidentified => f.write_str("names neither a family nor a device class"),
+            RuleError::VersionWithoutProduct => {
+                f.write_str("states a version without a product to version")
+            }
+            RuleError::Weight(value) => {
+                write!(f, "has weight {value}, outside 0..={MAX_RULE_WEIGHT}")
+            }
+            RuleError::Predicate { field, defect } => write!(f, "predicate `{field}` {defect}"),
+            RuleError::NoPredicates => {
+                f.write_str("states no predicates, so it would match every reply of its kind")
+            }
+            RuleError::ExampleWithoutSeries(source) => write!(
+                f,
+                "reads a series and its example ({source}) recorded none, so nothing \
+                 checks the rule against it"
+            ),
+            RuleError::ExampleWithoutWindow(reply) => write!(
+                f,
+                "has a {reply:?} example with no window; only an echo example may omit one"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RuleError {}
+
+impl<T: PartialOrd> Predicate<T> {
+    /// Why this predicate could never do its job, if it could not.
+    ///
+    /// `Ok` on a well-formed one. Kept beside the type rather than in the
+    /// validator so a form added to [`Predicate`] is a form this has to answer
+    /// for.
+    pub fn defect(&self) -> Option<PredicateDefect> {
+        match self.forms_set() {
+            1 => {}
+            0 => return Some(PredicateDefect::NoForm),
+            several => return Some(PredicateDefect::SeveralForms(several)),
+        }
+        if self.any_of.as_ref().is_some_and(Vec::is_empty) {
+            return Some(PredicateDefect::EmptyAnyOf);
+        }
+        if let Some([low, high]) = &self.range
+            && low > high
+        {
+            return Some(PredicateDefect::BackwardsRange);
+        }
+        None
+    }
+}
+
+impl MatchRule {
+    /// Checks every predicate this rule states, and that it states one.
+    ///
+    /// The macro is what keeps this in step with the struct. A predicate field
+    /// added above and not added here is a field nothing validates, and the
+    /// failure mode of an unvalidated predicate is a rule that ships and matches
+    /// the wrong hosts.
+    pub fn validate(&self) -> Result<(), RuleError> {
+        let mut stated = 0usize;
+        macro_rules! check {
+            ($($field:ident),* $(,)?) => {$(
+                if let Some(predicate) = &self.$field {
+                    stated += 1;
+                    if let Some(defect) = predicate.defect() {
+                        return Err(RuleError::Predicate {
+                            field: stringify!($field),
+                            defect,
+                        });
+                    }
+                }
+            )*};
+        }
+        check!(
+            initial_hops,
+            dont_fragment,
+            option_layout,
+            window,
+            window_units,
+            window_remainder,
+            window_scale,
+            mss,
+            timestamps,
+            sack_permitted,
+            echo_code,
+            echo_payload_intact,
+            identifier_class,
+            sequence_class,
+            clock_class,
+        );
+
+        match stated {
+            0 => Err(RuleError::NoPredicates),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl OsDefinition {
+    /// Whether this rule is one the engine may use.
+    ///
+    /// **Shared with `build.rs`**, which loads this very file, so the rules the
+    /// build accepts and the rules a caller may load through
+    /// [`RuleDb::try_from_rules`](super::RuleDb::try_from_rules) are one set
+    /// rather than two descriptions of one idea. The build additionally *warns*
+    /// about softer things — a measured rule with no example, an unconfirmed one
+    /// that does not say what it rests on — which are advisory and stay there.
+    ///
+    /// [`MatchRule::validate`] does the per-predicate half.
+    pub fn validate(&self) -> Result<(), RuleError> {
+        let named = |part: &Option<String>| {
+            part.as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        };
+        if !named(&self.os.family) && !named(&self.os.device) {
+            return Err(RuleError::Unidentified);
+        }
+
+        // The identity is a path, so a segment cannot be given without the one
+        // above it. "Ubuntu 22.04" with no vendor is fine; a version with no
+        // product names a version of nothing.
+        if self.os.version.is_some() && self.os.product.is_none() {
+            return Err(RuleError::VersionWithoutProduct);
+        }
+
+        if !(0.0..=MAX_RULE_WEIGHT).contains(&self.weight) || !self.weight.is_finite() {
+            return Err(RuleError::Weight(self.weight));
+        }
+
+        self.r#match.validate()?;
+
+        for example in &self.example {
+            if example.reply != ReplyKind::EchoReply && example.window.is_none() {
+                return Err(RuleError::ExampleWithoutWindow(example.reply));
+            }
+        }
+
+        // A rule that reads a series and ships an example that recorded none is
+        // an example the corpus test cannot run: the rule fails against it by
+        // the ordinary "the peer did not say" rule and the failure looks like a
+        // rule that stopped matching. Refused rather than warned about, because
+        // it is indistinguishable downstream from a rule that is simply wrong.
+        let reads_a_series = self.r#match.identifier_class.is_some()
+            || self.r#match.sequence_class.is_some()
+            || self.r#match.clock_class.is_some();
+        if reads_a_series && let Some(example) = self.example.iter().find(|e| !e.records_a_series())
+        {
+            return Err(RuleError::ExampleWithoutSeries(example.source.clone()));
+        }
+
+        Ok(())
+    }
 }

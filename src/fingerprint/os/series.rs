@@ -158,6 +158,25 @@ pub enum IdClass {
 }
 
 impl IdClass {
+    /// The class a stable name refers to, or `None` for a name nothing here
+    /// produces.
+    ///
+    /// The inverse of [`name`](Self::name), for reading back a class somebody
+    /// wrote down: a recorded example, a translated corpus. See
+    /// [`IsnClass::from_name`] for what a rebuilt class does not carry.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "absent" => IdClass::Absent,
+            "too-few" => IdClass::TooFew,
+            "unclear" => IdClass::Unclear,
+            "zero" => IdClass::Zero,
+            "constant" => IdClass::Constant,
+            "counting" => IdClass::Counting,
+            "scattered" => IdClass::Scattered,
+            _ => return None,
+        })
+    }
+
     /// The stable name a rule or a comparison matches on.
     pub const fn name(self) -> &'static str {
         match self {
@@ -199,6 +218,27 @@ pub enum IsnClass {
 }
 
 impl IsnClass {
+    /// The class a stable name refers to, or `None` for a name nothing here
+    /// produces.
+    ///
+    /// **A rebuilt class carries no figure.** [`name`](Self::name) deliberately
+    /// drops the step, because how fast a stepping generator advances is a fact
+    /// about the machine's activity rather than about the stack, and a rule
+    /// matches on the name alone. So a class read back from one is the right
+    /// class for matching and the wrong one for [`detail`](Self::detail); use
+    /// the reading itself where the figure matters.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "not-read" => IsnClass::NotRead,
+            "too-few" => IsnClass::TooFew,
+            "zero" => IsnClass::Zero,
+            "fixed-step" => IsnClass::FixedStep(0),
+            "multiples" => IsnClass::Multiples(0),
+            "hashed" => IsnClass::Hashed,
+            _ => return None,
+        })
+    }
+
     /// The class with the figure behind it, for a person reading a report.
     ///
     /// The other half of what [`name`](Self::name) deliberately drops. A rule
@@ -267,6 +307,22 @@ pub enum ClockClass {
 }
 
 impl ClockClass {
+    /// The class a stable name refers to, or `None` for a name nothing here
+    /// produces.
+    ///
+    /// Carries no frequency, for the reason [`IsnClass::from_name`] gives.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "none" => ClockClass::None,
+            "zero" => ClockClass::Zero,
+            "too-few" => ClockClass::TooFew,
+            "randomised" => ClockClass::Randomised,
+            "slower" => ClockClass::Slower,
+            "ticking" => ClockClass::Hertz(0),
+            _ => return None,
+        })
+    }
+
     /// The class with the frequency behind it, for a person reading a report.
     ///
     /// The rate is the whole reason to look: it is a stack-build constant, and
@@ -301,6 +357,7 @@ impl ClockClass {
 /// series and no `SeriesClasses`, which is the ordinary case — a rule naming a
 /// series predicate then fails to match by the same "the peer did not say"
 /// rule that governs every other absent field.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeriesClasses {
     /// What the IP identifier series turned out to be.
@@ -349,6 +406,7 @@ impl SeriesClasses {
 
 /// What one classifier made of one series: the class, and the raw values for a
 /// report to carry beside it.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reading<T> {
     /// The class itself.
@@ -422,12 +480,20 @@ pub fn read_identifiers(series: &[SeriesSample]) -> Reading<IdClass> {
         .windows(2)
         .map(|pair| pair[1].1.wrapping_sub(pair[0].1))
         .collect();
+    // The **fastest** interval, because one step implying an implausible rate is
+    // enough to say this is not a counter being followed. Taking the slowest
+    // instead asks whether *any* interval looks like a counter, which a random
+    // series answers by accident: measured, 284 of 2000 purely random six-sample
+    // series read as `counting` that way, and one clean counter with a single
+    // forty-thousand jump read as one too.
+    //
+    // `read_clock` forty lines down computes both bounds and tests the maximum,
+    // which is the same question about the field next door.
     let fastest = sampled
         .windows(2)
         .zip(&steps)
         .map(|(pair, step)| f64::from(*step) / pair[1].0.duration_since(pair[0].0).as_secs_f64())
-        .filter(|rate| *rate > 0.0)
-        .fold(f64::INFINITY, f64::min);
+        .fold(0.0, f64::max);
 
     if fastest <= PLAUSIBLE_ID_RATE {
         return Reading {
@@ -594,6 +660,108 @@ fn gcd(a: u32, b: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+
+    /// **The regression the fastest-interval reading exists for.**
+    ///
+    /// A counter never jumps, so one step implying an implausible rate settles
+    /// it. Reading the *slowest* interval instead asks whether any step looks
+    /// like a counter, which a random series answers by accident often enough to
+    /// matter: this measured 284 of 2000 six-sample random series as `counting`.
+    ///
+    /// The threshold is a ceiling on the whole series, not a floor somewhere in
+    /// it.
+    #[test]
+    fn a_randomised_identifier_series_is_not_a_counter() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let sample = |ms: u64, id: u16| SeriesSample {
+            at: at(ms),
+            flags: 0x12,
+            sequence: 1,
+            ip_id: Some(id),
+            tsval: None,
+        };
+
+        // Two tiny steps and one enormous jump. The jump alone disqualifies it.
+        let jumpy = vec![
+            sample(0, 1000),
+            sample(100, 1001),
+            sample(200, 1002),
+            sample(300, 41_002),
+        ];
+        assert_eq!(
+            read_identifiers(&jumpy).class,
+            IdClass::Scattered,
+            "a counter does not jump forty thousand in a tenth of a second"
+        );
+
+        // A random series that happens to contain one near-neighbour pair, which
+        // is what the slowest-interval reading was fooled by.
+        let random = vec![
+            sample(0, 51_234),
+            sample(100, 8_123),
+            sample(200, 8_223),
+            sample(300, 61_999),
+            sample(400, 3),
+            sample(500, 40_000),
+        ];
+        assert_eq!(read_identifiers(&random).class, IdClass::Scattered);
+
+        // Measured rather than asserted by example: a purely random series must
+        // almost never read as a counter. The bound is generous so the test does
+        // not depend on this particular generator.
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut counting = 0;
+        for _ in 0..2_000 {
+            let series: Vec<SeriesSample> = (0..6u64)
+                .map(|i| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    sample(i * 100, (state >> 16) as u16)
+                })
+                .collect();
+            if read_identifiers(&series).class == IdClass::Counting {
+                counting += 1;
+            }
+        }
+        assert!(
+            counting < 20,
+            "{counting} of 2000 random series read as a counter; the slowest-interval \
+             reading this replaced scored 284"
+        );
+    }
+
+    /// And a real counter is still a counter, including one the host's other
+    /// traffic advanced between samples.
+    #[test]
+    fn a_counter_is_still_read_as_one() {
+        let t0 = Instant::now();
+        let sample = |ms: u64, id: u16| SeriesSample {
+            at: t0 + Duration::from_millis(ms),
+            flags: 0x12,
+            sequence: 1,
+            ip_id: Some(id),
+            tsval: None,
+        };
+
+        let steady = vec![
+            sample(0, 100),
+            sample(100, 103),
+            sample(200, 107),
+            sample(300, 111),
+        ];
+        assert_eq!(read_identifiers(&steady).class, IdClass::Counting);
+
+        // Wrapping at the field's edge is still a counter.
+        let wrapping = vec![
+            sample(0, 65_530),
+            sample(100, 65_534),
+            sample(200, 2),
+            sample(300, 6),
+        ];
+        assert_eq!(read_identifiers(&wrapping).class, IdClass::Counting);
+    }
     use super::*;
     use std::time::Duration;
 

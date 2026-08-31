@@ -38,14 +38,18 @@ use async_trait::async_trait;
 
 use super::db::SignatureDb;
 use super::model::{Evidence, SourceId, Tunnel};
-use super::prefilter::Prefilter;
 use super::response::{Collected, ResponseSet};
 use crate::model::port::Protocol;
 
 /// What an [`Analyzer`] is told about the port it is examining.
 ///
 /// Deliberately small; it grows as analyzers need more context (prior evidence,
-/// transport hints) without changing the trait.
+/// transport hints) without changing the trait. `#[non_exhaustive]` is what
+/// makes that true outside this crate: with every field public and the type
+/// open, the growth its own documentation anticipates would break every caller
+/// that had built one. Construct it through [`new`](Self::new).
+#[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct PortContext {
     /// The port being examined. It selects the signatures registered for that
     /// port, and it is what an analyzer bound to particular ports (SSH on 22)
@@ -68,6 +72,37 @@ pub struct PortContext {
     /// transport handed the analyzers data decrypted from a tunnel, so evidence
     /// drawn from it can be marked accordingly.
     pub tunnel: Option<Tunnel>,
+}
+
+impl PortContext {
+    /// A context for `port` over `protocol`, with no live socket and no tunnel.
+    ///
+    /// The two required facts, because they are the two an analyzer gates on:
+    /// a port number alone would have an SSH probe dial TCP 22 because UDP 22
+    /// was scanned.
+    #[must_use]
+    pub fn new(port: u16, protocol: Protocol) -> Self {
+        Self {
+            port,
+            protocol,
+            addr: None,
+            tunnel: None,
+        }
+    }
+
+    /// Names the peer, so an active analyzer has somewhere to dial.
+    #[must_use]
+    pub fn with_addr(mut self, addr: Option<std::net::SocketAddr>) -> Self {
+        self.addr = addr;
+        self
+    }
+
+    /// Records the tunnel the responses were read through, if any.
+    #[must_use]
+    pub fn with_tunnel(mut self, tunnel: Option<Tunnel>) -> Self {
+        self.tunnel = tunnel;
+        self
+    }
 }
 
 /// A source of fingerprinting evidence, run in two phases (see the module docs):
@@ -142,197 +177,24 @@ impl Analyzer for BannerRegexAnalyzer {
         _collected: &Collected,
     ) -> Vec<Evidence> {
         let db = SignatureDb::global();
-
-        let port_signatures = db.signatures_for_port(ctx.port);
-        db.warm(port_signatures);
-
-        let attested_by = super::extract::attested_by(ctx.port, ctx.protocol);
-
-        let mut evidence = Vec::new();
-        for response in &responses.banners {
-            if let Some((found, port_confirmed)) =
-                banner_evidence(db, port_signatures, response, attested_by)
-            {
-                evidence.push(stamp(found, ctx, port_confirmed));
-            }
-        }
-        evidence
-    }
-}
-
-/// Evidence from the **most specific** signature in `indices` that identifies any
-/// of `texts`, by [`MatchQuality`](super::matcher::MatchQuality).
-///
-/// Unlike a first-match scan, this evaluates every candidate so a generic
-/// signature listed earlier cannot shadow a more specific one (e.g. a bare
-/// `HTTP/1.1` match hiding a `Server:`-header match that names a product and
-/// version). Ties keep the earliest text and the lowest-indexed signature, so
-/// the result stays deterministic. Candidate sets are bounded — the linked port
-/// set, or the prefilter-narrowed global set — so evaluating all of them stays
-/// cheap.
-///
-/// **Several texts, for one banner, for the same reason.** A structured banner
-/// carries a field the corpus is actually written against, and that field is
-/// where the specific rules live — so both the whole banner and the field are
-/// offered, and the better match wins. Taking the *first* match instead would
-/// reinstate exactly the shadowing this function exists to prevent: the whole
-/// line matches a loose rule naming a family, and the field matches the rule
-/// naming the release.
-fn best_match(
-    db: &SignatureDb,
-    indices: &[usize],
-    texts: &[&str],
-    attested_by: crate::model::host::OsSource,
-) -> Option<Evidence> {
-    let matched: Vec<super::matcher::Match> = texts
-        .iter()
-        .flat_map(|text| {
-            indices
-                .iter()
-                .filter_map(move |&idx| db.signature(idx).identify(text, attested_by))
-        })
-        .collect();
-
-    // Replace only on a strictly better match, so the earliest text and the
-    // lowest index win ties.
-    let service = matched
-        .iter()
-        .reduce(|best, m| if m.quality > best.quality { m } else { best })?;
-
-    // **Chosen separately, and that is the point.** `quality` ranks how well a
-    // signature identified the *service*, which is a different question from how
-    // much it managed to say about the machine — and the two disagree. A rule
-    // pinning `OpenSSH_9.2p1` exactly outranks one that also happens to name
-    // Debian 12, so ranking the operating system by service quality threw the
-    // release away and reported a bare family.
-    //
-    // The `Match` type already separates them for exactly this reason: a banner
-    // identifies a service, and what it implies about the host is a second
-    // inference with its own rules. So the service reading comes from the best
-    // service match and the operating-system reading from the most complete one,
-    // and neither decides the other.
-    let os = matched
-        .iter()
-        .filter_map(|m| m.os.as_ref())
-        .reduce(|best, os| {
-            if os_detail(os) > os_detail(best) {
-                os
-            } else {
-                best
-            }
-        })
-        .cloned();
-
-    Some(Evidence {
-        os,
-        ..service.evidence.clone()
-    })
-}
-
-/// How much of the identity path an operating-system reading fills in.
-///
-/// Ranks readings against each other and nothing else. A reading that names a
-/// release says strictly more than one that stops at the family, and where two
-/// say the same amount the first stands — so the answer does not depend on which
-/// signature happened to be indexed earlier.
-///
-/// **Every part counts, including the ones added later.** A field left out here
-/// is a field that cannot win a rule its ranking: when the kernel was first
-/// given a home of its own, the rule that read one lost to an imported rule that
-/// had crammed the same string into `version`, purely because this function had
-/// not been told the new field existed.
-fn os_detail(os: &crate::model::host::OsEvidence) -> u8 {
-    u8::from(os.version.is_some())
-        + u8::from(os.kernel.is_some())
-        + u8::from(os.product.is_some())
-        + u8::from(os.vendor.is_some())
-        + u8::from(os.cpe.is_some())
-}
-
-/// Everything one banner yields: the evidence, and whether the signature that
-/// named the service was registered for this port.
-///
-/// The whole per-banner decision in one place — text extraction, both tiers, and
-/// the separate choice of service and operating-system readings. `analyze` is a
-/// loop around it and the tests call it directly, which is deliberate: a test
-/// that reproduced this logic instead of calling it is what let the release-
-/// naming SSH rules go unreachable while a test asserting "real banners name an
-/// operating system" went on passing.
-fn banner_evidence(
-    db: &SignatureDb,
-    port_signatures: &[usize],
-    banner: &str,
-    attested_by: crate::model::host::OsSource,
-) -> Option<(Evidence, bool)> {
-    let texts = super::extract::texts(banner);
-
-    // Matched against the signatures registered for this port: port-confirmed.
-    let mut found = best_match(db, port_signatures, &texts, attested_by);
-    let mut port_confirmed = found.is_some();
-
-    // The global set — narrowed by the prefilter to a small candidate list,
-    // compiled on demand — is consulted when the port set identified nothing,
-    // and **also when it named a service but said nothing about the machine**.
-    //
-    // That second case is not a special case: a banner identifies a service, and
-    // what it implies about the host is a separate inference, so the signature
-    // that answers one is very often not the signature that answers the other.
-    // Stopping at the port tier discarded every operating-system reading that
-    // lives only in the global set — measured, on a real host, whose release was
-    // sitting there unread.
-    //
-    // It costs an Aho-Corasick pass over the banner and a bounded candidate
-    // evaluation, on banners that previously skipped both. Regex compilation is
-    // cached, so a scan pays it once per signature rather than once per host.
-    if found.as_ref().is_none_or(|found| found.os.is_none()) {
-        // Narrowed against every text, unioned: a literal that only appears in
-        // the extracted field would otherwise select no candidates and the field
-        // would go unmatched here even though it matches on a known port.
-        let mut candidates: Vec<usize> = texts
+        responses
+            .banners
             .iter()
-            .flat_map(|text| db.prefilter().candidates(text))
-            .collect();
-        candidates.sort_unstable();
-        candidates.dedup();
-
-        db.warm(&candidates);
-        if let Some(global) = best_match(db, &candidates, &texts, attested_by) {
-            match found.as_mut() {
-                // The port-confirmed service stands; only the reading about the
-                // machine is taken from the wider set.
-                Some(found) => found.os = global.os,
-                None => {
-                    found = Some(global);
-                    port_confirmed = false;
-                }
-            }
-        }
+            .filter_map(|response| db.identify(ctx.port, ctx.protocol, response))
+            .map(|found| stamp(found, ctx))
+            .collect()
     }
-
-    found.map(|found| (found, port_confirmed))
 }
 
-/// What a banner says about the operating system underneath it, matched exactly
-/// as [`BannerRegexAnalyzer`] matches it.
-#[cfg(test)]
-pub(crate) fn os_from_banner(
-    db: &SignatureDb,
-    port: u16,
-    protocol: Protocol,
-    banner: &str,
-) -> Option<crate::model::host::OsEvidence> {
-    let port_signatures = db.signatures_for_port(port);
-    db.warm(port_signatures);
-    let attested_by = super::extract::attested_by(port, protocol);
-    banner_evidence(db, port_signatures, banner, attested_by).and_then(|(found, _)| found.os)
-}
-
-/// Marks `evidence` with the tunnel its response was read through (so a banner
-/// matched inside TLS is labelled as tunnelled) and whether the match was
-/// port-confirmed (from the port-linked signature set) or global-only.
-fn stamp(mut evidence: Evidence, ctx: &PortContext, port_confirmed: bool) -> Evidence {
+/// Marks `evidence` with the tunnel its response was read through, so a banner
+/// matched inside TLS is labelled as tunnelled.
+///
+/// The tunnel is the one thing the signature set cannot know: it is a fact about
+/// how the bytes arrived rather than about what they say, and only the transport
+/// that opened it can supply it. Port confirmation comes back on the evidence
+/// already, from the tier that matched.
+fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
     evidence.tunnel = ctx.tunnel;
-    evidence.port_confirmed = port_confirmed;
     evidence
 }
 

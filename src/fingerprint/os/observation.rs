@@ -131,6 +131,7 @@ impl TcpOptionKind {
 }
 
 /// The timestamp option's two values.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamps {
     /// The sender's own clock. Two of these from one host, with the interval
@@ -148,6 +149,7 @@ pub struct Timestamps {
 /// ordinary field is compared, and a quirk is a thing a conformant stack simply
 /// does not do. All of them are cheap — every one is a comparison against a
 /// field already parsed.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Quirks {
     /// The three reserved bits after the data offset are not all zero.
@@ -177,6 +179,16 @@ pub struct Quirks {
     pub malformed_options: bool,
     /// Something other than padding followed an end-of-list marker.
     pub data_after_end_of_list: bool,
+    /// The option list held more options than the walk reads, so the recorded
+    /// layout is the first twenty options of it and not the whole.
+    ///
+    /// Reachable: forty single-byte no-ops fill the header's option space and
+    /// are forty options. Without this the observation reported a twenty-option
+    /// layout for them and flagged nothing, which is the one parse defect in
+    /// this walk that used to be invisible — and a rule keyed on
+    /// [`option_layout`](StackObservation::option_layout) would have compared
+    /// against a truncated string.
+    pub options_truncated: bool,
 }
 
 impl Quirks {
@@ -190,6 +202,7 @@ impl Quirks {
 ///
 /// See the [module documentation](super) for the two fields that are not what
 /// they look like, and for why the reply kind has to be read first.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackObservation {
     /// The TCP flag byte, verbatim.
@@ -271,6 +284,7 @@ impl StackObservation {
                     && flags & crate::protocols::tcp::flags::SYN != 0,
                 malformed_options: walked.malformed,
                 data_after_end_of_list: walked.data_after_end,
+                options_truncated: walked.truncated,
             },
         })
     }
@@ -442,6 +456,7 @@ impl StackObservation {
 /// machine with no open and no closed port answers nothing this crate's port
 /// scanner sends, and every feature the passive path reads starts from a reply.
 /// A great many such hosts still answer a ping.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EchoObservation {
     /// What the IP header this reply arrived under said. The initial hop
@@ -604,6 +619,7 @@ struct Walked {
     sack_permitted: bool,
     malformed: bool,
     data_after_end: bool,
+    truncated: bool,
 }
 
 /// Walks a TCP option list, recording the kinds in order and extracting the
@@ -623,6 +639,7 @@ fn walk_options(options: &[u8]) -> Walked {
         sack_permitted: false,
         malformed: false,
         data_after_end: false,
+        truncated: false,
     };
 
     let mut at = 0;
@@ -650,15 +667,19 @@ fn walk_options(options: &[u8]) -> Walked {
             walked.malformed = true;
             break;
         };
+        // Before the slice below, which would otherwise answer for this: a
+        // length under two describes an option shorter than its own header, and
+        // `get` refuses the inverted range it produces. Checked here so the
+        // reason is the one stated rather than a side effect of the range.
         let length = usize::from(length);
-        let Some(value) = options.get(at + 2..at + length) else {
-            walked.malformed = true;
-            break;
-        };
         if length < 2 {
             walked.malformed = true;
             break;
         }
+        let Some(value) = options.get(at + 2..at + length) else {
+            walked.malformed = true;
+            break;
+        };
 
         match (kind, value) {
             (2, [high, low]) => walked.mss = Some(u16::from_be_bytes([*high, *low])),
@@ -679,6 +700,12 @@ fn walk_options(options: &[u8]) -> Walked {
         at += length;
     }
 
+    // The loop is bounded because these bytes are a remote host's, and stopping
+    // at the bound is a fact about the reading rather than about the sender. It
+    // is recorded for the same reason every other defect here is: what was read
+    // is still true, and a reader comparing a layout needs to know it is partial.
+    walked.truncated = at < options.len() && !walked.malformed && !walked.data_after_end;
+
     walked
 }
 
@@ -693,6 +720,61 @@ fn walk_options(options: &[u8]) -> Walked {
 
 #[cfg(test)]
 mod tests {
+
+    /// A list longer than the walk reads is recorded as partial rather than
+    /// silently shortened.
+    ///
+    /// Forty single-byte no-ops fill the header's whole option space and are
+    /// forty options; the walk stops at twenty because these bytes are a remote
+    /// host's and it must terminate on any input. What it stops at is a fact
+    /// about the reading, and a rule keyed on the layout needs to know the string
+    /// it is comparing is not the whole one.
+    #[test]
+    fn a_truncated_option_walk_says_so() {
+        let forty_nops = [1u8; 40];
+        let observed = StackObservation::from_tcp(ip(), &segment(0x12, 64_240, &forty_nops))
+            .expect("a well-formed header");
+
+        assert_eq!(observed.option_layout.len(), MAX_OPTIONS);
+        assert!(observed.quirks.options_truncated);
+        assert!(
+            !observed.quirks.malformed_options,
+            "nothing was malformed; the walk simply stopped"
+        );
+        assert!(observed.quirks.any());
+    }
+
+    /// And an ordinary list is not reported as truncated.
+    #[test]
+    fn a_list_the_walk_reads_whole_is_not_truncated() {
+        // Maximum segment size, SACK permitted, timestamp, no-op, window scale.
+        let linux: [u8; 20] = [
+            0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0xad, 0x58, 0xa5, 0xa7, 0x64, 0x48,
+            0x96, 0x12, 0x01, 0x03, 0x03, 0x07,
+        ];
+        let observed = StackObservation::from_tcp(ip(), &segment(0x12, 65_160, &linux))
+            .expect("a well-formed header");
+
+        assert_eq!(observed.layout_string(), "M,S,T,N,W");
+        assert!(!observed.quirks.options_truncated);
+        assert!(!observed.quirks.any(), "nothing odd about it");
+    }
+
+    /// An option claiming a length shorter than its own header is malformed, and
+    /// is refused for that reason rather than by the slice it would produce.
+    #[test]
+    fn an_option_shorter_than_its_own_header_is_malformed() {
+        for length in [0u8, 1] {
+            let observed =
+                StackObservation::from_tcp(ip(), &segment(0x12, 64_240, &[2, length, 0x05, 0xb4]))
+                    .expect("a well-formed header");
+            assert!(
+                observed.quirks.malformed_options,
+                "an option of length {length} describes less than its own header"
+            );
+            assert_eq!(observed.mss, None);
+        }
+    }
     use super::*;
     use crate::model::capture::Ipv4Observation;
 

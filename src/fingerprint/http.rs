@@ -141,7 +141,7 @@ impl Analyzer for HttpHeadersAnalyzer {
         // `X-Powered-By`: a *secondary* technology (PHP, ASP.NET, Express). It
         // names a component running behind the server, not the server itself, so
         // it goes to `extrainfo` — never the product slot the server owns.
-        if let Some(powered_by) = http.header("x-powered-by") {
+        if let Some(powered_by) = http.header("x-powered-by").and_then(super::identity_field) {
             evidence.push(stamp(
                 Evidence::new(SourceId::HttpHeaders, Confidence::Probable)
                     .with_service("http")
@@ -428,9 +428,17 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
 /// The literal prefilter keeps that affordable — it selects a handful of
 /// candidates out of thousands before any regex is compiled.
 ///
-/// Only the strongest match contributes. A `Server` value that matches several
-/// rules has matched several statements about one machine, and taking them all
-/// would count one header as corroborating itself.
+/// Only the most complete match contributes. A `Server` value that matches
+/// several rules has matched several statements about one machine, and taking
+/// them all would count one header as corroborating itself.
+///
+/// **Ranked by how much a reading says, not by how sure it is**, which is the
+/// same choice `SignatureDb::identify` makes and for the same reason: a rule
+/// pinning a product exactly outranks one that also happens to name a release,
+/// so ranking by confidence throws the release away. Two functions answering one
+/// question differently is how that argument gets lost, and the shipped corpus
+/// currently produces at most one match per header, which is exactly the
+/// condition under which such a divergence goes unnoticed.
 ///
 /// Costs 22–37 µs per header, measured — slowest when nothing matches, since a
 /// miss compiles and tries every candidate the prefilter selected. Paid once per
@@ -444,15 +452,19 @@ fn os_from(header: &str) -> Option<crate::model::host::OsEvidence> {
         .candidates(header)
         .into_iter()
         .filter_map(|index| {
-            db.signature(index)
+            db.signature(index)?
                 .identify(header, crate::model::host::OsSource::ServiceBanner)
         })
         .filter_map(|matched| matched.os)
-        .max_by(|a, b| {
-            a.confidence
-                .partial_cmp(&b.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        // `reduce` keeps the earlier reading on a tie, where `max_by` would keep
+        // the last and make the answer depend on which signature was indexed
+        // first.
+        .reduce(
+            |best, os| match super::db::os_detail(&os) > super::db::os_detail(&best) {
+                true => os,
+                false => best,
+            },
+        )
 }
 
 /// Splits a `Server` header value into a product and optional version.
@@ -464,7 +476,7 @@ fn os_from(header: &str) -> Option<crate::model::host::OsEvidence> {
 /// `Jetty(9.4)` yields `Jetty`. Returns `None` for an empty value, or for a
 /// placeholder token like `null` that names no real product.
 fn parse_server(value: &str) -> Option<(String, Option<String>)> {
-    let token = value.split_whitespace().next()?;
+    let token = super::identity_field(value.split_whitespace().next()?)?;
 
     if let Some((product, version)) = token.split_once('/') {
         let product = product.trim_end_matches('(');
@@ -1064,7 +1076,7 @@ mod os_from_headers {
             .candidates(response)
             .into_iter()
             .filter_map(|index| {
-                db.signature(index)
+                db.signature(index)?
                     .identify(response, crate::model::host::OsSource::ServiceBanner)
             })
             .find_map(|matched| matched.os);

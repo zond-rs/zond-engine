@@ -90,6 +90,7 @@ const MEASURED_ACCURACY: f32 = 65.0;
 const PUBLISHED_ACCURACY: f32 = 50.0;
 
 /// What the rules concluded about one observation.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct OsVerdict {
     /// The broad family, where anything could name one.
@@ -245,15 +246,20 @@ impl OsVerdict {
 ///
 /// - **One rule matched.** It is the only thing that describes this host, and it
 ///   scores its base worth times its own weight.
-/// - **Several matched and agree on the family.** They corroborate at the family
-///   level and disagree, or say nothing, below it. The verdict is the family they
-///   share, and it keeps only the finer parts *all* of them agree on — which is
-///   usually none. The score does not rise for the agreement: two rules written
+/// - **Several matched and agree.** They corroborate on whichever of the two
+///   identifying axes they both speak to, and disagree, or say nothing, below
+///   it. The verdict keeps only the parts *all* of them agree on, which is
+///   usually few. The score does not rise for the agreement: two rules written
 ///   from the same measurements are not two pieces of evidence.
-/// - **Several matched and disagree on the family.** The rules cannot both be
-///   right and nothing here can say which is. Reported as nothing, deliberately:
-///   a tie broken by weight would be reporting an authoring decision as a
-///   measurement.
+/// - **Several matched and contradict each other.** Two rules naming different
+///   families, or different device classes, cannot both be right and nothing
+///   here can say which is. Reported as nothing, deliberately: a tie broken by
+///   weight would be reporting an authoring decision as a measurement.
+///
+/// A rule that names a family and one that names only a device class are not in
+/// the third case. They answer different questions about one host and the
+/// verdict carries both, which is what keeps a rule reading a hop counter from
+/// arguing with a banner about what the box runs.
 ///
 /// Returns `None` when no rule matched, when the matches contradict each other,
 /// or when the result scores below [`MIN_REPORTABLE_ACCURACY`].
@@ -311,6 +317,35 @@ pub fn classify_series(db: &RuleDb, readings: &[(StackReply, SeriesClasses)]) ->
     score(matched, lines.join(" | "))
 }
 
+/// Two matched rules named one part differently.
+///
+/// Only ever produced for the two axes that *identify* a host, where dissent has
+/// to stop the verdict. Below them a contradiction and an absence come to the
+/// same thing, so [`consensus`]'s error is discarded there.
+struct Contradiction;
+
+/// The one value every rule that states `part` gives, or `None` where none
+/// states it.
+///
+/// **Silence abstains and dissent is fatal**, and keeping the two apart is what
+/// this exists for. A rule that leaves a part empty is not disagreeing: a
+/// family-level rule and a version-level one that both matched are a refinement,
+/// and reading the broader one's silence as dissent would erase every version a
+/// rule can name. Two rules naming different values is the other case entirely.
+fn consensus<'a>(
+    matched: &[&'a OsDefinition],
+    part: impl Fn(&'a OsDefinition) -> Option<&'a str>,
+) -> Result<Option<String>, Contradiction> {
+    let mut stated = matched.iter().copied().filter_map(part);
+    let Some(candidate) = stated.next() else {
+        return Ok(None);
+    };
+    match stated.all(|other| other == candidate) {
+        true => Ok(Some(candidate.to_owned())),
+        false => Err(Contradiction),
+    }
+}
+
 /// Scores the rules that matched, whatever gathered them, into one verdict.
 ///
 /// The half [`classify`] and [`classify_series`] share: they differ in which
@@ -318,26 +353,26 @@ pub fn classify_series(db: &RuleDb, readings: &[(StackReply, SeriesClasses)]) ->
 /// everything after. `evidence` is that line, already rendered, because only the
 /// caller knows how many replies went into it.
 fn score(matched: Vec<&OsDefinition>, evidence: String) -> Option<OsVerdict> {
-    let (first, rest) = matched.split_first()?;
+    if matched.is_empty() {
+        return None;
+    }
 
-    // A family the matches do not share is a contradiction, not a ranking.
-    if rest.iter().any(|rule| rule.os.family != first.os.family) {
+    // The two axes that identify the host. Dissent on either is fatal: the rules
+    // cannot both be right and nothing here can say which is, and a tie broken by
+    // weight would report an authoring decision as a measurement.
+    let family = consensus(&matched, |rule| rule.os.family.as_deref()).ok()?;
+    let device = consensus(&matched, |rule| rule.os.device.as_deref()).ok()?;
+    if family.is_none() && device.is_none() {
         return None;
     }
 
     // Keep the finer parts of the path, where the rules that spoke to them
-    // agree. A rule that leaves a part empty **abstains** rather than dissents:
-    // a family-level rule and a version-level one that both matched are a
-    // refinement, not a contradiction, and treating silence as disagreement
-    // would mean every version a rule can name is erased by the broader rule
-    // that necessarily matched beside it. Two rules naming *different* values is
-    // still a contradiction and still yields nothing.
-    let agreed = |part: fn(&OsDefinition) -> &Option<String>| -> Option<String> {
-        let mut stated = matched.iter().filter_map(|rule| part(rule).as_deref());
-        let candidate = stated.next()?;
-        stated
-            .all(|other| other == candidate)
-            .then(|| candidate.to_owned())
+    // agree. Silence abstains here too, and two rules naming *different* values
+    // yield nothing rather than nothing at all: below the identifying axes a
+    // contradiction and an absence mean the same thing, which is that the part
+    // goes unreported.
+    let agreed = |part: fn(&OsDefinition) -> Option<&str>| -> Option<String> {
+        consensus(&matched, part).unwrap_or_default()
     };
 
     // The weight of the least confident match, not the most: a set of rules is
@@ -366,18 +401,15 @@ fn score(matched: Vec<&OsDefinition>, evidence: String) -> Option<OsVerdict> {
     }
 
     let (vendor, product, version, cpe) = (
-        agreed(|rule| &rule.os.vendor),
-        agreed(|rule| &rule.os.product),
-        agreed(|rule| &rule.os.version),
-        agreed(|rule| &rule.os.cpe),
+        agreed(|rule| rule.os.vendor.as_deref()),
+        agreed(|rule| rule.os.product.as_deref()),
+        agreed(|rule| rule.os.version.as_deref()),
+        agreed(|rule| rule.os.cpe.as_deref()),
     );
 
     Some(OsVerdict {
-        family: Some(first.os.family.clone()),
-        // A reply's shape says nothing about what kind of box sent it. The
-        // classes that would be worth reading — printer, switch, camera — are
-        // read off text, by rules that can name them.
-        device: None,
+        family,
+        device,
         // A rule is one source, and it asserts its whole identity at once: the
         // release it names is worth exactly what the rule is worth. The two
         // figures only come apart once *several* sources are folded together,
@@ -493,6 +525,35 @@ mod tests {
         let fingerprint = verdict.to_fingerprint();
         assert_eq!(fingerprint.name(), "Linux");
         assert_eq!(fingerprint.family(), Some("Linux"));
+    }
+
+    /// **The weight bound is where the knob stops turning.**
+    ///
+    /// A verdict's accuracy is a base worth times the weight, clamped at
+    /// [`MAX_STACK_ACCURACY`]. Past the point where that clamp bites, every
+    /// weight produces the same answer: the bound was ten and measured, 1.08
+    /// through 10 were indistinguishable, so nine tenths of the range an author
+    /// could reach for did nothing and the build validated against the end of it
+    /// where nothing happens.
+    ///
+    /// This fails if the bound rises back above where the arithmetic saturates.
+    #[test]
+    fn the_weight_bound_leaves_no_dead_range() {
+        use super::super::MAX_RULE_WEIGHT;
+
+        let saturates_at = f32::from(MAX_STACK_ACCURACY) / MEASURED_ACCURACY;
+        assert!(
+            saturates_at < MAX_RULE_WEIGHT,
+            "a measured rule saturates at {saturates_at}, which is at or above the \
+             bound of {MAX_RULE_WEIGHT}, so no weight reaches the ceiling"
+        );
+
+        // And not so far above it that most of the range is inert.
+        assert!(
+            MAX_RULE_WEIGHT < saturates_at * 2.0,
+            "weights from {saturates_at} to {MAX_RULE_WEIGHT} all produce the same \
+             answer, so most of the range an author can reach for does nothing"
+        );
     }
 
     /// The ceiling exists so that one correlated packet cannot satisfy the
@@ -690,7 +751,8 @@ mod tests {
 
         let rule = |family: &str| OsDefinition {
             os: OsIdentity {
-                family: family.to_string(),
+                family: Some(family.to_string()),
+                device: None,
                 vendor: None,
                 product: None,
                 version: None,
@@ -710,7 +772,8 @@ mod tests {
             example: Vec::new(),
         };
 
-        let db = RuleDb::from_rules(vec![rule("Linux"), rule("Windows")]);
+        let db = RuleDb::try_from_rules(vec![rule("Linux"), rule("Windows")])
+            .expect("the rules are well formed");
         let observed = StackObservation::from_tcp(
             ip(),
             &segment(flags::SYN | flags::ACK, 65_160, &DEBIAN_BOOKWORM),
@@ -862,11 +925,18 @@ mod series_backed {
         }
     }
 
+    /// An identity naming a family, and a release where the rule reaches one.
+    ///
+    /// The product travels with the version because a version needs something to
+    /// be a version *of*: `OsDefinition::validate` refuses the pair without it,
+    /// and it caught these fixtures the day the checked constructor arrived. The
+    /// corpus writes a distribution the same way.
     fn named(family: &str, version: Option<&str>) -> OsIdentity {
         OsIdentity {
-            family: family.to_owned(),
+            family: Some(family.to_owned()),
+            device: None,
             vendor: None,
-            product: None,
+            product: version.map(|_| "Debian".to_owned()),
             version: version.map(str::to_owned),
             cpe: None,
         }
@@ -905,7 +975,7 @@ mod series_backed {
     /// matched by one sequence number, whatever that number is.
     #[test]
     fn a_series_rule_cannot_be_satisfied_by_one_reply() {
-        let db = RuleDb::from_rules(vec![rule(
+        let db = RuleDb::try_from_rules(vec![rule(
             named("Linux", Some("6.x")),
             MatchRule {
                 reply: ReplyKind::SynAck,
@@ -913,7 +983,8 @@ mod series_backed {
                 sequence_class: is("hashed"),
                 ..Default::default()
             },
-        )]);
+        )])
+        .expect("the rules are well formed");
         let reply = syn_ack();
 
         assert!(
@@ -936,7 +1007,7 @@ mod series_backed {
     /// evidence yielding a less specific answer.
     #[test]
     fn a_broader_rule_matching_beside_a_finer_one_does_not_erase_the_version() {
-        let db = RuleDb::from_rules(vec![
+        let db = RuleDb::try_from_rules(vec![
             rule(
                 named("Linux", None),
                 MatchRule {
@@ -954,7 +1025,8 @@ mod series_backed {
                     ..Default::default()
                 },
             ),
-        ]);
+        ])
+        .expect("the rules are well formed");
 
         let reply = syn_ack();
         assert_eq!(
@@ -988,10 +1060,11 @@ mod series_backed {
                 },
             )
         };
-        let db = RuleDb::from_rules(vec![
+        let db = RuleDb::try_from_rules(vec![
             with_version("6.x", "hashed"),
             with_version("7.x", "hashed"),
-        ]);
+        ])
+        .expect("the rules are well formed");
 
         let verdict = classify_series(&db, &[(syn_ack(), hashed())]).expect("the family is agreed");
         assert_eq!(verdict.family.as_deref(), Some("Linux"));
@@ -1008,14 +1081,15 @@ mod series_backed {
     /// other.
     #[test]
     fn a_host_read_several_ways_still_yields_one_verdict() {
-        let db = RuleDb::from_rules(vec![rule(
+        let db = RuleDb::try_from_rules(vec![rule(
             named("Linux", None),
             MatchRule {
                 reply: ReplyKind::SynAck,
                 initial_hops: at_64(),
                 ..Default::default()
             },
-        )]);
+        )])
+        .expect("the rules are well formed");
 
         let one = classify_series(&db, &[(syn_ack(), hashed())]).expect("one reading names it");
         let twice = classify_series(&db, &[(syn_ack(), hashed()), (syn_ack(), hashed())])

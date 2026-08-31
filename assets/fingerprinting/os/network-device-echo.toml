@@ -14,7 +14,7 @@ weight = 0.8
 notes = "An initial TTL of 255 is the long-standing convention for routers, switches and embedded management stacks. The shared property of this class is the hop counter, not a stack, so this states it alone. Unconfirmed against hardware by this engine."
 
 [os]
-family = "Network device"
+device = "Network device"
 
 [match]
 reply = "echo_reply"

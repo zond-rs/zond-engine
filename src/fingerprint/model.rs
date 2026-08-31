@@ -74,6 +74,7 @@ impl Tunnel {
 /// float, and a value nobody can write down exactly is not one two observations
 /// should be claimed to share.
 #[must_use]
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Evidence {
     /// The protocol the port was speaking, in the corpus's vocabulary: `http`,
@@ -181,6 +182,23 @@ impl Evidence {
         self.tunnel = Some(tunnel);
         self
     }
+
+    /// Sets the platform identifier this observation established.
+    ///
+    /// Whatever names the CPE should name the product too: a verdict takes the
+    /// two from one observation, because a CPE is a whole identity and not a
+    /// fragment of one. See [`ServiceVerdict::resolve`].
+    pub fn with_cpe(mut self, cpe: impl Into<String>) -> Self {
+        self.cpe = Some(cpe.into());
+        self
+    }
+
+    /// Records what this observation said about the *machine* underneath the
+    /// service.
+    pub fn with_os(mut self, os: crate::model::host::OsEvidence) -> Self {
+        self.os = Some(os);
+        self
+    }
 }
 
 /// The reconciled answer for a port, plus the full evidence it was drawn from.
@@ -191,6 +209,7 @@ impl Evidence {
 /// Comparable but not [`Eq`], for the reason [`Evidence`] is not: the
 /// observations it retains carry a confidence, and a float is not something two
 /// verdicts should be claimed to share exactly.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ServiceVerdict {
     /// The protocol the port is speaking, from the strongest observation that
@@ -266,33 +285,47 @@ impl ServiceVerdict {
             fill(&mut verdict.version, &ev.version);
             fill(&mut verdict.vendor, &ev.vendor);
             fill(&mut verdict.extrainfo, &ev.extrainfo);
-            fill(&mut verdict.cpe, &ev.cpe);
         }
 
         // Product needs more than "first that carries it". A product that merely
         // echoes the service ("http" for service http) is what a *generic* match
-        // emits — the `generic_http` signature, the matcher's product-defaults-
-        // to-service fallback, a protocol baseline. It conveys no product, so it
-        // must not bury a real name ("cloudflare", bare "nginx") that a more
-        // specific analyzer supplied at the *same* confidence. Prefer the
-        // highest-confidence product that names something beyond the service;
-        // fall back to the echo only when nothing more specific exists.
-        verdict.product = evidence
+        // emits — the `generic_http` signature, a protocol baseline. It conveys
+        // no product, so it must not bury a real name ("cloudflare", bare
+        // "nginx") that a more specific analyzer supplied at the *same*
+        // confidence.
+        //
+        // An echo is never surfaced, whatever else is present. Reporting `dns`
+        // as the software behind DNS is a claim nothing made: it disagrees with
+        // every other scanner's answer for the same port, and a comparison then
+        // reports a difference between two tools that found the same thing. The
+        // one thing an echo is good for — naming the port where no service was
+        // identified at all — is already covered, because a product is only an
+        // echo when there *is* a service for it to echo.
+        let named = evidence
             .iter()
-            .filter_map(|ev| ev.product.as_deref())
-            .find(|product| Some(*product) != verdict.service.as_deref())
-            .or_else(|| evidence.iter().find_map(|ev| ev.product.as_deref()))
-            .map(str::to_string);
+            .filter(|ev| ev.product.is_some())
+            .find(|ev| ev.product.as_deref() != verdict.service.as_deref());
+        verdict.product = named.and_then(|ev| ev.product.clone());
 
-        // An echo is kept above only because it may be the *name* — `to_service`
-        // falls back to the product when nothing named a service. Once a service
-        // is named it conveys nothing, and reporting `dns` as the software
-        // behind DNS is a claim nothing made: it disagrees with every other
-        // scanner's answer for the same port, and a comparison then reports a
-        // difference between two tools that found the same thing.
-        if verdict.product == verdict.service {
-            verdict.product = None;
-        }
+        // **The platform identifier comes from whichever observation named the
+        // product**, and not from whichever happened to carry one first.
+        //
+        // A CPE is a whole identity rather than a fragment of one: vendor,
+        // product and version in a single string, already resolved against its
+        // own observation's version. Filled independently of the product, a
+        // verdict reported `gunicorn 21.2.0` beside
+        // `cpe:/a:apache:http_server:2.4.49` — measured — and `cve` joins on the
+        // CPE, so the port was matched against Apache's vulnerabilities while
+        // the report named something else entirely. That is a false finding in a
+        // security report, which is the most expensive thing this crate can
+        // produce.
+        //
+        // Where nothing named a product there is nothing for a CPE to
+        // contradict, so the strongest one stands on its own.
+        verdict.cpe = match named {
+            Some(ev) => ev.cpe.clone(),
+            None => evidence.iter().find_map(|ev| ev.cpe.clone()),
+        };
 
         verdict.evidence = evidence;
         verdict
@@ -481,6 +514,77 @@ mod tests {
 
         let verdict = ServiceVerdict::resolve(vec![weak_port, strong_global]);
         assert_eq!(verdict.service.as_deref(), Some("smtp"));
+    }
+
+    /// **A platform identifier belongs to the product it names.**
+    ///
+    /// The HTTP analyzer never sets a CPE and a banner rule often does, so a
+    /// versioned `Server` header outranking a versionless curated rule left the
+    /// two fields filled from different observations. Measured:
+    /// `product=gunicorn version=21.2.0` beside
+    /// `cpe:/a:apache:http_server:2.4.49`, which is the path-traversal release
+    /// of httpd. `cve` joins on the CPE, so a port the report named gunicorn was
+    /// matched against Apache's vulnerabilities.
+    #[test]
+    fn a_cpe_never_belongs_to_a_product_the_verdict_did_not_name() {
+        let http = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("gunicorn")
+            .with_version("21.2.0");
+        let mut curated = ev(Confidence::Probable)
+            .with_service("http")
+            .with_product("Apache HTTP Server");
+        curated.cpe = Some("cpe:/a:apache:http_server:2.4.49".to_string());
+
+        let verdict = ServiceVerdict::resolve(vec![http, curated]);
+
+        assert_eq!(verdict.product.as_deref(), Some("gunicorn"));
+        assert_eq!(
+            verdict.cpe, None,
+            "the winning product carried no platform identifier, so the verdict has none"
+        );
+        assert!(
+            verdict
+                .to_service()
+                .expect("names a service")
+                .cpes()
+                .is_empty(),
+            "and nothing reaches the CVE join"
+        );
+    }
+
+    /// The ordinary case is untouched: one observation names a product and its
+    /// identifier together, which is how every curated signature carrying a
+    /// `service.cpe23` is written.
+    #[test]
+    fn a_cpe_travels_with_the_product_that_won() {
+        let mut nginx = ev(Confidence::Strong)
+            .with_service("http")
+            .with_product("nginx")
+            .with_version("1.24.0");
+        nginx.cpe = Some("cpe:/a:nginx:nginx:1.24.0".to_string());
+        let weaker = ev(Confidence::Probable).with_service("http");
+
+        let verdict = ServiceVerdict::resolve(vec![weaker, nginx]);
+
+        assert_eq!(verdict.product.as_deref(), Some("nginx"));
+        assert_eq!(verdict.cpe.as_deref(), Some("cpe:/a:nginx:nginx:1.24.0"));
+    }
+
+    /// Where nothing named a product there is nothing for an identifier to
+    /// contradict, so one that was found still reaches the report.
+    #[test]
+    fn a_cpe_without_a_product_beside_it_still_stands() {
+        let mut bare = ev(Confidence::Probable).with_service("http");
+        bare.cpe = Some("cpe:/a:apache:http_server:2.4.58".to_string());
+
+        let verdict = ServiceVerdict::resolve(vec![bare]);
+
+        assert_eq!(verdict.product, None);
+        assert_eq!(
+            verdict.cpe.as_deref(),
+            Some("cpe:/a:apache:http_server:2.4.58")
+        );
     }
 
     #[test]

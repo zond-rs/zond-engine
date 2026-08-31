@@ -320,7 +320,8 @@ mod tests {
 
         OsDefinition {
             os: OsIdentity {
-                family: "Test family".to_string(),
+                family: Some("Test family".to_string()),
+                device: None,
                 vendor: None,
                 product: None,
                 version: None,

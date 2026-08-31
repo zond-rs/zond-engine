@@ -154,6 +154,58 @@ mod tests {
         assert!(!reads(9_999, Protocol::Udp));
     }
 
+    /// **Every port the corpus sends a UDP probe to has a decoder for the answer,
+    /// or is named here as one that does not.**
+    ///
+    /// The two lists are authored in different places for different reasons.
+    /// `assets/fingerprinting` says what to send, [`DECODED_UDP_PORTS`] says what
+    /// can be read back, and nothing but this connects them: a UDP probe
+    /// authored for a port with no decoder draws a reply the fingerprinter
+    /// throws away, and the only symptom is a service that is never identified.
+    ///
+    /// The sibling test on the service side
+    /// (`every_port_with_a_signature_is_a_port_the_default_scan_reaches`) holds
+    /// the same kind of join and is what this is modelled on.
+    #[test]
+    fn a_udp_probe_either_has_a_decoder_or_is_listed_as_having_none() {
+        use crate::fingerprint::SignatureDb;
+
+        /// Ports the corpus probes over UDP for *liveness* rather than for
+        /// identification. A UDP probe is what establishes the port is open at
+        /// all, since UDP offers no handshake to infer it from, so a probe here
+        /// earns its place without a decoder. Each entry is a decoder somebody
+        /// could write.
+        const PROBED_BUT_NOT_DECODED: &[u16] = &[53, 123, 137, 1900, 5353];
+
+        let db = SignatureDb::global();
+        let probed: Vec<u16> = (0..=u16::MAX)
+            .filter(|port| !db.udp_probe_payloads(*port).is_empty())
+            .collect();
+
+        for port in &probed {
+            assert!(
+                DECODED_UDP_PORTS.contains(port) || PROBED_BUT_NOT_DECODED.contains(port),
+                "the corpus sends a UDP probe to {port} and nothing here reads the \
+                 answer. Write a decoder in `from_datagram`, or list the port in \
+                 PROBED_BUT_NOT_DECODED to say the probe is for liveness alone."
+            );
+        }
+
+        for port in DECODED_UDP_PORTS {
+            assert!(
+                probed.contains(port),
+                "there is a decoder for {port} and the corpus sends it nothing, so \
+                 the decoder can never run"
+            );
+        }
+        for port in PROBED_BUT_NOT_DECODED {
+            assert!(
+                probed.contains(port),
+                "{port} is listed as probed without a decoder and is not probed"
+            );
+        }
+    }
+
     /// And a port that has one is worth the second datagram it costs.
     #[test]
     fn a_port_with_a_decoder_is_worth_dialling() {

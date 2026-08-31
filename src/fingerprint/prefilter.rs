@@ -69,6 +69,7 @@ pub trait Prefilter: Send + Sync {
 }
 
 /// A required-literal Aho-Corasick prefilter. See the module docs.
+#[derive(Debug)]
 pub struct LiteralPrefilter {
     automaton: AhoCorasick,
     /// Aho-Corasick pattern id -> the signature index that contributed it.

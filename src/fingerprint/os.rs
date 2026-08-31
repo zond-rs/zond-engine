@@ -133,7 +133,7 @@ pub use observation::{
 // a consumer writing rules of their own is held to the same shape rather than
 // discovering it when one is silently dropped, exactly as the service signature
 // schema is.
-pub use db::RuleDb;
+pub use db::{InvalidRule, RuleDb};
 pub use evidence::{MAX_FUSED_ACCURACY, resolve};
 pub use hardware::evidence_from as hardware_evidence;
 pub use hostname::evidence_from as hostname_evidence;
@@ -144,7 +144,8 @@ pub use series::{
     read_clock, read_identifiers, read_sequences,
 };
 pub use signature::{
-    Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind,
+    Example, MAX_RULE_WEIGHT, MatchRule, OsDefinition, OsIdentity, Predicate, PredicateDefect,
+    Provenance, ReplyKind, RuleError,
 };
 pub use text::{
     AGENT_CEILING, BANNER_CEILING, OsMetadata, ceiling, evidence_from as banner_evidence,

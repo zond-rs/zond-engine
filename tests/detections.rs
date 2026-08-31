@@ -634,12 +634,7 @@ fn a_passive_detection_that_asks_to_speak_is_handed_no_socket_at_all() {
         .instantiate(&module, &grant)
         .expect("the module instantiates");
     let mut caps = LiveCapabilities::new(addr, Protocol::Tcp, &grant.budget);
-    let ctx = PortContext {
-        port: addr.port(),
-        protocol: Protocol::Tcp,
-        addr: Some(addr),
-        tunnel: None,
-    };
+    let ctx = PortContext::new(addr.port(), Protocol::Tcp).with_addr(Some(addr));
 
     match runtime.run(&mut instance, &ctx, &[], &mut caps) {
         Err(RunOutcome::Faulted(ModuleFault::Runtime(reason))) => assert!(

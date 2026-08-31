@@ -32,6 +32,7 @@
 /// because they exist only on the live connection: once the tunnel is dropped,
 /// what version and cipher were agreed is unrecoverable without handshaking
 /// again.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct TlsInfo {
     /// The presented chain in DER form, leaf first. Owned so nothing borrows the
@@ -53,6 +54,37 @@ pub struct TlsInfo {
 }
 
 impl TlsInfo {
+    /// A handshake result carrying `certificates`, leaf first, and nothing
+    /// negotiated yet.
+    #[must_use]
+    pub fn new(certificates: Vec<Vec<u8>>) -> Self {
+        Self {
+            certificates,
+            ..Self::default()
+        }
+    }
+
+    /// Records the protocol version agreed, as the RFCs write it.
+    #[must_use]
+    pub fn with_version(mut self, version: &'static str) -> Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// Records the cipher suite the server selected, under its IANA name.
+    #[must_use]
+    pub fn with_cipher_suite(mut self, suite: &'static str) -> Self {
+        self.cipher_suite = Some(suite);
+        self
+    }
+
+    /// Records the protocol agreed over ALPN.
+    #[must_use]
+    pub fn with_alpn(mut self, alpn: impl Into<String>) -> Self {
+        self.alpn = Some(alpn.into());
+        self
+    }
+
     /// The leaf (end-entity) certificate's DER bytes, if the peer presented one.
     pub fn leaf(&self) -> Option<&[u8]> {
         self.certificates.first().map(Vec::as_slice)
@@ -67,6 +99,7 @@ impl TlsInfo {
 ///
 /// [`BannerRegexAnalyzer`]: super::analyzer::BannerRegexAnalyzer
 /// [`TlsCertAnalyzer`]: super::tls_cert::TlsCertAnalyzer
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct ResponseSet {
     /// Plaintext banner and active-probe responses, in the order collected.
@@ -77,8 +110,16 @@ pub struct ResponseSet {
 
 impl ResponseSet {
     /// A response set from plaintext banners alone (no TLS attempted).
+    #[must_use]
     pub fn from_banners(banners: Vec<String>) -> Self {
         Self { banners, tls: None }
+    }
+
+    /// Records what a completed handshake yielded beside the banners.
+    #[must_use]
+    pub fn with_tls(mut self, tls: TlsInfo) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Whether nothing at all was collected — no banners and no TLS.
@@ -99,8 +140,17 @@ impl ResponseSet {
 /// simply empty.
 ///
 /// [`Analyzer`]: super::analyzer::Analyzer
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct Collected {
     /// Raw frames read from this analyzer's own probes, in the order collected.
     pub frames: Vec<Vec<u8>>,
+}
+
+impl Collected {
+    /// What an active analyzer's own probe exchange read, in order.
+    #[must_use]
+    pub fn from_frames(frames: Vec<Vec<u8>>) -> Self {
+        Self { frames }
+    }
 }

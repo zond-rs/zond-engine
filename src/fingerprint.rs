@@ -66,7 +66,7 @@ mod pattern_properties;
 
 use crate::model::host::OsEvidence;
 pub use analyzer::{Analyzer, BannerRegexAnalyzer, PortContext};
-pub use db::SignatureDb;
+pub use db::{InvalidDefinition, SignatureDb};
 pub use http::HttpHeadersAnalyzer;
 pub use model::{Evidence, ServiceVerdict, SourceId, Tunnel};
 pub use response::{Collected, ResponseSet, TlsInfo};
@@ -75,8 +75,8 @@ pub use response::{Collected, ResponseSet, TlsInfo};
 // are exported so a consumer authoring signatures of their own is held to the
 // same bounds rather than discovering them when a pattern is silently dropped.
 pub use signature::{
-    MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, MatchRule, Probe, ServiceDefinition,
-    ServiceSignature,
+    DefinitionError, MAX_COMPILED_REGEX_BYTES, MAX_UDP_PROBE_BYTES, MatchRule, Probe,
+    ServiceDefinition, ServiceSignature,
 };
 // The payload decoder Tier-0 probes use, reused by the Tier-1 interpreter to turn
 // a flow's `\x`/`\r\n` escapes into the bytes it sends. Crate-visible, not public.
@@ -128,6 +128,67 @@ const CONNECT_RETRY_TIMEOUT: Duration = Duration::from_millis(500);
 /// Upper bound on how much of a single response we read/keep.
 const MAX_RESPONSE_BYTES: usize = 4096;
 
+/// The longest a single identity field lifted from a response may be.
+///
+/// A product name, a version and a supplementary technology are all short by
+/// nature. What a bound stops is a hostile response putting a kilobyte into
+/// each: measured before this existed, one reply produced a 1500-byte `product`
+/// and a 1500-byte `extrainfo`, and both travelled into the store, the journal,
+/// the JSON, the CSV, the HTML and the nmap XML.
+///
+/// **Refused rather than truncated**, which is the argument
+/// the SNMP reader already makes about `sysDescr`: half a value matched
+/// against a corpus of whole ones is a match nobody can reproduce, and a
+/// truncated version is a version that is simply wrong. A field this long is a
+/// pattern that ran away or a peer being difficult, and neither is worth
+/// reporting.
+///
+/// Every sibling reading here already bounded itself — 255 bytes for a system
+/// description, 40 for a document title, 32 for a last-resort banner label —
+/// and each said why. These three had no argument for being unbounded, only no
+/// author.
+pub const MAX_IDENTITY_BYTES: usize = 256;
+
+/// `value` as an identity field, or `None` where it is empty or past
+/// [`MAX_IDENTITY_BYTES`].
+///
+/// The one place the bound is applied, so the three readings that lift text off
+/// a response cannot disagree about it.
+pub(crate) fn identity_field(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty() && value.len() <= MAX_IDENTITY_BYTES).then_some(value)
+}
+
+/// How long a response may go on arriving, measured from its first byte.
+///
+/// [`CONTINUATION_GRACE`] bounds the gap between two reads and nothing bounded
+/// how many of them there could be, so a peer writing one byte every forty
+/// milliseconds stayed permanently inside the grace and held a task for
+/// **ninety-seven seconds**. Measured, against a loopback server doing exactly
+/// that, and it costs an attacker one socket.
+///
+/// Set where a legitimate response cannot reach it. What this has to cover is a
+/// server writing its headers and then its body, which is a segment boundary
+/// and at worst a round trip; two seconds is three orders of magnitude past
+/// that. What it cuts off is a peer being slow on purpose.
+const MAX_CONTINUATION: Duration = Duration::from_secs(2);
+
+/// The ceiling on everything one port's collection may spend on the network.
+///
+/// A backstop rather than a working budget. Every stage below already has its
+/// own bound, and the longest honest path through [`gather`] is an implicit-TLS
+/// handshake followed by a banner and the port's own probes inside the tunnel,
+/// which comes to nine and a half seconds. This sits well above that, so it
+/// never fires on a port behaving normally;
+/// `the_collection_budget_covers_every_path_through_gather` is what holds the
+/// two together.
+///
+/// It is here because the stages are added to over time and their sum is nobody's
+/// property. `read_bytes` grew a bound it did not have; the next stage to be
+/// added will be bounded by whoever writes it, and this is what makes the total
+/// somebody's responsibility rather than an emergent number.
+const COLLECTION_BUDGET: Duration = Duration::from_secs(15);
+
 /// Whether a reply from this port over this protocol is one the engine can read.
 ///
 /// What decides whether a port is worth the exchange a service pass costs. A TCP
@@ -145,10 +206,50 @@ pub fn reads_replies(port: u16, protocol: Protocol) -> bool {
 /// A pure metadata lookup with **no regex compilation**, safe to call on the
 /// scan hot path for every classified port. Returns the same names the fuller
 /// fingerprinting path uses, so a quick label and a deep identification agree.
-pub fn lookup_service_name(port: u16, _protocol: Protocol) -> Option<String> {
+///
+/// Registration is per port and not per transport, because a signature file
+/// names the numbers a service claims and says nothing about how they are
+/// reached. This took a `Protocol` for a while and ignored it, which is worse
+/// than not taking one: [`reads_replies`] next door does branch on the
+/// transport, so the two signatures read as though both meant it.
+pub fn lookup_service_name(port: u16) -> Option<String> {
     SignatureDb::global()
         .service_name(port)
         .map(|s| s.to_string())
+}
+
+/// The text a UDP reply from `port` carries, where this engine can read one.
+///
+/// The other half of [`reads_replies`], which says whether a port qualifies and
+/// leaves a caller who dialled one themselves with no way to read the answer.
+/// `None` for a port with no decoder, which is most of them: a datagram nothing
+/// can read is still proof the port is open, and that is what the scan already
+/// took from it.
+///
+/// Returns owned text because decoding is not always a borrow — a value lifted
+/// out of a binary encoding has no text in the datagram to point at.
+pub fn decode_udp_reply(port: u16, datagram: &[u8]) -> Option<String> {
+    extract::from_datagram(port, datagram)
+}
+
+/// What a completed handshake established, as the record a report carries.
+///
+/// A summary rather than the chain: who the certificate claims to be, who
+/// vouched for it, when it stops being valid, and a fingerprint to compare two
+/// sightings by. **Nothing here is a trust decision** — validity is recorded as
+/// two instants and left for the reader to compare against whatever time they
+/// care about, precisely so that expired, self-signed and wrong-host
+/// certificates are reported rather than rejected.
+///
+/// Always produces a record. A chain this cannot read is a finding rather than a
+/// reason to report nothing, and the version and cipher agreed are worth keeping
+/// on their own.
+///
+/// For a caller who performed their own handshake: this crate's connector is not
+/// public, and a [`TlsInfo`] built from what any TLS client hands back turns into
+/// a report record here.
+pub fn tls_security(tls: &TlsInfo) -> crate::model::port::Security {
+    tls_summary::security(tls)
 }
 
 /// The confidence-0 label every scan path seeds before deeper fingerprinting:
@@ -167,8 +268,8 @@ pub fn lookup_service_name(port: u16, _protocol: Protocol) -> Option<String> {
 ///
 /// The zero is what marks the rest as guesses; see
 /// [`Service::is_inferred`](crate::model::port::Service::is_inferred).
-pub fn baseline_service(port: u16, protocol: Protocol) -> Option<Service> {
-    lookup_service_name(port, protocol).map(|name| Service::new(name, 0))
+pub fn baseline_service(port: u16) -> Option<Service> {
+    lookup_service_name(port).map(|name| Service::new(name, 0))
 }
 
 /// A [`Port`] in the given `state` carrying only the [`baseline_service`] label.
@@ -179,7 +280,7 @@ pub fn baseline_service(port: u16, protocol: Protocol) -> Option<Service> {
 /// [`fingerprint_tcp_detailed`] to upgrade in place.
 pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
     let mut classified = Port::new(port, protocol, state);
-    if let Some(service) = baseline_service(port, protocol) {
+    if let Some(service) = baseline_service(port) {
         classified.set_service(service);
     }
     classified
@@ -221,7 +322,14 @@ pub async fn fingerprint_tcp_detailed(
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target.
     let addr = stream.peer_addr().ok();
-    let (responses, tunnel) = gather(stream, port.number(), detection).await;
+    // Every stage inside `gather` is bounded and their sum is nobody's property;
+    // see [`COLLECTION_BUDGET`]. A port that runs out of it is left exactly as
+    // the scan recorded it, which is what a port that said nothing gets.
+    let Ok((responses, tunnel)) =
+        timeout(COLLECTION_BUDGET, gather(stream, port.number(), detection)).await
+    else {
+        return (port, Vec::new(), Vec::new());
+    };
     if responses.is_empty() {
         return (port, Vec::new(), Vec::new());
     }
@@ -396,9 +504,18 @@ async fn gather(
     if tls::is_tls_port(port) {
         // Implicit-TLS port: the peer waits for our ClientHello, so skip the
         // banner grab that would only time out and handshake immediately.
-        return match peer {
-            Some(ip) => tunneled(tls::handshake(stream, ip).await, port).await,
-            None => (ResponseSet::default(), None),
+        let (Some(ip), Some(socket)) = (peer, socket) else {
+            return (ResponseSet::default(), None);
+        };
+        return match tls::handshake(stream, ip).await {
+            Some(completed) => tunneled(Some(completed), port).await,
+            // The handshake failed, and on a port numbered for TLS that is worth
+            // one more question. rustls implements 1.2 and 1.3 and deliberately
+            // implements neither 1.0 nor 1.1, so a legacy-only server lands here
+            // and used to be reported as a port that answered nothing — losing
+            // the identification *and* the finding, which for a security scanner
+            // is the wrong way round.
+            None => (legacy_tls(socket).await, None),
         };
     }
 
@@ -520,7 +637,16 @@ fn redirect_path(response: &str) -> Option<String> {
 
     match location {
         // Same host by construction: a path is relative to where it was served.
-        path if path.starts_with('/') => Some(path.to_string()),
+        //
+        // A control character is refused rather than carried. `lines()` has
+        // already made a CRLF impossible, but a lone carriage return survives in
+        // the middle of a value and some servers still treat one as a line
+        // terminator — so this would be a remote value spliced into a request
+        // line. The blast radius is the peer's own socket, which is why this is
+        // hygiene rather than a hole; the class is worth removing all the same.
+        path if path.starts_with('/') && !path.chars().any(char::is_control) => {
+            Some(path.to_string())
+        }
         // An absolute URL is somebody's name for a place, and this path has no
         // way to establish that the place is here. Declined rather than guessed.
         _ => None,
@@ -562,6 +688,28 @@ async fn follow_redirect(socket: SocketAddr, path: &str) -> Option<String> {
 /// it for a banner would leave a TLS service reported as an unidentifiable one.
 fn looks_like_tls(bytes: &[u8]) -> bool {
     matches!(bytes, [0x14..=0x17, 0x03, 0x00..=0x04, ..])
+}
+
+/// What a port numbered for TLS turns out to speak, where a modern handshake
+/// would not complete.
+///
+/// A fresh connection, because the failed handshake consumed the last one. Paid
+/// only on a port that has already declined to speak, so it costs a scan nothing
+/// on any port that worked.
+///
+/// The result carries no certificate and no tunnel. A legacy handshake sends its
+/// certificate in the clear and reading it would be possible, and it is
+/// deliberately not done here: the finding is the version, and a second binary
+/// parser over remote bytes wants an argument of its own before it exists.
+async fn legacy_tls(socket: SocketAddr) -> ResponseSet {
+    let Ok(Ok(fresh)) = timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await else {
+        return ResponseSet::default();
+    };
+    match tls::legacy_version(fresh).await {
+        Some(version) => ResponseSet::from_banners(Vec::new())
+            .with_tls(TlsInfo::new(Vec::new()).with_version(version)),
+        None => ResponseSet::default(),
+    }
 }
 
 /// Given the outcome of a handshake, re-probes through the tunnel (if it
@@ -633,6 +781,26 @@ static ANALYZERS: &[&dyn Analyzer] = &[
     &TlsCertAnalyzer,
 ];
 
+/// The analyzers this engine runs, in the order they are consulted.
+///
+/// Exposed so a caller can run the built-in set beside one of their own:
+///
+/// ```no_run
+/// # use zond_engine::fingerprint::{Analyzer, analyzers};
+/// # fn example(mine: &'static dyn Analyzer) {
+/// let mut set: Vec<&'static dyn Analyzer> = analyzers().to_vec();
+/// set.push(mine);
+/// # }
+/// ```
+///
+/// The order is not a ranking. Evidence is ranked by
+/// [`ServiceVerdict::resolve`], which sorts by confidence and breaks ties
+/// stably, so this decides only what a full tie falls back on.
+#[must_use]
+pub fn analyzers() -> &'static [&'static dyn Analyzer] {
+    ANALYZERS
+}
+
 /// Runs the registered analyzers over `responses` and resolves their evidence
 /// into a verdict, honouring the two-phase contract: each interested analyzer's
 /// [`collect`](Analyzer::collect) runs here on the reactor (I/O), then all the
@@ -647,23 +815,66 @@ async fn analyze(
     responses: ResponseSet,
     tunnel: Option<Tunnel>,
 ) -> Option<ServiceVerdict> {
-    let ctx = PortContext {
-        port,
-        protocol,
-        addr,
-        tunnel,
-    };
+    let ctx = PortContext::new(port, protocol)
+        .with_addr(addr)
+        .with_tunnel(tunnel);
+    analyze_with(ctx, responses, analyzers()).await
+}
 
+/// Runs `analyzers` over `responses` and resolves their evidence into a verdict,
+/// honouring the two-phase contract.
+///
+/// Each interested analyzer's [`collect`](Analyzer::collect) runs here on the
+/// reactor (I/O), then all the [`analyze`](Analyzer::analyze) work is handed to
+/// the blocking pool (CPU). Returns `None` if analysis produced nothing, or if
+/// the blocking task failed to join.
+///
+/// **This is where an analyzer of your own goes.** Gather responses however you
+/// like — [`fingerprint_tcp_detailed`] hands back the ones it read — and pass
+/// [`analyzers()`] plus your own:
+///
+/// ```no_run
+/// # use zond_engine::fingerprint::{Analyzer, PortContext, ResponseSet, analyze_with, analyzers};
+/// # use zond_engine::model::port::Protocol;
+/// # async fn example(mine: &'static dyn Analyzer) {
+/// let mut set: Vec<&'static dyn Analyzer> = analyzers().to_vec();
+/// set.push(mine);
+/// // Leaked once at start-up, which is what a `'static` set means in practice.
+/// let set: &'static [&'static dyn Analyzer] = Box::leak(set.into_boxed_slice());
+///
+/// let ctx = PortContext::new(8080, Protocol::Tcp);
+/// let responses = ResponseSet::from_banners(vec!["HTTP/1.1 200 OK".to_string()]);
+/// let verdict = analyze_with(ctx, responses, set).await;
+/// # }
+/// ```
+///
+/// The slice is `'static` because the CPU phase runs on the blocking pool and
+/// has to own what it reads. That costs nothing in practice: an analyzer is a
+/// stateless value, so a `static` of them is the natural way to hold a set, and
+/// it is how the built-in registry is held.
+pub async fn analyze_with(
+    ctx: PortContext,
+    responses: ResponseSet,
+    analyzers: &'static [&'static dyn Analyzer],
+) -> Option<ServiceVerdict> {
     // Phase 1 — I/O on the reactor: let each interested analyzer run its own
     // probes. Passive analyzers return an empty `Collected` (their inputs are in
-    // the shared `responses`); the index of each result matches `ANALYZERS`.
-    let mut collected = Vec::with_capacity(ANALYZERS.len());
-    for analyzer in ANALYZERS {
-        collected.push(if analyzer.interested(&ctx) {
-            analyzer.collect(&ctx).await
-        } else {
-            Collected::default()
-        });
+    // the shared `responses`).
+    //
+    // `interested` is asked once and the answer kept, rather than asked again in
+    // the CPU phase: it is documented as a cheap gate, and a gate answering
+    // differently between the two phases would silently pair one analyzer's
+    // frames with another's reading.
+    let mut collected = Vec::with_capacity(analyzers.len());
+    for analyzer in analyzers {
+        let interested = analyzer.interested(&ctx);
+        collected.push((
+            interested,
+            match interested {
+                true => analyzer.collect(&ctx).await,
+                false => Collected::default(),
+            },
+        ));
     }
 
     // Phase 2 — CPU off the reactor: parse the shared responses plus each
@@ -671,8 +882,8 @@ async fn analyze(
     // never stall the scheduler from here.
     tokio::task::spawn_blocking(move || {
         let mut evidence = Vec::new();
-        for (analyzer, collected) in ANALYZERS.iter().zip(&collected) {
-            if analyzer.interested(&ctx) {
+        for (analyzer, (interested, collected)) in analyzers.iter().zip(&collected) {
+            if *interested {
                 evidence.extend(analyzer.analyze(&ctx, &responses, collected));
             }
         }
@@ -724,6 +935,15 @@ where
 ///
 /// Bytes rather than text, because the caller sometimes has to tell a banner
 /// from a TLS alert and `from_utf8_lossy` destroys the difference.
+///
+/// # Three bounds, each owning one thing
+///
+/// `wait` is how long the port has to say anything at all. `grace` is how long a
+/// gap between two reads may be. [`MAX_CONTINUATION`] is how long the whole
+/// remainder may take once the first byte has arrived, and it is the one that
+/// makes the others safe: a peer that stays inside `grace` indefinitely is
+/// inside every per-read bound and past any sensible total, which is how one
+/// port held this function for ninety-seven seconds.
 async fn read_bytes<S>(stream: &mut S, wait: Duration, grace: Duration) -> Option<Vec<u8>>
 where
     S: AsyncRead + Unpin,
@@ -731,6 +951,9 @@ where
     let mut collected: Vec<u8> = Vec::new();
     let mut buffer = [0u8; MAX_RESPONSE_BYTES];
     let mut budget = wait;
+    // Set on the first byte rather than on entry, so a port that took its time
+    // greeting is not then charged for it twice.
+    let mut deadline = None;
 
     while collected.len() < MAX_RESPONSE_BYTES {
         match timeout(budget, stream.read(&mut buffer)).await {
@@ -740,7 +963,13 @@ where
                 if grace.is_zero() {
                     break;
                 }
-                budget = grace;
+                let deadline =
+                    *deadline.get_or_insert_with(|| tokio::time::Instant::now() + MAX_CONTINUATION);
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                budget = grace.min(remaining);
             }
             // A clean close, an error, or the port going quiet: whatever has
             // arrived is all there is.
@@ -784,17 +1013,15 @@ mod tests {
     /// running something called `???`.
     #[test]
     fn an_unregistered_port_is_seeded_with_nothing() {
-        use crate::model::port::Protocol;
-
         // 1 is `tcpmux` and registered; a high ephemeral port is not.
-        assert!(baseline_service(22, Protocol::Tcp).is_some());
+        assert!(baseline_service(22).is_some());
 
         let unregistered = (40_000..=65_535)
-            .find(|port| lookup_service_name(*port, Protocol::Tcp).is_none())
+            .find(|port| lookup_service_name(*port).is_none())
             .expect("some port in the ephemeral range is unregistered");
 
         assert!(
-            baseline_service(unregistered, Protocol::Tcp).is_none(),
+            baseline_service(unregistered).is_none(),
             "port {unregistered} invented a service name"
         );
         assert!(
@@ -807,9 +1034,7 @@ mod tests {
     /// And what is seeded is marked as the guess it is.
     #[test]
     fn a_seeded_label_is_never_mistaken_for_an_identification() {
-        use crate::model::port::Protocol;
-
-        let seeded = baseline_service(22, Protocol::Tcp).expect("ssh is registered");
+        let seeded = baseline_service(22).expect("ssh is registered");
         assert_eq!(seeded.name(), "ssh");
         assert!(
             seeded.is_inferred(),
@@ -837,6 +1062,11 @@ mod tests {
             "http://somewhere.else/",
             // A scheme change needs a handshake this path has no socket for.
             "https://127.0.0.1/web/",
+            // A lone carriage return is not a CRLF and survives `lines()`, and
+            // some servers read one as a line terminator. Nothing remote is
+            // spliced into a request this engine writes.
+            "/web/\rX-Injected: 1",
+            "/web/\u{0}index.html",
         ] {
             let response = format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\n\r\n");
             assert_eq!(
@@ -953,6 +1183,221 @@ mod tests {
 
         assert_eq!(verdict.service.as_deref(), Some("http"));
         assert_eq!(verdict.product.as_deref(), Some("cloudflare"));
+    }
+
+    /// **A hostile response cannot put a kilobyte into a report.**
+    ///
+    /// Measured before [`MAX_IDENTITY_BYTES`] existed: one reply produced a
+    /// 1500-byte `product` and a 1500-byte `extrainfo`, and both travelled into
+    /// the store and every export. Every sibling reading in this module already
+    /// bounded itself and said why; these had no argument for being unbounded,
+    /// only no author.
+    #[tokio::test]
+    async fn a_hostile_response_cannot_fill_a_report_field() {
+        use tokio::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
+        let addr = listener.local_addr().expect("its address");
+        let server = tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let long = "A".repeat(1_500);
+            let response =
+                format!("HTTP/1.1 200 OK\r\nServer: {long}\r\nX-Powered-By: {long}\r\n\r\n");
+            let _ = sock.write_all(response.as_bytes()).await;
+            let mut buffer = [0u8; MAX_RESPONSE_BYTES];
+            let _ = sock.read(&mut buffer).await;
+        });
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let port = baseline_port(80, Protocol::Tcp, PortState::Open);
+        let identified = fingerprint_tcp(stream, port, ServiceDetection::Probe).await;
+        server.abort();
+
+        let service = identified.service().expect("the port is still named");
+        for (field, value) in [
+            ("product", service.product()),
+            ("version", service.version()),
+            ("extrainfo", service.extrainfo()),
+        ] {
+            if let Some(value) = value {
+                assert!(
+                    value.len() <= MAX_IDENTITY_BYTES,
+                    "{field} is {} bytes, past the bound",
+                    value.len()
+                );
+            }
+        }
+        assert_eq!(
+            service.product(),
+            None,
+            "a fifteen-hundred-byte token is refused rather than truncated"
+        );
+    }
+
+    /// And an ordinary value is untouched by the bound.
+    #[test]
+    fn an_ordinary_identity_field_passes_through() {
+        assert_eq!(identity_field("nginx/1.24.0"), Some("nginx/1.24.0"));
+        assert_eq!(identity_field("  PHP/8.2.1  "), Some("PHP/8.2.1"));
+        assert_eq!(identity_field(""), None);
+        assert_eq!(identity_field("   "), None);
+        assert_eq!(
+            identity_field(&"A".repeat(MAX_IDENTITY_BYTES)).map(str::len),
+            Some(MAX_IDENTITY_BYTES)
+        );
+        assert_eq!(identity_field(&"A".repeat(MAX_IDENTITY_BYTES + 1)), None);
+    }
+
+    /// **A legacy-only TLS server is reported, not lost.**
+    ///
+    /// rustls implements TLS 1.2 and 1.3 and deliberately implements neither 1.0
+    /// nor 1.1, so a server offering only the older versions fails the modern
+    /// handshake. It used to be reported as a port that answered nothing at all,
+    /// which loses the identification and the finding together.
+    ///
+    /// The mock answers a ClientHello with a TLS 1.0 ServerHello and nothing
+    /// else, which is enough: the finding is the version.
+    #[tokio::test]
+    async fn a_server_that_speaks_only_tls_ten_is_still_recorded() {
+        use tokio::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
+        let addr = listener.local_addr().expect("its address");
+        let server = tokio::spawn(async move {
+            // Twice: the modern handshake dials first and is answered with an
+            // alert, then the legacy probe dials on its own connection.
+            for round in 0..2 {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buffer = [0u8; 1024];
+                let _ = sock.read(&mut buffer).await;
+                let reply: &[u8] = match round {
+                    // Fatal alert: protocol_version. What a 1.0-only server
+                    // answers a hello offering 1.2 and 1.3.
+                    0 => &[0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x46],
+                    // A ServerHello naming TLS 1.0.
+                    _ => &[
+                        0x16, 0x03, 0x01, 0x00, 0x2a, 0x02, 0x00, 0x00, 0x26, 0x03, 0x01,
+                    ],
+                };
+                let _ = sock.write_all(reply).await;
+            }
+        });
+
+        // The port number decides the path, and the socket decides the peer, so
+        // an implicit-TLS number over a loopback socket exercises the real
+        // branch without binding a privileged port.
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let port = baseline_port(443, Protocol::Tcp, PortState::Open);
+        let (responses, tunnel) = gather(stream, 443, ServiceDetection::Probe).await;
+        server.abort();
+        let _ = port;
+
+        assert!(
+            tunnel.is_none(),
+            "nothing was tunnelled and nothing claims to be"
+        );
+        let tls = responses
+            .tls
+            .as_ref()
+            .expect("the port speaks TLS, which is the finding");
+        assert_eq!(tls.version, Some("TLSv1.0"));
+
+        // And it reaches the record a report carries.
+        assert_eq!(tls_security(tls).tls_version(), Some("TLSv1.0"));
+    }
+
+    /// **A port that trickles cannot hold a scan.**
+    ///
+    /// One byte every forty milliseconds sits permanently inside
+    /// [`CONTINUATION_GRACE`], so before [`MAX_CONTINUATION`] existed this read
+    /// ran until the four-kilobyte cap was reached: measured at ninety-seven
+    /// seconds for one socket, with nothing above it to cut the exchange short.
+    ///
+    /// The assertion is on the clock rather than on the bytes because the clock
+    /// is the property. A generous ceiling keeps this from failing on a loaded
+    /// machine while still being an order of magnitude below the old behaviour.
+    #[tokio::test]
+    async fn a_trickling_port_cannot_hold_the_reader() {
+        use tokio::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a socket");
+        let addr = listener.local_addr().expect("its address");
+        let server = tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            // Just inside the grace, for longer than any budget here allows.
+            for _ in 0..2_000 {
+                if sock.write_all(b"A").await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            }
+        });
+
+        let mut stream = TcpStream::connect(addr).await.expect("connects");
+        let started = std::time::Instant::now();
+        let read = read_document(&mut stream, PROBE_READ_TIMEOUT).await;
+        let held = started.elapsed();
+        server.abort();
+
+        assert!(read.is_some(), "what did arrive is still returned");
+        assert!(
+            held < PROBE_READ_TIMEOUT + MAX_CONTINUATION + Duration::from_secs(2),
+            "one trickling port held the reader for {held:?}"
+        );
+    }
+
+    /// And the whole collection has a ceiling of its own, above every path
+    /// through [`gather`], so a stage added later cannot reintroduce the class.
+    ///
+    /// The three paths are written out rather than summed, because their sum is
+    /// not a path anything takes and a budget sized against it would be loose by
+    /// half. Whoever adds a fourth path adds it here, and finds out immediately
+    /// whether the budget still covers it.
+    #[test]
+    fn the_collection_budget_covers_every_path_through_gather() {
+        // The longest read a port's own probes can draw: at most two are
+        // registered for any port in the shipped corpus, each its own wait plus
+        // its continuation.
+        let probes = SignatureDb::global()
+            .indexed_ports()
+            .map(|port| SignatureDb::global().tcp_probe_payloads(port).len())
+            .max()
+            .unwrap_or(0)
+            .max(1) as u32;
+        let ask =
+            |count: u32| BANNER_READ_TIMEOUT + (PROBE_READ_TIMEOUT + MAX_CONTINUATION) * count;
+        let read_once = PROBE_READ_TIMEOUT + MAX_CONTINUATION;
+
+        let implicit_tls = tls::TLS_HANDSHAKE_TIMEOUT + ask(probes);
+        let implicit_tls_then_legacy =
+            tls::TLS_HANDSHAKE_TIMEOUT + CONNECT_RETRY_TIMEOUT + tls::LEGACY_PROBE_TIMEOUT;
+        let claimed = ask(probes);
+        let unclaimed_then_tls =
+            read_once + CONNECT_RETRY_TIMEOUT + tls::SPECULATIVE_TLS_TIMEOUT + ask(1);
+        let unclaimed_then_redirect = read_once + CONNECT_RETRY_TIMEOUT + read_once;
+
+        let worst = [
+            implicit_tls,
+            implicit_tls_then_legacy,
+            claimed,
+            unclaimed_then_tls,
+            unclaimed_then_redirect,
+        ]
+        .into_iter()
+        .max()
+        .expect("five paths");
+
+        assert!(
+            worst < COLLECTION_BUDGET,
+            "the budget ({COLLECTION_BUDGET:?}) is below the longest honest path \
+             ({worst:?}), so it would cut real scans short"
+        );
     }
 
     #[tokio::test]

@@ -160,3 +160,24 @@ path = "fuzz_targets/merge/reports.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fingerprint_certificate"
+path = "fuzz_targets/fingerprint/certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fingerprint_banner"
+path = "fuzz_targets/fingerprint/banner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fingerprint_stack"
+path = "fuzz_targets/fingerprint/stack.rs"
+test = false
+doc = false
+bench = false

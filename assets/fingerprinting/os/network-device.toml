@@ -11,19 +11,27 @@
 # Linux underneath and answer with a Linux option layout, and this rule matches
 # them on the counter alone.
 #
-# That does **not** collide with the Linux rules, because those require a counter
-# of 64 and this one requires 255 — a reply cannot satisfy both, so no host is
-# ever named twice. The consequence is worth stating plainly rather than being
-# discovered later: a Linux-based router that starts its counter at 64 is named
-# Linux and not a network device, and one that starts at 255 is named a network
-# device and not Linux. Neither answer is wrong; the reply carries no third thing
-# that would let one rule say both.
+# It states a device class rather than a family, and that is load-bearing. What a
+# hop counter of 255 establishes is that the box is infrastructure, not what is
+# running on it, and a great many of these devices run Linux and announce it over
+# SSH. Written as a family this ran against `Linux` on the ballot the resolver
+# settles by vote: measured, a router that had correctly named itself `Debian 12`
+# from its banner alone was reported as nothing at all once this rule matched
+# beside it. Two true observations cancelled.
+#
+# Stated as a class the two are no longer rivals, because they answer different
+# questions. Such a host now resolves to a network device running Debian 12,
+# which is what it is.
+#
+# It does not collide with the Linux rules either, for the reason it never did:
+# those require a counter of 64 and this one requires 255, so a reply cannot
+# satisfy both.
 provenance = "published"
 weight = 0.8
 notes = "An initial TTL of 255 is the long-standing convention for routers, switches and embedded management stacks. Deliberately states no option predicate: the shared property is the hop counter, not a TCP stack. Unconfirmed against hardware by this engine."
 
 [os]
-family = "Network device"
+device = "Network device"
 
 [match]
 reply = "syn_ack"

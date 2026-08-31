@@ -247,3 +247,174 @@ pub struct ServiceDefinition {
     #[serde(default)]
     pub r#match: Vec<MatchRule>,
 }
+
+/// Why an authored service definition cannot be used.
+///
+/// **Every variant is a defect that degrades detection silently.** A pattern
+/// neither engine compiles is a signature that never fires; a `version_group`
+/// past the pattern's groups is a version never captured; a probe over a
+/// transport this engine does not speak is a probe never sent. None of them is
+/// distinguishable, from a scan's output, from a service that simply was not
+/// there.
+///
+/// The engine's own reason for rejecting a pattern is carried as text rather
+/// than as the two regex crates' error types, which are foreign and pre-1.0 and
+/// have no business in a semver contract. Which rule and which defect are typed,
+/// because those are what a caller acts on.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefinitionError {
+    /// A rule's pattern is one neither engine can compile.
+    Pattern {
+        /// Which `[[match]]` rule, counting from zero.
+        rule: usize,
+        /// What both engines said about it.
+        reason: String,
+    },
+    /// A rule names a version capture group its pattern does not have.
+    VersionGroup {
+        /// Which `[[match]]` rule, counting from zero.
+        rule: usize,
+        /// The group the rule asked for.
+        group: u8,
+        /// How many capturing groups the pattern actually has.
+        available: usize,
+    },
+    /// A probe names a transport this engine does not speak.
+    ///
+    /// The loader drops such a probe rather than guessing which was meant, so
+    /// without this the only symptom is a probe that is never sent.
+    ProbeProtocol {
+        /// Which `[[probe]]`, counting from zero.
+        probe: usize,
+        /// The transport as authored.
+        protocol: String,
+    },
+    /// A probe marked [`generic`](Probe::generic) over something other than TCP.
+    ///
+    /// `generic` means "send this to any open port with nothing else to send",
+    /// and over UDP that is a payload aimed at every UDP port in the scan: a
+    /// different and much larger claim than the one the flag is for, and one
+    /// nobody would make by ticking a boolean.
+    GenericProbeNotTcp {
+        /// Which `[[probe]]`, counting from zero.
+        probe: usize,
+        /// The transport as authored.
+        protocol: String,
+    },
+    /// A UDP probe payload that is empty, or past [`MAX_UDP_PROBE_BYTES`].
+    ///
+    /// An empty datagram cannot elicit a reply, and an oversized one costs more
+    /// than it can return. Both read as a filtered port.
+    UdpProbeSize {
+        /// Which `[[probe]]`, counting from zero.
+        probe: usize,
+        /// What the payload decoded to.
+        bytes: usize,
+    },
+}
+
+impl std::fmt::Display for DefinitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DefinitionError::Pattern { rule, reason } => {
+                write!(f, "match #{rule} has an unusable pattern: {reason}")
+            }
+            DefinitionError::VersionGroup {
+                rule,
+                group,
+                available,
+            } => write!(
+                f,
+                "match #{rule} references version_group {group}, but the pattern has \
+                 {available} capture group(s)"
+            ),
+            DefinitionError::ProbeProtocol { probe, protocol } => write!(
+                f,
+                "probe #{probe} has unknown protocol '{protocol}' (expected 'tcp' or 'udp')"
+            ),
+            DefinitionError::GenericProbeNotTcp { probe, protocol } => write!(
+                f,
+                "probe #{probe} is marked generic over {protocol}; a generic probe is sent \
+                 to every open port that registers none of its own, which only makes sense \
+                 over TCP"
+            ),
+            DefinitionError::UdpProbeSize { probe, bytes } if *bytes == 0 => write!(
+                f,
+                "udp probe #{probe} decodes to zero bytes; an empty datagram cannot elicit \
+                 a reply"
+            ),
+            DefinitionError::UdpProbeSize { probe, bytes } => write!(
+                f,
+                "udp probe #{probe} is {bytes} bytes, over the {MAX_UDP_PROBE_BYTES}-byte \
+                 probe ceiling"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DefinitionError {}
+
+impl ServiceDefinition {
+    /// Whether this definition is one the engine may use.
+    ///
+    /// **Shared with `build.rs`**, which loads this very file, so the definitions
+    /// the build accepts and the definitions
+    /// [`SignatureDb::try_from_definitions`](crate::fingerprint::SignatureDb::try_from_definitions)
+    /// accepts are one set rather than two descriptions of one idea.
+    ///
+    /// Patterns are compiled here, through the same engine selection and the
+    /// same [`MAX_COMPILED_REGEX_BYTES`] the runtime uses, which is what makes
+    /// "the build accepted it" and "the runtime can match it" the same
+    /// statement. It is the expensive part, and it is why the shipped database
+    /// does not run this again at load: `build.rs` already did.
+    ///
+    /// The build checks two further things this cannot. It parses each UDP
+    /// payload the way the target service would, which needs protocol parsers
+    /// the runtime does not carry, and it warns about softer matters that make a
+    /// corpus hard to maintain rather than wrong.
+    pub fn validate(&self) -> Result<(), DefinitionError> {
+        for (rule, r#match) in self.r#match.iter().enumerate() {
+            let compiled = super::pattern::compile(&r#match.pattern, MAX_COMPILED_REGEX_BYTES)
+                .map_err(|reason| DefinitionError::Pattern {
+                    rule,
+                    reason: reason.to_string(),
+                })?;
+
+            // `captures_len` counts group 0 (the whole match) plus each
+            // capturing group, so valid indices are `0..captures_len()`.
+            if let Some(group) = r#match.version_group
+                && usize::from(group) >= compiled.captures_len()
+            {
+                return Err(DefinitionError::VersionGroup {
+                    rule,
+                    group,
+                    available: compiled.captures_len() - 1,
+                });
+            }
+        }
+
+        for (probe, authored) in self.probe.iter().enumerate() {
+            if !matches!(authored.protocol.as_str(), "tcp" | "udp") {
+                return Err(DefinitionError::ProbeProtocol {
+                    probe,
+                    protocol: authored.protocol.clone(),
+                });
+            }
+            if authored.generic && authored.protocol != "tcp" {
+                return Err(DefinitionError::GenericProbeNotTcp {
+                    probe,
+                    protocol: authored.protocol.clone(),
+                });
+            }
+            if authored.protocol == "udp" {
+                let bytes = unescape(&authored.payload).len();
+                if bytes == 0 || bytes > MAX_UDP_PROBE_BYTES {
+                    return Err(DefinitionError::UdpProbeSize { probe, bytes });
+                }
+            }
+        }
+
+        Ok(())
+    }
+}

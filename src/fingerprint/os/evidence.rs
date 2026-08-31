@@ -197,10 +197,17 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         agreed(|item| &item.device),
     );
 
-    // A device class alone is not an answer to this question. It says what the
-    // box is, and something that knows only that has identified no software to
-    // report — the class rides along on a verdict, it does not make one.
-    if family.is_none() && vendor.is_none() && product.is_none() {
+    // Something has to have been established. Every one of these is a real
+    // answer on its own: a device class says the box is infrastructure, which is
+    // the most a hop counter of 255 can support and is worth reporting about a
+    // host nothing else describes.
+    //
+    // This guard used to exclude a device class, on the reading that a source
+    // knowing only what kind of box this is has identified no software. That was
+    // true while a class could only arrive beside a product, from a text rule.
+    // It stopped being true when the rules that read a hop counter began stating
+    // a class instead of writing one into the family field.
+    if family.is_none() && device.is_none() && vendor.is_none() && product.is_none() {
         return None;
     }
 
@@ -511,17 +518,51 @@ mod tests {
         assert_eq!(resolved.product.as_deref(), Some("NC-8700w"));
     }
 
-    /// A class of box is not an operating system. Something that knows only what
-    /// the hardware is has identified no software, and a verdict is about
-    /// software.
+    /// A class of box on its own **is** a verdict, and this test reverses an
+    /// earlier reading that said otherwise.
+    ///
+    /// The old rule was that something knowing only what the hardware is has
+    /// identified no software, so a class alone was refused. That held while a
+    /// class could only arrive beside a product, from a rule reading text. It
+    /// stopped holding when the rules that read a hop counter of 255 began
+    /// stating a class instead of writing one into the family field: "this host
+    /// is infrastructure" is then the whole of what a real observation
+    /// established, and it is the only thing anything will ever say about a
+    /// switch with no port open and no name.
     #[test]
-    fn a_device_class_on_its_own_is_not_a_verdict() {
+    fn a_device_class_on_its_own_is_a_verdict() {
         let class_only = OsEvidence {
+            vendor: None,
+            product: None,
+            version: None,
+            confidence: 0.5,
+            ..a_named_appliance()
+        };
+        let resolved = resolve(vec![class_only]).expect("the class is the answer");
+
+        assert_eq!(resolved.device.as_deref(), Some("Printer"));
+        assert_eq!(
+            resolved.family, None,
+            "it still says nothing about software"
+        );
+        assert_eq!(
+            resolved.label(),
+            "Printer",
+            "and that is what a reader sees"
+        );
+    }
+
+    /// Nothing at all is still nothing.
+    #[test]
+    fn evidence_that_establishes_no_part_of_an_identity_is_refused() {
+        let says_nothing = OsEvidence {
+            family: None,
+            device: None,
             vendor: None,
             product: None,
             version: None,
             ..a_named_appliance()
         };
-        assert!(resolve(vec![class_only]).is_none());
+        assert!(resolve(vec![says_nothing]).is_none());
     }
 }

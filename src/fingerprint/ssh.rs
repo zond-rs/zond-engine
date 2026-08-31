@@ -106,6 +106,18 @@ const MAX_PACKET_LEN: usize = 35_000;
 /// §4.2). Bounds the banner read.
 const MAX_ID_LINE: usize = 255;
 
+/// How many lines a server may send before its identification string.
+///
+/// RFC 4253 §4.2 permits a server to send other lines first and requires a
+/// client to skip them, and it sets no limit on how many. A login banner is the
+/// usual reason and runs to a few dozen lines at most; the bound is here because
+/// these lines come from a peer that has not identified itself yet, and a
+/// preamble with no end is a peer holding the exchange open for free.
+///
+/// The whole exchange is already under [`EXCHANGE_TIMEOUT`], so this bounds the
+/// work rather than the wait.
+const MAX_PREAMBLE_LINES: usize = 64;
+
 /// `SSH_MSG_KEXINIT` message number (RFC 4253 §12).
 const SSH_MSG_KEXINIT: u8 = 20;
 
@@ -140,9 +152,7 @@ impl Analyzer for SshAnalyzer {
             return Collected::default();
         };
         match timeout(EXCHANGE_TIMEOUT, kexinit_exchange(addr)).await {
-            Ok(Some(packet)) => Collected {
-                frames: vec![packet],
-            },
+            Ok(Some(packet)) => Collected::from_frames(vec![packet]),
             _ => Collected::default(),
         }
     }
@@ -184,21 +194,43 @@ async fn kexinit_exchange(addr: SocketAddr) -> Option<Vec<u8>> {
     reader.write_all(CLIENT_ID).await.ok()?;
     reader.flush().await.ok()?;
 
-    // Read the server's identification line. It must begin with "SSH-".
-    let id_line = read_id_line(&mut reader).await?;
-    if !id_line.starts_with(b"SSH-") {
-        return None;
-    }
+    // Read the server's identification line, skipping whatever it sends first.
+    read_identification(&mut reader).await?;
 
     // Read one binary packet. The server sends its KEXINIT immediately after the
     // identification exchange, so this is it.
     read_packet_payload(&mut reader).await
 }
 
-/// Reads the CRLF-terminated identification line, bounded to [`MAX_ID_LINE`].
-/// The SSH server may emit banner text lines before it; we keep only the last
-/// line read, which is the `SSH-…` identifier (RFC 4253 §4.2).
-async fn read_id_line<R>(reader: &mut R) -> Option<Vec<u8>>
+/// Reads the server's `SSH-…` identification string, skipping whatever it sends
+/// before one.
+///
+/// **RFC 4253 §4.2 permits a server to send other lines first**, and requires a
+/// client to be able to skip them. A login banner ahead of the identifier is
+/// near-universal on hardened and enterprise hosts, which is to say on exactly
+/// the fleet an operator most wants a scanner to work against. Reading one line
+/// and giving up if it did not begin `SSH-` left this analyzer silent on every
+/// one of them, and silent invisibly: the passive banner grab still named the
+/// service, so only the corroboration went missing.
+///
+/// Bounded twice, because a peer that has not identified itself is sending
+/// these: [`MAX_ID_LINE`] per line, [`MAX_PREAMBLE_LINES`] lines before the
+/// identifier.
+async fn read_identification<R>(reader: &mut R) -> Option<Vec<u8>>
+where
+    R: AsyncReadExt + Unpin,
+{
+    for _ in 0..=MAX_PREAMBLE_LINES {
+        let line = read_line(reader).await?;
+        if line.starts_with(b"SSH-") {
+            return Some(line);
+        }
+    }
+    None // a preamble with no identifier at the end of it
+}
+
+/// Reads one CRLF- or LF-terminated line, bounded to [`MAX_ID_LINE`].
+async fn read_line<R>(reader: &mut R) -> Option<Vec<u8>>
 where
     R: AsyncReadExt + Unpin,
 {
@@ -218,7 +250,7 @@ where
         }
         line.push(byte[0]);
     }
-    None // line too long: not a well-formed SSH identifier
+    None // line too long: not a well-formed SSH line
 }
 
 /// Reads one SSH binary packet (RFC 4253 §6) and returns its payload — the bytes
@@ -405,12 +437,7 @@ mod tests {
             let _ = sock.read(&mut buf).await;
         });
 
-        let ctx = PortContext {
-            port: 22,
-            protocol: crate::model::port::Protocol::Tcp,
-            addr: Some(addr),
-            tunnel: None,
-        };
+        let ctx = PortContext::new(22, crate::model::port::Protocol::Tcp).with_addr(Some(addr));
         assert!(SshAnalyzer.interested(&ctx));
 
         let collected = SshAnalyzer.collect(&ctx).await;
@@ -451,22 +478,97 @@ mod tests {
         }
     }
 
+    /// **A server with a login banner is still an SSH server.**
+    ///
+    /// RFC 4253 §4.2 lets a server send lines before its identification string
+    /// and requires a client to skip them; a legal notice ahead of the
+    /// identifier is near-universal on hardened hosts. Reading exactly one line
+    /// left this analyzer silent on all of them, and silent invisibly, since the
+    /// passive banner grab still named the service.
+    #[tokio::test]
+    async fn a_server_that_greets_before_identifying_is_still_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            sock.write_all(
+                b"*******************************************\r\n\
+                  * Authorised access only. Activity is logged. *\r\n\
+                  *******************************************\r\n\
+                  SSH-2.0-OpenSSH_9.6p1\r\n",
+            )
+            .await
+            .unwrap();
+            let packet = frame_packet(&kexinit_payload("curve25519-sha256", "ssh-ed25519"));
+            sock.write_all(&packet).await.unwrap();
+            let mut buf = [0u8; 64];
+            let _ = sock.read(&mut buf).await;
+        });
+
+        let ctx = PortContext::new(22, crate::model::port::Protocol::Tcp).with_addr(Some(addr));
+        let collected = SshAnalyzer.collect(&ctx).await;
+        let evidence = SshAnalyzer.analyze(&ctx, &ResponseSet::default(), &collected);
+
+        assert_eq!(evidence.len(), 1, "the preamble is skipped, not fatal");
+        assert_eq!(evidence[0].service.as_deref(), Some("ssh"));
+    }
+
+    /// A preamble that never ends is a peer holding the exchange open, and is
+    /// given up on rather than followed.
+    #[tokio::test]
+    async fn a_preamble_with_no_identifier_is_given_up_on() {
+        let (client, mut server) = tokio::io::duplex(8192);
+        tokio::spawn(async move {
+            for _ in 0..(MAX_PREAMBLE_LINES * 4) {
+                if server
+                    .write_all(b"still not an identifier\r\n")
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+
+        let mut reader = BufReader::new(client);
+        assert!(read_identification(&mut reader).await.is_none());
+    }
+
+    /// The active probe dials the ports the corpus registers SSH on, and the two
+    /// lists are written in different places: this one in code, the other in
+    /// `assets/fingerprinting`. Nothing but this holds them together.
+    #[test]
+    fn the_probed_ports_are_the_ports_the_corpus_claims() {
+        use crate::fingerprint::SignatureDb;
+
+        let db = SignatureDb::global();
+        let claimed: Vec<u16> = db
+            .indexed_ports()
+            .filter(|port| db.service_name(*port).as_deref() == Some("ssh"))
+            .collect();
+
+        for port in &claimed {
+            assert!(
+                SSH_PORTS.contains(port),
+                "the corpus registers ssh on {port} and the active probe never dials it"
+            );
+        }
+        for port in SSH_PORTS {
+            assert!(
+                claimed.contains(port),
+                "the active probe dials {port} and no ssh signature is registered there"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn not_interested_off_ssh_ports_or_without_an_address() {
-        let no_addr = PortContext {
-            port: 22,
-            protocol: crate::model::port::Protocol::Tcp,
-            addr: None,
-            tunnel: None,
-        };
+        let no_addr = PortContext::new(22, crate::model::port::Protocol::Tcp);
         assert!(!SshAnalyzer.interested(&no_addr));
 
-        let wrong_port = PortContext {
-            port: 80,
-            protocol: crate::model::port::Protocol::Tcp,
-            addr: Some("127.0.0.1:80".parse().unwrap()),
-            tunnel: None,
-        };
+        let wrong_port = PortContext::new(80, crate::model::port::Protocol::Tcp)
+            .with_addr(Some("127.0.0.1:80".parse().unwrap()));
         assert!(!SshAnalyzer.interested(&wrong_port));
     }
 }

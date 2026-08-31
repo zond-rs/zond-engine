@@ -38,17 +38,53 @@ use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 
-use crate::fingerprint::signature::{ServiceDefinition, unescape};
+use crate::fingerprint::signature::{DefinitionError, ServiceDefinition, unescape};
+use crate::model::port::Protocol;
+
+use super::model::Evidence;
 
 use super::matcher::Signature;
-use super::prefilter::LiteralPrefilter;
+use super::prefilter::{LiteralPrefilter, Prefilter};
 
 /// The signature set compiled from `assets/fingerprinting/` by `build.rs`.
 const EMBEDDED_DB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fingerprints.bin"));
 
 static DB: OnceLock<SignatureDb> = OnceLock::new();
 
+/// A definition [`SignatureDb::try_from_definitions`] refused, and why.
+///
+/// Carries where the definition sat and which service it was about, because a
+/// caller loading a corpus of hundreds needs to find the one that is wrong
+/// rather than be told that one of them is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidDefinition {
+    /// Where the definition sat in the list handed over.
+    pub index: usize,
+    /// The service it was about.
+    pub service: String,
+    /// What is wrong with it.
+    pub error: DefinitionError,
+}
+
+impl std::fmt::Display for InvalidDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            index,
+            service,
+            error,
+        } = self;
+        write!(f, "definition {index} (service '{service}') {error}")
+    }
+}
+
+impl std::error::Error for InvalidDefinition {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 /// Runtime view over the service-signature database.
+#[derive(Debug)]
 pub struct SignatureDb {
     /// All signatures, flat, addressed by index.
     signatures: Vec<Signature>,
@@ -101,6 +137,33 @@ impl SignatureDb {
                 .expect("embedded fingerprint database failed to deserialize");
             SignatureDb::from_defs(defs)
         })
+    }
+
+    /// Builds a database from definitions given directly, refusing any the build
+    /// would refuse.
+    ///
+    /// **This is how a caller supplies signatures of their own**, and the reason
+    /// the authoring schema is exported at all. The checks are the ones in
+    /// [`ServiceDefinition::validate`], which `build.rs` runs over the shipped
+    /// corpus from the same code, so a definition that would fail the build fails
+    /// here with the same stated reason rather than shipping into a scan and
+    /// quietly matching nothing.
+    ///
+    /// Every pattern is compiled to check it, which is the expensive part and is
+    /// why [`global`](Self::global) does not repeat it: the build already did.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidDefinition`] names which definition was refused and why.
+    pub fn try_from_definitions(defs: Vec<ServiceDefinition>) -> Result<Self, InvalidDefinition> {
+        for (index, def) in defs.iter().enumerate() {
+            def.validate().map_err(|error| InvalidDefinition {
+                index,
+                service: def.service.name.clone(),
+                error,
+            })?;
+        }
+        Ok(Self::from_defs(defs))
     }
 
     /// Builds the flat signature list and its indices from raw definitions.
@@ -217,6 +280,42 @@ impl SignatureDb {
         }
     }
 
+    /// What this signature set makes of one `response` read from `port`.
+    ///
+    /// **The whole per-response decision**: text extraction, both matching
+    /// tiers, and the separate choice of a service reading and an
+    /// operating-system reading. A caller who has loaded signatures of their own
+    /// through [`try_from_definitions`](Self::try_from_definitions) matches with
+    /// them through here, and the built-in
+    /// [`BannerRegexAnalyzer`](crate::fingerprint::BannerRegexAnalyzer) is a loop
+    /// around this and nothing else.
+    ///
+    /// # Two tiers
+    ///
+    /// The response is checked first against the signatures registered for its
+    /// port, which is a small set and the common case. The global set — narrowed
+    /// by the prefilter to a bounded candidate list, compiled on demand — is
+    /// consulted when the port set identified nothing, **and also when it named a
+    /// service but said nothing about the machine**.
+    ///
+    /// That second case is not a special case. A banner identifies a service, and
+    /// what it implies about the host is a separate inference, so the signature
+    /// that answers one is very often not the signature that answers the other.
+    /// Stopping at the port tier discarded every operating-system reading that
+    /// lives only in the global set — measured, on a real host, whose release was
+    /// sitting there unread.
+    ///
+    /// [`Evidence::port_confirmed`](crate::fingerprint::Evidence::port_confirmed)
+    /// records which tier named the service, so the resolver can prefer a match
+    /// the port corroborates. What it does not set is the tunnel, which is a fact
+    /// about how the bytes arrived rather than about what they say.
+    pub fn identify(&self, port: u16, protocol: Protocol, response: &str) -> Option<Evidence> {
+        let port_signatures = self.signatures_for_port(port);
+        self.warm(port_signatures);
+        let attested_by = super::extract::attested_by(port, protocol);
+        identify_within(self, port_signatures, response, attested_by)
+    }
+
     /// The primary service name registered for `port`, if any. No compilation.
     pub fn service_name(&self, port: u16) -> Option<Arc<str>> {
         self.name_index.get(&port).cloned()
@@ -259,9 +358,13 @@ impl SignatureDb {
         self.by_port.get(&port).map_or(&[], Vec::as_slice)
     }
 
-    /// The signature at `idx`.
-    pub fn signature(&self, idx: usize) -> &Signature {
-        &self.signatures[idx]
+    /// The signature at `idx`, or `None` past the end of the set.
+    ///
+    /// Crate-visible. It hands back a type a caller outside the crate cannot
+    /// name, and every question it was reachable for is answered by
+    /// [`identify`](Self::identify) without one.
+    pub(crate) fn signature(&self, idx: usize) -> Option<&Signature> {
+        self.signatures.get(idx)
     }
 
     /// The TCP active-probe payloads registered for `port` (service-linked), as
@@ -283,15 +386,22 @@ impl SignatureDb {
     /// The global-match prefilter, built (over the whole set) on first use and
     /// cached. Building parses each pattern for literals; it compiles no
     /// regexes.
-    pub fn prefilter(&self) -> &LiteralPrefilter {
+    ///
+    /// Crate-visible. Both the type and the trait its only method comes from are
+    /// private, so outside the crate this returned a value with nothing callable
+    /// on it; [`identify`](Self::identify) is what it was there to serve.
+    pub(crate) fn prefilter(&self) -> &LiteralPrefilter {
         self.prefilter
             .get_or_init(|| LiteralPrefilter::build(&self.signatures))
     }
 
     /// Forces the regexes of `indices` to compile, in parallel. Idempotent —
-    /// already-compiled signatures are untouched — so callers can warm a
-    /// candidate set before matching to spread compilation across cores.
-    pub fn warm(&self, indices: &[usize]) {
+    /// already-compiled signatures are untouched — so a candidate set can be
+    /// warmed before matching to spread compilation across cores.
+    ///
+    /// Crate-visible: the indices only mean anything against this set, and
+    /// [`identify`](Self::identify) already warms what it is about to match.
+    pub(crate) fn warm(&self, indices: &[usize]) {
         indices
             .par_iter()
             .for_each(|&idx| self.signatures[idx].compile());
@@ -306,6 +416,161 @@ impl SignatureDb {
     }
 }
 
+/// Evidence from the **most specific** signature in `indices` that identifies any
+/// of `texts`, by [`MatchQuality`](super::matcher::MatchQuality).
+///
+/// Unlike a first-match scan, this evaluates every candidate so a generic
+/// signature listed earlier cannot shadow a more specific one (e.g. a bare
+/// `HTTP/1.1` match hiding a `Server:`-header match that names a product and
+/// version). Ties keep the earliest text and the lowest-indexed signature, so
+/// the result stays deterministic. Candidate sets are bounded — the linked port
+/// set, or the prefilter-narrowed global set — so evaluating all of them stays
+/// cheap.
+///
+/// **Several texts, for one banner, for the same reason.** A structured banner
+/// carries a field the corpus is actually written against, and that field is
+/// where the specific rules live — so both the whole banner and the field are
+/// offered, and the better match wins. Taking the *first* match instead would
+/// reinstate exactly the shadowing this function exists to prevent: the whole
+/// line matches a loose rule naming a family, and the field matches the rule
+/// naming the release.
+fn best_match(
+    db: &SignatureDb,
+    indices: &[usize],
+    texts: &[&str],
+    attested_by: crate::model::host::OsSource,
+) -> Option<Evidence> {
+    let matched: Vec<super::matcher::Match> = texts
+        .iter()
+        .flat_map(|text| {
+            indices
+                .iter()
+                .filter_map(move |&idx| db.signature(idx)?.identify(text, attested_by))
+        })
+        .collect();
+
+    // Replace only on a strictly better match, so the earliest text and the
+    // lowest index win ties.
+    let service = matched
+        .iter()
+        .reduce(|best, m| if m.quality > best.quality { m } else { best })?;
+
+    // **Chosen separately, and that is the point.** `quality` ranks how well a
+    // signature identified the *service*, which is a different question from how
+    // much it managed to say about the machine — and the two disagree. A rule
+    // pinning `OpenSSH_9.2p1` exactly outranks one that also happens to name
+    // Debian 12, so ranking the operating system by service quality threw the
+    // release away and reported a bare family.
+    //
+    // The `Match` type already separates them for exactly this reason: a banner
+    // identifies a service, and what it implies about the host is a second
+    // inference with its own rules. So the service reading comes from the best
+    // service match and the operating-system reading from the most complete one,
+    // and neither decides the other.
+    let os = matched
+        .iter()
+        .filter_map(|m| m.os.as_ref())
+        .reduce(|best, os| {
+            if os_detail(os) > os_detail(best) {
+                os
+            } else {
+                best
+            }
+        })
+        .cloned();
+
+    Some(Evidence {
+        os,
+        ..service.evidence.clone()
+    })
+}
+
+/// How much of the identity path an operating-system reading fills in.
+///
+/// Ranks readings against each other and nothing else. A reading that names a
+/// release says strictly more than one that stops at the family, and where two
+/// say the same amount the first stands — so the answer does not depend on which
+/// signature happened to be indexed earlier.
+///
+/// **Every part counts, including the ones added later.** A field left out here
+/// is a field that cannot win a rule its ranking: when the kernel was first
+/// given a home of its own, the rule that read one lost to an imported rule that
+/// had crammed the same string into `version`, purely because this function had
+/// not been told the new field existed.
+pub(super) fn os_detail(os: &crate::model::host::OsEvidence) -> u8 {
+    u8::from(os.version.is_some())
+        + u8::from(os.kernel.is_some())
+        + u8::from(os.product.is_some())
+        + u8::from(os.vendor.is_some())
+        + u8::from(os.cpe.is_some())
+}
+
+/// Everything one banner yields: the evidence, and whether the signature that
+/// named the service was registered for this port.
+///
+/// The whole per-banner decision in one place — text extraction, both tiers, and
+/// the separate choice of service and operating-system readings. `analyze` is a
+/// loop around it and the tests call it directly, which is deliberate: a test
+/// that reproduced this logic instead of calling it is what let the release-
+/// naming SSH rules go unreachable while a test asserting "real banners name an
+/// operating system" went on passing.
+fn identify_within(
+    db: &SignatureDb,
+    port_signatures: &[usize],
+    banner: &str,
+    attested_by: crate::model::host::OsSource,
+) -> Option<Evidence> {
+    let texts = super::extract::texts(banner);
+
+    // Matched against the signatures registered for this port: port-confirmed.
+    let mut found = best_match(db, port_signatures, &texts, attested_by);
+    let mut port_confirmed = found.is_some();
+
+    // The global set — narrowed by the prefilter to a small candidate list,
+    // compiled on demand — is consulted when the port set identified nothing,
+    // and **also when it named a service but said nothing about the machine**.
+    //
+    // That second case is not a special case: a banner identifies a service, and
+    // what it implies about the host is a separate inference, so the signature
+    // that answers one is very often not the signature that answers the other.
+    // Stopping at the port tier discarded every operating-system reading that
+    // lives only in the global set — measured, on a real host, whose release was
+    // sitting there unread.
+    //
+    // It costs an Aho-Corasick pass over the banner and a bounded candidate
+    // evaluation, on banners that previously skipped both. Regex compilation is
+    // cached, so a scan pays it once per signature rather than once per host.
+    if found.as_ref().is_none_or(|found| found.os.is_none()) {
+        // Narrowed against every text, unioned: a literal that only appears in
+        // the extracted field would otherwise select no candidates and the field
+        // would go unmatched here even though it matches on a known port.
+        let mut candidates: Vec<usize> = texts
+            .iter()
+            .flat_map(|text| db.prefilter().candidates(text))
+            .collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+
+        db.warm(&candidates);
+        if let Some(global) = best_match(db, &candidates, &texts, attested_by) {
+            match found.as_mut() {
+                // The port-confirmed service stands; only the reading about the
+                // machine is taken from the wider set.
+                Some(found) => found.os = global.os,
+                None => {
+                    found = Some(global);
+                    port_confirmed = false;
+                }
+            }
+        }
+    }
+
+    found.map(|mut found| {
+        found.port_confirmed = port_confirmed;
+        found
+    })
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -318,7 +583,7 @@ impl SignatureDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fingerprint::signature::{MatchRule, Probe, ServiceSignature};
+    use crate::fingerprint::signature::{DefinitionError, MatchRule, Probe, ServiceSignature};
     use crate::model::host::OsSource;
 
     fn def(name: &str, ports: Vec<u16>, patterns: &[&str]) -> ServiceDefinition {
@@ -406,7 +671,7 @@ mod tests {
     fn signatures_identify_through_the_index() {
         let db = db();
         let hit = db.signatures_for_port(80).iter().find_map(|&i| {
-            db.signature(i)
+            db.signature(i)?
                 .identify("HTTP/1.1 200 OK", OsSource::ServiceBanner)
         });
         assert_eq!(
@@ -497,6 +762,142 @@ mod tests {
                 .generic_tcp_probe_payloads()
                 .is_empty()
         );
+    }
+
+    /// **The other half of the same door.**
+    ///
+    /// The authoring schema is exported so a consumer writing signatures of
+    /// their own is held to the same bounds as the shipped corpus. Until this
+    /// constructor existed there was nowhere to load what they had authored, so
+    /// the export bought the types and not the thing the types are for.
+    #[test]
+    fn a_caller_can_load_signatures_of_their_own() {
+        let db =
+            SignatureDb::try_from_definitions(vec![def("acme", vec![9999], &[r"^ACME/([\d.]+)"])])
+                .expect("a well-formed definition");
+
+        assert_eq!(db.service_name(9999).as_deref(), Some("acme"));
+        let hit = db.signatures_for_port(9999).iter().find_map(|&i| {
+            db.signature(i)?
+                .identify("ACME/2.1", OsSource::ServiceBanner)
+        });
+        assert_eq!(
+            hit.and_then(|m| m.evidence.service),
+            Some("acme".to_string())
+        );
+    }
+
+    /// And the checks are the build's, so a definition that would fail the build
+    /// fails here rather than shipping into a scan and matching nothing.
+    #[test]
+    fn the_checks_are_the_ones_the_build_makes() {
+        // A pattern neither engine compiles.
+        let refused = SignatureDb::try_from_definitions(vec![def("broken", vec![1], &["("])])
+            .expect_err("an unclosed group is a syntax error in both engines");
+        assert!(
+            matches!(refused.error, DefinitionError::Pattern { rule: 0, .. }),
+            "{:?}",
+            refused.error
+        );
+        assert_eq!(refused.service, "broken");
+
+        // A version group the pattern has no group for.
+        let mut d = def("versioned", vec![2], &["^HELLO"]);
+        d.r#match[0].version_group = Some(1);
+        let refused =
+            SignatureDb::try_from_definitions(vec![d]).expect_err("the pattern captures nothing");
+        assert_eq!(
+            refused.error,
+            DefinitionError::VersionGroup {
+                rule: 0,
+                group: 1,
+                available: 0
+            }
+        );
+
+        // A transport nothing speaks, which the loader would silently drop.
+        let mut d = def("odd", vec![3], &["^X"]);
+        d.probe = vec![Probe {
+            name: None,
+            payload: "hello".into(),
+            protocol: "sctp".into(),
+            rarity: 0,
+            generic: false,
+        }];
+        let refused =
+            SignatureDb::try_from_definitions(vec![d]).expect_err("sctp is not a transport here");
+        assert_eq!(
+            refused.error,
+            DefinitionError::ProbeProtocol {
+                probe: 0,
+                protocol: "sctp".into()
+            }
+        );
+
+        // A generic probe over UDP is a payload aimed at every UDP port scanned.
+        let mut d = def("weird", vec![4], &["^X"]);
+        d.probe = vec![Probe {
+            name: None,
+            payload: "ping".into(),
+            protocol: "udp".into(),
+            rarity: 0,
+            generic: true,
+        }];
+        let refused = SignatureDb::try_from_definitions(vec![d])
+            .expect_err("generic only means anything over TCP");
+        assert_eq!(
+            refused.error,
+            DefinitionError::GenericProbeNotTcp {
+                probe: 0,
+                protocol: "udp".into()
+            }
+        );
+
+        // An empty UDP payload cannot elicit a reply.
+        let mut d = def("silent", vec![5], &["^X"]);
+        d.probe = vec![Probe {
+            name: None,
+            payload: String::new(),
+            protocol: "udp".into(),
+            rarity: 0,
+            generic: false,
+        }];
+        let refused = SignatureDb::try_from_definitions(vec![d])
+            .expect_err("an empty datagram draws nothing");
+        assert_eq!(
+            refused.error,
+            DefinitionError::UdpProbeSize { probe: 0, bytes: 0 }
+        );
+    }
+
+    /// Everything the build compiled passes the check the build ran. Circular if
+    /// they were two implementations; a seal because they are one.
+    #[test]
+    fn every_shipped_definition_satisfies_the_shared_check() {
+        for (index, def) in SignatureDb::embedded_definitions().iter().enumerate() {
+            assert!(
+                def.validate().is_ok(),
+                "shipped definition {index} ('{}') would be refused: {:?}",
+                def.service.name,
+                def.validate()
+            );
+        }
+    }
+
+    /// The message names the definition, because a corpus of hundreds needs the
+    /// one that is wrong rather than the fact that one of them is.
+    #[test]
+    fn the_refusal_names_which_definition_and_why() {
+        let refused = SignatureDb::try_from_definitions(vec![
+            def("fine", vec![1], &["^OK"]),
+            def("broken", vec![2], &["("]),
+        ])
+        .expect_err("the second definition is unusable");
+
+        let message = refused.to_string();
+        assert!(message.contains("definition 1"), "{message}");
+        assert!(message.contains("broken"), "{message}");
+        assert!(message.contains("unusable pattern"), "{message}");
     }
 
     #[test]

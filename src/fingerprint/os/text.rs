@@ -86,6 +86,7 @@ use crate::model::host::OsSource;
 /// Comparable but not [`Eq`]: [`certainty`](Self::certainty) is a float, and a
 /// value nobody can write down exactly is not one two rules should be claimed to
 /// share.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OsMetadata {
     /// The vendor, such as `"Microsoft"`.
@@ -645,13 +646,10 @@ mod against_the_shipped_corpus {
     fn a_banner_that_names_a_release_yields_the_release() {
         let db = SignatureDb::global();
 
-        let debian_12 = crate::fingerprint::analyzer::os_from_banner(
-            db,
-            22,
-            Protocol::Tcp,
-            "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10",
-        )
-        .expect("a Debian OpenSSH banner names an operating system");
+        let debian_12 = db
+            .identify(22, Protocol::Tcp, "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10")
+            .and_then(|found| found.os)
+            .expect("a Debian OpenSSH banner names an operating system");
 
         assert_eq!(debian_12.family.as_deref(), Some("Linux"));
         assert_eq!(
@@ -667,13 +665,10 @@ mod against_the_shipped_corpus {
         );
         assert_eq!(debian_12.vendor.as_deref(), Some("Debian"));
 
-        let debian_13 = crate::fingerprint::analyzer::os_from_banner(
-            db,
-            22,
-            Protocol::Tcp,
-            "SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4",
-        )
-        .expect("a Debian OpenSSH banner names an operating system");
+        let debian_13 = db
+            .identify(22, Protocol::Tcp, "SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4")
+            .and_then(|found| found.os)
+            .expect("a Debian OpenSSH banner names an operating system");
         assert_eq!(debian_13.family.as_deref(), Some("Linux"));
         assert_eq!(
             debian_13.version.as_deref(),
@@ -683,25 +678,19 @@ mod against_the_shipped_corpus {
         );
 
         // A backport says which release it was built *for*, in the same place.
-        let backported = crate::fingerprint::analyzer::os_from_banner(
-            db,
-            22,
-            Protocol::Tcp,
-            "SSH-2.0-OpenSSH_9.7p1 Debian-1~bpo12+1",
-        )
-        .expect("a backport names one too");
+        let backported = db
+            .identify(22, Protocol::Tcp, "SSH-2.0-OpenSSH_9.7p1 Debian-1~bpo12+1")
+            .and_then(|found| found.os)
+            .expect("a backport names one too");
         assert_eq!(backported.version.as_deref(), Some("12"));
 
         // And a banner with the suffix stripped — `DebianBanner no` — names no
         // release, because there is none in it to name. Declining is right:
         // guessing a release from an OpenSSH version would attribute Debian's
         // packaging to every distribution that ships the same upstream.
-        let stripped = crate::fingerprint::analyzer::os_from_banner(
-            db,
-            22,
-            Protocol::Tcp,
-            "SSH-2.0-OpenSSH_10.0p2",
-        );
+        let stripped = db
+            .identify(22, Protocol::Tcp, "SSH-2.0-OpenSSH_10.0p2")
+            .and_then(|found| found.os);
         assert!(
             stripped.is_none_or(|os| os.version.is_none()),
             "a stripped banner carries no release and must not invent one"
@@ -724,9 +713,9 @@ mod against_the_shipped_corpus {
     fn arch_is_named_by_its_kernel_because_nothing_else_names_it() {
         let db = SignatureDb::global();
 
-        let found = crate::fingerprint::analyzer::os_from_banner(db, 161, Protocol::Udp,
-            "Linux host 6.12.1-arch1-1 #1 SMP PREEMPT_DYNAMIC Fri, 22 Nov 2024 12:00:00 +0000 x86_64",
+        let found = db.identify(161, Protocol::Udp, "Linux host 6.12.1-arch1-1 #1 SMP PREEMPT_DYNAMIC Fri, 22 Nov 2024 12:00:00 +0000 x86_64",
         )
+        .and_then(|found| found.os)
         .expect("an Arch kernel names Arch");
 
         assert_eq!(found.vendor.as_deref(), Some("Arch Linux"));
@@ -740,12 +729,9 @@ mod against_the_shipped_corpus {
         // And the banner it actually presents on port 22 names nothing, which is
         // the honest answer rather than a gap to be papered over: a bare
         // `OpenSSH_10.0p2` is Arch, Fedora, Gentoo or a source build alike.
-        let by_ssh = crate::fingerprint::analyzer::os_from_banner(
-            db,
-            22,
-            Protocol::Tcp,
-            "SSH-2.0-OpenSSH_10.0p2",
-        );
+        let by_ssh = db
+            .identify(22, Protocol::Tcp, "SSH-2.0-OpenSSH_10.0p2")
+            .and_then(|found| found.os);
         assert!(
             by_ssh.is_none_or(|os| os.vendor.is_none()),
             "an unmarked upstream banner must not be attributed to any distribution"
@@ -768,13 +754,14 @@ mod against_the_shipped_corpus {
     fn an_agent_that_names_only_hardware_names_hardware() {
         let db = SignatureDb::global();
 
-        let found = crate::fingerprint::analyzer::os_from_banner(
-            db,
-            161,
-            Protocol::Udp,
-            "Brother NC-8700w, Firmware Ver.ZL  ,MID 8CE-823,FID 2",
-        )
-        .expect("a shipped rule reads this exact string");
+        let found = db
+            .identify(
+                161,
+                Protocol::Udp,
+                "Brother NC-8700w, Firmware Ver.ZL  ,MID 8CE-823,FID 2",
+            )
+            .and_then(|found| found.os)
+            .expect("a shipped rule reads this exact string");
 
         assert_eq!(found.vendor.as_deref(), Some("Brother"));
         assert_eq!(found.product.as_deref(), Some("NC-8700w"));
@@ -793,13 +780,14 @@ mod against_the_shipped_corpus {
     fn an_agent_that_names_a_kernel_names_a_kernel() {
         let db = SignatureDb::global();
 
-        let found = crate::fingerprint::analyzer::os_from_banner(
-            db,
-            161,
-            Protocol::Udp,
-            "Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) aarch64",
-        )
-        .expect("the kernel rule reads this");
+        let found = db
+            .identify(
+                161,
+                Protocol::Udp,
+                "Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) aarch64",
+            )
+            .and_then(|found| found.os)
+            .expect("the kernel rule reads this");
 
         assert_eq!(found.family.as_deref(), Some("Linux"));
         assert_eq!(found.kernel.as_deref(), Some("6.1.0"));
@@ -821,7 +809,9 @@ mod against_the_shipped_corpus {
             ("SSH-2.0-OpenSSH_7.9p1 Debian-10+deb10u2", "10"),
             ("SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u3", "11"),
         ] {
-            let found = crate::fingerprint::analyzer::os_from_banner(db, 22, Protocol::Tcp, banner)
+            let found = db
+                .identify(22, Protocol::Tcp, banner)
+                .and_then(|found| found.os)
                 .unwrap_or_else(|| panic!("{banner} names nothing"));
 
             assert_eq!(found.family.as_deref(), Some("Linux"));
@@ -850,7 +840,9 @@ mod against_the_shipped_corpus {
         let db = SignatureDb::global();
         let sys_descr = "Linux zond 6.1.0-18-arm64 #1 SMP Debian 6.1.76-1 (2024-02-01) aarch64";
 
-        let found = crate::fingerprint::analyzer::os_from_banner(db, 161, Protocol::Udp, sys_descr)
+        let found = db
+            .identify(161, Protocol::Udp, sys_descr)
+            .and_then(|found| found.os)
             .expect("a uname string names an operating system");
 
         assert_eq!(found.family.as_deref(), Some("Linux"));
@@ -900,8 +892,9 @@ mod against_the_shipped_corpus {
         for (port, banner) in cases {
             // The port-linked set first, then the global one, exactly as the
             // matcher does.
-            let found =
-                crate::fingerprint::analyzer::os_from_banner(db, port, Protocol::Tcp, banner);
+            let found = db
+                .identify(port, Protocol::Tcp, banner)
+                .and_then(|found| found.os);
 
             if let Some(os) = found {
                 assert!(

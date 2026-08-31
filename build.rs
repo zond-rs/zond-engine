@@ -112,7 +112,6 @@ fn main() {
         let def: ServiceDefinition = toml::from_str(&content)
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
         validate(&def, path);
-        validate_generic_probes(&def, path);
         services.push(def);
     }
 
@@ -677,132 +676,21 @@ fn compile_os_rules(out_dir: &Path) {
 
 /// Validates one operating-system rule, aborting the build on anything that
 /// would make it match the wrong hosts or no hosts at all.
-/// Refuses a generic probe that is not TCP.
-///
-/// `generic` means "send this to any open port with nothing else to send", and
-/// over UDP that is a payload aimed at every UDP port in the scan — a different
-/// and much larger claim than the one the flag is for, and one nobody would make
-/// by ticking a boolean. Caught here because the runtime simply skips such a
-/// probe, and a probe silently not sent is the kind of gap that ships.
-fn validate_generic_probes(def: &ServiceDefinition, path: &Path) {
-    for probe in &def.probe {
-        if probe.generic && probe.protocol != "tcp" {
-            panic!(
-                "{}: probe '{}' is marked generic over {}. A generic probe is sent to \
-                 every open port that registers none of its own, which only makes sense \
-                 over TCP.",
-                path.display(),
-                probe.name.as_deref().unwrap_or("<unnamed>"),
-                probe.protocol,
-            );
-        }
-    }
-}
-
 fn validate_os_rule(def: &os_schema::OsDefinition, path: &Path) {
     let file = path.display();
-    let family = &def.os.family;
+    let family = def.os.label();
 
-    if family.trim().is_empty() {
-        panic!("{file}: a rule must name a family");
+    // The fatal half lives in the schema, so a rule this build accepts is
+    // exactly a rule `RuleDb::try_from_rules` accepts. Adding a check there
+    // tightens both at once; adding one here would tighten only what ships.
+    if let Err(defect) = def.validate() {
+        panic!("{file}: '{family}' {defect}");
     }
 
-    // The identity is a path, so a segment cannot be given without the one above
-    // it. "Ubuntu 22.04" with no vendor is fine; a version with no product names
-    // a version of nothing.
-    if def.os.version.is_some() && def.os.product.is_none() {
-        panic!("{file}: '{family}' states a version without a product to version");
-    }
-
-    if !(0.0..=os_schema::MAX_RULE_WEIGHT).contains(&def.weight) || !def.weight.is_finite() {
-        panic!(
-            "{file}: '{family}' has weight {}, outside 0..={}",
-            def.weight,
-            os_schema::MAX_RULE_WEIGHT
-        );
-    }
-
-    let mut predicates = 0usize;
-    macro_rules! check {
-        ($($field:ident),* $(,)?) => {$(
-            if let Some(predicate) = &def.r#match.$field {
-                predicates += 1;
-                match predicate.forms_set() {
-                    1 => {}
-                    0 => panic!(
-                        "{file}: '{family}' predicate `{}` sets none of equals/any_of/range, \
-                         so it can never match",
-                        stringify!($field)
-                    ),
-                    n => panic!(
-                        "{file}: '{family}' predicate `{}` sets {n} of equals/any_of/range; \
-                         exactly one is allowed",
-                        stringify!($field)
-                    ),
-                }
-                if let Some(set) = &predicate.any_of
-                    && set.is_empty()
-                {
-                    panic!(
-                        "{file}: '{family}' predicate `{}` has an empty any_of, so it can \
-                         never match",
-                        stringify!($field)
-                    );
-                }
-                if let Some([low, high]) = &predicate.range
-                    && low > high
-                {
-                    panic!(
-                        "{file}: '{family}' predicate `{}` has a range whose low bound is \
-                         above its high bound, so it can never match",
-                        stringify!($field)
-                    );
-                }
-            }
-        )*};
-    }
-    check!(
-        initial_hops,
-        dont_fragment,
-        option_layout,
-        window,
-        window_units,
-        window_remainder,
-        window_scale,
-        mss,
-        timestamps,
-        sack_permitted,
-        echo_code,
-        echo_payload_intact,
-        identifier_class,
-        sequence_class,
-        clock_class,
-    );
-
-    // A TCP example without a window has recorded nothing about the field its
-    // rule most likely keys on, and the schema cannot require it: an echo reply
-    // has no window at all. So the requirement is stated here, per reply kind,
-    // where it can be.
-    for example in &def.example {
-        if example.reply != os_schema::ReplyKind::EchoReply && example.window.is_none() {
-            panic!(
-                "{file}: '{family}' has a {:?} example with no window; only an echo \
-                 example may omit one",
-                example.reply
-            );
-        }
-    }
-
-    // The one defect that is worse than a build failure. A rule testing nothing
-    // matches every reply of its kind and names every host that ever answers as
-    // this operating system, and nothing downstream can tell that from a
-    // detection that worked.
-    if predicates == 0 {
-        panic!(
-            "{file}: '{family}' states no predicates, so it would match every reply of its kind"
-        );
-    }
-
+    // The advisory half. Neither of these makes a rule unusable, so neither
+    // belongs in the shared check: they are about whether a rule can be
+    // maintained, which is a question for whoever is authoring it.
+    //
     // Only a rule claiming to have been measured is *missing* something by
     // shipping no example. A published rule has no local observation to record —
     // that is what publishing means — and warning about it would train whoever
@@ -832,53 +720,30 @@ fn validate(def: &ServiceDefinition, path: &Path) {
 
     // Note: a definition with no `default_ports` is legitimate — it is a
     // port-less banner signature intended for global matching, not the port
-    // index. Those become reachable with the prefilter (see the fingerprinting
-    // redesign RFC, phase 3); they are not a defect and are not flagged here.
+    // index. Those are reachable through the prefilter; not a defect, not flagged.
 
-    for (i, rule) in def.r#match.iter().enumerate() {
-        // Compile with the exact engine-selection and limit the runtime uses, so
-        // the build accepts precisely the patterns the engine will — including
-        // backref/lookaround patterns via the bounded fancy fallback.
-        let compiled =
-            pattern::compile(&rule.pattern, MAX_COMPILED_REGEX_BYTES).unwrap_or_else(|e| {
-                panic!(
-                    "{file}: service '{service}' match #{i} has an unusable pattern: {e}\n  \
-                     pattern: {}",
-                    rule.pattern
-                )
-            });
-
-        if let Some(group) = rule.version_group {
-            // `captures_len()` counts group 0 (the whole match) plus each
-            // capturing group, so valid indices are `0..captures_len()`.
-            if group as usize >= compiled.captures_len() {
-                panic!(
-                    "{file}: service '{service}' match #{i} references version_group {group}, but \
-                     the pattern has {} capture group(s)\n  pattern: {}",
-                    compiled.captures_len() - 1,
-                    rule.pattern
-                );
-            }
-        }
+    // The fatal half lives in the schema, so a definition this build accepts is
+    // exactly a definition `SignatureDb::try_from_definitions` accepts. It
+    // compiles every pattern with the engine selection the runtime uses, checks
+    // each `version_group` against its pattern's groups, and refuses a probe over
+    // a transport nothing speaks or a generic probe that is not TCP.
+    if let Err(defect) = def.validate() {
+        panic!("{file}: service '{service}' {defect}");
     }
 
+    // The half the runtime cannot do. A UDP datagram whose length fields
+    // disagree with its contents is discarded by the target application without
+    // a word, and the scanner reads that silence as `OpenFiltered` — the exact
+    // verdict it would report for a filtered port. Catching it needs the target
+    // protocol's own parser, which is a build dependency and not a runtime one.
     for (i, probe) in def.probe.iter().enumerate() {
-        if !matches!(probe.protocol.as_str(), "tcp" | "udp") {
-            println!(
-                "cargo:warning={file}: service '{service}' probe #{i} has unknown protocol '{}' \
-                 (expected 'tcp' or 'udp')",
-                probe.protocol
-            );
-        }
-
         if probe.protocol == "udp" {
             validate_udp_payload(&unescape(&probe.payload), def, i, path);
         }
         // Rarity is a 0..=9 intensity band (see `Probe::rarity`). A larger value
         // is almost certainly an authoring typo — it would silently keep the
-        // probe from ever being sent at normal intensity. Warn rather than fail:
-        // it degrades nothing that ships today (the runtime does not gate on it
-        // yet) and out-of-band values may be deliberate once it does.
+        // probe from ever being sent once an intensity cap is wired in. Warn
+        // rather than fail: it degrades nothing that ships today.
         if probe.rarity > 9 {
             println!(
                 "cargo:warning={file}: service '{service}' probe #{i} has rarity {} outside the \

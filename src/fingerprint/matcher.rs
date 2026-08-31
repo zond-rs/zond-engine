@@ -36,6 +36,7 @@ use crate::model::confidence::Confidence;
 
 /// A single service signature: metadata, its pattern, and its lazily-compiled
 /// regex.
+#[derive(Debug)]
 pub struct Signature {
     service: String,
     product: Option<String>,
@@ -112,12 +113,6 @@ impl Signature {
         }
     }
 
-    /// What this signature says about the operating system, before its templates
-    /// are resolved against a match.
-    pub fn os_metadata(&self) -> Option<&OsMetadata> {
-        self.os.as_deref()
-    }
-
     /// The raw pattern, for build-time literal extraction by the prefilter.
     pub fn pattern(&self) -> &str {
         &self.pattern
@@ -165,7 +160,11 @@ impl Signature {
             self.version_group,
             wants_captures,
         )?;
-        let version = matched.version;
+        // A capture past the bound is a pattern that ran away over a hostile
+        // response, not a version. See `MAX_IDENTITY_BYTES`.
+        let version = matched
+            .version
+            .filter(|version| super::identity_field(version).is_some());
 
         // A captured version is a materially stronger signal than a bare match.
         let confidence = if version.is_some() {
