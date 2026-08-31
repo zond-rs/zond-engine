@@ -191,7 +191,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-public-api
-        uses: taiki-e/install-action@cargo-public-api
+        # Asked for by name rather than through a `@cargo-public-api` tag, which
+        # is what the two other install-action steps in this file use. That tag
+        # form is an alias the action publishes per tool, and there is none for
+        # this one; the `tool:` input is the general form and takes any tool.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api
 
       - name: Regenerate the surface and compare it against the baseline
         run: |

@@ -48,7 +48,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
+        # `rustfmt` and `clippy` are not in a bare nightly, and this job lints
+        # with both. Named here rather than assumed: `dtolnay/rust-toolchain`
+        # installs the components it is asked for and nothing else, so a missing
+        # one fails at the step that uses it rather than at the install.
         uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
 
       - name: Install libpcap
         run: sudo apt-get update && sudo apt-get install -y libpcap-dev
