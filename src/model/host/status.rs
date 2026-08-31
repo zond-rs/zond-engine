@@ -132,6 +132,14 @@ pub enum StatusProtocol {
     /// reply to a port the scan probed without knowing what would be listening.
     /// Where the engine *can* name what answered, it has a variant for it.
     Udp,
+    /// Discovered via an SCTP chunk answering an INIT probe.
+    ///
+    /// Either answer proves the host is there: an INIT-ACK is an endpoint
+    /// willing to open an association, and an ABORT is the same stack refusing
+    /// one. Which of the two arrived is named in
+    /// [`StatusReason::details`](super::StatusReason::details), as it is for
+    /// [`Tcp`](Self::Tcp).
+    Sctp,
     /// A custom discovery method initiated by a specialized scanning script.
     Custom(Arc<str>),
 }
@@ -166,6 +174,7 @@ impl StatusProtocol {
         Self::Tcp,
         Self::Dhcp,
         Self::Udp,
+        Self::Sctp,
     ];
 }
 

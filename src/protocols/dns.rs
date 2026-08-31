@@ -464,7 +464,7 @@ pub(crate) mod tests {
     ///
     /// `str::parse::<u8>` takes a leading `+` and any number of leading zeros,
     /// which made three spellings of 192.0.2.1 all resolve. This is the key a
-    /// response is tied to an address by, and `model/parse/ip.rs` settled the
+    /// response is tied to an address by, and `src/model/parse/ip.rs` settled the
     /// same question on the range grammar.
     #[test]
     fn a_reverse_name_is_read_only_as_it_would_be_written() {

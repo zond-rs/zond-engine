@@ -104,6 +104,7 @@ pub fn protocol_name(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Tcp => "tcp",
         Protocol::Udp => "udp",
+        Protocol::Sctp => "sctp",
     }
 }
 
@@ -112,6 +113,7 @@ pub fn protocol(name: &str) -> Option<Protocol> {
     Some(match name {
         "tcp" => Protocol::Tcp,
         "udp" => Protocol::Udp,
+        "sctp" => Protocol::Sctp,
         _ => return None,
     })
 }
@@ -318,6 +320,7 @@ pub fn status_protocol_name(protocol: &StatusProtocol) -> Cow<'_, str> {
         StatusProtocol::Tcp => Cow::Borrowed("tcp"),
         StatusProtocol::Dhcp => Cow::Borrowed("dhcp"),
         StatusProtocol::Udp => Cow::Borrowed("udp"),
+        StatusProtocol::Sctp => Cow::Borrowed("sctp"),
         StatusProtocol::Custom(name) => Cow::Owned(format!("{CUSTOM}{name}")),
     }
 }
@@ -340,6 +343,7 @@ pub fn status_protocol(name: &str) -> Option<StatusProtocol> {
         "tcp" => StatusProtocol::Tcp,
         "dhcp" => StatusProtocol::Dhcp,
         "udp" => StatusProtocol::Udp,
+        "sctp" => StatusProtocol::Sctp,
         _ => return None,
     })
 }
@@ -351,6 +355,8 @@ pub fn scan_response_name(response: &ScanResponse) -> Cow<'_, str> {
         ScanResponse::OverheardSynAck => Cow::Borrowed("overheard_syn_ack"),
         ScanResponse::TcpRst => Cow::Borrowed("tcp_rst"),
         ScanResponse::UdpResponse => Cow::Borrowed("udp_response"),
+        ScanResponse::SctpInitAck => Cow::Borrowed("sctp_init_ack"),
+        ScanResponse::SctpAbort => Cow::Borrowed("sctp_abort"),
         ScanResponse::NoResponse => Cow::Borrowed("no_response"),
         ScanResponse::IcmpUnreachable => Cow::Borrowed("icmp_unreachable"),
         ScanResponse::IcmpProhibited => Cow::Borrowed("icmp_prohibited"),
@@ -370,6 +376,8 @@ pub fn scan_response(name: &str) -> Option<ScanResponse> {
         "overheard_syn_ack" => ScanResponse::OverheardSynAck,
         "tcp_rst" => ScanResponse::TcpRst,
         "udp_response" => ScanResponse::UdpResponse,
+        "sctp_init_ack" => ScanResponse::SctpInitAck,
+        "sctp_abort" => ScanResponse::SctpAbort,
         "no_response" => ScanResponse::NoResponse,
         "icmp_unreachable" => ScanResponse::IcmpUnreachable,
         "icmp_prohibited" => ScanResponse::IcmpProhibited,
@@ -448,6 +456,7 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
         ScannerKind::Connect => "connect",
         ScannerKind::ConnectUdp => "connect_udp",
         ScannerKind::UdpPort => "udp_port",
+        ScannerKind::SctpPort => "sctp_port",
         ScannerKind::OsEcho => "os_echo",
         ScannerKind::OsSeries => "os_series",
         ScannerKind::OsSnmp => "os_snmp",
@@ -467,6 +476,7 @@ pub fn scanner_kind(name: &str) -> Option<ScannerKind> {
         "connect" => ScannerKind::Connect,
         "connect_udp" => ScannerKind::ConnectUdp,
         "udp_port" => ScannerKind::UdpPort,
+        "sctp_port" => ScannerKind::SctpPort,
         "os_echo" => ScannerKind::OsEcho,
         "os_series" => ScannerKind::OsSeries,
         "os_snmp" => ScannerKind::OsSnmp,
@@ -695,16 +705,7 @@ mod tests {
             "the search caught the network-role enum instead"
         );
 
-        for protocol in [
-            StatusProtocol::Arp,
-            StatusProtocol::Ndp,
-            StatusProtocol::IcmpEcho,
-            StatusProtocol::IcmpUnreachable,
-            StatusProtocol::TcpSyn,
-            StatusProtocol::Tcp,
-            StatusProtocol::Dhcp,
-            StatusProtocol::Udp,
-        ] {
+        for protocol in StatusProtocol::ALL {
             match protocol {
                 StatusProtocol::Arp
                 | StatusProtocol::Ndp
@@ -713,13 +714,14 @@ mod tests {
                 | StatusProtocol::TcpSyn
                 | StatusProtocol::Tcp
                 | StatusProtocol::Dhcp
-                | StatusProtocol::Udp => {}
+                | StatusProtocol::Udp
+                | StatusProtocol::Sctp => {}
                 StatusProtocol::Custom(_) => {
-                    unreachable!("the list above holds no strategy-supplied names")
+                    unreachable!("`ALL` holds no strategy-supplied names")
                 }
             }
 
-            let name = status_protocol_name(&protocol);
+            let name = status_protocol_name(protocol);
             assert_eq!(status_protocol(&name), Some(protocol.clone()));
             assert!(
                 names.contains(&format!("\"{name}\"")),
@@ -766,7 +768,7 @@ mod tests {
     fn an_unknown_name_is_refused() {
         assert_eq!(host_status("perhaps"), None);
         assert_eq!(port_state("ajar"), None);
-        assert_eq!(protocol("sctp"), None);
+        assert_eq!(protocol("dccp"), None);
         assert_eq!(network_role("gateway"), None);
         assert_eq!(os_source("astrology"), None);
         assert_eq!(status_protocol("igmp"), None);

@@ -276,7 +276,7 @@ pub(super) fn build_port_scanner(
     // Read before the steps are consumed. A protocol the plan never intended to
     // cover has already been refused above, in the same words, and must not be
     // refused a second time by the coverage check below.
-    let intended: Vec<Protocol> = [Protocol::Tcp, Protocol::Udp]
+    let intended: Vec<Protocol> = Protocol::ALL
         .into_iter()
         .filter(|protocol| plan.covers(*protocol))
         .collect();
@@ -372,6 +372,14 @@ pub(super) fn ensure_coverage(
             crate::config::limits::CONNECT_CONCURRENCY,
             evasion,
         )));
+    }
+
+    // Nothing stands in for an INIT scan. A protocol whose only strategy failed
+    // to open is reported rather than answered by something that asked a
+    // different question, which for SCTP is the whole of what is available.
+    if missing(Protocol::Sctp) {
+        let refusal = plan::RefusedStep::sctp_needs_raw_sockets();
+        ctx.record_failure(refusal.scanner, refusal.reason);
     }
 
     scanners
@@ -976,12 +984,13 @@ pub(super) async fn run_port_phase(
     }
 
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
-    let built = build_port_scanner(
-        super::plan::PortScanPlan::build(cfg, caps.privilege),
-        ctx,
-        target_count,
-        cfg.probe_tuning(),
-    );
+    // SCTP is planned from the targets rather than from the configuration,
+    // since the ports are what name it and no default list holds one.
+    let mut plan = super::plan::PortScanPlan::build(cfg, caps.privilege);
+    if target_map.names(Protocol::Sctp) {
+        plan.cover_sctp(caps.privilege);
+    }
+    let built = build_port_scanner(plan, ctx, target_count, cfg.probe_tuning());
 
     // Only when nothing has enriched these hosts already. With the liveness
     // phase on, it has: the pass that established they are there is the same one

@@ -345,6 +345,15 @@ pub fn udp(ip: IpAddr, port: u16) -> Target {
     }
 }
 
+/// An SCTP target, as a port scanner expects one.
+pub fn sctp(ip: IpAddr, port: u16) -> Target {
+    Target {
+        ip,
+        port,
+        protocol: Protocol::Sctp,
+    }
+}
+
 /// The state recorded for `ip:port` in a session's store.
 ///
 /// The Tier 1 counterpart on [`Outcome`] reads a finished scan's snapshot; this

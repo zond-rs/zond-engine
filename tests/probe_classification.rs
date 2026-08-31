@@ -33,11 +33,16 @@ use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::report::StopReason;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
-use zond_engine::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
+use zond_engine::scanner::strategy::routed::{
+    RoutedScanner, SctpPortScanner, TcpPortScanner, UdpPortScanner,
+};
 use zond_engine::system::interface::RoutedTarget;
 
 /// The fixed source port the simulated UDP scans probe from.
 const UDP_SRC_PORT: u16 = 54_321;
+
+/// The fixed source port the simulated SCTP scans probe from.
+const SCTP_SRC_PORT: u16 = 54_322;
 
 /// Runs one SYN scan against [`TARGET`] over the given policies and returns the
 /// session to assert against, together with the network that served it.
@@ -118,6 +123,27 @@ async fn udp_scan(target: std::net::IpAddr, ports: &[(u16, Policy)]) -> (ScanSes
         UDP_SRC_PORT,
     );
     let targets = ports.iter().map(|(port, _)| udp(target, *port)).collect();
+    run_port_scanner(&mut scanner, targets).await;
+
+    (session, net)
+}
+
+/// The SCTP counterpart of [`syn_scan`].
+async fn sctp_scan(ports: &[(u16, Policy)]) -> (ScanSession, FakeNet) {
+    let mut net = FakeNet::new(Layer4::Sctp);
+    for (port, policy) in ports {
+        net = net.host(TARGET, *port, *policy);
+    }
+
+    let (session, ctx) = ScanSession::new();
+    let mut scanner = SctpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        net.transport(),
+        ports.len(),
+        SCTP_SRC_PORT,
+    );
+    let targets = ports.iter().map(|(port, _)| sctp(TARGET, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;
 
     (session, net)
@@ -868,4 +894,63 @@ async fn a_bare_ack_from_another_conversation_still_resolves_nothing() {
         Some(PortState::Filtered),
         "an ACK that answers none of this scan's probes is not evidence about the port"
     );
+}
+
+// ── SCTP ─────────────────────────────────────────────────────────────────────
+
+/// The three outcomes an INIT probe can reach, in one scan.
+///
+/// The middle one is what separates this from a UDP scan: a port with nothing
+/// listening answers an ABORT of its own, so `closed` is a verdict this scan
+/// reaches from a packet rather than from a timeout.
+#[tokio::test]
+async fn an_init_scan_classifies_open_closed_and_filtered() {
+    let (session, _net) = sctp_scan(&[
+        (2905, Policy::open()),
+        (3868, Policy::closed()),
+        (36412, Policy::silent()),
+    ])
+    .await;
+
+    assert_eq!(port_state(&session, TARGET, 2905), Some(PortState::Open));
+    assert_eq!(port_state(&session, TARGET, 3868), Some(PortState::Closed));
+    assert_eq!(
+        port_state(&session, TARGET, 36412),
+        Some(PortState::Filtered),
+        "silence is a filter here: a live endpoint answers an init either way"
+    );
+}
+
+/// An ICMP refusal is a filter here rather than a closed port. A closed SCTP
+/// port sends an abort of its own, so an error means something stopped the probe
+/// instead of a stack looking for a listener and finding none.
+#[tokio::test]
+async fn an_icmp_refusal_leaves_an_sctp_port_filtered() {
+    let (session, _net) = sctp_scan(&[
+        (2905, Policy::unreachable(Unreachable::Port)),
+        (3868, Policy::admin_prohibited()),
+    ])
+    .await;
+
+    assert_eq!(
+        port_state(&session, TARGET, 2905),
+        Some(PortState::Filtered)
+    );
+    assert_eq!(
+        port_state(&session, TARGET, 3868),
+        Some(PortState::Filtered)
+    );
+}
+
+/// Every probe leaves from the one port the capture filter narrows on, and each
+/// carries a tag of its own, which is what makes an answer attributable.
+#[tokio::test]
+async fn every_init_probe_leaves_from_the_scan_source_port_with_its_own_tag() {
+    let (_session, net) = sctp_scan(&[(2905, Policy::open()), (3868, Policy::closed())]).await;
+
+    let probes = net.probes();
+    assert_eq!(probes.len(), 2, "one probe per port");
+    for probe in &probes {
+        assert_eq!(probe.source_port, SCTP_SRC_PORT);
+    }
 }

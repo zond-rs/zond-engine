@@ -85,6 +85,13 @@ pub enum Protocol {
     /// ICMP port unreachable, or most often by nothing at all. That last case is
     /// why silence here means [`PortState::OpenFiltered`] rather than open.
     Udp,
+    /// SCTP. Probed with an INIT chunk, which a listener answers by accepting
+    /// the association and a stack with nothing there refuses outright, so both
+    /// verdicts come from a single exchange the way a SYN scan's do.
+    ///
+    /// Carries Diameter, S1AP and M3UA, which is why a mobile core is the place
+    /// a scan that asks about TCP and UDP alone reports an empty host.
+    Sctp,
 }
 
 impl Protocol {
@@ -96,7 +103,20 @@ impl Protocol {
     /// schema, is a port that survives a scan and cannot be written down. The
     /// export conformance suite reads this and the schema's own list and fails
     /// unless they hold the same names.
-    pub const ALL: [Protocol; 2] = [Self::Tcp, Self::Udp];
+    pub const ALL: [Protocol; 3] = [Self::Tcp, Self::Udp, Self::Sctp];
+
+    /// What a written port specification puts in front of this protocol's
+    /// ports: nothing for TCP, `u:` for UDP, `s:` for SCTP.
+    ///
+    /// Read by both halves of [`PortSet`]'s spelling, so the prefix a caller
+    /// writes and the one a report renders cannot come apart.
+    pub const fn spec_prefix(self) -> &'static str {
+        match self {
+            Self::Tcp => "",
+            Self::Udp => "u:",
+            Self::Sctp => "s:",
+        }
+    }
 }
 
 /// What a scan established about a port.

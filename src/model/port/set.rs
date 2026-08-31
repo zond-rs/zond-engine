@@ -9,8 +9,9 @@
 //! # Which ports to ask about
 //!
 //! [`PortSet`] is the port half of a scan's target specification: what a person
-//! wrote, such as `"80, 443, u:53, 1000-2000"`, held as disjoint ranges per
-//! protocol.
+//! wrote, such as `"80, 443, u:53, s:2905, 1000-2000"`, held as disjoint ranges
+//! per protocol. The prefix in front of a token names the transport and belongs
+//! to [`Protocol::spec_prefix`].
 //!
 //! It is built once and never mutated. Every construction path merges and
 //! sorts before returning, and there is no method that can undo that, so a
@@ -85,7 +86,7 @@ pub enum PortSetParseError {
 // PortSet Core Model
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// The TCP and UDP ports a scan asks about, as sorted disjoint ranges.
+/// The ports a scan asks about on each transport, as sorted disjoint ranges.
 ///
 /// Canonical from construction and immutable afterwards; the module
 /// documentation has what that buys and who relies on it.
@@ -98,6 +99,7 @@ pub enum PortSetParseError {
 pub struct PortSet {
     tcp: Vec<RangeInclusive<u16>>,
     udp: Vec<RangeInclusive<u16>>,
+    sctp: Vec<RangeInclusive<u16>>,
 }
 
 impl PortSet {
@@ -106,6 +108,7 @@ impl PortSet {
         Self {
             tcp: Vec::new(),
             udp: Vec::new(),
+            sctp: Vec::new(),
         }
     }
 
@@ -175,39 +178,29 @@ impl PortSet {
     ///
     /// Note: This counts every individual port within every range.
     pub fn len(&self) -> usize {
-        let tcp_count: usize = self
-            .tcp
-            .iter()
-            .map(|r| (r.end().saturating_sub(*r.start()) as usize).saturating_add(1))
-            .sum();
-        let udp_count: usize = self
-            .udp
-            .iter()
-            .map(|r| (r.end().saturating_sub(*r.start()) as usize).saturating_add(1))
-            .sum();
-
-        tcp_count + udp_count
+        Protocol::ALL
+            .into_iter()
+            .map(|protocol| self.len_on(protocol))
+            .sum()
     }
 
-    /// Returns `true` if no ports are defined for either protocol.
+    /// Returns `true` if no ports are defined on any protocol.
     pub fn is_empty(&self) -> bool {
-        self.tcp.is_empty() && self.udp.is_empty()
+        Protocol::ALL
+            .into_iter()
+            .all(|protocol| self.ranges(protocol).is_empty())
     }
 
     /// Returns an iterator over all individual ports in the set.
     ///
-    /// Yields TCP ports first, followed by UDP ports.
+    /// Walks the protocols in [`Protocol::ALL`] order, so a set renders and
+    /// enumerates the same way whatever order it was written in.
     pub fn iter(&self) -> impl Iterator<Item = (u16, Protocol)> + '_ {
-        let tcp_iter = self
-            .tcp
-            .iter()
-            .flat_map(|r| r.clone().map(|p| (p, Protocol::Tcp)));
-        let udp_iter = self
-            .udp
-            .iter()
-            .flat_map(|r| r.clone().map(|p| (p, Protocol::Udp)));
-
-        tcp_iter.chain(udp_iter)
+        Protocol::ALL.into_iter().flat_map(move |protocol| {
+            self.ranges(protocol)
+                .iter()
+                .flat_map(move |range| range.clone().map(move |port| (port, protocol)))
+        })
     }
 
     /// Flattens the set into a vector of individual ports.
@@ -224,6 +217,21 @@ impl PortSet {
         match protocol {
             Protocol::Tcp => &self.tcp,
             Protocol::Udp => &self.udp,
+            Protocol::Sctp => &self.sctp,
+        }
+    }
+
+    /// The lane a protocol's ranges are built into.
+    ///
+    /// The one exhaustive match over [`Protocol`] on the write side, so a
+    /// transport added to the enum stops this compiling until somebody says
+    /// where its ports go. A catch-all here, or a local vector nobody returns,
+    /// would drop them and produce a set quietly missing what it was given.
+    fn lane_mut(&mut self, protocol: Protocol) -> &mut Vec<RangeInclusive<u16>> {
+        match protocol {
+            Protocol::Tcp => &mut self.tcp,
+            Protocol::Udp => &mut self.udp,
+            Protocol::Sctp => &mut self.sctp,
         }
     }
 
@@ -240,29 +248,21 @@ impl PortSet {
     /// Merged as ranges rather than expanded, so uniting two full sweeps costs
     /// two entries and not a hundred and thirty thousand.
     pub fn union(&self, other: &PortSet) -> PortSet {
-        let mut tcp = self.tcp.clone();
-        tcp.extend(other.tcp.iter().cloned());
-        let mut udp = self.udp.clone();
-        udp.extend(other.udp.iter().cloned());
-
-        Self::merge_ranges(&mut tcp);
-        Self::merge_ranges(&mut udp);
-        Self { tcp, udp }
-    }
-
-    /// Whether the set holds `port` on `protocol`.
-    pub fn contains(&self, port: u16, protocol: Protocol) -> bool {
-        match protocol {
-            Protocol::Tcp => self.has_tcp(port),
-            Protocol::Udp => self.has_udp(port),
+        let mut merged = PortSet::new();
+        for protocol in Protocol::ALL {
+            let lane = merged.lane_mut(protocol);
+            lane.extend(self.ranges(protocol).iter().cloned());
+            lane.extend(other.ranges(protocol).iter().cloned());
+            Self::merge_ranges(lane);
         }
+        merged
     }
 
-    /// Whether `port` is in the TCP half of the set. A binary search over the
+    /// Whether the set holds `port` on `protocol`. A binary search over the
     /// merged ranges, so the cost follows how many ranges were written rather
     /// than how many ports they cover.
-    pub fn has_tcp(&self, port: u16) -> bool {
-        self.tcp
+    pub fn contains(&self, port: u16, protocol: Protocol) -> bool {
+        self.ranges(protocol)
             .binary_search_by(|range| {
                 if port < *range.start() {
                     std::cmp::Ordering::Greater
@@ -275,20 +275,19 @@ impl PortSet {
             .is_ok()
     }
 
-    /// Whether `port` is in the UDP half of the set. The counterpart of
-    /// [`has_tcp`](Self::has_tcp).
+    /// Whether `port` is in the TCP half of the set.
+    pub fn has_tcp(&self, port: u16) -> bool {
+        self.contains(port, Protocol::Tcp)
+    }
+
+    /// Whether `port` is in the UDP half of the set.
     pub fn has_udp(&self, port: u16) -> bool {
-        self.udp
-            .binary_search_by(|range| {
-                if port < *range.start() {
-                    std::cmp::Ordering::Greater
-                } else if port > *range.end() {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
-            .is_ok()
+        self.contains(port, Protocol::Udp)
+    }
+
+    /// Whether `port` is in the SCTP half of the set.
+    pub fn has_sctp(&self, port: u16) -> bool {
+        self.contains(port, Protocol::Sctp)
     }
 
     // ─── Internal Utility ────────────────────────────────────────────────────
@@ -340,48 +339,62 @@ impl Default for PortSet {
 
 /// The set as a specification [`TryFrom<&str>`](PortSet::try_from) reads back.
 ///
-/// The canonical form: TCP ranges first and UDP after them, each ascending, a
-/// single port written as itself and a run written `start-end`. Because the
-/// ranges are merged from construction, two sets holding the same ports render
-/// identically, which is what lets a written scope be compared with another and
-/// what lets a report record a port set as one field.
+/// The canonical form: the protocols in [`Protocol::ALL`] order, each one's
+/// ranges ascending behind its own prefix, a single port written as itself and a
+/// run written `start-end`. Because the ranges are merged from construction, two
+/// sets holding the same ports render identically, which is what lets a written
+/// scope be compared with another and what lets a report record a port set as
+/// one field.
 ///
 /// An empty set renders as the empty string, and reads back as an empty set.
 ///
 /// ```
 /// use zond_engine::model::port::set::PortSet;
 ///
-/// let set = PortSet::try_from("443, 80, 1000-1005, u:53").unwrap();
-/// assert_eq!(set.to_string(), "80,443,1000-1005,u:53");
+/// let set = PortSet::try_from("443, 80, 1000-1005, u:53, s:2905").unwrap();
+/// assert_eq!(set.to_string(), "80,443,1000-1005,u:53,s:2905");
 /// assert_eq!(PortSet::try_from(set.to_string().as_str()).unwrap(), set);
 /// ```
 impl fmt::Display for PortSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
-        let mut write_range =
-            |f: &mut fmt::Formatter<'_>, range: &RangeInclusive<u16>, udp: bool| -> fmt::Result {
+        for protocol in Protocol::ALL {
+            for range in self.ranges(protocol) {
                 if !first {
                     f.write_str(",")?;
                 }
                 first = false;
-                if udp {
-                    f.write_str("u:")?;
-                }
+                f.write_str(protocol.spec_prefix())?;
                 if range.start() == range.end() {
-                    write!(f, "{}", range.start())
+                    write!(f, "{}", range.start())?;
                 } else {
-                    write!(f, "{}-{}", range.start(), range.end())
+                    write!(f, "{}-{}", range.start(), range.end())?;
                 }
-            };
-
-        for range in &self.tcp {
-            write_range(f, range, false)?;
-        }
-        for range in &self.udp {
-            write_range(f, range, true)?;
+            }
         }
         Ok(())
     }
+}
+
+/// Splits a written token into the protocol its prefix names and the range left
+/// behind, which is the token itself where no prefix is there to strip.
+///
+/// Case-insensitive, as every other parser here reads the words a person types.
+/// `U:53` was refused with "Failed to parse port from 'U:53'", which reads as a
+/// complaint about the number.
+fn split_prefix(part: &str) -> (Protocol, &str) {
+    for protocol in Protocol::ALL {
+        let prefix = protocol.spec_prefix();
+        if prefix.is_empty() {
+            continue;
+        }
+        if let Some(head) = part.get(..prefix.len())
+            && head.eq_ignore_ascii_case(prefix)
+        {
+            return (protocol, &part[prefix.len()..]);
+        }
+    }
+    (Protocol::Tcp, part)
 }
 
 impl TryFrom<&str> for PortSet {
@@ -398,18 +411,20 @@ impl TryFrom<&str> for PortSet {
     ///   more use than a flag for the same thing would be, since it applies to
     ///   the UDP half (`u:-`) and to one side of a mixed specification just as
     ///   readily.
-    /// * **Protocols**: Defaults to TCP. Use `u:` prefix for UDP (e.g., `u:53`).
-    /// * **Mixed**: `80, 443, u:53, 161-162`
+    /// * **Protocols**: Defaults to TCP. `u:` prefixes a UDP port and `s:` an
+    ///   SCTP one, as [`Protocol::spec_prefix`] spells them.
+    /// * **Mixed**: `80, 443, u:53, s:2905, 161-162`
     ///
     /// # Examples
     ///
     /// ```
     /// use zond_engine::model::port::set::PortSet;
     ///
-    /// let set = PortSet::try_from("80, u:53, 1000-1005").unwrap();
+    /// let set = PortSet::try_from("80, u:53, s:2905, 1000-1005").unwrap();
     /// assert!(set.has_tcp(80));
     /// assert!(set.has_udp(53));
-    /// assert_eq!(set.len(), 8); // 1 + 1 + 6
+    /// assert!(set.has_sctp(2905));
+    /// assert_eq!(set.len(), 9); // 1 + 1 + 1 + 6
     ///
     /// // Every port there is, which is what `-p-` means on a command line.
     /// let everything = PortSet::try_from("-").unwrap();
@@ -417,19 +432,11 @@ impl TryFrom<&str> for PortSet {
     /// assert!(everything.has_tcp(1) && everything.has_tcp(65_535));
     /// ```
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let mut tcp = Vec::new();
-        let mut udp = Vec::new();
+        let mut set = PortSet::new();
 
         for part in value.split([',', ' ']).filter(|s| !s.trim().is_empty()) {
             let part = part.trim();
-
-            // Case-insensitively, as every other parser in the module reads the
-            // words a person types. `U:53` was refused with "Failed to parse
-            // port from 'U:53'", which reads as a complaint about the number.
-            let (is_udp, raw_range) = match part.get(..2) {
-                Some(prefix) if prefix.eq_ignore_ascii_case("u:") => (true, &part[2..]),
-                _ => (false, part),
-            };
+            let (protocol, raw_range) = split_prefix(part);
 
             let parts: Vec<&str> = raw_range.split('-').collect();
 
@@ -480,17 +487,14 @@ impl TryFrom<&str> for PortSet {
                 _ => return Err(PortSetParseError::MalformedSpec(part.to_string())),
             };
 
-            if is_udp {
-                udp.push(range);
-            } else {
-                tcp.push(range);
-            }
+            set.lane_mut(protocol).push(range);
         }
 
-        Self::merge_ranges(&mut tcp);
-        Self::merge_ranges(&mut udp);
+        for protocol in Protocol::ALL {
+            Self::merge_ranges(set.lane_mut(protocol));
+        }
 
-        Ok(Self { tcp, udp })
+        Ok(set)
     }
 }
 
@@ -510,22 +514,14 @@ impl FromStr for PortSet {
 
 impl FromIterator<(u16, Protocol)> for PortSet {
     fn from_iter<T: IntoIterator<Item = (u16, Protocol)>>(iter: T) -> Self {
-        let mut tcp = Vec::new();
-        let mut udp = Vec::new();
-        for (port, proto) in iter {
-            // Every arm pushes into a field this struct stores. That is the
-            // whole guarantee: a protocol added to `Protocol` stops this
-            // compiling until somebody decides where its ports go, where a
-            // catch-all - or a local vector nobody returns - would drop them
-            // silently and produce a `PortSet` quietly missing what it was given.
-            match proto {
-                Protocol::Tcp => tcp.push(port..=port),
-                Protocol::Udp => udp.push(port..=port),
-            }
+        let mut set = PortSet::new();
+        for (port, protocol) in iter {
+            set.lane_mut(protocol).push(port..=port);
         }
-        Self::merge_ranges(&mut tcp);
-        Self::merge_ranges(&mut udp);
-        Self { tcp, udp }
+        for protocol in Protocol::ALL {
+            Self::merge_ranges(set.lane_mut(protocol));
+        }
+        set
     }
 }
 
@@ -541,6 +537,21 @@ impl FromIterator<(u16, Protocol)> for PortSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Three transports in one specification, each behind its own prefix, and
+    /// the rendering reads back as what was written.
+    #[test]
+    fn a_specification_keeps_its_three_transports_apart() {
+        let set = PortSet::try_from("80, u:53, S:2905-2906").expect("a mixed specification");
+
+        assert!(set.has_tcp(80) && !set.has_sctp(80));
+        assert!(set.has_udp(53) && !set.has_sctp(53));
+        assert!(set.has_sctp(2905) && set.has_sctp(2906) && !set.has_udp(2905));
+        assert_eq!(set.len_on(Protocol::Sctp), 2);
+
+        assert_eq!(set.to_string(), "80,u:53,s:2905-2906");
+        assert_eq!(PortSet::try_from(set.to_string().as_str()).unwrap(), set);
+    }
 
     /// The UDP prefix is read the way every other word a person types is.
     ///

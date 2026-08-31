@@ -119,6 +119,8 @@ pub enum Layer4 {
     Tcp,
     /// UDP probes, answered with a datagram or an ICMP error.
     Udp,
+    /// SCTP INIT probes, answered with an INIT-ACK, an ABORT or an ICMP error.
+    Sctp,
 }
 
 /// How a virtual host's TCP implementation behaves, where implementations
@@ -661,6 +663,24 @@ impl FakeLink {
                     bytes,
                 })
             }
+            // Read off the RFC 4960 layout by offset rather than through this
+            // crate's own parser, for the reason the whole file is written this
+            // way: a simulator that reads a probe the way the engine wrote it
+            // agrees with the engine even when both are wrong. The common header
+            // is twelve bytes, a chunk header four, and the Initiate Tag is the
+            // first field of an INIT chunk's value (§3.3.2).
+            Layer4::Sctp => {
+                let ports: &[u8; 4] = segment.first_chunk()?;
+                let tag: &[u8; 4] = segment.get(16..20)?.try_into().ok()?;
+                Some(ParsedProbe {
+                    port: u16::from_be_bytes([ports[2], ports[3]]),
+                    reply_port: u16::from_be_bytes([ports[0], ports[1]]),
+                    seq: u32::from_be_bytes(*tag),
+                    ack: 0,
+                    flags: 0,
+                    bytes,
+                })
+            }
         }
     }
 
@@ -738,9 +758,10 @@ impl FakeLink {
     ) -> Vec<CapturedSegment> {
         let segment = match (self.layer4, reply) {
             (_, Reply::Silent) => None,
-            // UDP has no connection to be established on, so there is no
-            // equivalent segment to send and the probe simply goes unanswered.
-            (Layer4::Udp, Reply::Established) => None,
+            // Neither UDP nor an INIT scan has a connection to be established
+            // on, so there is no equivalent segment to send and the probe simply
+            // goes unanswered.
+            (Layer4::Udp | Layer4::Sctp, Reply::Established) => None,
 
             (Layer4::Tcp, Reply::Open) => self.tcp_answer(probe, scanner, target, true),
             (Layer4::Tcp, Reply::Closed) => self.tcp_answer(probe, scanner, target, false),
@@ -773,12 +794,19 @@ impl FakeLink {
                 self.icmp_reply(probe, scanner, target, reason)
             }
 
+            (Layer4::Sctp, Reply::Open) => self.sctp_answer(probe, target, true),
+            (Layer4::Sctp, Reply::Closed) => self.sctp_answer(probe, target, false),
+            (Layer4::Sctp, Reply::Unreachable(reason)) => {
+                self.icmp_reply(probe, scanner, target, reason)
+            }
+
             (layer4, Reply::Truncated) => {
                 // Truncate whatever this protocol's open reply would have been,
                 // so the bytes are a plausible prefix rather than noise.
                 let full = match layer4 {
                     Layer4::Tcp => self.tcp_answer(probe, scanner, target, true),
                     Layer4::Udp => self.udp_reply(probe, scanner, target),
+                    Layer4::Sctp => self.sctp_answer(probe, target, true),
                 };
                 full.map(|mut s| {
                     s.bytes.truncate(TRUNCATED_LEN);
@@ -1034,6 +1062,52 @@ impl FakeLink {
         ))
     }
 
+    /// What this net's SCTP stack answers an INIT with: an INIT-ACK where the
+    /// port is `listening` (RFC 4960 §5.1), an ABORT where it is not (§8.4).
+    ///
+    /// Both carry the probe's Initiate Tag as their verification tag, which
+    /// §3.3.2 obliges a peer to echo and which is the only thing tying the
+    /// answer to the probe. Written out here rather than built through
+    /// [`sctp`](zond_engine::protocols::sctp), so a scanner reading the tag out
+    /// of the wrong field fails instead of agreeing with itself.
+    fn sctp_answer(
+        &self,
+        probe: &ParsedProbe,
+        target: IpAddr,
+        listening: bool,
+    ) -> Option<CapturedSegment> {
+        let mut bytes = Vec::with_capacity(32);
+        bytes.extend_from_slice(&probe.port.to_be_bytes());
+        bytes.extend_from_slice(&probe.reply_port.to_be_bytes());
+        bytes.extend_from_slice(&probe.seq.to_be_bytes());
+        // The CRC32c. Left zero because nothing in the receive path verifies it:
+        // a reply is this scan's because of the tag above.
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+
+        if listening {
+            // An INIT-ACK's fixed fields, in the order §3.3.2 gives them: the
+            // responder's own tag, its receive window, its stream counts and its
+            // initial TSN. Twenty bytes with the chunk header.
+            bytes.extend_from_slice(&[2, 0]);
+            bytes.extend_from_slice(&20u16.to_be_bytes());
+            bytes.extend_from_slice(&self.next_u32().to_be_bytes());
+            bytes.extend_from_slice(&65_535u32.to_be_bytes());
+            bytes.extend_from_slice(&10u16.to_be_bytes());
+            bytes.extend_from_slice(&10u16.to_be_bytes());
+            bytes.extend_from_slice(&self.next_u32().to_be_bytes());
+        } else {
+            // An ABORT with no error causes, which §3.3.7 permits: four bytes.
+            bytes.extend_from_slice(&[6, 0]);
+            bytes.extend_from_slice(&4u16.to_be_bytes());
+        }
+
+        Some(CapturedSegment::synthetic(
+            target,
+            IpNextHeaderProtocols::Sctp,
+            bytes,
+        ))
+    }
+
     /// An ICMP Destination Unreachable quoting the probe.
     ///
     /// The quotation is the probe's own bytes under a freshly built IP header,
@@ -1128,6 +1202,7 @@ fn quote(scanner: IpAddr, target: IpAddr, probe: &[u8], layer4: Layer4) -> Optio
     let protocol = match layer4 {
         Layer4::Tcp => IpNextHeaderProtocols::Tcp,
         Layer4::Udp => IpNextHeaderProtocols::Udp,
+        Layer4::Sctp => IpNextHeaderProtocols::Sctp,
     };
     let header = match (scanner, target) {
         (IpAddr::V4(s), IpAddr::V4(d)) => {

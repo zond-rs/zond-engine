@@ -59,6 +59,12 @@ pub enum ScanResponse {
     TcpRst,
     /// Received a valid protocol response to a UDP payload.
     UdpResponse,
+    /// Received an SCTP INIT-ACK: an endpoint willing to open an association,
+    /// which is the SCTP analogue of [`TcpSynAck`](Self::TcpSynAck).
+    SctpInitAck,
+    /// Received an SCTP ABORT: a reachable stack refusing the association
+    /// because nothing is listening, the analogue of [`TcpRst`](Self::TcpRst).
+    SctpAbort,
     /// No response received within the timeout window.
     NoResponse,
     /// Received an ICMP Destination Unreachable.

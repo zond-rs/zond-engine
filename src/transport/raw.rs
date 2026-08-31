@@ -23,7 +23,8 @@
 //! needs both, since targets can be either, so [`open_sender`] opens one
 //! socket per address family for [`TransportType::TcpLayer4`].
 //! [`TransportType::UdpLayer4`] stays IPv4-only, since nothing in this crate
-//! currently needs UDP over IPv6. [`TransportType::IcmpLayer4`] opens both, and
+//! currently needs UDP over IPv6. [`TransportType::SctpLayer4`] and
+//! [`TransportType::IcmpLayer4`] open both, and the ICMP one is
 //! is the only way this crate can put an ICMP message on the wire for a host it
 //! cannot reach at the link layer — the echo builders in
 //! [`crate::protocols::icmp`] emit whole Ethernet frames and therefore need a
@@ -48,6 +49,10 @@ const CHANNEL_TYPE_ICMP_V4: TransportChannelType =
     TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Icmp));
 const CHANNEL_TYPE_ICMP_V6: TransportChannelType =
     TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Icmpv6));
+const CHANNEL_TYPE_SCTP_V4: TransportChannelType =
+    TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Sctp));
+const CHANNEL_TYPE_SCTP_V6: TransportChannelType =
+    TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Sctp));
 
 /// Which transport-layer protocol, and address family coverage, to open a capture for.
 #[non_exhaustive]
@@ -72,6 +77,18 @@ pub enum TransportType {
     ///
     /// [`protocols::icmp`]: crate::protocols::icmp
     IcmpLayer4,
+    /// Raw SCTP packets, over both IPv4 and IPv6 where available.
+    ///
+    /// The socket carries the packet and nothing more: an SCTP checksum is a
+    /// CRC32c over the packet alone, so unlike TCP and UDP there is no
+    /// pseudo-header for the kernel or the builder to agree about, and the same
+    /// bytes go out over either family.
+    ///
+    /// Opening it needs no SCTP stack in the kernel, only the privilege every
+    /// raw socket needs. A host that cannot itself hold an association can still
+    /// send an INIT and read what comes back, which is the whole of what a scan
+    /// does with one.
+    SctpLayer4,
 }
 
 /// Routes an outgoing packet to whichever underlying raw socket matches its
@@ -245,6 +262,19 @@ pub fn open_sender(transport_type: TransportType) -> Result<TransportSenderHandl
             Ok(TransportSenderHandle {
                 v4: Some(Socket::new(v4_tx)),
                 v6: None,
+            })
+        }
+        TransportType::SctpLayer4 => {
+            let (v4_tx, _v4_rx) = open_channel(CHANNEL_TYPE_SCTP_V4)?;
+            // As for TCP: a host without IPv6 raw sockets still scans SCTP over
+            // IPv4, so a failure here narrows the transport rather than ending
+            // it.
+            let v6 = open_channel(CHANNEL_TYPE_SCTP_V6)
+                .ok()
+                .map(|(v6_tx, _v6_rx)| Socket::new(v6_tx));
+            Ok(TransportSenderHandle {
+                v4: Some(Socket::new(v4_tx)),
+                v6,
             })
         }
         TransportType::IcmpLayer4 => {

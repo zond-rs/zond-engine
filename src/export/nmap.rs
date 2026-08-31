@@ -249,7 +249,7 @@ fn write_scan_info(out: &mut dyn Write, phase: &ScanPhase) -> Result<(), ExportE
         return Ok(());
     };
 
-    for protocol in [Protocol::Tcp, Protocol::Udp] {
+    for protocol in Protocol::ALL {
         let ranges = ports.ranges(protocol);
         if ranges.is_empty() {
             continue;
@@ -282,12 +282,17 @@ fn write_scan_info(out: &mut dyn Write, phase: &ScanPhase) -> Result<(), ExportE
 
 /// The scan type in nmap's vocabulary.
 ///
-/// A UDP scan is `udp` whatever the TCP technique was, and an unprivileged phase
-/// is `connect` for the same reason nmap's is: no raw segment went out, so
-/// naming the technique would describe a probe that was never sent.
+/// A UDP scan is `udp` and an SCTP one `sctpinit` whatever the TCP technique
+/// was, and an unprivileged phase is `connect` for the same reason nmap's is: no
+/// raw segment went out, so naming the technique would describe a probe that was
+/// never sent.
 fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
-    if protocol == Protocol::Udp {
-        return "udp";
+    match protocol {
+        Protocol::Udp => return "udp",
+        // Nmap's own name for an INIT scan, which is the only SCTP scan either
+        // engine performs.
+        Protocol::Sctp => return "sctpinit",
+        Protocol::Tcp => {}
     }
     // Only where the phase is known to have been unprivileged. A phase this
     // engine did not measure keeps whatever technique its own document named.
@@ -627,6 +632,7 @@ fn transport(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Tcp => "tcp",
         Protocol::Udp => "udp",
+        Protocol::Sctp => "sctp",
     }
 }
 

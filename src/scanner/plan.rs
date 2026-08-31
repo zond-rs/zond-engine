@@ -69,7 +69,7 @@ use crate::scanner::strategy::connect::{
 };
 use crate::scanner::strategy::local::{LocalScanner, Scope};
 use crate::scanner::strategy::routed::{
-    IdlePortScanner, RoutedScanner, TcpPortScanner, UdpPortScanner,
+    IdlePortScanner, RoutedScanner, SctpPortScanner, TcpPortScanner, UdpPortScanner,
 };
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::interface::Link;
@@ -116,6 +116,39 @@ impl RefusedStep {
                  not have, and a connect scan answers a different question - so no TCP \
                  port was probed"
             ),
+        }
+    }
+
+    /// SCTP ports were named by a scan with no raw sockets to probe them with.
+    ///
+    /// There is no unprivileged form of an INIT scan: the kernel offers no way
+    /// to send a chunk and read the answer without an SCTP stack and an
+    /// association, and an association is the one thing this scan avoids
+    /// completing. So the ports are refused rather than answered by something
+    /// that asked a different question.
+    pub fn sctp_needs_raw_sockets() -> Self {
+        Self {
+            scanner: ScannerKind::SctpPort,
+            reason: "the sctp ports named for this scan need raw sockets, which this process \
+                     does not have, and there is no unprivileged init probe - so no sctp port \
+                     was probed"
+                .to_string(),
+        }
+    }
+
+    /// SCTP ports were named for a scan running as an idle scan, which probes
+    /// through a third party and has no way to carry an INIT.
+    ///
+    /// The refusal is the point rather than a limitation. An INIT sent directly
+    /// would leave this host's own address on the target, which is the one thing
+    /// an idle scan exists to avoid.
+    pub fn sctp_not_in_an_idle_scan() -> Self {
+        Self {
+            scanner: ScannerKind::SctpPort,
+            reason: "an idle scan reads a third party's counter, which carries no sctp probe, \
+                     and sending one directly would put this host's address on the target - so \
+                     no sctp port was probed"
+                .to_string(),
         }
     }
 
@@ -404,6 +437,9 @@ pub enum PortScanStep {
     /// Raw UDP probes, classified from a direct reply or an ICMP unreachable.
     /// Needs raw sockets.
     RawUdp,
+    /// Raw SCTP INIT probes, classified from the chunk that answers. Needs raw
+    /// sockets, and has no unprivileged counterpart.
+    RawSctp,
     /// A full TCP connect per target. Needs no privileges, and answers roughly
     /// the question a SYN scan asks.
     ConnectTcp,
@@ -432,6 +468,7 @@ impl PortScanStep {
         match self {
             Self::RawTcp { technique } => ScannerKind::for_raw_tcp(*technique),
             Self::RawUdp => ScannerKind::UdpPort,
+            Self::RawSctp => ScannerKind::SctpPort,
             Self::ConnectTcp => ScannerKind::Connect,
             Self::ConnectUdp => ScannerKind::ConnectUdp,
             Self::Idle { .. } => ScannerKind::Idle,
@@ -443,6 +480,7 @@ impl PortScanStep {
         match self {
             Self::RawTcp { .. } | Self::ConnectTcp | Self::Idle { .. } => Protocol::Tcp,
             Self::RawUdp | Self::ConnectUdp => Protocol::Udp,
+            Self::RawSctp => Protocol::Sctp,
         }
     }
 
@@ -456,7 +494,7 @@ impl PortScanStep {
     /// the two answer different questions. Read off the name instead, this went
     /// wrong the moment a technique stopped being called `syn_port`.
     pub fn is_raw(&self) -> bool {
-        matches!(self, Self::RawTcp { .. } | Self::RawUdp)
+        matches!(self, Self::RawTcp { .. } | Self::RawUdp | Self::RawSctp)
     }
 
     /// Opens whatever this step needs and hands back the strategy to run.
@@ -478,6 +516,12 @@ impl PortScanStep {
                 tuning,
             )?)),
             Self::RawUdp => Ok(Box::new(UdpPortScanner::new(
+                interface::SourceResolver::from_system(),
+                ctx,
+                target_count,
+                tuning,
+            )?)),
+            Self::RawSctp => Ok(Box::new(SctpPortScanner::new(
                 interface::SourceResolver::from_system(),
                 ctx,
                 target_count,
@@ -619,6 +663,36 @@ impl PortScanPlan {
     /// Takes the steps out, leaving the plan empty.
     pub fn into_steps(self) -> Vec<PortScanStep> {
         self.steps
+    }
+
+    /// Adds the step that probes SCTP, or the refusal that says why it could
+    /// not be added.
+    ///
+    /// Apart from [`build`](Self::build) because what decides it is not in the
+    /// configuration. SCTP ports are named in a target's port specification,
+    /// which the plan is built before reading, and no default port list holds
+    /// one: a scan that never mentions SCTP opens no socket for it, where a step
+    /// added unconditionally would cost every privileged run a raw socket and a
+    /// capture for a transport nobody asked about.
+    ///
+    /// Called with the same `privilege` the plan was built for.
+    pub fn cover_sctp(&mut self, privilege: Privilege) {
+        if self
+            .steps
+            .iter()
+            .any(|step| matches!(step, PortScanStep::Idle { .. }))
+        {
+            self.refusals.push(RefusedStep::sctp_not_in_an_idle_scan());
+            return;
+        }
+
+        // The same two conditions raw scanning is planned under in `build`:
+        // the privilege, and an address to send from.
+        if privilege.is_raw() && interface::SourceResolver::from_system().has_sources() {
+            self.steps.push(PortScanStep::RawSctp);
+        } else {
+            self.refusals.push(RefusedStep::sctp_needs_raw_sockets());
+        }
     }
 
     /// Whether any step covers `protocol`.
@@ -771,6 +845,49 @@ mod tests {
             mac: None,
             interface_index: index,
         }
+    }
+
+    /// SCTP has no unprivileged form at all, so a scan that named SCTP ports
+    /// without raw sockets is told those ports went unprobed rather than being
+    /// handed a strategy that asked a different question.
+    #[test]
+    fn sctp_without_raw_sockets_is_refused_rather_than_substituted() {
+        let mut plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
+        plan.cover_sctp(Privilege::Connect);
+
+        assert!(!plan.covers(Protocol::Sctp));
+        assert!(
+            plan.refusals()
+                .iter()
+                .any(|refusal| refusal.scanner == ScannerKind::SctpPort),
+            "the sctp ports went unprobed and nothing in the report said so"
+        );
+    }
+
+    /// An idle scan reads a third party's counter and has no way to carry an
+    /// INIT. Sending one directly would leave this host's address on the target,
+    /// which is the one thing the technique exists to avoid, so the ports are
+    /// refused with that as the reason.
+    #[test]
+    fn an_idle_scan_refuses_sctp_rather_than_probing_it_directly() {
+        let cfg = ZondConfig {
+            idle_scan: Some(crate::config::IdleScan::new(v6("192.0.2.9"))),
+            ..ZondConfig::default()
+        };
+        let mut plan = PortScanPlan::build(&cfg, Privilege::Raw);
+        plan.cover_sctp(Privilege::Raw);
+
+        assert!(!plan.covers(Protocol::Sctp));
+        let refusal = plan
+            .refusals()
+            .iter()
+            .find(|refusal| refusal.scanner == ScannerKind::SctpPort)
+            .expect("the sctp ports are accounted for");
+        assert!(
+            refusal.reason.contains("idle"),
+            "the reason names something other than the idle scan: {}",
+            refusal.reason
+        );
     }
 
     /// The three entries that must never become targets, each wrong in its own

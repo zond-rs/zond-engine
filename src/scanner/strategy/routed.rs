@@ -24,6 +24,7 @@ mod os_echo;
 mod os_series;
 mod port_scan;
 mod probe_scan;
+mod sctp_scan;
 pub mod traceroute;
 mod udp_scan;
 
@@ -62,6 +63,7 @@ pub use idle::IdlePortScanner;
 pub use os_echo::OsEchoScanner;
 pub use os_series::{ACTIVE_SAMPLES, AGGRESSIVE_SAMPLES, OsSeriesScanner, SeriesTarget};
 pub use port_scan::TcpPortScanner;
+pub use sctp_scan::SctpPortScanner;
 pub use udp_scan::UdpPortScanner;
 
 // The machinery both raw port scanners are built from: the state, the loop

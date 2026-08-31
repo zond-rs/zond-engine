@@ -19,7 +19,8 @@
 //!
 //! This design allows the engine to handle targets across different protocols
 //! concurrently without modifying the `PortScanner` consumer interface, and
-//! makes it trivial to slot in support for new protocols (like SCTP) in the future.
+//! is what let SCTP arrive as one more scanner rather than as a branch at every
+//! call site.
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;

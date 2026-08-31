@@ -2052,6 +2052,13 @@ pub enum ScannerKind {
     ConnectUdp,
     /// Privileged raw UDP port scanning.
     UdpPort,
+    /// Privileged raw SCTP port scanning: an INIT chunk per port, classified by
+    /// the chunk that answers it.
+    ///
+    /// Named apart from the others because there is no unprivileged form of it
+    /// to fall back to and no service pass behind it, so a report saying this
+    /// step failed is saying the SCTP ports went unprobed entirely.
+    SctpPort,
     /// The active operating-system echo probe, sent at the hosts the passive
     /// sources could not name.
     ///
@@ -2127,7 +2134,7 @@ impl ScannerKind {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [ScannerKind; 13] = [
+    pub const ALL: [ScannerKind; 14] = [
         Self::Local,
         Self::Passive,
         Self::Routed,
@@ -2136,6 +2143,7 @@ impl ScannerKind {
         Self::Connect,
         Self::ConnectUdp,
         Self::UdpPort,
+        Self::SctpPort,
         Self::OsEcho,
         Self::OsSeries,
         Self::OsSnmp,

@@ -159,6 +159,9 @@ async fn fingerprint_one(
         // out, one back, and whatever text it carries. Silence leaves the port
         // exactly as the scan recorded it.
         Protocol::Udp => crate::fingerprint::fingerprint_udp_detailed(addr, port).await?,
+        // Nothing here speaks SCTP as a client, so an open SCTP port keeps the
+        // name the scan gave it rather than being dialled for a banner.
+        Protocol::Sctp => return None,
     };
 
     // The key, not the address: this is what the finding is written back

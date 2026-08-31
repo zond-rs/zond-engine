@@ -110,6 +110,7 @@ mod tests {
             StatusProtocol::Tcp => Some(5),
             StatusProtocol::Dhcp => Some(6),
             StatusProtocol::Udp => Some(7),
+            StatusProtocol::Sctp => Some(8),
             // Named by a strategy rather than by this enum, so there is no fixed
             // place for it and no list it belongs in.
             StatusProtocol::Custom(_) => None,

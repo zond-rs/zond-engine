@@ -232,6 +232,16 @@ impl TargetMap {
         self.units.push(unit);
     }
 
+    /// Whether any unit names a port on `protocol`.
+    ///
+    /// Read when a scan is assembled, to decide whether a transport nothing is
+    /// probed on by default is worth opening a socket for.
+    pub fn names(&self, protocol: Protocol) -> bool {
+        self.units
+            .iter()
+            .any(|unit| !unit.ports().ranges(protocol).is_empty())
+    }
+
     /// Returns the gross total of target connections across all units.
     ///
     /// Gross rather than net: two units naming the same address each count it,
@@ -289,6 +299,21 @@ mod tests {
 
     fn ports(written: &str) -> PortSet {
         written.parse().expect("a valid port specification")
+    }
+
+    /// What decides whether a scan opens a socket for SCTP, which nothing
+    /// probes unless a port specification asks for it.
+    #[test]
+    fn a_map_says_which_transports_its_units_name() {
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(ips("192.0.2.1"), ports("80, u:53")));
+
+        assert!(map.names(Protocol::Tcp));
+        assert!(map.names(Protocol::Udp));
+        assert!(!map.names(Protocol::Sctp));
+
+        map.add_unit(TargetSet::new(ips("192.0.2.2"), ports("s:2905")));
+        assert!(map.names(Protocol::Sctp));
     }
 
     /// The cross product's size, which is what a caller checks a scan budget

@@ -49,6 +49,7 @@ use std::io::BufRead;
 
 use crate::import::xml::{Element, Event, Parser};
 use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
+use crate::model::port::Protocol;
 
 /// The format's name in errors.
 const FORMAT: &str = "nmap XML";
@@ -138,7 +139,7 @@ impl Importer for NmapXmlImporter {
 struct Accumulator {
     addresses: Vec<String>,
     /// Port number and whether it is UDP, in the order the document listed them.
-    ports: Vec<(u16, bool)>,
+    ports: Vec<(u16, Protocol)>,
 }
 
 impl Accumulator {
@@ -169,21 +170,17 @@ impl Accumulator {
             .parse()
             .map_err(|_| parser.malformed(format!("'{number}' is not a port number")))?;
 
-        let protocol = element.value(b"protocol").unwrap_or("tcp");
-        let udp = match protocol {
-            "tcp" => false,
-            "udp" => true,
-            // A transport this build cannot name is a port it cannot probe
-            // correctly, and reading it as TCP would scan something else and
-            // call that a success.
-            other => {
-                return Err(parser.malformed(format!(
-                    "port {number} names transport '{other}', which this build cannot probe"
-                )));
-            }
+        let name = element.value(b"protocol").unwrap_or("tcp");
+        // A transport this build cannot name is a port it cannot probe
+        // correctly, and reading it as TCP would scan something else and call
+        // that a success.
+        let Some(protocol) = crate::record::wire::protocol(name) else {
+            return Err(parser.malformed(format!(
+                "port {number} names transport '{name}', which this build cannot probe"
+            )));
         };
 
-        self.ports.push((number, udp));
+        self.ports.push((number, protocol));
         Ok(())
     }
 }
@@ -200,13 +197,11 @@ fn emit(
     };
 
     let mut ports = String::new();
-    for (number, udp) in &host.ports {
+    for (number, protocol) in &host.ports {
         if !ports.is_empty() {
             ports.push(',');
         }
-        if *udp {
-            ports.push_str("u:");
-        }
+        ports.push_str(protocol.spec_prefix());
         ports.push_str(&number.to_string());
     }
 
@@ -443,12 +438,12 @@ mod tests {
     fn an_unknown_transport_is_refused() {
         let document = concat!(
             r#"<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/>"#,
-            r#"<ports><port protocol="sctp" portid="9"><state state="open"/></port></ports>"#,
+            r#"<ports><port protocol="dccp" portid="9"><state state="open"/></port></ports>"#,
             r#"</host></nmaprun>"#,
         );
 
         let message = read(document).expect_err("refused").to_string();
-        assert!(message.contains("sctp"), "{message}");
+        assert!(message.contains("dccp"), "{message}");
     }
 
     #[test]

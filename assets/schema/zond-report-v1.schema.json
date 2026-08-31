@@ -272,6 +272,8 @@
                 "overheard_syn_ack",
                 "tcp_rst",
                 "udp_response",
+                "sctp_init_ack",
+                "sctp_abort",
                 "no_response",
                 "icmp_unreachable",
                 "icmp_prohibited"
@@ -1112,7 +1114,8 @@
     "protocol": {
       "enum": [
         "tcp",
-        "udp"
+        "udp",
+        "sctp"
       ]
     },
     "range": {
@@ -1162,7 +1165,8 @@
                 "tcp_syn",
                 "tcp",
                 "dhcp",
-                "udp"
+                "udp",
+                "sctp"
               ]
             },
             {
@@ -1237,6 +1241,7 @@
         "connect",
         "connect_udp",
         "udp_port",
+        "sctp_port",
         "os_echo",
         "os_series",
         "os_snmp",

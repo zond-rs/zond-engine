@@ -178,6 +178,16 @@ pub enum ProbeKind {
         /// matched in userspace and this field is what a caller matches against.
         identifier: u16,
     },
+    /// SCTP INIT probes and the chunks they draw, over both address families.
+    SctpInit {
+        /// The port every probe in the scan leaves from, and so the port its
+        /// answers come back to.
+        ///
+        /// One fixed port for the same reason [`UdpProbe`](Self::UdpProbe) uses
+        /// one: it is what the kernel filter narrows on, and it is what the
+        /// packet quoted inside an ICMP error is checked against.
+        reply_port: u16,
+    },
     /// UDP port probes and their ICMP unreachable / direct UDP replies.
     UdpProbe {
         /// The source port every probe in the scan is sent from, and so the
@@ -195,6 +205,7 @@ impl ProbeKind {
         match self {
             ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => TransportType::TcpLayer4,
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => TransportType::UdpLayer4,
+            ProbeKind::SctpInit { .. } => TransportType::SctpLayer4,
             ProbeKind::IcmpEcho { .. } => TransportType::IcmpLayer4,
         }
     }
@@ -215,6 +226,7 @@ impl ProbeKind {
             ProbeKind::UdpResolve | ProbeKind::UdpProbe { .. } => {
                 IpProtocols::same(IpNextHeaderProtocols::Udp)
             }
+            ProbeKind::SctpInit { .. } => IpProtocols::same(IpNextHeaderProtocols::Sctp),
             // The one kind whose two families are different protocols rather
             // than one protocol over two address sizes.
             ProbeKind::IcmpEcho { .. } => IpProtocols {
@@ -285,6 +297,14 @@ impl ProbeKind {
             // narrowed here and is matched in userspace instead.
             ProbeKind::UdpProbe { reply_port } => {
                 format!("icmp or icmp6 or (udp and dst port {reply_port})")
+            }
+            // The same shape as the UDP filter, and for the same reasons: every
+            // answer an INIT can draw comes back to the one port the scan sends
+            // from, and an ICMP error carries no ports of its own, so the error
+            // half is admitted whole and matched against the quoted probe in
+            // userspace.
+            ProbeKind::SctpInit { reply_port } => {
+                format!("icmp or icmp6 or (sctp and dst port {reply_port})")
             }
             // Unnarrowed, and it has to be. The identifier that separates this
             // scan's replies from every other ping on the host sits four bytes
@@ -1026,6 +1046,13 @@ mod filter_conformance {
         frame(src, dst, IpNextHeaderProtocols::Udp, &segment)
     }
 
+    /// An Ethernet-framed SCTP packet between the given ports, carrying the
+    /// chunk a probe draws back.
+    fn sctp_frame(src: IpAddr, dst: IpAddr, src_port: u16, dst_port: u16) -> Vec<u8> {
+        let packet = crate::protocols::sctp::build_init_probe(src_port, dst_port, 0xDEAD_BEEF);
+        frame(src, dst, IpNextHeaderProtocols::Sctp, &packet)
+    }
+
     /// An Ethernet-framed ICMPv6 destination-unreachable, the shape a UDP probe
     /// draws from a closed port over IPv6.
     fn icmpv6_error_frame(src: IpAddr, dst: IpAddr) -> Vec<u8> {
@@ -1311,6 +1338,35 @@ mod filter_conformance {
         assert!(
             !admits(&filter, &udp_frame(SRC_V6, DST_V6, 53, REPLY_PORT + 1)),
             "a datagram to a port this scan never sent from is somebody else's"
+        );
+    }
+
+    /// The SCTP filter, held to the same three claims the UDP one is: both
+    /// families admitted, ICMP errors admitted whole, and somebody else's
+    /// association kept out.
+    ///
+    /// `sctp` is a protocol keyword libpcap has to know for this to compile at
+    /// all, and a filter that fails to compile is a scanner that reads nothing.
+    #[test]
+    fn the_sctp_filter_admits_answers_to_the_scan_over_both_families() {
+        const REPLY_PORT: u16 = 40_000;
+        let filter = ProbeKind::SctpInit {
+            reply_port: REPLY_PORT,
+        }
+        .filter();
+
+        assert!(admits(
+            &filter,
+            &sctp_frame(SRC_V4, DST_V4, 2905, REPLY_PORT)
+        ));
+        assert!(admits(
+            &filter,
+            &sctp_frame(SRC_V6, DST_V6, 2905, REPLY_PORT)
+        ));
+        assert!(admits(&filter, &icmpv6_error_frame(SRC_V6, DST_V6)));
+        assert!(
+            !admits(&filter, &sctp_frame(SRC_V4, DST_V4, 2905, REPLY_PORT + 1)),
+            "a packet to a port this scan never sent from belongs to somebody else"
         );
     }
 }

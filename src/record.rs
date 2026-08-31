@@ -1764,6 +1764,14 @@ pub struct CaptureRecord {
     pub dropped: u64,
     /// How many the interface dropped before it.
     pub if_dropped: u64,
+    /// How many captures ended before they were told to.
+    ///
+    /// Defaulted on read, so a journal written before this was recorded opens
+    /// and reports none — which is what it knew. A scan whose receive path was
+    /// intact writes zero, and the two are indistinguishable in an old journal
+    /// for the same reason every other field added to this record is.
+    #[serde(default)]
+    pub stopped_early: u64,
 }
 
 impl From<CaptureCounts> for CaptureRecord {
@@ -1772,6 +1780,7 @@ impl From<CaptureCounts> for CaptureRecord {
             received: counts.received,
             dropped: counts.dropped,
             if_dropped: counts.if_dropped,
+            stopped_early: counts.stopped_early,
         }
     }
 }
@@ -1782,6 +1791,7 @@ impl From<&CaptureRecord> for CaptureCounts {
             received: record.received,
             dropped: record.dropped,
             if_dropped: record.if_dropped,
+            stopped_early: record.stopped_early,
         }
     }
 }
@@ -2244,7 +2254,7 @@ mod tests {
         let mut record = HostRecord::from(&maximal_host());
         record.status = "ascended".to_string();
         record.ports[0].state = "ajar".to_string();
-        record.ports[0].protocol = "sctp".to_string();
+        record.ports[0].protocol = "dccp".to_string();
 
         let rebuilt = Host::from(&record);
 
@@ -2323,6 +2333,39 @@ mod tests {
             };
             assert_eq!(render(phase), render(&rebuilt), "a field was lost");
         }
+    }
+
+    /// A capture that stopped early survives the journal, and an older journal
+    /// that never recorded one still opens.
+    ///
+    /// The count existed only as a log line until this crossed the wire. A log
+    /// line is not the record: a resumed scan, or a report read a week later,
+    /// had no way to know part of the receive path was missing for part of the
+    /// run, and the counts beside it looked like a complete measurement.
+    #[test]
+    fn a_capture_that_stopped_early_survives_the_journal() {
+        let counts = CaptureCounts {
+            received: 271,
+            dropped: 4,
+            if_dropped: 1,
+            stopped_early: 2,
+        };
+
+        let record = CaptureRecord::from(counts);
+        assert_eq!(CaptureCounts::from(&record), counts, "a field was lost");
+
+        // Through the serialized form the journal actually holds.
+        let json = serde_json::to_string(&record).expect("a record serializes");
+        assert!(json.contains("stopped_early"), "{json}");
+        let read: CaptureRecord = serde_json::from_str(&json).expect("and reads back");
+        assert_eq!(CaptureCounts::from(&read), counts);
+
+        // A journal written before this was recorded opens and reports none,
+        // which is what it knew.
+        let older = r#"{"received":271,"dropped":4,"if_dropped":1}"#;
+        let read: CaptureRecord = serde_json::from_str(older).expect("an older journal opens");
+        assert_eq!(CaptureCounts::from(&read).stopped_early, 0);
+        assert_eq!(CaptureCounts::from(&read).received, 271);
     }
 
     /// Privilege is a `Privilege` in the model and a boolean on the wire, and

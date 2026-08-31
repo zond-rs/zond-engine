@@ -378,6 +378,9 @@ impl Probe for SocketProbe {
         let reply = match self.protocol {
             Protocol::Tcp => tcp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
             Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
+            // An SCTP port is scanned without a client stack, so there is
+            // nothing here for a detection to hold a conversation over.
+            Protocol::Sctp => None,
         }?;
         self.bytes_left -= reply.len() as u64;
         Some(reply)

@@ -90,6 +90,11 @@ impl Capabilities for LiveCapabilities {
         let reply = match self.protocol {
             Protocol::Tcp => tcp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
             Protocol::Udp => udp_exchange(self.addr, bytes, self.deadline, self.bytes_left),
+            Protocol::Sctp => Err(CapError::Denied(
+                "a detection cannot speak to an SCTP port: the engine scans SCTP without a client \
+                 stack to hold an association open"
+                    .to_string(),
+            )),
         }?;
         self.bytes_left -= reply.len() as u64;
         Ok(reply)

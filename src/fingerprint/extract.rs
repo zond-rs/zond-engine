@@ -82,6 +82,9 @@ pub(crate) fn reads(port: u16, protocol: Protocol) -> bool {
     match protocol {
         Protocol::Tcp => true,
         Protocol::Udp => DECODED_UDP_PORTS.contains(&port),
+        // An INIT scan learns that a port answers and nothing about what is
+        // behind it, and there is no client here to ask it a second time.
+        Protocol::Sctp => false,
     }
 }
 

@@ -197,24 +197,22 @@ impl<'a> Emitter<'a> {
     fn emit(&mut self, host: &HostRecord, format: &'static str, origin: ImportOrigin) -> bool {
         self.ports.clear();
         for port in &host.ports {
-            let prefix = match port.protocol.to_ascii_lowercase().as_str() {
-                "tcp" => "",
-                "udp" => "u:",
-                // A transport this build cannot name is a port it cannot probe
-                // correctly, and reading it as TCP would scan
-                // something else and call it a success.
-                other => {
-                    self.failure = Some(ImportError::Malformed {
-                        format,
-                        origin,
-                        message: format!(
-                            "'{}' names transport '{other}', which this build cannot probe",
-                            host.primary_ip
-                        ),
-                    });
-                    return false;
-                }
+            let name = port.protocol.to_ascii_lowercase();
+            // A transport this build cannot name is a port it cannot probe
+            // correctly, and reading it as TCP would scan something else and
+            // call it a success.
+            let Some(protocol) = crate::record::wire::protocol(&name) else {
+                self.failure = Some(ImportError::Malformed {
+                    format,
+                    origin,
+                    message: format!(
+                        "'{}' names transport '{name}', which this build cannot probe",
+                        host.primary_ip
+                    ),
+                });
+                return false;
             };
+            let prefix = protocol.spec_prefix();
             if !self.ports.is_empty() {
                 self.ports.push(',');
             }
@@ -632,19 +630,29 @@ mod tests {
         assert!(imported.map.units[0].ports().has_tcp(22));
     }
 
+    /// A transport this build does scan reads back as itself, prefix and all.
+    #[test]
+    fn an_sctp_port_reads_back_as_an_sctp_port() {
+        let file = document(r#"{"primary_ip":"10.0.0.1","ports":[{"port":9,"protocol":"sctp"}]}"#);
+
+        let imported = read(ImportFormat::Json, &file).expect("imports");
+        let ports = imported.map.units[0].ports();
+        assert!(ports.has_sctp(9) && !ports.has_tcp(9));
+    }
+
     /// The opposite rule, and the reason for it: an unrecognised transport is
     /// not a field to skip, it is a value that says what the record means.
     /// Reading it as TCP would probe something else and report success.
     #[test]
     fn an_unknown_transport_is_refused_rather_than_assumed() {
-        let file = document(r#"{"primary_ip":"10.0.0.1","ports":[{"port":9,"protocol":"sctp"}]}"#);
+        let file = document(r#"{"primary_ip":"10.0.0.1","ports":[{"port":9,"protocol":"dccp"}]}"#);
 
-        let err = read(ImportFormat::Json, &file).expect_err("sctp cannot be probed");
+        let err = read(ImportFormat::Json, &file).expect_err("dccp cannot be probed");
 
         match err {
             ImportError::Malformed { message, .. } => {
                 assert!(
-                    message.contains("sctp"),
+                    message.contains("dccp"),
                     "the error has to name it: {message}"
                 );
             }

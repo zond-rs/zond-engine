@@ -18,16 +18,17 @@
 //! An INIT scan puts an INIT chunk to a port and reads the chunk that answers.
 //! Two answers are decisive, and RFC 4960 fixes both:
 //!
-//! - **INIT-ACK** (§5.1): an endpoint willing to open an association. The port
-//!   is open.
-//! - **ABORT** (§8.4): a reachable stack with nothing listening on that port,
+//! - INIT-ACK (§5.1): an endpoint willing to open an association. The port is
+//!   open.
+//! - ABORT (§8.4): a reachable stack with nothing listening on that port,
 //!   refusing the association outright. The port is closed.
 //!
-//! Silence is neither, and means open-or-filtered exactly as it does for a UDP
-//! port: an INIT chunk is the only thing that draws an answer, so a dropped
-//! probe and a dropped reply look the same. Which verdict silence earns, and how
-//! an ICMP unreachable is read, is the scanner's decision; see
-//! [`classify_probe_response`] for where this module stops.
+//! Silence is neither, and it is the weakest of the three. An endpoint that is
+//! up answers an INIT whichever way its port stands, so a probe that drew
+//! nothing was stopped on the way out or on the way back rather than ignored by
+//! a listener. What verdict that earns, and how an ICMP unreachable is read, is
+//! the scanner's decision; see [`classify_probe_response`] for where this module
+//! stops, and [`sctp_scan`](crate::scanner::strategy::routed) for what reads it.
 //!
 //! ## The nonce is the Initiate Tag
 //!
@@ -47,10 +48,10 @@
 //! ## The checksum is a CRC32c, over the packet alone
 //!
 //! SCTP does not use the internet checksum. It carries a CRC32c (RFC 3309, RFC
-//! 4960 §6.8) computed over the whole packet with the field zeroed and, the part
-//! that catches everyone, written into the field little-endian. It covers
-//! no pseudo-header, so unlike a TCP or UDP probe an SCTP one needs no addresses
-//! to be built. The computation lives in [`craft`]; this module
+//! 4960 §6.8) computed over the whole packet with the field zeroed and written
+//! into the field little-endian, which is the detail most implementations get
+//! wrong first. It covers no pseudo-header, so unlike a TCP or UDP probe an SCTP
+//! one needs no addresses to be built. The computation lives in [`craft`]; this module
 //! assembles the chunks around it.
 
 use crate::protocols::craft;

@@ -12,9 +12,9 @@
 * **Host discovery:** ARP and ICMPv6 on the local segment, raw TCP SYN for anything
   through a gateway, and an unprivileged TCP connect fallback when the process is
   not root. Hosts arrive live on an event stream as they are found.
-* **Port scanning:** six TCP techniques (see below) and raw UDP, with
-  retransmission, an adaptive deadline, and a verdict per port that says what the
-  evidence actually supports.
+* **Port scanning:** seven TCP techniques (see below), raw UDP, and SCTP by INIT
+  chunk, with retransmission, an adaptive deadline, and a verdict per port that
+  says what the evidence actually supports.
 * **Service fingerprinting:** identify the service, product and version behind an
   open port using an embedded signature database.
 * **Path measurement:** the routers between this machine and each host that
@@ -162,6 +162,32 @@ the listening socket's window on a reset, which BSD derivatives and a lot of
 network hardware do and current Linux and Windows do not: against those it
 reports the whole range closed. A range that comes back almost entirely open is
 the same failure from the other side. Read either against a `syn` scan.
+
+## Scanning SCTP
+
+SCTP carries Diameter, S1AP and M3UA, so a mobile core scanned for TCP and UDP
+alone comes back looking empty. Ask about it in the port specification, with the
+`s:` prefix beside the `u:` one UDP uses:
+
+```text
+80,443,u:53,s:2905,s:3868
+```
+
+The probe is an INIT chunk, and both answers it can draw are decisive: an
+INIT-ACK is an endpoint accepting the association, so the port is open, and an
+ABORT is a reachable stack refusing it, so the port is closed. Neither completes
+an association, and nothing sends the COOKIE-ECHO that would, so no port is left
+half-open. Silence is `filtered` rather than `open|filtered`, because a live
+endpoint answers either way.
+
+Two things worth knowing. It needs raw sockets and has no unprivileged form, so
+an unprivileged scan that named SCTP ports is told they went unprobed rather than
+being handed a different question's answer. And a host with no SCTP stack at all
+answers ICMP protocol unreachable, so a range that comes back entirely filtered
+may be a machine that does not speak SCTP rather than a firewall in front of one.
+
+There is no service pass behind an SCTP port: identifying what is listening needs
+an association, and this engine holds none.
 
 ## Measuring the route to a host
 

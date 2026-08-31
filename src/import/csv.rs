@@ -70,6 +70,7 @@ use std::io::BufRead;
 use crate::format::UTF8_BOM;
 use crate::format::csv::FORMULA_LEADERS;
 use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
+use crate::model::port::Protocol;
 
 /// The format's name in errors.
 const FORMAT: &str = "CSV";
@@ -351,9 +352,11 @@ fn normalize(name: &str) -> String {
 /// Assembles the target expression a row describes, through
 /// [`expression`](crate::import::expression), which owns the bracketing rule.
 ///
-/// What belongs to this format is the transport column: anything that is not UDP
-/// is read as TCP, which is what the port grammar means by an unprefixed port.
-/// SCTP has no spelling in a `PortSet` at all.
+/// What belongs to this format is the transport column: a name this build knows
+/// takes that transport's prefix, and anything else is read as TCP, which is
+/// what the port grammar means by an unprefixed port. Leniently, unlike the JSON
+/// and nmap readers, because a spreadsheet somebody typed is the one input here
+/// with no schema behind it.
 fn build_token(
     token: &mut String,
     ports: &mut String,
@@ -364,9 +367,11 @@ fn build_token(
     ports.clear();
 
     if let Some(port) = port {
-        if protocol.is_some_and(|protocol| protocol.eq_ignore_ascii_case("udp")) {
-            ports.push_str("u:");
-        }
+        let protocol = protocol
+            .map(str::to_ascii_lowercase)
+            .and_then(|name| crate::record::wire::protocol(&name))
+            .unwrap_or(Protocol::Tcp);
+        ports.push_str(protocol.spec_prefix());
         ports.push_str(port);
     }
 

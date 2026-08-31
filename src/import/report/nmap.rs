@@ -535,14 +535,12 @@ fn attr(element: &Element, name: &[u8]) -> Option<String> {
 /// specification itself, so a UDP list is rewritten with the prefix each entry
 /// needs.
 fn services(spec: &str, protocol: Protocol) -> Option<PortSet> {
-    let spec = match protocol {
-        Protocol::Tcp => spec.to_owned(),
-        Protocol::Udp => spec
-            .split(',')
-            .map(|entry| format!("u:{}", entry.trim()))
-            .collect::<Vec<_>>()
-            .join(","),
-    };
+    let prefix = protocol.spec_prefix();
+    let spec = spec
+        .split(',')
+        .map(|entry| format!("{prefix}{}", entry.trim()))
+        .collect::<Vec<_>>()
+        .join(",");
 
     PortSet::try_from(spec.as_str()).ok()
 }

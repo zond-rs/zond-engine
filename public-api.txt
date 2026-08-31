@@ -6974,6 +6974,7 @@ pub zond_engine::model::host::status::StatusProtocol::Dhcp
 pub zond_engine::model::host::status::StatusProtocol::IcmpEcho
 pub zond_engine::model::host::status::StatusProtocol::IcmpUnreachable
 pub zond_engine::model::host::status::StatusProtocol::Ndp
+pub zond_engine::model::host::status::StatusProtocol::Sctp
 pub zond_engine::model::host::status::StatusProtocol::Tcp
 pub zond_engine::model::host::status::StatusProtocol::TcpSyn
 pub zond_engine::model::host::status::StatusProtocol::Udp
@@ -7237,6 +7238,7 @@ pub zond_engine::model::host::StatusProtocol::Dhcp
 pub zond_engine::model::host::StatusProtocol::IcmpEcho
 pub zond_engine::model::host::StatusProtocol::IcmpUnreachable
 pub zond_engine::model::host::StatusProtocol::Ndp
+pub zond_engine::model::host::StatusProtocol::Sctp
 pub zond_engine::model::host::StatusProtocol::Tcp
 pub zond_engine::model::host::StatusProtocol::TcpSyn
 pub zond_engine::model::host::StatusProtocol::Udp
@@ -8615,6 +8617,8 @@ pub zond_engine::model::port::discovery::ScanResponse::IcmpProhibited
 pub zond_engine::model::port::discovery::ScanResponse::IcmpUnreachable
 pub zond_engine::model::port::discovery::ScanResponse::NoResponse
 pub zond_engine::model::port::discovery::ScanResponse::OverheardSynAck
+pub zond_engine::model::port::discovery::ScanResponse::SctpAbort
+pub zond_engine::model::port::discovery::ScanResponse::SctpInitAck
 pub zond_engine::model::port::discovery::ScanResponse::TcpRst
 pub zond_engine::model::port::discovery::ScanResponse::TcpSynAck
 pub zond_engine::model::port::discovery::ScanResponse::UdpResponse
@@ -8809,6 +8813,7 @@ pub struct zond_engine::model::port::set::PortSet
 impl zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::common_discovery() -> Self
 pub fn zond_engine::model::port::set::PortSet::contains(&self, u16, zond_engine::model::port::Protocol) -> bool
+pub fn zond_engine::model::port::set::PortSet::has_sctp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_tcp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_udp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::is_empty(&self) -> bool
@@ -8911,10 +8916,12 @@ impl core::marker::UnsafeUnpin for zond_engine::model::port::PortState
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::PortState
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::PortState
 #[non_exhaustive] pub enum zond_engine::model::port::Protocol
+pub zond_engine::model::port::Protocol::Sctp
 pub zond_engine::model::port::Protocol::Tcp
 pub zond_engine::model::port::Protocol::Udp
 impl zond_engine::model::port::Protocol
-pub const zond_engine::model::port::Protocol::ALL: [zond_engine::model::port::Protocol; 2]
+pub const zond_engine::model::port::Protocol::ALL: [zond_engine::model::port::Protocol; 3]
+pub const fn zond_engine::model::port::Protocol::spec_prefix(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::port::Protocol
 pub fn zond_engine::model::port::Protocol::clone(&self) -> zond_engine::model::port::Protocol
 impl core::cmp::Eq for zond_engine::model::port::Protocol
@@ -8943,6 +8950,8 @@ pub zond_engine::model::port::ScanResponse::IcmpProhibited
 pub zond_engine::model::port::ScanResponse::IcmpUnreachable
 pub zond_engine::model::port::ScanResponse::NoResponse
 pub zond_engine::model::port::ScanResponse::OverheardSynAck
+pub zond_engine::model::port::ScanResponse::SctpAbort
+pub zond_engine::model::port::ScanResponse::SctpInitAck
 pub zond_engine::model::port::ScanResponse::TcpRst
 pub zond_engine::model::port::ScanResponse::TcpSynAck
 pub zond_engine::model::port::ScanResponse::UdpResponse
@@ -9068,6 +9077,7 @@ pub struct zond_engine::model::port::PortSet
 impl zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::common_discovery() -> Self
 pub fn zond_engine::model::port::set::PortSet::contains(&self, u16, zond_engine::model::port::Protocol) -> bool
+pub fn zond_engine::model::port::set::PortSet::has_sctp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_tcp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_udp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::is_empty(&self) -> bool
@@ -9266,6 +9276,7 @@ pub fn zond_engine::model::target::TargetMap::gross_ips(&self) -> core::result::
 pub fn zond_engine::model::target::TargetMap::gross_targets(&self) -> core::result::Result<u128, zond_engine::model::target::TargetError>
 pub fn zond_engine::model::target::TargetMap::is_empty(&self) -> bool
 pub fn zond_engine::model::target::TargetMap::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = zond_engine::model::target::Target> + core::marker::Send + '_
+pub fn zond_engine::model::target::TargetMap::names(&self, zond_engine::model::port::Protocol) -> bool
 pub fn zond_engine::model::target::TargetMap::new() -> Self
 impl core::clone::Clone for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::clone(&self) -> zond_engine::model::target::TargetMap
@@ -11463,11 +11474,12 @@ pub zond_engine::report::ScannerKind::OsSeries
 pub zond_engine::report::ScannerKind::OsSnmp
 pub zond_engine::report::ScannerKind::Passive
 pub zond_engine::report::ScannerKind::Routed
+pub zond_engine::report::ScannerKind::SctpPort
 pub zond_engine::report::ScannerKind::SynPort
 pub zond_engine::report::ScannerKind::TcpPort
 pub zond_engine::report::ScannerKind::UdpPort
 impl zond_engine::report::ScannerKind
-pub const zond_engine::report::ScannerKind::ALL: [zond_engine::report::ScannerKind; 13]
+pub const zond_engine::report::ScannerKind::ALL: [zond_engine::report::ScannerKind; 14]
 pub const fn zond_engine::report::ScannerKind::for_raw_tcp(zond_engine::model::technique::TcpScanTechnique) -> Self
 impl core::clone::Clone for zond_engine::report::ScannerKind
 pub fn zond_engine::report::ScannerKind::clone(&self) -> zond_engine::report::ScannerKind
@@ -12419,6 +12431,7 @@ pub zond_engine::scanner::plan::PortScanStep::ConnectUdp
 pub zond_engine::scanner::plan::PortScanStep::Idle
 pub zond_engine::scanner::plan::PortScanStep::Idle::zombie: core::net::ip_addr::IpAddr
 pub zond_engine::scanner::plan::PortScanStep::Idle::zombie_port: core::option::Option<u16>
+pub zond_engine::scanner::plan::PortScanStep::RawSctp
 pub zond_engine::scanner::plan::PortScanStep::RawTcp
 pub zond_engine::scanner::plan::PortScanStep::RawTcp::technique: zond_engine::model::technique::TcpScanTechnique
 pub zond_engine::scanner::plan::PortScanStep::RawUdp
@@ -12464,6 +12477,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::plan::Discov
 pub struct zond_engine::scanner::plan::PortScanPlan
 impl zond_engine::scanner::plan::PortScanPlan
 pub fn zond_engine::scanner::plan::PortScanPlan::build(&zond_engine::config::ZondConfig, zond_engine::system::privilege::Privilege) -> Self
+pub fn zond_engine::scanner::plan::PortScanPlan::cover_sctp(&mut self, zond_engine::system::privilege::Privilege)
 pub fn zond_engine::scanner::plan::PortScanPlan::covers(&self, zond_engine::model::port::Protocol) -> bool
 pub fn zond_engine::scanner::plan::PortScanPlan::into_steps(self) -> alloc::vec::Vec<zond_engine::scanner::plan::PortScanStep>
 pub fn zond_engine::scanner::plan::PortScanPlan::refusals(&self) -> &[zond_engine::scanner::plan::RefusedStep]
@@ -12487,6 +12501,8 @@ pub zond_engine::scanner::plan::RefusedStep::scanner: zond_engine::report::Scann
 impl zond_engine::scanner::plan::RefusedStep
 pub fn zond_engine::scanner::plan::RefusedStep::idle_needs_privilege() -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::routed_range_not_enumerable(&zond_engine::model::ip::range::Ipv6Range) -> Self
+pub fn zond_engine::scanner::plan::RefusedStep::sctp_needs_raw_sockets() -> Self
+pub fn zond_engine::scanner::plan::RefusedStep::sctp_not_in_an_idle_scan() -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::technique_needs_raw_sockets(zond_engine::model::technique::TcpScanTechnique) -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::unprivileged_range_not_enumerable(&zond_engine::model::ip::range::Ipv6Range) -> Self
 impl core::clone::Clone for zond_engine::scanner::plan::RefusedStep
@@ -13084,6 +13100,39 @@ impl core::marker::Unpin for zond_engine::scanner::strategy::routed::RoutedScann
 impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::routed::RoutedScanner
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::routed::RoutedScanner
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::routed::RoutedScanner
+pub struct zond_engine::scanner::strategy::routed::SctpPortScanner
+impl zond_engine::scanner::strategy::routed::SctpPortScanner
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::new(zond_engine::system::interface::SourceResolver, zond_engine::scanner::session::ScanContext, usize, zond_engine::config::ProbeTuning) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::with_transport(zond_engine::system::interface::SourceResolver, zond_engine::scanner::session::ScanContext, zond_engine::transport::probe::ProbeTransport, usize, u16) -> Self
+impl zond_engine::scanner::strategy::PortScanner for zond_engine::scanner::strategy::routed::SctpPortScanner
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::detect_services<'life0, 'life1, 'async_trait>(&'life0 mut self, &'life1 zond_engine::scanner::session::ScanContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::kind(&self) -> zond_engine::report::ScannerKind
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::scan<'life0, 'async_trait>(&'life0 mut self, tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::supported_protocols(&self) -> alloc::vec::Vec<zond_engine::model::port::Protocol>
+impl zond_engine::scanner::strategy::routed::RawPortScan for zond_engine::scanner::strategy::routed::SctpPortScanner
+pub type zond_engine::scanner::strategy::routed::SctpPortScanner::Token = zond_engine::scanner::strategy::routed::sctp_scan::SctpToken
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::audit_labels(&self) -> zond_engine::scanner::strategy::routed::AuditLabels
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::core(&self) -> &zond_engine::scanner::strategy::routed::RawProbeScan<zond_engine::scanner::strategy::routed::sctp_scan::SctpToken>
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::routed::RawProbeScan<zond_engine::scanner::strategy::routed::sctp_scan::SctpToken>
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::resolve_remaining(&mut self)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::service_retries(&mut self, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::silence_means(&self) -> zond_engine::model::port::PortState
+impl core::marker::Freeze for zond_engine::scanner::strategy::routed::SctpPortScanner
+impl core::marker::Send for zond_engine::scanner::strategy::routed::SctpPortScanner
+impl core::marker::Sync for zond_engine::scanner::strategy::routed::SctpPortScanner
+impl core::marker::Unpin for zond_engine::scanner::strategy::routed::SctpPortScanner
+impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::routed::SctpPortScanner
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::routed::SctpPortScanner
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::routed::SctpPortScanner
 pub struct zond_engine::scanner::strategy::routed::SeriesTarget
 pub zond_engine::scanner::strategy::routed::SeriesTarget::address: zond_engine::model::ip::scoped::ScopedIp
 pub zond_engine::scanner::strategy::routed::SeriesTarget::closed: core::option::Option<u16>
@@ -13209,6 +13258,23 @@ pub fn zond_engine::scanner::strategy::routed::RawPortScan::send_probe(&mut self
 pub fn zond_engine::scanner::strategy::routed::RawPortScan::service_retries(&mut self, std::time::Instant)
 pub fn zond_engine::scanner::strategy::routed::RawPortScan::settle(&mut self, zond_engine::journal::settle::Outcome)
 pub fn zond_engine::scanner::strategy::routed::RawPortScan::silence_means(&self) -> zond_engine::model::port::PortState
+impl zond_engine::scanner::strategy::routed::RawPortScan for zond_engine::scanner::strategy::routed::SctpPortScanner
+pub type zond_engine::scanner::strategy::routed::SctpPortScanner::Token = zond_engine::scanner::strategy::routed::sctp_scan::SctpToken
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::audit_labels(&self) -> zond_engine::scanner::strategy::routed::AuditLabels
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::core(&self) -> &zond_engine::scanner::strategy::routed::RawProbeScan<zond_engine::scanner::strategy::routed::sctp_scan::SctpToken>
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::core_mut(&mut self) -> &mut zond_engine::scanner::strategy::routed::RawProbeScan<zond_engine::scanner::strategy::routed::sctp_scan::SctpToken>
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::handle_reply(&mut self, &zond_engine::transport::capture::CapturedSegment, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::probe(&mut self, core::net::ip_addr::IpAddr, u16, u64, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::protocol(&self) -> zond_engine::model::port::Protocol
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::record_port(&mut self, core::net::ip_addr::IpAddr, u16, zond_engine::model::port::PortState, core::option::Option<core::net::ip_addr::IpAddr>)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::reprobe(&mut self, core::net::ip_addr::IpAddr, u16, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::resolve_remaining(&mut self)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::resolve_unasked(&mut self, &mut tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> u128
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::send(&mut self, core::net::ip_addr::IpAddr, u16, core::option::Option<u64>, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::send_probe(&mut self, zond_engine::model::target::PlannedTarget)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::service_retries(&mut self, std::time::Instant)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::settle(&mut self, zond_engine::journal::settle::Outcome)
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::silence_means(&self) -> zond_engine::model::port::PortState
 impl zond_engine::scanner::strategy::routed::RawPortScan for zond_engine::scanner::strategy::routed::TcpPortScanner
 pub type zond_engine::scanner::strategy::routed::TcpPortScanner::Token = zond_engine::scanner::strategy::routed::port_scan::TcpToken
 pub fn zond_engine::scanner::strategy::routed::TcpPortScanner::audit_labels(&self) -> zond_engine::scanner::strategy::routed::AuditLabels
@@ -13315,6 +13381,11 @@ pub fn zond_engine::scanner::strategy::routed::IdlePortScanner::detect_services<
 pub fn zond_engine::scanner::strategy::routed::IdlePortScanner::kind(&self) -> zond_engine::report::ScannerKind
 pub fn zond_engine::scanner::strategy::routed::IdlePortScanner::scan<'life0, 'async_trait>(&'life0 mut self, tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn zond_engine::scanner::strategy::routed::IdlePortScanner::supported_protocols(&self) -> alloc::vec::Vec<zond_engine::model::port::Protocol>
+impl zond_engine::scanner::strategy::PortScanner for zond_engine::scanner::strategy::routed::SctpPortScanner
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::detect_services<'life0, 'life1, 'async_trait>(&'life0 mut self, &'life1 zond_engine::scanner::session::ScanContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::kind(&self) -> zond_engine::report::ScannerKind
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::scan<'life0, 'async_trait>(&'life0 mut self, tokio::sync::mpsc::bounded::Receiver<zond_engine::model::target::PlannedTarget>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn zond_engine::scanner::strategy::routed::SctpPortScanner::supported_protocols(&self) -> alloc::vec::Vec<zond_engine::model::port::Protocol>
 impl zond_engine::scanner::strategy::PortScanner for zond_engine::scanner::strategy::routed::TcpPortScanner
 pub fn zond_engine::scanner::strategy::routed::TcpPortScanner::detect_services<'life0, 'life1, 'async_trait>(&'life0 mut self, &'life1 zond_engine::scanner::session::ScanContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn zond_engine::scanner::strategy::routed::TcpPortScanner::kind(&self) -> zond_engine::report::ScannerKind
@@ -13986,6 +14057,8 @@ pub mod zond_engine::transport::probe
 #[non_exhaustive] pub enum zond_engine::transport::probe::ProbeKind
 pub zond_engine::transport::probe::ProbeKind::IcmpEcho
 pub zond_engine::transport::probe::ProbeKind::IcmpEcho::identifier: u16
+pub zond_engine::transport::probe::ProbeKind::SctpInit
+pub zond_engine::transport::probe::ProbeKind::SctpInit::reply_port: u16
 pub zond_engine::transport::probe::ProbeKind::TcpProbe
 pub zond_engine::transport::probe::ProbeKind::TcpProbe::icmp_errors: bool
 pub zond_engine::transport::probe::ProbeKind::TcpProbe::reply_port: u16
@@ -14209,6 +14282,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::raw::R
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::raw::RawSocketError
 #[non_exhaustive] pub enum zond_engine::transport::raw::TransportType
 pub zond_engine::transport::raw::TransportType::IcmpLayer4
+pub zond_engine::transport::raw::TransportType::SctpLayer4
 pub zond_engine::transport::raw::TransportType::TcpLayer4
 pub zond_engine::transport::raw::TransportType::UdpLayer4
 impl core::clone::Clone for zond_engine::transport::raw::TransportType
@@ -14299,10 +14373,12 @@ impl core::marker::UnsafeUnpin for zond_engine::model::port::PortState
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::PortState
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::PortState
 #[non_exhaustive] pub enum zond_engine::Protocol
+pub zond_engine::Protocol::Sctp
 pub zond_engine::Protocol::Tcp
 pub zond_engine::Protocol::Udp
 impl zond_engine::model::port::Protocol
-pub const zond_engine::model::port::Protocol::ALL: [zond_engine::model::port::Protocol; 2]
+pub const zond_engine::model::port::Protocol::ALL: [zond_engine::model::port::Protocol; 3]
+pub const fn zond_engine::model::port::Protocol::spec_prefix(self) -> &'static str
 impl core::clone::Clone for zond_engine::model::port::Protocol
 pub fn zond_engine::model::port::Protocol::clone(&self) -> zond_engine::model::port::Protocol
 impl core::cmp::Eq for zond_engine::model::port::Protocol
@@ -14820,6 +14896,7 @@ pub struct zond_engine::PortSet
 impl zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::common_discovery() -> Self
 pub fn zond_engine::model::port::set::PortSet::contains(&self, u16, zond_engine::model::port::Protocol) -> bool
+pub fn zond_engine::model::port::set::PortSet::has_sctp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_tcp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_udp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::is_empty(&self) -> bool
@@ -14864,7 +14941,7 @@ impl core::marker::Unpin for zond_engine::model::port::set::PortSet
 impl core::marker::UnsafeUnpin for zond_engine::model::port::set::PortSet
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::set::PortSet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::set::PortSet
-pub struct zond_engine::ResolveConfig
+#[non_exhaustive] pub struct zond_engine::ResolveConfig
 pub zond_engine::ResolveConfig::mdns: bool
 pub zond_engine::ResolveConfig::mdns_timeout: core::time::Duration
 impl core::clone::Clone for zond_engine::resolve::ResolveConfig
@@ -15151,6 +15228,7 @@ pub fn zond_engine::model::target::TargetMap::gross_ips(&self) -> core::result::
 pub fn zond_engine::model::target::TargetMap::gross_targets(&self) -> core::result::Result<u128, zond_engine::model::target::TargetError>
 pub fn zond_engine::model::target::TargetMap::is_empty(&self) -> bool
 pub fn zond_engine::model::target::TargetMap::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = zond_engine::model::target::Target> + core::marker::Send + '_
+pub fn zond_engine::model::target::TargetMap::names(&self, zond_engine::model::port::Protocol) -> bool
 pub fn zond_engine::model::target::TargetMap::new() -> Self
 impl core::clone::Clone for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::clone(&self) -> zond_engine::model::target::TargetMap
