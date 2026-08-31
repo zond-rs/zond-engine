@@ -16,10 +16,10 @@
 //! xmllint --dtdvalid /path/to/nmap.dtd --noout zond.xml
 //! ```
 //!
-//! Against nmap 7.99's DTD that reports exactly one error, the deliberate one:
+//! Against nmap 7.99's DTD that reports one error, the intended one:
 //! `scanner="zond"` is not `scanner="nmap"`. Substituting the name and nothing
-//! else validates clean. Run the same check on real nmap output first, because
-//! it passes, and that is what makes the instrument worth trusting.
+//! else validates clean. Run the same check on real nmap output first, since it
+//! passes, and that is what makes the instrument worth trusting.
 //!
 //! ## Why this is an example and not a test
 //!
@@ -29,9 +29,9 @@
 //! consistency, not validity. The thing that answers the real question is
 //! `xmllint` and a DTD, both outside the crate.
 //!
-//! It lived behind `#[ignore]` in `export::nmap`'s tests until W22, where it
-//! read as a coverage claim the repository never cashed. An example is compiled
-//! by `cargo check --all-targets`, so it cannot rot, and it runs without a test
+//! It lived behind `#[ignore]` in `export::nmap`'s tests, where it read as a
+//! coverage claim the repository never cashed. An example is compiled by
+//! `cargo check --all-targets`, so it cannot rot, and it runs without a test
 //! harness flag.
 //!
 //! ## What it covers
