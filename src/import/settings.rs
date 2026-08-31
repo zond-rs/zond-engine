@@ -135,12 +135,13 @@ pub mod paths;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::BufRead;
+use std::num::{NonZeroU8, NonZeroU32};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::config::ScanEffort;
 use crate::config::ZondConfig;
+use crate::config::{ScanEffort, TimeoutScale};
 use crate::model::exclusion::Exclusions;
 use crate::model::ip::set::IpSet;
 use crate::model::port::PortSet;
@@ -347,18 +348,24 @@ pub struct Settings {
     /// How raw probes are placed on the wire.
     #[serde(deserialize_with = "de_send_mode")]
     pub send_mode: Option<SendMode>,
-    /// The fastest routed discovery may probe, in probes per second.
-    pub max_probe_rate: Option<u32>,
+    /// The fastest routed discovery may probe, in probes per second. Refused if
+    /// zero, which is not a slower scan but no scan.
+    #[serde(deserialize_with = "de_probe_rate")]
+    pub max_probe_rate: Option<NonZeroU32>,
     /// Which segment a TCP port probe carries.
     #[serde(deserialize_with = "de_technique")]
     pub tcp_technique: Option<TcpScanTechnique>,
     /// How hard the scan tries before accepting silence as an answer.
     #[serde(deserialize_with = "de_effort")]
     pub effort: Option<ScanEffort>,
-    /// Replaces the attempt budget outright. One disables retransmission.
-    pub max_attempts: Option<u8>,
-    /// Multiplies how long the scan is willing to wait.
-    pub timeout_scale: Option<f64>,
+    /// Replaces the attempt budget outright. One disables retransmission, and
+    /// zero is refused: a probe that is never sent is not a scan setting.
+    #[serde(deserialize_with = "de_max_attempts")]
+    pub max_attempts: Option<NonZeroU8>,
+    /// Multiplies how long the scan is willing to wait. Refused unless positive
+    /// and finite.
+    #[serde(deserialize_with = "de_timeout_scale")]
+    pub timeout_scale: Option<TimeoutScale>,
     /// Whether a host that answers nothing may have its probe budget cut.
     pub dampen_silent_hosts: Option<bool>,
     /// The ports a scan covers when the caller names none.
@@ -833,6 +840,53 @@ fn de_effort<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ScanEffort
     de_named(d)
 }
 
+/// Reads `max_probe_rate`, refusing a ceiling of zero.
+///
+/// The three numeric readers below all exist for one reason: the engine used to
+/// take these values, find them unusable where the schedule is built, discard
+/// them without a word, and then write them into the report as though they had
+/// applied. A document is exactly where that is worth catching, since nobody is
+/// watching the file being read.
+fn de_probe_rate<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<NonZeroU32>, D::Error> {
+    let Some(rate) = Option::<u32>::deserialize(d)? else {
+        return Ok(None);
+    };
+    NonZeroU32::new(rate).map(Some).ok_or_else(|| {
+        serde::de::Error::custom(
+            "max_probe_rate = 0: a ceiling of zero probes per second is not a slower scan \
+             but no scan. Remove the key to leave each scanner its own pacing.",
+        )
+    })
+}
+
+/// Reads `max_attempts`, refusing a budget of zero.
+fn de_max_attempts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<NonZeroU8>, D::Error> {
+    let Some(attempts) = Option::<u8>::deserialize(d)? else {
+        return Ok(None);
+    };
+    NonZeroU8::new(attempts).map(Some).ok_or_else(|| {
+        serde::de::Error::custom(
+            "max_attempts = 0: a probe that is never sent is not a scan setting. \
+             Write 1 for a single attempt with no retransmission.",
+        )
+    })
+}
+
+/// Reads `timeout_scale`, refusing anything no schedule can be built from.
+fn de_timeout_scale<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<TimeoutScale>, D::Error> {
+    let Some(scale) = Option::<f64>::deserialize(d)? else {
+        return Ok(None);
+    };
+    TimeoutScale::new(scale).map(Some).ok_or_else(|| {
+        serde::de::Error::custom(format!(
+            "timeout_scale = {scale}: a scale multiplies how long the scan waits, \
+             so it has to be a positive, finite number."
+        ))
+    })
+}
+
 /// Reads `exclude` as a list of address expressions, refusing anything the
 /// document cannot settle by itself.
 ///
@@ -888,6 +942,44 @@ mod tests {
     /// third range. Under the ordinary overlay rule the administrator's range
     /// would be gone the moment the user named one, and the scan that followed
     /// would look like a correct one.
+    /// A value the engine cannot honour is refused where the document is read,
+    /// rather than accepted, discarded where the schedule is built, and then
+    /// written into the report as though it had applied.
+    ///
+    /// A file is exactly where that is worth catching: nobody is watching it
+    /// being read, so a scan runs at a pace the user believes they changed.
+    #[test]
+    fn a_setting_the_engine_could_not_honour_is_refused_by_name() {
+        for (document, expected) in [
+            ("[defaults]\nmax_probe_rate = 0\n", "max_probe_rate"),
+            ("[defaults]\nmax_attempts = 0\n", "max_attempts"),
+            ("[defaults]\ntimeout_scale = 0.0\n", "timeout_scale"),
+            ("[defaults]\ntimeout_scale = -1.5\n", "timeout_scale"),
+            ("[defaults]\ntimeout_scale = nan\n", "timeout_scale"),
+        ] {
+            let refused = read(&mut document.as_bytes()).expect_err(document);
+            let message = refused.to_string();
+            assert!(
+                message.contains(expected),
+                "{document:?} was refused without naming {expected}: {message}"
+            );
+        }
+    }
+
+    /// And the values beside them still read, so the refusal is a bound rather
+    /// than a wall.
+    #[test]
+    fn the_smallest_usable_values_are_accepted() {
+        let mut document =
+            &b"[defaults]\nmax_probe_rate = 1\nmax_attempts = 1\ntimeout_scale = 0.001\n"[..];
+        let loaded = read(&mut document).expect("the smallest usable values are settings");
+
+        let settings = loaded.document.resolve(None).expect("resolves");
+        assert_eq!(settings.max_probe_rate, NonZeroU32::new(1));
+        assert_eq!(settings.max_attempts, NonZeroU8::new(1));
+        assert_eq!(settings.timeout_scale.map(TimeoutScale::get), Some(0.001));
+    }
+
     #[test]
     fn every_layer_adds_its_exclusions_and_none_replaces_another() {
         let mut administrator = document(
@@ -1020,7 +1112,7 @@ mod tests {
             "the user file spoke about this"
         );
         assert_eq!(settings.no_dns, Some(true), "and said nothing about this");
-        assert_eq!(settings.max_probe_rate, Some(1000));
+        assert_eq!(settings.max_probe_rate, NonZeroU32::new(1000));
     }
 
     #[test]
@@ -1040,11 +1132,11 @@ mod tests {
 
         let defaults = loaded.document.resolve(None).expect("resolves");
         assert_eq!(defaults.effort, Some(ScanEffort::Balanced));
-        assert_eq!(defaults.max_probe_rate, Some(20000));
+        assert_eq!(defaults.max_probe_rate, NonZeroU32::new(20000));
 
         let stealth = loaded.document.resolve(Some("stealth")).expect("resolves");
         assert_eq!(stealth.effort, Some(ScanEffort::Thorough));
-        assert_eq!(stealth.max_probe_rate, Some(200));
+        assert_eq!(stealth.max_probe_rate, NonZeroU32::new(200));
         assert_eq!(stealth.no_dns, Some(true), "inherited from the defaults");
     }
 
@@ -1159,8 +1251,8 @@ mod tests {
         assert!(config.redact);
         assert_eq!(config.tcp_technique, TcpScanTechnique::Xmas);
         assert_eq!(config.retry.effort, ScanEffort::Thorough);
-        assert_eq!(config.retry.max_attempts, Some(5));
-        assert_eq!(config.max_probe_rate, Some(750));
+        assert_eq!(config.retry.max_attempts, NonZeroU8::new(5));
+        assert_eq!(config.max_probe_rate, NonZeroU32::new(750));
         assert_eq!(config.send_mode, SendMode::Ethernet);
         assert_eq!(
             config.segment_sweep, before_sweep,

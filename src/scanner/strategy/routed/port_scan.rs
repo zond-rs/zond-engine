@@ -44,7 +44,6 @@
 //! [`icmp_error`](super::icmp_error).
 
 use std::net::IpAddr;
-use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -244,10 +243,7 @@ impl TcpPortScanner {
         target_count: usize,
     ) -> RawProbeScan<TcpToken> {
         let retry = PORT_RETRY_POLICY.configured(tuning.retry);
-        let rate = tuning
-            .max_probe_rate
-            .and_then(NonZeroU32::new)
-            .unwrap_or(super::TCP_PORT_RATE_CEILING);
+        let rate = super::rate_or(tuning.max_probe_rate, super::TCP_PORT_RATE_CEILING);
 
         RawProbeScan::new(CoreParts {
             resolver,

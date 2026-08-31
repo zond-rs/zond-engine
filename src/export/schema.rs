@@ -964,7 +964,7 @@ impl SettingsDto {
             send_mode: send_mode_name(settings.send_mode),
             tcp_technique: settings.tcp_technique.name(),
             retry: RetryDto::new(&settings.retry),
-            max_probe_rate: settings.max_probe_rate,
+            max_probe_rate: settings.max_probe_rate.map(std::num::NonZeroU32::get),
             dns_enabled: settings.dns_enabled,
             redact: settings.redact,
             os_detection: settings.os_detection.name(),
@@ -988,12 +988,14 @@ pub struct RetryDto {
     /// The effort level: `single`, `fast`, `balanced` or `thorough`.
     pub effort: &'static str,
     /// An attempt budget set by the caller, overriding what `effort` implies.
+    /// One or more, never zero.
     pub max_attempts: Option<u8>,
     /// A multiplier on how long the scan was willing to wait.
     ///
-    /// `null` when the caller set none, and also when the value set was not a
-    /// finite number - a scale that cannot be written down is not a scale a
-    /// report should claim two runs shared.
+    /// `null` when the caller set none. Always a positive, finite number when
+    /// present: [`TimeoutScale`](crate::config::TimeoutScale) refuses anything
+    /// else, so this no longer has to filter for what a scan could not have
+    /// honoured.
     pub timeout_scale: Option<f64>,
     /// Whether a host that answered nothing could have its budget cut short.
     pub dampen_silent_hosts: bool,
@@ -1004,8 +1006,8 @@ impl RetryDto {
     pub fn new(retry: &RetryConfig) -> Self {
         Self {
             effort: scan_effort_name(retry.effort),
-            max_attempts: retry.max_attempts,
-            timeout_scale: retry.timeout_scale.filter(|scale| scale.is_finite()),
+            max_attempts: retry.max_attempts.map(std::num::NonZeroU8::get),
+            timeout_scale: retry.timeout_scale.map(crate::config::TimeoutScale::get),
             dampen_silent_hosts: retry.dampen_silent_hosts,
         }
     }
@@ -2023,18 +2025,28 @@ mod tests {
 
     /// A scale nobody can write down is not a scale two runs should be claimed
     /// to share, and it is not a JSON number either.
+    ///
+    /// This document used to be where that was caught, by filtering a value the
+    /// engine had already discarded and recorded anyway. The refusal is at
+    /// [`TimeoutScale`](crate::config::TimeoutScale) now, so what reaches here
+    /// is always a number JSON can hold, and this holds that rather than the
+    /// filter.
     #[test]
-    fn a_non_finite_timeout_scale_is_dropped() {
-        let retry = RetryConfig {
-            timeout_scale: Some(f64::NAN),
-            ..Default::default()
-        };
-        assert_eq!(RetryDto::new(&retry).timeout_scale, None);
+    fn a_recorded_timeout_scale_is_always_a_number_json_can_hold() {
+        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                crate::config::TimeoutScale::new(scale),
+                None,
+                "a scale of {scale} would have reached a report"
+            );
+        }
 
         let retry = RetryConfig {
-            timeout_scale: Some(2.5),
+            timeout_scale: crate::config::TimeoutScale::new(2.5),
             ..Default::default()
         };
-        assert_eq!(RetryDto::new(&retry).timeout_scale, Some(2.5));
+        let rendered = RetryDto::new(&retry).timeout_scale;
+        assert_eq!(rendered, Some(2.5));
+        assert!(rendered.is_some_and(f64::is_finite));
     }
 }

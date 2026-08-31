@@ -3,20 +3,31 @@ pub mod zond_engine::config
 pub mod zond_engine::config::envelope
 pub struct zond_engine::config::envelope::DetectionEnvelope
 impl zond_engine::config::envelope::DetectionEnvelope
-pub fn zond_engine::config::envelope::DetectionEnvelope::ceiling(&self) -> zond_engine::model::finding::DetectionClass
-pub fn zond_engine::config::envelope::DetectionEnvelope::permits(&self, zond_engine::model::finding::DetectionClass) -> bool
-pub fn zond_engine::config::envelope::DetectionEnvelope::up_to(zond_engine::model::finding::DetectionClass) -> Self
+pub const fn zond_engine::config::envelope::DetectionEnvelope::ceiling(self) -> zond_engine::model::finding::DetectionClass
+pub fn zond_engine::config::envelope::DetectionEnvelope::permits(self, zond_engine::model::finding::DetectionClass) -> bool
+pub const fn zond_engine::config::envelope::DetectionEnvelope::up_to(zond_engine::model::finding::DetectionClass) -> Self
 impl core::clone::Clone for zond_engine::config::envelope::DetectionEnvelope
 pub fn zond_engine::config::envelope::DetectionEnvelope::clone(&self) -> zond_engine::config::envelope::DetectionEnvelope
 impl core::cmp::Eq for zond_engine::config::envelope::DetectionEnvelope
+impl core::cmp::Ord for zond_engine::config::envelope::DetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::cmp(&self, &zond_engine::config::envelope::DetectionEnvelope) -> core::cmp::Ordering
 impl core::cmp::PartialEq for zond_engine::config::envelope::DetectionEnvelope
 pub fn zond_engine::config::envelope::DetectionEnvelope::eq(&self, &zond_engine::config::envelope::DetectionEnvelope) -> bool
+impl core::cmp::PartialOrd for zond_engine::config::envelope::DetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::partial_cmp(&self, &zond_engine::config::envelope::DetectionEnvelope) -> core::option::Option<core::cmp::Ordering>
 impl core::default::Default for zond_engine::config::envelope::DetectionEnvelope
 pub fn zond_engine::config::envelope::DetectionEnvelope::default() -> Self
 impl core::fmt::Debug for zond_engine::config::envelope::DetectionEnvelope
 pub fn zond_engine::config::envelope::DetectionEnvelope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::config::envelope::DetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::config::envelope::DetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::StructuralPartialEq for zond_engine::config::envelope::DetectionEnvelope
+impl core::str::traits::FromStr for zond_engine::config::envelope::DetectionEnvelope
+pub type zond_engine::config::envelope::DetectionEnvelope::Err = zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::from_str(&str) -> core::result::Result<Self, Self::Err>
 impl core::marker::Freeze for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::Send for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::Sync for zond_engine::config::envelope::DetectionEnvelope
@@ -24,6 +35,26 @@ impl core::marker::Unpin for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::UnsafeUnpin for zond_engine::config::envelope::DetectionEnvelope
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::envelope::DetectionEnvelope
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::envelope::DetectionEnvelope
+pub struct zond_engine::config::envelope::UnknownDetectionEnvelope
+pub zond_engine::config::envelope::UnknownDetectionEnvelope::input: alloc::string::String
+impl core::clone::Clone for zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::clone(&self) -> zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::cmp::Eq for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::cmp::PartialEq for zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::eq(&self, &zond_engine::config::envelope::UnknownDetectionEnvelope) -> bool
+impl core::error::Error for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::fmt::Debug for zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::marker::Freeze for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::marker::Send for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::marker::Sync for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::marker::Unpin for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::marker::UnsafeUnpin for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::envelope::UnknownDetectionEnvelope
 pub mod zond_engine::config::limits
 pub const zond_engine::config::limits::CONNECT_CONCURRENCY: usize
 pub const zond_engine::config::limits::CONNECT_PROBE_TIMEOUT: core::time::Duration
@@ -76,18 +107,26 @@ pub zond_engine::config::ScanEffort::Single
 pub zond_engine::config::ScanEffort::Thorough
 impl zond_engine::config::ScanEffort
 pub const zond_engine::config::ScanEffort::ALL: [zond_engine::config::ScanEffort; 4]
+pub const fn zond_engine::config::ScanEffort::from_level(u8) -> core::option::Option<Self>
+pub const fn zond_engine::config::ScanEffort::level(self) -> u8
 pub const fn zond_engine::config::ScanEffort::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::clone(&self) -> zond_engine::config::ScanEffort
 impl core::cmp::Eq for zond_engine::config::ScanEffort
+impl core::cmp::Ord for zond_engine::config::ScanEffort
+pub fn zond_engine::config::ScanEffort::cmp(&self, &zond_engine::config::ScanEffort) -> core::cmp::Ordering
 impl core::cmp::PartialEq for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::eq(&self, &zond_engine::config::ScanEffort) -> bool
+impl core::cmp::PartialOrd for zond_engine::config::ScanEffort
+pub fn zond_engine::config::ScanEffort::partial_cmp(&self, &zond_engine::config::ScanEffort) -> core::option::Option<core::cmp::Ordering>
 impl core::default::Default for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::default() -> zond_engine::config::ScanEffort
 impl core::fmt::Debug for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::config::ScanEffort
+pub fn zond_engine::config::ScanEffort::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for zond_engine::config::ScanEffort
 impl core::marker::StructuralPartialEq for zond_engine::config::ScanEffort
 impl core::str::traits::FromStr for zond_engine::config::ScanEffort
@@ -142,20 +181,31 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ServiceDet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ServiceDetection
 pub struct zond_engine::config::DetectionEnvelope
 impl zond_engine::config::envelope::DetectionEnvelope
-pub fn zond_engine::config::envelope::DetectionEnvelope::ceiling(&self) -> zond_engine::model::finding::DetectionClass
-pub fn zond_engine::config::envelope::DetectionEnvelope::permits(&self, zond_engine::model::finding::DetectionClass) -> bool
-pub fn zond_engine::config::envelope::DetectionEnvelope::up_to(zond_engine::model::finding::DetectionClass) -> Self
+pub const fn zond_engine::config::envelope::DetectionEnvelope::ceiling(self) -> zond_engine::model::finding::DetectionClass
+pub fn zond_engine::config::envelope::DetectionEnvelope::permits(self, zond_engine::model::finding::DetectionClass) -> bool
+pub const fn zond_engine::config::envelope::DetectionEnvelope::up_to(zond_engine::model::finding::DetectionClass) -> Self
 impl core::clone::Clone for zond_engine::config::envelope::DetectionEnvelope
 pub fn zond_engine::config::envelope::DetectionEnvelope::clone(&self) -> zond_engine::config::envelope::DetectionEnvelope
 impl core::cmp::Eq for zond_engine::config::envelope::DetectionEnvelope
+impl core::cmp::Ord for zond_engine::config::envelope::DetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::cmp(&self, &zond_engine::config::envelope::DetectionEnvelope) -> core::cmp::Ordering
 impl core::cmp::PartialEq for zond_engine::config::envelope::DetectionEnvelope
 pub fn zond_engine::config::envelope::DetectionEnvelope::eq(&self, &zond_engine::config::envelope::DetectionEnvelope) -> bool
+impl core::cmp::PartialOrd for zond_engine::config::envelope::DetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::partial_cmp(&self, &zond_engine::config::envelope::DetectionEnvelope) -> core::option::Option<core::cmp::Ordering>
 impl core::default::Default for zond_engine::config::envelope::DetectionEnvelope
 pub fn zond_engine::config::envelope::DetectionEnvelope::default() -> Self
 impl core::fmt::Debug for zond_engine::config::envelope::DetectionEnvelope
 pub fn zond_engine::config::envelope::DetectionEnvelope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::config::envelope::DetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::config::envelope::DetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::StructuralPartialEq for zond_engine::config::envelope::DetectionEnvelope
+impl core::str::traits::FromStr for zond_engine::config::envelope::DetectionEnvelope
+pub type zond_engine::config::envelope::DetectionEnvelope::Err = zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::DetectionEnvelope::from_str(&str) -> core::result::Result<Self, Self::Err>
 impl core::marker::Freeze for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::Send for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::Sync for zond_engine::config::envelope::DetectionEnvelope
@@ -163,9 +213,12 @@ impl core::marker::Unpin for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::UnsafeUnpin for zond_engine::config::envelope::DetectionEnvelope
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::envelope::DetectionEnvelope
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::envelope::DetectionEnvelope
-pub struct zond_engine::config::IdleScan
+#[non_exhaustive] pub struct zond_engine::config::IdleScan
 pub zond_engine::config::IdleScan::zombie: core::net::ip_addr::IpAddr
 pub zond_engine::config::IdleScan::zombie_port: core::option::Option<u16>
+impl zond_engine::config::IdleScan
+pub const fn zond_engine::config::IdleScan::new(core::net::ip_addr::IpAddr) -> Self
+pub const fn zond_engine::config::IdleScan::with_port(self, u16) -> Self
 impl core::clone::Clone for zond_engine::config::IdleScan
 pub fn zond_engine::config::IdleScan::clone(&self) -> zond_engine::config::IdleScan
 impl core::cmp::Eq for zond_engine::config::IdleScan
@@ -182,9 +235,9 @@ impl core::marker::Unpin for zond_engine::config::IdleScan
 impl core::marker::UnsafeUnpin for zond_engine::config::IdleScan
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::IdleScan
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::IdleScan
-pub struct zond_engine::config::ProbeTuning
+#[non_exhaustive] pub struct zond_engine::config::ProbeTuning
 pub zond_engine::config::ProbeTuning::evasion: zond_engine::evasion::EvasionProfile
-pub zond_engine::config::ProbeTuning::max_probe_rate: core::option::Option<u32>
+pub zond_engine::config::ProbeTuning::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ProbeTuning::os_detection: zond_engine::config::OsDetection
 pub zond_engine::config::ProbeTuning::retry: zond_engine::config::RetryConfig
 pub zond_engine::config::ProbeTuning::send_mode: zond_engine::transport::probe::SendMode
@@ -203,11 +256,11 @@ impl core::marker::Unpin for zond_engine::config::ProbeTuning
 impl core::marker::UnsafeUnpin for zond_engine::config::ProbeTuning
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ProbeTuning
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ProbeTuning
-pub struct zond_engine::config::RetryConfig
+#[non_exhaustive] pub struct zond_engine::config::RetryConfig
 pub zond_engine::config::RetryConfig::dampen_silent_hosts: bool
 pub zond_engine::config::RetryConfig::effort: zond_engine::config::ScanEffort
-pub zond_engine::config::RetryConfig::max_attempts: core::option::Option<u8>
-pub zond_engine::config::RetryConfig::timeout_scale: core::option::Option<f64>
+pub zond_engine::config::RetryConfig::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
+pub zond_engine::config::RetryConfig::timeout_scale: core::option::Option<zond_engine::config::TimeoutScale>
 impl core::clone::Clone for zond_engine::config::RetryConfig
 pub fn zond_engine::config::RetryConfig::clone(&self) -> zond_engine::config::RetryConfig
 impl core::cmp::PartialEq for zond_engine::config::RetryConfig
@@ -225,6 +278,29 @@ impl core::marker::Unpin for zond_engine::config::RetryConfig
 impl core::marker::UnsafeUnpin for zond_engine::config::RetryConfig
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::RetryConfig
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::RetryConfig
+pub struct zond_engine::config::TimeoutScale(_)
+impl zond_engine::config::TimeoutScale
+pub const fn zond_engine::config::TimeoutScale::get(self) -> f64
+pub fn zond_engine::config::TimeoutScale::new(f64) -> core::option::Option<Self>
+impl core::clone::Clone for zond_engine::config::TimeoutScale
+pub fn zond_engine::config::TimeoutScale::clone(&self) -> zond_engine::config::TimeoutScale
+impl core::cmp::PartialEq for zond_engine::config::TimeoutScale
+pub fn zond_engine::config::TimeoutScale::eq(&self, &zond_engine::config::TimeoutScale) -> bool
+impl core::cmp::PartialOrd for zond_engine::config::TimeoutScale
+pub fn zond_engine::config::TimeoutScale::partial_cmp(&self, &zond_engine::config::TimeoutScale) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::config::TimeoutScale
+pub fn zond_engine::config::TimeoutScale::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::config::TimeoutScale
+pub fn zond_engine::config::TimeoutScale::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::config::TimeoutScale
+impl core::marker::StructuralPartialEq for zond_engine::config::TimeoutScale
+impl core::marker::Freeze for zond_engine::config::TimeoutScale
+impl core::marker::Send for zond_engine::config::TimeoutScale
+impl core::marker::Sync for zond_engine::config::TimeoutScale
+impl core::marker::Unpin for zond_engine::config::TimeoutScale
+impl core::marker::UnsafeUnpin for zond_engine::config::TimeoutScale
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::TimeoutScale
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::TimeoutScale
 pub struct zond_engine::config::UnknownOsDetection
 pub zond_engine::config::UnknownOsDetection::input: alloc::string::String
 impl core::clone::Clone for zond_engine::config::UnknownOsDetection
@@ -292,7 +368,7 @@ pub zond_engine::config::ZondConfig::detection: zond_engine::config::envelope::D
 pub zond_engine::config::ZondConfig::evasion: zond_engine::evasion::EvasionProfile
 pub zond_engine::config::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
 pub zond_engine::config::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
-pub zond_engine::config::ZondConfig::max_probe_rate: core::option::Option<u32>
+pub zond_engine::config::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ZondConfig::no_dns: bool
 pub zond_engine::config::ZondConfig::os_detection: zond_engine::config::OsDetection
 pub zond_engine::config::ZondConfig::redact: bool
@@ -4992,13 +5068,13 @@ pub zond_engine::import::settings::Settings::dampen_silent_hosts: core::option::
 pub zond_engine::import::settings::Settings::default_ports: core::option::Option<alloc::string::String>
 pub zond_engine::import::settings::Settings::effort: core::option::Option<zond_engine::config::ScanEffort>
 pub zond_engine::import::settings::Settings::exclude: zond_engine::model::exclusion::Exclusions
-pub zond_engine::import::settings::Settings::max_attempts: core::option::Option<u8>
-pub zond_engine::import::settings::Settings::max_probe_rate: core::option::Option<u32>
+pub zond_engine::import::settings::Settings::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
+pub zond_engine::import::settings::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::settings::Settings::no_dns: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::send_mode: core::option::Option<zond_engine::transport::probe::SendMode>
 pub zond_engine::import::settings::Settings::tcp_technique: core::option::Option<zond_engine::model::technique::TcpScanTechnique>
-pub zond_engine::import::settings::Settings::timeout_scale: core::option::Option<f64>
+pub zond_engine::import::settings::Settings::timeout_scale: core::option::Option<zond_engine::config::TimeoutScale>
 impl zond_engine::import::settings::Settings
 pub fn zond_engine::import::settings::Settings::apply_to(&self, &mut zond_engine::config::ZondConfig)
 pub fn zond_engine::import::settings::Settings::new() -> Self
@@ -5425,13 +5501,13 @@ pub zond_engine::import::Settings::dampen_silent_hosts: core::option::Option<boo
 pub zond_engine::import::Settings::default_ports: core::option::Option<alloc::string::String>
 pub zond_engine::import::Settings::effort: core::option::Option<zond_engine::config::ScanEffort>
 pub zond_engine::import::Settings::exclude: zond_engine::model::exclusion::Exclusions
-pub zond_engine::import::Settings::max_attempts: core::option::Option<u8>
-pub zond_engine::import::Settings::max_probe_rate: core::option::Option<u32>
+pub zond_engine::import::Settings::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
+pub zond_engine::import::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::Settings::no_dns: core::option::Option<bool>
 pub zond_engine::import::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::Settings::send_mode: core::option::Option<zond_engine::transport::probe::SendMode>
 pub zond_engine::import::Settings::tcp_technique: core::option::Option<zond_engine::model::technique::TcpScanTechnique>
-pub zond_engine::import::Settings::timeout_scale: core::option::Option<f64>
+pub zond_engine::import::Settings::timeout_scale: core::option::Option<zond_engine::config::TimeoutScale>
 impl zond_engine::import::settings::Settings
 pub fn zond_engine::import::settings::Settings::apply_to(&self, &mut zond_engine::config::ZondConfig)
 pub fn zond_engine::import::settings::Settings::new() -> Self
@@ -11709,7 +11785,7 @@ pub zond_engine::report::ScanSettings::detection: zond_engine::config::envelope:
 pub zond_engine::report::ScanSettings::dns_enabled: bool
 pub zond_engine::report::ScanSettings::evasion: core::option::Option<zond_engine::report::EvasionRecord>
 pub zond_engine::report::ScanSettings::idle_scan: core::option::Option<zond_engine::config::IdleScan>
-pub zond_engine::report::ScanSettings::max_probe_rate: core::option::Option<u32>
+pub zond_engine::report::ScanSettings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::report::ScanSettings::os_detection: zond_engine::config::OsDetection
 pub zond_engine::report::ScanSettings::redact: bool
 pub zond_engine::report::ScanSettings::retry: zond_engine::config::RetryConfig
@@ -14250,18 +14326,26 @@ pub zond_engine::ScanEffort::Single
 pub zond_engine::ScanEffort::Thorough
 impl zond_engine::config::ScanEffort
 pub const zond_engine::config::ScanEffort::ALL: [zond_engine::config::ScanEffort; 4]
+pub const fn zond_engine::config::ScanEffort::from_level(u8) -> core::option::Option<Self>
+pub const fn zond_engine::config::ScanEffort::level(self) -> u8
 pub const fn zond_engine::config::ScanEffort::name(self) -> &'static str
 impl core::clone::Clone for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::clone(&self) -> zond_engine::config::ScanEffort
 impl core::cmp::Eq for zond_engine::config::ScanEffort
+impl core::cmp::Ord for zond_engine::config::ScanEffort
+pub fn zond_engine::config::ScanEffort::cmp(&self, &zond_engine::config::ScanEffort) -> core::cmp::Ordering
 impl core::cmp::PartialEq for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::eq(&self, &zond_engine::config::ScanEffort) -> bool
+impl core::cmp::PartialOrd for zond_engine::config::ScanEffort
+pub fn zond_engine::config::ScanEffort::partial_cmp(&self, &zond_engine::config::ScanEffort) -> core::option::Option<core::cmp::Ordering>
 impl core::default::Default for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::default() -> zond_engine::config::ScanEffort
 impl core::fmt::Debug for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::config::ScanEffort
 pub fn zond_engine::config::ScanEffort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::config::ScanEffort
+pub fn zond_engine::config::ScanEffort::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for zond_engine::config::ScanEffort
 impl core::marker::StructuralPartialEq for zond_engine::config::ScanEffort
 impl core::str::traits::FromStr for zond_engine::config::ScanEffort
@@ -14803,11 +14887,11 @@ impl core::marker::Unpin for zond_engine::resolve::Resolver
 impl core::marker::UnsafeUnpin for zond_engine::resolve::Resolver
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::Resolver
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::Resolver
-pub struct zond_engine::RetryConfig
+#[non_exhaustive] pub struct zond_engine::RetryConfig
 pub zond_engine::RetryConfig::dampen_silent_hosts: bool
 pub zond_engine::RetryConfig::effort: zond_engine::config::ScanEffort
-pub zond_engine::RetryConfig::max_attempts: core::option::Option<u8>
-pub zond_engine::RetryConfig::timeout_scale: core::option::Option<f64>
+pub zond_engine::RetryConfig::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
+pub zond_engine::RetryConfig::timeout_scale: core::option::Option<zond_engine::config::TimeoutScale>
 impl core::clone::Clone for zond_engine::config::RetryConfig
 pub fn zond_engine::config::RetryConfig::clone(&self) -> zond_engine::config::RetryConfig
 impl core::cmp::PartialEq for zond_engine::config::RetryConfig
@@ -15115,7 +15199,7 @@ pub zond_engine::ZondConfig::detection: zond_engine::config::envelope::Detection
 pub zond_engine::ZondConfig::evasion: zond_engine::evasion::EvasionProfile
 pub zond_engine::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
 pub zond_engine::ZondConfig::idle_scan: core::option::Option<zond_engine::config::IdleScan>
-pub zond_engine::ZondConfig::max_probe_rate: core::option::Option<u32>
+pub zond_engine::ZondConfig::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::ZondConfig::no_dns: bool
 pub zond_engine::ZondConfig::os_detection: zond_engine::config::OsDetection
 pub zond_engine::ZondConfig::redact: bool

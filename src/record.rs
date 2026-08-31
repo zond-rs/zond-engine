@@ -69,7 +69,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::config::DetectionEnvelope;
-use crate::config::{IdleScan, RetryConfig};
+use crate::config::{IdleScan, RetryConfig, TimeoutScale};
 use crate::model::capture::CaptureCounts;
 use crate::model::confidence::Confidence;
 use crate::model::finding::{
@@ -96,6 +96,7 @@ use crate::report::{
     TargetScope,
 };
 use crate::system::privilege::Privilege;
+use std::num::{NonZeroU8, NonZeroU32};
 
 /// One host, as a file holds it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1436,9 +1437,14 @@ pub struct SettingsRecord {
     /// The retransmission effort in force.
     pub retry_effort: String,
     /// A caller's override of the attempt budget.
+    ///
+    /// Written as a plain number, and read back through the bound the
+    /// configuration enforces: a journal from a build that accepted zero is read
+    /// as no override, which is what it was.
     #[serde(default)]
     pub retry_max_attempts: Option<u8>,
-    /// A caller's scaling of the timeout.
+    /// A caller's scaling of the timeout. Read back the same way, so a scale a
+    /// schedule could not have been built from reads as absent.
     #[serde(default)]
     pub retry_timeout_scale: Option<f64>,
     /// Whether silent hosts were probed less.
@@ -1529,10 +1535,10 @@ impl From<&ScanSettings> for SettingsRecord {
             send_mode: settings.send_mode.name().to_owned(),
             tcp_technique: settings.tcp_technique.name().to_owned(),
             retry_effort: settings.retry.effort.name().to_owned(),
-            retry_max_attempts: settings.retry.max_attempts,
-            retry_timeout_scale: settings.retry.timeout_scale,
+            retry_max_attempts: settings.retry.max_attempts.map(NonZeroU8::get),
+            retry_timeout_scale: settings.retry.timeout_scale.map(TimeoutScale::get),
             retry_dampen_silent_hosts: settings.retry.dampen_silent_hosts,
-            max_probe_rate: settings.max_probe_rate,
+            max_probe_rate: settings.max_probe_rate.map(NonZeroU32::get),
             dns_enabled: settings.dns_enabled,
             redact: settings.redact,
             os_detection: settings.os_detection.name().to_owned(),
@@ -1565,11 +1571,15 @@ impl From<&SettingsRecord> for ScanSettings {
             tcp_technique: record.tcp_technique.parse().unwrap_or_default(),
             retry: RetryConfig {
                 effort: record.retry_effort.parse().unwrap_or_default(),
-                max_attempts: record.retry_max_attempts,
-                timeout_scale: record.retry_timeout_scale,
+                // Read downward, as every other field of this record is: a
+                // journal written by a build that accepted a zero budget or a
+                // NaN scale carries a value that never applied, and reading it
+                // as absent is what it always meant.
+                max_attempts: record.retry_max_attempts.and_then(NonZeroU8::new),
+                timeout_scale: record.retry_timeout_scale.and_then(TimeoutScale::new),
                 dampen_silent_hosts: record.retry_dampen_silent_hosts,
             },
-            max_probe_rate: record.max_probe_rate,
+            max_probe_rate: record.max_probe_rate.and_then(NonZeroU32::new),
             dns_enabled: record.dns_enabled,
             redact: record.redact,
             os_detection: record.os_detection.parse().unwrap_or_default(),

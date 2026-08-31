@@ -306,8 +306,8 @@ const MIN_SEND_TICK: Duration = Duration::from_millis(1);
 /// A configured zero is a caller error rather than an instruction to stall, and
 /// falls back to the engine's own rate the same way an unset one does. Pacing at
 /// one probe a second would honour the number and not the intent.
-pub(super) fn rate_or(configured: Option<u32>, default: NonZeroU32) -> NonZeroU32 {
-    configured.and_then(NonZeroU32::new).unwrap_or(default)
+pub(super) fn rate_or(configured: Option<NonZeroU32>, default: NonZeroU32) -> NonZeroU32 {
+    configured.unwrap_or(default)
 }
 
 pub(super) fn pacing_for(rate_per_sec: NonZeroU32) -> (Duration, usize) {
@@ -1429,16 +1429,18 @@ mod tests {
 
     /// A rate of zero is a caller error, not an instruction to stall forever.
     ///
-    /// `pacing_for` can no longer be asked: its argument is a [`NonZeroU32`].
-    /// The question survives one level up, where a caller's `Some(0)` still
-    /// arrives, and it resolves to the engine's own rate rather than to one
-    /// probe a second.
+    /// It can no longer be asked at any level. `pacing_for` takes a
+    /// [`NonZeroU32`] and so does the configuration above it, so the fallback
+    /// this holds is now only the one a caller means: no ceiling at all.
+    ///
+    /// Zero used to arrive here as `Some(0)` and resolve to the engine's own
+    /// rate, at three call sites of which only this one went through `rate_or`,
+    /// while the report recorded the ceiling the caller believed they had set.
     #[test]
-    fn a_configured_rate_of_zero_falls_back_to_the_default() {
-        assert_eq!(rate_or(Some(0), PROBE_RATE_PER_SEC), PROBE_RATE_PER_SEC);
+    fn an_unset_rate_falls_back_to_the_default_and_a_set_one_is_obeyed() {
         assert_eq!(rate_or(None, PROBE_RATE_PER_SEC), PROBE_RATE_PER_SEC);
         assert_eq!(
-            rate_or(Some(500), PROBE_RATE_PER_SEC).get(),
+            rate_or(NonZeroU32::new(500), PROBE_RATE_PER_SEC).get(),
             500,
             "a rate the caller meant is the rate they get"
         );

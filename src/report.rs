@@ -597,7 +597,7 @@ pub struct ScanSettings {
     /// The retransmission budget and patience in force.
     pub retry: RetryConfig,
     /// The probe-rate ceiling, or `None` if the scanner's own default applied.
-    pub max_probe_rate: Option<u32>,
+    pub max_probe_rate: Option<std::num::NonZeroU32>,
     /// Whether name resolution was permitted to generate traffic.
     pub dns_enabled: bool,
     /// Whether the caller asked for identifying detail to be masked.

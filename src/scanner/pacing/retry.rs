@@ -250,10 +250,10 @@ impl RetryPolicy {
             policy.silent_host = None;
         }
         if let Some(max_attempts) = config.max_attempts {
-            policy.max_attempts = max_attempts.max(1);
+            policy.max_attempts = max_attempts.get();
         }
         if let Some(scale) = config.timeout_scale {
-            policy = policy.scaled(scale);
+            policy = policy.scaled(scale.get());
         }
 
         policy
@@ -264,10 +264,18 @@ impl RetryPolicy {
     /// [`min_rto`](Self::min_rto) is untouched on purpose. It is the shortest
     /// wait that can still produce an answer, which is a property of the
     /// protocol rather than of how much hurry the caller is in.
+    ///
+    /// `factor` is positive and finite. It used to be guarded here instead, and
+    /// a caller's zero or NaN was discarded without a word and then written into
+    /// the report as though it had applied;
+    /// [`TimeoutScale`](crate::config::TimeoutScale) is where that is refused
+    /// now.
     fn scaled(self, factor: f64) -> Self {
-        if factor <= 0.0 || !factor.is_finite() {
-            return self;
-        }
+        debug_assert!(
+            factor.is_finite() && factor > 0.0,
+            "a scale that cannot build a schedule is refused at `TimeoutScale`, \
+             and the effort levels below pass their own literals"
+        );
 
         Self {
             initial_rto: self.initial_rto.mul_f64(factor),
@@ -991,7 +999,9 @@ impl Jitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TimeoutScale;
     use std::net::Ipv4Addr;
+    use std::num::NonZeroU8;
 
     const HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
     const OTHER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 201));
@@ -1945,12 +1955,12 @@ mod tests {
         for config in [
             effort(ScanEffort::Fast),
             RetryConfig {
-                timeout_scale: Some(0.1),
+                timeout_scale: TimeoutScale::new(0.1),
                 ..Default::default()
             },
             RetryConfig {
                 effort: ScanEffort::Fast,
-                timeout_scale: Some(0.01),
+                timeout_scale: TimeoutScale::new(0.01),
                 ..Default::default()
             },
         ] {
@@ -1967,7 +1977,7 @@ mod tests {
     #[test]
     fn scaling_never_leaves_the_ceiling_below_the_floor() {
         let configured = rate_limited_policy().configured(RetryConfig {
-            timeout_scale: Some(0.01),
+            timeout_scale: TimeoutScale::new(0.01),
             ..Default::default()
         });
 
@@ -1982,7 +1992,7 @@ mod tests {
         let t0 = Instant::now();
         let base = rate_limited_policy();
         let configured = base.configured(RetryConfig {
-            timeout_scale: Some(0.1),
+            timeout_scale: TimeoutScale::new(0.1),
             ..Default::default()
         });
         assert!(configured.initial_rto < configured.min_rto, "test premise");
@@ -2000,7 +2010,7 @@ mod tests {
     fn an_explicit_budget_overrides_the_effort_level() {
         let configured = policy().configured(RetryConfig {
             effort: ScanEffort::Thorough,
-            max_attempts: Some(2),
+            max_attempts: NonZeroU8::new(2),
             ..Default::default()
         });
 
@@ -2030,17 +2040,27 @@ mod tests {
         assert!(configured.silent_host.is_none());
     }
 
+    /// A scale no schedule can be built from never reaches this policy, because
+    /// it cannot be written into a [`RetryConfig`] at all.
+    ///
+    /// It used to be accepted there, silently discarded here, and then written
+    /// into the report as though it had applied. Guarding it at the point of use
+    /// fixed the schedule and left the record wrong, which is why the guard
+    /// moved to [`TimeoutScale`](crate::config::TimeoutScale) and this asserts
+    /// the refusal rather than the shrug.
     #[test]
-    fn a_nonsensical_scale_is_ignored_rather_than_obeyed() {
-        let base = policy();
+    fn a_scale_no_schedule_can_be_built_from_never_reaches_a_policy() {
         for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let configured = base.configured(RetryConfig {
-                timeout_scale: Some(scale),
-                ..Default::default()
-            });
-            assert_eq!(configured.initial_rto, base.initial_rto, "scale {scale}");
-            assert_eq!(configured.max_rto, base.max_rto, "scale {scale}");
+            assert_eq!(TimeoutScale::new(scale), None, "scale {scale}");
         }
+
+        // And one that can is applied rather than merely accepted.
+        let base = policy();
+        let configured = base.configured(RetryConfig {
+            timeout_scale: TimeoutScale::new(2.0),
+            ..Default::default()
+        });
+        assert_eq!(configured.initial_rto, base.initial_rto * 2);
     }
 
     // ── Properties ─────────────────────────────────────────────────────────

@@ -18,10 +18,19 @@
 //! Most of what a person wants to say about a scan is how hard it should try,
 //! and the levels here are the vocabulary for that. [`ScanEffort`] sets how many
 //! attempts a probe gets and how long each one waits. [`OsDetection`] and
-//! [`ServiceDetection`] set how far a run may go to name what it found. Each is
-//! an ordered scale with a default in the middle, each parses from a word or a
-//! number so a front end can accept either, and each is carried into the report
-//! so a result says what was asked of it.
+//! [`ServiceDetection`] set how far a run may go to name what it found.
+//!
+//! All three are one vocabulary and are built alike: an ordered scale, an `ALL`
+//! in that order, a `name` and a `level` for each rung, and a `FromStr` that
+//! takes either spelling so a front end can accept a word from a settings file
+//! and a number from a flag without keeping a table of its own. Each is carried
+//! into the report, so a result says what was asked of it.
+//!
+//! Where the default sits is each scale's own decision rather than a rule.
+//! [`ScanEffort`] and [`OsDetection`] default low, since effort and traffic are
+//! what a caller should have to ask for. [`ServiceDetection`] defaults to its
+//! *top* level, because there its highest level is also its fastest against an
+//! unrecognised port; the reasoning is at the variant.
 //!
 //! Below those sit the numbers a strategy actually paces by, and they are not
 //! here to be set. A raw scanner measures its own round trips and sizes its
@@ -57,12 +66,63 @@ pub use crate::config::envelope::DetectionEnvelope;
 
 use std::fmt;
 use std::net::IpAddr;
+use std::num::{NonZeroU8, NonZeroU32};
 use std::str::FromStr;
 
 use crate::evasion::EvasionProfile;
 use crate::model::exclusion::Exclusions;
 use crate::model::technique::TcpScanTechnique;
 use crate::transport::probe::SendMode;
+
+/// Reads a level written as its name or as its number.
+///
+/// The three scales in this module are one vocabulary and are parsed one way.
+/// Written out per type, the three drifted: two accepted a number and one did
+/// not, while the module documentation promised all three did, and the three
+/// bodies compared names by three different means.
+///
+/// Both spellings are accepted because both are how these are written in
+/// practice: a settings file says `passive`, and a command line says `2`.
+/// Splitting them across two entry points would put the correspondence between
+/// the word and the number in whoever called this, and two front ends would
+/// eventually disagree about it.
+fn parse_level<T: Copy>(
+    written: &str,
+    all: &[T],
+    name: fn(T) -> &'static str,
+    from_level: fn(u8) -> Option<T>,
+) -> Option<T> {
+    let written = written.trim();
+
+    if let Ok(level) = written.parse::<u8>() {
+        return from_level(level);
+    }
+
+    all.iter()
+        .copied()
+        .find(|level| name(*level).eq_ignore_ascii_case(written))
+}
+
+/// The `expected one of` half of every parse error in this module, built from
+/// the levels themselves.
+///
+/// The three messages used to spell their own lists. A variant added to an enum
+/// and to its `ALL` left the message naming the levels that existed when it was
+/// written, and nothing here would have said so: both spellings still parse, and
+/// only the sentence a caller reads is wrong.
+fn expected_levels<T: Copy>(
+    all: &[T],
+    name: fn(T) -> &'static str,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    let names: Vec<&str> = all.iter().copied().map(name).collect();
+    let highest = all.len().saturating_sub(1);
+    write!(
+        f,
+        "expected one of: {} (or 0 to {highest})",
+        names.join(", ")
+    )
+}
 
 /// How much effort a scan spends before accepting silence as an answer.
 ///
@@ -73,7 +133,7 @@ use crate::transport::probe::SendMode;
 /// that starting point rather than replacing it, so choosing "fast" does not
 /// quietly hand the UDP scanner a schedule its protocol cannot satisfy.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScanEffort {
     /// One probe per target and no repeats.
     ///
@@ -96,7 +156,8 @@ pub enum ScanEffort {
 }
 
 impl ScanEffort {
-    /// Every level, ordered from least effort to most.
+    /// Every level, ordered from least effort to most. The index of a level in
+    /// this array is its [`level`](Self::level) number.
     pub const ALL: [ScanEffort; 4] = [
         ScanEffort::Single,
         ScanEffort::Fast,
@@ -113,6 +174,39 @@ impl ScanEffort {
             ScanEffort::Thorough => "thorough",
         }
     }
+
+    /// The number this level is written as, for a front end that offers it as a
+    /// dial rather than a word.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::config::ScanEffort;
+    ///
+    /// assert_eq!(ScanEffort::default().level(), 2);
+    /// ```
+    pub const fn level(self) -> u8 {
+        match self {
+            ScanEffort::Single => 0,
+            ScanEffort::Fast => 1,
+            ScanEffort::Balanced => 2,
+            ScanEffort::Thorough => 3,
+        }
+    }
+
+    /// The level with this number, or `None` past the highest there is.
+    ///
+    /// Deliberately not saturating, on the reasoning
+    /// [`OsDetection::from_level`] gives.
+    pub const fn from_level(level: u8) -> Option<Self> {
+        match level {
+            0 => Some(ScanEffort::Single),
+            1 => Some(ScanEffort::Fast),
+            2 => Some(ScanEffort::Balanced),
+            3 => Some(ScanEffort::Thorough),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ScanEffort {
@@ -123,12 +217,23 @@ impl std::fmt::Display for ScanEffort {
 
 /// The error parsing a [`ScanEffort`] returns, carrying the names that would
 /// have worked so a front end can print it verbatim.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unknown scan effort '{input}', expected one of: single, fast, balanced, thorough")]
+///
+/// The list is built from [`ScanEffort::ALL`] rather than spelled here, so a
+/// level added to the enum is a level this message names.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownScanEffort {
     /// What the caller wrote.
     pub input: String,
 }
+
+impl fmt::Display for UnknownScanEffort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown scan effort '{}', ", self.input)?;
+        expected_levels(&ScanEffort::ALL, ScanEffort::name, f)
+    }
+}
+
+impl std::error::Error for UnknownScanEffort {}
 
 impl std::str::FromStr for ScanEffort {
     type Err = UnknownScanEffort;
@@ -146,13 +251,9 @@ impl std::str::FromStr for ScanEffort {
     /// assert!("maximum".parse::<ScanEffort>().is_err());
     /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let name = s.trim().to_ascii_lowercase();
-        Self::ALL
-            .into_iter()
-            .find(|effort| effort.name() == name)
-            .ok_or_else(|| UnknownScanEffort {
-                input: s.to_string(),
-            })
+        parse_level(s, &Self::ALL, Self::name, Self::from_level).ok_or_else(|| UnknownScanEffort {
+            input: s.to_string(),
+        })
     }
 }
 
@@ -353,15 +454,23 @@ impl fmt::Display for OsDetection {
 
 /// The error parsing an [`OsDetection`] returns, carrying the values that would
 /// have worked so a front end can print it verbatim.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "unknown OS detection level '{input}', expected one of: off, passive, active, aggressive \
-     (or 0, 1, 2, 3)"
-)]
+///
+/// The list is built from [`OsDetection::ALL`] rather than spelled here, so a
+/// level added to the enum is a level this message names.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownOsDetection {
     /// What the caller wrote.
     pub input: String,
 }
+
+impl fmt::Display for UnknownOsDetection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown OS detection level '{}', ", self.input)?;
+        expected_levels(&OsDetection::ALL, OsDetection::name, f)
+    }
+}
+
+impl std::error::Error for UnknownOsDetection {}
 
 impl FromStr for OsDetection {
     type Err = UnknownOsDetection;
@@ -386,20 +495,9 @@ impl FromStr for OsDetection {
     /// assert!("maximum".parse::<OsDetection>().is_err());
     /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let written = s.trim().to_ascii_lowercase();
-
-        if let Ok(level) = written.parse::<u8>()
-            && let Some(detection) = Self::from_level(level)
-        {
-            return Ok(detection);
-        }
-
-        Self::ALL
-            .into_iter()
-            .find(|detection| detection.name() == written)
-            .ok_or_else(|| UnknownOsDetection {
-                input: s.to_string(),
-            })
+        parse_level(s, &Self::ALL, Self::name, Self::from_level).ok_or_else(|| UnknownOsDetection {
+            input: s.to_string(),
+        })
     }
 }
 
@@ -529,15 +627,23 @@ impl fmt::Display for ServiceDetection {
 
 /// The error parsing a [`ServiceDetection`] returns, carrying the values that
 /// would have worked so a front end can print it verbatim.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "unknown service detection level '{input}', expected one of: off, banner, probe \
-     (or 0, 1, 2)"
-)]
+///
+/// The list is built from [`ServiceDetection::ALL`] rather than spelled here, so
+/// a level added to the enum is a level this message names.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownServiceDetection {
     /// What the caller wrote.
     pub input: String,
 }
+
+impl fmt::Display for UnknownServiceDetection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown service detection level '{}', ", self.input)?;
+        expected_levels(&ServiceDetection::ALL, ServiceDetection::name, f)
+    }
+}
+
+impl std::error::Error for UnknownServiceDetection {}
 
 impl FromStr for ServiceDetection {
     type Err = UnknownServiceDetection;
@@ -553,19 +659,55 @@ impl FromStr for ServiceDetection {
     /// assert!("thorough".parse::<ServiceDetection>().is_err());
     /// ```
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let trimmed = input.trim();
-        if let Ok(level) = trimmed.parse::<u8>()
-            && let Some(detection) = Self::from_level(level)
-        {
-            return Ok(detection);
-        }
-
-        Self::ALL
-            .into_iter()
-            .find(|detection| detection.name().eq_ignore_ascii_case(trimmed))
-            .ok_or_else(|| UnknownServiceDetection {
+        parse_level(input, &Self::ALL, Self::name, Self::from_level).ok_or_else(|| {
+            UnknownServiceDetection {
                 input: input.to_string(),
-            })
+            }
+        })
+    }
+}
+
+/// A multiplier on how long a scan is willing to wait.
+///
+/// Positive and finite, and a type rather than an `f64` because the values that
+/// are neither cannot be honoured. A scale of zero asks for no patience at all,
+/// a negative one asks for less than none, and a NaN compares false against
+/// every bound a policy has. Each used to be accepted here, discarded without a
+/// word where the policy is built, and then written into the report as though it
+/// had applied.
+///
+/// That last part is what makes this a type. [`ZondConfig`] is the record of how
+/// a scan was run as well as the instruction for running it, and a field that
+/// could not change a finding has no business in the record of one.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct TimeoutScale(f64);
+
+impl TimeoutScale {
+    /// The scale `factor` names, or `None` if no schedule could be built from
+    /// it: zero, negative, infinite, or NaN.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::config::TimeoutScale;
+    ///
+    /// assert!(TimeoutScale::new(2.5).is_some());
+    /// assert!(TimeoutScale::new(0.0).is_none());
+    /// assert!(TimeoutScale::new(f64::NAN).is_none());
+    /// ```
+    pub fn new(factor: f64) -> Option<Self> {
+        (factor.is_finite() && factor > 0.0).then_some(Self(factor))
+    }
+
+    /// The multiplier, as the number a duration is scaled by.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl fmt::Display for TimeoutScale {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -575,20 +717,29 @@ impl FromStr for ServiceDetection {
 /// Comparable so a report can state whether two runs were asked for the same
 /// effort. Not [`Eq`]: `timeout_scale` is a float, and a scale nobody can write
 /// down exactly is not a scale two runs should be claimed to share.
+///
+/// Non-exhaustive and [`Default`]-constructed. Every override here is optional
+/// and every one of them is a *narrower* type than the field it sets, so a value
+/// that reaches this struct is one the engine can honour; see
+/// [`TimeoutScale`] for why that matters to the report as much as to the scan.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryConfig {
     /// How hard the scan tries before the fields below override any part of it.
     pub effort: ScanEffort,
     /// Replaces the attempt budget outright, whatever `effort` implies. One
-    /// disables retransmission.
-    pub max_attempts: Option<u8>,
+    /// attempt disables retransmission.
+    ///
+    /// Non-zero because a probe that is never sent is not a scan setting. Zero
+    /// used to be accepted here and raised to one where the policy is built.
+    pub max_attempts: Option<NonZeroU8>,
     /// Multiplies how long the scan is willing to wait.
     ///
     /// Deliberately does not touch the shortest timeout a policy allows. That
     /// floor is not a preference to be traded away, it is what the protocol
     /// costs: retrying a UDP probe sooner than the target is permitted to answer
     /// is not a faster scan, it is a wasted packet.
-    pub timeout_scale: Option<f64>,
+    pub timeout_scale: Option<TimeoutScale>,
     /// Whether a host that answers nothing at all may have its budget cut.
     /// Turning this off spends the full budget on every port of every silent
     /// address, which is thorough and expensive.
@@ -617,6 +768,12 @@ impl Default for RetryConfig {
 /// port scan paces itself by a congestion window and treats it only as a
 /// ceiling. The unprivileged paths pace themselves by their connection
 /// concurrency instead.
+///
+/// Non-exhaustive, like the [`ZondConfig`] it is built from: a knob added there
+/// that a strategy has to read is added here too, and neither should be a major
+/// version. Built by [`ZondConfig::probe_tuning`] and, in tests, from
+/// [`Default`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct ProbeTuning {
     /// Which layer a strategy puts its probes on the wire through, where it has
@@ -629,7 +786,11 @@ pub struct ProbeTuning {
 
     /// The most probes per second a strategy may emit, or `None` for the pacing
     /// each one arrives at on its own.
-    pub max_probe_rate: Option<u32>,
+    ///
+    /// Non-zero because a ceiling of zero probes per second is not a slower
+    /// scan, it is no scan. Zero used to be accepted and then read as `None` at
+    /// three separate call sites.
+    pub max_probe_rate: Option<NonZeroU32>,
 
     /// Which segment a TCP port probe carries. Read only by the raw TCP port
     /// scanner: host discovery asks whether anything is there, which every one
@@ -681,6 +842,11 @@ pub struct ProbeTuning {
 /// self-built Ethernet frame to carry a source address the kernel would never
 /// choose. A scan that cannot have either is refused rather than run quietly
 /// wrong; see the idle port scanner.
+///
+/// Non-exhaustive. A zombie is qualified on more than its address and its port
+/// already, and what the scan has to be told about one will grow before what it
+/// concludes does.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleScan {
     /// The zombie's address.
@@ -702,6 +868,26 @@ pub struct IdleScan {
     /// reads — but the zombie's own filter must not drop the probe, so a caller
     /// that knows a port the zombie answers on can name it here.
     pub zombie_port: Option<u16>,
+}
+
+impl IdleScan {
+    /// An idle scan through `zombie`, on whichever port the engine picks.
+    pub const fn new(zombie: IpAddr) -> Self {
+        Self {
+            zombie,
+            zombie_port: None,
+        }
+    }
+
+    /// Names the port on the zombie to read its counter from.
+    ///
+    /// For a zombie whose filter drops the engine's default. See
+    /// [`zombie_port`](Self::zombie_port).
+    #[must_use]
+    pub const fn with_port(mut self, port: u16) -> Self {
+        self.zombie_port = Some(port);
+        self
+    }
 }
 
 /// What a scan does, and what it is allowed to put on the wire.
@@ -895,7 +1081,11 @@ pub struct ZondConfig {
     /// must not be pushed at all, but on an ordinary scan it will not be what
     /// decides the pace. The discovery sweep and the UDP port scan *are* paced
     /// by it, because neither is given evidence it could adapt on.
-    pub max_probe_rate: Option<u32>,
+    ///
+    /// Non-zero: a ceiling of zero is not a slower scan but no scan, and the
+    /// value reaches the report, which must not record a ceiling that was never
+    /// applied.
+    pub max_probe_rate: Option<NonZeroU32>,
 
     /// Which segment a TCP port probe carries, and so what its answers mean.
     ///
@@ -958,15 +1148,43 @@ pub struct ZondConfig {
 
 impl ZondConfig {
     /// The probe-level knobs, bundled for the strategies that need them.
+    ///
+    /// `self` is destructured with every field named, so a knob added above and
+    /// not carried here is a compile error rather than a setting that silently
+    /// reaches no strategy. The fields listed and dropped are the ones a probing
+    /// strategy has no use for: they govern which phases run and where a scan may
+    /// go, which is the orchestrator's business rather than a probe's.
     pub fn probe_tuning(&self) -> ProbeTuning {
+        let Self {
+            send_mode,
+            retry,
+            max_probe_rate,
+            tcp_technique,
+            os_detection,
+            service_detection,
+            evasion,
+
+            // Read elsewhere. Named so that adding a field forces this decision
+            // rather than skipping it.
+            no_dns: _,
+            segment_sweep: _,
+            assume_up: _,
+            traceroute: _,
+            characterise: _,
+            idle_scan: _,
+            exclusions: _,
+            redact: _,
+            detection: _,
+        } = self;
+
         ProbeTuning {
-            send_mode: self.send_mode,
-            retry: self.retry,
-            max_probe_rate: self.max_probe_rate,
-            tcp_technique: self.tcp_technique,
-            os_detection: self.os_detection,
-            service_detection: self.service_detection,
-            evasion: self.evasion.clone(),
+            send_mode: *send_mode,
+            retry: *retry,
+            max_probe_rate: *max_probe_rate,
+            tcp_technique: *tcp_technique,
+            os_detection: *os_detection,
+            service_detection: *service_detection,
+            evasion: evasion.clone(),
         }
     }
 }
@@ -983,42 +1201,167 @@ impl ZondConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroU8;
 
-    /// A level's number is written down in three places — the position in
-    /// [`OsDetection::ALL`], the arm in `level`, and the arm in `from_level` —
-    /// and a fifth level added to two of them would leave a name and a number
-    /// that quietly disagree. Nothing else would notice: both spellings would
-    /// still parse, and a front end offering the dial would simply select the
-    /// wrong thing.
+    /// The three scales are one vocabulary, so what holds for one holds for all
+    /// three. Written per type, they drifted: `ScanEffort` took no number, and
+    /// the module documentation promised that all three did.
     #[test]
-    fn every_os_detection_level_agrees_with_its_number() {
-        for (index, detection) in OsDetection::ALL.into_iter().enumerate() {
-            assert_eq!(usize::from(detection.level()), index);
-            assert_eq!(OsDetection::from_level(detection.level()), Some(detection));
-        }
-
-        let past_the_end = OsDetection::ALL.len() as u8;
-        assert_eq!(
-            OsDetection::from_level(past_the_end),
-            None,
-            "a level this engine does not offer is refused, not rounded down to the highest"
-        );
-    }
-
-    /// A level's number is written down in three places, exactly as
-    /// [`OsDetection`]'s is, and the same silent disagreement is possible.
-    #[test]
-    fn every_service_detection_level_agrees_with_its_number() {
-        for (index, detection) in ServiceDetection::ALL.into_iter().enumerate() {
-            assert_eq!(usize::from(detection.level()), index);
+    fn every_scale_agrees_with_its_own_numbering() {
+        fn check<T: Copy + std::fmt::Debug + PartialEq>(
+            all: &[T],
+            name: fn(T) -> &'static str,
+            level: fn(T) -> u8,
+            from_level: fn(u8) -> Option<T>,
+        ) {
+            for (index, value) in all.iter().copied().enumerate() {
+                assert_eq!(usize::from(level(value)), index, "{value:?}");
+                assert_eq!(from_level(level(value)), Some(value), "{value:?}");
+                assert!(!name(value).is_empty());
+            }
+            let past_the_end = all.len() as u8;
             assert_eq!(
-                ServiceDetection::from_level(detection.level()),
-                Some(detection)
+                from_level(past_the_end),
+                None,
+                "a level this engine does not offer is refused, not rounded down"
             );
         }
 
-        let past_the_end = ServiceDetection::ALL.len() as u8;
-        assert_eq!(ServiceDetection::from_level(past_the_end), None);
+        check(
+            &ScanEffort::ALL,
+            ScanEffort::name,
+            ScanEffort::level,
+            ScanEffort::from_level,
+        );
+        check(
+            &OsDetection::ALL,
+            OsDetection::name,
+            OsDetection::level,
+            OsDetection::from_level,
+        );
+        check(
+            &ServiceDetection::ALL,
+            ServiceDetection::name,
+            ServiceDetection::level,
+            ServiceDetection::from_level,
+        );
+    }
+
+    /// Both spellings are one setting for every scale, including the one that
+    /// used to accept only the word while the module documentation said
+    /// otherwise. A front end reading `2` from a flag and `balanced` from a
+    /// settings file must not get two different scans.
+    #[test]
+    fn every_scale_parses_the_same_by_name_and_by_number() {
+        for effort in ScanEffort::ALL {
+            assert_eq!(effort.name().parse(), Ok(effort));
+            assert_eq!(effort.name().to_uppercase().parse(), Ok(effort));
+            assert_eq!(format!("  {}  ", effort.level()).parse(), Ok(effort));
+        }
+        assert!("4".parse::<ScanEffort>().is_err());
+        assert!("maximum".parse::<ScanEffort>().is_err());
+
+        for detection in OsDetection::ALL {
+            assert_eq!(detection.name().parse(), Ok(detection));
+            assert_eq!(detection.level().to_string().parse(), Ok(detection));
+        }
+        for detection in ServiceDetection::ALL {
+            assert_eq!(detection.name().parse(), Ok(detection));
+            assert_eq!(detection.level().to_string().parse(), Ok(detection));
+        }
+    }
+
+    /// The message a front end prints is built from the levels themselves, so a
+    /// level added to a scale is a level the message names.
+    ///
+    /// The three messages used to spell their own lists, and nothing compared
+    /// them against `ALL`: both spellings would still parse and only the
+    /// sentence a caller reads would be wrong.
+    #[test]
+    fn a_parse_error_names_every_level_that_would_have_worked() {
+        let effort = "maximum".parse::<ScanEffort>().unwrap_err().to_string();
+        for level in ScanEffort::ALL {
+            assert!(effort.contains(level.name()), "{effort} omits {level}");
+        }
+        assert!(effort.contains("0 to 3"), "{effort}");
+
+        let os = "9".parse::<OsDetection>().unwrap_err().to_string();
+        for level in OsDetection::ALL {
+            assert!(os.contains(level.name()), "{os} omits {level}");
+        }
+
+        let service = "thorough"
+            .parse::<ServiceDetection>()
+            .unwrap_err()
+            .to_string();
+        for level in ServiceDetection::ALL {
+            assert!(service.contains(level.name()), "{service} omits {level}");
+        }
+        assert!(service.contains("0 to 2"), "{service}");
+    }
+
+    /// A scale no schedule can be built from is refused where it is set.
+    ///
+    /// It used to be accepted here, discarded without a word where the policy is
+    /// built, and then written into the report as though it had applied. That
+    /// last part is why this is a type: `ZondConfig` is the record of how a scan
+    /// ran as well as the instruction for running it.
+    #[test]
+    fn a_retry_override_can_only_hold_a_value_a_scan_could_honour() {
+        for factor in [0.0, -1.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(TimeoutScale::new(factor), None, "scale {factor}");
+        }
+        assert_eq!(TimeoutScale::new(2.5).map(TimeoutScale::get), Some(2.5));
+
+        // The smallest positive float is a scale, absurd but honourable: it says
+        // what it does and the schedule it produces is the one asked for.
+        assert!(TimeoutScale::new(f64::MIN_POSITIVE).is_some());
+    }
+
+    /// Every override in a retry configuration is a narrower type than the field
+    /// it sets, so what reaches a strategy is what a scan can honour.
+    #[test]
+    fn the_retry_overrides_are_unset_by_default() {
+        let retry = RetryConfig::default();
+        assert_eq!(retry.max_attempts, None);
+        assert_eq!(retry.timeout_scale, None);
+        assert_eq!(retry.effort, ScanEffort::Balanced);
+        assert!(retry.dampen_silent_hosts);
+    }
+
+    /// The knobs a strategy reads arrive intact.
+    ///
+    /// `probe_tuning` enumerated seven fields by hand, had eight call sites and
+    /// no test: a knob added to both structs and forgotten here would reach no
+    /// strategy, silently, which is the defect `Host::merge` had. It
+    /// destructures `self` now, so the omission is a compile error; this is the
+    /// half that catches a field wired to the wrong place.
+    #[test]
+    fn every_probe_level_knob_reaches_the_strategies() {
+        let cfg = ZondConfig {
+            send_mode: SendMode::Ethernet,
+            retry: RetryConfig {
+                effort: ScanEffort::Thorough,
+                max_attempts: NonZeroU8::new(7),
+                timeout_scale: TimeoutScale::new(3.5),
+                dampen_silent_hosts: false,
+            },
+            max_probe_rate: NonZeroU32::new(1234),
+            tcp_technique: TcpScanTechnique::Xmas,
+            os_detection: OsDetection::Aggressive,
+            service_detection: ServiceDetection::Banner,
+            evasion: EvasionProfile::default(),
+            ..Default::default()
+        };
+
+        let tuning = cfg.probe_tuning();
+        assert_eq!(tuning.send_mode, cfg.send_mode);
+        assert_eq!(tuning.retry, cfg.retry);
+        assert_eq!(tuning.max_probe_rate, cfg.max_probe_rate);
+        assert_eq!(tuning.tcp_technique, cfg.tcp_technique);
+        assert_eq!(tuning.os_detection, cfg.os_detection);
+        assert_eq!(tuning.service_detection, cfg.service_detection);
+        assert_eq!(tuning.evasion, cfg.evasion);
     }
 
     /// The two boundaries that matter to a target, and they are different ones.
@@ -1048,19 +1391,6 @@ mod tests {
         );
     }
 
-    /// Both spellings are one setting, on the same reasoning [`OsDetection`]
-    /// accepts both.
-    #[test]
-    fn a_service_detection_level_parses_the_same_by_name_and_by_number() {
-        for detection in ServiceDetection::ALL {
-            assert_eq!(detection.name().parse(), Ok(detection));
-            assert_eq!(detection.level().to_string().parse(), Ok(detection));
-        }
-
-        assert!("3".parse::<ServiceDetection>().is_err());
-        assert!("thorough".parse::<ServiceDetection>().is_err());
-    }
-
     /// Where the wire cost begins. The default level promises to emit nothing at
     /// all, and that promise is what makes it safe to leave on for every scan —
     /// so which levels answer `true` here is a behavioural contract, not an
@@ -1074,19 +1404,5 @@ mod tests {
 
         assert!(!OsDetection::default().is_active(), "the default is silent");
         assert!(OsDetection::default().is_enabled(), "and it is still on");
-    }
-
-    /// The two spellings are one setting, so a name and its number have to parse
-    /// to the same level. A front end reading `2` from a flag and `active` from a
-    /// settings file must not get two different scans.
-    #[test]
-    fn an_os_detection_level_parses_the_same_by_name_and_by_number() {
-        for detection in OsDetection::ALL {
-            assert_eq!(detection.name().parse(), Ok(detection));
-            assert_eq!(detection.level().to_string().parse(), Ok(detection));
-        }
-
-        assert!("4".parse::<OsDetection>().is_err());
-        assert!("passive-ish".parse::<OsDetection>().is_err());
     }
 }

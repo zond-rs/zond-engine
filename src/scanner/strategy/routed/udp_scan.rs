@@ -42,7 +42,6 @@
 //! probe it refers to was aimed at the host behind it.
 
 use std::net::IpAddr;
-use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -239,10 +238,7 @@ impl UdpPortScanner {
         src_port: u16,
         target_count: usize,
     ) -> RawProbeScan<()> {
-        let rate = tuning
-            .max_probe_rate
-            .and_then(NonZeroU32::new)
-            .unwrap_or(super::UDP_PORT_RATE_PER_SEC);
+        let rate = super::rate_or(tuning.max_probe_rate, super::UDP_PORT_RATE_PER_SEC);
 
         RawProbeScan::new(CoreParts {
             resolver,
