@@ -41,7 +41,12 @@ fuzz_target!(|data: &[u8]| {
             continue;
         };
 
-        for field in [&found.product, &found.version, &found.vendor, &found.extrainfo] {
+        for field in [
+            &found.product,
+            &found.version,
+            &found.vendor,
+            &found.extrainfo,
+        ] {
             if let Some(value) = field {
                 assert!(
                     value.len() <= MAX_IDENTITY_BYTES,
