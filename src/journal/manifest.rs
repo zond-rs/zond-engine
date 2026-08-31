@@ -75,7 +75,6 @@
 //! by reporting that recorded positions would name different targets, of which
 //! such a journal has none.
 
-use std::hash::{Hash, Hasher};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -270,9 +269,10 @@ impl Plan {
 /// A fingerprint of the plan a cursor's positions are counted in.
 ///
 /// Compared, never interpreted. The value has no meaning beyond equality with
-/// another one, and its derivation is free to change between journal versions
-/// because [`JOURNAL_VERSION`](super::format::JOURNAL_VERSION) already refuses a
-/// journal written by a build whose format this one does not know.
+/// another one, and its derivation is free to change when
+/// [`JOURNAL_VERSION`](super::format::JOURNAL_VERSION) does, which is what
+/// refuses a journal written under an older derivation rather than reporting it
+/// as a plan that moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PlanFingerprint(u64);
 
@@ -285,23 +285,28 @@ impl PlanFingerprint {
     /// and so has no second question a privilege change could switch it to; see
     /// the `Listen` arm.
     ///
-    /// It goes into the hasher as the boolean the manifest writes, because
-    /// every journal already on disk was fingerprinted from that byte and the
-    /// derivation may move when
-    /// [`JOURNAL_VERSION`](super::JOURNAL_VERSION) does and not before.
+    /// It goes in as the boolean the manifest writes, because that is the shape
+    /// the field has on disk and there is no reason for the two to differ.
     ///
-    /// The hash walks each unit's canonical ranges and ports rather than its
+    /// The digest walks each unit's canonical ranges and ports rather than its
     /// targets, so this is cheap on a plan of any size. Feeding each field's
     /// count before the fields themselves is what keeps two differently-shaped
-    /// plans from colliding — without it, one unit of two ranges and two units
-    /// of one would hash the same.
+    /// plans from colliding: without it, one unit of two ranges and two units of
+    /// one would digest the same.
+    ///
+    /// Every enum reaches the digest as its wire name rather than as a derived
+    /// hash, for the reason [`record::wire`](crate::record::wire) gives about
+    /// names generally. A derived hash is a variant's position in a declaration,
+    /// so inserting a technique anywhere but the end would silently invalidate
+    /// every journal on disk, which is precisely the change
+    /// [`JOURNAL_VERSION`](super::JOURNAL_VERSION) exists to announce.
     pub fn of(plan: &Plan, privilege: Privilege) -> Self {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut digest = Digest::new();
 
         // The phase first, so a sweep and a port scan over the same addresses
         // can never agree. They count different things, and a position from one
         // read against the other names a target nobody probed.
-        wire::scan_kind_name(plan.kind()).hash(&mut hasher);
+        digest.text(wire::scan_kind_name(plan.kind()));
 
         match &plan.0 {
             Resolved::Discovery { addresses, sweep } => {
@@ -309,13 +314,13 @@ impl PlanFingerprint {
                 // A raw SYN and a connect attempt ask different questions of the
                 // same port, so a journal half of each would be counting two
                 // things — which is what this bit refuses.
-                privilege.is_raw().hash(&mut hasher);
-                sweep.hash(&mut hasher);
-                hash_addresses(addresses, &mut hasher);
+                digest.flag(privilege.is_raw());
+                digest.flag(*sweep);
+                digest.addresses(addresses);
             }
             Resolved::Listen { links } => {
                 // **And a watch has no such pair to tell apart**, so privilege
-                // is deliberately not hashed here. A listener has one way of
+                // is deliberately not digested here. A listener has one way of
                 // working and no fallback: it either opened a capture or it did
                 // nothing at all, and either way it enumerated nothing and left
                 // no position for a privilege change to invalidate.
@@ -330,56 +335,127 @@ impl PlanFingerprint {
                 // about a running kernel and changes across a reboot; the name
                 // is what a person meant by the link and what two sittings of
                 // one watch agree on.
-                links.len().hash(&mut hasher);
+                digest.count(links.len());
                 for link in links {
-                    link.name().hash(&mut hasher);
+                    digest.text(link.name());
                 }
             }
             Resolved::PortScan { targets, technique } => {
-                privilege.is_raw().hash(&mut hasher);
-                technique.hash(&mut hasher);
-                targets.units.len().hash(&mut hasher);
+                digest.flag(privilege.is_raw());
+                digest.text(technique.name());
+                digest.count(targets.units.len());
 
                 for unit in &targets.units {
-                    hash_addresses(unit.ips(), &mut hasher);
+                    digest.addresses(unit.ips());
 
                     let ports = unit.ports().to_vec();
-                    ports.len().hash(&mut hasher);
+                    digest.count(ports.len());
                     for (port, protocol) in ports {
-                        port.hash(&mut hasher);
-                        protocol.hash(&mut hasher);
+                        digest.number(u64::from(port));
+                        digest.text(wire::protocol_name(protocol));
                     }
                 }
             }
         }
 
         // A cheap cross-check on everything above. Cannot catch a change the
-        // structure hash missed on its own, but it costs one call and it turns a
-        // hash collision into a mismatch rather than a silent agreement.
-        plan.total_targets().hash(&mut hasher);
+        // structure digest missed on its own, but it costs one call and it turns
+        // a collision into a mismatch rather than a silent agreement.
+        digest.wide(plan.total_targets());
 
-        Self(hasher.finish())
+        Self(digest.finish())
     }
 }
 
-/// Feeds one address set's canonical ranges into `hasher`.
+/// The plan digest: FNV-1a over bytes this file chooses, and nothing borrowed
+/// from a `Hash` implementation.
 ///
-/// Each family's count goes in before its ranges. Without it, one set of two
-/// ranges and two sets of one would hash the same.
-fn hash_addresses(ips: &IpSet, hasher: &mut impl Hasher) {
-    ips.v4().len().hash(hasher);
-    for range in ips.v4() {
-        range.start_addr().hash(hasher);
-        range.end_addr().hash(hasher);
+/// **A fingerprint that is written down cannot be built out of `Hash`.**
+/// `DefaultHasher` was what this used, and the standard library says of it that
+/// "the internal algorithm is not specified, and so it and its hashes should not
+/// be relied upon over releases" — so upgrading the compiler moved the value,
+/// every journal on disk stopped matching, and the refusal said the plan had
+/// changed. The same caveat covers the `Hash` implementations of the types fed
+/// to it, so the bytes are chosen here instead.
+///
+/// Non-cryptographic on purpose. Nothing here is defending against a chosen
+/// collision: anyone who can edit a manifest can edit the fingerprint beside it.
+/// What is required is that the value be a function of the plan and of nothing
+/// else, which this is.
+struct Digest(u64);
+
+impl Digest {
+    /// The FNV-1a 64-bit offset basis and prime, as the algorithm defines them.
+    const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn new() -> Self {
+        Self(Self::BASIS)
     }
 
-    ips.v6().len().hash(hasher);
-    for range in ips.v6() {
-        range.start_addr().hash(hasher);
-        range.end_addr().hash(hasher);
-        // The zone is part of the address for a link-local range: `fe80::1`
-        // names a different machine on every segment.
-        range.zone().hash(hasher);
+    fn bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    /// A string, length first, so that two adjacent fields cannot be run
+    /// together into a third that digests the same.
+    fn text(&mut self, text: &str) {
+        self.number(text.len() as u64);
+        self.bytes(text.as_bytes());
+    }
+
+    fn number(&mut self, value: u64) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn wide(&mut self, value: u128) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn count(&mut self, value: usize) {
+        self.number(value as u64);
+    }
+
+    fn flag(&mut self, value: bool) {
+        self.bytes(&[u8::from(value)]);
+    }
+
+    /// One address set's canonical ranges.
+    ///
+    /// Each family's count goes in before its ranges. Without it, one set of two
+    /// ranges and two sets of one would digest the same. The family tag goes in
+    /// too, so a v4 range and a v6 range whose octets happen to coincide cannot.
+    fn addresses(&mut self, ips: &IpSet) {
+        self.count(ips.v4().len());
+        for range in ips.v4() {
+            self.bytes(&[4]);
+            self.bytes(&range.start_addr().octets());
+            self.bytes(&range.end_addr().octets());
+        }
+
+        self.count(ips.v6().len());
+        for range in ips.v6() {
+            self.bytes(&[6]);
+            self.bytes(&range.start_addr().octets());
+            self.bytes(&range.end_addr().octets());
+            // The zone is part of the address for a link-local range: `fe80::1`
+            // names a different machine on every segment. Absent and zero are
+            // told apart, since zero is a scope id a kernel can report.
+            match range.zone() {
+                Some(zone) => {
+                    self.bytes(&[1]);
+                    self.number(u64::from(zone));
+                }
+                None => self.bytes(&[0]),
+            }
+        }
+    }
+
+    fn finish(self) -> u64 {
+        self.0
     }
 }
 
@@ -685,6 +761,29 @@ mod tests {
 
     fn sweeping(ips: &IpSet, sweep: bool) -> Plan {
         Plan::discovery(ips, &Exclusions::none(), sweep)
+    }
+
+    /// The derivation is pinned to a value, not merely to itself.
+    ///
+    /// Every other test here asks whether two fingerprints agree, and every one
+    /// of them passed while the derivation was `DefaultHasher` — whose output the
+    /// standard library declines to keep stable across compiler releases, so the
+    /// value moved when the toolchain did and every journal on disk was refused
+    /// as a plan that had changed. A test comparing two fingerprints taken in one
+    /// process cannot see that. This one can.
+    ///
+    /// **If this fails, the derivation moved.** That is allowed, and it is a
+    /// [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) bump: every journal
+    /// already written carries the old value and cannot be continued under the
+    /// new one. Bump the version, update the number here, and check that
+    /// `Journal::resume` still refuses the older format by name.
+    #[test]
+    fn the_derivation_is_pinned_to_a_value() {
+        assert_eq!(
+            print(&plan(&[("192.0.2.1-192.0.2.10", "80,443")])).0,
+            0xa4d1_e087_ea5b_98c2,
+            "the plan fingerprint derivation has moved"
+        );
     }
 
     /// The same plan fingerprints the same, however many times it is asked. A

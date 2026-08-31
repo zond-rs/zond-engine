@@ -1191,6 +1191,32 @@ impl Host {
     /// unconditionally would reintroduce between phases the same
     /// machine-reported-as-two that the ranking prevents within one.
     pub fn merge(&mut self, other: Host) {
+        // Destructured rather than reached through `other.…`, so a field added
+        // to this struct is a compile error here and not a value that quietly
+        // stops being folded. `filtering` and `os_evidence` were both lost that
+        // way, silently, at every call site this has.
+        let Host {
+            primary_ip: other_primary,
+            ips,
+            hostname,
+            status,
+            reasons,
+            os,
+            os_evidence,
+            hardware,
+            zone,
+            telemetry,
+            path,
+            network_roles,
+            filtering,
+            findings,
+            first_seen: other_first_seen,
+            last_seen: other_last_seen,
+            ports,
+            // Derived, and maintained by `add_port` as the ports below arrive.
+            open_ports: _,
+        } = other;
+
         // Taken before anything else, and restored at the end.
         //
         // Every mutator below stamps `last_seen` with the current time, because
@@ -1200,24 +1226,22 @@ impl Host {
         // records' observation times with the moment they happened to be folded
         // together, and `last_seen` would answer "when was this record last
         // touched" to a reader who asked when the host was last heard from.
-        let first_seen = self.first_seen.min(other.first_seen);
-        let last_seen = self.last_seen.max(other.last_seen);
+        let first_seen = self.first_seen.min(other_first_seen);
+        let last_seen = self.last_seen.max(other_last_seen);
 
-        let other_primary = other.primary_ip;
-
-        self.ips.extend(other.ips);
+        self.ips.extend(ips);
         self.consider_primary_ip(other_primary);
 
         if self.hostname.is_none() {
-            self.hostname = other.hostname;
+            self.hostname = hostname;
         }
 
-        if other.status > self.status {
-            self.status = other.status;
+        if status > self.status {
+            self.status = status;
         }
-        self.reasons.extend(other.reasons);
+        self.reasons.extend(reasons);
 
-        if let Some(other_os) = other.os {
+        if let Some(other_os) = os {
             if let Some(ref mut self_os) = self.os {
                 self_os.merge(*other_os);
             } else {
@@ -1225,7 +1249,14 @@ impl Host {
             }
         }
 
-        if let Some(other_hw) = other.hardware {
+        // Through `record_os_evidence` rather than by extending the map, so two
+        // records of one claim keep the strongest confidence and every distinct
+        // line behind it, and the ceiling still turns away only what is new.
+        for evidence in os_evidence.into_values() {
+            self.record_os_evidence(evidence);
+        }
+
+        if let Some(other_hw) = hardware {
             if let Some(ref mut self_hw) = self.hardware {
                 self_hw.merge(other_hw);
             } else {
@@ -1233,11 +1264,11 @@ impl Host {
             }
         }
 
-        if let Some(other_zone) = other.zone {
+        if let Some(other_zone) = zone {
             self.zone.get_or_insert(other_zone);
         }
 
-        self.telemetry.merge(other.telemetry);
+        self.telemetry.merge(telemetry);
 
         // Hop by hop rather than by taking whichever path looks fuller, so the
         // "only ever gets stronger" rule in `NetworkPath::record` decides each
@@ -1249,20 +1280,25 @@ impl Host {
         // the two together — and the trace runs between those two moments, so
         // the earlier record has no path at all. Left out here, the empty half
         // wins and the scan reports a path it measured and then discarded.
-        for hop in other.path.hops() {
+        for hop in path.hops() {
             self.path.record(*hop);
         }
 
-        self.network_roles.extend(other.network_roles);
+        self.network_roles.extend(network_roles);
+
+        // A conclusion about the filter in front of a host is drawn by a
+        // comparative probe that only one of two records will have run, so a
+        // fold that dropped the other side's discarded the whole finding.
+        self.filtering.extend(filtering);
 
         // Findings accumulate: a claim missing from one record is a detection
         // that did not run there, never a retraction, so a fold adds and never
         // removes. A claim on both corroborates through `add_finding`.
-        for finding in other.findings.into_values() {
+        for finding in findings.into_values() {
             self.add_finding(finding);
         }
 
-        for port in other.ports.into_values() {
+        for port in ports.into_values() {
             self.add_port(port);
         }
 
@@ -1324,6 +1360,51 @@ mod tests {
     use std::net::Ipv4Addr;
 
     static IP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 100));
+
+    /// Every field of the record being folded in, not merely the ones somebody
+    /// remembered.
+    ///
+    /// `merge` consumed `other` field by field, and two fields were never named:
+    /// `filtering` and `os_evidence` were dropped at every call site it has, so a
+    /// resumed scan kept only the first journal record's and a report assembled
+    /// from two records lost the second's. Destructuring `other` is what stops
+    /// the next field going the same way; this asserts the two that already did.
+    #[test]
+    fn a_merge_keeps_every_field_of_the_record_it_folds_in() {
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+        let mut incumbent = Host::new(ip);
+        let mut arriving = Host::new(ip);
+
+        arriving.add_filtering(Filtering::StatefulFilter);
+        arriving.add_filtering(Filtering::InlineMiddlebox);
+        arriving.record_os_evidence(OsEvidence {
+            source: OsSource::ServiceBanner,
+            family: Some("Linux".to_string()),
+            device: None,
+            vendor: None,
+            product: None,
+            version: None,
+            kernel: Some("6.1.0".to_string()),
+            cpe: None,
+            confidence: 0.9,
+            evidence: "ssh banner".to_string(),
+        });
+
+        incumbent.merge(arriving);
+
+        assert_eq!(
+            incumbent.filtering().len(),
+            2,
+            "a filtering conclusion is drawn by a comparative probe only one \
+             record will have run, so dropping it loses the whole finding"
+        );
+        assert_eq!(
+            incumbent.os_evidence().count(),
+            1,
+            "os evidence is what corroboration is computed over, and the \
+             fold is where a second source's reading arrives"
+        );
+    }
 
     /// A merge folds in what only one side of it knows.
     ///

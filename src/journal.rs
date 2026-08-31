@@ -179,9 +179,18 @@
 /// [`manifest`] is written and checked either way.
 ///
 /// Bump on any change an older build could misread. Adding a field a reader may
-/// ignore is not such a change; changing what an existing field means, or what a
-/// position refers to, is.
-pub const JOURNAL_VERSION: u32 = 1;
+/// ignore is not such a change; changing what an existing field means, what a
+/// position refers to, or how
+/// [`PlanFingerprint`](manifest::PlanFingerprint) is derived, is.
+///
+/// Version 2 is the third of those. Version 1 derived the fingerprint through
+/// `DefaultHasher`, whose output the standard library declines to keep stable
+/// across compiler releases, so the value a version 1 journal recorded is not one
+/// this build can reproduce. Such a journal still reads: [`store::report`] and
+/// [`store::list`] work on it exactly as before. Only continuing one is refused,
+/// by [`store::OpenError::VersionTooOld`], because a fingerprint that cannot be
+/// recomputed cannot prove the plan has not moved.
+pub const JOURNAL_VERSION: u32 = 2;
 
 pub mod cursor;
 /// How a journal's files are created: the mode and the ownership, together.

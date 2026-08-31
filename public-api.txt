@@ -5829,6 +5829,9 @@ pub mod zond_engine::journal::store
 pub zond_engine::journal::store::OpenError::Journal(zond_engine::journal::format::JournalError)
 pub zond_engine::journal::store::OpenError::Locked(zond_engine::journal::lock::LockRefused)
 pub zond_engine::journal::store::OpenError::PlanChanged(zond_engine::journal::manifest::PlanChanged)
+pub zond_engine::journal::store::OpenError::VersionTooOld
+pub zond_engine::journal::store::OpenError::VersionTooOld::found: u32
+pub zond_engine::journal::store::OpenError::VersionTooOld::understood: u32
 pub zond_engine::journal::store::OpenError::WrongPhase
 pub zond_engine::journal::store::OpenError::WrongPhase::asked: &'static str
 pub zond_engine::journal::store::OpenError::WrongPhase::held: &'static str

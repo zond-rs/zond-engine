@@ -75,6 +75,25 @@ pub enum OpenError {
         asked: &'static str,
     },
 
+    /// The journal was written under a format this build can read but cannot
+    /// continue.
+    ///
+    /// Only [`Journal::resume`] raises it. [`report`] and [`list`] read such a
+    /// journal exactly as they read any other, because everything written down
+    /// still means what it said; what is gone is the ability to prove the plan
+    /// has not moved, and continuing a scan on an unprovable plan is the failure
+    /// [`manifest`](crate::journal::manifest) exists to prevent.
+    #[error(
+        "this journal was written in format {found} and this build continues \
+         format {understood}; its findings still read, but it cannot be resumed"
+    )]
+    VersionTooOld {
+        /// The format the journal was written in.
+        found: u32,
+        /// The format this build continues.
+        understood: u32,
+    },
+
     /// Somebody else holds it, or might.
     #[error("{0}")]
     Locked(LockRefused),
@@ -163,6 +182,17 @@ impl Journal {
         privilege: Privilege,
     ) -> Result<(Self, Checkpoint), OpenError> {
         let manifest = read_manifest(directory)?;
+        // The format before anything about the plan, because it decides whether
+        // the fingerprint below is a value this build can recompute at all. A
+        // journal from an older derivation would otherwise fail `covers` and be
+        // reported as a plan that changed, which is the one thing that message
+        // must never say when the plan did not.
+        if manifest.journal_version < super::JOURNAL_VERSION {
+            return Err(OpenError::VersionTooOld {
+                found: manifest.journal_version,
+                understood: super::JOURNAL_VERSION,
+            });
+        }
         // The phase before the fingerprint, so continuing a sweep as a port scan
         // is named for what it is rather than reported as a plan that moved.
         if manifest.kind() != plan.kind() {
@@ -234,9 +264,7 @@ impl Journal {
             return Ok(());
         }
 
-        let file = fs::OpenOptions::new()
-            .append(true)
-            .open(self.directory.join(HOSTS))?;
+        let file = append_existing(&self.directory.join(HOSTS))?;
 
         let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
         for host in hosts {
@@ -333,9 +361,7 @@ impl Journal {
             return Ok(());
         }
 
-        let file = fs::OpenOptions::new()
-            .append(true)
-            .open(self.directory.join(PHASES))?;
+        let file = append_existing(&self.directory.join(PHASES))?;
 
         let mut writer = crate::journal::format::Writer::append(std::io::BufWriter::new(file));
         for phase in phases {
@@ -830,9 +856,8 @@ fn claim_directory(root: &Path) -> Result<(String, PathBuf), JournalError> {
         let id = mint_id();
         let directory = root.join(&id);
 
-        match fs::create_dir(&directory) {
+        match create_private_directory(&directory) {
             Ok(()) => {
-                restrict(&directory, 0o700)?;
                 claim_directory_for_invoking_user(&directory);
                 return Ok((id, directory));
             }
@@ -856,16 +881,28 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
     Ok(())
 }
 
+/// Creates one scan's directory, private from the moment it exists.
+///
+/// The mode is set as the directory is created rather than chmod'd afterwards,
+/// which is the same rule [`file`](super::file) applies to everything inside it
+/// and for the same two reasons. Creating at the default mode leaves a window in
+/// which the addresses an engagement was pointed at are world-readable, and a
+/// `chmod` by path is a privileged operation on a name in a directory this
+/// engine has just given to an unprivileged user.
+///
+/// Fails with [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) on a
+/// directory that is already there, which is what makes a minted id that
+/// collides a retry rather than two scans sharing one journal.
 #[cfg(unix)]
-fn restrict(path: &Path, mode: u32) -> Result<(), JournalError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-    Ok(())
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    fs::DirBuilder::new().mode(0o700).create(path)
 }
 
 #[cfg(not(unix))]
-fn restrict(_path: &Path, _mode: u32) -> Result<(), JournalError> {
-    Ok(())
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
 }
 
 /// How long journals are kept.
@@ -2007,6 +2044,106 @@ mod tests {
         assert_eq!(mode_of(&directory.join(LOCK)), 0o600, "after a heartbeat");
 
         journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The two files a scan appends to are opened the way every other journal
+    /// file is: refusing a link standing where the file should be.
+    ///
+    /// `file` makes the whole argument for `O_NOFOLLOW` and
+    /// `a_link_where_a_journal_file_should_be_is_refused` proves its three
+    /// openers honour it, and for a while neither reached here: `record_hosts`
+    /// and `record_phases` opened by path. The journal directory belongs to the
+    /// *invoking* user by design and the writing process is usually root, so a
+    /// link planted under a fixed name inside it is a root process appending an
+    /// engagement's addresses to whatever the link points at.
+    #[cfg(unix)]
+    #[test]
+    fn appending_refuses_a_link_where_a_journal_file_should_be() {
+        let root = scratch("nofollow");
+        let map = plan("192.0.2.1", "80");
+        let mut journal = begin(&root, &map);
+        let directory = journal.directory().to_path_buf();
+
+        let elsewhere = root.join("not-the-journals-to-touch");
+        fs::write(&elsewhere, b"untouched").expect("writes");
+
+        for name in [HOSTS, PHASES] {
+            fs::remove_file(directory.join(name)).expect("removes");
+            std::os::unix::fs::symlink(&elsewhere, directory.join(name)).expect("links");
+        }
+
+        let phases = crate::export::fixture::report().phases().to_vec();
+        assert!(
+            journal
+                .record_hosts(&[Host::new("192.0.2.1".parse().expect("an address"))])
+                .is_err(),
+            "a link was appended to as the findings file"
+        );
+        assert!(
+            journal.record_phases(&phases).is_err(),
+            "a link was appended to as the phases file"
+        );
+        assert_eq!(
+            fs::read(&elsewhere).expect("reads"),
+            b"untouched",
+            "the file behind the link was written through"
+        );
+
+        journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A journal written under an older format reads, and is refused a resume by
+    /// name rather than reported as a plan that moved.
+    ///
+    /// The fingerprint derivation belongs to the format version, so a journal
+    /// from an earlier one carries a value this build cannot recompute. Saying
+    /// "the plan changed" about it would be false, and it is the one message
+    /// that must never be wrong: it is what tells somebody their targets were
+    /// edited between two sittings.
+    #[test]
+    fn a_journal_from_an_older_format_reads_but_does_not_resume() {
+        let root = scratch("older-format");
+        let map = plan("192.0.2.1-192.0.2.4", "80");
+
+        let directory = {
+            let mut journal = begin(&root, &map);
+            journal
+                .record_hosts(&[Host::new("192.0.2.1".parse().expect("an address"))])
+                .expect("records");
+            let directory = journal.directory().to_path_buf();
+            journal.close().expect("closes");
+            directory
+        };
+
+        // Aged by hand, since no build that wrote the old format is around to do
+        // it. Only the manifest's version moves; everything else it says stands.
+        let path = directory.join(MANIFEST);
+        let mut manifest: JournalManifest =
+            serde_json::from_str(&fs::read_to_string(&path).expect("reads")).expect("parses");
+        manifest.journal_version = super::super::JOURNAL_VERSION - 1;
+        fs::write(&path, serde_json::to_vec(&manifest).expect("encodes")).expect("writes");
+
+        assert_eq!(
+            report(&directory).expect("reads back").host_count(),
+            1,
+            "an older journal still reads as the report its scan produced"
+        );
+        assert_eq!(
+            list(&root).expect("lists").len(),
+            1,
+            "and still appears in a listing"
+        );
+
+        match Journal::resume(&directory, &ports(&map), Privilege::Raw) {
+            Err(OpenError::VersionTooOld { found, understood }) => {
+                assert_eq!(found, super::super::JOURNAL_VERSION - 1);
+                assert_eq!(understood, super::super::JOURNAL_VERSION);
+            }
+            other => panic!("expected a refusal naming the format, got {other:?}"),
+        }
+
         std::fs::remove_dir_all(&root).ok();
     }
 

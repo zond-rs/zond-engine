@@ -23,6 +23,7 @@
 //! reasoning excludes a service's confidence score, which measures how sure the
 //! fingerprinter is rather than what is running.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -267,30 +268,31 @@ pub(crate) struct Clocks {
 ///
 /// Endpoints that are identical in both scans are left out entirely, so the
 /// result is what moved and nothing else.
-pub(crate) fn compare(
-    baseline: &[&Port],
-    current: &[&Port],
+pub(crate) fn compare<'a>(
+    baseline: &[&'a Port],
+    current: &[&'a Port],
     presence: PresenceFor<'_>,
     clocks: &Clocks,
 ) -> Vec<PortDelta> {
-    let mut keys: Vec<(u16, Protocol)> = baseline
-        .iter()
-        .chain(current.iter())
-        .map(|port| (port.number(), port.protocol()))
-        .collect();
-    keys.sort_unstable();
-    keys.dedup();
+    // Indexed rather than searched. Every settled port is on the record, so a
+    // host from a full-port scan carries tens of thousands of them, and a linear
+    // find per endpoint made a comparison quadratic in the one number that grows
+    // fastest. The maps also give the ascending order the result promises.
+    let index = |ports: &[&'a Port]| -> BTreeMap<(u16, Protocol), &'a Port> {
+        ports
+            .iter()
+            .map(|port| ((port.number(), port.protocol()), *port))
+            .collect()
+    };
+    let baseline = index(baseline);
+    let current = index(current);
+
+    let keys: BTreeSet<(u16, Protocol)> = baseline.keys().chain(current.keys()).copied().collect();
 
     let mut deltas = Vec::new();
     for (number, protocol) in keys {
-        let before = baseline
-            .iter()
-            .find(|port| port.number() == number && port.protocol() == protocol)
-            .copied();
-        let after = current
-            .iter()
-            .find(|port| port.number() == number && port.protocol() == protocol)
-            .copied();
+        let before = baseline.get(&(number, protocol)).copied();
+        let after = current.get(&(number, protocol)).copied();
 
         let (presence, changes) = match (before, after) {
             (Some(_), Some(_)) => (Presence::Both, changes_between(before, after, clocks)),
