@@ -86,7 +86,10 @@
 
 /// TCP ports, most likely to be listening first. See the module documentation
 /// for how the order was arrived at and how much of it to believe.
-pub static TCP_BY_PREVALENCE: [u16; 1000] = [
+///
+/// A `const` like [`TCP_TIER_BOUNDS`] and [`COMMON_DISCOVERY_PORTS`](super::set::COMMON_DISCOVERY_PORTS)
+/// beside it, rather than the `static` it was. Nothing wants its address.
+pub const TCP_BY_PREVALENCE: [u16; 1000] = [
     // ── Tier 1 (ranks 1–100): hand-ranked against each other ────────────────
     443, 80, 22, 445, 3389, 8080, 139, 135, 21, 25, 8443, 53, 23, 110, 143, 993, 995, 3306, 5432,
     111, 8000, 587, 465, 631, 5900, 1433, 389, 636, 8888, 3000, 5000, 9000, 8081, 6379, 27017,
@@ -186,7 +189,7 @@ pub static TCP_BY_PREVALENCE: [u16; 1000] = [
 ///
 /// The first forty are hand-ranked; past that, see the module documentation on
 /// how much of the order to believe.
-pub static UDP_BY_PREVALENCE: [u16; 250] = [
+pub const UDP_BY_PREVALENCE: [u16; 250] = [
     // ── Ranks 1–40: hand-ranked against each other ──────────────────────────
     53, 161, 137, 123, 5353, 500, 1900, 67, 68, 138, 69, 162, 111, 4500, 5060, 623, 520, 514, 631,
     1434, 177, 1701, 1812, 1813, 3702, 5355, 11211, 27015, 51820, 2049, 88, 389, 4789, 5683, 6081,

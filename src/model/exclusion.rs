@@ -196,6 +196,12 @@ impl Exclusions {
     /// naming the same excluded address are two questions withheld, and the
     /// number has to be subtractable from the
     /// [`gross_ips`](TargetMap::gross_ips) it is reported beside.
+    ///
+    /// It saturates where `gross_ips` refuses, which is a difference only a plan
+    /// too large to count reaches: `gross_ips` has already answered
+    /// [`CapacityOverflow`](crate::model::target::TargetError::CapacityOverflow)
+    /// by then, so there is nothing for this to be subtracted from and no pair
+    /// to disagree.
     pub fn withhold_targets(&self, map: &mut TargetMap) -> u128 {
         if self.is_empty() {
             return 0;

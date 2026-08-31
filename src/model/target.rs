@@ -105,11 +105,17 @@ impl PlannedTarget {
 /// canonicalizes them and there is no way to mutate them afterwards, so a
 /// `TargetSet` never holds overlapping ranges and never miscounts them. Every
 /// method that reads one takes `&self`, since counting is not a mutation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TargetSet {
     /// Internal IP set, canonical by construction.
     ips: IpSet,
-    /// Internal Port set. Kept private to protect lazy-evaluation invariants.
+    /// The ports to try on each of them.
+    ///
+    /// Private for symmetry with the addresses rather than to protect anything:
+    /// a [`PortSet`] is canonical from construction and has no lazy state, which
+    /// is what the note here used to claim it had. [`ports`](Self::ports) hands
+    /// out a reference and [`into_parts`](Self::into_parts) the value, so what
+    /// privacy buys is that nobody replaces it under a set that has been counted.
     ports: PortSet,
 }
 
@@ -204,7 +210,7 @@ impl TargetSet {
 }
 
 /// A collection of multiple [`TargetSet`] units.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TargetMap {
     /// The units, in the order they were added.
     ///

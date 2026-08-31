@@ -25,7 +25,7 @@
 //! equality and hashing stay the ordinary thing for the ordinary case.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6};
+use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -149,6 +149,11 @@ impl fmt::Display for Zone {
 }
 
 /// An IP address, carrying the interface it is valid on when it needs one.
+///
+/// No [`Default`]. There is no address that means "no address", and the one
+/// this used to answer with was `::`, which is a perfectly good key for a host
+/// record and names nothing. It had no caller anywhere in the crate, its tests
+/// or its examples; what it had was a way to be wrong quietly.
 ///
 /// Constructed through [`ScopedIp::scoped`], which drops a zone the address has
 /// no use for. That is what keeps equality honest: a global address is the same
@@ -323,13 +328,6 @@ impl FromStr for ScopedIp {
     }
 }
 
-/// The unspecified address, as a convenience for callers building one.
-impl Default for ScopedIp {
-    fn default() -> Self {
-        Self::unscoped(IpAddr::V6(Ipv6Addr::UNSPECIFIED))
-    }
-}
-
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -342,7 +340,7 @@ impl Default for ScopedIp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn link_local() -> IpAddr {
         IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))

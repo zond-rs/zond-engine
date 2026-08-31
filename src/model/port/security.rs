@@ -235,6 +235,30 @@ impl Default for Security {
     }
 }
 
+/// The most Subject Alternative Names one certificate will have recorded
+/// against it.
+///
+/// A bound on what a single target can make this process allocate. The names
+/// come out of a certificate the scanned host presented, so their number is the
+/// host's to choose, and the only thing standing between this and an
+/// unbounded list was whatever the TLS layer admits as a handshake message,
+/// which is not a bound this crate states. A `Security` is held per port and a
+/// port per host.
+///
+/// A hundred is past what a real certificate carries. A wildcard covers a domain
+/// in one name, and the shared-hosting certificates that do enumerate carry tens
+/// rather than hundreds; past that the list has stopped describing what the
+/// endpoint is for. The same argument [`MAX_CPES_PER_SERVICE`] makes, about the
+/// other thing on a port that a target writes.
+///
+/// Over-length lists are truncated rather than refused, as an
+/// [`Excerpt`](crate::model::finding::Excerpt) is: the names are evidence, and
+/// dropping a certificate because it carried too many would lose the whole
+/// finding over the part of it that ran long.
+///
+/// [`MAX_CPES_PER_SERVICE`]: crate::model::port::service::MAX_CPES_PER_SERVICE
+pub const MAX_SANS_PER_CERTIFICATE: usize = 100;
+
 /// A parsed summary of a service's X.509 security certificate.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,9 +321,12 @@ impl CertificateInfo {
         }
     }
 
-    /// Builder method to attach the other names the certificate claims.
+    /// Attaches the other names the certificate claims, up to
+    /// [`MAX_SANS_PER_CERTIFICATE`].
+    ///
+    /// Truncated rather than refused, for the reason the bound gives.
     pub fn with_sans(mut self, sans: impl IntoIterator<Item = Arc<str>>) -> Self {
-        self.sans = sans.into_iter().collect();
+        self.sans = sans.into_iter().take(MAX_SANS_PER_CERTIFICATE).collect();
         self
     }
 
@@ -367,6 +394,45 @@ impl CertificateInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The names on a certificate are the scanned host's to choose, so the list
+    /// needs a bound this crate decides.
+    ///
+    /// It had none. `subject_alt_names` collects every DNS and IP name in the
+    /// extension and hands the vector straight here, so the only ceiling was
+    /// whatever the TLS layer admits as a handshake message, which is not
+    /// something this crate states. A `Security` is held per port and a port per
+    /// host.
+    ///
+    /// Truncated rather than refused, so a certificate is not lost over the part
+    /// of it that ran long.
+    #[test]
+    fn a_certificates_names_are_held_to_the_bound() {
+        let many: Vec<Arc<str>> = (0..MAX_SANS_PER_CERTIFICATE * 3)
+            .map(|i| Arc::from(format!("n{i}.example").as_str()))
+            .collect();
+
+        let cert = CertificateInfo::new(
+            "host.example",
+            "Internal CA",
+            SystemTime::now(),
+            SystemTime::now(),
+            "deadbeef",
+        )
+        .with_sans(many);
+
+        assert_eq!(cert.sans().len(), MAX_SANS_PER_CERTIFICATE);
+        assert_eq!(
+            cert.common_name(),
+            "host.example",
+            "the certificate survives its own name list"
+        );
+        assert_eq!(
+            cert.sans()[0].as_ref(),
+            "n0.example",
+            "the first names kept"
+        );
+    }
 
     fn mock_cert(start_offset: i64, end_offset: i64) -> CertificateInfo {
         let now = SystemTime::now();

@@ -22,13 +22,19 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::model::host::os::MAX_CPES_PER_OS;
+
 /// The most CPE identifiers one service will have recorded against it.
 ///
-/// The same bound [`MAX_CPES_PER_OS`](crate::model::host::os::MAX_CPES_PER_OS)
-/// applies to an OS fingerprint, and it matters more here. An OS fingerprint is
-/// derived from stack behaviour, where a service's is derived from a banner:
-/// text the target chose and can make as long and as varied as it likes.
-pub const MAX_CPES_PER_SERVICE: usize = 50;
+/// The same bound [`MAX_CPES_PER_OS`] applies to an OS fingerprint, and it
+/// matters more here: a fingerprint is derived from stack behaviour, where a
+/// service's identifiers are derived from a banner, which is text the target
+/// chose and can make as long and as varied as it likes.
+///
+/// Read from there rather than written again. The two were both a literal 50
+/// under a paragraph asserting they were the same number, which is the one
+/// arrangement in which they can stop being it.
+pub const MAX_CPES_PER_SERVICE: usize = MAX_CPES_PER_OS;
 
 /// A service identified on a port, and how sure the identification is.
 #[must_use]

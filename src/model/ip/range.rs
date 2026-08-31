@@ -279,8 +279,32 @@ impl Ipv6Range {
     /// every interface holds an `fe80::/64`, so there is no way to tell which
     /// segment was meant, and picking one is a guess a scan must not make
     /// silently.
+    ///
+    /// True where *any* of the range is link-local, which is the direction a
+    /// safety question has to fail in. It used to ask
+    /// `start_addr.is_unicast_link_local()`, and a range is two addresses where
+    /// that predicate takes one: `fe00::-fe80::5` covers link-local space,
+    /// starts outside it, and reached `system::interface::routing`'s
+    /// `owning_interface` as though its segment were knowable.
     pub fn is_ambiguous(&self) -> bool {
-        self.zone.is_none() && self.start_addr.is_unicast_link_local()
+        self.zone.is_none() && self.covers_link_local()
+    }
+
+    /// Whether any address in the range is in `fe80::/10`.
+    pub fn covers_link_local(&self) -> bool {
+        u128::from(self.start_addr) <= LINK_LOCAL_LAST
+            && u128::from(self.end_addr) >= LINK_LOCAL_FIRST
+    }
+
+    /// Whether every address in the range is in `fe80::/10`.
+    ///
+    /// What a `%zone` suffix needs to be true of the thing it is written on. A
+    /// zone on a range only partly link-local is meaningful for that part and
+    /// meaningless for the rest, which is a target that does not mean what it
+    /// says.
+    pub fn is_link_local(&self) -> bool {
+        u128::from(self.start_addr) >= LINK_LOCAL_FIRST
+            && u128::from(self.end_addr) <= LINK_LOCAL_LAST
     }
 
     /// Returns an iterator over every [`IpAddr`] within the range.
@@ -323,6 +347,16 @@ impl Ipv6Range {
     }
 }
 
+/// The first and last address of `fe80::/10`, the block
+/// [`Ipv6Addr::is_unicast_link_local`] answers for.
+///
+/// Written out because that predicate takes one address and a range is two, so
+/// asking it about either end says nothing about what lies between them. The
+/// test beside them checks the two agree at all four boundaries, which is what
+/// keeps these from being a second opinion about where link-local space is.
+const LINK_LOCAL_FIRST: u128 = 0xfe80 << 112;
+const LINK_LOCAL_LAST: u128 = (0xfebf << 112) | ((1u128 << 112) - 1);
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Unified IpRange API
 // ══════════════════════════════════════════════════════════════════════════════
@@ -331,6 +365,13 @@ impl Ipv6Range {
 ///
 /// What [`FromStr`] produces, since the text decides the family and the caller
 /// writing it usually has no reason to branch on the answer.
+///
+/// The one public enum in [`model`](crate::model) without `#[non_exhaustive]`,
+/// and deliberately. There is no third address family to add, so a caller
+/// matching both arms is writing something exhaustive that will stay
+/// exhaustive, and the marker's whole effect would be to take away the compile
+/// error if that ever stopped being true. The same argument
+/// [`diff::change::Presence`](crate::diff::change::Presence) is left open on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IpRange {
     /// An IPv4 address range.
@@ -499,18 +540,20 @@ pub fn cidr_range(ip: IpAddr, prefix: u8) -> Result<IpRange, IpError> {
                 return Err(IpError::InvalidPrefix(prefix));
             }
 
+            // No special case for a zero prefix: `checked_shr(0)` is the whole
+            // mask, whose complement is no mask, which is what `/0` means. The
+            // branch that used to be here could not change an answer, and both
+            // property tests below start at 1, so it was never reached either.
             let ip_u32 = u32::from(v4);
-            let mask = if prefix == 0 {
-                0
-            } else {
-                !u32::MAX.checked_shr(prefix as u32).unwrap_or(0)
-            };
+            let mask = !u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
 
             let network = ip_u32 & mask;
             let broadcast = ip_u32 | !mask;
 
             Ok(IpRange::V4(
-                Ipv4Range::new(Ipv4Addr::from(network), Ipv4Addr::from(broadcast)).unwrap(),
+                Ipv4Range::new(Ipv4Addr::from(network), Ipv4Addr::from(broadcast)).unwrap_or_else(
+                    |_| unreachable!("a network address is never above its own broadcast"),
+                ),
             ))
         }
         IpAddr::V6(v6) => {
@@ -519,17 +562,15 @@ pub fn cidr_range(ip: IpAddr, prefix: u8) -> Result<IpRange, IpError> {
             }
 
             let ip_u128 = u128::from(v6);
-            let mask = if prefix == 0 {
-                0
-            } else {
-                !u128::MAX.checked_shr(prefix as u32).unwrap_or(0)
-            };
+            let mask = !u128::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
 
             let network = ip_u128 & mask;
             let broadcast = ip_u128 | !mask;
 
             Ok(IpRange::V6(
-                Ipv6Range::new(Ipv6Addr::from(network), Ipv6Addr::from(broadcast)).unwrap(),
+                Ipv6Range::new(Ipv6Addr::from(network), Ipv6Addr::from(broadcast)).unwrap_or_else(
+                    |_| unreachable!("a network address is never above its own broadcast"),
+                ),
             ))
         }
     }
@@ -701,6 +742,72 @@ mod tests {
         assert_eq!(padded.len(), 5);
     }
 
+    /// The link-local bounds agree with the predicate std answers for one
+    /// address, at all four edges.
+    ///
+    /// They are a second opinion about where `fe80::/10` sits, and the only
+    /// thing that keeps a second opinion honest is checking it against the
+    /// first. Written out because a range is two addresses and the predicate
+    /// takes one.
+    #[test]
+    fn the_link_local_bounds_are_the_block_std_recognises() {
+        let first = Ipv6Addr::from(LINK_LOCAL_FIRST);
+        let last = Ipv6Addr::from(LINK_LOCAL_LAST);
+        assert!(first.is_unicast_link_local(), "{first}");
+        assert!(last.is_unicast_link_local(), "{last}");
+
+        let below = Ipv6Addr::from(LINK_LOCAL_FIRST - 1);
+        let above = Ipv6Addr::from(LINK_LOCAL_LAST + 1);
+        assert!(!below.is_unicast_link_local(), "{below}");
+        assert!(!above.is_unicast_link_local(), "{above}");
+    }
+
+    /// A range is two addresses, and whether it is link-local is a question
+    /// about both.
+    ///
+    /// `is_ambiguous` asked `start_addr.is_unicast_link_local()`, so a range
+    /// that runs into link-local space from below was not ambiguous and went to
+    /// `owning_interface` as though its segment were knowable, and one that runs
+    /// out of it from within was ambiguous along its whole length. The two
+    /// questions are also not the same question: covering *some* link-local
+    /// space is what makes a range ambiguous, and covering *only* link-local
+    /// space is what a `%zone` suffix needs.
+    #[test]
+    fn whether_a_range_is_link_local_is_a_question_about_all_of_it() {
+        let range = |first: &str, last: &str| {
+            Ipv6Range::new(
+                first.parse().expect("an address"),
+                last.parse().expect("an address"),
+            )
+            .expect("in order")
+        };
+
+        // Runs into the block from below: some of it needs a zone.
+        let into = range("fe00::", "fe80::5");
+        assert!(into.covers_link_local());
+        assert!(!into.is_link_local(), "most of it is not link-local");
+        assert!(into.is_ambiguous(), "and the part that is has no interface");
+
+        // Runs out of the block from within: same answer, other direction.
+        let out_of = range("fe80::1", "fec0::1");
+        assert!(out_of.covers_link_local());
+        assert!(!out_of.is_link_local());
+        assert!(out_of.is_ambiguous());
+
+        // Entirely inside, which is what a zone may be written on.
+        let inside = range("fe80::1", "fe80::5");
+        assert!(inside.covers_link_local() && inside.is_link_local());
+        assert!(inside.is_ambiguous(), "until an interface is named");
+
+        // Entirely outside, at both ends of the block.
+        for (first, last) in [("2001:db8::", "2001:db8::ff"), ("fec0::", "fec0::ff")] {
+            let elsewhere = range(first, last);
+            assert!(!elsewhere.covers_link_local(), "{first}-{last}");
+            assert!(!elsewhere.is_link_local(), "{first}-{last}");
+            assert!(!elsewhere.is_ambiguous(), "{first}-{last}");
+        }
+    }
+
     /// A scope id of zero names no interface, so a range carrying one is not
     /// scoped and has to say so.
     ///
@@ -842,16 +949,23 @@ mod property_tests {
             prop_assert_eq!(range.iter().count() as u128, range.len());
         }
 
+        /// From zero, which the ranges used to start at one to avoid: the
+        /// assertion could not write `1 << 128`, so the case the implementation
+        /// special-cased was the case neither generator reached.
         #[test]
-        fn cidr_v4_roundtrip(v4 in any_ipv4(), prefix in 1..=32u8) {
+        fn cidr_v4_roundtrip(v4 in any_ipv4(), prefix in 0..=32u8) {
             let range = cidr_range(IpAddr::V4(v4), prefix).unwrap();
             prop_assert_eq!(range.len(), 1u128 << (32 - prefix));
         }
 
         #[test]
-        fn cidr_v6_roundtrip(v6 in any_ipv6(), prefix in 1..=128u8) {
+        fn cidr_v6_roundtrip(v6 in any_ipv6(), prefix in 0..=128u8) {
             let range = cidr_range(IpAddr::V6(v6), prefix).unwrap();
-            prop_assert_eq!(range.len(), 1u128 << (128 - prefix));
+            // `/0` is the whole space, which is one more address than a `u128`
+            // counts and is what `len` saturates for; every other prefix is the
+            // shift.
+            let expected = 1u128.checked_shl(u32::from(128 - prefix)).unwrap_or(u128::MAX);
+            prop_assert_eq!(range.len(), expected);
         }
     }
 }

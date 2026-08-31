@@ -67,7 +67,7 @@ pub(crate) fn detect_host(
             continue;
         }
 
-        let version = Version::parse(&manifest.version).unwrap_or(Version::new(0, 0, 0));
+        let version = manifest.version.parse().unwrap_or(Version::new(0, 0, 0));
         let Ok(id) = DetectionId::new(manifest.id.clone(), version, &loaded.content_hash) else {
             continue;
         };

@@ -304,8 +304,9 @@ impl Catalogue {
         let version = document.version.ok_or_else(|| {
             CatalogueError::Malformed("the document names no 'version'".to_string())
         })?;
-        let parsed =
-            Version::parse(&version).ok_or(CatalogueError::UnreadableVersion { version })?;
+        let parsed = version
+            .parse()
+            .map_err(|_| CatalogueError::UnreadableVersion { version })?;
 
         Ok(Self {
             id,

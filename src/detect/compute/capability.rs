@@ -228,7 +228,7 @@ impl Grant {
     /// manifest's id is empty, which a corpus refuses at build, so a loaded
     /// detection always resolves.
     pub fn from_manifest(manifest: &DetectionManifest, content_hash: &str) -> Option<Self> {
-        let version = Version::parse(&manifest.version).unwrap_or(Version::new(0, 0, 0));
+        let version = manifest.version.parse().unwrap_or(Version::new(0, 0, 0));
         let detection = DetectionId::new(manifest.id.clone(), version, content_hash).ok()?;
         let caps = &manifest.capabilities;
         // The class is the boundary, not the declaration: a passive detection is

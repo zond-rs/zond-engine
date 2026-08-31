@@ -591,18 +591,9 @@ pub struct Host {
 fn identity_rank(ip: &IpAddr) -> u8 {
     match ip {
         IpAddr::V4(_) => 0,
-        IpAddr::V6(v6) if crate::model::ip::is_global_unicast(v6) || is_unique_local(v6) => 1,
+        IpAddr::V6(v6) if crate::model::ip::is_globally_scoped(v6) => 1,
         IpAddr::V6(_) => 2,
     }
-}
-
-/// Whether `addr` is in `fc00::/7`, the range reserved for addresses that are
-/// unique across an organization but not routed onto the internet.
-///
-/// Globally scoped for this purpose: it names one host wherever the
-/// organization's routing reaches, which is what the ranking is asking.
-fn is_unique_local(addr: &std::net::Ipv6Addr) -> bool {
-    addr.octets()[0] & 0xfe == 0xfc
 }
 
 impl Host {
@@ -856,8 +847,11 @@ impl Host {
     /// Records one piece of liveness evidence: the status it establishes, and
     /// the reason it establishes it.
     ///
-    /// This is how scanners report what they saw, and it is deliberately the
-    /// only such entry point. The status is **promoted, never lowered**, on the
+    /// This is how a scanner reports what it saw, and the one to reach for: it
+    /// records the verdict and the evidence together, which
+    /// [`set_status`](Self::set_status) and [`add_reason`](Self::add_reason) do
+    /// separately for the callers that genuinely have only one of the two.
+    /// The status is **promoted, never lowered**, on the
     /// semantic ordering of [`HostStatus`]. [`Host::merge`](Host::merge)
     /// applies the same rule between two records of one host, for the same
     /// reason: a scan learns about a host from several probes arriving in an
@@ -981,10 +975,21 @@ impl Host {
     /// behind it, and hands the finding back to the port it is about, named by
     /// number and protocol. The host owns its ports, so the finding arrives
     /// through it rather than through a loose mutable handle.
-    pub fn add_port_finding(&mut self, number: u16, protocol: Protocol, finding: Finding) -> bool {
+    ///
+    /// `None` where this host has no such port, which is a different answer from
+    /// `Some(false)`, which means the port has the claim already or is at
+    /// [`MAX_FINDINGS_PER_SUBJECT`]. A `bool` said the same thing about a
+    /// detection that fired against a port nothing recorded and a detection that
+    /// found nothing new, and only the first is worth a caller's attention.
+    pub fn add_port_finding(
+        &mut self,
+        number: u16,
+        protocol: Protocol,
+        finding: Finding,
+    ) -> Option<bool> {
         self.ports
             .get_mut(&(number, protocol))
-            .is_some_and(|port| port.add_finding(finding))
+            .map(|port| port.add_finding(finding))
     }
 
     /// Replaces this host's operating-system fingerprint outright, whatever was
@@ -1186,11 +1191,19 @@ impl Host {
 
         let was_open = existing.is_some_and(|port| port.state() == PortState::Open);
 
-        let recorded = self
-            .ports
-            .entry(key)
-            .and_modify(|p| p.merge(new_port.clone()))
-            .or_insert(new_port);
+        // Matched on the entry rather than `and_modify` beside `or_insert`,
+        // which needs the value in both closures and so cloned it on every
+        // re-probe. `new_port` is owned and a `Port` is not cheap to copy: a
+        // findings map, a service with its identifiers, a security record with
+        // its certificate and every name on it.
+        let recorded = match self.ports.entry(key) {
+            std::collections::btree_map::Entry::Occupied(slot) => {
+                let recorded = slot.into_mut();
+                recorded.merge(new_port);
+                recorded
+            }
+            std::collections::btree_map::Entry::Vacant(slot) => slot.insert(new_port),
+        };
 
         // A state only ever promotes, so this counts up and never has to count
         // back down; see `open_ports`.

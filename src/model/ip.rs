@@ -31,6 +31,10 @@ pub mod range;
 pub mod scoped;
 pub mod set;
 
+pub use range::{IpError, IpRange, Ipv4Range, Ipv6Range};
+pub use scoped::{ScopedIp, ScopedIpError, Zone};
+pub use set::{IpSet, IpSetError, Positions};
+
 /// Whether `ipv6_addr` falls in `2000::/3`, the range IANA currently allocates
 /// global unicast from.
 ///
@@ -57,6 +61,28 @@ pub mod set;
 pub fn is_global_unicast(ipv6_addr: &Ipv6Addr) -> bool {
     let first_byte = ipv6_addr.octets()[0];
     (0x20..=0x3F).contains(&first_byte)
+}
+
+/// Whether `ipv6_addr` names its host from off the segment it is on.
+///
+/// The question this module says it exists to answer, and the one more than one
+/// of [`range`], [`set`] and [`scoped`] has to agree about. Global unicast or
+/// unique-local: the first names a host wherever the internet reaches and the
+/// second wherever an organization's routing does, and for the purpose of
+/// deciding which address identifies a host those are the same answer. A
+/// link-local names a different machine on every segment and is neither.
+///
+/// [`Host::consider_primary_ip`](crate::model::host::Host::consider_primary_ip)
+/// is what reads it, and it used to carry the unique-local half itself, so the
+/// classification this module claims to hold in one place was in two.
+pub fn is_globally_scoped(ipv6_addr: &Ipv6Addr) -> bool {
+    is_global_unicast(ipv6_addr) || is_unique_local(ipv6_addr)
+}
+
+/// Whether `addr` is in `fc00::/7`, the range reserved for addresses that are
+/// unique across an organization but not routed onto the internet.
+fn is_unique_local(addr: &Ipv6Addr) -> bool {
+    addr.octets()[0] & 0xfe == 0xfc
 }
 
 // ╔════════════════════════════════════════════╗

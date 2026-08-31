@@ -6321,6 +6321,9 @@ impl core::marker::UnsafeUnpin for zond_engine::model::finding::Severity
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::Severity
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Severity
 pub struct zond_engine::model::finding::ClaimId
+impl zond_engine::model::finding::ClaimId
+pub fn zond_engine::model::finding::ClaimId::detection(&self) -> &str
+pub fn zond_engine::model::finding::ClaimId::subject(&self) -> &str
 impl core::clone::Clone for zond_engine::model::finding::ClaimId
 pub fn zond_engine::model::finding::ClaimId::clone(&self) -> zond_engine::model::finding::ClaimId
 impl core::cmp::Eq for zond_engine::model::finding::ClaimId
@@ -6434,7 +6437,6 @@ pub zond_engine::model::finding::Version::minor: u16
 pub zond_engine::model::finding::Version::patch: u16
 impl zond_engine::model::finding::Version
 pub const fn zond_engine::model::finding::Version::new(u16, u16, u16) -> Self
-pub fn zond_engine::model::finding::Version::parse(&str) -> core::option::Option<Self>
 impl core::clone::Clone for zond_engine::model::finding::Version
 pub fn zond_engine::model::finding::Version::clone(&self) -> zond_engine::model::finding::Version
 impl core::cmp::Eq for zond_engine::model::finding::Version
@@ -6452,6 +6454,9 @@ impl core::hash::Hash for zond_engine::model::finding::Version
 pub fn zond_engine::model::finding::Version::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for zond_engine::model::finding::Version
 impl core::marker::StructuralPartialEq for zond_engine::model::finding::Version
+impl core::str::traits::FromStr for zond_engine::model::finding::Version
+pub type zond_engine::model::finding::Version::Err = zond_engine::model::finding::VersionParseError
+pub fn zond_engine::model::finding::Version::from_str(&str) -> core::result::Result<Self, Self::Err>
 impl core::marker::Freeze for zond_engine::model::finding::Version
 impl core::marker::Send for zond_engine::model::finding::Version
 impl core::marker::Sync for zond_engine::model::finding::Version
@@ -6459,6 +6464,26 @@ impl core::marker::Unpin for zond_engine::model::finding::Version
 impl core::marker::UnsafeUnpin for zond_engine::model::finding::Version
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::Version
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Version
+pub struct zond_engine::model::finding::VersionParseError
+pub zond_engine::model::finding::VersionParseError::input: alloc::string::String
+impl core::clone::Clone for zond_engine::model::finding::VersionParseError
+pub fn zond_engine::model::finding::VersionParseError::clone(&self) -> zond_engine::model::finding::VersionParseError
+impl core::cmp::Eq for zond_engine::model::finding::VersionParseError
+impl core::cmp::PartialEq for zond_engine::model::finding::VersionParseError
+pub fn zond_engine::model::finding::VersionParseError::eq(&self, &zond_engine::model::finding::VersionParseError) -> bool
+impl core::error::Error for zond_engine::model::finding::VersionParseError
+impl core::fmt::Debug for zond_engine::model::finding::VersionParseError
+pub fn zond_engine::model::finding::VersionParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::finding::VersionParseError
+pub fn zond_engine::model::finding::VersionParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::finding::VersionParseError
+impl core::marker::Freeze for zond_engine::model::finding::VersionParseError
+impl core::marker::Send for zond_engine::model::finding::VersionParseError
+impl core::marker::Sync for zond_engine::model::finding::VersionParseError
+impl core::marker::Unpin for zond_engine::model::finding::VersionParseError
+impl core::marker::UnsafeUnpin for zond_engine::model::finding::VersionParseError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::VersionParseError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::VersionParseError
 pub const zond_engine::model::finding::MAX_EXCERPT_BYTES: usize
 pub const zond_engine::model::finding::MAX_FINDINGS_PER_SUBJECT: usize
 pub mod zond_engine::model::host
@@ -6595,6 +6620,7 @@ impl core::marker::Unpin for zond_engine::model::host::os::OsFingerprint
 impl core::marker::UnsafeUnpin for zond_engine::model::host::os::OsFingerprint
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::os::OsFingerprint
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::os::OsFingerprint
+pub const zond_engine::model::host::os::HIGH_CONFIDENCE_ACCURACY: u8
 pub const zond_engine::model::host::os::MAX_CPES_PER_OS: usize
 pub mod zond_engine::model::host::path
 pub struct zond_engine::model::host::path::Hop
@@ -6822,6 +6848,7 @@ impl core::marker::Unpin for zond_engine::model::host::telemetry::RttSample
 impl core::marker::UnsafeUnpin for zond_engine::model::host::telemetry::RttSample
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::telemetry::RttSample
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::telemetry::RttSample
+pub const zond_engine::model::host::telemetry::DEFAULT_RTT_SAMPLES: usize
 #[non_exhaustive] pub enum zond_engine::model::host::Filtering
 pub zond_engine::model::host::Filtering::InlineMiddlebox
 pub zond_engine::model::host::Filtering::PortTrustingAcl
@@ -7041,7 +7068,7 @@ pub fn zond_engine::model::host::Host::add_finding(&mut self, zond_engine::model
 pub fn zond_engine::model::host::Host::add_ip(&mut self, core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::host::Host::add_network_role(&mut self, zond_engine::model::host::NetworkRole) -> bool
 pub fn zond_engine::model::host::Host::add_port(&mut self, zond_engine::model::port::Port) -> bool
-pub fn zond_engine::model::host::Host::add_port_finding(&mut self, u16, zond_engine::model::port::Protocol, zond_engine::model::finding::Finding) -> bool
+pub fn zond_engine::model::host::Host::add_port_finding(&mut self, u16, zond_engine::model::port::Protocol, zond_engine::model::finding::Finding) -> core::option::Option<bool>
 pub fn zond_engine::model::host::Host::add_reason(&mut self, zond_engine::model::host::status::StatusReason)
 pub fn zond_engine::model::host::Host::add_rtt(&mut self, core::time::Duration)
 pub fn zond_engine::model::host::Host::add_rtts(&mut self, impl core::iter::traits::collect::IntoIterator<Item = core::time::Duration>)
@@ -7375,9 +7402,11 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::range::Ipv
 pub struct zond_engine::model::ip::range::Ipv6Range
 impl zond_engine::model::ip::range::Ipv6Range
 pub fn zond_engine::model::ip::range::Ipv6Range::contains(&self, &core::net::ip_addr::Ipv6Addr) -> bool
+pub fn zond_engine::model::ip::range::Ipv6Range::covers_link_local(&self) -> bool
 pub fn zond_engine::model::ip::range::Ipv6Range::end_addr(&self) -> core::net::ip_addr::Ipv6Addr
 pub fn zond_engine::model::ip::range::Ipv6Range::extend_end_to(&mut self, core::net::ip_addr::Ipv6Addr)
 pub fn zond_engine::model::ip::range::Ipv6Range::is_ambiguous(&self) -> bool
+pub fn zond_engine::model::ip::range::Ipv6Range::is_link_local(&self) -> bool
 pub fn zond_engine::model::ip::range::Ipv6Range::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = core::net::ip_addr::IpAddr>
 pub fn zond_engine::model::ip::range::Ipv6Range::len(&self) -> u128
 pub fn zond_engine::model::ip::range::Ipv6Range::new(core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr) -> core::result::Result<Self, zond_engine::model::ip::range::IpError>
@@ -7451,8 +7480,6 @@ impl core::convert::From<&zond_engine::model::ip::scoped::ScopedIp> for zond_eng
 pub fn zond_engine::model::ip::scoped::ScopedIp::from(&zond_engine::model::ip::scoped::ScopedIp) -> Self
 impl core::convert::From<core::net::ip_addr::IpAddr> for zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ScopedIp::from(core::net::ip_addr::IpAddr) -> Self
-impl core::default::Default for zond_engine::model::ip::scoped::ScopedIp
-pub fn zond_engine::model::ip::scoped::ScopedIp::default() -> Self
 impl core::fmt::Debug for zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ScopedIp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::model::ip::scoped::ScopedIp
@@ -7610,7 +7637,337 @@ impl core::marker::Unpin for zond_engine::model::ip::set::Positions
 impl core::marker::UnsafeUnpin for zond_engine::model::ip::set::Positions
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::set::Positions
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::set::Positions
+#[non_exhaustive] pub enum zond_engine::model::ip::IpError
+pub zond_engine::model::ip::IpError::AddrParse(core::net::parser::AddrParseError)
+pub zond_engine::model::ip::IpError::InvalidFormat(alloc::string::String)
+pub zond_engine::model::ip::IpError::InvalidPrefix(u8)
+pub zond_engine::model::ip::IpError::InvalidRange(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr)
+pub zond_engine::model::ip::IpError::PrefixParse(core::num::error::ParseIntError)
+impl core::clone::Clone for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::clone(&self) -> zond_engine::model::ip::range::IpError
+impl core::cmp::Eq for zond_engine::model::ip::range::IpError
+impl core::cmp::PartialEq for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::eq(&self, &zond_engine::model::ip::range::IpError) -> bool
+impl core::convert::From<core::net::parser::AddrParseError> for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::from(core::net::parser::AddrParseError) -> Self
+impl core::convert::From<core::num::error::ParseIntError> for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::from(core::num::error::ParseIntError) -> Self
+impl core::convert::From<zond_engine::model::ip::range::IpError> for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::from(zond_engine::model::ip::range::IpError) -> Self
+impl core::error::Error for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::range::IpError
+impl core::marker::Freeze for zond_engine::model::ip::range::IpError
+impl core::marker::Send for zond_engine::model::ip::range::IpError
+impl core::marker::Sync for zond_engine::model::ip::range::IpError
+impl core::marker::Unpin for zond_engine::model::ip::range::IpError
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::range::IpError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::range::IpError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::range::IpError
+pub enum zond_engine::model::ip::IpRange
+pub zond_engine::model::ip::IpRange::V4(zond_engine::model::ip::range::Ipv4Range)
+pub zond_engine::model::ip::IpRange::V6(zond_engine::model::ip::range::Ipv6Range)
+impl zond_engine::model::ip::range::IpRange
+pub fn zond_engine::model::ip::range::IpRange::contains(&self, &core::net::ip_addr::IpAddr) -> bool
+pub fn zond_engine::model::ip::range::IpRange::end_addr(&self) -> core::net::ip_addr::IpAddr
+pub fn zond_engine::model::ip::range::IpRange::len(&self) -> u128
+pub fn zond_engine::model::ip::range::IpRange::start_addr(&self) -> core::net::ip_addr::IpAddr
+impl core::clone::Clone for zond_engine::model::ip::range::IpRange
+pub fn zond_engine::model::ip::range::IpRange::clone(&self) -> zond_engine::model::ip::range::IpRange
+impl core::cmp::Eq for zond_engine::model::ip::range::IpRange
+impl core::cmp::PartialEq for zond_engine::model::ip::range::IpRange
+pub fn zond_engine::model::ip::range::IpRange::eq(&self, &zond_engine::model::ip::range::IpRange) -> bool
+impl core::convert::From<&zond_engine::model::ip::range::IpRange> for zond_engine::record::RangeRecord
+pub fn zond_engine::record::RangeRecord::from(&zond_engine::model::ip::range::IpRange) -> Self
+impl core::convert::From<zond_engine::model::ip::range::IpRange> for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::from(zond_engine::model::ip::range::IpRange) -> Self
+impl core::fmt::Debug for zond_engine::model::ip::range::IpRange
+pub fn zond_engine::model::ip::range::IpRange::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::ip::range::IpRange
+pub fn zond_engine::model::ip::range::IpRange::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::iter::traits::collect::FromIterator<zond_engine::model::ip::range::IpRange> for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::from_iter<I: core::iter::traits::collect::IntoIterator<Item = zond_engine::model::ip::range::IpRange>>(I) -> Self
+impl core::marker::Copy for zond_engine::model::ip::range::IpRange
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::range::IpRange
+impl core::str::traits::FromStr for zond_engine::model::ip::range::IpRange
+pub type zond_engine::model::ip::range::IpRange::Err = zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpRange::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl core::marker::Freeze for zond_engine::model::ip::range::IpRange
+impl core::marker::Send for zond_engine::model::ip::range::IpRange
+impl core::marker::Sync for zond_engine::model::ip::range::IpRange
+impl core::marker::Unpin for zond_engine::model::ip::range::IpRange
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::range::IpRange
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::range::IpRange
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::range::IpRange
+#[non_exhaustive] pub enum zond_engine::model::ip::IpSetError
+pub zond_engine::model::ip::IpSetError::InvalidTarget(zond_engine::model::ip::range::IpError)
+impl core::clone::Clone for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::clone(&self) -> zond_engine::model::ip::set::IpSetError
+impl core::cmp::Eq for zond_engine::model::ip::set::IpSetError
+impl core::cmp::PartialEq for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::eq(&self, &zond_engine::model::ip::set::IpSetError) -> bool
+impl core::convert::From<zond_engine::model::ip::range::IpError> for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::from(zond_engine::model::ip::range::IpError) -> Self
+impl core::error::Error for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::set::IpSetError
+impl core::marker::Freeze for zond_engine::model::ip::set::IpSetError
+impl core::marker::Send for zond_engine::model::ip::set::IpSetError
+impl core::marker::Sync for zond_engine::model::ip::set::IpSetError
+impl core::marker::Unpin for zond_engine::model::ip::set::IpSetError
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::set::IpSetError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::set::IpSetError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::set::IpSetError
+#[non_exhaustive] pub enum zond_engine::model::ip::ScopedIpError
+pub zond_engine::model::ip::ScopedIpError::EmptyZone
+pub zond_engine::model::ip::ScopedIpError::NotAnAddress(alloc::string::String)
+pub zond_engine::model::ip::ScopedIpError::ZoneOnUnscopedAddress(core::net::ip_addr::IpAddr, alloc::string::String)
+impl core::clone::Clone for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::clone(&self) -> zond_engine::model::ip::scoped::ScopedIpError
+impl core::cmp::Eq for zond_engine::model::ip::scoped::ScopedIpError
+impl core::cmp::PartialEq for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::eq(&self, &zond_engine::model::ip::scoped::ScopedIpError) -> bool
+impl core::error::Error for zond_engine::model::ip::scoped::ScopedIpError
+impl core::fmt::Debug for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::scoped::ScopedIpError
+impl core::marker::Freeze for zond_engine::model::ip::scoped::ScopedIpError
+impl core::marker::Send for zond_engine::model::ip::scoped::ScopedIpError
+impl core::marker::Sync for zond_engine::model::ip::scoped::ScopedIpError
+impl core::marker::Unpin for zond_engine::model::ip::scoped::ScopedIpError
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::scoped::ScopedIpError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::scoped::ScopedIpError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::scoped::ScopedIpError
+pub struct zond_engine::model::ip::IpSet
+impl zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::canonicalize(&mut self)
+pub fn zond_engine::model::ip::set::IpSet::contains(&self, &core::net::ip_addr::IpAddr) -> bool
+pub fn zond_engine::model::ip::set::IpSet::insert(&mut self, core::net::ip_addr::IpAddr)
+pub fn zond_engine::model::ip::set::IpSet::insert_range(&mut self, zond_engine::model::ip::range::IpRange)
+pub fn zond_engine::model::ip::set::IpSet::is_empty(&self) -> bool
+pub fn zond_engine::model::ip::set::IpSet::iter(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = core::net::ip_addr::IpAddr> + core::marker::Send + '_)>
+pub fn zond_engine::model::ip::set::IpSet::len(&self) -> u128
+pub fn zond_engine::model::ip::set::IpSet::len_gross(&self) -> u128
+pub fn zond_engine::model::ip::set::IpSet::new() -> Self
+pub fn zond_engine::model::ip::set::IpSet::push_v4_range(&mut self, zond_engine::model::ip::range::Ipv4Range)
+pub fn zond_engine::model::ip::set::IpSet::push_v6_range(&mut self, zond_engine::model::ip::range::Ipv6Range)
+pub fn zond_engine::model::ip::set::IpSet::subtract(&mut self, &zond_engine::model::ip::set::IpSet)
+pub fn zond_engine::model::ip::set::IpSet::v4(&self) -> &[zond_engine::model::ip::range::Ipv4Range]
+pub fn zond_engine::model::ip::set::IpSet::v4_len(&self) -> u128
+pub fn zond_engine::model::ip::set::IpSet::v6(&self) -> &[zond_engine::model::ip::range::Ipv6Range]
+pub fn zond_engine::model::ip::set::IpSet::v6_len(&self) -> u128
+impl zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::positions(&self) -> zond_engine::model::ip::set::Positions
+impl core::clone::Clone for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::clone(&self) -> zond_engine::model::ip::set::IpSet
+impl core::cmp::Eq for zond_engine::model::ip::set::IpSet
+impl core::cmp::PartialEq for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::eq(&self, &Self) -> bool
+impl core::convert::From<&zond_engine::model::ip::set::IpSet> for zond_engine::record::PlanRecord
+pub fn zond_engine::record::PlanRecord::from(&zond_engine::model::ip::set::IpSet) -> Self
+impl core::convert::From<core::net::ip_addr::IpAddr> for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::from(core::net::ip_addr::IpAddr) -> Self
+impl core::convert::From<zond_engine::model::ip::range::IpRange> for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::from(zond_engine::model::ip::range::IpRange) -> Self
+impl core::convert::From<zond_engine::model::ip::set::IpSet> for zond_engine::model::exclusion::Exclusions
+pub fn zond_engine::model::exclusion::Exclusions::from(zond_engine::model::ip::set::IpSet) -> Self
+impl core::convert::TryFrom<&str> for zond_engine::model::ip::set::IpSet
+pub type zond_engine::model::ip::set::IpSet::Error = zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSet::try_from(&str) -> core::result::Result<Self, Self::Error>
+impl core::default::Default for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::default() -> zond_engine::model::ip::set::IpSet
+impl core::fmt::Debug for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::iter::traits::collect::Extend<core::net::ip_addr::IpAddr> for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::extend<T: core::iter::traits::collect::IntoIterator<Item = core::net::ip_addr::IpAddr>>(&mut self, T)
+impl core::iter::traits::collect::FromIterator<core::net::ip_addr::IpAddr> for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::from_iter<I: core::iter::traits::collect::IntoIterator<Item = core::net::ip_addr::IpAddr>>(I) -> Self
+impl core::iter::traits::collect::FromIterator<zond_engine::model::ip::range::IpRange> for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::from_iter<I: core::iter::traits::collect::IntoIterator<Item = zond_engine::model::ip::range::IpRange>>(I) -> Self
+impl core::iter::traits::collect::FromIterator<zond_engine::model::ip::set::IpSet> for zond_engine::model::ip::set::IpSet
+pub fn zond_engine::model::ip::set::IpSet::from_iter<I: core::iter::traits::collect::IntoIterator<Item = zond_engine::model::ip::set::IpSet>>(I) -> Self
+impl core::iter::traits::collect::IntoIterator for zond_engine::model::ip::set::IpSet
+pub type zond_engine::model::ip::set::IpSet::IntoIter = alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = core::net::ip_addr::IpAddr> + core::marker::Send)>
+pub type zond_engine::model::ip::set::IpSet::Item = core::net::ip_addr::IpAddr
+pub fn zond_engine::model::ip::set::IpSet::into_iter(self) -> Self::IntoIter
+impl core::str::traits::FromStr for zond_engine::model::ip::set::IpSet
+pub type zond_engine::model::ip::set::IpSet::Err = zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSet::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl core::marker::Freeze for zond_engine::model::ip::set::IpSet
+impl core::marker::Send for zond_engine::model::ip::set::IpSet
+impl core::marker::Sync for zond_engine::model::ip::set::IpSet
+impl core::marker::Unpin for zond_engine::model::ip::set::IpSet
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::set::IpSet
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::set::IpSet
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::set::IpSet
+pub struct zond_engine::model::ip::Ipv4Range
+impl zond_engine::model::ip::range::Ipv4Range
+pub fn zond_engine::model::ip::range::Ipv4Range::contains(&self, &core::net::ip_addr::Ipv4Addr) -> bool
+pub fn zond_engine::model::ip::range::Ipv4Range::end_addr(&self) -> core::net::ip_addr::Ipv4Addr
+pub fn zond_engine::model::ip::range::Ipv4Range::extend_end_to(&mut self, core::net::ip_addr::Ipv4Addr)
+pub fn zond_engine::model::ip::range::Ipv4Range::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = core::net::ip_addr::IpAddr>
+pub fn zond_engine::model::ip::range::Ipv4Range::len(&self) -> u64
+pub fn zond_engine::model::ip::range::Ipv4Range::new(core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> core::result::Result<Self, zond_engine::model::ip::range::IpError>
+pub const fn zond_engine::model::ip::range::Ipv4Range::single(core::net::ip_addr::Ipv4Addr) -> Self
+pub fn zond_engine::model::ip::range::Ipv4Range::start_addr(&self) -> core::net::ip_addr::Ipv4Addr
+impl core::clone::Clone for zond_engine::model::ip::range::Ipv4Range
+pub fn zond_engine::model::ip::range::Ipv4Range::clone(&self) -> zond_engine::model::ip::range::Ipv4Range
+impl core::cmp::Eq for zond_engine::model::ip::range::Ipv4Range
+impl core::cmp::PartialEq for zond_engine::model::ip::range::Ipv4Range
+pub fn zond_engine::model::ip::range::Ipv4Range::eq(&self, &zond_engine::model::ip::range::Ipv4Range) -> bool
+impl core::fmt::Debug for zond_engine::model::ip::range::Ipv4Range
+pub fn zond_engine::model::ip::range::Ipv4Range::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::ip::range::Ipv4Range
+pub fn zond_engine::model::ip::range::Ipv4Range::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::ip::range::Ipv4Range
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::range::Ipv4Range
+impl core::marker::Freeze for zond_engine::model::ip::range::Ipv4Range
+impl core::marker::Send for zond_engine::model::ip::range::Ipv4Range
+impl core::marker::Sync for zond_engine::model::ip::range::Ipv4Range
+impl core::marker::Unpin for zond_engine::model::ip::range::Ipv4Range
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::range::Ipv4Range
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::range::Ipv4Range
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::range::Ipv4Range
+pub struct zond_engine::model::ip::Ipv6Range
+impl zond_engine::model::ip::range::Ipv6Range
+pub fn zond_engine::model::ip::range::Ipv6Range::contains(&self, &core::net::ip_addr::Ipv6Addr) -> bool
+pub fn zond_engine::model::ip::range::Ipv6Range::covers_link_local(&self) -> bool
+pub fn zond_engine::model::ip::range::Ipv6Range::end_addr(&self) -> core::net::ip_addr::Ipv6Addr
+pub fn zond_engine::model::ip::range::Ipv6Range::extend_end_to(&mut self, core::net::ip_addr::Ipv6Addr)
+pub fn zond_engine::model::ip::range::Ipv6Range::is_ambiguous(&self) -> bool
+pub fn zond_engine::model::ip::range::Ipv6Range::is_link_local(&self) -> bool
+pub fn zond_engine::model::ip::range::Ipv6Range::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = core::net::ip_addr::IpAddr>
+pub fn zond_engine::model::ip::range::Ipv6Range::len(&self) -> u128
+pub fn zond_engine::model::ip::range::Ipv6Range::new(core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr) -> core::result::Result<Self, zond_engine::model::ip::range::IpError>
+pub fn zond_engine::model::ip::range::Ipv6Range::scoped(core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, core::option::Option<u32>) -> core::result::Result<Self, zond_engine::model::ip::range::IpError>
+pub const fn zond_engine::model::ip::range::Ipv6Range::single(core::net::ip_addr::Ipv6Addr) -> Self
+pub fn zond_engine::model::ip::range::Ipv6Range::start_addr(&self) -> core::net::ip_addr::Ipv6Addr
+pub fn zond_engine::model::ip::range::Ipv6Range::zone(&self) -> core::option::Option<u32>
+impl core::clone::Clone for zond_engine::model::ip::range::Ipv6Range
+pub fn zond_engine::model::ip::range::Ipv6Range::clone(&self) -> zond_engine::model::ip::range::Ipv6Range
+impl core::cmp::Eq for zond_engine::model::ip::range::Ipv6Range
+impl core::cmp::PartialEq for zond_engine::model::ip::range::Ipv6Range
+pub fn zond_engine::model::ip::range::Ipv6Range::eq(&self, &zond_engine::model::ip::range::Ipv6Range) -> bool
+impl core::fmt::Debug for zond_engine::model::ip::range::Ipv6Range
+pub fn zond_engine::model::ip::range::Ipv6Range::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::ip::range::Ipv6Range
+pub fn zond_engine::model::ip::range::Ipv6Range::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::ip::range::Ipv6Range
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::range::Ipv6Range
+impl core::marker::Freeze for zond_engine::model::ip::range::Ipv6Range
+impl core::marker::Send for zond_engine::model::ip::range::Ipv6Range
+impl core::marker::Sync for zond_engine::model::ip::range::Ipv6Range
+impl core::marker::Unpin for zond_engine::model::ip::range::Ipv6Range
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::range::Ipv6Range
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::range::Ipv6Range
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::range::Ipv6Range
+pub struct zond_engine::model::ip::Positions
+impl zond_engine::model::ip::set::Positions
+pub fn zond_engine::model::ip::set::Positions::address_at(&self, u64) -> core::option::Option<core::net::ip_addr::IpAddr>
+pub fn zond_engine::model::ip::set::Positions::find(&self, core::net::ip_addr::IpAddr) -> core::option::Option<u64>
+pub fn zond_engine::model::ip::set::Positions::is_empty(&self) -> bool
+pub fn zond_engine::model::ip::set::Positions::of(&zond_engine::model::ip::set::IpSet) -> Self
+pub fn zond_engine::model::ip::set::Positions::ranges_in(&self, core::ops::range::Range<u64>) -> alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
+pub fn zond_engine::model::ip::set::Positions::total(&self) -> u64
+pub fn zond_engine::model::ip::set::Positions::unnumbered(&self) -> &[zond_engine::model::ip::range::IpRange]
+impl core::clone::Clone for zond_engine::model::ip::set::Positions
+pub fn zond_engine::model::ip::set::Positions::clone(&self) -> zond_engine::model::ip::set::Positions
+impl core::default::Default for zond_engine::model::ip::set::Positions
+pub fn zond_engine::model::ip::set::Positions::default() -> zond_engine::model::ip::set::Positions
+impl core::fmt::Debug for zond_engine::model::ip::set::Positions
+pub fn zond_engine::model::ip::set::Positions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::model::ip::set::Positions
+impl core::marker::Send for zond_engine::model::ip::set::Positions
+impl core::marker::Sync for zond_engine::model::ip::set::Positions
+impl core::marker::Unpin for zond_engine::model::ip::set::Positions
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::set::Positions
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::set::Positions
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::set::Positions
+pub struct zond_engine::model::ip::ScopedIp
+impl zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::addr(&self) -> core::net::ip_addr::IpAddr
+pub fn zond_engine::model::ip::scoped::ScopedIp::is_unusable(&self) -> bool
+pub fn zond_engine::model::ip::scoped::ScopedIp::needs_zone(&core::net::ip_addr::IpAddr) -> bool
+pub fn zond_engine::model::ip::scoped::ScopedIp::scoped(core::net::ip_addr::IpAddr, zond_engine::model::ip::scoped::Zone) -> Self
+pub fn zond_engine::model::ip::scoped::ScopedIp::to_socket_addr(&self, u16) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn zond_engine::model::ip::scoped::ScopedIp::unscoped(core::net::ip_addr::IpAddr) -> Self
+pub fn zond_engine::model::ip::scoped::ScopedIp::zone(&self) -> core::option::Option<&zond_engine::model::ip::scoped::Zone>
+impl core::clone::Clone for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::clone(&self) -> zond_engine::model::ip::scoped::ScopedIp
+impl core::cmp::Eq for zond_engine::model::ip::scoped::ScopedIp
+impl core::cmp::Ord for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::cmp(&self, &zond_engine::model::ip::scoped::ScopedIp) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::eq(&self, &zond_engine::model::ip::scoped::ScopedIp) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::partial_cmp(&self, &zond_engine::model::ip::scoped::ScopedIp) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<&core::net::ip_addr::IpAddr> for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::from(&core::net::ip_addr::IpAddr) -> Self
+impl core::convert::From<&zond_engine::model::ip::scoped::ScopedIp> for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::from(&zond_engine::model::ip::scoped::ScopedIp) -> Self
+impl core::convert::From<core::net::ip_addr::IpAddr> for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::from(core::net::ip_addr::IpAddr) -> Self
+impl core::fmt::Debug for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::ip::scoped::ScopedIp
+pub fn zond_engine::model::ip::scoped::ScopedIp::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::scoped::ScopedIp
+impl core::str::traits::FromStr for zond_engine::model::ip::scoped::ScopedIp
+pub type zond_engine::model::ip::scoped::ScopedIp::Err = zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIp::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl core::marker::Freeze for zond_engine::model::ip::scoped::ScopedIp
+impl core::marker::Send for zond_engine::model::ip::scoped::ScopedIp
+impl core::marker::Sync for zond_engine::model::ip::scoped::ScopedIp
+impl core::marker::Unpin for zond_engine::model::ip::scoped::ScopedIp
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::scoped::ScopedIp
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::scoped::ScopedIp
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::scoped::ScopedIp
+pub struct zond_engine::model::ip::Zone
+impl zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::index(&self) -> core::option::Option<u32>
+pub fn zond_engine::model::ip::scoped::Zone::name(&self) -> &str
+pub fn zond_engine::model::ip::scoped::Zone::new(u32, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub fn zond_engine::model::ip::scoped::Zone::unresolved(impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+impl core::clone::Clone for zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::clone(&self) -> zond_engine::model::ip::scoped::Zone
+impl core::cmp::Eq for zond_engine::model::ip::scoped::Zone
+impl core::cmp::Ord for zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<&zond_engine::model::ip::scoped::Zone> for zond_engine::record::ZoneRecord
+pub fn zond_engine::record::ZoneRecord::from(&zond_engine::model::ip::scoped::Zone) -> Self
+impl core::convert::From<&zond_engine::record::ZoneRecord> for zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::from(&zond_engine::record::ZoneRecord) -> Self
+impl core::fmt::Debug for zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::ip::scoped::Zone
+pub fn zond_engine::model::ip::scoped::Zone::hash<H: core::hash::Hasher>(&self, &mut H)
+impl core::marker::Freeze for zond_engine::model::ip::scoped::Zone
+impl core::marker::Send for zond_engine::model::ip::scoped::Zone
+impl core::marker::Sync for zond_engine::model::ip::scoped::Zone
+impl core::marker::Unpin for zond_engine::model::ip::scoped::Zone
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::scoped::Zone
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::scoped::Zone
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::scoped::Zone
 pub fn zond_engine::model::ip::is_global_unicast(&core::net::ip_addr::Ipv6Addr) -> bool
+pub fn zond_engine::model::ip::is_globally_scoped(&core::net::ip_addr::Ipv6Addr) -> bool
 pub mod zond_engine::model::mac
 pub struct zond_engine::model::mac::MacAddr(_)
 impl zond_engine::model::mac::MacAddr
@@ -7678,7 +8035,9 @@ pub mod zond_engine::model::parse::ip
 pub zond_engine::model::parse::ip::IpParseError::EmptySet
 pub zond_engine::model::parse::ip::IpParseError::InvalidPrefix(u32)
 pub zond_engine::model::parse::ip::IpParseError::InvalidRange(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr)
-pub zond_engine::model::parse::ip::IpParseError::LanError(alloc::string::String)
+pub zond_engine::model::parse::ip::IpParseError::KeywordUnresolved
+pub zond_engine::model::parse::ip::IpParseError::KeywordUnresolved::keyword: &'static str
+pub zond_engine::model::parse::ip::IpParseError::KeywordUnresolved::reason: alloc::string::String
 pub zond_engine::model::parse::ip::IpParseError::Malformed(alloc::string::String)
 pub zond_engine::model::parse::ip::IpParseError::UnknownInterface(alloc::string::String)
 pub zond_engine::model::parse::ip::IpParseError::ZoneOnUnscopedTarget(alloc::string::String)
@@ -7703,6 +8062,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::ip::IpP
 #[non_exhaustive] pub enum zond_engine::model::parse::ip::Keyword
 pub zond_engine::model::parse::ip::Keyword::Lan
 impl zond_engine::model::parse::ip::Keyword
+pub const zond_engine::model::parse::ip::Keyword::ALL: [zond_engine::model::parse::ip::Keyword; 1]
 pub fn zond_engine::model::parse::ip::Keyword::as_str(self) -> &'static str
 pub fn zond_engine::model::parse::ip::Keyword::from_token(&str) -> core::option::Option<Self>
 impl core::clone::Clone for zond_engine::model::parse::ip::Keyword
@@ -7762,7 +8122,7 @@ impl core::marker::Unpin for zond_engine::model::parse::target::TargetParseError
 impl core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetParseError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetParseError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target::TargetParseError
-pub struct zond_engine::model::parse::target::TargetContext<'a>
+#[non_exhaustive] pub struct zond_engine::model::parse::target::TargetContext<'a>
 pub zond_engine::model::parse::target::TargetContext::hosts: core::option::Option<zond_engine::model::parse::target::HostLookup<'a>>
 pub zond_engine::model::parse::target::TargetContext::keywords: core::option::Option<zond_engine::model::parse::ip::ResolverFn<'a>>
 pub zond_engine::model::parse::target::TargetContext::zones: core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'a>>
@@ -7835,7 +8195,9 @@ pub type zond_engine::model::parse::target::HostLookup<'a> = &'a dyn core::ops::
 pub zond_engine::model::parse::IpParseError::EmptySet
 pub zond_engine::model::parse::IpParseError::InvalidPrefix(u32)
 pub zond_engine::model::parse::IpParseError::InvalidRange(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr)
-pub zond_engine::model::parse::IpParseError::LanError(alloc::string::String)
+pub zond_engine::model::parse::IpParseError::KeywordUnresolved
+pub zond_engine::model::parse::IpParseError::KeywordUnresolved::keyword: &'static str
+pub zond_engine::model::parse::IpParseError::KeywordUnresolved::reason: alloc::string::String
 pub zond_engine::model::parse::IpParseError::Malformed(alloc::string::String)
 pub zond_engine::model::parse::IpParseError::UnknownInterface(alloc::string::String)
 pub zond_engine::model::parse::IpParseError::ZoneOnUnscopedTarget(alloc::string::String)
@@ -7857,14 +8219,139 @@ impl core::marker::Unpin for zond_engine::model::parse::ip::IpParseError
 impl core::marker::UnsafeUnpin for zond_engine::model::parse::ip::IpParseError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::ip::IpParseError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::ip::IpParseError
+#[non_exhaustive] pub enum zond_engine::model::parse::Keyword
+pub zond_engine::model::parse::Keyword::Lan
+impl zond_engine::model::parse::ip::Keyword
+pub const zond_engine::model::parse::ip::Keyword::ALL: [zond_engine::model::parse::ip::Keyword; 1]
+pub fn zond_engine::model::parse::ip::Keyword::as_str(self) -> &'static str
+pub fn zond_engine::model::parse::ip::Keyword::from_token(&str) -> core::option::Option<Self>
+impl core::clone::Clone for zond_engine::model::parse::ip::Keyword
+pub fn zond_engine::model::parse::ip::Keyword::clone(&self) -> zond_engine::model::parse::ip::Keyword
+impl core::cmp::Eq for zond_engine::model::parse::ip::Keyword
+impl core::cmp::PartialEq for zond_engine::model::parse::ip::Keyword
+pub fn zond_engine::model::parse::ip::Keyword::eq(&self, &zond_engine::model::parse::ip::Keyword) -> bool
+impl core::fmt::Debug for zond_engine::model::parse::ip::Keyword
+pub fn zond_engine::model::parse::ip::Keyword::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::model::parse::ip::Keyword
+impl core::marker::StructuralPartialEq for zond_engine::model::parse::ip::Keyword
+impl core::marker::Freeze for zond_engine::model::parse::ip::Keyword
+impl core::marker::Send for zond_engine::model::parse::ip::Keyword
+impl core::marker::Sync for zond_engine::model::parse::ip::Keyword
+impl core::marker::Unpin for zond_engine::model::parse::ip::Keyword
+impl core::marker::UnsafeUnpin for zond_engine::model::parse::ip::Keyword
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::ip::Keyword
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::ip::Keyword
+#[non_exhaustive] pub enum zond_engine::model::parse::TargetParseError
+pub zond_engine::model::parse::TargetParseError::Address
+pub zond_engine::model::parse::TargetParseError::Address::expression: alloc::string::String
+pub zond_engine::model::parse::TargetParseError::Address::source: zond_engine::model::parse::ip::IpParseError
+pub zond_engine::model::parse::TargetParseError::Empty
+pub zond_engine::model::parse::TargetParseError::EmptyPorts(alloc::string::String)
+pub zond_engine::model::parse::TargetParseError::MistypedAddress(alloc::string::String)
+pub zond_engine::model::parse::TargetParseError::NoHostLookup(alloc::string::String)
+pub zond_engine::model::parse::TargetParseError::Ports
+pub zond_engine::model::parse::TargetParseError::Ports::expression: alloc::string::String
+pub zond_engine::model::parse::TargetParseError::Ports::source: zond_engine::model::port::set::PortSetParseError
+pub zond_engine::model::parse::TargetParseError::ResolvedToNothing(alloc::string::String)
+pub zond_engine::model::parse::TargetParseError::TrailingText(alloc::string::String)
+pub zond_engine::model::parse::TargetParseError::UnbalancedBracket(alloc::string::String)
+pub zond_engine::model::parse::TargetParseError::UnbracketedAddress(alloc::string::String)
+pub zond_engine::model::parse::TargetParseError::UnknownHost(alloc::string::String)
+impl core::clone::Clone for zond_engine::model::parse::target::TargetParseError
+pub fn zond_engine::model::parse::target::TargetParseError::clone(&self) -> zond_engine::model::parse::target::TargetParseError
+impl core::cmp::Eq for zond_engine::model::parse::target::TargetParseError
+impl core::cmp::PartialEq for zond_engine::model::parse::target::TargetParseError
+pub fn zond_engine::model::parse::target::TargetParseError::eq(&self, &zond_engine::model::parse::target::TargetParseError) -> bool
+impl core::error::Error for zond_engine::model::parse::target::TargetParseError
+pub fn zond_engine::model::parse::target::TargetParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for zond_engine::model::parse::target::TargetParseError
+pub fn zond_engine::model::parse::target::TargetParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::parse::target::TargetParseError
+pub fn zond_engine::model::parse::target::TargetParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::parse::target::TargetParseError
+impl core::marker::Freeze for zond_engine::model::parse::target::TargetParseError
+impl core::marker::Send for zond_engine::model::parse::target::TargetParseError
+impl core::marker::Sync for zond_engine::model::parse::target::TargetParseError
+impl core::marker::Unpin for zond_engine::model::parse::target::TargetParseError
+impl core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetParseError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetParseError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target::TargetParseError
+#[non_exhaustive] pub struct zond_engine::model::parse::TargetContext<'a>
+pub zond_engine::model::parse::TargetContext::hosts: core::option::Option<zond_engine::model::parse::target::HostLookup<'a>>
+pub zond_engine::model::parse::TargetContext::keywords: core::option::Option<zond_engine::model::parse::ip::ResolverFn<'a>>
+pub zond_engine::model::parse::TargetContext::zones: core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'a>>
+impl<'a> zond_engine::model::parse::target::TargetContext<'a>
+pub fn zond_engine::model::parse::target::TargetContext<'a>::new() -> Self
+pub fn zond_engine::model::parse::target::TargetContext<'a>::with_hosts(self, zond_engine::model::parse::target::HostLookup<'a>) -> Self
+pub fn zond_engine::model::parse::target::TargetContext<'a>::with_keywords(self, zond_engine::model::parse::ip::ResolverFn<'a>) -> Self
+pub fn zond_engine::model::parse::target::TargetContext<'a>::with_zones(self, zond_engine::model::parse::ip::ZoneResolverFn<'a>) -> Self
+impl core::fmt::Debug for zond_engine::model::parse::target::TargetContext<'_>
+pub fn zond_engine::model::parse::target::TargetContext<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for zond_engine::model::parse::target::TargetContext<'a>
+pub fn zond_engine::model::parse::target::TargetContext<'a>::clone(&self) -> zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::default::Default for zond_engine::model::parse::target::TargetContext<'a>
+pub fn zond_engine::model::parse::target::TargetContext<'a>::default() -> zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::marker::Copy for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::marker::Freeze for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> !core::marker::Send for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> !core::marker::Sync for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::marker::Unpin for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetContext<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target::TargetContext<'a>
+pub struct zond_engine::model::parse::TargetExpr<'a>
+pub zond_engine::model::parse::TargetExpr::address: &'a str
+pub zond_engine::model::parse::TargetExpr::ports: core::option::Option<&'a str>
+impl<'a> zond_engine::model::parse::target::TargetExpr<'a>
+pub fn zond_engine::model::parse::target::TargetExpr<'a>::addresses(&self) -> impl core::iter::traits::iterator::Iterator<Item = &'a str>
+pub fn zond_engine::model::parse::target::TargetExpr<'a>::parse(&'a str) -> core::result::Result<Self, zond_engine::model::parse::target::TargetParseError>
+impl<'a> core::clone::Clone for zond_engine::model::parse::target::TargetExpr<'a>
+pub fn zond_engine::model::parse::target::TargetExpr<'a>::clone(&self) -> zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::cmp::Eq for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::cmp::PartialEq for zond_engine::model::parse::target::TargetExpr<'a>
+pub fn zond_engine::model::parse::target::TargetExpr<'a>::eq(&self, &zond_engine::model::parse::target::TargetExpr<'a>) -> bool
+impl<'a> core::fmt::Debug for zond_engine::model::parse::target::TargetExpr<'a>
+pub fn zond_engine::model::parse::target::TargetExpr<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::hash::Hash for zond_engine::model::parse::target::TargetExpr<'a>
+pub fn zond_engine::model::parse::target::TargetExpr<'a>::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl<'a> core::marker::Copy for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::marker::StructuralPartialEq for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::marker::Freeze for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::marker::Send for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::marker::Sync for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::marker::Unpin for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetExpr<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target::TargetExpr<'a>
+pub struct zond_engine::model::parse::TargetMapBuilder
+impl zond_engine::model::parse::target::TargetMapBuilder
+pub fn zond_engine::model::parse::target::TargetMapBuilder::address_count(&mut self) -> u128
+pub fn zond_engine::model::parse::target::TargetMapBuilder::build(self) -> zond_engine::model::target::TargetMap
+pub fn zond_engine::model::parse::target::TargetMapBuilder::gross_address_count(&self) -> u128
+pub fn zond_engine::model::parse::target::TargetMapBuilder::group_count(&self) -> usize
+pub fn zond_engine::model::parse::target::TargetMapBuilder::is_empty(&self) -> bool
+pub fn zond_engine::model::parse::target::TargetMapBuilder::new(zond_engine::model::port::set::PortSet) -> Self
+pub fn zond_engine::model::parse::target::TargetMapBuilder::push(&mut self, &str, &zond_engine::model::parse::target::TargetContext<'_>) -> core::result::Result<(), zond_engine::model::parse::target::TargetParseError>
+impl core::clone::Clone for zond_engine::model::parse::target::TargetMapBuilder
+pub fn zond_engine::model::parse::target::TargetMapBuilder::clone(&self) -> zond_engine::model::parse::target::TargetMapBuilder
+impl core::fmt::Debug for zond_engine::model::parse::target::TargetMapBuilder
+pub fn zond_engine::model::parse::target::TargetMapBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::model::parse::target::TargetMapBuilder
+impl core::marker::Send for zond_engine::model::parse::target::TargetMapBuilder
+impl core::marker::Sync for zond_engine::model::parse::target::TargetMapBuilder
+impl core::marker::Unpin for zond_engine::model::parse::target::TargetMapBuilder
+impl core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetMapBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetMapBuilder
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target::TargetMapBuilder
 pub fn zond_engine::model::parse::names_keyword<S: core::convert::AsRef<str>>(&[S], zond_engine::model::parse::ip::Keyword) -> bool
 pub fn zond_engine::model::parse::to_set<S>(&[S], core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>, core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'_>>) -> core::result::Result<zond_engine::model::ip::set::IpSet, zond_engine::model::parse::ip::IpParseError> where S: core::convert::AsRef<str>
 pub fn zond_engine::model::parse::to_target_map(&[alloc::string::String], zond_engine::model::port::set::PortSet, core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>) -> core::result::Result<zond_engine::model::target::TargetMap, zond_engine::model::parse::target::TargetParseError>
+pub type zond_engine::model::parse::HostLookup<'a> = &'a dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::IpAddr>>
 pub mod zond_engine::model::port
 pub mod zond_engine::model::port::catalog
+pub const zond_engine::model::port::catalog::TCP_BY_PREVALENCE: [u16; 1000]
 pub const zond_engine::model::port::catalog::TCP_TIER_BOUNDS: [usize; 4]
-pub static zond_engine::model::port::catalog::TCP_BY_PREVALENCE: [u16; 1000]
-pub static zond_engine::model::port::catalog::UDP_BY_PREVALENCE: [u16; 250]
+pub const zond_engine::model::port::catalog::UDP_BY_PREVALENCE: [u16; 250]
 pub fn zond_engine::model::port::catalog::top_tcp(usize) -> &'static [u16]
 pub fn zond_engine::model::port::catalog::top_udp(usize) -> &'static [u16]
 pub mod zond_engine::model::port::discovery
@@ -7996,6 +8483,7 @@ impl core::marker::Unpin for zond_engine::model::port::security::Security
 impl core::marker::UnsafeUnpin for zond_engine::model::port::security::Security
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::security::Security
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::security::Security
+pub const zond_engine::model::port::security::MAX_SANS_PER_CERTIFICATE: usize
 pub mod zond_engine::model::port::service
 pub struct zond_engine::model::port::service::Service
 impl zond_engine::model::port::service::Service
@@ -8445,8 +8933,8 @@ impl core::marker::Unpin for zond_engine::model::port::service::Service
 impl core::marker::UnsafeUnpin for zond_engine::model::port::service::Service
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::service::Service
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::service::Service
-pub static zond_engine::model::port::TCP_BY_PREVALENCE: [u16; 1000]
-pub static zond_engine::model::port::UDP_BY_PREVALENCE: [u16; 250]
+pub const zond_engine::model::port::TCP_BY_PREVALENCE: [u16; 1000]
+pub const zond_engine::model::port::UDP_BY_PREVALENCE: [u16; 250]
 pub mod zond_engine::model::target
 #[non_exhaustive] pub enum zond_engine::model::target::TargetError
 pub zond_engine::model::target::TargetError::CapacityOverflow
@@ -8527,6 +9015,9 @@ pub fn zond_engine::model::target::TargetMap::iter(&self) -> impl core::iter::tr
 pub fn zond_engine::model::target::TargetMap::new() -> Self
 impl core::clone::Clone for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::clone(&self) -> zond_engine::model::target::TargetMap
+impl core::cmp::Eq for zond_engine::model::target::TargetMap
+impl core::cmp::PartialEq for zond_engine::model::target::TargetMap
+pub fn zond_engine::model::target::TargetMap::eq(&self, &zond_engine::model::target::TargetMap) -> bool
 impl core::convert::From<&zond_engine::model::target::TargetMap> for zond_engine::record::PlanRecord
 pub fn zond_engine::record::PlanRecord::from(&zond_engine::model::target::TargetMap) -> Self
 impl core::convert::From<&zond_engine::record::PlanRecord> for zond_engine::model::target::TargetMap
@@ -8535,6 +9026,7 @@ impl core::default::Default for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::default() -> zond_engine::model::target::TargetMap
 impl core::fmt::Debug for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::target::TargetMap
 impl core::marker::Freeze for zond_engine::model::target::TargetMap
 impl core::marker::Send for zond_engine::model::target::TargetMap
 impl core::marker::Sync for zond_engine::model::target::TargetMap
@@ -8556,10 +9048,14 @@ pub fn zond_engine::model::target::TargetSet::ports(&self) -> &zond_engine::mode
 pub fn zond_engine::model::target::TargetSet::total_targets(&self) -> core::result::Result<u128, zond_engine::model::target::TargetError>
 impl core::clone::Clone for zond_engine::model::target::TargetSet
 pub fn zond_engine::model::target::TargetSet::clone(&self) -> zond_engine::model::target::TargetSet
+impl core::cmp::Eq for zond_engine::model::target::TargetSet
+impl core::cmp::PartialEq for zond_engine::model::target::TargetSet
+pub fn zond_engine::model::target::TargetSet::eq(&self, &zond_engine::model::target::TargetSet) -> bool
 impl core::default::Default for zond_engine::model::target::TargetSet
 pub fn zond_engine::model::target::TargetSet::default() -> zond_engine::model::target::TargetSet
 impl core::fmt::Debug for zond_engine::model::target::TargetSet
 pub fn zond_engine::model::target::TargetSet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::target::TargetSet
 impl core::marker::Freeze for zond_engine::model::target::TargetSet
 impl core::marker::Send for zond_engine::model::target::TargetSet
 impl core::marker::Sync for zond_engine::model::target::TargetSet
@@ -13824,7 +14320,7 @@ pub fn zond_engine::model::host::Host::add_finding(&mut self, zond_engine::model
 pub fn zond_engine::model::host::Host::add_ip(&mut self, core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::host::Host::add_network_role(&mut self, zond_engine::model::host::NetworkRole) -> bool
 pub fn zond_engine::model::host::Host::add_port(&mut self, zond_engine::model::port::Port) -> bool
-pub fn zond_engine::model::host::Host::add_port_finding(&mut self, u16, zond_engine::model::port::Protocol, zond_engine::model::finding::Finding) -> bool
+pub fn zond_engine::model::host::Host::add_port_finding(&mut self, u16, zond_engine::model::port::Protocol, zond_engine::model::finding::Finding) -> core::option::Option<bool>
 pub fn zond_engine::model::host::Host::add_reason(&mut self, zond_engine::model::host::status::StatusReason)
 pub fn zond_engine::model::host::Host::add_rtt(&mut self, core::time::Duration)
 pub fn zond_engine::model::host::Host::add_rtts(&mut self, impl core::iter::traits::collect::IntoIterator<Item = core::time::Duration>)
@@ -14280,8 +14776,6 @@ impl core::convert::From<&zond_engine::model::ip::scoped::ScopedIp> for zond_eng
 pub fn zond_engine::model::ip::scoped::ScopedIp::from(&zond_engine::model::ip::scoped::ScopedIp) -> Self
 impl core::convert::From<core::net::ip_addr::IpAddr> for zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ScopedIp::from(core::net::ip_addr::IpAddr) -> Self
-impl core::default::Default for zond_engine::model::ip::scoped::ScopedIp
-pub fn zond_engine::model::ip::scoped::ScopedIp::default() -> Self
 impl core::fmt::Debug for zond_engine::model::ip::scoped::ScopedIp
 pub fn zond_engine::model::ip::scoped::ScopedIp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::model::ip::scoped::ScopedIp
@@ -14369,6 +14863,9 @@ pub fn zond_engine::model::target::TargetMap::iter(&self) -> impl core::iter::tr
 pub fn zond_engine::model::target::TargetMap::new() -> Self
 impl core::clone::Clone for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::clone(&self) -> zond_engine::model::target::TargetMap
+impl core::cmp::Eq for zond_engine::model::target::TargetMap
+impl core::cmp::PartialEq for zond_engine::model::target::TargetMap
+pub fn zond_engine::model::target::TargetMap::eq(&self, &zond_engine::model::target::TargetMap) -> bool
 impl core::convert::From<&zond_engine::model::target::TargetMap> for zond_engine::record::PlanRecord
 pub fn zond_engine::record::PlanRecord::from(&zond_engine::model::target::TargetMap) -> Self
 impl core::convert::From<&zond_engine::record::PlanRecord> for zond_engine::model::target::TargetMap
@@ -14377,6 +14874,7 @@ impl core::default::Default for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::default() -> zond_engine::model::target::TargetMap
 impl core::fmt::Debug for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::target::TargetMap
 impl core::marker::Freeze for zond_engine::model::target::TargetMap
 impl core::marker::Send for zond_engine::model::target::TargetMap
 impl core::marker::Sync for zond_engine::model::target::TargetMap
@@ -14398,10 +14896,14 @@ pub fn zond_engine::model::target::TargetSet::ports(&self) -> &zond_engine::mode
 pub fn zond_engine::model::target::TargetSet::total_targets(&self) -> core::result::Result<u128, zond_engine::model::target::TargetError>
 impl core::clone::Clone for zond_engine::model::target::TargetSet
 pub fn zond_engine::model::target::TargetSet::clone(&self) -> zond_engine::model::target::TargetSet
+impl core::cmp::Eq for zond_engine::model::target::TargetSet
+impl core::cmp::PartialEq for zond_engine::model::target::TargetSet
+pub fn zond_engine::model::target::TargetSet::eq(&self, &zond_engine::model::target::TargetSet) -> bool
 impl core::default::Default for zond_engine::model::target::TargetSet
 pub fn zond_engine::model::target::TargetSet::default() -> zond_engine::model::target::TargetSet
 impl core::fmt::Debug for zond_engine::model::target::TargetSet
 pub fn zond_engine::model::target::TargetSet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::target::TargetSet
 impl core::marker::Freeze for zond_engine::model::target::TargetSet
 impl core::marker::Send for zond_engine::model::target::TargetSet
 impl core::marker::Sync for zond_engine::model::target::TargetSet

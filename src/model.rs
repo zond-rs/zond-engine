@@ -68,6 +68,7 @@ mod tests {
     use super::finding::{DetectionClass, Severity};
     use super::host::status::{HostStatus, StatusProtocol};
     use super::host::{Filtering, NetworkRole};
+    use super::parse::ip::Keyword;
     use super::port::{PortState, Protocol};
     use super::technique::TcpScanTechnique;
 
@@ -139,6 +140,7 @@ mod tests {
     #[test]
     fn every_vocabulary_lists_itself_in_declaration_order() {
         holds_declaration_order("Confidence", &Confidence::ALL, |v| *v as usize);
+        holds_declaration_order("Keyword", &Keyword::ALL, |v| *v as usize);
         holds_declaration_order("Severity", &Severity::ALL, |v| *v as usize);
         holds_declaration_order("DetectionClass", &DetectionClass::ALL, |v| *v as usize);
         holds_declaration_order("NetworkRole", &NetworkRole::ALL, |v| *v as usize);

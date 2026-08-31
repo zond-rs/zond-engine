@@ -161,8 +161,21 @@ impl NetworkPath {
         {
             Ok(index) => {
                 let known = &self.hops[index];
-                let stronger = (known.inferred && !hop.inferred)
-                    || (known.address.is_none() && hop.address.is_some());
+                // The two rules above are ranked rather than added together.
+                // Whether anything answered comes first, because silence is the
+                // absence of a finding and an address is one; provenance decides
+                // only between two hops that agree about that.
+                //
+                // Or-ing them let a *measured silence* displace an *inferred
+                // answer*, which is a router's address traded for the news that
+                // it declined to answer this time. `Host::merge` replays one
+                // record's hops into another's in whatever order the two were
+                // folded, so it took no exotic trace to reach.
+                let stronger = match (known.address.is_some(), hop.address.is_some()) {
+                    (false, true) => true,
+                    (true, false) => false,
+                    _ => known.inferred && !hop.inferred,
+                };
                 if stronger {
                     self.hops[index] = hop;
                 }
@@ -214,6 +227,50 @@ mod tests {
 
     fn ip(last: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, last))
+    }
+
+    /// An answer displaces silence whatever measured it, and provenance decides
+    /// only between two hops that agree about whether anything answered.
+    ///
+    /// The two rules are ranked. Added together, as they were, a *measured
+    /// silent* hop displaced an *inferred answered* one: a router's address
+    /// traded for the news that it declined to answer this time, which is the
+    /// absence of a finding rather than a finding of absence. `Host::merge`
+    /// replays one record's hops into another's in whatever order the two were
+    /// folded, so it took no exotic trace to reach.
+    #[test]
+    fn an_answer_is_never_traded_for_a_silence_that_measured_it() {
+        let spliced = Hop::answered(4, ip(4), None).as_inferred();
+
+        let mut path = NetworkPath::new();
+        path.record(spliced);
+        path.record(Hop::silent(4));
+        assert_eq!(
+            path.at(4),
+            Some(ip(4)),
+            "a measured silence does not erase a router somebody found"
+        );
+
+        // And the other way round, which was already right.
+        let mut reverse = NetworkPath::new();
+        reverse.record(Hop::silent(4));
+        reverse.record(spliced);
+        assert_eq!(reverse.at(4), Some(ip(4)));
+
+        // Where both answered, the measurement wins, which is the rule that
+        // ranking these did not weaken.
+        let mut both = NetworkPath::new();
+        both.record(Hop::answered(1, ip(9), None).as_inferred());
+        both.record(Hop::answered(1, ip(1), None));
+        assert_eq!(both.at(1), Some(ip(1)), "a measurement beats an inference");
+
+        // And where neither did, an inference has nothing to offer a
+        // measurement, so the record stands.
+        let mut neither = NetworkPath::new();
+        neither.record(Hop::silent(2));
+        neither.record(Hop::silent(2).as_inferred());
+        assert_eq!(neither.hops().len(), 1);
+        assert!(!neither.hops()[0].inferred());
     }
 
     /// Hops arrive in whatever order their replies do, and a path reads in

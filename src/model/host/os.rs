@@ -27,9 +27,18 @@ use std::{collections::BTreeSet, sync::Arc};
 /// thousand plausible ones would otherwise have every one of them held.
 ///
 /// [`MAX_CPES_PER_SERVICE`](crate::model::port::service::MAX_CPES_PER_SERVICE)
-/// is the same bound for a service, where it matters more: a banner is text the
-/// target chose outright.
+/// is the same bound for a service, and reads its number from here so that
+/// "the same" stays true. It matters more there: a banner is text the target
+/// chose outright, where a fingerprint is derived from how a stack behaved.
 pub const MAX_CPES_PER_OS: usize = 50;
+
+/// The accuracy at which [`OsFingerprint::is_highly_confident`] answers true.
+///
+/// A named number rather than one written into the comparison, since it is a
+/// threshold two other modules read a verdict against and one somebody will want
+/// to argue with. Eighty-five is where a stack reading and a second source
+/// agreeing land, and below where a single weakly-scored source does.
+pub const HIGH_CONFIDENCE_ACCURACY: u8 = 85;
 
 /// A host's operating system as one technique identified it, and how sure that
 /// technique was.
@@ -251,18 +260,23 @@ impl OsFingerprint {
         &self.cpe
     }
 
-    /// Returns `true` if the identification has high certainty (>= 85%).
+    /// Whether the identification is sure enough to stop asking:
+    /// [`HIGH_CONFIDENCE_ACCURACY`] or better.
     ///
-    /// This threshold is often used by scanning engines to decide whether
-    /// to terminate OS discovery or continue with more intrusive probes.
+    /// Read by `fingerprint::os`'s verdict and text passes, to decide whether a
+    /// host needs a more intrusive probe than it has already answered.
     pub fn is_highly_confident(&self) -> bool {
-        self.accuracy >= 85
+        self.accuracy >= HIGH_CONFIDENCE_ACCURACY
     }
 
     /// Folds another technique's identification of this host into this one.
     ///
-    /// The identity — name, family, generation, vendor — comes from whichever
-    /// record is more accurate, and a tie keeps what is already recorded.
+    /// The identity comes from whichever record is more accurate, and a tie
+    /// keeps what is already recorded. All of it: the name, and the family,
+    /// device, generation, vendor, kernel, detail accuracy and evidence line
+    /// beside it, each filling a gap in the other where the winner has none.
+    /// The body destructures `other`, so the list here is the one that can fall
+    /// behind, and it named four of the eight.
     ///
     /// **CPEs are unioned whatever the accuracies are**, which is the one part
     /// that does not follow the ranking, and it matches
@@ -342,7 +356,7 @@ impl OsFingerprint {
 
 /// What separates two readings in an evidence line.
 ///
-/// The same separator [`resolve`](crate::fingerprint::os::resolve)(crate::fingerprint::os::resolve) folds its
+/// The same separator [`resolve`](crate::fingerprint::os::resolve) folds its
 /// sources with, so a person reading a report meets one convention rather than
 /// two.
 const SEPARATOR: &str = " | ";

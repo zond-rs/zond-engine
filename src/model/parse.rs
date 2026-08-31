@@ -30,7 +30,8 @@
 pub mod ip;
 pub mod target;
 
-pub use ip::{IpParseError, names_keyword, to_set};
+pub use ip::{IpParseError, Keyword, names_keyword, to_set};
+pub use target::{HostLookup, TargetContext, TargetExpr, TargetMapBuilder, TargetParseError};
 
 use crate::model::port::PortSet;
 use crate::model::target::TargetMap;
@@ -41,13 +42,13 @@ use crate::model::target::TargetMap;
 ///
 /// The shape of [`target::to_target_map`] that takes a keyword resolver and
 /// nothing else. To resolve interface zones or hostnames as well, build a
-/// [`TargetContext`](target::TargetContext) and call that function directly.
+/// [`TargetContext`] and call that function directly.
 ///
 /// # Errors
 ///
 /// The first expression that does not parse. Nothing is returned partially, so
 /// a caller that wants to log the bad lines and scan the rest should drive
-/// [`TargetMapBuilder`](target::TargetMapBuilder) itself.
+/// [`TargetMapBuilder`] itself.
 pub fn to_target_map(
     targets: &[String],
     global_ports: PortSet,

@@ -39,11 +39,24 @@ use std::{
     str::FromStr,
 };
 
-/// Errors that can occur when processing an [`IpSet`].
+/// Why a written address specification could not be read as a set.
+///
+/// One variant, wrapping the range grammar's own error, and deliberately less
+/// than [`IpParseError`](crate::model::parse::ip::IpParseError) says about the
+/// same input. That type distinguishes "this is not a range" from "this is a
+/// range and it is wrong", names both prefix bounds, and carries the expression
+/// as the caller wrote it, all of which a person reading a refused target wants.
+///
+/// It is not available here. `parse` is built on `ip` and reaching the other way
+/// would put the two modules in a cycle, which `tests/architecture.rs` refuses
+/// and `lib.rs` sets out the order to avoid. So the richer reading belongs to
+/// the layer that has both, and a caller wanting it goes through
+/// [`to_set`](crate::model::parse::ip::to_set) rather than through this type's
+/// [`FromStr`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IpSetError {
-    /// Indicates that an invalid IP range or address was provided.
+    /// The text named something that is not an address or a range.
     #[error("Invalid target in set: {0}")]
     InvalidTarget(#[from] IpError),
 }

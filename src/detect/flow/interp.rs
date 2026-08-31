@@ -187,7 +187,11 @@ fn build_finding(
     env: &Env,
     response: Option<&str>,
 ) -> Option<Finding> {
-    let version = Version::parse(&flow.detection.version).unwrap_or(Version::new(0, 0, 0));
+    let version = flow
+        .detection
+        .version
+        .parse()
+        .unwrap_or(Version::new(0, 0, 0));
     let detection = DetectionId::new(flow.detection.id.clone(), version, content_hash).ok()?;
 
     // The finding's one-line title is its own `title`, or its `summary` when it

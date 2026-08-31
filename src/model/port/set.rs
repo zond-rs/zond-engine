@@ -424,10 +424,12 @@ impl TryFrom<&str> for PortSet {
         for part in value.split([',', ' ']).filter(|s| !s.trim().is_empty()) {
             let part = part.trim();
 
-            let (is_udp, raw_range) = if let Some(stripped) = part.strip_prefix("u:") {
-                (true, stripped)
-            } else {
-                (false, part)
+            // Case-insensitively, as every other parser in the module reads the
+            // words a person types. `U:53` was refused with "Failed to parse
+            // port from 'U:53'", which reads as a complaint about the number.
+            let (is_udp, raw_range) = match part.get(..2) {
+                Some(prefix) if prefix.eq_ignore_ascii_case("u:") => (true, &part[2..]),
+                _ => (false, part),
             };
 
             let parts: Vec<&str> = raw_range.split('-').collect();
@@ -436,7 +438,11 @@ impl TryFrom<&str> for PortSet {
                 [single_port] => {
                     let p = single_port.parse::<u16>().map_err(|source| {
                         PortSetParseError::InvalidPort {
-                            input: single_port.to_string(),
+                            // `part` rather than the stripped token, so the
+                            // field's promise to carry it "as written" holds for
+                            // a UDP port too: `u:http` reported `http`, which is
+                            // not what anybody typed.
+                            input: part.to_string(),
                             source,
                         }
                     })?;
@@ -472,7 +478,7 @@ impl TryFrom<&str> for PortSet {
 
                     start..=end
                 }
-                _ => return Err(PortSetParseError::MalformedSpec(raw_range.to_string())),
+                _ => return Err(PortSetParseError::MalformedSpec(part.to_string())),
             };
 
             if is_udp {
@@ -536,6 +542,35 @@ impl FromIterator<(u16, Protocol)> for PortSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The UDP prefix is read the way every other word a person types is.
+    ///
+    /// `TcpScanTechnique::from_str` ignores case, `Keyword::from_token` ignores
+    /// case, `MacAddr::from_str` takes either, and hex is hex. This was the one
+    /// parser in the module that did not, and it refused `U:53` with "Failed to
+    /// parse port from 'U:53'", which reads as a complaint about the number.
+    ///
+    /// The error also carries the token as its field promises: the whole of what
+    /// was written, prefix included, rather than what is left after the prefix
+    /// comes off.
+    #[test]
+    fn the_udp_prefix_is_read_the_way_every_other_token_is() {
+        let lower = PortSet::try_from("u:53").expect("the spelling that always worked");
+        let upper = PortSet::try_from("U:53").expect("and the one that did not");
+        assert_eq!(lower, upper);
+        assert!(upper.has_udp(53) && !upper.has_tcp(53));
+
+        // Mixed into a specification, where it has to not swallow a TCP port.
+        let mixed = PortSet::try_from("80, U:53, u:161-162").expect("parses");
+        assert!(mixed.has_tcp(80));
+        assert!(mixed.has_udp(53) && mixed.has_udp(161) && mixed.has_udp(162));
+        assert!(!mixed.has_tcp(53));
+
+        let error = PortSet::try_from("U:http")
+            .expect_err("not a port")
+            .to_string();
+        assert!(error.contains("U:http"), "the token as written: {error}");
+    }
 
     /// The forms a person actually writes, mixed in one specification the way
     /// they arrive on a command line.

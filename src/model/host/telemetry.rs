@@ -23,6 +23,27 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// How many round trips a host keeps by default.
+///
+/// Every latency figure in every report is computed over this many samples, and
+/// it was a bare `10` inside the [`Default`] impl, which is the only bound in
+/// the module that was not a named constant with its reasoning under it.
+///
+/// Ten is enough for a median to mean something and short enough that the window
+/// describes the host now rather than an average over an afternoon, which is
+/// what [`HostTelemetry`] keeps a window for at all. A caller that wants a
+/// longer view sets its own with [`HostTelemetry::new`].
+pub const DEFAULT_RTT_SAMPLES: usize = 10;
+
+/// The smallest window [`HostTelemetry::new`] will build.
+///
+/// One, because zero is a telemetry that accepts every sample and keeps none:
+/// `add_rtt` returns as though it recorded something, every statistic answers
+/// `None` for ever, and nothing says why. A caller asking for no history is
+/// asking for something this type cannot mean, and the nearest thing it can is
+/// the most recent reply.
+const MIN_RTT_SAMPLES: usize = 1;
+
 /// What kind of question a round-trip sample answers, which decides whether it
 /// describes the network or the responder.
 ///
@@ -108,12 +129,27 @@ pub struct HostTelemetry {
     ///
     /// The most recent rather than the first: a route that changed mid-scan is
     /// better described by the reply that came after it.
+    ///
+    /// Which of two is more recent is not something this type can see, having no
+    /// clock of its own for it. [`merge`](Self::merge) takes the other record's,
+    /// which is right because of how the engine folds: every call is
+    /// `stored.merge(fresh)`, so the argument is always the later account. A
+    /// fold across two *documents* has no such guarantee and does not come
+    /// through here at all, [`merge`](crate::merge) picking the newest account by
+    /// the documents' own clocks and taking its telemetry whole, because an
+    /// `Instant` from another process orders against nothing.
     hop_counter: Option<u8>,
 }
 
 impl HostTelemetry {
-    /// Creates a new `HostTelemetry` instance with a specific sample window size.
+    /// A telemetry whose window holds `max_samples` round trips.
+    ///
+    /// Raised to one if it is smaller. A window of zero is a telemetry that
+    /// accepts every sample and keeps none: `add_rtt` returns as though it had
+    /// recorded something, every statistic answers `None` for ever, and nothing
+    /// says why. [`DEFAULT_RTT_SAMPLES`] is what [`Default`] uses.
     pub fn new(max_samples: usize) -> Self {
+        let max_samples = max_samples.max(MIN_RTT_SAMPLES);
         Self {
             rtt_history: VecDeque::with_capacity(max_samples),
             max_samples,
@@ -133,7 +169,7 @@ impl HostTelemetry {
     /// [`history`](Self::history) immediately afterwards sees what it asked
     /// for.
     pub fn set_max_samples(&mut self, max_samples: usize) {
-        self.max_samples = max_samples;
+        self.max_samples = max_samples.max(MIN_RTT_SAMPLES);
         while self.rtt_history.len() > self.max_samples {
             self.rtt_history.pop_front();
         }
@@ -323,10 +359,14 @@ impl HostTelemetry {
             return self.tightest_bound();
         }
 
+        // Saturating, as `median_rtt` above is careful to be and as every other
+        // count in the model is. A window of samples cannot realistically reach
+        // `Duration::MAX`, but the samples are a caller's to supply and a
+        // library has no business panicking in its caller's process over it.
         let (sum, count) = self
             .direct()
             .fold((Duration::ZERO, 0u32), |(sum, count), rtt| {
-                (sum + rtt, count + 1)
+                (sum.saturating_add(rtt), count.saturating_add(1))
             });
 
         (count > 0).then(|| sum / count)
@@ -346,9 +386,9 @@ impl HostTelemetry {
         let mut total = Duration::ZERO;
         let mut gaps = 0u32;
         for rtt in samples {
-            total += rtt.abs_diff(previous);
+            total = total.saturating_add(rtt.abs_diff(previous));
             previous = rtt;
-            gaps += 1;
+            gaps = gaps.saturating_add(1);
         }
 
         (gaps > 0).then(|| total / gaps)
@@ -372,6 +412,10 @@ impl HostTelemetry {
         // counter is not a sample and is not bounded by the window, so folding
         // it after that check would lose it on exactly the records that keep no
         // round trips.
+        //
+        // Taken unconditionally, there being nothing here to order two of them
+        // by. See the field, which has why that is the right answer for the way
+        // the engine folds and where the case it would be wrong for is handled.
         if let Some(arrived) = other.hop_counter {
             self.hop_counter = Some(arrived);
         }
@@ -414,8 +458,9 @@ impl std::fmt::Display for HostTelemetry {
 }
 
 impl Default for HostTelemetry {
+    /// A window of [`DEFAULT_RTT_SAMPLES`].
     fn default() -> Self {
-        Self::new(10)
+        Self::new(DEFAULT_RTT_SAMPLES)
     }
 }
 
@@ -431,6 +476,34 @@ impl Default for HostTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A window of zero is a telemetry that accepts every sample and keeps
+    /// none, so it is not a window this type will build.
+    ///
+    /// `add_rtt` returned as though it had recorded something, every statistic
+    /// answered `None` for ever, and nothing said why. A caller asking for no
+    /// history is asking for something this type cannot mean.
+    #[test]
+    fn a_window_is_never_smaller_than_one_sample() {
+        let mut asked_for_none = HostTelemetry::new(0);
+        assert_eq!(asked_for_none.max_samples(), MIN_RTT_SAMPLES);
+
+        asked_for_none.add_rtt(Duration::from_millis(5));
+        assert_eq!(asked_for_none.history().len(), 1, "the sample is kept");
+        assert_eq!(asked_for_none.min_rtt(), Some(Duration::from_millis(5)));
+
+        // And the same floor when a window is narrowed afterwards.
+        let mut narrowed = HostTelemetry::new(4);
+        narrowed.add_rtt(Duration::from_millis(1));
+        narrowed.add_rtt(Duration::from_millis(2));
+        narrowed.set_max_samples(0);
+        assert_eq!(narrowed.max_samples(), MIN_RTT_SAMPLES);
+        assert_eq!(
+            narrowed.history().len(),
+            1,
+            "trimmed to the floor, not to nothing"
+        );
+    }
 
     /// A host with nothing but segment-wide replies is described by one figure,
     /// and every statistic answers with it.

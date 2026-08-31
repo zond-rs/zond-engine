@@ -155,7 +155,15 @@ pub type HostLookup<'a> = &'a dyn Fn(&str) -> Option<Vec<IpAddr>>;
 /// resolving `lan`, `%en0` or a hostname means reading the host this process
 /// runs on, and a parser that does that on its own behalf cannot be embedded
 /// anywhere its author did not anticipate.
+///
+/// `#[non_exhaustive]`, which almost nothing else in this module is. This is a
+/// list of the lookups the grammar may need, and the grammar learns to need new
+/// ones: it has learned twice. Build one with [`new`](Self::new) and the
+/// `with_*` methods, or with [`Default`], and assign the fields directly where
+/// that reads better. What the marker rules out is a struct literal, which is
+/// the one shape a fourth lookup would break.
 #[must_use]
+#[non_exhaustive]
 #[derive(Default, Clone, Copy)]
 pub struct TargetContext<'a> {
     /// Expands keywords such as `lan` into the addresses they stand for.
@@ -689,21 +697,25 @@ impl TargetMapBuilder {
     }
 
     /// Whether anything scannable has accumulated.
+    ///
+    /// Which is whether any group exists. [`push`](Self::push) refuses an
+    /// expression that named no addresses before a group is created or joined,
+    /// and nothing removes addresses from one afterwards, so a group holds at
+    /// least one address for as long as it exists.
     pub fn is_empty(&self) -> bool {
-        self.groups.iter().all(|(_, ips)| ips.is_empty())
+        self.groups.is_empty()
     }
 
     /// Finishes the map.
     ///
-    /// Groups that ended up with no addresses are dropped rather than emitted
-    /// as empty units - a caller that collected errors and carried on should not
-    /// be handed a map padded with the targets that failed.
+    /// Every group becomes a unit. There is no empty one to skip, for the reason
+    /// [`is_empty`](Self::is_empty) gives; this used to test for them and drop
+    /// them, with a paragraph about a caller that collects errors and carries
+    /// on, which `push` had already made unreachable by refusing the expression
+    /// that would have produced one.
     pub fn build(self) -> TargetMap {
         let mut map = TargetMap::new();
         for (ports, ips) in self.groups {
-            if ips.is_empty() {
-                continue;
-            }
             map.add_unit(TargetSet::new(ips, ports));
         }
         map

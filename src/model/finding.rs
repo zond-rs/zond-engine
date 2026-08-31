@@ -48,6 +48,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::str::FromStr;
 
 use thiserror::Error;
 
@@ -180,7 +181,15 @@ pub enum DetectionClass {
 }
 
 impl DetectionClass {
-    /// The human label.
+    /// How a class is written for a person to read.
+    ///
+    /// Lowercase, by the rule
+    /// [`NetworkRole::label`](crate::model::host::NetworkRole::label) writes
+    /// down: an acronym is capitals and a word is not, so `exploit` is an
+    /// ordinary noun and `DoS` is a name in initials. [`Severity::label`] beside
+    /// it is Title Case, which is its own deliberate choice, so a report showing
+    /// both axes shows `Critical` and `active-benign`. Two conventions, one per
+    /// axis, and neither is a slip.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Passive => "passive",
@@ -233,22 +242,45 @@ impl Version {
             patch,
         }
     }
+}
 
-    /// Reads `"major.minor.patch"`, returning [`None`] for anything else.
+/// Why a string is not a detection version.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("'{input}' is not a version: expected three dot-separated numbers, as in `1.2.3`")]
+pub struct VersionParseError {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl FromStr for Version {
+    type Err = VersionParseError;
+
+    /// Reads `"major.minor.patch"`.
     ///
     /// Strict on purpose: exactly three dot-separated unsigned integers, each in
-    /// range. A version that will not parse is not guessed at — a caller reading
-    /// one from a file substitutes the earliest, least-trusted value rather than
-    /// inventing a middle one.
-    pub fn parse(text: &str) -> Option<Self> {
+    /// range. A version that will not parse is not guessed at, and a caller
+    /// reading one from a file substitutes the earliest, least-trusted value
+    /// rather than inventing a middle one, which `unwrap_or` says in one line.
+    ///
+    /// A [`FromStr`] rather than the inherent `parse` this used to be, because
+    /// every other type in the model that reads itself from text is one, and an
+    /// inherent method of that name invites a reader to expect
+    /// `"1.2.3".parse::<Version>()` to work.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let fail = || VersionParseError {
+            input: text.to_string(),
+        };
+
         let mut parts = text.split('.');
-        let major = parts.next()?.parse().ok()?;
-        let minor = parts.next()?.parse().ok()?;
-        let patch = parts.next()?.parse().ok()?;
+        let mut number = || parts.next().ok_or_else(fail)?.parse().map_err(|_| fail());
+
+        let major = number()?;
+        let minor = number()?;
+        let patch = number()?;
         if parts.next().is_some() {
-            return None;
+            return Err(fail());
         }
-        Some(Self::new(major, minor, patch))
+        Ok(Self::new(major, minor, patch))
     }
 }
 
@@ -440,6 +472,21 @@ impl DetectionId {
 pub struct ClaimId {
     detection: String,
     subject: String,
+}
+
+impl ClaimId {
+    /// The producing detection's author-chosen id. Untrusted; escape before
+    /// display.
+    pub fn detection(&self) -> &str {
+        &self.detection
+    }
+
+    /// What the claim is about: the first CVE identifier the finding
+    /// references, or its title where it references none. Untrusted; escape
+    /// before display.
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
 }
 
 /// One thing wrong with a scanned subject: a typed, provenance-tagged claim.
@@ -798,10 +845,10 @@ mod tests {
 
     #[test]
     fn version_parses_and_orders_numerically() {
-        assert_eq!(Version::parse("8.3.1"), Some(Version::new(8, 3, 1)));
-        assert!(Version::parse("8.3").is_none());
-        assert!(Version::parse("8.3.1.0").is_none());
-        assert!(Version::parse("8.x.1").is_none());
+        assert_eq!("8.3.1".parse(), Ok(Version::new(8, 3, 1)));
+        assert!("8.3".parse::<Version>().is_err());
+        assert!("8.3.1.0".parse::<Version>().is_err());
+        assert!("8.x.1".parse::<Version>().is_err());
         // The order is component-wise numeric, not lexicographic: 8.10 > 8.3.
         assert!(Version::new(8, 10, 0) > Version::new(8, 3, 1));
     }

@@ -299,6 +299,11 @@ impl fmt::Display for TcpScanTechnique {
 ///
 /// The list is built from [`TcpScanTechnique::ALL`] rather than written out, so
 /// a technique added there appears in the error that exists to enumerate them.
+///
+/// Open rather than `#[non_exhaustive]`, for the reason
+/// [`MacAddrParseError`](crate::model::mac::MacAddrParseError) gives: one way to
+/// fail, one thing to say about it, and the list of alternatives derived rather
+/// than stored.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
     "unknown TCP scan technique '{input}', expected one of: {}",

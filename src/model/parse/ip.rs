@@ -64,6 +64,20 @@ pub enum Keyword {
 }
 
 impl Keyword {
+    /// Every keyword this build knows, in declaration order.
+    ///
+    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
+    /// gives, and because [`from_token`](Self::from_token) had the list written
+    /// out inside it. `as_str` is an exhaustive match, so a keyword added to the
+    /// enum stops the build until it has a spelling; nothing then required it to
+    /// be *recognised*, and an unrecognised keyword falls through to the address
+    /// parser, comes back [`Malformed`](IpParseError::Malformed), and is looked
+    /// up in DNS.
+    ///
+    /// [`names_keyword`] reads the same function, so a scan that should have
+    /// asked for a segment sweep would not have.
+    pub const ALL: [Keyword; 1] = [Self::Lan];
+
     /// The word as it is written in a target expression.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -78,7 +92,7 @@ impl Keyword {
     /// parser will act on rather than a second opinion.
     pub fn from_token(token: &str) -> Option<Self> {
         let token = token.trim();
-        [Keyword::Lan]
+        Self::ALL
             .into_iter()
             .find(|keyword| token.eq_ignore_ascii_case(keyword.as_str()))
     }
@@ -131,9 +145,21 @@ pub enum IpParseError {
     #[error("Malformed IP or range string: '{0}'")]
     Malformed(String),
 
-    /// Failed to retrieve local interface information for "lan" resolution.
-    #[error("Could not resolve LAN interface: {0}")]
-    LanError(String),
+    /// A keyword's resolver could not answer.
+    ///
+    /// Carries the keyword, because [`Keyword`] is `#[non_exhaustive]` and meant
+    /// to grow: this was `LanError(String)`, named after the one word in the
+    /// vocabulary, so a second keyword failing would have reported a LAN
+    /// problem. The reason stays prose, since it is the caller's resolver that
+    /// knows why and there is no set of answers this module could enumerate for
+    /// it.
+    #[error("could not resolve `{keyword}`: {reason}")]
+    KeywordUnresolved {
+        /// The word that could not be expanded.
+        keyword: &'static str,
+        /// What the caller's resolver said about it.
+        reason: String,
+    },
 
     /// The provided input resulted in zero valid IP addresses.
     #[error("Target input resulted in an empty set")]
@@ -274,10 +300,10 @@ pub fn insert_expression(
 
     if let Some(keyword) = Keyword::from_token(s) {
         let Some(resolve) = resolver else {
-            return Err(IpParseError::LanError(format!(
-                "the `{}` keyword needs a resolver, and none was supplied",
-                keyword.as_str()
-            )));
+            return Err(IpParseError::KeywordUnresolved {
+                keyword: keyword.as_str(),
+                reason: "no resolver was supplied to expand it".to_string(),
+            });
         };
         return resolve(keyword, set);
     }
@@ -313,7 +339,11 @@ fn parse_scoped(
     let IpRange::V6(v6) = range else {
         return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
     };
-    if !v6.start_addr().is_unicast_link_local() {
+    // The whole range, not its first address. A zone on a range only partly
+    // link-local is meaningful for that part and meaningless for the rest, and
+    // asking about the start alone accepted `fe80::1-fec0::1` and refused
+    // `fe00::1-fe80::5`, neither of which is what the suffix means.
+    if !v6.is_link_local() {
         return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
     }
 

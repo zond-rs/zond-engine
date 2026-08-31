@@ -74,6 +74,12 @@ impl From<MacAddr> for [u8; 6] {
 }
 
 /// Why a string could not be read as a hardware address.
+///
+/// Open rather than `#[non_exhaustive]`, unlike every error *enum* in this
+/// module. There is one way to fail here and one thing worth saying about it,
+/// so a second field would be a different type rather than a growth of this
+/// one, and sealing it would cost a caller the ability to write the literal
+/// without buying anything.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("'{input}' is not a MAC address: expected six hex octets separated by ':' or '-'")]
 pub struct MacAddrParseError {

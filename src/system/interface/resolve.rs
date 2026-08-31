@@ -43,6 +43,14 @@ pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpPar
     }
 }
 
+/// The `lan` keyword, unresolved, with the reason this module found.
+fn lan_unresolved(reason: impl Into<String>) -> IpParseError {
+    IpParseError::KeywordUnresolved {
+        keyword: Keyword::Lan.as_str(),
+        reason: reason.into(),
+    }
+}
+
 /// Dynamically resolves the host's primary LAN interface into an inclusive range.
 ///
 /// Resolves the *link* rather than an IPv4 network, because the two can come
@@ -55,14 +63,14 @@ pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpPar
 /// addressed publicly.
 fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
     let link = interface::lan_link()
-        .ok_or_else(|| IpParseError::LanError("No active network interface found".into()))?;
+        .ok_or_else(|| lan_unresolved("no active network interface was found"))?;
 
     let Some(net) = link.ipv4 else {
         // Named, and named accurately. What the caller needs to be able to tell
         // apart is "nothing is there" from "this link cannot be swept the way
         // you asked", and the old message asserted the first while meaning the
         // second.
-        return Err(IpParseError::LanError(format!(
+        return Err(lan_unresolved(format!(
             "{} has no private IPv4 network to sweep{}. Give an explicit range, \
              or an IPv6 target on this link.",
             link.link.name(),
@@ -78,9 +86,7 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
     // range, and it is the same code the on-link tests use.
     let network = net.network();
     let (IpAddr::V4(first), IpAddr::V4(last)) = (network.start_addr(), network.end_addr()) else {
-        return Err(IpParseError::LanError(
-            "the LAN link's IPv4 network is not IPv4".into(),
-        ));
+        return Err(lan_unresolved("the LAN link's IPv4 network is not IPv4"));
     };
 
     // Neither end is a host: the first names the network and the last is the
@@ -92,7 +98,7 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
         let range = Ipv4Range::new(Ipv4Addr::from(start_u32), Ipv4Addr::from(end_u32)).map_err(
             |e| match e {
                 IpError::InvalidRange(s, e) => IpParseError::InvalidRange(s, e),
-                _ => IpParseError::LanError("Invalid LAN range".into()),
+                _ => lan_unresolved("the network's own ends are out of order"),
             },
         )?;
 
