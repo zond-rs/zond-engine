@@ -8,9 +8,10 @@
 
 //! # Forward name resolution
 //!
-//! Turns the names a person writes — `example.com`, `raspberrypi.local`, `nas`
-//! — into the addresses a scan can probe. This is the half of resolution that
-//! runs *before* a scan, deciding what it will cover; the reverse half, which
+//! Turns the names a person writes, such as `example.com`, `raspberrypi.local`
+//! and `nas`, into the addresses a scan can probe. This is the half of
+//! resolution that runs before a scan, deciding what it will cover. The reverse
+//! half, which
 //! attaches names to hosts a scan has already found, lives in
 //! [`crate::scanner::rdns`] and answers the opposite question.
 //!
@@ -21,14 +22,14 @@
 //!
 //! - A `.local` name is a multicast name (RFC 6762): it is resolved by asking
 //!   the link over multicast DNS, not by asking a unicast server. A unicast
-//!   lookup of one fails everywhere the host has no mDNS-aware resolver — which
-//!   on Linux is the common case — so the engine speaks mDNS itself rather than
-//!   hope the system does.
+//!   lookup of one fails everywhere the host has no mDNS-aware resolver, which
+//!   on Linux is the common case, so the engine speaks mDNS itself rather than
+//!   hoping the system does.
 //! - Any other name goes to the system's unicast resolver, which applies the
 //!   host's own search domains and returns A and AAAA records alike.
 //! - A single-label name (`nas`) is tried unicast first, and if nothing answers
-//!   and mDNS is enabled, again as `nas.local` — which on a home network is
-//!   often what the author meant by it.
+//!   and mDNS is enabled, again as `nas.local`, which on a home network is often
+//!   what the author meant by it.
 //!
 //! ## Why a resolver, and not just the hook
 //!
@@ -42,9 +43,9 @@
 //!
 //! ## The synchronous seam, and the two passes
 //!
-//! That hook is synchronous — it is called once per name while a target
-//! expression is parsed — and resolution is asynchronous and slow, mDNS
-//! especially so. Blocking inside the hook would turn a file of two hundred
+//! That hook is synchronous, called once per name while a target expression is
+//! parsed, and resolution is asynchronous and slow, mDNS especially so. Blocking
+//! inside the hook would turn a file of two hundred
 //! names into two hundred sequential round trips. So resolution is done in two
 //! passes, and this module ships both rather than describing them:
 //!
@@ -59,9 +60,10 @@
 //!
 //! ## What it does not decide
 //!
-//! Whether a scan is *allowed* to resolve at all — the meaning of
-//! [`ZondConfig::no_dns`](crate::config::ZondConfig::no_dns) at request time — is
-//! the caller's policy, not this module's: a resolver that refused to run would
+//! Whether a scan is allowed to resolve at all, which is what
+//! [`ZondConfig::no_dns`](crate::config::ZondConfig::no_dns) means at request
+//! time, is the caller's policy rather than this module's: a resolver that
+//! refused to run would
 //! be a strange thing to hold. A front end that must not emit DNS supplies no
 //! resolver, and the parse layer then refuses a name with
 //! [`NoHostLookup`](crate::model::parse::target::TargetParseError::NoHostLookup)
@@ -145,7 +147,7 @@ impl Default for ResolveConfig {
 
 /// Resolves names to addresses over unicast DNS and multicast DNS.
 ///
-/// Cheap to clone — the unicast resolver it holds is reference-counted — so it
+/// Cheap to clone, the unicast resolver it holds being reference-counted, so it
 /// can be shared across the concurrent lookups [`resolve_names`] runs.
 #[derive(Clone)]
 pub struct Resolver {
@@ -160,9 +162,9 @@ impl Resolver {
     /// Builds a resolver from the host's own unicast configuration, with mDNS
     /// enabled.
     ///
-    /// Reading the resolver configuration can fail — a container with no
-    /// `resolv.conf`, say — and that is not fatal: the resolver is returned with
-    /// no unicast half, so `.local` names still resolve while global names come
+    /// Reading the resolver configuration can fail, as in a container with no
+    /// `resolv.conf`, and that is not fatal: the resolver is returned with no
+    /// unicast half, so `.local` names still resolve while global names come
     /// back empty. The failure is logged rather than raised, because a scan that
     /// resolves fewer names is still a scan.
     pub fn from_system() -> Self {
@@ -179,9 +181,9 @@ impl Resolver {
 
     /// Resolves one name to every address it stands for, in first-seen order.
     ///
-    /// An empty result means nothing answered for the name — which a caller
-    /// treats the same as a name that resolved to nothing, since both are a
-    /// target that is simply not there. Routing is by name: see the module
+    /// An empty result means nothing answered for the name, which a caller treats
+    /// the same as a name that resolved to nothing, since both are a target that
+    /// is not there. Routing is by name: see the module
     /// documentation for how `.local`, global, and single-label names differ.
     pub async fn resolve(&self, name: &str) -> Vec<IpAddr> {
         let name = name.trim_end_matches('.');
@@ -260,8 +262,8 @@ fn build_unicast() -> Option<TokioResolver> {
 /// Whether `name` is resolved over multicast: a multi-label name whose last
 /// label is `local`.
 ///
-/// A bare `local` is not one — it is a single-label name that the fallback path
-/// may try as `local.local`, not a `.local` host in its own right.
+/// A bare `local` is not one. It is a single-label name the fallback path may try
+/// as `local.local`, rather than a `.local` host in its own right.
 fn is_multicast_local(name: &str) -> bool {
     name.contains('.')
         && name

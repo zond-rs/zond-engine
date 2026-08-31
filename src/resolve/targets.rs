@@ -14,10 +14,10 @@
 //! resolved concurrently, and the answers feed the
 //! [`HostLookup`](crate::model::parse::target::HostLookup) the second pass reads.
 //!
-//! Nothing here re-implements the grammar. A name is exactly what
-//! [`insert_expression`] rejects as [`IpParseError::Malformed`] — the same
-//! signal [`TargetMapBuilder`](crate::model::parse::target::TargetMapBuilder)
-//! uses to decide a token is worth resolving — so the classification cannot drift
+//! Nothing here re-implements the grammar. A name is what [`insert_expression`]
+//! rejects as [`IpParseError::Malformed`], the same signal
+//! [`TargetMapBuilder`](crate::model::parse::target::TargetMapBuilder) uses to
+//! decide a token is worth resolving, so the classification cannot drift
 //! from the one the builder applies when it later consumes the same input.
 
 use std::collections::{HashMap, HashSet};
@@ -74,10 +74,10 @@ pub async fn resolve_names<S: AsRef<str>>(
 /// becomes the addresses it stands for instead of the error an unresolved one
 /// would raise.
 ///
-/// The returned future borrows `ctx`, and so is only as `Send` as the keyword
-/// and zone resolvers `ctx` holds — which are `&dyn Fn` and need not be. A
-/// caller that must move the work across threads resolves with [`resolve_names`]
-/// and builds synchronously from the owned map it returns.
+/// The returned future borrows `ctx`, and so is only as `Send` as the keyword and
+/// zone resolvers `ctx` holds, which are `&dyn Fn` and need not be. A caller that
+/// has to move the work across threads resolves with [`resolve_names`] and builds
+/// synchronously from the owned map it returns.
 pub async fn to_target_map<S: AsRef<str>>(
     exprs: &[S],
     default_ports: PortSet,
@@ -104,8 +104,8 @@ pub async fn to_target_map<S: AsRef<str>>(
 /// The convenience over [`to_target_map`] for a caller feeding
 /// [`discover`](crate::scanner::discover): a name resolves the same way, and the
 /// ports every expression is grouped by are discarded rather than carried.
-/// Reports a [`TargetParseError`] — richer than the address grammar's own error,
-/// since it can name a host that would not resolve.
+/// Reports a [`TargetParseError`], which is richer than the address grammar's own
+/// error since it can name a host that would not resolve.
 pub async fn to_set<S: AsRef<str>>(
     exprs: &[S],
     keywords: Option<ResolverFn<'_>>,
@@ -187,8 +187,8 @@ fn ips_of(map: &TargetMap) -> IpSet {
 /// Those two travel together because separating them is a mistake nobody
 /// notices. `lan` and the range it expands to produce the same [`IpSet`], and by
 /// the time [`discover`](crate::scanner::discover) has one it cannot tell which
-/// was written — so a caller that resolves the addresses and forgets the flag
-/// gets a targeted run where a sweep was asked for, no all-nodes echo, no
+/// was written, so a caller that resolves the addresses and forgets the flag gets
+/// a targeted run where a sweep was asked for, no all-nodes echo, no
 /// neighbour-table leads, and an IPv6 half that reports a network as empty. It
 /// looks exactly like a working scan.
 #[derive(Debug, Clone)]
@@ -232,9 +232,9 @@ impl DiscoveryTargets {
 ///
 /// The one call a front end makes. It wires this host's own interface table for
 /// `lan` and for the `%interface` suffix, resolves any hostnames, and works out
-/// whether a segment sweep was asked for — three steps that were previously
-/// three separate things for every consumer to remember, and that every
-/// consumer remembered differently.
+/// whether a segment sweep was asked for: three steps that were once three
+/// separate things for every consumer to remember, and that every consumer
+/// remembered differently.
 ///
 /// `names` is the DNS policy, and it is the caller's because only they know it.
 /// `Some` resolves hostnames; `None` refuses them, which is what a scan running
@@ -274,8 +274,8 @@ pub async fn for_discovery<S: AsRef<str>>(
 ///
 /// The same call with its two reads of the local machine handed in. That is what
 /// makes the behaviour around `lan` and `%en0` testable somewhere that has
-/// neither, and what lets a caller who means something else by `lan` — a
-/// management network, a lab segment — say so.
+/// neither, and what lets a caller who means something else by `lan`, such as a
+/// management network or a lab segment, say so.
 pub async fn for_discovery_with<S: AsRef<str>>(
     exprs: &[S],
     names: Option<&Resolver>,
@@ -294,10 +294,11 @@ pub async fn for_discovery_with<S: AsRef<str>>(
 /// Resolves exclusion expressions into a policy [`scan`](crate::scanner::scan)
 /// and [`discover`](crate::scanner::discover) will honour.
 ///
-/// The counterpart of [`for_discovery`], and deliberately the same grammar. An
-/// exclusion is written the way a target is — `10.0.5.0/24`, `192.168.1.10-20`,
-/// `db.internal`, `lan`, `fe80::1%en0` — because a person reading a scope
-/// document transcribes both halves of it, and a scanner that accepted CIDR for
+/// The counterpart of [`for_discovery`], and the same grammar. An exclusion is
+/// written the way a target is, so `10.0.5.0/24`, `192.168.1.10-20`,
+/// `db.internal`, `lan` and `fe80::1%en0` all work, because a person reading a
+/// scope document transcribes both halves of it and a scanner that accepted CIDR
+/// for
 /// what it must scan and something narrower for what it must not would be asking
 /// them to translate the half that matters more.
 ///
@@ -306,10 +307,10 @@ pub async fn for_discovery_with<S: AsRef<str>>(
 /// point: an exclusion that quietly failed to parse is an exclusion that quietly
 /// does not apply.
 ///
-/// **A name is resolved once, here.** What comes back is the addresses it stood
-/// for at that moment, and the policy holds those rather than the name — so a
-/// host that moves during the scan is no longer excluded, and one whose record
-/// lists two addresses is excluded at both. Write the addresses where that
+/// A name is resolved once, here. What comes back is the addresses it stood for
+/// at that moment, and the policy holds those rather than the name, so a host
+/// that moves during the scan is no longer excluded and one whose record lists
+/// two addresses is excluded at both. Write the addresses where that
 /// matters, which is most of the time it matters at all.
 ///
 /// # Combining with a settings document
@@ -368,9 +369,9 @@ pub async fn for_exclusion_with<S: AsRef<str>>(
 ///
 /// A name is an address half the grammar rejects as
 /// [`IpParseError::Malformed`] **and** that
-/// [`host_name`](target::host_name) then agrees is a name. Every other rejection
-/// — a wrong address, a keyword with no resolver, a zone on a global address —
-/// is an error about something that was meant to be an address, and is left for
+/// [`host_name`](target::host_name) then agrees is a name. Every other rejection,
+/// whether a wrong address or a keyword with no resolver or a zone on a global
+/// address, is an error about something meant to be an address, and is left for
 /// the build pass to report against the expression it belongs to. A token that
 /// will not even split is skipped for the same reason: the builder will raise it
 /// verbatim.
@@ -407,8 +408,9 @@ fn collect_names<S: AsRef<str>>(exprs: &[S], ctx: &TargetContext<'_>) -> Vec<Str
 /// Resolves a list of names concurrently, at most [`MAX_CONCURRENT_LOOKUPS`] in
 /// flight, keeping only those that resolved to something.
 ///
-/// **One lookup per name, not per spelling.** DNS is case-insensitive, so `NAS`
-/// and `nas` are one host and used to be two round trips and two map entries.
+/// One lookup per name rather than per spelling. DNS is case-insensitive, so
+/// `NAS` and `nas` are one host and were once two round trips and two map
+/// entries.
 /// They are resolved once and the answer is recorded under every spelling that
 /// asked for it, which leaves the returned map keyed as the caller wrote things:
 /// the build pass looks a name up by the token in the expression, and lowering
@@ -486,11 +488,11 @@ mod tests {
     /// The two passes agree about what a name is, because they ask the same
     /// function.
     ///
-    /// **They did not.** The collector took [`IpParseError::Malformed`] as the
-    /// whole answer, and the builder applies two more tests before it consults
+    /// They once did not. The collector took [`IpParseError::Malformed`] as the
+    /// whole answer while the builder applies two more tests before consulting
     /// the lookup, so a mistyped address was sent to a resolver somebody else
     /// operates and then refused here without ever being looked up. A typo in a
-    /// target file became a DNS query, which is the one thing `no_dns` exists to
+    /// target file became a DNS query, which is what `no_dns` exists to
     /// prevent.
     #[test]
     fn a_token_the_builder_will_refuse_is_never_put_on_the_network() {
@@ -561,8 +563,8 @@ mod tests {
     }
 
     /// The distinction the addresses cannot carry. Both of these resolve to the
-    /// same single address, and only one of them is a request to sweep a
-    /// segment — so a caller reading only the `IpSet` has already lost it.
+    /// same single address and only one is a request to sweep a segment, so a
+    /// caller reading only the `IpSet` has already lost it.
     #[tokio::test]
     async fn only_the_keyword_asks_for_a_segment_sweep() {
         let keyword = for_discovery_with(&["lan"], None, Some(&keywords), None)
@@ -627,8 +629,8 @@ mod tests {
     /// The whole point of the classification: names are picked out and nothing
     /// else is. A literal, a range, a CIDR block and a resolvable keyword are all
     /// addresses the grammar handles, and only the two hostnames are left for
-    /// resolution — carrying their ports stripped, since a name is the address
-    /// half alone.
+    /// resolution, carrying their ports stripped since a name is the address half
+    /// alone.
     #[test]
     fn only_the_hostnames_in_a_mixed_list_are_collected() {
         let ctx = TargetContext::new().with_keywords(&keywords);
@@ -692,7 +694,7 @@ mod tests {
     }
 
     /// A list of literals reaches `to_set` without a name to resolve, so it
-    /// touches no network — which is what makes this seam testable offline. What
+    /// touches no network, which is what makes this seam testable offline. What
     /// it pins is the union: expressions land in separate port groups, and
     /// `to_set` has to fold every group's addresses back into one set across
     /// both families rather than returning only the last group's.

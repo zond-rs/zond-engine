@@ -12,17 +12,17 @@
 //! that is aimed at a **link** rather than at addresses.
 //!
 //! A listener has no target grammar. There are no ranges, no ports and no
-//! hostnames — there is a wire, and either this machine is on it or it is not.
-//! So this resolves a much smaller vocabulary than a target expression does, and
-//! it resolves it against one thing: the interface table of the machine the
-//! process is running on.
+//! hostnames, only a wire that this machine is either on or not. So this
+//! resolves a much smaller vocabulary than a target expression does, and
+//! resolves it against one thing: the interface table of the machine the process
+//! is running on.
 //!
 //! ## Why this is not asynchronous
 //!
 //! [`for_discovery`](super::for_discovery) awaits because a target expression
 //! may contain a hostname, and resolving one means speaking to a resolver
-//! somebody else operates. Nothing here leaves the machine. A link is named,
-//! found in a table the kernel already holds, or not found — and making the call
+//! somebody else operates. Nothing here leaves the machine: a link is named and
+//! then found in a table the kernel already holds, or not found. Making the call
 //! `async` to match its sibling would promise a wait that never happens.
 
 use crate::system::interface::Link;
@@ -78,20 +78,20 @@ pub enum LinkError {
 ///
 /// Four things may be written:
 ///
-/// - **an interface name** — `en0`, `eth0`, `enp3s0`;
-/// - **the same with the zone sigil** — `%en0`, which is how an address names
+/// - **an interface name**, such as `en0`, `eth0` or `enp3s0`;
+/// - **the same with the zone sigil**, so `%en0`, which is how an address names
 ///   its interface everywhere else in this engine;
-/// - **`lan`** — the link a LAN scan would run on, which is the interface
+/// - **`lan`**, the link a LAN scan would run on, which is the interface
 ///   carrying this host's default route;
-/// - **nothing at all** — every interface that is up.
+/// - **nothing at all**, meaning every interface that is up.
 ///
 /// A link named twice, or named once as `en0` and once as `%en0`, is one link.
 ///
-/// # The empty case is every link, and that is deliberate
+/// # The empty case is every link
 ///
 /// A scan given no targets has nothing to do. A listener given no links has
-/// something perfectly sensible to do — listen to everything this machine is
-/// attached to — and refusing would make the commonest use of the phase the one
+/// something sensible to do, which is to listen to everything this machine is
+/// attached to, and refusing would make the commonest use of the phase the one
 /// that needs an argument.
 ///
 /// ```no_run
@@ -115,7 +115,7 @@ pub fn for_listening<S: AsRef<str>>(exprs: &[S]) -> Result<Vec<Zone>, LinkError>
 ///
 /// The same call with its one read of the local machine handed in, which is what
 /// makes the behaviour around `lan`, `%en0` and the empty case testable on a
-/// machine that has none of them — the same seam
+/// machine that has none of them, the seam
 /// [`for_discovery_with`](super::for_discovery_with) exists for.
 ///
 /// Every branch reads `interfaces` and nothing else. `lan` used to reach past it
@@ -202,8 +202,8 @@ mod tests {
         let up = |name: &str, index: u32, up: bool| Link::new(name, index).up(up);
 
         // A link says whether it is up rather than carrying a flags word the
-        // reader has to know the bit positions of — which is the whole of what
-        // was wrong on Windows, where nobody filled that word in.
+        // reader has to know the bit positions of, which is what was wrong on
+        // Windows, where nobody filled that word in.
         vec![
             up("en0", 4, true),
             up("en1", 5, true),
@@ -230,11 +230,11 @@ mod tests {
     /// `lan` is answered from the table this was handed, like every other
     /// expression it takes.
     ///
-    /// **This test could not be written before.** The branch called
-    /// `interface::lan_link()`, which reads the running machine, so the seam
-    /// this function exists to provide covered `%en0` and the empty case and not
-    /// the one its own documentation names first. An empty table still answered
-    /// with whichever interface held the host's default route.
+    /// This test could not be written before. The branch called
+    /// `interface::lan_link()`, which reads the running machine, so the seam this
+    /// function exists to provide covered `%en0` and the empty case but not the
+    /// one its own documentation names first. An empty table still answered with
+    /// whichever interface held the host's default route.
     #[test]
     fn lan_is_answered_from_the_table_this_was_given() {
         let table = vec![lan_capable("lab0", 42)];

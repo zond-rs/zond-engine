@@ -19,16 +19,16 @@
 //! may answer. The tempting shortcut is to send from an ephemeral port and read
 //! the reply there, on the strength of RFC 6762 §6.7, which says a responder
 //! seeing a query from a port other than 5353 must answer it as unicast. In
-//! practice that reply does not reliably arrive: a responder that has an answer
-//! ready — the host's own responder answering for `mac.local`, most of all —
-//! sends it to the multicast group, and a socket listening only on its own
-//! ephemeral port never sees it.
+//! practice that reply does not reliably arrive. A responder that has an answer
+//! ready, above all the host's own responder answering for `mac.local`, sends it
+//! to the multicast group, and a socket listening only on its own ephemeral port
+//! never sees it.
 //!
 //! So this speaks mDNS the way the responders expect to be spoken to. It binds
 //! port 5353, joins the group, and reads the multicast answers directly.
 //! Port 5353 already belongs to the host's own responder (`mDNSResponder` on
 //! macOS, `avahi` on Linux), so the bind sets `SO_REUSEADDR` and `SO_REUSEPORT`
-//! to sit alongside it rather than displace it — multicast datagrams are
+//! to sit alongside it rather than displace it. Multicast datagrams are
 //! delivered to every socket joined to the group, so both receive them.
 //! Multicast loopback is left on, which is what lets the host hear its *own*
 //! responder: the `mac.local` case resolves for exactly this reason.
@@ -44,8 +44,8 @@
 //! A multicast group is joined on *an* interface, and the query egresses *an*
 //! interface, and leaving the host to pick which is the mistake this makes a
 //! point of not making. On a machine with a VPN up, the kernel's default
-//! multicast interface is routinely the tunnel — measured on the machine this
-//! was written on, where an unspecified-interface join bound to a `utun` and the
+//! multicast interface is routinely the tunnel, measured on the machine this was
+//! written on, where an unspecified-interface join bound to a `utun` and the
 //! LAN's own responder was never heard. So the query is put out, and the group
 //! joined, on *every* non-loopback interface holding an IPv4 address, one socket
 //! each, and every answer that comes back on any of them is gathered.
@@ -87,7 +87,7 @@ const MAX_DATAGRAM: usize = 9000;
 /// ordinary "nobody here answers to that" outcome. A socket that will not bind
 /// or a group that cannot be reached is logged and also yields nothing, on the
 /// principle that a name that could not be looked up and a name that resolved to
-/// nothing are the same target — missing — to the caller.
+/// nothing are the same missing target to the caller.
 pub async fn resolve(name: &str, timeout_after: Duration) -> Vec<IpAddr> {
     match query(name, timeout_after).await {
         Ok(addresses) => addresses,
@@ -104,8 +104,8 @@ pub async fn resolve(name: &str, timeout_after: Duration) -> Vec<IpAddr> {
 /// Each interface gets its own socket, its own send, and its own listening task;
 /// the tasks run for the whole window and their finds are unioned. An interface
 /// whose socket will not open, or whose send fails, is logged and dropped rather
-/// than failing the lookup — another interface may still carry it. Only a run in
-/// which no interface could be queried at all is an error.
+/// than failing the lookup, since another interface may still carry it. Only a
+/// run in which no interface could be queried at all is an error.
 async fn query(name: &str, timeout_after: Duration) -> std::io::Result<Vec<IpAddr>> {
     let interfaces = multicast_interfaces();
     if interfaces.is_empty() {
@@ -186,9 +186,10 @@ async fn listen(socket: UdpSocket, wanted: String, deadline: Instant) -> Vec<IpA
 /// Opens one socket bound to port 5353 on `interface`, joined to the mDNS group
 /// there.
 ///
-/// The options that let this coexist with the host's own responder — reusing the
-/// address and the port — must be set before the bind, which `std` cannot
-/// express, so the socket is built through `socket2` and configured here. The
+/// The options that let this coexist with the host's own responder, meaning
+/// reusing the address and the port, have to be set before the bind, which `std`
+/// cannot express, so the socket is built through `socket2` and configured here.
+/// The
 /// multicast interface is pinned so the query egresses `interface` rather than
 /// whichever one the host would otherwise default to, and the group is joined on
 /// the same interface so the answers arriving there are delivered. Once bound and
@@ -197,9 +198,9 @@ fn open_group_socket(interface: Ipv4Addr) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
     socket.set_reuse_address(true)?;
-    // Unix only, and both supported platforms are: without it a second socket on
-    // 5353 — the host's own responder is the first — is refused rather than bound
-    // alongside.
+    // Unix only, and both supported platforms are: without it a second socket
+    // on 5353, the host's own responder being the first, is refused rather than
+    // bound alongside.
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
     socket.set_multicast_ttl_v4(MULTICAST_TTL)?;
@@ -244,7 +245,7 @@ fn multicast_interfaces() -> Vec<Ipv4Addr> {
 ///
 /// A datagram that will not parse is skipped in silence: the group carries every
 /// responder's traffic, including announcements and other queriers' answers, so
-/// a message about a different host — or no host — is not this lookup's to
+/// a message about a different host, or about no host, is not this lookup's to
 /// complain about. Names are matched without regard to case, since a responder
 /// may echo the owner name in whatever case it stores it. Addresses already seen
 /// are not repeated, so two responders naming the same host do not double it.
@@ -371,8 +372,8 @@ mod tests {
         assert!(found.is_empty());
     }
 
-    /// Two responders naming the same host — a Pi that answers on two
-    /// interfaces, say — must not make it appear twice.
+    /// Two responders naming the same host, such as a Pi that answers on two
+    /// interfaces, must not make it appear twice.
     #[test]
     fn an_address_two_responders_agree_on_is_recorded_once() {
         let datagram = response(&[("nas.local", ip("192.168.0.5"))]);
