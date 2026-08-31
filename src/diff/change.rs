@@ -25,9 +25,9 @@ use std::fmt;
 /// three, and `match (&change.before, &change.after)` covers every case a
 /// renderer has.
 ///
-/// **A `Change` never holds two equal values.** [`between`](Self::between) is
-/// the constructor a comparison uses and it returns `None` when nothing moved,
-/// so a delta's change list contains only changes.
+/// A `Change` never holds two equal values. [`between`](Self::between) is the
+/// constructor a comparison uses and returns `None` when nothing moved, so a
+/// delta's change list contains only changes.
 ///
 /// ```
 /// use zond_engine::diff::Change;
@@ -99,11 +99,11 @@ impl<T: fmt::Display> fmt::Display for Change<T> {
 /// Which of the two scans holds a record, and what the other one says about
 /// having looked.
 ///
-/// The distinction this type exists for: a host missing from tonight's scan is
-/// gone if tonight's scan covered its address, and is merely unobserved if it
-/// did not. Collapsing those two into "removed" is what makes a monitoring tool
-/// cry wolf every time somebody narrows a scan, so the coverage travels with the
-/// presence and a consumer never has to go looking for it.
+/// A host missing from tonight's scan is gone if tonight's scan covered its
+/// address and merely unobserved if it did not. Collapsing those two into
+/// "removed" is what makes a monitoring tool cry wolf every time somebody narrows
+/// a scan, so the coverage travels with the presence and a consumer never has to
+/// go looking for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Presence {
     /// Both scans have a record. The difference between them, if any, is in the
@@ -167,11 +167,11 @@ impl Presence {
 
 /// What a report says about whether a target was within what it walked.
 ///
-/// Read off the [`TargetScope`](crate::report::TargetScope) of the
-/// report's phases, which record the ranges a scan iterated after its exclusion
-/// policy was applied and the ranges that policy withheld. A report that carries
-/// no scope at all - one rebuilt from a foreign scanner's output, or from a scan
-/// that stopped before it wrote a phase down - answers [`Unstated`](Self::Unstated)
+/// Read off the [`TargetScope`](crate::report::TargetScope) of the report's
+/// phases, which record the ranges a scan iterated after its exclusion policy was
+/// applied and the ranges that policy withheld. A report carrying no scope, such
+/// as one rebuilt from a foreign scanner's output or from a scan that stopped
+/// before it wrote a phase down, answers [`Unstated`](Self::Unstated)
 /// rather than guessing.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -194,7 +194,7 @@ impl Coverage {
         matches!(self, Coverage::Covered)
     }
 
-    /// Whether the report is known **not** to have walked the target, for either
+    /// Whether the report is known not to have walked the target, for either
     /// reason.
     pub fn is_excluded(&self) -> bool {
         matches!(self, Coverage::Withheld | Coverage::OutOfScope)
@@ -225,7 +225,7 @@ impl fmt::Display for Coverage {
 mod tests {
     use super::*;
 
-    /// The invariant the rest of the module rests on: a delta's change list
+    /// The invariant the rest of the module rests on. A delta's change list
     /// holds only changes.
     #[test]
     fn a_value_that_did_not_move_is_not_a_change() {

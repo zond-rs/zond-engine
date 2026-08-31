@@ -13,13 +13,12 @@
 //! all. `RawPortScan::resolve_unasked` explains why, and is right: for a report,
 //! a too-kind verdict beats a silently truncated port list.
 //!
-//! For a resume it is the worst bug available — a cursor advanced over a target
+//! For a resume that is the worst bug available: a cursor advanced over a target
 //! nobody probed produces a second sitting that skips it and a merged report
 //! claiming coverage it never had.
 //!
-//! [`Outcome`] makes the distinction unforgeable: **only the settled variants
-//! carry a position**, and a position is the only thing a cursor can advance
-//! over.
+//! [`Outcome`] makes the distinction unforgeable. Only the settled variants carry
+//! a position, and a position is the only thing a cursor can advance over.
 //!
 //! | Outcome | Decided at | Position |
 //! |---|---|---|
@@ -38,19 +37,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::cursor::{Checkpoint, Cursor};
 
-/// The two outcomes a *probe* earns, before the position is attached.
+/// The two outcomes a probe earns, before the position is attached.
 ///
 /// A caller that has earned a verdict says which of these it earned, and
-/// something that knows the plan attaches the position — see
+/// something that knows the plan attaches the position. See
 /// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address),
 /// which is how a sweep settles an address it does not know the number of.
 ///
-/// Not every settled outcome is here, because not every one is earned by a
-/// probe: [`Skipped`](Outcome::Skipped) is the liveness pass deciding no probe
-/// was owed, and whatever reaches that conclusion already knows the position, so
-/// it builds the outcome directly. The unsettled outcomes are absent for the
-/// opposite reason — they carry no position, so there is nothing to attach and
-/// they are recorded straight through [`Settlements::record`].
+/// Not every settled outcome is here, since not every one is earned by a probe.
+/// [`Skipped`](Outcome::Skipped) is the liveness pass deciding no probe was owed,
+/// and whatever reaches that conclusion already knows the position, so it builds
+/// the outcome directly. The unsettled outcomes carry no position, so there is
+/// nothing to attach and they are recorded straight through
+/// [`Settlements::record`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Settled {
@@ -77,14 +76,14 @@ impl Settled {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Outcome {
-    /// The target answered. **Settled.**
+    /// The target answered. Settled.
     Answered {
         /// Its position in the plan.
         position: u64,
     },
 
     /// The retry budget was spent without an answer: silence, asked for as many
-    /// times as the policy allows. **Settled** — waiting longer could not have
+    /// times as the policy allows. Settled, since waiting longer could not have
     /// changed it.
     Exhausted {
         /// Its position in the plan.
@@ -93,20 +92,19 @@ pub enum Outcome {
 
     /// Its host answered nothing in the liveness pass, so no probe was owed.
     ///
-    /// **Settled**, and the one settled outcome no probe was sent for. The
-    /// evidence is still earned: the scan asked whether the host was there and
-    /// heard nothing, and declining to spend a probe per port on a host that is
-    /// not there is work it *decided against* rather than work it missed. That
-    /// is the difference between this and [`Unasked`](Outcome::Unasked).
+    /// Settled, and the one settled outcome no probe was sent for. The evidence
+    /// is still earned: the scan asked whether the host was there and heard
+    /// nothing, so declining to spend a probe per port on it is work decided
+    /// against rather than work missed. That is the difference between this and
+    /// [`Unasked`](Outcome::Unasked).
     ///
-    /// It follows that a resumed scan does not revisit those ports even if the
-    /// host answers next time. A resume continues one job, and that job's
-    /// finding about the host was that it was down; asking again is a new scan,
-    /// which is the same argument
-    /// [`JournalManifest`](crate::journal::manifest::JournalManifest) makes about
+    /// So a resumed scan does not revisit those ports even if the host answers
+    /// next time. A resume continues one job, and that job's finding about the
+    /// host was that it was down; asking again is a new scan, which is what
+    /// [`JournalManifest`](crate::journal::manifest::JournalManifest) says about
     /// a plan that has moved.
     /// [`ZondConfig::assume_up`](crate::config::ZondConfig::assume_up) is how a
-    /// caller declines the whole bargain.
+    /// caller declines the bargain.
     Skipped {
         /// Its position in the plan.
         position: u64,
@@ -119,9 +117,9 @@ pub enum Outcome {
     /// Still queued when the scan stopped, so nothing was sent.
     Unasked,
 
-    /// No scanner spoke its protocol, or the host had no route — usually a
-    /// missing privilege rather than a fact about the target, and privileges can
-    /// differ between sittings.
+    /// No scanner spoke its protocol, or the host had no route. Usually a missing
+    /// privilege rather than a fact about the target, and privileges can differ
+    /// between sittings.
     Unroutable,
 }
 
@@ -192,10 +190,10 @@ impl Settlements {
 
     /// Records `count` targets ending the same way.
     ///
-    /// For the unsettled outcomes, which are counted rather than stored: a
-    /// sweep cut short can leave millions of addresses unasked, and they are one
-    /// fact rather than a million. A settled outcome names one position, so
-    /// repeating it here would count one target many times — those go through
+    /// For the unsettled outcomes, which are counted rather than stored. A sweep
+    /// cut short can leave millions of addresses unasked, and they are one fact
+    /// rather than a million. A settled outcome names one position, so repeating
+    /// it here would count one target many times; those go through
     /// [`record`](Self::record) one at a time.
     pub fn record_many(&self, outcome: Outcome, count: u64) {
         debug_assert!(
@@ -215,8 +213,8 @@ impl Settlements {
         self.with_cursor(|cursor| cursor.settled_count())
     }
 
-    /// How many targets ended in `outcome`'s variant **this sitting**. The
-    /// position of a settled variant is ignored; any will do.
+    /// How many targets ended in `outcome`'s variant this sitting. The position
+    /// of a settled variant is ignored, so any will do.
     pub fn count(&self, outcome: Outcome) -> u64 {
         self.counter(outcome).load(Ordering::Relaxed)
     }
@@ -272,7 +270,7 @@ mod tests {
     }
 
     /// A sitting cut short gives every outstanding and unasked target the same
-    /// *verdict* as an exhausted one, and must advance the cursor over none.
+    /// verdict as an exhausted one, and advances the cursor over none.
     #[test]
     fn a_cut_short_sitting_settles_only_what_it_earned() {
         let settlements = Settlements::default();

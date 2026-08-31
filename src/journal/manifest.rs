@@ -6,29 +6,28 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # What a journal is a journal *of*
+//! # What a journal is a journal of
 //!
 //! A cursor is a number. It means something only against the plan it was counted
-//! in, so the plan has to travel with it — and a resumed scan has to be able to
-//! prove the plan has not moved.
+//! in, so the plan travels with it and a resumed scan can prove the plan has not
+//! moved.
 //!
 //! ## Why a position is not self-describing
 //!
 //! [`Cursor`](super::cursor) records that position 4,001,927 is settled.
-//! [`TargetMap::iter`](crate::model::target::TargetMap::iter) is what says which
-//! target that is, and it answers differently if anything about the plan
-//! changed: a port added to the list, a range widened, an exclusion policy
-//! edited, a unit added. None of those are exotic — they are what happens when
-//! somebody edits a settings file between two sittings.
+//! [`TargetMap::iter`](crate::model::target::TargetMap::iter) says which target
+//! that is, and it answers differently if anything about the plan changed: a port
+//! added to the list, a range widened, an exclusion policy edited, a unit added.
+//! None of those are exotic; they are what happens when somebody edits a settings
+//! file between two sittings.
 //!
 //! Resuming across such a change does not fail. It scans the wrong targets and
-//! reports success, which is the same class of invisible wrongness
-//! [`settle`](super::settle) exists to prevent, arriving by a different route.
+//! reports success, which is the invisible wrongness
+//! [`settle`](super::settle) exists to prevent arriving by another route.
 //!
 //! So the plan is fingerprinted when the journal is created and checked when it
-//! is resumed, and **a mismatch is a refusal rather than a warning.** A caller
-//! who genuinely wants the new plan is asking for a new scan, and that is a
-//! different journal.
+//! is resumed, and a mismatch is a refusal rather than a warning. A caller who
+//! wants the new plan is asking for a new scan, which is a different journal.
 //!
 //! ## Two shapes of plan
 //!
@@ -46,34 +45,32 @@
 //!
 //! ## What the fingerprint covers, and what it costs
 //!
-//! Not the enumeration — hashing sixteen billion targets to check a `/8` would
-//! cost more than the scan. It covers the *structure that decides* the
-//! enumeration: the canonical address ranges, each unit's port list in order,
-//! the technique or the sweep flag, and the privilege level, plus the total as a
-//! cheap cross-check.
+//! Not the enumeration; hashing sixteen billion targets to check a `/8` would
+//! cost more than the scan. It covers the structure that decides the enumeration:
+//! the canonical address ranges, each unit's port list in order, the technique or
+//! the sweep flag, and the privilege level, plus the total as a cheap
+//! cross-check.
 //!
-//! That is a few hundred bytes of hashing for any plan of any size, and it moves
-//! whenever a position's meaning moves — which is the only property required of
+//! That is a few hundred bytes of hashing for a plan of any size, and it moves
+//! whenever a position's meaning moves, which is the only property required of
 //! it.
 //!
 //! ## Privilege is part of the plan, for the plans that probe
 //!
 //! A scan begun privileged and resumed unprivileged is not the same scan
 //! continued. The connect fallback can only complete handshakes, so it answers a
-//! different question than a raw technique does —
-//! [`TcpScanTechnique`] makes exactly
-//! this argument about not quietly substituting one for the other. Folding it
-//! into the fingerprint means the refusal happens up front, rather than the
-//! second sitting silently filling the first one's gaps with weaker evidence.
+//! different question than a raw technique does, which is the argument
+//! [`TcpScanTechnique`] makes about not substituting one for the other. Folding
+//! it into the fingerprint puts the refusal up front, rather than letting the
+//! second sitting fill the first one's gaps with weaker evidence.
 //!
-//! **A watch has no such pair, so it is deliberately not covered.** A listener
-//! sends nothing and has no fallback to be silently substituted: it either
-//! opened a capture or did nothing at all, and it enumerated nothing either way,
-//! so there is no position a privilege change could give a second meaning to.
-//! Covering it refused a resume across `sudo` — an ordinary thing to do on a
-//! machine that captures through `access_bpf` or `cap_net_raw` — and refused it
-//! by reporting that recorded positions would name different targets, of which
-//! such a journal has none.
+//! A watch has no such pair and is not covered. A listener sends nothing and has
+//! no fallback to be substituted: it either opened a capture or did nothing, and
+//! it enumerated nothing either way, so there is no position a privilege change
+//! could give a second meaning to. Covering it refused a resume across `sudo`,
+//! which is ordinary on a machine that captures through `access_bpf` or
+//! `cap_net_raw`, and refused it by reporting that recorded positions would name
+//! different targets, of which such a journal has none.
 
 use std::time::SystemTime;
 
@@ -90,10 +87,10 @@ use crate::system::privilege::Privilege;
 
 /// What a scan will actually walk, in the shape the phase it belongs to counts.
 ///
-/// The engine's two entry points are asked different questions and enumerate
-/// different things: [`discover`](crate::scanner::discover) walks addresses and
+/// The engine's two entry points enumerate different things:
+/// [`discover`](crate::scanner::discover) walks addresses and
 /// [`scan`](crate::scanner::scan) walks addresses paired with ports. A position
-/// means one or the other, never both, so a journal has to say which it holds.
+/// means one or the other, never both, so a journal says which it holds.
 ///
 /// # The exclusion policy is part of the plan
 ///
@@ -102,11 +99,11 @@ use crate::system::privilege::Privilege;
 /// exclusion for the rest of the job, and counts a total the scan can never
 /// reach.
 ///
-/// Worse, the policy *decides the enumeration*: withhold the first half of a
-/// range and every position after it names a different target. Two sittings
-/// under different policies would then agree on a fingerprint and disagree on
-/// what position 400 means, which is the silent-wrong-coverage failure
-/// [`settle`](super::settle) exists to prevent, arriving by a different route.
+/// The policy also decides the enumeration: withhold the first half of a range
+/// and every position after it names a different target. Two sittings under
+/// different policies would agree on a fingerprint and disagree on what position
+/// 400 means, which is the silent wrong coverage [`settle`](super::settle) exists
+/// to prevent arriving by another route.
 ///
 /// So constructing a plan applies the policy, and a caller cannot hold one that
 /// has not had it applied. Applying it again inside the scan costs nothing:
@@ -114,9 +111,9 @@ use crate::system::privilege::Privilege;
 #[derive(Debug, Clone)]
 pub struct Plan(Resolved);
 
-/// A plan's two shapes. Private, which is what makes the constructors the only
-/// way in — a variant a caller could fill in themselves would be a plan with no
-/// exclusion policy applied, which is the thing this type exists to prevent.
+/// A plan's two shapes. Private, which makes the constructors the only way in: a
+/// variant a caller could fill in themselves would be a plan with no exclusion
+/// policy applied, which is what this type exists to prevent.
 #[derive(Debug, Clone)]
 enum Resolved {
     /// Which hosts among these addresses are alive.
@@ -129,8 +126,8 @@ enum Resolved {
     /// What these links carry.
     ///
     /// The one plan that enumerates nothing. A listener is pointed at a link
-    /// rather than at targets, so there is no set to walk, no position to
-    /// settle, and no total to reach — see [`Plan::listen`].
+    /// rather than at targets, so there is no set to walk, no position to settle
+    /// and no total to reach. See [`Plan::listen`].
     Listen { links: Vec<Zone> },
 }
 
@@ -161,25 +158,24 @@ impl Plan {
     /// # The plan that counts nothing
     ///
     /// The other two enumerate: a sweep walks addresses and a port scan walks
-    /// addresses paired with ports, and everything the journal does — the
-    /// cursor, the watermark, the total — is arithmetic over that enumeration.
-    /// A listener has none. It was pointed at a link, the link carries what it
-    /// carries, and there is no set of things that could be finished.
+    /// addresses paired with ports, and the cursor and the watermark and the
+    /// total are all arithmetic over that enumeration. A listener has none. It
+    /// was pointed at a link, the link carries what it carries, and there is no
+    /// set of things that could be finished.
     ///
-    /// So a listen journal has no cursor, and **resuming one appends a sitting
-    /// rather than skipping settled work**. There is nothing settled to skip.
-    /// What the journal buys is the other half of what it buys the other two:
-    /// the findings survive a listener that stopped, and the report describes
-    /// the whole watch rather than its last sitting.
+    /// So a listen journal has no cursor, and resuming one appends a sitting
+    /// rather than skipping settled work, since there is nothing settled to skip.
+    /// What it buys is the other half of what the journal buys the other two: the
+    /// findings survive a listener that stopped, and the report describes the
+    /// whole watch rather than its last sitting.
     ///
     /// # Why the exclusion policy is not applied here
     ///
-    /// Because it has nothing to apply to. The other constructors narrow a set
-    /// before it is numbered, since the policy decides the enumeration; a
-    /// listener cannot narrow what a link carries and enforces its scope where
-    /// findings are recorded instead. The policy is still in force — it is
-    /// applied at the store, as it is for every phase — and it is simply not
-    /// part of *this* plan's identity.
+    /// It has nothing to apply to. The other constructors narrow a set before it
+    /// is numbered, since the policy decides the enumeration. A listener cannot
+    /// narrow what a link carries and enforces its scope where findings are
+    /// recorded instead. The policy is still in force, applied at the store as it
+    /// is for every phase, and it is not part of this plan's identity.
     ///
     /// # What identifies the job
     ///
@@ -258,9 +254,9 @@ impl Plan {
         match &self.0 {
             Resolved::Discovery { addresses, .. } => PlanRecord::from(addresses),
             Resolved::PortScan { targets, .. } => PlanRecord::from(targets),
-            // A watch names links rather than targets, and those are recorded on
-            // the manifest beside the technique and the sweep flag — the other
-            // two fields that belong to one phase and not the others.
+            // A watch names links rather than targets, and those are recorded
+            // on the manifest beside the technique and the sweep flag, the other
+            // two fields belonging to one phase and not the others.
             Resolved::Listen { .. } => PlanRecord::default(),
         }
     }
@@ -311,25 +307,24 @@ impl PlanFingerprint {
         match &plan.0 {
             Resolved::Discovery { addresses, sweep } => {
                 // Privilege belongs to the enumerating phases and to them only.
-                // A raw SYN and a connect attempt ask different questions of the
-                // same port, so a journal half of each would be counting two
-                // things — which is what this bit refuses.
+                // A raw SYN and a connect attempt ask different questions of
+                // the same port, so a journal half of each would count two
+                // things, which is what this bit refuses.
                 digest.flag(privilege.is_raw());
                 digest.flag(*sweep);
                 digest.addresses(addresses);
             }
             Resolved::Listen { links } => {
-                // **And a watch has no such pair to tell apart**, so privilege
-                // is deliberately not digested here. A listener has one way of
-                // working and no fallback: it either opened a capture or it did
-                // nothing at all, and either way it enumerated nothing and left
-                // no position for a privilege change to invalidate.
+                // A watch has no such pair to tell apart, so privilege is not
+                // digested here. A listener has one way of working and no
+                // fallback: it either opened a capture or it did nothing, and
+                // either way it enumerated nothing and left no position for a
+                // privilege change to invalidate.
                 //
-                // Hashing it refused a resume across `sudo`, which is a thing
-                // people do — a machine that captures through `access_bpf` or
-                // `cap_net_raw` records one sitting unprivileged and the next
-                // one under `sudo` — and refused it with a message about
-                // recorded positions this journal does not have.
+                // Hashing it refused a resume across `sudo`, which is ordinary
+                // on a machine that captures through `access_bpf` or
+                // `cap_net_raw`, and refused it with a message about recorded
+                // positions this journal does not have.
                 //
                 // By name, and not by index. An interface's number is a fact
                 // about a running kernel and changes across a reboot; the name
@@ -370,13 +365,12 @@ impl PlanFingerprint {
 /// The plan digest: FNV-1a over bytes this file chooses, and nothing borrowed
 /// from a `Hash` implementation.
 ///
-/// **A fingerprint that is written down cannot be built out of `Hash`.**
-/// `DefaultHasher` was what this used, and the standard library says of it that
-/// "the internal algorithm is not specified, and so it and its hashes should not
-/// be relied upon over releases" — so upgrading the compiler moved the value,
-/// every journal on disk stopped matching, and the refusal said the plan had
-/// changed. The same caveat covers the `Hash` implementations of the types fed
-/// to it, so the bytes are chosen here instead.
+/// A fingerprint that is written down cannot be built out of `Hash`. This used
+/// `DefaultHasher`, which the standard library declines to keep stable across
+/// releases, so upgrading the compiler moved the value, every journal on disk
+/// stopped matching, and the refusal said the plan had changed. The same caveat
+/// covers the `Hash` implementations of the types fed to it, so the bytes are
+/// chosen here instead.
 ///
 /// Non-cryptographic on purpose. Nothing here is defending against a chosen
 /// collision: anyone who can edit a manifest can edit the fingerprint beside it.
@@ -624,15 +618,14 @@ impl JournalManifest {
     /// The plan this journal was counted in, as it was recorded.
     ///
     /// What a resume scans, in the shape its phase counts in. Rebuilt from the
-    /// ranges and ports written down rather than from anything a caller typed,
-    /// so a hostname that has since moved does not quietly change what is being
-    /// continued — and the exclusion policy is already in it, since it was
-    /// applied before the plan was recorded.
+    /// ranges and ports written down rather than from anything a caller typed, so
+    /// a hostname that has since moved does not change what is being continued.
+    /// The exclusion policy is already in it, having been applied before the plan
+    /// was recorded.
     pub fn recorded(&self) -> Plan {
-        // Built here rather than through the constructors: the policy was
-        // applied before this was written down, and applying it again would be
-        // a second subtraction against whatever policy happens to be in force
-        // now.
+        // Built here rather than through the constructors. The policy was
+        // applied before this was written down, and applying it again would
+        // subtract a second time against whatever policy is in force now.
         Plan(match self.kind() {
             ScanKind::Discovery => Resolved::Discovery {
                 addresses: self.targets.addresses(),
@@ -774,13 +767,13 @@ mod tests {
     /// The derivation is pinned to a value, not merely to itself.
     ///
     /// Every other test here asks whether two fingerprints agree, and every one
-    /// of them passed while the derivation was `DefaultHasher` — whose output the
-    /// standard library declines to keep stable across compiler releases, so the
+    /// of them passed while the derivation was `DefaultHasher`, whose output the
+    /// standard library declines to keep stable across compiler releases. The
     /// value moved when the toolchain did and every journal on disk was refused
     /// as a plan that had changed. A test comparing two fingerprints taken in one
     /// process cannot see that. This one can.
     ///
-    /// **If this fails, the derivation moved.** That is allowed, and it is a
+    /// A failure here means the derivation moved. That is allowed, and it is a
     /// [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) bump: every journal
     /// already written carries the old value and cannot be continued under the
     /// new one. Bump the version, update the number here, and check that
@@ -1037,10 +1030,10 @@ mod tests {
         );
     }
 
-    /// A link-local plan has to survive the round trip *in order*. The set
-    /// sorts IPv6 by zone before address, so a record that came back with the
-    /// interfaces in another order would enumerate differently — and every
-    /// position an earlier sitting settled would name a different machine.
+    /// A link-local plan has to survive the round trip in order. The set sorts
+    /// IPv6 by zone before address, so a record coming back with the interfaces
+    /// in another order would enumerate differently and every position an earlier
+    /// sitting settled would name a different machine.
     #[test]
     fn a_link_local_plan_comes_back_in_the_order_it_was_counted() {
         let mut ips = IpSet::new();
@@ -1097,9 +1090,9 @@ mod tests {
         assert!(!message.contains("then,"), "{message}");
     }
 
-    /// A watch names links; a sweep and a port scan name targets. The phase is
-    /// hashed first, so no two of the three can ever agree — which is what keeps
-    /// a journal of one from being continued as another.
+    /// A watch names links, where a sweep and a port scan name targets. The phase
+    /// is hashed first, so no two of the three can agree and a journal of one
+    /// cannot be continued as another.
     #[test]
     fn a_watch_never_shares_a_fingerprint_with_a_phase_that_walks_targets() {
         let listen = Plan::listen(vec![Zone::unresolved("en0")]);
@@ -1139,18 +1132,17 @@ mod tests {
     /// A watch is the same watch whether or not this sitting is root, and the
     /// phases that probe still are not.
     ///
-    /// The distinction is what the bit is *for*. A port scan begun with raw
-    /// sockets and resumed without them fell back to completing handshakes,
-    /// which answers a different question — so the second sitting would fill the
-    /// first's gaps with weaker evidence and report success. A listener has no
-    /// second way of working to fall back to: it opened a capture or it did
-    /// nothing, and it enumerated nothing either way.
+    /// A port scan begun with raw sockets and resumed without them falls back to
+    /// completing handshakes, which answers a different question, so the second
+    /// sitting would fill the first's gaps with weaker evidence and report
+    /// success. A listener has no second way of working: it opened a capture or
+    /// it did nothing, and it enumerated nothing either way.
     ///
-    /// Both halves are asserted together because the risk runs in both
-    /// directions. Covering a watch refused a resume across `sudo` — ordinary on
-    /// a machine that captures through `access_bpf` or `cap_net_raw` — and
-    /// uncovering a port scan is the silent-wrong-coverage failure this whole
-    /// module exists to prevent.
+    /// Both halves are asserted together because the risk runs both ways.
+    /// Covering a watch refused a resume across `sudo`, which is ordinary on a
+    /// machine that captures through `access_bpf` or `cap_net_raw`, and
+    /// uncovering a port scan is the silent wrong coverage this module exists to
+    /// prevent.
     #[test]
     fn privilege_decides_a_probing_plan_and_says_nothing_about_a_watch() {
         let watch = Plan::listen(vec![Zone::unresolved("en0")]);

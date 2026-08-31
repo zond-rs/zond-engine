@@ -17,16 +17,16 @@
 //!
 //! ## How the decision is made
 //!
-//! Each record yields a set of **identity tokens** under the caller's
+//! Each record yields a set of identity tokens under the caller's
 //! [`HostIdentity`] policy. A baseline record and a current record are linked
 //! when they share a token. The links form a bipartite graph, and each connected
 //! component of that graph is one host as far as the comparison is concerned.
 //!
-//! Components rather than pairs, because pairing greedily would have to break
-//! ties, and the tie is information. A component with one record on each side is
-//! the ordinary case. A component with one record on one side and two on the
-//! other says the two scans grouped the same addresses differently, which is a
-//! real event and is reported as one rather than resolved by picking a winner.
+//! Components rather than pairs, since pairing greedily would have to break ties
+//! and the tie is information. A component with one record on each side is the
+//! ordinary case. A component with one record on one side and two on the other
+//! says the two scans grouped the same addresses differently, which is a real
+//! event and is reported as one rather than resolved by picking a winner.
 //!
 //! ## Link-local addresses carry their interface
 //!
@@ -34,12 +34,12 @@
 //! a link-local address includes the zone the record was found on. Without that
 //! two hosts on two interfaces would share a token and be folded into one.
 //!
-//! **A record that names no zone gets no zone in its token**, and two of those
-//! at one address fold together. Only a scan that reached the link layer records
-//! one, so this is what a report rebuilt from a foreign scanner's output gets:
-//! the addresses are all it has, and the comparison can only be as precise as
-//! the record. Pairing under [`PrimaryAddress`](HostIdentity::PrimaryAddress) is
-//! how a caller declines the guess.
+//! A record that names no zone gets no zone in its token, and two of those at one
+//! address fold together. Only a scan that reached the link layer records one, so
+//! this is what a report rebuilt from a foreign scanner's output gets: the
+//! addresses are all it has, and the comparison can only be as precise as the
+//! record. Pairing under [`PrimaryAddress`](HostIdentity::PrimaryAddress) is how
+//! a caller declines the guess.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -60,9 +60,9 @@ pub enum HostIdentity {
     /// Two records are the same host when their primary addresses match.
     ///
     /// The strictest policy and the most literal. A host whose primary address
-    /// changed reads as one host gone and another arrived, which is the correct
-    /// reading when addresses are the identity — an external scan of a public
-    /// range, where the address is the asset and the machine behind it is not.
+    /// changed reads as one host gone and another arrived, which is right when
+    /// addresses are the identity, as in an external scan of a public range where
+    /// the address is the asset and the machine behind it is not.
     PrimaryAddress,
 
     /// Two records are the same host when they share any address.
@@ -78,7 +78,7 @@ pub enum HostIdentity {
     /// host when they share a hardware address.
     ///
     /// Follows a machine across a DHCP lease change on a segment where the scan
-    /// reached the link layer. Not the default because a hardware address is not
+    /// reached the link layer. Not the default, since a hardware address is not
     /// always the host's own: a router answering ARP on another machine's behalf
     /// lends its address to everything behind it, and under this policy those
     /// records fold into one.
@@ -139,10 +139,10 @@ pub(crate) fn components(
         let mut current_queue: Vec<usize> = Vec::new();
 
         // Alternating flood fill across the two sides. A record is queued at
-        // most once, and a token's list is walked at most once: the second visit
+        // most once, and a token's list is walked at most once; the second visit
         // finds every record on it already queued, so the walk is pure cost.
         //
-        // **That mattered, and the case is the one `Hardware` warns about.** A
+        // The case that makes it matter is the one `Hardware` warns about. A
         // router answering ARP for everything behind it lends its address to
         // every record on the segment, and without taking the token out the
         // walk was one full list per record carrying it: four thousand hosts
@@ -206,13 +206,13 @@ pub(crate) fn components(
 /// groups ascending by their lowest index, so the same input always groups the
 /// same way.
 ///
-/// **Not the same question as [`components`], and deliberately not the same
-/// code.** A comparison asks which of tonight's records *continues* which of
-/// last night's, which is a relation between two sides: two baseline records
-/// that share an address stay two records, and `HostDelta::is_regrouped` reports
-/// that the scans disagreed. This asks which records *are* one host, which is an
-/// equivalence over all of them at once, and two records sharing an address are
-/// one host whichever documents they came from. Sharing an implementation would
+/// Not the same question as [`components`], and not the same code. A comparison
+/// asks which of tonight's records continues which of last night's, a relation
+/// between two sides: two baseline records that share an address stay two
+/// records, and `HostDelta::is_regrouped` reports that the scans disagreed. This
+/// asks which records are one host, an equivalence over all of them at once,
+/// where two records sharing an address are one host whichever documents they
+/// came from. Sharing an implementation would
 /// force one of the two to answer the other's question.
 ///
 /// The tokens, the identity policy and the link-local zone rule are shared, and

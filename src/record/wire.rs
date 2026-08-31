@@ -13,17 +13,16 @@
 //! here and [`journal`](crate::journal) reads through the parsers, which is why
 //! neither of them defines its own.
 //!
-//! A name is a promise: it appears in exported reports and in journals on disk,
-//! so changing one is a breaking change to both. Adding a variant means adding
-//! its name and its parse case here, and `every_name_parses_back` will fail
-//! until you do.
+//! A name is a promise. It appears in exported reports and in journals on disk,
+//! so changing one is a breaking change to both. A new variant needs its name and
+//! its parse case here, and `every_name_parses_back` fails until it has both.
 //!
 //! ## An unknown name is never guessed at here
 //!
 //! Every parser returns [`None`] for a name this build does not know. What that
-//! becomes is the caller's, and the callers do not all answer alike:
+//! becomes is the caller's, and the callers do not all answer alike.
 //! [`record`](crate::record) reads downward, to the value that claims least of
-//! the ones its type has, and says so at each field; [`reference()`] drops a
+//! the ones its type has, and says so at each field. [`reference()`] drops a
 //! malformed reference and keeps the finding it belonged to.
 //!
 //! What none of them do is substitute a neighbour. A port state read as `Open`
@@ -34,9 +33,9 @@
 //! ## Strategy-supplied names are prefixed
 //!
 //! [`StatusProtocol::Custom`] and [`ScanResponse::Custom`] carry a name their
-//! author chose, rendered with a `custom:` prefix so that it can never be
-//! mistaken for one this engine defines. Without it, something calling itself
-//! `arp` would be indistinguishable from a real ARP finding.
+//! author chose, rendered with a `custom:` prefix so it cannot be mistaken for
+//! one this engine defines. Without it, something calling itself `arp` would be
+//! indistinguishable from a real ARP finding.
 
 use std::borrow::Cow;
 
@@ -215,10 +214,11 @@ pub fn detection_class(name: &str) -> Option<DetectionClass> {
     })
 }
 
-/// How sure a finding — or a service identification — is, on the wire.
+/// How sure a finding, or a service identification, is on the wire.
 ///
-/// The first wire form [`Confidence`] has: nothing serialized it until a finding
-/// did, so its names are defined here beside every other model enum's rather than
+/// The first wire form [`Confidence`] has. Nothing serialized it until a finding
+/// did, so its names are defined here beside every other model enum's rather
+/// than
 /// in the fingerprinting module that owns the type.
 pub fn confidence_name(confidence: Confidence) -> &'static str {
     match confidence {
@@ -244,9 +244,9 @@ pub fn confidence(name: &str) -> Option<Confidence> {
 
 /// Which kind of [`Reference`] this is, on the wire.
 ///
-/// The kind travels beside a value the record carries separately, so its
-/// read-back is [`reference()`], which takes both halves — the one parser here that
-/// needs the value alongside the name, because a reference is an enum with a
+/// The kind travels beside a value the record carries separately, so its read-back
+/// is [`reference()`], which takes both halves. It is the one parser here needing
+/// the value alongside the name, since a reference is an enum with a
 /// payload rather than a bare one.
 pub fn reference_kind_name(reference: &Reference) -> &'static str {
     match reference {
@@ -259,7 +259,7 @@ pub fn reference_kind_name(reference: &Reference) -> &'static str {
 /// A [`Reference`] rebuilt from its wire `kind` and `value`.
 ///
 /// Returns [`None`] for an unknown kind, a CWE number that is not a number, or a
-/// CVE identifier of the wrong shape — a malformed reference is dropped rather
+/// CVE identifier of the wrong shape. A malformed reference is dropped rather
 /// than guessed at, the same discipline every parser here follows.
 pub fn reference(kind: &str, value: &str) -> Option<Reference> {
     Some(match kind {
@@ -271,9 +271,9 @@ pub fn reference(kind: &str, value: &str) -> Option<Reference> {
 }
 
 /// The TCP flags set in `byte`, named and joined with `|`, so an arbitrary
-/// evasion flag combination reads back in a report as `fin|psh|urg` rather than
-/// a bare number. Ordered from the high header bit down; the empty combination
-/// (a flagless probe) renders as the empty string.
+/// evasion flag combination reads back in a report as `fin|psh|urg` rather than a
+/// bare number. Ordered from the high header bit down, with the empty combination
+/// of a flagless probe rendering as the empty string.
 pub fn tcp_flags_name(byte: u8) -> String {
     [
         (tcp::flags::URG, "urg"),
@@ -517,7 +517,7 @@ pub fn port_scope_name(scope: &PortScope) -> &'static str {
 /// [`port_scope_name`] read back, given the set that travelled with it.
 ///
 /// A name this build does not know reads as `None`, which a caller turns into
-/// [`PortScope::Unstated`] — the reading that claims nothing.
+/// [`PortScope::Unstated`], the reading that claims nothing.
 pub fn port_scope(name: &str, ports: Option<PortSet>) -> Option<PortScope> {
     Some(match (name, ports) {
         ("unstated", _) => PortScope::Unstated,
@@ -665,11 +665,11 @@ mod tests {
     /// writer, the reader, and the report schema.
     ///
     /// The first two are exhaustive matches, so the compiler already refuses a
-    /// variant that has no name. The schema is a JSON file on disk and the
-    /// compiler cannot see it at all — which is the one gap, and the one that
-    /// lets a finding survive a scan and disappear on the way to the report.
+    /// variant that has no name. The schema is a JSON file the compiler cannot
+    /// see, which is the gap that lets a finding survive a scan and disappear on
+    /// the way to the report.
     ///
-    /// The `match` below has no wildcard for exactly that reason: a variant
+    /// The `match` below has no wildcard for that reason: a variant
     /// added to [`StatusProtocol`] stops this test compiling until somebody has
     /// decided what the document calls it.
     #[test]

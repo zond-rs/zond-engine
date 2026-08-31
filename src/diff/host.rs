@@ -118,7 +118,7 @@ impl HostDelta {
 
 /// Something that moved about a host.
 ///
-/// `#[non_exhaustive]`: a scan learns to establish more about a host as it
+/// `#[non_exhaustive]`, since a scan learns to establish more about a host as it
 /// learns to speak more protocols, and a consumer matching on this should pay
 /// for that with a recompile rather than with a major version.
 #[non_exhaustive]
@@ -146,8 +146,8 @@ pub enum HostChange {
     /// confidence for the same system is not a change and is not reported.
     ///
     /// Boxed because a pair of fingerprints is several times the size of any
-    /// other variant, and a change list is mostly the other variants: unboxed,
-    /// every hostname change in a diff would be stored in a slot wide enough for
+    /// other variant and a change list is mostly the other variants. Unboxed,
+    /// every hostname change in a diff would sit in a slot wide enough for
     /// two operating systems. A reader dereferences it like any other change.
     Os(Box<Change<Option<OsFingerprint>>>),
     /// The hardware addresses the host was seen at changed, each list ascending.
@@ -173,14 +173,14 @@ pub enum HostChange {
     /// list ascending.
     ///
     /// A verdict about the network rather than a measurement of the scan, which
-    /// is why it is compared where round-trip times and probe counts are not: a
+    /// is why it is compared where round-trip times and probe counts are not. A
     /// stateful filter appearing in front of a host, or one that stopped
     /// reassembling fragments, is a change to the path somebody has to know
     /// about.
     ///
     /// Each conclusion is drawn by a comparative probe that only a scan asking
     /// for it runs, so both lists are empty between two scans where
-    /// [`characterise`](crate::report::ScanSettings::characterise) was off — the
+    /// [`characterise`](crate::report::ScanSettings::characterise) was off, the
     /// same reading [`Macs`](Self::Macs) has between two scans that never
     /// reached the link layer.
     Filtering {
@@ -225,7 +225,7 @@ pub struct Reassessment {
 /// Compares one host's two records, either of which may be absent.
 ///
 /// `baseline_coverage` and `current_coverage` are what each report says about
-/// having walked this address, and they are what turns "no record" into either a
+/// having walked this address, and they turn an absent record into either a
 /// host that went away or a host nobody asked about.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compare(

@@ -10,8 +10,8 @@
 //!
 //! A port pairs with a port by number and transport, which needs no policy: 443
 //! over TCP is 443 over TCP in both scans. What is left is reporting what moved,
-//! and this module holds the vocabulary for it — the state, what is listening,
-//! and what it presents at the TLS handshake.
+//! and this module holds the vocabulary for it: the state, what is listening, and
+//! what it presents at the TLS handshake.
 //!
 //! ## Only the verdicts
 //!
@@ -92,8 +92,8 @@ impl PortDelta {
 
     /// Whether this endpoint accepts connections now and did not before.
     ///
-    /// Reads the records: an endpoint the baseline has no record for counts,
-    /// because a report is the whole of what a scan wrote down. Whether the
+    /// Reads the records. An endpoint the baseline has no record for counts,
+    /// since a report is the whole of what a scan wrote down. Whether the
     /// baseline looked at all is [`presence`](Self::presence)'s question, and
     /// [`Presence::is_confirmed`] is the test that separates a port that opened
     /// from one nobody had checked.
@@ -117,7 +117,7 @@ impl PortDelta {
 
 /// Something that moved about one endpoint.
 ///
-/// `#[non_exhaustive]`: a scan learns to establish more about a port as it
+/// `#[non_exhaustive]`, since a scan learns to establish more about a port as it
 /// learns to speak more protocols, and a consumer matching on this should pay
 /// for that with a recompile rather than with a major version.
 #[non_exhaustive]
@@ -155,8 +155,8 @@ pub enum PortChange {
 pub enum ServiceChange {
     /// Nothing was identified here before, and something is now.
     Identified(Service),
-    /// Something was identified here before, and nothing is now. Not the same as
-    /// the service being gone: the endpoint may simply not have been asked, which
+    /// Something was identified here before and nothing is now. Not the same as
+    /// the service being gone: the endpoint may not have been asked, which
     /// the phase's
     /// [`service_detection`](crate::report::ScanSettings::service_detection)
     /// setting records.
@@ -201,10 +201,10 @@ pub enum SecurityChange {
 
 /// Something that moved about the certificate an endpoint presents.
 ///
-/// Identity is the SHA-256 fingerprint, so two certificates are the same one
-/// exactly when they are byte for byte the same. That is why there are no
-/// field-level variants here: a certificate whose issuer or validity differs is
-/// a different certificate, and [`Rotated`](Self::Rotated) is what that is.
+/// Identity is the SHA-256 fingerprint, so two certificates are the same one when
+/// they are byte for byte the same. That is why there are no field-level variants
+/// here: a certificate whose issuer or validity differs is a different
+/// certificate, and [`Rotated`](Self::Rotated) is what that is.
 ///
 /// [`Expiring`](Self::Expiring) and [`Expired`](Self::Expired) are the two
 /// changes an unchanged certificate can undergo. Nothing about it moved; the
@@ -244,8 +244,8 @@ pub enum CertificateChange {
 
 /// Where a certificate stands at one moment.
 ///
-/// The five states are exhaustive and ordered by nothing: a comparison reads
-/// them as labels, and reports a transition into [`Expiring`](Self::Expiring) or
+/// The five states are exhaustive and unordered. A comparison reads them as
+/// labels and reports a transition into [`Expiring`](Self::Expiring) or
 /// [`Expired`](Self::Expired) because those are the two a person has to act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Validity {

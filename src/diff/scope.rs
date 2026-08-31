@@ -8,9 +8,9 @@
 
 //! # What a report says it looked at
 //!
-//! One report's [`TargetScope`]s, flattened across its phases and turned into
-//! the question a comparison actually asks: was *this* target covered? Every
-//! [`Coverage`] answer in a diff comes from here.
+//! One report's [`TargetScope`]s, flattened across its phases and turned into the
+//! question a comparison asks: was this target covered? Every [`Coverage`] answer
+//! in a diff comes from here.
 
 use std::net::IpAddr;
 
@@ -23,13 +23,11 @@ use crate::report::{PortScope, ScanReport, TargetScope};
 /// The ranges and port sets a report says it walked, gathered once so an address
 /// can be placed without walking the phases again.
 ///
-/// **A set rather than a list**, which is the difference between an index and a
-/// scan that has stopped repeating itself. Held as two `Vec<IpRange>`, placing
-/// one address asked every range of every phase in turn, once per address of
-/// every host: a report merged from a `/16` scanned in chunks carries hundreds
-/// of ranges and the question is asked tens of thousands of times.
-/// [`IpSet`] canonicalises on construction and answers by binary search over
-/// disjoint ranges, which is what this was describing itself as doing.
+/// A set rather than a list. Held as two `Vec<IpRange>`, placing one address
+/// asked every range of every phase in turn, once per address of every host, and
+/// a report merged from a `/16` scanned in chunks carries hundreds of ranges
+/// against tens of thousands of questions. [`IpSet`] canonicalises on
+/// construction and answers by binary search over disjoint ranges.
 pub(crate) struct ScopeIndex {
     covered: IpSet,
     withheld: IpSet,
@@ -83,12 +81,12 @@ impl ScopeIndex {
 
     /// What the report says about having covered a host.
     ///
-    /// **Asked of every address the host is known at, not only the one it is
-    /// keyed by.** A host is covered if the scan walked ground it was standing
-    /// on, and which of its addresses a report happens to key it under is the
-    /// report's business rather than the network's — a dual-stack machine keyed
-    /// under IPv6 in one scan and IPv4 in the other was equally in reach of a
-    /// sweep of the IPv4 range both times.
+    /// Asked of every address the host is known at rather than only the one it
+    /// is keyed by. A host is covered if the scan walked ground it was standing
+    /// on, and which address a report keys it under is the report's business
+    /// rather than the network's: a dual-stack machine keyed under IPv6 in one
+    /// scan and IPv4 in the other was in reach of a sweep of the IPv4 range both
+    /// times.
     ///
     /// The strongest answer over those addresses wins, on the same reasoning
     /// that makes covered beat withheld for one of them.
@@ -118,13 +116,13 @@ impl ScopeIndex {
 
     /// What the report says about having walked one address, on `zone`.
     ///
-    /// Covered wins over withheld, because a job's two phases can disagree: a
+    /// Covered wins over withheld, since a job's two phases can disagree: a
     /// discovery sweep that walked an address and a port scan that was forbidden
     /// it still means somebody looked.
     ///
-    /// Whether a *link* was swept is a separate question, asked by
-    /// [`of_host`](Self::of_host), because it is about the host rather than
-    /// about any one of its addresses.
+    /// Whether a link was swept is a separate question, asked by
+    /// [`of_host`](Self::of_host), since it is about the host rather than about
+    /// any one of its addresses.
     pub(crate) fn address(&self, ip: &IpAddr) -> Coverage {
         if self.covered.contains(ip) {
             Coverage::Covered
@@ -142,10 +140,10 @@ impl ScopeIndex {
     ///
     /// An address nothing walked has no endpoint anything walked, so a withheld
     /// or out-of-scope address carries its answer straight down. Otherwise the
-    /// phases decide, and **any phase that cannot say vetoes the rest**: a job
-    /// whose sweep walked no ports and whose port scan did not record which
-    /// ports it walked knows nothing about this endpoint, and the sweep's
-    /// certainty about its own half must not be read as the job's.
+    /// phases decide and any phase that cannot say vetoes the rest: a job whose
+    /// sweep walked no ports and whose port scan did not record which ports it
+    /// walked knows nothing about this endpoint, and the sweep's certainty about
+    /// its own half is not the job's.
     pub(crate) fn endpoint(&self, address: Coverage, port: u16, protocol: Protocol) -> Coverage {
         if address.is_excluded() {
             return address;

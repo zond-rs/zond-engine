@@ -19,11 +19,11 @@
 //! home; this is the other half of that answer, without which it goes to their
 //! home and stays unreadable to them.
 //!
-//! **They live together because separating them cost exactly that.** The cursor
-//! had its own copy of the mode and none of the ownership, so a sweep run with
-//! `sudo` left `cursor.json` owned by root beside a manifest and findings owned
-//! by the user. An unprivileged listing could read the plan and not the
-//! progress, and reported every scan as untouched.
+//! They live together because separating them cost exactly that. The cursor had
+//! its own copy of the mode and none of the ownership, so a sweep run with `sudo`
+//! left `cursor.json` owned by root beside a manifest and findings owned by the
+//! user. An unprivileged listing could read the plan and not the progress, and
+//! reported every scan as untouched.
 //!
 //! ## Why nothing here takes a path twice
 //!
@@ -35,10 +35,10 @@
 //! ownership change goes through the descriptor already open rather than
 //! through the name, so there is no second lookup to redirect between them.
 //!
-//! Taking a lock is the one file this does not open. It has to appear at its
-//! name already holding its record, or a racer reads a lock mid-creation and
-//! finds it empty — see `lock::Lock::create_exclusively`, which stages the
-//! content through [`create_private`] here and links it into place.
+//! Taking a lock is the one file this does not open. It has to appear at its name
+//! already holding its record, or a racer reads a lock mid-creation and finds it
+//! empty. See `lock::Lock::create_exclusively`, which stages the content through
+//! [`create_private`] here and links it into place.
 //!
 //! Directories are opened the same way for the same reason.
 
@@ -49,8 +49,7 @@ use std::path::Path;
 ///
 /// The mode is set as the file is created rather than after, so there is no
 /// moment where what a scan is recording can be read by anyone else. The
-/// directory is `0700` as well, which would cover it either way; this is the
-/// belt to that pair of braces, and it costs one flag.
+/// directory is `0700` as well, which would cover it either way.
 pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -119,7 +118,7 @@ fn claim(file: &fs::File) {
     use std::sync::OnceLock;
 
     /// Resolved once. Who invoked this process cannot change while it runs, and
-    /// the lookup goes to the password database — which a checkpoint every three
+    /// the lookup goes to the password database, which a checkpoint every three
     /// seconds has no reason to ask again.
     static INVOKING: OnceLock<Option<super::paths::InvokingUser>> = OnceLock::new();
 

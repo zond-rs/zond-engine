@@ -45,36 +45,34 @@
 //! nmap output against tonight's scan is the same call as comparing two of this
 //! engine's own runs.
 //!
-//! That is why nothing here reaches for a field only this engine fills in. A
-//! report with no phases, no scope, no probe statistics and no hardware
-//! addresses still compares; it just answers "unstated" to the questions its
-//! record cannot answer, which is covered below.
+//! So nothing here reaches for a field only this engine fills in. A report with
+//! no phases, no scope, no probe statistics and no hardware addresses still
+//! compares, answering unstated to the questions its record cannot answer, which
+//! is covered below.
 //!
 //! ## Verdicts are compared. Evidence is not.
 //!
-//! A report carries two kinds of record, and the
-//! [`report`](crate::report) module keeps them apart on purpose:
-//! findings about the network, and measurements about the scan. **Only the
-//! findings are compared.**
+//! A report carries two kinds of record, which [`report`](crate::report) keeps
+//! apart: findings about the network, and measurements about the scan. Only the
+//! findings are compared.
 //!
 //! So a host's status is compared and the probe that established it is not. A
 //! port's state is compared and the packet that settled it is not. A service's
 //! identity is compared and the confidence behind it is not. An operating system
 //! is compared by what it names, not by how sure the fingerprinter was.
 //!
-//! Left out entirely, and deliberately: round-trip times, hop counters, measured
-//! routes, capture counters, per-scanner probe statistics, first- and last-seen
-//! timestamps, and strategy failures. Every one of them moves between two scans
-//! of an unchanged network, and a diff that reported them would drown the one
-//! line that mattered.
+//! Left out entirely: round-trip times, hop counters, measured routes, capture
+//! counters, per-scanner probe statistics, first- and last-seen timestamps, and
+//! strategy failures. Every one of them moves between two scans of an unchanged
+//! network, and a diff reporting them would drown the line that mattered.
 //!
 //! ## What "gone" is allowed to mean
 //!
 //! A host in last week's report and not in tonight's has two very different
 //! explanations, and a monitoring tool that cannot tell them apart raises an
 //! alarm every time somebody narrows a scan. So every appearance and every
-//! disappearance carries [`Coverage`]: what the *other* scan says about whether
-//! it covered that target at all.
+//! disappearance carries [`Coverage`]: what the other scan says about whether it
+//! covered that target at all.
 //!
 //! [`TargetScope`](crate::report::TargetScope) is where that comes
 //! from. Each phase of a report records the ranges it walked after exclusions and
@@ -97,12 +95,12 @@
 //!
 //! ## Which clock a certificate is judged against
 //!
-//! "Expires within thirty days" is a question about a moment, and the moment a
-//! diff is *taken* is not the moment either scan ran. So each side is judged
+//! Expiring within thirty days is a question about a moment, and the moment a
+//! diff is taken is not the moment either scan ran. So each side is judged
 //! against its own scan's clock: the baseline's standing at the baseline's start
 //! time, the current standing at the current scan's. A certificate nobody touched
-//! then crosses the threshold exactly once, between the two scans that straddle
-//! it, which is what makes it a change rather than a property.
+//! then crosses the threshold once, between the two scans that straddle it, which
+//! is what makes it a change rather than a property.
 //!
 //! A report with no phases has no start time to take, and the latest sighting
 //! among its hosts is used instead. [`DiffOptions::as_of`] overrides the current
@@ -133,9 +131,9 @@ use crate::diff::scope::ScopeIndex;
 /// How long before a certificate lapses it counts as expiring, when a caller
 /// does not say.
 ///
-/// Thirty days is the interval the public web has settled on: it is what the
-/// major certificate authorities send their first renewal notice at, and what
-/// most monitoring templates ship with.
+/// Thirty days is the interval the public web has settled on. It is when the
+/// major certificate authorities send their first renewal notice, and what most
+/// monitoring templates ship with.
 pub const DEFAULT_EXPIRY_THRESHOLD: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// What a comparison is allowed to assume.
@@ -186,7 +184,7 @@ impl DiffOptions {
     /// that scan ran.
     ///
     /// For asking where a stored scan's certificates stand today. The baseline is
-    /// still judged at its own clock, because it is the two standings differing
+    /// still judged at its own clock, since it is the two standings differing
     /// that makes the change.
     pub fn as_of(mut self, at: SystemTime) -> Self {
         self.as_of = Some(at);
@@ -212,8 +210,8 @@ impl DiffOptions {
 
 /// Which scan one side of a comparison was.
 ///
-/// Carried so a diff can be rendered on its own, without the reports it was
-/// taken from still being in hand — which is what a front end that computed the
+/// Carried so a diff can be rendered on its own, without the reports it was taken
+/// from still being in hand, which is what a front end that computed the
 /// diff on a server and sent it to a browser has.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Provenance {
@@ -283,7 +281,7 @@ impl ScanDiff {
     /// Compares two scans.
     ///
     /// `baseline` is the earlier scan and `current` the later one. Nothing
-    /// enforces that: two reports compare in whichever order they are given, and
+    /// enforces that. Two reports compare in whichever order they are given, and
     /// a caller who hands them over the other way round gets a diff that reads
     /// backwards rather than an error.
     pub fn compare(baseline: &ScanReport, current: &ScanReport, options: &DiffOptions) -> Self {
@@ -368,8 +366,9 @@ impl ScanDiff {
     /// Whether the two scans describe the same network.
     ///
     /// True means nothing this module compares moved. It does not mean the two
-    /// reports are identical: the measurements about each scan are not compared,
-    /// so two runs that timed differently and found the same things are equal
+    /// reports are identical, since the measurements about each scan are not
+    /// compared and two runs that timed differently and found the same things are
+    /// equal
     /// here.
     pub fn is_empty(&self) -> bool {
         self.hosts.is_empty()
@@ -405,8 +404,8 @@ impl ScanDiff {
                 }
 
                 // Matched with no wildcard, so a change this crate learns to
-                // report is a compile error here until somebody decides whether
-                // it belongs in the counters a front end leads with. A `_` arm
+                // report fails to compile here until somebody decides whether it
+                // belongs in the counters a front end leads with. A `_` arm
                 // would leave it silently at zero.
                 let mut service_moved = false;
                 for change in port.changes() {
@@ -458,10 +457,10 @@ impl ScanDiff {
 /// A count of records, and how many of them the other scan is known to have
 /// looked for.
 ///
-/// The two are not the same number and the difference is the whole point. Three
-/// hosts appearing is a finding when the baseline covered all three addresses,
-/// and is a wider scan when it covered none of them. A front end that prints
-/// only one of these should print [`confirmed`](Self::confirmed).
+/// The two are not the same number and the difference matters. Three hosts
+/// appearing is a finding when the baseline covered all three addresses and is a
+/// wider scan when it covered none of them. A front end printing only one of
+/// these should print [`confirmed`](Self::confirmed).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Confirmed {
     /// How many records, whatever the other scan covered.
@@ -559,10 +558,10 @@ mod tests {
 
     /// How long the phases these helpers build ran for.
     ///
-    /// Zero, so that the moment a report is placed at is the `at` each helper
-    /// was given. A report is placed by when it *finished* looking, and a
-    /// duration would put its clock somewhere no test named — which the
-    /// certificate tests below would then read as a threshold crossed a second
+    /// Zero, so the moment a report is placed at is the `at` each helper was
+    /// given. A report is placed by when it finished looking, and a duration
+    /// would put its clock somewhere no test named, which the certificate tests
+    /// below would read as a threshold crossed a second
     /// early. How long a scan took is not what any of them is about.
     const PROMPT: Duration = Duration::ZERO;
 

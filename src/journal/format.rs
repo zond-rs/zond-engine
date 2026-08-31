@@ -14,11 +14,10 @@
 //! ## Why this is a promised format and the export DTOs are not
 //!
 //! [`export::schema`](crate::export::schema) is write-only by construction:
-//! `&'a str` for every borrowed field, `&'static str` for every enum name,
-//! nothing for `serde` to deserialize *into*. That is a deliberate choice and a
-//! good one — it costs the export path no allocation per enum name per port —
-//! and it is why `import::json` reads back only the four
-//! fields a rescan needs and skips the rest without building it.
+//! `&'a str` for every borrowed field, `&'static str` for every enum name, and
+//! nothing for `serde` to deserialize into. That costs the export path no
+//! allocation per enum name per port, and it is why `import::json` reads back
+//! only the four fields a rescan needs and skips the rest without building it.
 //!
 //! A journal cannot make that trade. Resuming means reconstructing what the
 //! first sitting found, in full, or the merged report silently loses it. So
@@ -30,18 +29,17 @@
 //! - **Unknown fields are ignored.** A journal from a newer build stays
 //!   readable for whatever it has in common with this one.
 //! - **An unknown enum string reads downward.** A value this build does not
-//!   recognise is not a field a reader can skip: it is the thing that decides
-//!   what the record *says*. It is also one field of one host in a file holding
-//!   a scan that took hours, and refusing the whole journal over it would throw
-//!   that away for the same reason the torn last line below does not. So it is
-//!   read as the weakest value the type has — a port state as `Filtered`, a
-//!   sitting as a discovery sweep, a severity as `Info` — never as a stronger
-//!   one, and never as a neighbour. [`record`](crate::record) makes that choice
-//!   field by field and documents each; the parsers themselves guess at nothing
-//!   and hand back [`None`].
+//!   recognise is not a field a reader can skip but the thing that decides what
+//!   the record says. It is also one field of one host in a file holding a scan
+//!   that took hours, so refusing the whole journal over it would throw that away
+//!   for the reason the torn last line below does not. It is read as the weakest
+//!   value the type has, so a port state as `Filtered`, a sitting as a discovery
+//!   sweep and a severity as `Info`, never as a stronger one and never as a
+//!   neighbour. [`record`](crate::record) makes that choice field by field and
+//!   documents each; the parsers guess at nothing and hand back [`None`].
 //! - **[`JOURNAL_VERSION`] is required and checked.** A journal from a future
-//!   major version is refused rather than read approximately, because by
-//!   construction its positions may not mean what this build thinks.
+//!   major version is refused rather than read approximately, since its positions
+//!   may not mean what this build thinks.
 //! - **A torn final line is discarded, not an error.** The writer appends and
 //!   does not fsync per record (see [`journal`](super)), so a process killed
 //!   mid-append leaves a partial last line. That is one record inside the replay
@@ -51,19 +49,15 @@
 //! ## Versioned apart from the export schema
 //!
 //! [`SCHEMA_VERSION`](crate::format::SCHEMA_VERSION) versions the report
-//! document. This versions the journal. They answer different questions — "what
-//! did this scan find" against "how do I continue this scan" — and coupling them
-//! would mean an additive change to an export field invalidating every scan
-//! currently in flight on disk.
+//! document and this versions the journal. One says what a scan found and the
+//! other says how to continue it, and coupling them would mean an additive change
+//! to an export field invalidating every scan currently in flight on disk.
 //!
 //! ## One vocabulary, both directions
 //!
-//! The wire names are [`record::wire`](crate::record::wire)'s, in both
-//! directions and for every consumer, so a port state spells the same in a
-//! report and in a journal and reads back the same from either. This module had
-//! a `parse` of its own that re-exported six of them; it duplicated a public
-//! path for no reader's benefit, was an arbitrary subset, and nothing but its
-//! own tests ever called it.
+//! The wire names are [`record::wire`](crate::record::wire)'s, in both directions
+//! and for every consumer, so a port state spells the same in a report and in a
+//! journal and reads back the same from either.
 
 use std::io::{BufRead, Write};
 
@@ -78,8 +72,8 @@ pub use super::JOURNAL_VERSION;
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
-    /// The file did not begin with a header record, so it is not a journal this
-    /// engine wrote — or it is empty.
+    /// The file did not begin with a header record, so it is empty or is not a
+    /// journal this engine wrote.
     #[error("no journal header: this is not a file {ENGINE_NAME} wrote, or it is empty")]
     NotAJournal,
 
@@ -121,9 +115,9 @@ pub struct Header {
     pub journal_version: u32,
     /// Always [`ENGINE_NAME`].
     pub engine: String,
-    /// The engine build that opened this journal, for diagnostics. **Not** a
-    /// resume gate — the plan hash in the manifest is what refuses a resume
-    /// whose meaning has moved.
+    /// The engine build that opened this journal, for diagnostics. Not a resume
+    /// gate: the plan hash in the manifest is what refuses a resume whose meaning
+    /// has moved.
     pub engine_version: String,
 }
 
@@ -157,7 +151,7 @@ impl<W: Write> Writer<W> {
 
     /// Continues a journal that already carries a header, appending to it.
     ///
-    /// No header is written and none is checked: a caller appending has already
+    /// No header is written and none is checked. A caller appending has already
     /// opened the file for reading and validated it, and re-validating here
     /// would mean this type needed the file to be seekable.
     pub fn append(inner: W) -> Self {
@@ -236,7 +230,7 @@ impl<R: BufRead> Reader<R> {
     }
 
     /// The 1-based line the reader has most recently consumed. For attaching a
-    /// position to an error a caller raises about a record's *contents*, which
+    /// position to an error a caller raises about a record's contents, which
     /// this type cannot judge.
     pub fn line(&self) -> u64 {
         self.line
@@ -245,9 +239,9 @@ impl<R: BufRead> Reader<R> {
     /// Reads the next record, or `None` at the end of the journal.
     ///
     /// A final line with no trailing newline that does not parse is treated as
-    /// the end rather than as an error: it is the torn tail of a process that
-    /// died mid-append. A line that does not parse but *is* newline-terminated
-    /// was written whole and is corruption, so it is reported.
+    /// the end rather than an error, being the torn tail of a process that died
+    /// mid-append. A line that does not parse and is newline-terminated was
+    /// written whole and is corruption, so it is reported.
     pub fn read<T: for<'de> Deserialize<'de>>(&mut self) -> Result<Option<T>, JournalError> {
         loop {
             if self.truncated {

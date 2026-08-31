@@ -15,9 +15,9 @@
 //!
 //! [`TargetMap::iter`](crate::model::target::TargetMap::iter) walks its units in
 //! order and each unit's addresses against its ports, and a
-//! [`TargetSet`](crate::model::target::TargetSet) is canonical and immutable
-//! from construction. So the same plan yields the same targets in the same order
-//! on every run, and the *n*th target is a stable identity that costs nothing to
+//! [`TargetSet`](crate::model::target::TargetSet) is canonical and immutable from
+//! construction. So the same plan yields the same targets in the same order on
+//! every run, and the nth target is a stable identity that costs nothing to
 //! record.
 //!
 //! That is the whole reason this is affordable. The cursor holds one integer and
@@ -25,12 +25,11 @@
 //! out of order the scan settled rather than of how large the scan is. A `/8` on
 //! a thousand ports checkpoints in the same handful of bytes a `/24` does.
 //!
-//! **This enumeration is load-bearing.** The dispatcher walks it to decide what
-//! to probe and this walks it to decide what was probed, so the two must be one
-//! walk — see `Dispatcher::run_shuffled`, which calls the same method for
-//! exactly that reason. Shuffling does not affect it: the dispatcher permutes
-//! within a batch, which changes the order targets are *asked* in and not the
-//! order they are *numbered* in.
+//! This enumeration is load-bearing. The dispatcher walks it to decide what to
+//! probe and this walks it to decide what was probed, so the two have to be one
+//! walk; see `Dispatcher::run_shuffled`, which calls the same method. Shuffling
+//! does not affect it, since the dispatcher permutes within a batch, changing the
+//! order targets are asked in rather than the order they are numbered in.
 //!
 //! ## The watermark chases the settled set
 //!
@@ -38,19 +37,19 @@
 //! every consecutive settled position above it. Anything that settles out of
 //! order waits in [`above`](Cursor::settled_above) until the gap below it fills.
 //!
-//! The set therefore stays small on its own, with no window to size and no
-//! eviction policy to get wrong: it holds only what the watermark has not caught
-//! up to, which is bounded by how far the dispatcher runs ahead of the slowest
-//! outstanding probe. A single tarpitting host stalls the watermark and the set
-//! grows to the pipeline depth — a few tens of thousands of integers, not a few
-//! million — and collapses the moment that host settles.
+//! The set stays small on its own, with no window to size and no eviction policy
+//! to get wrong. It holds only what the watermark has not caught up to, which is
+//! bounded by how far the dispatcher runs ahead of the slowest outstanding probe.
+//! A single tarpitting host stalls the watermark and the set grows to the
+//! pipeline depth, a few tens of thousands of integers rather than a few million,
+//! then collapses the moment that host settles.
 //!
 //! ## Only settled positions are recorded
 //!
 //! A position reaches here only from [`Outcome`](super::settle::Outcome)'s
-//! settled variants — the only ones that carry one. A target that was
-//! interrupted, never asked, or never routed has no position to offer, so the
-//! watermark stalls behind it and the next sitting asks again.
+//! settled variants, the only ones that carry one. A target that was interrupted,
+//! never asked or never routed has no position to offer, so the watermark stalls
+//! behind it and the next sitting asks again.
 
 use std::collections::BTreeSet;
 
@@ -96,9 +95,9 @@ impl Cursor {
     /// Records that the target at `position` is settled.
     ///
     /// Idempotent: settling a position already below the watermark, or already
-    /// recorded, changes nothing. That matters because a target can be reported
-    /// twice — a probe retired by its retry budget and then swept again by a
-    /// stop path that does not know it already had a verdict.
+    /// recorded, changes nothing. A target can be reported twice, by a probe
+    /// retired on its retry budget and then again by a stop path that does not
+    /// know it already had a verdict.
     pub fn settle(&mut self, position: u64) {
         if position < self.watermark {
             return;
@@ -158,11 +157,11 @@ impl Cursor {
 
 /// A cursor as it is written down.
 ///
-/// Sparse rather than a bitmap over a fixed window. Both are bounded by the same
-/// thing — how far the dispatcher runs ahead — and the sparse form is far
-/// smaller in the case that actually occurs, where a handful of positions are
-/// out of order rather than tens of thousands. A bitmap only wins where the
-/// window is nearly full, which is the pathological case and not one worth
+/// Sparse rather than a bitmap over a fixed window. Both are bounded by how far
+/// the dispatcher runs ahead, and the sparse form is far smaller in the case that
+/// occurs, where a handful of positions are out of order rather than tens of
+/// thousands. A bitmap only wins where the window is nearly full, which is the
+/// pathological case and not one worth
 /// optimising the ordinary one for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -182,7 +181,7 @@ impl Checkpoint {
     ///
     /// The list is sorted and deduplicated here, which is the invariant
     /// [`is_settled`](Self::is_settled) binary-searches on. The fields are public
-    /// and this is not the only way to build one; it is the way that cannot be
+    /// and this is not the only way to build one, but it is the way that cannot be
     /// built wrong, and a caller keeping journals in something other than a
     /// directory should come through it.
     pub fn new(watermark: u64, settled_above: impl IntoIterator<Item = u64>) -> Self {
@@ -210,10 +209,10 @@ impl Checkpoint {
 
     /// The addresses a resumed sweep still has to ask about.
     ///
-    /// The sweep counterpart of [`remaining`](Self::remaining), and it gives
-    /// back a set rather than a positioned stream because a
-    /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets
-    /// and is aimed at them. Its positions come from the context instead — see
+    /// The sweep counterpart of [`remaining`](Self::remaining). It gives back a
+    /// set rather than a positioned stream because a
+    /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets and
+    /// is aimed at them, and its positions come from the context. See
     /// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address),
     /// which numbers an address against this same plan.
     ///
@@ -223,17 +222,17 @@ impl Checkpoint {
     /// are taken out individually. Anything the plan was too large to number
     /// comes back whole, since no checkpoint can have accounted for it.
     ///
-    /// **`positions` must number the plan this checkpoint was written against.**
-    /// A position is an index into one enumeration, and the manifest's plan
+    /// `positions` has to number the plan this checkpoint was written against. A
+    /// position is an index into one enumeration, and the manifest's plan
     /// fingerprint is what refuses a resume before it reaches here.
     pub fn remaining_addresses(&self, positions: &Positions) -> IpSet {
         let mut remaining = IpSet::new();
         let total = positions.total();
         let mut from = self.watermark;
 
-        // `settled_above` is written ascending, and a checkpoint that arrived
-        // from disk is only as ordered as the file said. Sorting a copy costs
-        // nothing on the window-sized list this holds and makes the walk below
+        // `settled_above` is written ascending, and a checkpoint from disk is
+        // only as ordered as the file said. Sorting a copy costs nothing on the
+        // window-sized list this holds and makes the walk below
         // right either way.
         let mut above = self.settled_above.clone();
         above.sort_unstable();
@@ -263,19 +262,20 @@ impl Checkpoint {
     }
 
     /// The targets a resumed scan still has to ask about, each carrying its
-    /// position in the **original** plan.
+    /// position in the original plan.
     ///
-    /// Takes the plan's enumeration — [`TargetMap::iter`](crate::model::target::TargetMap::iter),
-    /// the same walk the first sitting was numbered by — and yields only what
+    /// Takes the plan's enumeration,
+    /// [`TargetMap::iter`](crate::model::target::TargetMap::iter), the same walk
+    /// the first sitting was numbered by, and yields only what
     /// this checkpoint does not account for.
     ///
     /// The positions are why this yields [`PlannedTarget`] rather than
-    /// [`Target`]. A resumed sitting is scanning a
-    /// *subset*, so numbering it afresh would give position 0 to whatever
-    /// happens to be left — and the two sittings' cursors would then count
-    /// different things. The original numbering has to survive the filtering.
+    /// [`Target`]. A resumed sitting scans a subset, so numbering it afresh would
+    /// give position 0 to whatever happens to be left and the two sittings'
+    /// cursors would count different things. The original numbering has to
+    /// survive the filtering.
     ///
-    /// **The plan must be the one this checkpoint was written against.** A
+    /// The plan has to be the one this checkpoint was written against. A
     /// position is an index into a specific enumeration, so a changed port list,
     /// a changed exclusion policy or a changed privilege level all move what
     /// position 4,001,927 refers to. Nothing here detects that; the manifest's
@@ -307,23 +307,21 @@ mod persistence {
         /// previous one intact.
         ///
         /// Writes a sibling temporary file and renames it over the destination,
-        /// which is atomic on every filesystem this engine runs on. **No
-        /// `fsync`**, deliberately: the failures this exists for — `^C`, a
-        /// dropped session, an OOM kill — are process deaths, and the page cache
-        /// outlives the process. Paying a flush on every checkpoint would buy
-        /// protection against machine power loss alone, at a cost on every scan
-        /// that survives without it. See [`journal`](crate::journal) for what
-        /// that policy does and does not promise.
+        /// which is atomic on every filesystem this engine runs on. No `fsync`:
+        /// the failures this exists for, `^C` and a dropped session and an OOM
+        /// kill, are process deaths, and the page cache outlives the process. A
+        /// flush per checkpoint would buy protection against machine power loss
+        /// alone, at a cost on every scan that survives without it. See
+        /// [`journal`](crate::journal) for what that policy promises.
         ///
-        /// A torn write is impossible rather than tolerated: the destination
-        /// only ever changes by rename, so a reader sees the whole of one
-        /// checkpoint or the whole of the one before it.
+        /// A torn write is impossible rather than tolerated. The destination only
+        /// changes by rename, so a reader sees the whole of one checkpoint or the
+        /// whole of the one before it.
         pub fn write_atomically(&self, path: &Path) -> Result<(), JournalError> {
             let temporary = path.with_extension("tmp");
 
-            // Scoped so the handle is closed before the rename: renaming over a
-            // file still held open is a footgun on the platforms this may yet
-            // reach, and costs nothing to avoid.
+            // Scoped so the handle is closed before the rename. Renaming over a
+            // file still held open is a hazard on platforms this may yet reach.
             {
                 let mut file = create_private(&temporary)?;
                 file.write_all(serde_json::to_string(self)?.as_bytes())?;
@@ -337,11 +335,10 @@ mod persistence {
 
         /// Reads a checkpoint back.
         ///
-        /// The `settled_above` list is sorted on read rather than trusted,
-        /// because [`is_settled`](Checkpoint::is_settled) binary-searches it and
-        /// an unsorted list would silently answer `false` for a position that is
-        /// present — re-probing a settled target, which is safe, but also
-        /// quietly wrong in a way no test would catch.
+        /// The `settled_above` list is sorted on read rather than trusted, since
+        /// [`is_settled`](Checkpoint::is_settled) binary-searches it and an
+        /// unsorted list would answer `false` for a position that is present. That
+        /// re-probes a settled target, which is safe and quietly wrong.
         pub fn read(path: &Path) -> Result<Self, JournalError> {
             let text = fs::read_to_string(path)?;
             let mut checkpoint: Self = serde_json::from_str(&text)?;
@@ -527,7 +524,7 @@ mod tests {
 
         cursor.settle(0);
         cursor.settle(1);
-        // 2 is still outstanding — a tarpit, or a probe mid-retry.
+        // 2 is still outstanding: a tarpit, or a probe mid-retry.
         for position in 3..1_000 {
             cursor.settle(position);
         }
@@ -542,9 +539,9 @@ mod tests {
         assert_eq!(cursor.pending_count(), 0);
     }
 
-    /// Out-of-order settling is the normal case — the dispatcher shuffles within
-    /// a batch — so the watermark must be correct whatever order positions
-    /// arrive in.
+    /// Out-of-order settling is the normal case, since the dispatcher shuffles
+    /// within a batch, so the watermark has to be correct whatever order
+    /// positions arrive in.
     #[test]
     fn the_watermark_is_independent_of_arrival_order() {
         let forwards = {
@@ -661,10 +658,10 @@ mod tests {
         assert_eq!(finished.watermark(), total as u64);
     }
 
-    /// The cursor numbers targets by the same walk the dispatcher probes them
-    /// by. Asserted rather than assumed: the two live in different modules, and
-    /// a divergence would resume a scan against positions that mean something
-    /// else — which looks like a working resume that skips the wrong targets.
+    /// The cursor numbers targets by the same walk the dispatcher probes them by.
+    /// Asserted rather than assumed: the two live in different modules, and a
+    /// divergence would resume a scan against positions that mean something else,
+    /// which looks like a working resume that skips the wrong targets.
     #[test]
     fn positions_follow_the_plans_own_enumeration() {
         let mut map = plan("192.0.2.1-192.0.2.2", "80,443");
@@ -723,8 +720,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `is_settled` binary-searches, so a list that arrived unsorted would
-    /// answer `false` for a position that is present. Safe — it re-probes — but
+    /// `is_settled` binary-searches, so a list that arrived unsorted would answer
+    /// `false` for a position that is present. That re-probes, which is safe and
     /// silently wrong, so the reader sorts rather than trusting the file.
     #[cfg(feature = "journal-format")]
     #[test]

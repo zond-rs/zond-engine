@@ -28,30 +28,27 @@
 //!
 //! ## What a merge answers, and what it does not
 //!
-//! **A merge answers "what is out there, given everything I know."** It produces
-//! the network as of the newest source that looked at it.
+//! A merge answers what is out there given everything known, producing the
+//! network as of the newest source that looked at it.
+//! [`diff`](crate::diff) answers what changed. A merge that also tried to be a
+//! history, recording that 3389 was open in March and closed in August, would be
+//! a worse differ built inside a document format. The historical answer stays in
+//! the input documents and in a comparison run over them.
 //!
-//! **[`diff`](crate::diff) answers "what changed."** A merge that also tried to
-//! be a history — recording that 3389 was open in March and closed in August —
-//! would be a worse differ built inside a document format. The historical answer
-//! stays where it already lives: in the input documents, and in a comparison run
-//! over them.
-//!
-//! So a merge is lossy in exactly one way, stated once. Where two sources give
-//! different answers to the same question, one answer wins and the other is only
-//! in the input file. Everything that *accumulates* — addresses, endpoints,
-//! hardware addresses, CPEs, roles, status reasons — accumulates, and none of
-//! that is lost.
+//! So a merge is lossy in one way, stated once. Where two sources give different
+//! answers to the same question, one answer wins and the other is only in the
+//! input file. Everything that accumulates does accumulate: addresses, endpoints,
+//! hardware addresses, CPEs, roles and status reasons.
 //!
 //! ## The rule: a later source overrides only where it made a claim
 //!
 //! Sources are folded oldest to newest. Where a newer source states something,
 //! it wins. Where a newer source says nothing, the older answer stands.
 //!
-//! **Absence is never a claim.** A host missing from tonight's scan is not
-//! evidence the host went away. An endpoint not listed is not evidence the port
-//! closed. A field the document has no word for — nmap records no service vendor
-//! — is not a retraction of one.
+//! Absence is never a claim. A host missing from tonight's scan is not evidence
+//! the host went away, an endpoint not listed is not evidence the port closed,
+//! and a field the document has no word for, as nmap has none for a service
+//! vendor, is not a retraction of one.
 //!
 //! One carve-out follows from the model's own words.
 //! [`Unknown`](crate::model::host::HostStatus::Unknown) is documented as nothing
@@ -65,18 +62,17 @@
 //! report and not the other has two explanations and telling them apart is most
 //! of that feature's value.
 //!
-//! **A merge never asks what a scan covered, because it never has to explain an
-//! absence.** It reports nothing. It folds what each source claimed and leaves
-//! what nothing claimed alone. The merged report's own scope needs no work
-//! either: it holds every source's phases, and coverage is already a property of
-//! the phase list.
+//! A merge never asks what a scan covered, since it never has to explain an
+//! absence. It reports nothing, folds what each source claimed, and leaves what
+//! nothing claimed alone. The merged report's own scope needs no work either: it
+//! holds every source's phases, and coverage is already a property of the phase
+//! list.
 //!
 //! ## Which record is which host
 //!
-//! [`HostIdentity`] decides, exactly as it does for a comparison, and
-//! [`pairing`] carries the whole argument for how. The
-//! default follows a dual-stack machine keyed under IPv4 by one scanner and
-//! under IPv6 by another.
+//! [`HostIdentity`] decides, as it does for a comparison, and [`pairing`] carries
+//! the argument for how. The default follows a dual-stack machine keyed under
+//! IPv4 by one scanner and under IPv6 by another.
 //!
 //! ## Where a merged report says its findings came from
 //!
@@ -104,16 +100,16 @@
 //!
 //! That is what makes merging in rounds different from merging at once.
 //! `merge(merge(a, c), b)` folds `b` against a document whose clock is `c`'s, so
-//! a verdict `b` should have overturned survives it — and a reading that
+//! a verdict `b` should have overturned survives it, and a reading that
 //! `merge(a, c)` already discarded is no longer there to enrich `b`'s finding.
-//! Both are the lossiness above, applied one round earlier than the caller
-//! meant. Equality of the two would need every field to carry the moment it was
+//! Both are the lossiness above applied one round earlier than the caller meant.
+//! Making the two equal would need every field to carry the moment it was
 //! established, which is a claim about the domain rather than about this fold.
 //!
-//! So N documents go into one [`Merge`]. Merging a merged report is supported
-//! and often right — a baseline folded last quarter, tonight's scan folded into
-//! it — and gives a coherent report; it is not the report all N sources folded
-//! together would have given.
+//! So N documents go into one [`Merge`]. Merging a merged report is supported and
+//! often right, as when a baseline folded last quarter takes tonight's scan, and
+//! gives a coherent report. It is not the report all N sources folded together
+//! would have given.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -197,7 +193,7 @@ impl Merge {
 
     /// Adds a report, naming the document it was read from.
     ///
-    /// The label is whatever the caller calls it — a path, a record id, a bucket
+    /// The label is whatever the caller calls it: a path, a record id, a bucket
     /// key. The engine opens nothing and has no word for one.
     ///
     /// A phase that already carries a [`PhaseOrigin`] keeps it, so merging a report
@@ -314,19 +310,18 @@ impl Merge {
 /// first is the bound on it: nothing in a document was observed after the
 /// document stopped, so a record is placed at the earlier of the two.
 ///
-/// **Both halves earn their place.** Taking the document's clock alone puts
-/// every host in a report at one moment, which is wrong for any source that
-/// spans time — a resumed job, and every merged report. A quarterly baseline
-/// merged with a scan from last month would then outrank it about hosts the
-/// baseline last saw in January.
+/// Both halves earn their place. Taking the document's clock alone puts every
+/// host in a report at one moment, which is wrong for any source that spans time,
+/// such as a resumed job or a merged report. A quarterly baseline merged with a
+/// scan from last month would then outrank it about hosts the baseline last saw
+/// in January.
 ///
 /// Taking the record's alone trusts a field that is only meaningful when
 /// something restored it. Every mutator on [`Host`] stamps `last_seen` with the
-/// moment it ran, and the readers put back what was recorded — but a record
+/// moment it ran and the readers put back what was recorded, but a record
 /// assembled by hand carries the moment it was assembled, which would place a
 /// document read today at today whatever it says. Bounding by the document's
-/// clock is what makes that case degrade to the document's own answer instead of
-/// to the wrong one.
+/// clock makes that case degrade to the document's own answer.
 fn observed_at(record: &Host, stopped: SystemTime) -> SystemTime {
     record.last_seen().min(stopped)
 }
@@ -335,9 +330,9 @@ fn observed_at(record: &Host, stopped: SystemTime) -> SystemTime {
 ///
 /// Built through the model's own constructors rather than by folding with
 /// [`Host::merge`] and correcting afterwards. `Host::merge` is right about the
-/// job it documents — two probes of one scan, where a state only ever promotes
-/// — and a merge across scans has to be able to record that a port closed. Two
-/// policies, and the domain keeps the one it was written with.
+/// job it documents, two probes of one scan where a state only promotes, and a
+/// merge across scans has to be able to record that a port closed. Two policies,
+/// and the domain keeps the one it was written with.
 fn fold_host(accounts: &[&Host]) -> Host {
     let newest = accounts.last().expect("a group holds at least one record");
 
@@ -387,9 +382,9 @@ fn fold_host(accounts: &[&Host]) -> Host {
     // Keying is per source and per claim, which is exactly the deduplication a
     // fold across documents wants: one stack read by four scanners is four
     // readings of it, and the same scanner's reading twice is one. But the map
-    // is capped — a host with many identifiable services can otherwise offer one
-    // claim each until enough of them agree to a certainty none of them stated —
-    // and once it is full it turns away what arrives next.
+    // is capped, since a host with many identifiable services could otherwise
+    // offer one claim each until enough of them agree to a certainty none of
+    // them stated, and once full it turns away what arrives next.
     //
     // A fold across documents is the one caller that can fill it: eight scans
     // that each read a different kernel release are eight distinct claims. Given
@@ -524,8 +519,8 @@ fn fold_port(accounts: &[&Port]) -> Port {
     // merge record that a port closed.
     let mut port = Port::new(newest.number(), newest.protocol(), newest.state());
 
-    // The evidence follows the verdict it explains — from the newest account
-    // that reached the *same* verdict, rather than from the newest account.
+    // The evidence follows the verdict it explains, taken from the newest
+    // account that reached the same verdict rather than the newest account.
     //
     // The same shape as `fold_service` below, and the same reason. A packet is
     // an account of the state it settled, so one that settled a different state
@@ -577,8 +572,8 @@ fn fold_port(accounts: &[&Port]) -> Port {
 
 /// The service one endpoint is running, from every account of it.
 ///
-/// **The identity moves as a unit.** "Newest wins, but fill in what it left
-/// blank" would splice an older `Apache` with a newer `nginx` and produce
+/// The identity moves as a unit. Letting the newest win and filling in what it
+/// left blank would splice an older `Apache` with a newer `nginx` and produce
 /// `nginx 2.4`, a finding nobody made. So name, product, vendor, version, extra
 /// info and confidence all come from the newest account that named a service.
 ///
@@ -652,9 +647,10 @@ fn same_service(newest: &Service, older: &Service) -> bool {
 
 /// The operating system, from every account of one host.
 ///
-/// The same shape as [`fold_service`], one field list along. The verdict —
-/// name, family, generation, vendor and the accuracy behind it — comes from the
-/// newest account that named a system. An older account naming the same system
+/// The same shape as [`fold_service`], one field list along. The verdict, meaning
+/// name and family and generation and vendor and the accuracy behind them, comes
+/// from the newest account that named a system. An older account naming the same
+/// system
 /// contributes the kernel, the device class, the detail accuracy and the
 /// evidence line where the newer one carried none, and every account contributes
 /// CPEs.
@@ -815,8 +811,8 @@ mod tests {
     /// reading a report as an account of one job has to know.
     ///
     /// `elapsed` is a sum over the phases, so a merged report's is the working
-    /// time of every source added together — a real quantity, and not a length
-    /// of time anything took. A caller presenting it as a duration would
+    /// time of every source added together, which is a real quantity and not a
+    /// length of time anything took. A caller presenting it as a duration would
     /// describe a scan that never ran, and this is the flag that stops it.
     #[test]
     fn a_folded_report_says_it_was_folded_and_a_measured_one_does_not() {
@@ -992,11 +988,10 @@ mod tests {
     /// by a packet, so a router calling an address unreachable tonight is a
     /// later word about it than an ARP reply last quarter.
     ///
-    /// Worth holding because the fold expresses "replace" through
+    /// Worth holding because the fold expresses replacement through
     /// [`Host::set_status`], which promotes and never lowers. It reads as a
-    /// replacement only because the host it is called on is still `Unknown`,
-    /// the bottom of that ordering — so the rule holds by where the call sits,
-    /// and until now nothing said so.
+    /// replacement only because the host it is called on is still `Unknown`, the
+    /// bottom of that ordering, so the rule holds by where the call sits.
     #[test]
     fn a_newer_unreachable_verdict_unseats_an_older_answer() {
         let january = host(1);
@@ -1018,7 +1013,7 @@ mod tests {
     /// A verdict a merged report cannot explain is a verdict its reader cannot
     /// check. Nmap's XML records no packet behind a port state, so taking the
     /// newest account's discovery unconditionally drops the evidence of every
-    /// zond scan an imported document is folded with — while both accounts agree
+    /// zond scan an imported document is folded with, while both accounts agree
     /// on what the state is.
     #[test]
     fn an_older_probe_of_the_state_that_won_still_explains_it() {
@@ -1162,11 +1157,10 @@ mod tests {
         );
     }
 
-    /// The positive half, and the reason the guard above is written on identity
-    /// rather than on everything. A guard too strict — one that also compared the
-    /// version, or the CPEs — would refuse to enrich exactly the readings worth
-    /// enriching, and a merge would keep only whatever the last scan happened to
-    /// extract.
+    /// The positive half, and why the guard above is written on identity rather
+    /// than on everything. A guard that also compared the version or the CPEs
+    /// would refuse to enrich the readings most worth enriching, and a merge
+    /// would keep only whatever the last scan happened to extract.
     #[test]
     fn an_older_reading_of_the_same_service_supplies_the_version_the_newer_one_missed() {
         let older = with_port(
@@ -1259,8 +1253,8 @@ mod tests {
     }
 
     /// A fold is not a change. Merging one report, and merging it with itself,
-    /// both have to give back what went in — which is the assertion that catches
-    /// a field any of the fold rules quietly drops, whichever field it was.
+    /// both have to give back what went in, which catches a field any of the fold
+    /// rules drops whichever field it was.
     ///
     /// Asserted through the differ rather than field by field, on the same
     /// reasoning as `import::report::json`'s round-trip test: the comparison
@@ -1400,17 +1394,17 @@ mod tests {
         assert_eq!(zones, ["en0", "en1"], "and each says which link it is on");
     }
 
-    /// **Merging in rounds is not merging at once, and this is what pins it.**
+    /// Merging in rounds is not merging at once, and this is what pins it.
     ///
     /// `merge(merge(a, c), b)` folds `b` against a document whose clock is `c`'s,
-    /// so `a`'s verdict — which `b` overturned and `c` never spoke to — survives
-    /// a round it should not have. Equality of the two would need every field to
-    /// carry the moment it was established, which the record does not offer and
-    /// a fold cannot invent.
+    /// so `a`'s verdict survives a round it should not have, having been
+    /// overturned by `b` and never spoken to by `c`. Making the two equal would
+    /// need every field to carry the moment it was established, which the record
+    /// does not offer and a fold cannot invent.
     ///
-    /// Asserted rather than left alone, because the tempting claim is that a
-    /// merge is associative: it reads true, the API gives no hint otherwise, and
-    /// three separate places in this crate once said it was.
+    /// Asserted rather than left alone, since the tempting claim is that a merge
+    /// is associative: it reads true, the API gives no hint otherwise, and three
+    /// separate places in this crate once said it was.
     #[test]
     fn folding_in_rounds_is_not_folding_at_once() {
         let january = report(
@@ -1554,10 +1548,10 @@ mod tests {
     /// The other half of [`observed_at`], and the case the bound exists for.
     ///
     /// A reader puts back the times a document recorded. A document that recorded
-    /// none leaves its records carrying the moment they were assembled, because
-    /// every mutator on a host stamps the current time — so a record can be
-    /// stamped later than the document holding it is dated. Taken at its word,
-    /// an undated archive read tonight outranks tonight's scan.
+    /// none leaves its records carrying the moment they were assembled, since
+    /// every mutator on a host stamps the current time, so a record can be
+    /// stamped later than the document holding it is dated. Taken at its word, an
+    /// undated archive read tonight outranks tonight's scan.
     #[test]
     fn a_record_stamped_later_than_its_document_is_placed_by_the_document() {
         let mut archived = with_port(host(1), Port::new(3389, TCP, PortState::Open));
