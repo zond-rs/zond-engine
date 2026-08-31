@@ -41,19 +41,20 @@ fuzz_target!(|data: &[u8]| {
             continue;
         };
 
-        for field in [
+        for value in [
             &found.product,
             &found.version,
             &found.vendor,
             &found.extrainfo,
-        ] {
-            if let Some(value) = field {
-                assert!(
-                    value.len() <= MAX_IDENTITY_BYTES,
-                    "an identity field reached a report at {} bytes",
-                    value.len()
-                );
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(
+                value.len() <= MAX_IDENTITY_BYTES,
+                "an identity field reached a report at {} bytes",
+                value.len()
+            );
         }
 
         // A service name that is present is a name, not an empty string that a

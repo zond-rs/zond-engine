@@ -37,7 +37,7 @@ fuzz_target!(|data: &[u8]| {
     let ip = IpObservation::V4(Ipv4Observation {
         ttl: data.first().copied().unwrap_or(64),
         identification: 0,
-        dont_fragment: data.len() % 2 == 0,
+        dont_fragment: data.len().is_multiple_of(2),
         more_fragments: false,
         dscp: 0,
         ecn: 0,
