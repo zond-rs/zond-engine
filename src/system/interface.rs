@@ -28,6 +28,10 @@ mod source;
 mod utils;
 
 pub use lan::{LanLink, ViabilityError, lan_link, lan_network};
+// Not published: the seam `lan_link` reads the machine through, so a caller that
+// already holds an interface table can ask `lan` of that table instead. See
+// `resolve::for_listening_on`.
+pub(crate) use lan::lan_link_with;
 pub use link::{Addressing, Link, LinkAddress, LinkKind, interfaces};
 pub use resolve::{resolve_keyword, resolve_zone};
 pub use routing::{

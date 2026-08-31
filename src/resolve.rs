@@ -77,6 +77,7 @@ pub use targets::{
     resolve_names, to_set, to_target_map,
 };
 
+use std::fmt;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -88,8 +89,24 @@ use crate::warn;
 /// is a whole second.
 const DEFAULT_MDNS_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// The shortest window that can hear a conformant responder.
+///
+/// RFC 6762 §6.3 permits a responder to defer a reply by up to half a second so
+/// it can aggregate answers, so a window below that closes while a correct
+/// implementation is still waiting to speak. A caller asking for less has asked
+/// for a lookup that cannot succeed, and gets this instead: unlike the scan
+/// settings in [`ZondConfig`](crate::config::ZondConfig), nothing here is
+/// carried into a report, so raising a window costs nobody a record that says
+/// one thing while the run did another.
+const MIN_MDNS_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// How a [`Resolver`] behaves, independent of the host it reads its unicast
 /// configuration from.
+///
+/// Non-exhaustive and [`Default`]-constructed, like
+/// [`ZondConfig`](crate::config::ZondConfig): the next thing worth saying about
+/// how a name is resolved is an additive change rather than a major version.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct ResolveConfig {
     /// Whether `.local` names are resolved over multicast, and whether a
@@ -109,6 +126,11 @@ pub struct ResolveConfig {
     /// longer, so the default is a whole second: short enough not to stall a
     /// scan, long enough that a device answering slowly is found rather than
     /// declared absent.
+    ///
+    /// A window shorter than the half second the RFC permits is raised to it.
+    /// Below that the lookup cannot hear a correct responder at all, so it is a
+    /// preference the protocol overrules rather than a value to refuse: zero was
+    /// accepted here and produced a listener that closed before it opened.
     pub mdns_timeout: Duration,
 }
 
@@ -200,7 +222,24 @@ impl Resolver {
         if !self.config.mdns {
             return Vec::new();
         }
-        mdns::resolve(name, self.config.mdns_timeout).await
+        let window = self.config.mdns_timeout.max(MIN_MDNS_TIMEOUT);
+        mdns::resolve(name, window).await
+    }
+}
+
+impl fmt::Debug for Resolver {
+    /// Says what this resolver can do rather than dumping the unicast client.
+    ///
+    /// Hand-written because the type it holds is a third party's and printing
+    /// its internals would put that crate's shape in this one's output. What a
+    /// caller debugging a resolution wants is the two facts that decide where a
+    /// name goes: whether there is a unicast half at all, and whether multicast
+    /// is on.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Resolver")
+            .field("unicast", &self.unicast.is_some())
+            .field("config", &self.config)
+            .finish()
     }
 }
 
@@ -264,6 +303,44 @@ mod tests {
         // A bare `local` has no host part; it is a short name, not a `.local`
         // one.
         assert!(!is_multicast_local("local"));
+    }
+
+    /// A window too short to hear a conformant responder is raised to one that
+    /// can, rather than producing a lookup that closes before it opens.
+    ///
+    /// RFC 6762 §6.3 lets a responder defer a reply half a second to aggregate
+    /// answers, so half a second is the floor the protocol sets. Zero used to be
+    /// accepted here and reached the listener as written.
+    ///
+    /// Raised rather than refused, unlike the overrides in
+    /// [`RetryConfig`](crate::config::RetryConfig): nothing in a
+    /// [`ResolveConfig`] is carried into a report, so a window the engine
+    /// overrules costs nobody a record claiming a run did something it did not.
+    #[test]
+    fn a_window_shorter_than_the_protocol_allows_is_raised_to_it() {
+        for asked in [Duration::ZERO, Duration::from_millis(1), MIN_MDNS_TIMEOUT] {
+            assert_eq!(asked.max(MIN_MDNS_TIMEOUT), MIN_MDNS_TIMEOUT);
+        }
+
+        // A window the caller meant is the window they get.
+        let generous = Duration::from_secs(5);
+        assert_eq!(generous.max(MIN_MDNS_TIMEOUT), generous);
+        assert_eq!(
+            DEFAULT_MDNS_TIMEOUT.max(MIN_MDNS_TIMEOUT),
+            DEFAULT_MDNS_TIMEOUT,
+            "the default is above the floor, or the floor is the default"
+        );
+    }
+
+    /// A resolver says what it can do rather than printing a third party's
+    /// client, and it says it at all, which it could not before.
+    #[test]
+    fn a_resolver_reports_the_two_facts_that_decide_where_a_name_goes() {
+        let rendered = format!("{:?}", Resolver::with_config(ResolveConfig::default()));
+
+        assert!(rendered.starts_with("Resolver"), "{rendered}");
+        assert!(rendered.contains("unicast"), "{rendered}");
+        assert!(rendered.contains("mdns: true"), "{rendered}");
     }
 
     #[test]

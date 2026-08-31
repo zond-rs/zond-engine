@@ -117,6 +117,11 @@ pub fn for_listening<S: AsRef<str>>(exprs: &[S]) -> Result<Vec<Zone>, LinkError>
 /// makes the behaviour around `lan`, `%en0` and the empty case testable on a
 /// machine that has none of them — the same seam
 /// [`for_discovery_with`](super::for_discovery_with) exists for.
+///
+/// Every branch reads `interfaces` and nothing else. `lan` used to reach past it
+/// to the running machine, so this function handed an empty table still answered
+/// with whichever interface held the default route, and the one case the seam is
+/// named for was the one it did not cover.
 pub fn for_listening_on<S: AsRef<str>>(
     exprs: &[S],
     interfaces: &[Link],
@@ -145,10 +150,12 @@ pub fn for_listening_on<S: AsRef<str>>(
         }
 
         let link = if Keyword::from_token(name) == Some(Keyword::Lan) {
-            // Asked of the machine rather than matched by name: `lan` means the
+            // Asked of the table rather than matched by name: `lan` means the
             // link carrying the default route, which is a routing question and
-            // not a naming one.
-            interface::lan_link()
+            // not a naming one. Asked of the *table* rather than of the machine,
+            // because the table is what this function was given and the whole
+            // point of taking one.
+            interface::lan_link_with(interfaces.to_vec())
                 .map(|lan| lan.link.zone())
                 .ok_or(LinkError::NoLan)?
         } else {
@@ -202,6 +209,57 @@ mod tests {
             up("en1", 5, true),
             up("awdl0", 9, false),
         ]
+    }
+
+    /// A link viable enough for `lan` to pick: up, physical, broadcast, with a
+    /// MAC and a private address, and carrying the default route.
+    fn lan_capable(name: &str, index: u32) -> Link {
+        Link::new(name, index)
+            .up(true)
+            .physical(true)
+            .addressing(crate::system::interface::Addressing::Broadcast)
+            .of_kind(crate::system::interface::LinkKind::Wired)
+            .with_mac(crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 1))
+            .with_addresses(vec![crate::system::interface::LinkAddress::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 10)),
+                24,
+            )])
+            .carrying_the_default_route(true)
+    }
+
+    /// `lan` is answered from the table this was handed, like every other
+    /// expression it takes.
+    ///
+    /// **This test could not be written before.** The branch called
+    /// `interface::lan_link()`, which reads the running machine, so the seam
+    /// this function exists to provide covered `%en0` and the empty case and not
+    /// the one its own documentation names first. An empty table still answered
+    /// with whichever interface held the host's default route.
+    #[test]
+    fn lan_is_answered_from_the_table_this_was_given() {
+        let table = vec![lan_capable("lab0", 42)];
+        let links = for_listening_on(&["lan"], &table).expect("the table has a lan");
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].name(),
+            "lab0",
+            "`lan` was answered from the machine rather than from the table"
+        );
+    }
+
+    /// And a table with nothing a LAN scan could run on says so, rather than
+    /// reaching past the caller to a machine that has one.
+    #[test]
+    fn a_table_with_no_lan_refuses_rather_than_asking_the_machine() {
+        assert!(matches!(
+            for_listening_on(&["lan"], &table()),
+            Err(LinkError::NoLan)
+        ));
+        assert!(matches!(
+            for_listening_on(&["lan"], &[]),
+            Err(LinkError::NoLan)
+        ));
     }
 
     #[test]

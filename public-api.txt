@@ -12000,7 +12000,7 @@ impl core::marker::Unpin for zond_engine::resolve::DiscoveryTargets
 impl core::marker::UnsafeUnpin for zond_engine::resolve::DiscoveryTargets
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::DiscoveryTargets
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::DiscoveryTargets
-pub struct zond_engine::resolve::ResolveConfig
+#[non_exhaustive] pub struct zond_engine::resolve::ResolveConfig
 pub zond_engine::resolve::ResolveConfig::mdns: bool
 pub zond_engine::resolve::ResolveConfig::mdns_timeout: core::time::Duration
 impl core::clone::Clone for zond_engine::resolve::ResolveConfig
@@ -12024,6 +12024,8 @@ pub async fn zond_engine::resolve::Resolver::resolve(&self, &str) -> alloc::vec:
 pub fn zond_engine::resolve::Resolver::with_config(zond_engine::resolve::ResolveConfig) -> Self
 impl core::clone::Clone for zond_engine::resolve::Resolver
 pub fn zond_engine::resolve::Resolver::clone(&self) -> zond_engine::resolve::Resolver
+impl core::fmt::Debug for zond_engine::resolve::Resolver
+pub fn zond_engine::resolve::Resolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for zond_engine::resolve::Resolver
 impl core::marker::Send for zond_engine::resolve::Resolver
 impl core::marker::Sync for zond_engine::resolve::Resolver
@@ -14886,6 +14888,8 @@ pub async fn zond_engine::resolve::Resolver::resolve(&self, &str) -> alloc::vec:
 pub fn zond_engine::resolve::Resolver::with_config(zond_engine::resolve::ResolveConfig) -> Self
 impl core::clone::Clone for zond_engine::resolve::Resolver
 pub fn zond_engine::resolve::Resolver::clone(&self) -> zond_engine::resolve::Resolver
+impl core::fmt::Debug for zond_engine::resolve::Resolver
+pub fn zond_engine::resolve::Resolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for zond_engine::resolve::Resolver
 impl core::marker::Send for zond_engine::resolve::Resolver
 impl core::marker::Sync for zond_engine::resolve::Resolver

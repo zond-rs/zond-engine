@@ -35,6 +35,7 @@ use crate::model::parse::target::{self, TargetContext, TargetExpr, TargetParseEr
 use crate::model::port::PortSet;
 use crate::model::target::TargetMap;
 use crate::system::interface;
+use crate::warn;
 
 use super::Resolver;
 
@@ -123,6 +124,41 @@ pub async fn to_set<S: AsRef<str>>(
     let map = to_target_map(exprs, PortSet::default(), &ctx, resolver).await?;
 
     Ok(ips_of(&map))
+}
+
+/// The addresses `exprs` names, under the caller's DNS policy.
+///
+/// The one decision [`for_discovery_with`] and [`for_exclusion_with`] both make,
+/// and they used to make it in identical blocks a dozen lines apart. `Some`
+/// resolves hostnames; `None` refuses them, which is what a scan running under
+/// [`ZondConfig::no_dns`](crate::config::ZondConfig::no_dns) needs, since looking
+/// a target up emits a query to a resolver somebody else operates. Either way a
+/// name that cannot be turned into addresses is reported rather than dropped.
+///
+/// An empty list of expressions is an empty set of addresses through the
+/// ordinary path. `for_exclusion_with` used to answer that case first and by
+/// hand, which read as a difference between the two callers and was not one.
+async fn addresses_of<S: AsRef<str>>(
+    exprs: &[S],
+    names: Option<&Resolver>,
+    keywords: Option<ResolverFn<'_>>,
+    zones: Option<ZoneResolverFn<'_>>,
+) -> Result<IpSet, TargetParseError> {
+    match names {
+        Some(resolver) => to_set(exprs, keywords, zones, resolver).await,
+        None => {
+            let ctx = TargetContext {
+                keywords,
+                zones,
+                hosts: None,
+            };
+            Ok(ips_of(&target::to_target_map(
+                exprs,
+                PortSet::default(),
+                &ctx,
+            )?))
+        }
+    }
 }
 
 /// Every address a target map covers, with the port groupings discarded.
@@ -246,17 +282,7 @@ pub async fn for_discovery_with<S: AsRef<str>>(
     keywords: Option<ResolverFn<'_>>,
     zones: Option<ZoneResolverFn<'_>>,
 ) -> Result<DiscoveryTargets, TargetParseError> {
-    let ips = match names {
-        Some(resolver) => to_set(exprs, keywords, zones, resolver).await?,
-        None => {
-            let ctx = TargetContext {
-                keywords,
-                zones,
-                hosts: None,
-            };
-            ips_of(&target::to_target_map(exprs, PortSet::default(), &ctx)?)
-        }
-    };
+    let ips = addresses_of(exprs, names, keywords, zones).await?;
 
     // Asked of what was written, not of what it expanded to. This is the whole
     // reason the flag has to be worked out here: the addresses cannot answer it.
@@ -333,34 +359,27 @@ pub async fn for_exclusion_with<S: AsRef<str>>(
     keywords: Option<ResolverFn<'_>>,
     zones: Option<ZoneResolverFn<'_>>,
 ) -> Result<Exclusions, TargetParseError> {
-    if exprs.is_empty() {
-        return Ok(Exclusions::none());
-    }
-
-    let ips = match names {
-        Some(resolver) => to_set(exprs, keywords, zones, resolver).await?,
-        None => {
-            let ctx = TargetContext {
-                keywords,
-                zones,
-                hosts: None,
-            };
-            ips_of(&target::to_target_map(exprs, PortSet::default(), &ctx)?)
-        }
-    };
-
-    Ok(Exclusions::new(ips))
+    Ok(Exclusions::new(
+        addresses_of(exprs, names, keywords, zones).await?,
+    ))
 }
 
 /// Every distinct hostname named across `exprs`, in first-seen order.
 ///
 /// A name is an address half the grammar rejects as
-/// [`IpParseError::Malformed`], which is precisely what the builder treats as a
-/// name to look up. Every other rejection — a wrong address, a keyword with no
-/// resolver, a zone on a global address — is an error about something that was
-/// meant to be an address, and is left for the build pass to report against the
-/// expression it belongs to. A token that will not even split is skipped for the
-/// same reason: the builder will raise it verbatim.
+/// [`IpParseError::Malformed`] **and** that
+/// [`host_name`](target::host_name) then agrees is a name. Every other rejection
+/// — a wrong address, a keyword with no resolver, a zone on a global address —
+/// is an error about something that was meant to be an address, and is left for
+/// the build pass to report against the expression it belongs to. A token that
+/// will not even split is skipped for the same reason: the builder will raise it
+/// verbatim.
+///
+/// The second half used to be missing, and `Malformed` alone is not the
+/// builder's rule: it applies two more tests before it consults the lookup, so
+/// `192.168.0.300` was sent to a resolver here and refused as a mistyped address
+/// there. Asking the same function is what makes the two passes agree, rather
+/// than a comment saying they do.
 fn collect_names<S: AsRef<str>>(exprs: &[S], ctx: &TargetContext<'_>) -> Vec<String> {
     let mut names = Vec::new();
     let mut seen = HashSet::new();
@@ -374,6 +393,7 @@ fn collect_names<S: AsRef<str>>(exprs: &[S], ctx: &TargetContext<'_>) -> Vec<Str
             let mut throwaway = IpSet::new();
             if let Err(IpParseError::Malformed(_)) =
                 insert_expression(address, &mut throwaway, ctx.keywords, ctx.zones)
+                && target::host_name(address) == target::HostName::Yes
                 && seen.insert(address.to_string())
             {
                 names.push(address.to_string());
@@ -386,24 +406,50 @@ fn collect_names<S: AsRef<str>>(exprs: &[S], ctx: &TargetContext<'_>) -> Vec<Str
 
 /// Resolves a list of names concurrently, at most [`MAX_CONCURRENT_LOOKUPS`] in
 /// flight, keeping only those that resolved to something.
+///
+/// **One lookup per name, not per spelling.** DNS is case-insensitive, so `NAS`
+/// and `nas` are one host and used to be two round trips and two map entries.
+/// They are resolved once and the answer is recorded under every spelling that
+/// asked for it, which leaves the returned map keyed as the caller wrote things:
+/// the build pass looks a name up by the token in the expression, and lowering
+/// the keys here would simply move the mismatch.
 async fn resolve_all(names: Vec<String>, resolver: &Resolver) -> HashMap<String, Vec<IpAddr>> {
     let mut resolved = HashMap::new();
     if names.is_empty() {
         return resolved;
     }
 
+    // Every spelling that asked for one host, under the one name to look up.
+    let mut spellings: HashMap<String, Vec<String>> = HashMap::new();
+    let mut order = Vec::new();
+    for name in names {
+        let folded = name.to_ascii_lowercase();
+        let written = spellings.entry(folded.clone()).or_default();
+        if written.is_empty() {
+            order.push(folded);
+        }
+        written.push(name);
+    }
+
     let mut set: JoinSet<(String, Vec<IpAddr>)> = JoinSet::new();
-    let mut pending = names.into_iter();
+    let mut pending = order.into_iter();
 
     for name in pending.by_ref().take(MAX_CONCURRENT_LOOKUPS) {
         spawn_lookup(&mut set, resolver, name);
     }
 
     while let Some(joined) = set.join_next().await {
-        if let Ok((name, addresses)) = joined
-            && !addresses.is_empty()
-        {
-            resolved.insert(name, addresses);
+        match joined {
+            Ok((folded, addresses)) if !addresses.is_empty() => {
+                for spelling in spellings.remove(&folded).unwrap_or_default() {
+                    resolved.insert(spelling, addresses.clone());
+                }
+            }
+            Ok(_) => {}
+            // A lookup that did not finish is a name that resolves to nothing,
+            // which is what an absent entry says. Logged rather than swallowed,
+            // because every other failure on this path is.
+            Err(e) => warn!("a name lookup did not finish: {e}"),
         }
 
         if let Some(name) = pending.next() {
@@ -436,6 +482,72 @@ fn spawn_lookup(set: &mut JoinSet<(String, Vec<IpAddr>)>, resolver: &Resolver, n
 mod tests {
     use super::*;
     use crate::model::parse::ip::Keyword;
+
+    /// The two passes agree about what a name is, because they ask the same
+    /// function.
+    ///
+    /// **They did not.** The collector took [`IpParseError::Malformed`] as the
+    /// whole answer, and the builder applies two more tests before it consults
+    /// the lookup, so a mistyped address was sent to a resolver somebody else
+    /// operates and then refused here without ever being looked up. A typo in a
+    /// target file became a DNS query, which is the one thing `no_dns` exists to
+    /// prevent.
+    #[test]
+    fn a_token_the_builder_will_refuse_is_never_put_on_the_network() {
+        let ctx = TargetContext {
+            keywords: None,
+            zones: None,
+            hosts: None,
+        };
+
+        let refused = [
+            "192.168.0.300",   // an octet out of range
+            "999.999.999.999", // every octet out of range
+            "10.0.0",          // too few octets
+        ];
+        assert_eq!(
+            collect_names(&refused, &ctx),
+            Vec::<String>::new(),
+            "a mistyped address was collected as a name to look up"
+        );
+
+        // The builder's own verdict on the same tokens, which is what makes the
+        // two agree rather than merely both refuse.
+        for token in refused {
+            assert_eq!(target::host_name(token), target::HostName::Mistyped);
+        }
+
+        // A real name is still collected, or the check above proves nothing.
+        assert_eq!(
+            collect_names(&["nas.local", "example.com"], &ctx),
+            vec!["nas.local".to_string(), "example.com".to_string()]
+        );
+    }
+
+    /// One host is one lookup, however many ways it is spelled.
+    ///
+    /// DNS is case-insensitive, so `NAS` and `nas` name one host. They used to
+    /// be two entries and two round trips.
+    #[test]
+    fn a_name_written_two_ways_is_looked_up_once() {
+        let ctx = TargetContext {
+            keywords: None,
+            zones: None,
+            hosts: None,
+        };
+
+        // Collection keeps every spelling, since the build pass looks a name up
+        // by the token the expression carried.
+        let collected = collect_names(&["NAS", "nas", "Nas"], &ctx);
+        assert_eq!(collected.len(), 3);
+
+        // What must not be three is the number of names resolution asks for.
+        let folded: std::collections::HashSet<String> = collected
+            .iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        assert_eq!(folded.len(), 1, "three spellings of one host");
+    }
 
     /// A keyword resolver that expands `lan` to one address, so a list mixing a
     /// keyword, literals and names can be classified the way the builder would.

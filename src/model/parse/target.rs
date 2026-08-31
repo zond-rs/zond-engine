@@ -615,19 +615,14 @@ impl TargetMapBuilder {
         into: &mut IpSet,
         ctx: &TargetContext<'_>,
     ) -> Result<(), TargetParseError> {
-        // A name with a colon in it is not a name. Sending it to a host lookup
-        // would report "no such host" for something that was never a host, and
-        // the author almost certainly wrote an IPv6 target without brackets.
-        if name.contains(':') {
-            return Err(TargetParseError::UnbracketedAddress(name.to_string()));
-        }
-
-        // Neither is a name made only of digits and dots: a top-level domain
-        // cannot be entirely numeric, so `192.168.0.300` is a mistyped address
-        // rather than a host to look up. Reporting it as an unresolvable name
-        // would send its author to check their DNS over a typo.
-        if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            return Err(TargetParseError::MistypedAddress(name.to_string()));
+        match host_name(name) {
+            HostName::Yes => {}
+            HostName::Unbracketed => {
+                return Err(TargetParseError::UnbracketedAddress(name.to_string()));
+            }
+            HostName::Mistyped => {
+                return Err(TargetParseError::MistypedAddress(name.to_string()));
+            }
         }
 
         let lookup = ctx
@@ -720,6 +715,50 @@ impl TargetMapBuilder {
         }
         map
     }
+}
+
+/// Whether a token the address grammar refused is worth looking up as a host
+/// name, and if not, what it is instead.
+///
+/// [`IpParseError::Malformed`] says only "this is not an address". Two kinds of
+/// token reach that verdict and are still not names, and telling the author what
+/// they wrote is worth more than a lookup that was always going to fail.
+///
+/// **Both passes ask this**, which is the point of it being a function. The
+/// synchronous build asks before it consults the lookup, and
+/// `resolve::targets`'s collection pass asks before it puts a name on the
+/// network. Written out once each, the two disagreed: the collector took
+/// `Malformed` as the whole answer, so a mistyped address became a query to a
+/// resolver somebody else operates, and the builder then refused it without ever
+/// looking it up.
+pub(crate) fn host_name(token: &str) -> HostName {
+    // A token with a colon in it is not a name. Sending it to a host lookup
+    // would report "no such host" for something that was never a host, and the
+    // author almost certainly wrote an IPv6 target without brackets.
+    if token.contains(':') {
+        return HostName::Unbracketed;
+    }
+
+    // Neither is a token made only of digits and dots: a top-level domain cannot
+    // be entirely numeric, so `192.168.0.300` is a mistyped address rather than
+    // a host to look up. Reporting it as an unresolvable name would send its
+    // author to check their DNS over a typo.
+    if !token.is_empty() && token.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return HostName::Mistyped;
+    }
+
+    HostName::Yes
+}
+
+/// What [`host_name`] concluded about a token the address grammar refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostName {
+    /// Worth resolving.
+    Yes,
+    /// An IPv6 address written without brackets.
+    Unbracketed,
+    /// Digits and dots only: a mistyped address rather than a host.
+    Mistyped,
 }
 
 /// Parses a slice of target expressions into a [`TargetMap`].
