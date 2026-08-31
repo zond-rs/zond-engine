@@ -169,12 +169,41 @@ pub struct Checkpoint {
     /// The position below which everything is settled.
     pub watermark: u64,
     /// Settled positions at or above the watermark, ascending.
+    ///
+    /// Ascending is an invariant, not a description: [`is_settled`](Self::is_settled)
+    /// binary-searches it. [`new`](Self::new) establishes it, and [`read`](Self::read)
+    /// re-establishes it on anything that arrived from a file.
     #[serde(default)]
     pub settled_above: Vec<u64>,
 }
 
 impl Checkpoint {
+    /// A checkpoint over `watermark` and the settled positions above it.
+    ///
+    /// The list is sorted and deduplicated here, which is the invariant
+    /// [`is_settled`](Self::is_settled) binary-searches on. The fields are public
+    /// and this is not the only way to build one; it is the way that cannot be
+    /// built wrong, and a caller keeping journals in something other than a
+    /// directory should come through it.
+    pub fn new(watermark: u64, settled_above: impl IntoIterator<Item = u64>) -> Self {
+        let mut settled_above: Vec<u64> = settled_above
+            .into_iter()
+            .filter(|position| *position >= watermark)
+            .collect();
+        settled_above.sort_unstable();
+        settled_above.dedup();
+
+        Self {
+            watermark,
+            settled_above,
+        }
+    }
+
     /// Whether the target at `position` may be skipped.
+    ///
+    /// Binary-searched, so [`settled_above`](Self::settled_above) has to be
+    /// ascending. Everything in this module that builds one keeps it that way,
+    /// and [`new`](Self::new) is how a caller does.
     pub fn is_settled(&self, position: u64) -> bool {
         position < self.watermark || self.settled_above.binary_search(&position).is_ok()
     }

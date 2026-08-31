@@ -198,13 +198,24 @@ impl Security {
     /// about a moment, and the moment a report is *read* is not the moment it
     /// was taken: asked with the current time, a scan from last quarter reports
     /// a renewal queue that was never true of the network it describes.
+    /// A `threshold` no clock can reach reads as one that covers everything, and
+    /// never as a panic. `SystemTime + Duration` is checked because the threshold
+    /// arrives from a caller — [`DiffOptions::with_expiry_threshold`] takes any
+    /// `Duration` there is — and a horizon past the end of representable time is
+    /// a caller saying every certificate is on the queue, which is an answer
+    /// rather than an error.
+    ///
+    /// [`DiffOptions::with_expiry_threshold`]: crate::diff::DiffOptions::with_expiry_threshold
     pub fn is_cert_expiring_at(&self, threshold: Duration, at: SystemTime) -> bool {
         self.certificate.as_ref().is_some_and(|c| {
             // An already-expired certificate is not expiring; see above.
             if at < c.validity_start() || at > c.validity_end() {
                 return false;
             }
-            c.validity_end() < at + threshold
+            match at.checked_add(threshold) {
+                Some(horizon) => c.validity_end() < horizon,
+                None => true,
+            }
         })
     }
 }

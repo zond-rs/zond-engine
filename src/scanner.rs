@@ -145,6 +145,10 @@ pub mod strategy;
 // tail, `service` identifies what is behind an open port, and `pool` and
 // `payload` are shared probe machinery.
 pub mod audit;
+/// The timer that writes a running scan into its journal, and the handle that
+/// stops it. Behind `journal-format` because that is what compiles a
+/// [`Journal`](crate::journal::Journal) to write into.
+#[cfg(feature = "journal-format")]
 pub mod checkpoint;
 pub mod detect;
 pub mod dispatcher;

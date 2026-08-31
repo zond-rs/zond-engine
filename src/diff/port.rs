@@ -570,6 +570,10 @@ fn validity(security: Option<&Security>, threshold: Duration, at: SystemTime) ->
         return Validity::Absent;
     };
 
+    // The two bounds are asked here and again inside `is_cert_expiring_at`,
+    // which is the one place they belong: this reads them to tell `NotYetValid`
+    // and `Expired` apart, and that reads them because it is public and answers
+    // for itself. Restating either here would be the bound written down twice.
     if at < certificate.validity_start() {
         Validity::NotYetValid
     } else if at > certificate.validity_end() {

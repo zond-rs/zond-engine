@@ -320,28 +320,29 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
+    /// Empty, deliberately, and both arms of this module are stubs that refuse.
+    ///
+    /// Windows is not a supported scanning host, so nothing here is exercised;
+    /// what it must not do is *appear* to work. It was `GetTickCount64`
+    /// subtracted from the wall clock, described as constant within a boot, and
+    /// it is not: the two are read at different instants, the tick counter has a
+    /// resolution of about fifteen milliseconds, and it does not advance across
+    /// some suspend states. The value moved within one boot, every lock read as
+    /// `RebootedUnder`, and `RebootedUnder` is resumable.
+    ///
+    /// That mattered because [`classify`](super::classify) reads the boot
+    /// identity *first*: a differing one returns before `pid_is_alive` is
+    /// reached, so the stub below could never deliver the refusal its own
+    /// comment promised. Returning the same value every time is what lets it.
+    /// Two empty identities compare equal, the pid decides, and the pid always
+    /// says a scan may be running.
     pub fn boot_identity() -> String {
-        // Milliseconds since boot, subtracted from now: constant within a boot
-        // to the resolution of the tick counter, and different across boots.
-        // SAFETY: takes no arguments and dereferences nothing.
-        let uptime_ms = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
-        match std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-        {
-            Some(now) => format!(
-                "{}",
-                now.as_millis().saturating_sub(uptime_ms as u128) / 1000
-            ),
-            None => String::new(),
-        }
+        String::new()
     }
 
+    /// Always alive, which refuses a resume rather than permitting a second
+    /// writer. The safe direction for a stub, and now reachable.
     pub fn pid_is_alive(_pid: u32) -> bool {
-        // Not yet implemented: Windows is not a supported scanning host, so no
-        // journal is written there to lock. Reported as alive, which refuses a
-        // resume rather than permitting a second writer — the safe direction for
-        // a stub.
         true
     }
 }

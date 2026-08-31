@@ -287,7 +287,7 @@ impl From<&StatusReasonRecord> for StatusReason {
         let protocol = wire::status_protocol(&record.protocol)
             .unwrap_or_else(|| StatusProtocol::Custom(record.protocol.as_str().into()));
 
-        let mut reason = StatusReason::new(protocol, record.details.clone().unwrap_or_default());
+        let mut reason = StatusReason::new(protocol, "");
         reason.details = record.details.as_deref().map(Into::into);
         reason.source = record.source;
         reason
@@ -1824,7 +1824,8 @@ impl From<&IpSet> for PlanRecord {
         Self {
             units: vec![UnitRecord {
                 ranges: ranges_of(addresses),
-                ports: Vec::new(),
+                spec: String::new(),
+                enumerated_ports: Vec::new(),
             }],
         }
     }
@@ -1849,9 +1850,40 @@ pub struct UnitRecord {
     /// The addresses, as ranges.
     #[serde(default)]
     pub ranges: Vec<RangeRecord>,
-    /// The ports, in order, each with its transport's wire name.
-    #[serde(default)]
-    pub ports: Vec<(u16, String)>,
+    /// The ports, as the specification [`PortSet`] parses.
+    ///
+    /// Written the way [`PortsRecord`] writes a phase's scope, and for the
+    /// reason given there: a full sweep is six bytes rather than a hundred and
+    /// thirty thousand entries, and a person reading the manifest can see what
+    /// is being scanned. A [`PortSet`] is canonical from construction, so the
+    /// specification and the enumeration are the same order and a position keeps
+    /// its meaning across the round trip.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub spec: String,
+    /// The ports one at a time, as journal format 1 wrote them.
+    ///
+    /// Read and never written. A journal from that format cannot be *continued*
+    /// — see [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) — but it still
+    /// reads back as the report its scan produced, and a manifest that would not
+    /// deserialize takes that away too.
+    #[serde(default, rename = "ports", skip_serializing_if = "Vec::is_empty")]
+    pub enumerated_ports: Vec<(u16, String)>,
+}
+
+impl UnitRecord {
+    /// The ports this unit walks, from whichever form the record carries.
+    fn port_set(&self) -> PortSet {
+        if !self.spec.is_empty()
+            && let Ok(ports) = PortSet::try_from(self.spec.as_str())
+        {
+            return ports;
+        }
+
+        self.enumerated_ports
+            .iter()
+            .filter_map(|(port, protocol)| wire::protocol(protocol).map(|p| (*port, p)))
+            .collect()
+    }
 }
 
 impl From<&TargetMap> for PlanRecord {
@@ -1862,11 +1894,8 @@ impl From<&TargetMap> for PlanRecord {
                 .iter()
                 .map(|unit| UnitRecord {
                     ranges: ranges_of(unit.ips()),
-                    ports: unit
-                        .ports()
-                        .iter()
-                        .map(|(port, protocol)| (port, wire::protocol_name(protocol).to_owned()))
-                        .collect(),
+                    spec: unit.ports().to_string(),
+                    enumerated_ports: Vec::new(),
                 })
                 .collect(),
         }
@@ -1883,11 +1912,7 @@ impl From<&PlanRecord> for TargetMap {
                 ips.insert_range(range);
             }
 
-            let ports: PortSet = unit
-                .ports
-                .iter()
-                .filter_map(|(port, protocol)| wire::protocol(protocol).map(|p| (*port, p)))
-                .collect();
+            let ports = unit.port_set();
 
             // A unit with nothing left in it would renumber every position after
             // it, so an unreadable one is kept as an empty unit rather than
@@ -2229,6 +2254,56 @@ mod tests {
     /// Rendered through the export path before and after, for the reason the
     /// host oracle gives: it is an independent view, so a field the record
     /// forgets shows up as a difference rather than as silence.
+    /// A plan's ports survive as a specification, and a manifest from format 1
+    /// still reads.
+    ///
+    /// The enumeration is what positions are counted through, so the two forms
+    /// have to agree about it exactly. They do because a `PortSet` is canonical
+    /// from construction: the specification is written from the same order it is
+    /// read back into.
+    #[test]
+    fn a_plans_ports_round_trip_as_a_specification() {
+        use crate::model::ip::set::IpSet;
+        use crate::model::target::TargetSet;
+
+        let mut plan = TargetMap::new();
+        plan.add_unit(TargetSet::new(
+            "192.0.2.0/30".parse::<IpSet>().expect("a range"),
+            "80,443,1000-1010,u:53".parse::<PortSet>().expect("ports"),
+        ));
+
+        let record = PlanRecord::from(&plan);
+        assert!(
+            record.units[0].enumerated_ports.is_empty(),
+            "the enumerated form is read and never written"
+        );
+        assert_eq!(
+            TargetMap::from(&record).iter().collect::<Vec<_>>(),
+            plan.iter().collect::<Vec<_>>(),
+            "the enumeration a position is counted through has to be identical"
+        );
+
+        // Six bytes and change, rather than one entry per port.
+        assert!(record.units[0].spec.len() < 40, "{}", record.units[0].spec);
+
+        // And a manifest written before the specification existed still reads.
+        let legacy = PlanRecord {
+            units: vec![UnitRecord {
+                ranges: record.units[0].ranges.clone(),
+                spec: String::new(),
+                enumerated_ports: plan.units[0]
+                    .ports()
+                    .iter()
+                    .map(|(port, protocol)| (port, wire::protocol_name(protocol).to_owned()))
+                    .collect(),
+            }],
+        };
+        assert_eq!(
+            TargetMap::from(&legacy).iter().collect::<Vec<_>>(),
+            plan.iter().collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn a_phase_survives_a_round_trip() {
         let report = crate::export::fixture::report();

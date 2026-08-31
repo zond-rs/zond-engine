@@ -16,15 +16,23 @@ use std::net::IpAddr;
 
 use crate::diff::change::Coverage;
 use crate::model::host::Host;
-use crate::model::ip::range::IpRange;
+use crate::model::ip::set::IpSet;
 use crate::model::port::Protocol;
 use crate::report::{PortScope, ScanReport, TargetScope};
 
 /// The ranges and port sets a report says it walked, gathered once so an address
 /// can be placed without walking the phases again.
+///
+/// **A set rather than a list**, which is the difference between an index and a
+/// scan that has stopped repeating itself. Held as two `Vec<IpRange>`, placing
+/// one address asked every range of every phase in turn, once per address of
+/// every host: a report merged from a `/16` scanned in chunks carries hundreds
+/// of ranges and the question is asked tens of thousands of times.
+/// [`IpSet`] canonicalises on construction and answers by binary search over
+/// disjoint ranges, which is what this was describing itself as doing.
 pub(crate) struct ScopeIndex {
-    covered: Vec<IpRange>,
-    withheld: Vec<IpRange>,
+    covered: IpSet,
+    withheld: IpSet,
     stated: bool,
     ports: Vec<PortScope>,
     /// The phases' scopes, kept whole because a link sweep is not a range and
@@ -34,18 +42,27 @@ pub(crate) struct ScopeIndex {
 
 impl ScopeIndex {
     pub(crate) fn of(report: &ScanReport) -> Self {
-        let mut covered = Vec::new();
-        let mut withheld = Vec::new();
+        let mut covered = IpSet::new();
+        let mut withheld = IpSet::new();
         let mut ports = Vec::new();
         let mut scopes = Vec::new();
 
         for phase in report.phases() {
             let scope = phase.targets();
-            covered.extend_from_slice(scope.ranges());
-            withheld.extend_from_slice(scope.excluded());
+            for range in scope.ranges() {
+                covered.insert_range(*range);
+            }
+            for range in scope.excluded() {
+                withheld.insert_range(*range);
+            }
             ports.push(scope.ports().clone());
             scopes.push(scope.clone());
         }
+
+        // Both are searched and never extended again, so the ordering the
+        // search needs is established once here.
+        covered.canonicalize();
+        withheld.canonicalize();
 
         let stated = !covered.is_empty()
             || !withheld.is_empty()
@@ -109,9 +126,9 @@ impl ScopeIndex {
     /// [`of_host`](Self::of_host), because it is about the host rather than
     /// about any one of its addresses.
     pub(crate) fn address(&self, ip: &IpAddr) -> Coverage {
-        if self.covered.iter().any(|range| range.contains(ip)) {
+        if self.covered.contains(ip) {
             Coverage::Covered
-        } else if self.withheld.iter().any(|range| range.contains(ip)) {
+        } else if self.withheld.contains(ip) {
             Coverage::Withheld
         } else if self.stated {
             Coverage::OutOfScope

@@ -287,13 +287,18 @@ impl Journal {
             return Ok(());
         }
 
+        // Appending is tried first and the file is created only where there is
+        // none, rather than asking whether one exists and then acting on the
+        // answer. `create_private` truncates, so losing that race would have cost
+        // every tape written before it.
         let path = self.directory.join(DETECTIONS);
-        let mut writer = if path.exists() {
-            let file = append_existing(&path)?;
-            crate::journal::format::Writer::append(std::io::BufWriter::new(file))
-        } else {
-            let file = create_private_file(&path)?;
-            crate::journal::format::Writer::create(std::io::BufWriter::new(file))?
+        let mut writer = match append_existing(&path) {
+            Ok(file) => crate::journal::format::Writer::append(std::io::BufWriter::new(file)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let file = create_private_file(&path)?;
+                crate::journal::format::Writer::create(std::io::BufWriter::new(file))?
+            }
+            Err(error) => return Err(error.into()),
         };
         for run in runs {
             writer.write(run)?;
@@ -611,10 +616,10 @@ fn phase_name(kind: ScanKind) -> &'static str {
     match kind {
         ScanKind::Discovery => "host-discovery sweep",
         ScanKind::PortScan => "port scan",
-        // Reachable only through a journal written by a build that records one,
-        // which none does: a listening phase enumerates nothing, so there is no
-        // plan to count it in and no cursor to continue it from. See the
-        // passive listening design's §7 for the fork that is still open.
+        // A watch enumerates nothing, so its journal has no cursor and resuming
+        // one appends a sitting rather than skipping settled work. It is still a
+        // journal this build writes — see `listen_with_journal` — so this name
+        // reaches a person.
         ScanKind::Listen => "listening phase",
     }
 }

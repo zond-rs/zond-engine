@@ -5357,6 +5357,7 @@ pub zond_engine::journal::cursor::Checkpoint::settled_above: alloc::vec::Vec<u64
 pub zond_engine::journal::cursor::Checkpoint::watermark: u64
 impl zond_engine::journal::cursor::Checkpoint
 pub fn zond_engine::journal::cursor::Checkpoint::is_settled(&self, u64) -> bool
+pub fn zond_engine::journal::cursor::Checkpoint::new(u64, impl core::iter::traits::collect::IntoIterator<Item = u64>) -> Self
 pub fn zond_engine::journal::cursor::Checkpoint::remaining<'a, I>(&'a self, I) -> impl core::iter::traits::iterator::Iterator<Item = zond_engine::model::target::PlannedTarget> + 'a where I: core::iter::traits::collect::IntoIterator<Item = zond_engine::model::target::Target> + 'a
 pub fn zond_engine::journal::cursor::Checkpoint::remaining_addresses(&self, &zond_engine::model::ip::set::Positions) -> zond_engine::model::ip::set::IpSet
 impl zond_engine::journal::cursor::Checkpoint
@@ -10483,8 +10484,9 @@ impl core::marker::UnsafeUnpin for zond_engine::record::TelemetryRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::TelemetryRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::TelemetryRecord
 pub struct zond_engine::record::UnitRecord
-pub zond_engine::record::UnitRecord::ports: alloc::vec::Vec<(u16, alloc::string::String)>
+pub zond_engine::record::UnitRecord::enumerated_ports: alloc::vec::Vec<(u16, alloc::string::String)>
 pub zond_engine::record::UnitRecord::ranges: alloc::vec::Vec<zond_engine::record::RangeRecord>
+pub zond_engine::record::UnitRecord::spec: alloc::string::String
 impl core::clone::Clone for zond_engine::record::UnitRecord
 pub fn zond_engine::record::UnitRecord::clone(&self) -> zond_engine::record::UnitRecord
 impl core::cmp::Eq for zond_engine::record::UnitRecord

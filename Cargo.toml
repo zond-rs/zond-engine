@@ -230,8 +230,6 @@ windows-sys = { version = "0.61.2", features = [
     # Elevation, via the process token.
     "Win32_Security",
     "Win32_System_Threading",
-    # `GetTickCount64`, which is how a journal lock recognises a reboot.
-    "Win32_System_SystemInformation",
     # `SystemTimeToTzSpecificLocalTime`, which is how a local time gets an
     # offset on a platform with no `tm_gmtoff`.
     "Win32_System_Time",

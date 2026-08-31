@@ -404,6 +404,10 @@ impl ScanDiff {
                     summary.ports_changed += 1;
                 }
 
+                // Matched with no wildcard, so a change this crate learns to
+                // report is a compile error here until somebody decides whether
+                // it belongs in the counters a front end leads with. A `_` arm
+                // would leave it silently at zero.
                 let mut service_moved = false;
                 for change in port.changes() {
                     match change {
@@ -419,10 +423,26 @@ impl ScanDiff {
                                 CertificateChange::Expired { .. } => {
                                     summary.certificates_expired += 1;
                                 }
-                                _ => {}
+                                // A certificate appearing or being withdrawn is
+                                // the endpoint's security changing, which
+                                // `ports_changed` already counts. Neither is a
+                                // renewal queue's business.
+                                CertificateChange::Presented(_)
+                                | CertificateChange::Withdrawn(_) => {}
                             }
                         }
-                        _ => {}
+                        // Counted above, through `is_opened` and `is_closed`.
+                        PortChange::State(_) => {}
+                        // The version and cipher a handshake agreed are reported
+                        // in the deltas and are not a headline number.
+                        PortChange::Security(
+                            SecurityChange::TlsVersion(_)
+                            | SecurityChange::CipherSuite(_)
+                            | SecurityChange::Alpn { .. },
+                        ) => {}
+                        // A finding's own severity is what a reader sorts by, so
+                        // it is read off the delta rather than totalled here.
+                        PortChange::Findings { .. } => {}
                     }
                 }
                 if service_moved {
@@ -1386,6 +1406,46 @@ mod tests {
     /// endpoint that most needs renewing reports a rotation and no expiry. The
     /// standing belongs to one certificate at two moments, and the baseline was
     /// never shown this one.
+    /// A threshold no clock can reach is an answer, not a panic.
+    ///
+    /// `with_expiry_threshold` takes any `Duration` there is and nothing checks
+    /// it where it is set, so `Duration::MAX` reached `SystemTime + Duration`
+    /// inside the model and brought the whole comparison down with it. Read as
+    /// the horizon it is, every certificate is inside it: the one presented at
+    /// both scans was already inside it when the baseline ran and so crossed
+    /// nothing, and the one that replaced another is reported, because the
+    /// baseline was never shown it.
+    #[test]
+    fn an_expiry_horizon_past_the_end_of_time_reports_rather_than_panics() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let endpoint = |fingerprint: &str| {
+            let mut host = host(10);
+            host.add_port(
+                Port::new(443, Protocol::Tcp, PortState::Open).with_security(certificate(
+                    fingerprint,
+                    at - 90 * DAY,
+                    at + 900 * DAY,
+                )),
+            );
+            host
+        };
+        let forever = DiffOptions::new().with_expiry_threshold(Duration::MAX);
+
+        let untouched = ScanDiff::compare(
+            &scoped(vec![endpoint("aaaa")], "192.168.0.0/24", &[], at),
+            &scoped(vec![endpoint("aaaa")], "192.168.0.0/24", &[], at + DAY),
+            &forever,
+        );
+        assert_eq!(untouched.summary().certificates_expiring, 0);
+
+        let rotated = ScanDiff::compare(
+            &scoped(vec![endpoint("aaaa")], "192.168.0.0/24", &[], at),
+            &scoped(vec![endpoint("bbbb")], "192.168.0.0/24", &[], at + DAY),
+            &forever,
+        );
+        assert_eq!(rotated.summary().certificates_expiring, 1);
+    }
+
     #[test]
     fn a_rotation_onto_an_expiring_certificate_still_reports_the_expiry() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);

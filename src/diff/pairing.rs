@@ -33,6 +33,13 @@
 //! `fe80::1` names a different machine on every segment, so an address token for
 //! a link-local address includes the zone the record was found on. Without that
 //! two hosts on two interfaces would share a token and be folded into one.
+//!
+//! **A record that names no zone gets no zone in its token**, and two of those
+//! at one address fold together. Only a scan that reached the link layer records
+//! one, so this is what a report rebuilt from a foreign scanner's output gets:
+//! the addresses are all it has, and the comparison can only be as precise as
+//! the record. Pairing under [`PrimaryAddress`](HostIdentity::PrimaryAddress) is
+//! how a caller declines the guess.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -111,8 +118,8 @@ pub(crate) fn components(
     let current_tokens: Vec<HashSet<Token>> =
         current.iter().map(|host| tokens(host, identity)).collect();
 
-    let baseline_index = index(&baseline_tokens);
-    let current_index = index(&current_tokens);
+    let mut baseline_index = index(&baseline_tokens);
+    let mut current_index = index(&current_tokens);
 
     let mut baseline_seen = vec![false; baseline.len()];
     let mut current_seen = vec![false; current.len()];
@@ -132,12 +139,19 @@ pub(crate) fn components(
         let mut current_queue: Vec<usize> = Vec::new();
 
         // Alternating flood fill across the two sides. A record is queued at
-        // most once, so this walks each token list once overall.
+        // most once, and a token's list is walked at most once: the second visit
+        // finds every record on it already queued, so the walk is pure cost.
+        //
+        // **That mattered, and the case is the one `Hardware` warns about.** A
+        // router answering ARP for everything behind it lends its address to
+        // every record on the segment, and without taking the token out the
+        // walk was one full list per record carrying it: four thousand hosts
+        // behind one router cost sixteen million steps to reach the same answer.
         while !baseline_queue.is_empty() || !current_queue.is_empty() {
             while let Some(i) = baseline_queue.pop() {
                 component.baseline.push(i);
                 for token in &baseline_tokens[i] {
-                    for &j in current_index.get(token).into_iter().flatten() {
+                    for j in current_index.remove(token).unwrap_or_default() {
                         if !current_seen[j] {
                             current_seen[j] = true;
                             current_queue.push(j);
@@ -149,7 +163,7 @@ pub(crate) fn components(
             while let Some(j) = current_queue.pop() {
                 component.current.push(j);
                 for token in &current_tokens[j] {
-                    for &i in baseline_index.get(token).into_iter().flatten() {
+                    for i in baseline_index.remove(token).unwrap_or_default() {
                         if !baseline_seen[i] {
                             baseline_seen[i] = true;
                             baseline_queue.push(i);

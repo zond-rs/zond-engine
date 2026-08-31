@@ -116,8 +116,14 @@ pub(super) fn claim_directory_for_invoking_user(_path: &Path) {}
 #[cfg(unix)]
 fn claim(file: &fs::File) {
     use std::os::unix::io::AsRawFd;
+    use std::sync::OnceLock;
 
-    let Some(user) = super::paths::invoking_user() else {
+    /// Resolved once. Who invoked this process cannot change while it runs, and
+    /// the lookup goes to the password database — which a checkpoint every three
+    /// seconds has no reason to ask again.
+    static INVOKING: OnceLock<Option<super::paths::InvokingUser>> = OnceLock::new();
+
+    let Some(user) = INVOKING.get_or_init(super::paths::invoking_user) else {
         return;
     };
 

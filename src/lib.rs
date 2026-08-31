@@ -159,12 +159,15 @@
 //! The names most consumers need are re-exported here at the root. The modules
 //! below are the whole of it:
 //!
-//! The list is an order, not a set: each module depends only on the ones above
-//! it. `tests/architecture.rs` reads every `crate::` path in the library —
-//! including the ones inside an expression, which is where three of these edges
-//! were hiding — and fails if that stops being true, so this is a rule rather
-//! than an aspiration. Its `ORDER` is the enforced list, and holds the modules
-//! this one leaves out because a reader arriving here does not meet them first.
+//! **The modules are layered, and the layering is a rule.** Each depends only on
+//! those below it, and `tests/architecture.rs` reads every `crate::` path in the
+//! library — including the ones inside an expression, which is where three
+//! violations were hiding — and fails if that stops being true.
+//!
+//! The list below is ordered for somebody meeting the crate rather than for the
+//! rule: it opens with the vocabulary and ends with the file formats, where the
+//! layering opens with the plumbing those two share. `ORDER` in that test is the
+//! layering itself, and it is the one that decides anything.
 //!
 //! - [`model`] — the vocabulary every other module names: [`Host`], [`Port`],
 //!   [`IpSet`], [`TargetMap`], and the grammars that construct them from what a
@@ -182,6 +185,10 @@
 //!   requires touching them.
 //! - [`system`] — interfaces, routing, and whether the process may open raw
 //!   sockets. The one place the engine asks the host about itself.
+//! - [`evasion`] — what a scan is allowed to change about the packets it sends,
+//!   and which of those a given strategy can honour. Beside [`protocols`] rather
+//!   than inside it, because a profile is asked for before a packet is built and
+//!   is refused up front when no scan could carry it.
 //! - [`resolve`] — turning the names a person writes into the addresses a scan
 //!   probes, over unicast DNS and multicast DNS. It runs before a scan, deciding
 //!   what it covers; the reverse direction, naming hosts a scan has found, is the
@@ -202,7 +209,13 @@
 //!   A step rather than a phase: it sends nothing, and everything it needs is
 //!   already in hand, so it runs equally well over a host read back out of a
 //!   file as over one a scan just found.
+//! - [`detect`] — running a detection over what a scan has already established,
+//!   and recording what it read so the run can be replayed offline. A step, like
+//!   [`cve`], rather than a phase.
 //! - [`record`] — the same information in a shape that survives a file.
+//! - [`journal`] — what a scan writes down as it runs, so one that did not finish
+//!   can be continued rather than restarted. It holds the plan, how far the scan
+//!   got, and what it found; [`record`] is the shape all three are written in.
 //! - [`scanner`] — the two entry points, the [`plan`](scanner::plan) behind
 //!   them, and the [`strategy`](scanner::strategy) implementations behind that,
 //!   together with the live [`session`](scanner::session), the
@@ -227,6 +240,15 @@
 //! # Platforms
 //!
 //! Linux and macOS. Windows is not currently supported.
+//!
+//! There is `cfg(windows)` code all the same, and it is worth knowing what it
+//! is. Where the platform difference is small and testable it is real: paths
+//! resolve to `%LOCALAPPDATA%`, a local time gets its offset from
+//! `SystemTimeToTzSpecificLocalTime`, and privilege is read from the process
+//! token. Where it is not, the arm is a **stub that refuses** rather than one
+//! that guesses — a journal lock reports that a scan may be running, so nothing
+//! resumes underneath a writer this build cannot see. None of it is exercised by
+//! the test suite, and none of it should be read as a promise.
 
 // A public item without a doc comment is a gap in this crate's contract, so the
 // standard is enforced rather than kept by hand.

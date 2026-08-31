@@ -36,11 +36,13 @@
 //! over the same set. A target's identity in a plan is therefore its position
 //! in that enumeration, and a position needs no address stored to name it.
 //!
-//! What is written is a cursor — a watermark — the position below which everything has
-//! settled — a bitmap over the window of positions above it that settled out of
-//! order, and a spill list for anything outstanding longer than the window is
-//! wide. That is a few kilobytes, fixed, whether the scan is a `/24` or a `/8`,
-//! rewritten on a timer rather than on an event. The findings themselves append
+//! What is written is a cursor: a watermark, which is the position below which
+//! everything has settled, and the positions above it that settled out of order.
+//! Its size follows how far out of order the scan is settling and not how large
+//! the scan is, so a `/8` on a thousand ports checkpoints in what a `/24` does,
+//! and it is rewritten on a timer rather than on an event. See
+//! [`cursor`](mod@cursor), which argues for the sparse form over a bitmap and
+//! bounds what the out-of-order set can grow to. The findings themselves append
 //! at the rate hosts are *discovered*, which is orders of magnitude below the
 //! rate they are probed.
 //!
@@ -88,11 +90,11 @@
 //! feature because it is the one part that needs `serde_json`; [`paths`] needs
 //! nothing and is always present, so a front end can list and locate journals
 //! without compiling the reader.
-
+//!
 //! [`settle`] is what a resume is allowed to skip: the outcome of each target,
 //! kept apart from the verdict it received, because the engine gives an
 //! exhausted probe and one it never sent the same verdict on purpose.
-
+//!
 //! [`cursor`] is how far a scan got: a position in the plan below which
 //! everything is settled, plus the few positions above it that settled out of
 //! order. It is what a resumed scan subtracts from the plan.
@@ -167,10 +169,6 @@
 //! A front end that wants every scan resumable opens a journal for every scan,
 //! and one that wants a standing "not on this machine" keeps that preference in
 //! its own configuration. Neither is the engine's business.
-
-//! [`manifest`] is what a journal is a journal *of*: the plan its positions are
-//! counted in, fingerprinted, so a resume against an edited plan is refused
-//! rather than scanning the wrong targets and reporting success.
 
 /// The version of the on-disk journal format this build writes.
 ///

@@ -38,16 +38,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::cursor::{Checkpoint, Cursor};
 
-/// The two outcomes that carry a position.
+/// The two outcomes a *probe* earns, before the position is attached.
 ///
-/// A caller that has *earned* a verdict says which of these it earned, and
+/// A caller that has earned a verdict says which of these it earned, and
 /// something that knows the plan attaches the position — see
 /// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address),
 /// which is how a sweep settles an address it does not know the number of.
 ///
-/// The unsettled outcomes are deliberately absent. They carry no position, so
-/// there is nothing to attach and they are recorded straight through
-/// [`Settlements::record`].
+/// Not every settled outcome is here, because not every one is earned by a
+/// probe: [`Skipped`](Outcome::Skipped) is the liveness pass deciding no probe
+/// was owed, and whatever reaches that conclusion already knows the position, so
+/// it builds the outcome directly. The unsettled outcomes are absent for the
+/// opposite reason — they carry no position, so there is nothing to attach and
+/// they are recorded straight through [`Settlements::record`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Settled {

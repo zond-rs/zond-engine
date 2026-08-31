@@ -650,7 +650,7 @@ impl JournalManifest {
                     .map(|name| Zone::unresolved(name.as_str()))
                     .collect(),
             },
-            _ => Resolved::PortScan {
+            ScanKind::PortScan => Resolved::PortScan {
                 targets: TargetMap::from(&self.targets),
                 technique: self.technique(),
             },
