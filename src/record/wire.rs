@@ -18,12 +18,18 @@
 //! its name and its parse case here, and `every_name_parses_back` will fail
 //! until you do.
 //!
-//! ## An unknown name is refused, not guessed
+//! ## An unknown name is never guessed at here
 //!
-//! Every parser returns `None` for a name this build does not know, and callers
-//! report it rather than substituting a neighbour. A port state read as
-//! `Filtered` because the file said something newer is a scan reporting a
-//! firewall that is not there.
+//! Every parser returns [`None`] for a name this build does not know. What that
+//! becomes is the caller's, and the callers do not all answer alike:
+//! [`record`](crate::record) reads downward, to the value that claims least of
+//! the ones its type has, and says so at each field; [`reference()`] drops a
+//! malformed reference and keeps the finding it belonged to.
+//!
+//! What none of them do is substitute a neighbour. A port state read as `Open`
+//! because the file said something newer would be a scan reporting a listener
+//! that is not there, so the reading is chosen in the one direction where a
+//! stale build's mistake is always to claim too little.
 //!
 //! ## Strategy-supplied names are prefixed
 //!
@@ -754,6 +760,38 @@ mod tests {
 
     /// A name this build does not know is refused rather than falling into a
     /// neighbouring variant.
+    /// The one vocabulary here that `every_name_parses_back` could not drive.
+    ///
+    /// [`PortScope`] has no `ALL`, because two of its four carry a set, so the
+    /// module header's promise that adding a variant fails the build until it is
+    /// named held for every enum but this one: the writer is an exhaustive match
+    /// and breaks, and the reader is a string match with a fallback and does not.
+    /// Written out by hand instead, which is what an `ALL` would have bought.
+    #[test]
+    fn every_port_scope_parses_back() {
+        let ports = || PortSet::try_from("80,443").expect("a port set");
+
+        for scope in [
+            PortScope::Unstated,
+            PortScope::NoPorts,
+            PortScope::Every(ports()),
+            PortScope::Mixed(ports()),
+        ] {
+            let name = port_scope_name(&scope);
+            assert_eq!(
+                port_scope(name, scope.ports().cloned()),
+                Some(scope.clone()),
+                "{name}"
+            );
+        }
+
+        // A kind that needs a set and did not travel with one says nothing,
+        // rather than claiming the phase walked no ports.
+        assert_eq!(port_scope("every", None), Some(PortScope::Unstated));
+        assert_eq!(port_scope("mixed", None), Some(PortScope::Unstated));
+        assert_eq!(port_scope("thorough", Some(ports())), None);
+    }
+
     #[test]
     fn an_unknown_name_is_refused() {
         assert_eq!(host_status("perhaps"), None);

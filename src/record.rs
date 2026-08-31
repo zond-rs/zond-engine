@@ -40,6 +40,22 @@
 //!   `a_fully_populated_host_survives_a_round_trip` is what keeps that true as
 //!   the model grows.
 //!
+//! ## These are not `#[non_exhaustive]`, deliberately
+//!
+//! Almost everything else public in this crate is, and the reason it stops here
+//! is what these types are for. A record is interchange: something builds one to
+//! hand over, and a struct literal naming every field is the honest way to write
+//! that down. Sealing them would trade a compile error for a caller who adds a
+//! field against a builder per type for a caller who wants to state one.
+//!
+//! The cost is real and is accepted: a field added here is a breaking change,
+//! and five of the ones below arrived that way. What buys it back is that the
+//! serialized shape is versioned where it matters —
+//! [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) for a journal,
+//! [`SCHEMA_VERSION`](crate::format::SCHEMA_VERSION) for a report — so a reader
+//! is told when a document has moved, which is the thing a caller actually has
+//! to act on.
+//!
 //! ## Who uses it
 //!
 //! [`journal`](crate::journal) writes findings as a scan produces them and reads
@@ -1157,7 +1173,7 @@ impl From<&PhaseOriginRecord> for PhaseOrigin {
 impl From<&ScanPhase> for PhaseRecord {
     fn from(phase: &ScanPhase) -> Self {
         Self {
-            kind: crate::export::schema::scan_kind_name(phase.kind()).to_owned(),
+            kind: wire::scan_kind_name(phase.kind()).to_owned(),
             started_at: phase.started_at(),
             elapsed: phase.elapsed(),
             privileged: phase.privilege().map(Privilege::is_raw),
@@ -1394,7 +1410,7 @@ pub struct FailureRecord {
 impl From<&ScannerFailure> for FailureRecord {
     fn from(failure: &ScannerFailure) -> Self {
         Self {
-            scanner: crate::export::schema::scanner_kind_name(failure.scanner()).to_owned(),
+            scanner: wire::scanner_kind_name(failure.scanner()).to_owned(),
             reason: failure.reason().to_owned(),
             at: failure.at(),
         }
@@ -1635,9 +1651,9 @@ pub struct ProbeStatsRecord {
 impl From<&ProbeStats> for ProbeStatsRecord {
     fn from(stats: &ProbeStats) -> Self {
         Self {
-            scanner: crate::export::schema::scanner_kind_name(stats.scanner()).to_owned(),
+            scanner: wire::scanner_kind_name(stats.scanner()).to_owned(),
             targets: stats.targets(),
-            stop_reason: crate::export::schema::stop_reason_name(stats.stop_reason()).to_owned(),
+            stop_reason: wire::stop_reason_name(stats.stop_reason()).to_owned(),
             elapsed: stats.elapsed(),
             sends_attempted: stats.sends_attempted(),
             sends_failed: stats.sends_failed(),

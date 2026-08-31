@@ -360,7 +360,7 @@
       ],
       "properties": {
         "kind": {
-          "description": "Which field moved. `certificate_expiring` and `certificate_expired` are the two an untouched certificate undergoes: nothing about it moved, a threshold was crossed between the two scans, and `after` is when it lapses. `finding_appeared`, `finding_resolved` and `finding_reassessed` carry a finding's severity and title; the report the diff was taken over holds its evidence. A reassessment is one claim both scans make, graded differently.",
+          "description": "Which field moved. `filtering_gained` and `filtering_lost` are what the filter in front of a host was shown to be doing, which only a scan that ran the comparative probe records at all. `certificate_expiring` and `certificate_expired` are the two a certificate undergoes without being replaced: nothing about it moved, a threshold was crossed between the two scans, and `after` is when it lapses. They are also reported for a certificate that replaced one, since the baseline was never shown it and it has no earlier standing to have moved from. `finding_appeared`, `finding_resolved` and `finding_reassessed` carry a finding's severity and title; the report the diff was taken over holds its evidence. A reassessment is one claim both scans make, graded differently.",
           "enum": [
             "status",
             "hostname",
@@ -372,6 +372,8 @@
             "vendor",
             "role_gained",
             "role_lost",
+            "filtering_gained",
+            "filtering_lost",
             "port_state",
             "service_identified",
             "service_lost",

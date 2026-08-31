@@ -29,11 +29,16 @@
 //!
 //! - **Unknown fields are ignored.** A journal from a newer build stays
 //!   readable for whatever it has in common with this one.
-//! - **An unknown enum string is an error naming it.** The opposite choice, and
-//!   for the reason `import::json` already gives: a value
-//!   this build does not recognise is not a field a reader can skip, it is the
-//!   thing that decides what the record *says*. Quietly reading an unknown port
-//!   state as `Filtered` would resume the wrong scan and report success.
+//! - **An unknown enum string reads downward.** A value this build does not
+//!   recognise is not a field a reader can skip: it is the thing that decides
+//!   what the record *says*. It is also one field of one host in a file holding
+//!   a scan that took hours, and refusing the whole journal over it would throw
+//!   that away for the same reason the torn last line below does not. So it is
+//!   read as the weakest value the type has — a port state as `Filtered`, a
+//!   sitting as a discovery sweep, a severity as `Info` — never as a stronger
+//!   one, and never as a neighbour. [`record`](crate::record) makes that choice
+//!   field by field and documents each; the parsers themselves guess at nothing
+//!   and hand back [`None`].
 //! - **[`JOURNAL_VERSION`] is required and checked.** A journal from a future
 //!   major version is refused rather than read approximately, because by
 //!   construction its positions may not mean what this build thinks.
@@ -53,11 +58,12 @@
 //!
 //! ## One vocabulary, both directions
 //!
-//! The wire names here are the export path's, read through
-//! [`export::schema`](crate::export::schema) rather than restated, so a port
-//! state spells the same in a report and in a journal. What this module adds is
-//! the direction the export never needed: [`parse`], which turns those names
-//! back into values and refuses anything else by name.
+//! The wire names are [`record::wire`](crate::record::wire)'s, in both
+//! directions and for every consumer, so a port state spells the same in a
+//! report and in a journal and reads back the same from either. This module had
+//! a `parse` of its own that re-exported six of them; it duplicated a public
+//! path for no reader's benefit, was an arbitrary subset, and nothing but its
+//! own tests ever called it.
 
 use std::io::{BufRead, Write};
 
@@ -96,18 +102,6 @@ pub enum JournalError {
         line: u64,
         /// What `serde` said about it.
         message: String,
-    },
-
-    /// A field held a name this build does not have a value for. Named rather
-    /// than skipped; see the module documentation.
-    #[error("journal line {line}: unknown {field} '{value}'")]
-    UnknownValue {
-        /// The 1-based line the failure is on.
-        line: u64,
-        /// Which field carried it, in the wire vocabulary.
-        field: &'static str,
-        /// The name that was not recognised.
-        value: String,
     },
 
     /// The file could not be read or written.
@@ -289,16 +283,6 @@ impl<R: BufRead> Reader<R> {
     }
 }
 
-/// Reading the wire names back into values.
-///
-/// Re-exported from [`record::wire`](crate::record::wire), where each parser is
-/// defined beside the name it reads, so the two cannot drift apart.
-pub mod parse {
-    pub use crate::record::wire::{
-        host_status, network_role, port_state, protocol, scan_response, status_protocol,
-    };
-}
-
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -311,10 +295,6 @@ pub mod parse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::export::schema;
-    use crate::model::host::{HostStatus, NetworkRole, StatusProtocol};
-    use crate::model::port::discovery::ScanResponse;
-    use crate::model::port::{PortState, Protocol};
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct Sample {
@@ -440,100 +420,5 @@ mod tests {
             reader.read::<Sample>().expect("reads"),
             Some(sample("first"))
         );
-    }
-
-    /// The two directions must agree for every variant. Asserted rather than
-    /// eyeballed: the export names live in another module, and a variant added
-    /// there without a case here would otherwise be a journal that cannot read
-    /// its own writing.
-    #[test]
-    fn every_wire_name_parses_back_to_the_value_it_came_from() {
-        for status in [
-            HostStatus::Unknown,
-            HostStatus::Down,
-            HostStatus::Filtered,
-            HostStatus::Up,
-        ] {
-            let name = schema::host_status_name(status);
-            assert_eq!(parse::host_status(name), Some(status), "{name}");
-        }
-
-        for state in [
-            PortState::ClosedFiltered,
-            PortState::Filtered,
-            PortState::Unfiltered,
-            PortState::Closed,
-            PortState::OpenFiltered,
-            PortState::Open,
-        ] {
-            let name = schema::port_state_name(state);
-            assert_eq!(parse::port_state(name), Some(state), "{name}");
-        }
-
-        for protocol in [Protocol::Tcp, Protocol::Udp] {
-            let name = schema::protocol_name(protocol);
-            assert_eq!(parse::protocol(name), Some(protocol), "{name}");
-        }
-
-        for role in NetworkRole::ALL {
-            let name = schema::network_role_name(role);
-            assert_eq!(parse::network_role(name), Some(role), "{name}");
-        }
-
-        for protocol in [
-            StatusProtocol::Arp,
-            StatusProtocol::Ndp,
-            StatusProtocol::IcmpEcho,
-            StatusProtocol::IcmpUnreachable,
-            StatusProtocol::TcpSyn,
-            StatusProtocol::Tcp,
-            StatusProtocol::Udp,
-            StatusProtocol::Custom("a-strategy".into()),
-        ] {
-            let name = schema::status_protocol_name(&protocol);
-            assert_eq!(
-                parse::status_protocol(&name),
-                Some(protocol.clone()),
-                "{name}"
-            );
-        }
-
-        for response in [
-            ScanResponse::TcpSynAck,
-            ScanResponse::TcpRst,
-            ScanResponse::UdpResponse,
-            ScanResponse::NoResponse,
-            ScanResponse::IcmpUnreachable,
-            ScanResponse::IcmpProhibited,
-            ScanResponse::Custom("a-strategy".to_string()),
-        ] {
-            let name = schema::scan_response_name(&response);
-            assert_eq!(
-                parse::scan_response(&name),
-                Some(response.clone()),
-                "{name}"
-            );
-        }
-    }
-
-    /// A name this build does not know must come back as `None` so the caller
-    /// can report it, rather than falling into a neighbouring variant.
-    #[test]
-    fn an_unknown_name_is_refused_rather_than_guessed() {
-        assert_eq!(parse::port_state("ajar"), None);
-        assert_eq!(parse::host_status("perhaps"), None);
-        assert_eq!(parse::protocol("sctp"), None);
-        assert_eq!(parse::network_role("gateway"), None);
-        assert_eq!(parse::status_protocol("igmp"), None);
-        assert_eq!(parse::scan_response("tcp_fin_ack"), None);
-    }
-
-    /// A custom name that is empty renders as the bare prefix, which names
-    /// nothing. It must not read back as a finding attributed to an empty
-    /// strategy.
-    #[test]
-    fn an_empty_custom_name_is_refused() {
-        assert_eq!(parse::status_protocol("custom:"), None);
-        assert_eq!(parse::scan_response("custom:"), None);
     }
 }

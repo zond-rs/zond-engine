@@ -99,9 +99,20 @@ class Screen:
         self.last_edge = None
         self.best_cov = 0
         self.finds = []
+        # The most recent line that was not a stats line, shown until the first
+        # one arrives. Everything before fuzzing starts — cargo relinking the
+        # target, libFuzzer counting the corpus — reaches this program and
+        # nothing else, and dropping it silently leaves a blank terminal for as
+        # long as the build takes. A blank terminal is indistinguishable from a
+        # hung one, which is the one thing this must never look like.
+        self.waiting_on = "starting"
 
     def take(self, line):
         """Reads one stats line, and says whether it was one."""
+        stripped = line.strip()
+        if stripped:
+            self.waiting_on = stripped[:100]
+
         matched = False
         for name, pattern in FIELDS.items():
             found = pattern.search(line)
@@ -137,6 +148,20 @@ class Screen:
     def draw(self):
         def since(when):
             return "never" if when is None else f"{elapsed(time.monotonic() - when)} ago"
+
+        # Nothing has been measured yet, so there is nothing to lay out. What
+        # there is instead is whatever the toolchain last said, which is the
+        # answer to "is this doing anything".
+        if not self.stats:
+            sys.stdout.write(
+                CLEAR
+                + f"\n  {BOLD}{self.target}{OFF}{DIM}   starting, {elapsed(self.age())} in{OFF}\n"
+                + f"\n  {self.waiting_on}\n"
+                + f"\n  {DIM}a rebuild lands here first, and takes minutes on a cold "
+                f"target{OFF}\n"
+            )
+            sys.stdout.flush()
+            return
         rows = [
             "",
             f"  {BOLD}{self.target}{OFF}{DIM}   running {elapsed(self.age())}{OFF}",
@@ -178,7 +203,7 @@ def main():
             sys.stdout.flush()
             return 1
 
-        if not screen.take(line):
+        if not screen.take(line) and screen.stats:
             continue
 
         # Redrawn at most a few times a second. libFuzzer emits thousands of

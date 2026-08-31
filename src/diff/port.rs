@@ -249,6 +249,9 @@ pub enum CertificateChange {
 /// [`Expired`](Self::Expired) because those are the two a person has to act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Validity {
+    /// Nothing was presented, or what is presented now was not what the
+    /// baseline was shown, so there is no earlier standing for this certificate
+    /// to have moved from.
     Absent,
     NotYetValid,
     Valid,
@@ -503,11 +506,30 @@ fn certificate_changes(
         }
     }
 
-    // The standing of whatever is presented now, against the standing of
-    // whatever was presented before. A certificate nobody touched still crosses
-    // a threshold when enough time passes between the two scans, and that is the
-    // change a renewal queue is built from.
-    let was = validity(before, clocks.expiry_threshold, clocks.baseline);
+    // **The standing of one certificate at two moments, not of two certificates.**
+    //
+    // A certificate nobody touched still crosses a threshold when enough time
+    // passes between the two scans, and that is the change a renewal queue is
+    // built from. Read as the standing of whatever each side happened to
+    // present, a rotation onto a certificate that is *also* expiring cancelled
+    // the alert: both sides answered `Expiring`, nothing had "changed", and an
+    // endpoint that needs renewing today reported a rotation and nothing else.
+    //
+    // So the question is what the certificate presented *now* stood at when the
+    // baseline ran, and a certificate the baseline was not shown stood at
+    // nothing. Where both sides present the same one this is exactly the reading
+    // above; where they do not, the standing has no incumbent to be measured
+    // against and the current one is reported on its own terms.
+    let same_certificate = matches!(
+        (before_cert, after_cert),
+        (Some(before), Some(after))
+            if before.fingerprint_sha256() == after.fingerprint_sha256()
+    );
+    let was = if same_certificate {
+        validity(after, clocks.expiry_threshold, clocks.baseline)
+    } else {
+        Validity::Absent
+    };
     let is = validity(after, clocks.expiry_threshold, clocks.current);
 
     if let Some(certificate) = after_cert {

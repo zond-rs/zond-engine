@@ -373,6 +373,12 @@ fn fold_host(accounts: &[&Host]) -> Host {
         for role in account.network_roles() {
             host.add_network_role(*role);
         }
+        // A conclusion about the filter in front of a host is drawn by a
+        // comparative probe, so at most one source will have run it and every
+        // account that reached one is the only account of it there is.
+        for filtering in account.filtering() {
+            host.add_filtering(*filtering);
+        }
     }
 
     // **Newest first, which is the one place in this fold that order decides
@@ -1518,6 +1524,31 @@ mod tests {
             Some(PortState::Closed),
             "March saw the endpoint after January did, whatever their documents say"
         );
+    }
+
+    /// What the filter in front of a host was shown to be doing survives a fold.
+    ///
+    /// Every other field here is folded by an argument about which account wins.
+    /// This one has no contest to lose: a conclusion is drawn by a comparative
+    /// probe only a scan that asked for it runs, so the account that reached one
+    /// is the only account of it there is, and a fold that did not name the field
+    /// discarded every one of them.
+    #[test]
+    fn a_conclusion_about_the_filter_in_front_of_a_host_survives_a_fold() {
+        use crate::model::host::Filtering;
+
+        let mut characterised = host(1);
+        characterised.add_filtering(Filtering::StatefulFilter);
+        characterised.add_filtering(Filtering::StatelessFilter);
+
+        let folded = merged(vec![
+            report("a", day(1), vec![characterised]),
+            report("b", day(2), vec![host(1)]),
+        ]);
+
+        let host = folded.hosts().next().expect("one host");
+        assert!(host.filtering().contains(&Filtering::StatefulFilter));
+        assert!(host.filtering().contains(&Filtering::StatelessFilter));
     }
 
     /// The other half of [`observed_at`], and the case the bound exists for.

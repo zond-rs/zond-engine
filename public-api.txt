@@ -1288,6 +1288,9 @@ pub mod zond_engine::diff::host
 pub zond_engine::diff::host::HostChange::Addresses
 pub zond_engine::diff::host::HostChange::Addresses::gained: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::diff::host::HostChange::Addresses::lost: alloc::vec::Vec<core::net::ip_addr::IpAddr>
+pub zond_engine::diff::host::HostChange::Filtering
+pub zond_engine::diff::host::HostChange::Filtering::gained: alloc::vec::Vec<zond_engine::model::host::Filtering>
+pub zond_engine::diff::host::HostChange::Filtering::lost: alloc::vec::Vec<zond_engine::model::host::Filtering>
 pub zond_engine::diff::host::HostChange::Findings
 pub zond_engine::diff::host::HostChange::Findings::appeared: alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub zond_engine::diff::host::HostChange::Findings::reassessed: alloc::vec::Vec<zond_engine::diff::host::Reassessment>
@@ -1559,6 +1562,9 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::change::Coverag
 pub zond_engine::diff::HostChange::Addresses
 pub zond_engine::diff::HostChange::Addresses::gained: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::diff::HostChange::Addresses::lost: alloc::vec::Vec<core::net::ip_addr::IpAddr>
+pub zond_engine::diff::HostChange::Filtering
+pub zond_engine::diff::HostChange::Filtering::gained: alloc::vec::Vec<zond_engine::model::host::Filtering>
+pub zond_engine::diff::HostChange::Filtering::lost: alloc::vec::Vec<zond_engine::model::host::Filtering>
 pub zond_engine::diff::HostChange::Findings
 pub zond_engine::diff::HostChange::Findings::appeared: alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub zond_engine::diff::HostChange::Findings::reassessed: alloc::vec::Vec<zond_engine::diff::host::Reassessment>
@@ -5406,23 +5412,12 @@ impl core::marker::UnsafeUnpin for zond_engine::journal::cursor::Cursor
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::cursor::Cursor
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::cursor::Cursor
 pub mod zond_engine::journal::format
-pub mod zond_engine::journal::format::parse
-pub fn zond_engine::journal::format::parse::host_status(&str) -> core::option::Option<zond_engine::model::host::status::HostStatus>
-pub fn zond_engine::journal::format::parse::network_role(&str) -> core::option::Option<zond_engine::model::host::NetworkRole>
-pub fn zond_engine::journal::format::parse::port_state(&str) -> core::option::Option<zond_engine::model::port::PortState>
-pub fn zond_engine::journal::format::parse::protocol(&str) -> core::option::Option<zond_engine::model::port::Protocol>
-pub fn zond_engine::journal::format::parse::scan_response(&str) -> core::option::Option<zond_engine::model::port::discovery::ScanResponse>
-pub fn zond_engine::journal::format::parse::status_protocol(&str) -> core::option::Option<zond_engine::model::host::status::StatusProtocol>
 #[non_exhaustive] pub enum zond_engine::journal::format::JournalError
 pub zond_engine::journal::format::JournalError::Io(core::io::error::Error)
 pub zond_engine::journal::format::JournalError::Malformed
 pub zond_engine::journal::format::JournalError::Malformed::line: u64
 pub zond_engine::journal::format::JournalError::Malformed::message: alloc::string::String
 pub zond_engine::journal::format::JournalError::NotAJournal
-pub zond_engine::journal::format::JournalError::UnknownValue
-pub zond_engine::journal::format::JournalError::UnknownValue::field: &'static str
-pub zond_engine::journal::format::JournalError::UnknownValue::line: u64
-pub zond_engine::journal::format::JournalError::UnknownValue::value: alloc::string::String
 pub zond_engine::journal::format::JournalError::VersionTooNew
 pub zond_engine::journal::format::JournalError::VersionTooNew::found: u32
 pub zond_engine::journal::format::JournalError::VersionTooNew::understood: u32
@@ -5606,7 +5601,7 @@ pub fn zond_engine::journal::lock::classify(&zond_engine::journal::lock::LockRec
 pub fn zond_engine::journal::lock::inspect(&std::path::Path) -> zond_engine::journal::lock::LockState
 pub fn zond_engine::journal::lock::pid_is_alive(u32) -> bool
 pub mod zond_engine::journal::manifest
-pub struct zond_engine::journal::manifest::JournalManifest
+#[non_exhaustive] pub struct zond_engine::journal::manifest::JournalManifest
 pub zond_engine::journal::manifest::JournalManifest::created_at: std::time::SystemTime
 pub zond_engine::journal::manifest::JournalManifest::engine_version: alloc::string::String
 pub zond_engine::journal::manifest::JournalManifest::id: alloc::string::String
@@ -5856,18 +5851,6 @@ impl core::marker::Unpin for zond_engine::journal::store::OpenError
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::OpenError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::OpenError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::OpenError
-pub struct zond_engine::journal::store::Checkpointing
-impl zond_engine::journal::store::Checkpointing
-pub async fn zond_engine::journal::store::Checkpointing::finish(self, &[zond_engine::report::ScanPhase])
-impl core::fmt::Debug for zond_engine::journal::store::Checkpointing
-pub fn zond_engine::journal::store::Checkpointing::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for zond_engine::journal::store::Checkpointing
-impl core::marker::Send for zond_engine::journal::store::Checkpointing
-impl core::marker::Sync for zond_engine::journal::store::Checkpointing
-impl core::marker::Unpin for zond_engine::journal::store::Checkpointing
-impl core::marker::UnsafeUnpin for zond_engine::journal::store::Checkpointing
-impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Checkpointing
-impl !core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Checkpointing
 pub struct zond_engine::journal::store::Entry
 pub zond_engine::journal::store::Entry::checkpoint: core::option::Option<zond_engine::journal::cursor::Checkpoint>
 pub zond_engine::journal::store::Entry::directory: std::path::PathBuf
@@ -5977,14 +5960,12 @@ impl core::marker::Unpin for zond_engine::journal::store::Retention
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::Retention
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Retention
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Retention
-pub const zond_engine::journal::store::CHECKPOINT_EVERY: core::time::Duration
 pub fn zond_engine::journal::store::list(&std::path::Path) -> core::result::Result<alloc::vec::Vec<zond_engine::journal::store::Entry>, zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::prepare_root(&std::path::Path) -> core::io::error::Result<()>
 pub fn zond_engine::journal::store::prune(&std::path::Path, &zond_engine::journal::store::Retention) -> core::result::Result<zond_engine::journal::store::Pruned, zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::read_detections(&std::path::Path) -> core::result::Result<alloc::vec::Vec<zond_engine::detect::compute::DetectionRunRecord>, zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::remove(&std::path::Path) -> core::result::Result<(), zond_engine::journal::store::OpenError>
 pub fn zond_engine::journal::store::report(&std::path::Path) -> core::result::Result<zond_engine::report::ScanReport, zond_engine::journal::format::JournalError>
-pub fn zond_engine::journal::store::spawn_checkpoints(zond_engine::journal::store::Journal, zond_engine::scanner::session::ScanProgress) -> zond_engine::journal::store::Checkpointing
 pub struct zond_engine::journal::Journal
 impl zond_engine::journal::store::Journal
 pub fn zond_engine::journal::store::Journal::checkpoint(&mut self, &zond_engine::journal::settle::Settlements) -> core::result::Result<(), zond_engine::journal::format::JournalError>
@@ -11260,6 +11241,21 @@ impl core::marker::Unpin for zond_engine::scanner::audit::ProbeAudit
 impl core::marker::UnsafeUnpin for zond_engine::scanner::audit::ProbeAudit
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::audit::ProbeAudit
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::audit::ProbeAudit
+pub mod zond_engine::scanner::checkpoint
+pub struct zond_engine::scanner::checkpoint::Checkpointing
+impl zond_engine::scanner::checkpoint::Checkpointing
+pub async fn zond_engine::scanner::checkpoint::Checkpointing::finish(self, &[zond_engine::report::ScanPhase])
+impl core::fmt::Debug for zond_engine::scanner::checkpoint::Checkpointing
+pub fn zond_engine::scanner::checkpoint::Checkpointing::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::scanner::checkpoint::Checkpointing
+impl core::marker::Send for zond_engine::scanner::checkpoint::Checkpointing
+impl core::marker::Sync for zond_engine::scanner::checkpoint::Checkpointing
+impl core::marker::Unpin for zond_engine::scanner::checkpoint::Checkpointing
+impl core::marker::UnsafeUnpin for zond_engine::scanner::checkpoint::Checkpointing
+impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::checkpoint::Checkpointing
+impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::checkpoint::Checkpointing
+pub const zond_engine::scanner::checkpoint::CHECKPOINT_EVERY: core::time::Duration
+pub fn zond_engine::scanner::checkpoint::spawn_checkpoints(zond_engine::journal::store::Journal, zond_engine::scanner::session::ScanProgress) -> zond_engine::scanner::checkpoint::Checkpointing
 pub mod zond_engine::scanner::detect
 pub async fn zond_engine::scanner::detect::detect(&zond_engine::scanner::session::ScanContext, zond_engine::config::ServiceDetection, zond_engine::config::envelope::DetectionEnvelope)
 pub mod zond_engine::scanner::dispatcher

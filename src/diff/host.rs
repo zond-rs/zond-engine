@@ -34,7 +34,7 @@ use crate::diff::port::{self, Clocks, PortDelta, PresenceFor};
 use crate::diff::scope::ScopeIndex;
 use crate::model::finding::{ClaimId, Finding, Severity};
 use crate::model::host::os::OsFingerprint;
-use crate::model::host::{Host, HostStatus, NetworkRole};
+use crate::model::host::{Filtering, Host, HostStatus, NetworkRole};
 use crate::model::mac::MacAddr;
 
 /// One host, as the two scans hold it.
@@ -168,6 +168,26 @@ pub enum HostChange {
         gained: Vec<NetworkRole>,
         /// Roles the baseline inferred and the current scan does not.
         lost: Vec<NetworkRole>,
+    },
+    /// What the filter in front of the host was shown to be doing changed, each
+    /// list ascending.
+    ///
+    /// A verdict about the network rather than a measurement of the scan, which
+    /// is why it is compared where round-trip times and probe counts are not: a
+    /// stateful filter appearing in front of a host, or one that stopped
+    /// reassembling fragments, is a change to the path somebody has to know
+    /// about.
+    ///
+    /// Each conclusion is drawn by a comparative probe that only a scan asking
+    /// for it runs, so both lists are empty between two scans where
+    /// [`characterise`](crate::report::ScanSettings::characterise) was off — the
+    /// same reading [`Macs`](Self::Macs) has between two scans that never
+    /// reached the link layer.
+    Filtering {
+        /// Conclusions the current scan drew and the baseline did not.
+        gained: Vec<Filtering>,
+        /// Conclusions the baseline drew and the current scan does not.
+        lost: Vec<Filtering>,
     },
     /// Findings that appeared on the host, and findings no longer claimed about
     /// it.
@@ -329,6 +349,14 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         changes.push(HostChange::Roles { gained, lost });
     }
 
+    let (gained, lost) = difference(
+        before.filtering().iter().copied(),
+        after.filtering().iter().copied(),
+    );
+    if !gained.is_empty() || !lost.is_empty() {
+        changes.push(HostChange::Filtering { gained, lost });
+    }
+
     let (appeared, resolved, reassessed) = findings_between(before.findings(), after.findings());
     if !appeared.is_empty() || !resolved.is_empty() || !reassessed.is_empty() {
         changes.push(HostChange::Findings {
@@ -459,6 +487,43 @@ mod tests {
             )),
             _ => None,
         })
+    }
+
+    /// A filter that appeared in front of a host is a change to the network, and
+    /// was the one host verdict this module never looked at.
+    ///
+    /// It reads like a measurement and is not: `characterise` draws each
+    /// conclusion from a comparative probe, so what is recorded is a fact about
+    /// the path rather than about how well the scan saw it. A stateful filter
+    /// standing where none stood last week is exactly the line a rescan exists
+    /// to surface.
+    #[test]
+    fn a_filter_that_appeared_in_front_of_a_host_is_reported() {
+        use crate::model::host::Filtering;
+
+        let before = host(1);
+        let mut after = host(1);
+        after.add_filtering(Filtering::StatefulFilter);
+
+        let changes = changes_between(&before, &after);
+        let filtering = changes
+            .iter()
+            .find_map(|change| match change {
+                HostChange::Filtering { gained, lost } => Some((gained, lost)),
+                _ => None,
+            })
+            .expect("a filtering change");
+
+        assert_eq!(filtering.0, &[Filtering::StatefulFilter]);
+        assert!(filtering.1.is_empty());
+
+        // And two scans that both went without the probe report nothing, the way
+        // two scans that never reached the link layer report no hardware.
+        assert!(
+            changes_between(&host(1), &host(1))
+                .iter()
+                .all(|change| !matches!(change, HostChange::Filtering { .. }))
+        );
     }
 
     #[test]

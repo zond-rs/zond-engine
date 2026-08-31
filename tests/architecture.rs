@@ -26,8 +26,10 @@ use std::path::{Path, PathBuf};
 /// Every top-level module, lowest first. A module may import from those before
 /// it and never from those after.
 ///
-/// Keep in step with the layout section of `src/lib.rs`, which says the same
-/// thing in prose for a reader arriving at the documentation.
+/// **This is the enforced list.** The layout section of `src/lib.rs` states the
+/// same rule for a reader arriving at the documentation and groups the modules
+/// for reading rather than for the rule, so the two are not line for line the
+/// same and only this one decides anything.
 const ORDER: &[&str] = &[
     "format",
     "logging",
@@ -35,10 +37,15 @@ const ORDER: &[&str] = &[
     "version",
     "protocols",
     "system",
-    "fingerprint",
     "transport",
     "evasion",
     "config",
+    // Above `config` because a fingerprinter is told how far to go by
+    // `ServiceDetection`, and above `transport` because reading a stack off a
+    // reply parses the segment the capture handed over. It was below both, and
+    // the two edges went unseen for as long as this file read a third of some
+    // files.
+    "fingerprint",
     "report",
     "resolve",
     "diff",
@@ -63,19 +70,81 @@ fn owner(path: &Path) -> String {
         .into_owned()
 }
 
-/// The file's source with its test modules removed.
+/// The file's production source: every `#[cfg(test)]` item removed, and every
+/// line comment blanked.
 ///
-/// Whole-file test modules are gated at the declaration site rather than inside,
-/// so a file whose own first item is a `#[cfg(test)]` module contributes nothing.
-fn production_source(text: &str) -> &str {
-    let inline = text.find("#[cfg(test)]");
-    let gated = text.find("#[cfg(all(test");
-    match (inline, gated) {
-        (Some(a), Some(b)) => &text[..a.min(b)],
-        (Some(a), None) => &text[..a],
-        (None, Some(b)) => &text[..b],
-        (None, None) => text,
+/// **Truncating at the first `#[cfg(test)]` was not the same thing**, and the
+/// difference was most of the crate. Whole-file test modules are gated at the
+/// declaration site, which is what that was written for; but a `#[cfg(test)] mod
+/// corpus;` or a gated helper near the top of a file threw away everything below
+/// it, and `src/protocols/tcp.rs` was checked to line 78 of 928. Across `src/`
+/// it read 65% of the lines and reported nothing, while four real violations
+/// stood — one of them a plain `use crate::config::…` sixty lines further down
+/// than the cut.
+///
+/// Comments go because this file's own prose, and every intra-doc link like
+/// `[`Redaction`](crate::export::Redaction)`, names modules without depending on
+/// them.
+fn production_source(text: &str) -> String {
+    strip_comments(&strip_test_items(text))
+}
+
+/// Removes each `#[cfg(test)]` or `#[cfg(all(test, …))]` item whole, by matching
+/// the braces of the item it is attached to.
+fn strip_test_items(text: &str) -> String {
+    const GATES: [&str; 2] = ["#[cfg(test)]", "#[cfg(all(test"];
+
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+
+    loop {
+        let Some(at) = GATES.iter().filter_map(|gate| rest.find(gate)).min() else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..at]);
+
+        // Past the attribute, by its own brackets, so `#[cfg(all(test, unix))]`
+        // ends where it ends rather than at the first `]`.
+        let after_attribute = balanced(&rest[at..], '[', ']').unwrap_or(rest.len() - at);
+        let item = &rest[at + after_attribute..];
+
+        // Then the item: a declaration up to its `;`, or a body in braces.
+        let ends = match item.find(['{', ';']) {
+            Some(i) if item.as_bytes()[i] == b';' => i + 1,
+            Some(i) => i + balanced(&item[i..], '{', '}').unwrap_or(item.len() - i),
+            None => item.len(),
+        };
+        rest = &item[ends..];
     }
+}
+
+/// How far into `text` the group opened by its first `open` is closed, or `None`
+/// where it never is.
+fn balanced(text: &str, open: char, close: char) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices() {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i + c.len_utf8());
+            }
+        }
+    }
+    None
+}
+
+/// Blanks `//` comments, keeping the lines so nothing else shifts.
+fn strip_comments(text: &str) -> String {
+    text.lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -102,21 +171,70 @@ fn edges() -> BTreeMap<String, BTreeSet<String>> {
             continue;
         }
         let text = fs::read_to_string(&file).expect("a readable source file");
-        for line in production_source(&text).lines() {
-            let Some(rest) = line.trim_start().strip_prefix("use crate::") else {
+        let source = production_source(&text);
+
+        // **Every `crate::`, not only the ones a `use` line opens with.** A
+        // `pub use crate::…` is a dependency, a second name inside one set of
+        // braces is a dependency, and an inline `crate::export::schema::name(..)`
+        // in the middle of an expression is a dependency that no amount of
+        // reading `use` lines will ever see. Three of the four violations this
+        // file missed were of the last kind.
+        for at in source.match_indices("crate::").map(|(i, _)| i) {
+            let before = source[..at].chars().next_back();
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':') {
                 continue;
-            };
-            let rest = rest.trim_start_matches('{');
-            let imported: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
-                .collect();
-            if imported != owner && known.contains(imported.as_str()) {
-                graph.entry(owner.clone()).or_default().insert(imported);
+            }
+            for imported in modules_named(&source[at + "crate::".len()..]) {
+                if imported != owner && known.contains(imported.as_str()) {
+                    graph.entry(owner.clone()).or_default().insert(imported);
+                }
             }
         }
     }
     graph
+}
+
+/// The module names a path fragment after `crate::` reaches for.
+///
+/// One name for an ordinary path, and one per member for a set: `{model::Host,
+/// config::ZondConfig}` names two modules and reading only the first would miss
+/// the second.
+fn modules_named(text: &str) -> Vec<String> {
+    let text = text.trim_start();
+    if !text.starts_with('{') {
+        let name: String = text
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+            .collect();
+        return if name.is_empty() {
+            Vec::new()
+        } else {
+            vec![name]
+        };
+    }
+
+    let Some(end) = balanced(text, '{', '}') else {
+        return Vec::new();
+    };
+
+    let mut names = Vec::new();
+    let mut depth = 0usize;
+    let mut member = String::new();
+    for c in text[1..end - 1].chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                names.extend(modules_named(&member));
+                member.clear();
+                continue;
+            }
+            _ => {}
+        }
+        member.push(c);
+    }
+    names.extend(modules_named(&member));
+    names
 }
 
 #[test]

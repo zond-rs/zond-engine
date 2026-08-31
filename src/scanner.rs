@@ -145,6 +145,7 @@ pub mod strategy;
 // tail, `service` identifies what is behind an open port, and `pool` and
 // `payload` are shared probe machinery.
 pub mod audit;
+pub mod checkpoint;
 pub mod detect;
 pub mod dispatcher;
 pub mod payload;
@@ -290,7 +291,7 @@ pub struct ScanTask {
     /// task without joining still closes the journal, though the last few
     /// settlements may go unrecorded.
     #[cfg(feature = "journal-format")]
-    journal: Option<crate::journal::store::Checkpointing>,
+    journal: Option<checkpoint::Checkpointing>,
     /// What earlier sittings of this job did, restored from the journal.
     ///
     /// Folded in front of this run's own phases when the task is joined, so the
@@ -314,7 +315,7 @@ impl ScanTask {
     #[cfg(feature = "journal-format")]
     fn journalling(
         handle: JoinHandle<ScanReport>,
-        journal: crate::journal::store::Checkpointing,
+        journal: checkpoint::Checkpointing,
         earlier: Vec<ScanPhase>,
     ) -> Self {
         Self {
@@ -472,7 +473,7 @@ pub async fn discover_with_journal(
     ctx.restore_hosts(journal.restored());
     let earlier = journal.earlier_phases().to_vec();
 
-    let ticker = crate::journal::store::spawn_checkpoints(journal, ctx.progress());
+    let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
     let handle = spawn_discovery(sweep, cfg, ctx);
 
     Ok((session, ScanTask::journalling(handle, ticker, earlier)))
@@ -740,7 +741,7 @@ pub async fn listen_with_journal(
     ctx.restore_hosts(journal.restored());
     let earlier = journal.earlier_phases().to_vec();
 
-    let ticker = crate::journal::store::spawn_checkpoints(journal, ctx.progress());
+    let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
     let handle = spawn_listen(scope, cfg, ctx);
 
     Ok((session, ScanTask::journalling(handle, ticker, earlier)))
@@ -882,7 +883,7 @@ pub async fn scan_with_journal(
     // task holding the event sender would keep the stream open after the scan
     // ended, and a caller watching it to know when to stop would wait for a scan
     // that was already over. See `ScanContext::progress`.
-    let ticker = crate::journal::store::spawn_checkpoints(journal, ctx.progress());
+    let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
     let handle = spawn_scan(target_map, cfg, ctx, resume_point);
 
     Ok((session, ScanTask::journalling(handle, ticker, earlier)))

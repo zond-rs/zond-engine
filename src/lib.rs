@@ -160,8 +160,11 @@
 //! below are the whole of it:
 //!
 //! The list is an order, not a set: each module depends only on the ones above
-//! it. `tests/architecture.rs` reads every `use crate::…` in the library and
-//! fails if that stops being true, so this is a rule rather than an aspiration.
+//! it. `tests/architecture.rs` reads every `crate::` path in the library —
+//! including the ones inside an expression, which is where three of these edges
+//! were hiding — and fails if that stops being true, so this is a rule rather
+//! than an aspiration. Its `ORDER` is the enforced list, and holds the modules
+//! this one leaves out because a reader arriving here does not meet them first.
 //!
 //! - [`model`] — the vocabulary every other module names: [`Host`], [`Port`],
 //!   [`IpSet`], [`TargetMap`], and the grammars that construct them from what a
@@ -203,8 +206,10 @@
 //! - [`scanner`] — the two entry points, the [`plan`](scanner::plan) behind
 //!   them, and the [`strategy`](scanner::strategy) implementations behind that,
 //!   together with the live [`session`](scanner::session), the
-//!   [`handle`](scanner::handle) that stops it, and the
-//!   [`recorder`](scanner::recorder) that closes a phase into a [`ScanReport`].
+//!   [`handle`](scanner::handle) that stops it, the
+//!   [`recorder`](scanner::recorder) that closes a phase into a [`ScanReport`],
+//!   and the [`checkpoint`](scanner::checkpoint) timer that carries a running
+//!   scan into a [`journal`].
 //! - [`diff`] — what changed between two scans. It sits above [`scanner`]
 //!   because it reads the report the scanner leaves behind, and below the file
 //!   formats because it compares reports rather than documents: where either

@@ -472,6 +472,7 @@ impl ChangeDto {
     /// | `mac_gained`, `mac_lost` | one hardware address each |
     /// | `vendor` | the vendor its hardware address resolves to |
     /// | `role_gained`, `role_lost` | one inferred role each |
+    /// | `filtering_gained`, `filtering_lost` | one conclusion about the filter in front of it each |
     ///
     /// Matched exhaustively and with no wildcard, so a variant added to
     /// [`HostChange`] stops this compiling until somebody decides what it is
@@ -518,6 +519,12 @@ impl ChangeDto {
                 let gained: Vec<&'static str> = gained.iter().copied().map(name).collect();
                 let lost: Vec<&'static str> = lost.iter().copied().map(name).collect();
                 Self::set("role_gained", "role_lost", &gained, &lost)
+            }
+            HostChange::Filtering { gained, lost } => {
+                let name = crate::record::wire::filtering_name;
+                let gained: Vec<&'static str> = gained.iter().copied().map(name).collect();
+                let lost: Vec<&'static str> = lost.iter().copied().map(name).collect();
+                Self::set("filtering_gained", "filtering_lost", &gained, &lost)
             }
             HostChange::Findings {
                 appeared,

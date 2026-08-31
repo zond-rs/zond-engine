@@ -152,7 +152,7 @@
 //! | The machine losing power | mostly | one interval, plus whatever the page cache had not flushed |
 //! | A disk filling mid-write | yes | nothing: the cursor is replaced by rename, so the previous one stands |
 //!
-//! An interval is [`CHECKPOINT_EVERY`](store::CHECKPOINT_EVERY). Losing one
+//! An interval is [`CHECKPOINT_EVERY`](crate::scanner::checkpoint::CHECKPOINT_EVERY). Losing one
 //! costs the targets settled within it being probed again, never a target being
 //! skipped: what a cursor does not claim is re-probed.
 //!

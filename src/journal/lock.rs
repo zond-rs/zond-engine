@@ -289,13 +289,23 @@ mod imp {
     }
 
     pub fn pid_is_alive(pid: u32) -> bool {
-        if pid == 0 {
+        // A number that is not a process id names no process, and must not reach
+        // `kill` as one. `pid_t` is signed, and `kill` reads a negative argument
+        // as *a process group* rather than a process: `u32::MAX` casts to `-1`,
+        // which asks about every process the caller may signal and is answered
+        // yes by any machine running anything. A lock naming it then reads as one
+        // somebody is holding, and the journal is refused for as long as the
+        // number sits in the file.
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 {
             return false;
         }
 
         // SAFETY: `kill` with signal 0 sends nothing. It performs the existence
         // and permission checks and returns, dereferencing nothing.
-        let code = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        let code = unsafe { libc::kill(pid, 0) };
         if code == 0 {
             return true;
         }
@@ -344,7 +354,7 @@ mod persistence {
     use std::time::SystemTime;
 
     use super::{HEARTBEAT_STALE_AFTER, LockRecord, LockState, boot_identity, classify};
-    use crate::journal::file::{create_exclusive, create_private};
+    use crate::journal::file::create_private;
     use crate::journal::format::JournalError;
 
     /// Reads a lock file and says what it means.
@@ -407,35 +417,90 @@ mod persistence {
             Self::acquire_inner(path, true)
         }
 
+        /// How many times a break is retried before giving up.
+        ///
+        /// A retry happens only when somebody else won the create between this
+        /// process removing a dead lock and replacing it, which resolves in one
+        /// round: the winner's lock is live, so the next inspection refuses. More
+        /// than a couple of rounds means two processes are breaking each other's
+        /// locks in a loop, and refusing is better than joining in.
+        const BREAK_ATTEMPTS: usize = 3;
+
         fn acquire_inner(path: &Path, force: bool) -> Result<Self, LockRefused> {
-            let record = LockRecord::current();
-
-            match Self::create_exclusively(path, &record) {
-                Ok(()) => {
-                    return Ok(Self {
-                        path: path.to_path_buf(),
-                        record,
-                        released: false,
-                    });
-                }
-                Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
-                    return Err(LockRefused::Io(error.to_string()));
-                }
-                Err(_) => {}
-            }
-
-            let state = inspect(path);
-            if !force && !state.is_resumable() {
-                return Err(LockRefused::Held(state));
-            }
-
-            // Breaking a lock is a replacement, not a second creation, so the
-            // exclusive create above cannot be reused here.
-            Self::write(path, &record).map_err(|e| LockRefused::Io(e.to_string()))?;
-            Ok(Self {
+            // Built only once the create has succeeded, never before: `Lock`
+            // removes its file on drop, so an attempt that lost the create and
+            // then dropped one would delete the winner's lock on its way out.
+            let held = |record| Self {
                 path: path.to_path_buf(),
                 record,
                 released: false,
+            };
+            let mut refusal = None;
+
+            for _ in 0..Self::BREAK_ATTEMPTS {
+                let record = LockRecord::current();
+                match Self::create_exclusively(path, &record) {
+                    Ok(()) => return Ok(held(record)),
+                    Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                        return Err(LockRefused::Io(error.to_string()));
+                    }
+                    Err(_) => {}
+                }
+
+                // **Deciding a lock is dead and replacing it is one operation.**
+                //
+                // The exclusion this file rests on is `create_new`: two processes
+                // racing for a *free* journal cannot both succeed. Breaking one
+                // needs the opposite and does not get it for free. Replacing a
+                // dead lock by rename stepped outside the create entirely, and
+                // removing it first is no better on its own: every racer removes
+                // whatever is at the name, including the lock the last winner
+                // created a microsecond ago. Eight processes put on one crashed
+                // journal produced two to four holders that way, each having
+                // deleted the previous winner's brand-new lock.
+                //
+                // So the inspect, the removal and the create are held together
+                // under an advisory lock on a sibling file, released the moment
+                // they are done and never held for the life of the journal. The
+                // kernel drops it when the process holding it exits, so unlike
+                // the lock file it cannot go stale and there is nothing here a
+                // `force` would ever need to clear.
+                let _breaking = Breaking::take(path).map_err(|e| LockRefused::Io(e.to_string()))?;
+
+                // Asked again under the guard, because whoever held it before
+                // this process may have taken the journal in the meantime: what
+                // was crashed a moment ago is now a scan that is running.
+                let state = inspect(path);
+                if !force && !state.is_resumable() {
+                    return Err(LockRefused::Held(state));
+                }
+
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    // Removed between the two inspections; the create below
+                    // decides either way.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(LockRefused::Io(error.to_string())),
+                }
+
+                let record = LockRecord::current();
+                match Self::create_exclusively(path, &record) {
+                    Ok(()) => return Ok(held(record)),
+                    Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                        return Err(LockRefused::Io(error.to_string()));
+                    }
+                    // A process arriving at a journal whose lock this one has just
+                    // removed takes no guard, because from where it stands there
+                    // is nothing to break, and it can win the create in that gap.
+                    // That is the case the loop is for: the next round finds a
+                    // lock that is beating and is refused by name.
+                    Err(_) => refusal = Some(state),
+                }
+            }
+
+            Err(match refusal {
+                Some(state) => LockRefused::Held(state),
+                None => LockRefused::Io("the lock could not be taken".to_string()),
             })
         }
 
@@ -458,19 +523,50 @@ mod persistence {
             Ok(())
         }
 
+        /// Takes the lock, or fails with
+        /// [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) if somebody has
+        /// it.
+        ///
+        /// **The name appears already holding the record.** Creating the file and
+        /// then writing it is two steps, and a racer reading between them finds a
+        /// lock it cannot parse — which [`inspect`] reports as `Free`, correctly,
+        /// because that is what a writer killed mid-write leaves. It is also what
+        /// a writer *mid-create* leaves, and reading it that way let a second
+        /// process delete a lock the first had taken a microsecond earlier. So
+        /// the record is written to a file of its own and that file is linked
+        /// into place: `link` refuses a name that exists, which is the same
+        /// exclusion `create_new` gives, over a file that already has its
+        /// contents.
+        ///
+        /// The lock names a pid and a scan, in a directory holding an
+        /// engagement's targets. It is nobody else's business — and under `sudo`
+        /// it belongs to whoever invoked it, or they cannot release a journal
+        /// they own the rest of, which is why the staging file is created the
+        /// same way every other journal file is.
         fn create_exclusively(path: &Path, record: &LockRecord) -> std::io::Result<()> {
-            // The lock names a pid and a scan, in a directory holding an
-            // engagement's targets. It is nobody else's business — and under
-            // `sudo` it belongs to whoever invoked it, or they cannot release a
-            // journal they own the rest of.
-            let mut file = create_exclusive(path)?;
-            file.write_all(
-                serde_json::to_string(record)
-                    .map_err(std::io::Error::other)?
-                    .as_bytes(),
-            )
+            let staged = path.with_extension(format!("lock-{}", std::process::id()));
+
+            {
+                let mut file = create_private(&staged)?;
+                file.write_all(
+                    serde_json::to_string(record)
+                        .map_err(std::io::Error::other)?
+                        .as_bytes(),
+                )?;
+            }
+
+            let linked = fs::hard_link(&staged, path);
+            let _ = fs::remove_file(&staged);
+            linked
         }
 
+        /// Replaces the lock file in place, for the holder moving its own
+        /// heartbeat forward.
+        ///
+        /// **Not a way to take a lock.** Taking one goes through
+        /// [`create_exclusively`](Self::create_exclusively), which is the only
+        /// operation two processes cannot both win; this is the holder rewriting
+        /// a file it already owns, where there is nothing to decide.
         fn write(path: &Path, record: &LockRecord) -> std::io::Result<()> {
             let temporary = path.with_extension("lock-tmp");
             {
@@ -487,6 +583,49 @@ mod persistence {
             // The lock becomes the temporary's inode, ownership and all.
             fs::rename(&temporary, path)?;
             Ok(())
+        }
+    }
+
+    /// Serialises deciding that a lock is dead and replacing it.
+    ///
+    /// See the argument at the call site. Held across three operations that have
+    /// to be one, and dropped as soon as they are done.
+    #[cfg(unix)]
+    struct Breaking {
+        /// Held for the descriptor alone: the advisory lock lives on the open
+        /// file, and the kernel releases it when this closes.
+        _file: fs::File,
+    }
+
+    #[cfg(unix)]
+    impl Breaking {
+        fn take(lock: &Path) -> std::io::Result<Self> {
+            use std::os::unix::io::AsRawFd;
+
+            // Its own file rather than the lock, which is about to be removed:
+            // an advisory lock follows the open file, and removing the name it
+            // was taken on leaves the next process locking a different inode.
+            // Private and link-refusing like everything else a journal writes.
+            let file = create_private(&lock.with_extension("break"))?;
+
+            // SAFETY: the descriptor is owned by `file` and open for the call.
+            // `flock` waits for the lock, dereferences nothing, and the kernel
+            // releases it when `file` is closed or this process exits.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Self { _file: file })
+        }
+    }
+
+    /// Nothing to serialise against: the platform has no journal to break.
+    #[cfg(not(unix))]
+    struct Breaking;
+
+    #[cfg(not(unix))]
+    impl Breaking {
+        fn take(_lock: &Path) -> std::io::Result<Self> {
+            Ok(Self)
         }
     }
 
@@ -807,6 +946,56 @@ mod file_tests {
 
         let lock = Lock::acquire(&path).expect("a crashed lock needs no force");
         assert_eq!(lock.record().pid, std::process::id());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Several processes finding the same crashed journal: exactly one takes it.
+    ///
+    /// The case the break path used to get wrong. `inspect` then rename is two
+    /// operations, so every racer read `Crashed`, every racer wrote its own
+    /// record over the last one, and every racer returned a `Lock` it believed
+    /// was exclusive. Going back through the exclusive create is what makes the
+    /// question have one answer.
+    #[test]
+    fn only_one_of_several_racers_breaks_a_crashed_lock() {
+        let dir = scratch("break-race");
+        let path = dir.join("LOCK");
+
+        // A lock from before a reboot, which is resumable whatever its pid is
+        // doing now. Written this way rather than with a dead pid because a test
+        // cannot name a number it is certain nothing holds.
+        let stale = LockRecord {
+            pid: std::process::id(),
+            boot: "a boot that is over".to_string(),
+            started_at: SystemTime::UNIX_EPOCH,
+            heartbeat: SystemTime::UNIX_EPOCH,
+        };
+        std::fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("writes");
+        assert!(matches!(inspect(&path), LockState::RebootedUnder { .. }));
+
+        let taken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let path = path.clone();
+                let taken = std::sync::Arc::clone(&taken);
+                scope.spawn(move || {
+                    if let Ok(lock) = Lock::acquire(&path) {
+                        taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // Held for the rest of the scope, so a racer that came
+                        // second is refused rather than finding it free again.
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::mem::forget(lock);
+                    }
+                });
+            }
+        });
+
+        assert_eq!(
+            taken.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "more than one racer believed it held the journal"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

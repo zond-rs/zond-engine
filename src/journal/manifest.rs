@@ -464,6 +464,14 @@ impl Digest {
 /// Written once when the journal is created and never rewritten, which is what
 /// makes it safe to read without a lock: nothing that reads a manifest can race
 /// a writer changing it.
+///
+/// `#[non_exhaustive]` because this type has grown six times and will grow
+/// again: `kind`, `targets`, `technique`, `sweep`, `links` and `privilege` each
+/// carry a `#[serde(default)]` recording a journal written before they existed,
+/// and each addition would have broken a caller who built one by literal.
+/// [`new`](Self::new) is how one is made, and reading is what everything else
+/// does.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalManifest {
     /// The journal format this was written under, so a reader that predates it

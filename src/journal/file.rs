@@ -35,6 +35,11 @@
 //! ownership change goes through the descriptor already open rather than
 //! through the name, so there is no second lookup to redirect between them.
 //!
+//! Taking a lock is the one file this does not open. It has to appear at its
+//! name already holding its record, or a racer reads a lock mid-creation and
+//! finds it empty — see `lock::Lock::create_exclusively`, which stages the
+//! content through [`create_private`] here and links it into place.
+//!
 //! Directories are opened the same way for the same reason.
 
 use std::fs;
@@ -49,22 +54,6 @@ use std::path::Path;
 pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    private(&mut options);
-
-    let file = options.open(path)?;
-    claim(&file);
-    Ok(file)
-}
-
-/// Creates a file that must not already exist: private, and the invoking
-/// user's.
-///
-/// [`create_private`] for the case where existing is the failure rather than
-/// something to truncate: a lock, whose whole job is to be refused when
-/// somebody else got there first.
-pub(super) fn create_exclusive(path: &Path) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
     private(&mut options);
 
     let file = options.open(path)?;
@@ -170,7 +159,6 @@ mod tests {
 
         for opened in [
             create_private(&planted).err(),
-            create_exclusive(&planted).err(),
             append_existing(&planted).err(),
         ] {
             assert!(opened.is_some(), "a link was opened as a journal file");
@@ -185,7 +173,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// And an ordinary file still opens, in each of the three ways.
+    /// And an ordinary file still opens, both ways.
     #[test]
     fn an_ordinary_journal_file_opens_and_is_private() {
         use std::os::unix::fs::PermissionsExt;
@@ -206,10 +194,6 @@ mod tests {
         assert_eq!(
             fs::metadata(&path).expect("stats").permissions().mode() & 0o777,
             0o600
-        );
-        assert!(
-            create_exclusive(&path).is_err(),
-            "the exclusive open refuses a file that is already there"
         );
 
         fs::remove_dir_all(&dir).ok();

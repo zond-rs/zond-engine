@@ -1379,6 +1379,97 @@ mod tests {
         assert_eq!(diff.summary().certificates_expiring, 1);
     }
 
+    /// A renewal that lands on a certificate which is *itself* expiring is the
+    /// case a standing read off "whatever each side presented" cancels out.
+    ///
+    /// Both sides answer `Expiring`, so nothing appears to have moved, and the
+    /// endpoint that most needs renewing reports a rotation and no expiry. The
+    /// standing belongs to one certificate at two moments, and the baseline was
+    /// never shown this one.
+    #[test]
+    fn a_rotation_onto_an_expiring_certificate_still_reports_the_expiry() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+
+        // Twenty days left when the baseline ran, and the replacement installed
+        // a week later has fifteen. Inside the threshold both times.
+        let mut before = host(10);
+        before.add_port(
+            Port::new(443, Protocol::Tcp, PortState::Open).with_security(certificate(
+                "aaaa",
+                at - 90 * DAY,
+                at + 20 * DAY,
+            )),
+        );
+        let mut after = host(10);
+        after.add_port(
+            Port::new(443, Protocol::Tcp, PortState::Open).with_security(certificate(
+                "bbbb",
+                at,
+                at + 22 * DAY,
+            )),
+        );
+
+        let diff = ScanDiff::between(
+            &scoped(vec![before], "192.168.0.0/24", &[], at),
+            &scoped(vec![after], "192.168.0.0/24", &[], at + 7 * DAY),
+        );
+
+        let changes = diff.hosts()[0].ports()[0].changes();
+        assert!(
+            changes.iter().any(|change| matches!(
+                change,
+                PortChange::Security(SecurityChange::Certificate(
+                    CertificateChange::Rotated { .. }
+                ))
+            )),
+            "{changes:?}"
+        );
+        assert_eq!(diff.summary().certificates_rotated, 1);
+        assert_eq!(
+            diff.summary().certificates_expiring,
+            1,
+            "the certificate presented now is inside the threshold and the \
+             baseline never saw it: {changes:?}"
+        );
+    }
+
+    /// The same, one step worse: a renewal that installs a certificate which had
+    /// already lapsed. `certificates_expired` counted none of these.
+    #[test]
+    fn a_rotation_onto_an_already_lapsed_certificate_still_reports_it() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+
+        let mut before = host(10);
+        before.add_port(
+            Port::new(443, Protocol::Tcp, PortState::Open).with_security(certificate(
+                "aaaa",
+                at - 400 * DAY,
+                at - DAY,
+            )),
+        );
+        let mut after = host(10);
+        after.add_port(
+            Port::new(443, Protocol::Tcp, PortState::Open).with_security(certificate(
+                "bbbb",
+                at - 400 * DAY,
+                at - 2 * DAY,
+            )),
+        );
+
+        let diff = ScanDiff::between(
+            &scoped(vec![before], "192.168.0.0/24", &[], at),
+            &scoped(vec![after], "192.168.0.0/24", &[], at + DAY),
+        );
+
+        assert_eq!(diff.summary().certificates_rotated, 1);
+        assert_eq!(
+            diff.summary().certificates_expired,
+            1,
+            "{:?}",
+            diff.hosts()[0].ports()[0].changes()
+        );
+    }
+
     #[test]
     fn a_certificate_that_was_already_expiring_is_not_reported_again() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
