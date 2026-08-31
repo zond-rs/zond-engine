@@ -33,11 +33,13 @@ libfuzzer-sys = "0.4"
 serde_json = "1"
 
 # Every reader and every writer, because a target per surface needs the surface
-# compiled in. `test-support` is deliberately absent: it swaps a real transport
-# for a synthetic one, and nothing here goes near a transport.
+# compiled in. `journal-format` is named rather than left to the default set: the
+# journal targets do not compile without it, and a default is something a
+# consumer can turn off. `test-support` is deliberately absent: it swaps a real
+# transport for a synthetic one, and nothing here goes near a transport.
 [dependencies.zond-engine]
 path = ".."
-features = ["import-all", "export-all"]
+features = ["import-all", "export-all", "journal-format"]
 
 # ---------------------------------------------------------------------------
 # Targets
@@ -105,6 +107,56 @@ bench = false
 [[bin]]
 name = "format_timestamp"
 path = "fuzz_targets/format/timestamp.rs"
+test = false
+doc = false
+bench = false
+
+# The boundary between a type with invariants and a file that holds it.
+[[bin]]
+name = "record_host"
+path = "fuzz_targets/record/host.rs"
+test = false
+doc = false
+bench = false
+
+# What a scan writes down as it runs, and what a resume trusts. Three targets,
+# because a journal is three questions that fail differently: whether the file
+# can be read at all, whether the number in it means what a second sitting will
+# take it to mean, and whether the plan it names is still the plan.
+[[bin]]
+name = "journal_framing"
+path = "fuzz_targets/journal/framing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_cursor"
+path = "fuzz_targets/journal/cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_manifest"
+path = "fuzz_targets/journal/manifest.rs"
+test = false
+doc = false
+bench = false
+
+# Two scans against each other, and several folded into one. Both take reports
+# rather than bytes, so both reach their subject through a reader — the same
+# arrangement `export_report` makes, for the same reason.
+[[bin]]
+name = "diff_reports"
+path = "fuzz_targets/diff/reports.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "merge_reports"
+path = "fuzz_targets/merge/reports.rs"
 test = false
 doc = false
 bench = false

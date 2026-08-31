@@ -123,6 +123,12 @@ jobs:
           - import_settings
           - export_report
           - format_timestamp
+          - record_host
+          - journal_framing
+          - journal_cursor
+          - journal_manifest
+          - diff_reports
+          - merge_reports
 
     steps:
       - name: Checkout repository

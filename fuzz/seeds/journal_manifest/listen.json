@@ -1,0 +1,22 @@
+{
+  "journal_version": 2,
+  "id": "01JCCCCCCCCCCCCC",
+  "engine_version": "0.13.0",
+  "created_at": {
+    "secs_since_epoch": 1788183429,
+    "nanos_since_epoch": 623804000
+  },
+  "kind": "listen",
+  "plan": 10559431106773391719,
+  "targets": {
+    "units": []
+  },
+  "technique": "",
+  "sweep": false,
+  "links": [
+    "en0"
+  ],
+  "privileged": true,
+  "total_targets": 0,
+  "summary": "watching en0"
+}

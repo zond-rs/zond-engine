@@ -1,0 +1,56 @@
+# What a journal is a journal of: the manifest's own fields, the plan record's,
+# and the phase and technique names either can carry.
+#
+# Generated from `src/journal/manifest.rs` and `src/record.rs`. Regenerate when
+# either moves.
+
+"{}"
+"[]"
+"true"
+"false"
+"\"created_at\":"
+"\"end\":"
+"\"engine_version\":"
+"\"expected\":"
+"\"expected_targets\":"
+"\"found\":"
+"\"found_targets\":"
+"\"id\":"
+"\"journal_version\":"
+"\"kind\":"
+"\"links\":"
+"\"plan\":"
+"\"ports\":"
+"\"privilege\":"
+"\"privileged\":"
+"\"ranges\":"
+"\"spec\":"
+"\"start\":"
+"\"summary\":"
+"\"sweep\":"
+"\"targets\":"
+"\"technique\":"
+"\"total_targets\":"
+"\"units\":"
+"\"zone\":"
+
+# The phases, and the segment a port probe carries.
+"\"discovery\""
+"\"port_scan\""
+"\"listen\""
+"\"syn\""
+"\"fin\""
+"\"null\""
+"\"xmas\""
+"\"ack\""
+"\"window\""
+"\"maimon\""
+
+# Port specifications, which decide the enumeration.
+"-"
+"u:-"
+"1-65535"
+"80,443"
+"u:53"
+"0"
+"65535"

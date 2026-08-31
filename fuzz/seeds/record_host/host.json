@@ -1,0 +1,65 @@
+{
+  "primary_ip": "127.0.0.1",
+  "ips": [
+    "127.0.0.1"
+  ],
+  "hostname": null,
+  "status": "up",
+  "reasons": [
+    {
+      "protocol": "tcp_syn",
+      "source": null,
+      "details": "tcp connect answered by the host"
+    }
+  ],
+  "os": null,
+  "os_evidence": [],
+  "hardware": null,
+  "zone": null,
+  "telemetry": {
+    "rtts": [],
+    "hop_counter": null
+  },
+  "path": [],
+  "roles": [
+    "origin"
+  ],
+  "filtering": [],
+  "first_seen": {
+    "secs_since_epoch": 1788113594,
+    "nanos_since_epoch": 941120000
+  },
+  "last_seen": {
+    "secs_since_epoch": 1788113597,
+    "nanos_since_epoch": 526303000
+  },
+  "ports": [
+    {
+      "port": 55178,
+      "protocol": "tcp",
+      "state": "open",
+      "service": {
+        "name": "ssh",
+        "confidence": 90,
+        "product": "OpenSSH",
+        "vendor": "OpenBSD",
+        "version": "9.6",
+        "extrainfo": null,
+        "cpes": []
+      },
+      "security": null,
+      "discovery": {
+        "reason": "tcp_syn_ack",
+        "timestamp": {
+          "secs_since_epoch": 1788113594,
+          "nanos_since_epoch": 986700000
+        },
+        "rtt": null,
+        "ttl": null,
+        "source_ip": null
+      },
+      "findings": []
+    }
+  ],
+  "findings": []
+}

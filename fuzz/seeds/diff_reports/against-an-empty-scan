@@ -1,0 +1,478 @@
+*t{
+  "schema_version": 1,
+  "engine": {
+    "name": "zond-engine",
+    "version": "0.13.0"
+  },
+  "produced_by": "0.13.0",
+  "generated_at": "2026-08-30T18:13:17.526438Z",
+  "started_at": "2026-08-30T18:13:14.939136Z",
+  "elapsed_us": 2587074,
+  "partial": false,
+  "summary": {
+    "hosts_total": 1,
+    "hosts_alive": 1,
+    "hosts_by_status": {
+      "up": 1,
+      "filtered": 0,
+      "down": 0,
+      "unknown": 0
+    },
+    "ports_total": 1,
+    "ports_open": 1,
+    "ports_by_state": {
+      "open": 1,
+      "open_filtered": 0,
+      "closed": 0,
+      "unfiltered": 0,
+      "filtered": 0,
+      "closed_filtered": 0
+    },
+    "services_identified": 1,
+    "hosts_by_family": {
+      "ipv4": 1,
+      "ipv6": 0,
+      "dual_stack": 0
+    }
+  },
+  "phases": [
+    {
+      "kind": "discovery",
+      "started_at": "2026-08-30T18:13:14.939136Z",
+      "elapsed_us": 5169,
+      "privileged": false,
+      "targets": {
+        "ranges": [
+          {
+            "family": "ipv4",
+            "start": "127.0.0.1",
+            "end": "127.0.0.1"
+          }
+        ],
+        "addresses": "1",
+        "probes": null,
+        "links": [],
+        "ports": {
+          "kind": "none",
+          "spec": ""
+        },
+        "protocols": [],
+        "excluded": [],
+        "withheld": "0"
+      },
+      "settings": {
+        "send_mode": "auto",
+        "tcp_technique": "syn",
+        "retry": {
+          "effort": "balanced",
+          "max_attempts": null,
+          "timeout_scale": null,
+          "dampen_silent_hosts": true
+        },
+        "max_probe_rate": null,
+        "dns_enabled": false,
+        "redact": false,
+        "os_detection": "passive",
+        "service_detection": "probe",
+        "detection": "active_benign",
+        "traceroute": false,
+        "characterise": false
+      },
+      "failures": [],
+      "unroutable": [],
+      "probe_stats": [
+        {
+          "scanner": "connect",
+          "targets": "1",
+          "stop_reason": "attempts_spent",
+          "complete": true,
+          "elapsed_us": 2692,
+          "sends_attempted": 1,
+          "sends_failed": 0,
+          "segments_seen": 0,
+          "segments_off_target": 0,
+          "replies_without_rtt": 0,
+          "hosts_found": 1,
+          "answered_on": [
+            {
+              "attempt": 1,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 2,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 3,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 4,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 5,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 6,
+              "or_later": true,
+              "count": 0
+            }
+          ],
+          "answered_unattributed": 1,
+          "first_reply_us": 1900,
+          "last_reply_us": 1900,
+          "found_at": [
+            {
+              "le_ms": 1,
+              "count": 1
+            },
+            {
+              "le_ms": 2,
+              "count": 0
+            },
+            {
+              "le_ms": 5,
+              "count": 0
+            },
+            {
+              "le_ms": 10,
+              "count": 0
+            },
+            {
+              "le_ms": 25,
+              "count": 0
+            },
+            {
+              "le_ms": 50,
+              "count": 0
+            },
+            {
+              "le_ms": 100,
+              "count": 0
+            },
+            {
+              "le_ms": 250,
+              "count": 0
+            },
+            {
+              "le_ms": 1000,
+              "count": 0
+            },
+            {
+              "le_ms": null,
+              "count": 0
+            }
+          ],
+          "capture": null,
+          "window": null
+        }
+      ]
+    },
+    {
+      "kind": "port_scan",
+      "started_at": "2026-08-30T18:13:14.944422Z",
+      "elapsed_us": 2581905,
+      "privileged": false,
+      "targets": {
+        "ranges": [
+          {
+            "family": "ipv4",
+            "start": "127.0.0.1",
+            "end": "127.0.0.1"
+          }
+        ],
+        "addresses": "1",
+        "probes": "1",
+        "links": [],
+        "ports": {
+          "kind": "every",
+          "spec": "55178"
+        },
+        "protocols": [
+          "tcp"
+        ],
+        "excluded": [],
+        "withheld": "0"
+      },
+      "settings": {
+        "send_mode": "auto",
+        "tcp_technique": "syn",
+        "retry": {
+          "effort": "balanced",
+          "max_attempts": null,
+          "timeout_scale": null,
+          "dampen_silent_hosts": true
+        },
+        "max_probe_rate": null,
+        "dns_enabled": false,
+        "redact": false,
+        "os_detection": "passive",
+        "service_detection": "probe",
+        "detection": "active_benign",
+        "traceroute": false,
+        "characterise": false
+      },
+      "failures": [],
+      "unroutable": [],
+      "probe_stats": [
+        {
+          "scanner": "connect_udp",
+          "targets": "0",
+          "stop_reason": "attempts_spent",
+          "complete": true,
+          "elapsed_us": 90,
+          "sends_attempted": 0,
+          "sends_failed": 0,
+          "segments_seen": 0,
+          "segments_off_target": 0,
+          "replies_without_rtt": 0,
+          "hosts_found": 0,
+          "answered_on": [
+            {
+              "attempt": 1,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 2,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 3,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 4,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 5,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 6,
+              "or_later": true,
+              "count": 0
+            }
+          ],
+          "answered_unattributed": 0,
+          "first_reply_us": null,
+          "last_reply_us": null,
+          "found_at": [
+            {
+              "le_ms": 1,
+              "count": 0
+            },
+            {
+              "le_ms": 2,
+              "count": 0
+            },
+            {
+              "le_ms": 5,
+              "count": 0
+            },
+            {
+              "le_ms": 10,
+              "count": 0
+            },
+            {
+              "le_ms": 25,
+              "count": 0
+            },
+            {
+              "le_ms": 50,
+              "count": 0
+            },
+            {
+              "le_ms": 100,
+              "count": 0
+            },
+            {
+              "le_ms": 250,
+              "count": 0
+            },
+            {
+              "le_ms": 1000,
+              "count": 0
+            },
+            {
+              "le_ms": null,
+              "count": 0
+            }
+          ],
+          "capture": null,
+          "window": null
+        },
+        {
+          "scanner": "connect",
+          "targets": "1",
+          "stop_reason": "attempts_spent",
+          "complete": true,
+          "elapsed_us": 581519,
+          "sends_attempted": 1,
+          "sends_failed": 0,
+          "segments_seen": 0,
+          "segments_off_target": 0,
+          "replies_without_rtt": 0,
+          "hosts_found": 1,
+          "answered_on": [
+            {
+              "attempt": 1,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 2,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 3,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 4,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 5,
+              "or_later": false,
+              "count": 0
+            },
+            {
+              "attempt": 6,
+              "or_later": true,
+              "count": 0
+            }
+          ],
+          "answered_unattributed": 1,
+          "first_reply_us": 581479,
+          "last_reply_us": 581479,
+          "found_at": [
+            {
+              "le_ms": 1,
+              "count": 0
+            },
+            {
+              "le_ms": 2,
+              "count": 0
+            },
+            {
+              "le_ms": 5,
+              "count": 0
+            },
+            {
+              "le_ms": 10,
+              "count": 0
+            },
+            {
+              "le_ms": 25,
+              "count": 0
+            },
+            {
+              "le_ms": 50,
+              "count": 0
+            },
+            {
+              "le_ms": 100,
+              "count": 0
+            },
+            {
+              "le_ms": 250,
+              "count": 0
+            },
+            {
+              "le_ms": 1000,
+              "count": 1
+            },
+            {
+              "le_ms": null,
+              "count": 0
+            }
+          ],
+          "capture": null,
+          "window": null
+        }
+      ]
+    }
+  ],
+  "hosts": [
+    {
+      "primary_ip": "127.0.0.1",
+      "ips": [
+        "127.0.0.1"
+      ],
+      "zone": null,
+      "families": [
+        "ipv4"
+      ],
+      "hostname": null,
+      "status": "up",
+      "alive": true,
+      "reasons": [
+        {
+          "protocol": "tcp_syn",
+          "source_ip": null,
+          "details": "tcp connect answered by the host"
+        }
+      ],
+      "roles": [
+        "origin"
+      ],
+      "filtering": [],
+      "os": null,
+      "hardware": null,
+      "telemetry": {
+        "rtt_min_us": 499,
+        "rtt_median_us": 499,
+        "rtt_avg_us": 499,
+        "rtt_max_us": 499,
+        "jitter_us": 0,
+        "samples": 2
+      },
+      "path": [],
+      "ports": [
+        {
+          "port": 55178,
+          "protocol": "tcp",
+          "state": "open",
+          "service": {
+            "name": "ssh",
+            "confidence": 90,
+            "product": "OpenSSH",
+            "vendor": "OpenBSD",
+            "version": "9.6",
+            "extrainfo": null,
+            "cpes": []
+          },
+          "security": null,
+          "discovery": {
+            "reason": "tcp_syn_ack",
+            "timestamp": "2026-08-30T18:13:14.986700Z",
+            "rtt_us": null,
+            "ttl": null,
+            "source_ip": null
+          },
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "first_seen": "2026-08-30T18:13:14.941120Z",
+      "last_seen": "2026-08-30T18:13:17.526303Z"
+    }
+  ]
+}
+{"schema_version":1,"hosts":[],"phases":[]}

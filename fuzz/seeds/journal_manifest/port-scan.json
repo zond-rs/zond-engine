@@ -1,0 +1,31 @@
+{
+  "journal_version": 2,
+  "id": "01JAAAAAAAAAAAAA",
+  "engine_version": "0.13.0",
+  "created_at": {
+    "secs_since_epoch": 1788183429,
+    "nanos_since_epoch": 620956000
+  },
+  "kind": "port_scan",
+  "plan": 290429121049682909,
+  "targets": {
+    "units": [
+      {
+        "ranges": [
+          {
+            "start": "192.0.2.0",
+            "end": "192.0.2.255",
+            "zone": null
+          }
+        ],
+        "spec": "22,80,443,1000-1010,u:53"
+      }
+    ]
+  },
+  "technique": "syn",
+  "sweep": false,
+  "links": [],
+  "privileged": true,
+  "total_targets": 3840,
+  "summary": "192.0.2.0/24 on 15 ports"
+}

@@ -1,8 +1,9 @@
 # Fuzzing
 
-Coverage-guided fuzzing over the code that reads bytes somebody else wrote, and
-over the code that writes bytes somebody else opens. Eight targets, each an
-entry point a hostile network or a hostile file reaches directly.
+Coverage-guided fuzzing over the code that reads bytes somebody else wrote, the
+code that writes bytes somebody else opens, and the code that decides what a
+scan already found means. Fourteen targets, each an entry point a hostile
+network, a hostile file or an edited state directory reaches directly.
 
 ```
 cargo +nightly fuzz list
@@ -62,12 +63,24 @@ src/lib.rs                            →  the oracles more than one target asks
 watch.py                              →  a libFuzzer run as a status screen
 ```
 
-Four surfaces, because a target is defined by the boundary it attacks rather
+Eight surfaces, because a target is defined by the boundary it attacks rather
 than by the module it happens to call: `wire` is bytes off a segment, `import` is
-a file an operator was handed, `export` is a document this engine produces, and
-`format` is the contract the two directions share. `export_report` reaches the
-writers by way of a reader and is still an export target, because a writer is
-what it asserts about.
+a file an operator was handed, `export` is a document this engine produces,
+`format` is the contract the two directions share, `record` is where a type with
+invariants becomes something a file can hold, `journal` is what a scan writes
+down as it runs, and `diff` and `merge` are what two scans and several scans
+respectively add up to. `export_report` reaches the writers by way of a reader
+and is still an export target, because a writer is what it asserts about; the
+same arrangement gets `diff` and `merge` their reports.
+
+**The last four surfaces are not parsers, and that is why they are here.** A
+reader is fuzzed because it takes bytes from somebody hostile. `journal::cursor`
+takes no bytes from anyone: it takes a number a scan produced and decides whether
+a resumed scan may skip a target, and a wrong answer is a second sitting that
+skips work, finds nothing, and reports success. Nothing downstream detects that,
+and there is no document to hold up against it — so the assertions are the whole
+of the instrument, and the input is a fuzzer's only way of reaching enough of
+them. The same is true of a merge that quietly drops a field.
 
 A new target goes in the directory for its surface, takes the matching name, and
 brings a seed. Nothing else is arranged around any of them.
@@ -112,12 +125,25 @@ opposite of the folklore, and it is measured, sixty seconds each way:
 | `export_report` | 876 | 1 663 | 9 851 | 9 911 |
 | `import_report` | 2 159 | 2 844 | 10 133 | 10 105 |
 | `import_settings` | 2 980 | 3 170 | 4 045 | 4 109 |
+| `record_host`* | 987 | 2 079 | 4 532 | 4 490 |
+| `journal_manifest`* | 1 026 | 1 634 | 2 443 | 2 512 |
+
+\* forty-five seconds each way rather than sixty, which is why they are not
+comparable with the rows above. They are comparable across their own row, which
+is what the table is for.
 
 From nothing a dictionary is worth 6% to 150%, and it is worth most exactly where
 a seed is: a format with a header a fuzzer will not stumble into. Beside the
 seeds it is worth 0% to 5%, and for `import_report` it measured slightly
 negative — noise, which is the point. The seeds already contain every token, and
-splicing between corpus entries reproduces them without being told.
+splicing between corpus entries reproduces them without being told. The two rows
+added later reproduce the same shape: 111% and 59% from nothing, and -1% and 3%
+beside the seeds.
+
+Six of the fourteen have no dictionary. `journal_cursor` takes numbers rather
+than a format, and `diff_reports` and `merge_reports` take whole documents whose
+tokens are already `import_report`'s — a dictionary of them would be the same
+file under another name, and the seeds carry every one.
 
 So: pass the dictionary, because it costs nothing and the tail of a long run is
 not what sixty seconds measures. But do not expect it to be the lever. **It is

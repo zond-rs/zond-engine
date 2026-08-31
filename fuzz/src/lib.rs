@@ -14,7 +14,11 @@
 //! all: it stops the run on a document that was never wrong, and the campaign
 //! spends its night on the harness instead of on the engine.
 
+use std::io::Cursor;
+
 use zond_engine::diff::ScanDiff;
+use zond_engine::import::report::ReportReader;
+use zond_engine::import::report::json::JsonReportReader;
 use zond_engine::report::ScanReport;
 
 /// Asks a report the questions that must hold however it was built.
@@ -52,4 +56,65 @@ pub fn report_is_coherent(report: &ScanReport) {
             host.primary_ip()
         );
     }
+}
+
+/// Splits one input into the several documents a target needs.
+///
+/// Two bytes of big-endian length, then that many bytes, repeated; whatever is
+/// left over after the last complete segment is the final one. `diff` and
+/// `merge` take reports rather than bytes and take *more than one*, and a
+/// fuzzer has no other way to say where one ends.
+///
+/// **The leftover matters more than the framing does.** An input the mutator has
+/// not yet taught to carry a length still yields one segment, so a corpus entry
+/// that is a plain report is useful from the first run rather than after the
+/// fuzzer has invented a header. A length longer than what remains ends the
+/// split for the same reason: what is left is a document, not a mistake.
+pub fn documents(data: &[u8], most: usize) -> Vec<&[u8]> {
+    let mut found = Vec::new();
+    let mut rest = data;
+
+    while found.len() + 1 < most && rest.len() > 2 {
+        let length = usize::from(u16::from_be_bytes([rest[0], rest[1]]));
+        let Some(body) = rest.get(2..2 + length) else {
+            break;
+        };
+        found.push(body);
+        rest = &rest[2 + length..];
+    }
+
+    if !rest.is_empty() {
+        found.push(rest);
+    }
+    found
+}
+
+/// The reports [`documents`] describes, skipping the segments that are not one.
+///
+/// Reading is how a fuzzer reaches a `ScanReport` at all, and most inputs stop
+/// there: `seeds/` is what gets past it, and a target wanting two reports needs
+/// two segments that both parse.
+pub fn reports(data: &[u8], most: usize) -> Vec<ScanReport> {
+    documents(data, most)
+        .into_iter()
+        .filter_map(|document| {
+            JsonReportReader::default()
+                .read(&mut Cursor::new(document))
+                .ok()
+        })
+        .collect()
+}
+
+/// Holds two reports to describing the same network.
+///
+/// The comparison is the instrument for the reason the in-crate round-trip tests
+/// give: a field one side dropped shows up whatever field it was, including one
+/// added after the target was written.
+pub fn same_network(before: &ScanReport, after: &ScanReport, what: &str) {
+    let diff = ScanDiff::between(before, after);
+    assert!(
+        diff.is_empty(),
+        "{what} changed the network it describes: {:#?}",
+        diff.hosts()
+    );
 }
