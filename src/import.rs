@@ -294,44 +294,6 @@ pub struct RejectedTarget {
     pub reason: TargetParseError,
 }
 
-impl Imported {
-    /// Takes the addresses, discarding the ports.
-    ///
-    /// [`crate::scanner::scan`] takes the [`map`](Self::map) as it stands.
-    /// [`crate::scanner::discover`] takes an [`IpSet`](crate::model::ip::set::IpSet), because asking whether a
-    /// host is there at all has no use for ports - so this is the other half of
-    /// the same journey, and it lives here rather than in every front end
-    /// writing the same fold.
-    ///
-    /// Addresses from every unit are merged into one set and canonicalized, so
-    /// a file naming the same host under two port specifications sweeps it
-    /// once.
-    ///
-    /// ```
-    /// use std::io::Cursor;
-    /// use zond_engine::model::port::PortSet;
-    /// use zond_engine::import::{ImportFormat, ImportOptions};
-    ///
-    /// let list = "192.168.0.1\n192.168.0.100\n192.168.0.20\n";
-    /// let options = ImportOptions::new(PortSet::try_from("80").unwrap());
-    ///
-    /// let targets = ImportFormat::List
-    ///     .read(&mut Cursor::new(list), &options)
-    ///     .unwrap()
-    ///     .into_ip_set();
-    ///
-    /// assert_eq!(targets.len(), 3);
-    /// // `zond_engine::scanner::discover(targets, &config)` takes it from here.
-    /// ```
-    pub fn into_ip_set(self) -> crate::model::ip::set::IpSet {
-        self.map
-            .units
-            .into_iter()
-            .map(TargetSet::into_ips)
-            .collect()
-    }
-}
-
 impl fmt::Display for RejectedTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.origin, self.reason)
@@ -411,6 +373,44 @@ pub struct Imported {
     /// against: the limit errs high to stay cheap, and this one is exact because
     /// a caller reports it to a person.
     pub addresses: u128,
+}
+
+impl Imported {
+    /// Takes the addresses, discarding the ports.
+    ///
+    /// [`crate::scanner::scan`] takes the [`map`](Self::map) as it stands.
+    /// [`crate::scanner::discover`] takes an [`IpSet`](crate::model::ip::set::IpSet), because asking whether a
+    /// host is there at all has no use for ports - so this is the other half of
+    /// the same journey, and it lives here rather than in every front end
+    /// writing the same fold.
+    ///
+    /// Addresses from every unit are merged into one set and canonicalized, so
+    /// a file naming the same host under two port specifications sweeps it
+    /// once.
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    /// use zond_engine::model::port::PortSet;
+    /// use zond_engine::import::{ImportFormat, ImportOptions};
+    ///
+    /// let list = "192.168.0.1\n192.168.0.100\n192.168.0.20\n";
+    /// let options = ImportOptions::new(PortSet::try_from("80").unwrap());
+    ///
+    /// let targets = ImportFormat::List
+    ///     .read(&mut Cursor::new(list), &options)
+    ///     .unwrap()
+    ///     .into_ip_set();
+    ///
+    /// assert_eq!(targets.len(), 3);
+    /// // `zond_engine::scanner::discover(targets, &config)` takes it from here.
+    /// ```
+    pub fn into_ip_set(self) -> crate::model::ip::set::IpSet {
+        self.map
+            .units
+            .into_iter()
+            .map(TargetSet::into_ips)
+            .collect()
+    }
 }
 
 /// What went wrong while reading targets in.

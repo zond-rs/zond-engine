@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="zond" args="" start="1788113594" startstr="2026-08-30T18:13:14.939136Z" version="0.13.0" xmloutputversion="1.05">
+<scaninfo type="connect" protocol="tcp" numservices="1" services="55178"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<host starttime="1788113594" endtime="1788113597">
+<status state="up" reason="echo-reply" reason_ttl="0"/>
+<address addr="127.0.0.1" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="55178">
+<state state="open" reason="syn-ack" reason_ttl="0"/>
+<service name="ssh" product="OpenSSH" version="9.6" method="probed" conf="9"/>
+</port>
+</ports>
+</host>
+<runstats>
+<finished time="1788164220" timestr="2026-08-31T08:17:00.377234Z" elapsed="2.59" summary="zond-engine done; 1 IP addresses (1 hosts up) scanned in 2.59 seconds" exit="success"/>
+<hosts up="1" down="0" total="1"/>
+</runstats>
+</nmaprun>

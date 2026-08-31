@@ -1,0 +1,2 @@
+ip,hostname,status,alive,ips,mac,mac_vendor,os,os_accuracy,roles,rtt_median_us,first_seen,last_seen,port,protocol,state,service,service_product,service_version,service_confidence,discovery_reason,tls_version,cert_common_name,cert_not_after,findings
+127.0.0.1,,up,true,127.0.0.1,,,,,origin,,2026-08-30T18:13:14.941120Z,2026-08-30T18:13:17.526303Z,55178,tcp,open,ssh,OpenSSH,9.6,90,tcp_syn_ack,,,,

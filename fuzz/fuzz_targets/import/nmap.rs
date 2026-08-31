@@ -15,8 +15,8 @@
 use std::io::Cursor;
 
 use libfuzzer_sys::fuzz_target;
-use zond_engine::import::report::nmap::NmapXmlReportReader;
 use zond_engine::import::report::ReportReader;
+use zond_engine::import::report::nmap::NmapXmlReportReader;
 
 fuzz_target!(|data: &[u8]| {
     let _ = NmapXmlReportReader::default().read(&mut Cursor::new(data));

@@ -75,6 +75,7 @@ pub const HOST_RECORD: &str = "host";
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 #[derive(Debug, Clone, Default)]
 pub struct JsonLinesExporter {
     options: ExportOptions,

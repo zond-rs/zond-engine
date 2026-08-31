@@ -1,0 +1,146 @@
+# The fuzzing harnesses: built on every change that could break them, run on a
+# schedule.
+#
+# Two jobs because they answer different questions and cost different amounts. A
+# target that no longer compiles is the failure that actually happens — an API it
+# drives moves, and nobody notices until somebody goes to fuzz and finds the
+# harness rotted — so building is cheap and runs per change. Finding a crash
+# takes hours, not the sixty seconds a pull request will wait, so that is the
+# weekly job.
+#
+# Neither runs on the library's own toolchain. `cargo fuzz` reads a sanitizer
+# runtime that is nightly-only, and `fuzz/` is a crate of its own with its own
+# `[workspace]` for exactly that reason; nothing here touches what the other
+# workflows build.
+name: Fuzz
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "fuzz/**"
+      - "Cargo.toml"
+      - ".github/workflows/fuzz.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "fuzz/**"
+      - "Cargo.toml"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    # Sunday, early. A run that lands mid-week competes with the machine for
+    # everything else.
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds to run each target for"
+        required: false
+        default: "600"
+
+jobs:
+  build:
+    name: Harnesses build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # The targets are ordinary Rust and are held to the same standard as the
+      # library: a harness with a warning in it is a harness nobody trusts.
+      - name: Check formatting
+        run: cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+
+      - name: Build every target
+        run: cargo fuzz build
+
+      # A target with no seeds reaches almost nothing, and `fuzz/README.md`
+      # measures how much. A new one arriving without a directory is the way that
+      # gets forgotten.
+      - name: Every target has seeds
+        run: |
+          missing=0
+          for target in $(cargo fuzz list); do
+            if [ ! -d "fuzz/seeds/$target" ] || [ -z "$(ls -A "fuzz/seeds/$target")" ]; then
+              echo "::error::$target has no seeds; see fuzz/README.md"
+              missing=1
+            fi
+          done
+          exit $missing
+
+  run:
+    name: Fuzzing run
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # One job per target rather than a loop, so a crash in one still leaves the
+    # others' verdicts, and the failing target is the job that is red.
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - wire_ethernet_frame
+          - wire_buffer
+          - import_targets
+          - import_report
+          - import_nmap
+          - import_settings
+          - export_report
+          - format_timestamp
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # The corpus this produces is thrown away with the runner. Carrying one
+      # between runs would find more, and it would also mean a cache nobody can
+      # reason about deciding what got tested; the seeds are the tracked input
+      # and they are the same every week.
+      - name: Fuzz ${{ matrix.target }}
+        run: |
+          cargo fuzz run "${{ matrix.target }}" \
+            fuzz/corpus/${{ matrix.target }} \
+            "fuzz/seeds/${{ matrix.target }}" \
+            -- -max_total_time="${{ github.event.inputs.seconds || 600 }}"
+
+      # The input, not the log. A crash somebody has to reconstruct from a
+      # base64 blob in a scrolled-away job output is a crash that does not get
+      # fixed.
+      - name: Keep what crashed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

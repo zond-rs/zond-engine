@@ -1,0 +1,11 @@
+# A file whose keys this build does not know, which is the arm that suggests a
+# correction rather than the one that reads a value.
+[defaults]
+effrot = "balanced"
+tcp_techniqu = "syn"
+
+[profils.stealth]
+max_probe_rate = 200
+
+[unrelated]
+key = 1

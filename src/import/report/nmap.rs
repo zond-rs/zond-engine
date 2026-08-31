@@ -549,11 +549,15 @@ fn services(spec: &str, protocol: Protocol) -> Option<PortSet> {
 }
 
 /// Seconds since the epoch, as nmap writes every time in its document.
+///
+/// `None` for a count no clock can name. A `u64` of seconds reaches five
+/// hundred billion years and a [`SystemTime`] does not, so the addition is
+/// checked: `+` panics on the difference, and a panic belongs to the process
+/// that embedded this engine rather than to the file it was handed. Found by
+/// `import_nmap` on `start="16847805878974283974"`.
 fn epoch(seconds: &str) -> Option<SystemTime> {
-    seconds
-        .parse::<u64>()
-        .ok()
-        .map(|seconds| SystemTime::UNIX_EPOCH + Duration::from_secs(seconds))
+    let seconds = seconds.parse::<u64>().ok()?;
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,6 +1188,35 @@ mod tests {
 
     fn ip(last: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))
+    }
+
+    /// A timestamp no clock can name is a field to drop, not a process to end.
+    ///
+    /// **This crashed.** `SystemTime + Duration` panics on overflow, and a `u64`
+    /// of seconds reaches far past what a `SystemTime` holds, so a document
+    /// carrying twenty digits in `start` took down whatever had embedded the
+    /// engine — a web front end serving an upload, a pipeline reading an
+    /// engagement directory. Found by the `import_nmap` fuzz target within
+    /// thirty seconds of it being pointed at the seeds.
+    #[test]
+    fn a_time_past_what_a_clock_can_hold_is_dropped_rather_than_fatal() {
+        for seconds in ["16847805878974283974", "18446744073709551615"] {
+            let document = format!(
+                r#"<nmaprun scanner="nmap" start="{seconds}" version="7.94">
+<host starttime="{seconds}" endtime="{seconds}">
+<status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.0.10" addrtype="ipv4"/>
+</host>
+</nmaprun>"#
+            );
+
+            let report = read(&document).expect("a time it cannot hold is not a broken document");
+            assert_eq!(report.host_count(), 1, "the host survived the bad stamp");
+        }
+
+        // And a time it can hold is still read, so the guard is not refusing
+        // every document that carries one.
+        assert!(read(SWEEP).is_ok());
     }
 
     /// What nmap writes for `-sS -sV -O --reason` over two addresses, one of

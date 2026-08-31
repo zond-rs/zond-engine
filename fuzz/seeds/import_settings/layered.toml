@@ -1,0 +1,25 @@
+# Every key the reader knows, set to something other than its default, plus two
+# profiles so the layering has something to layer.
+[defaults]
+effort = "balanced"
+tcp_technique = "syn"
+send_mode = "auto"
+max_probe_rate = 5000
+max_attempts = 3
+timeout_scale = 1.5
+dampen_silent_hosts = true
+default_ports = "1-1024,u:53"
+no_dns = false
+redact = false
+exclude = ["10.0.0.0/8", "192.168.1.1"]
+
+[profiles.stealth]
+tcp_technique = "fin"
+max_probe_rate = 200
+effort = "thorough"
+exclude = ["172.16.0.0/12"]
+
+[profiles.sweep]
+effort = "single"
+max_probe_rate = 50000
+no_dns = true

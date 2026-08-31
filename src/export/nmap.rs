@@ -113,6 +113,7 @@ const XML_OUTPUT_VERSION: &str = "1.05";
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 #[derive(Debug, Clone, Default)]
 pub struct NmapXmlExporter {
     options: ExportOptions,

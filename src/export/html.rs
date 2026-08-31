@@ -1605,8 +1605,6 @@ mod tests {
         assert!(page.contains("raw socket unavailable"));
     }
 
-    /// A report that is narrower than the scan asked for has to say so where
-    /// somebody will see it, which means above the findings.
     /// The facts that change what a state on this page means have to be on the
     /// page.
     ///
@@ -1648,6 +1646,8 @@ mod tests {
         assert!(!page.contains("where this ran from"));
     }
 
+    /// A report that is narrower than the scan asked for has to say so where
+    /// somebody will see it, which means above the findings.
     #[test]
     fn a_narrowed_report_says_so_before_the_findings() {
         let page = default_page();

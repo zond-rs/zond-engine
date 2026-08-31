@@ -6,8 +6,8 @@
 # `cargo build` at the repository root never reaches it.
 #
 # `cargo fuzz run <target>` from the repository root; `cargo fuzz list` names
-# them. Everything under `fuzz/` except this file and the targets is generated
-# and gitignored.
+# them. Tracked here: this file, `README.md`, `fuzz_targets/` and `seeds/`.
+# Everything else under `fuzz/` is what a run produces and is gitignored.
 [package]
 name = "zond-engine-fuzz"
 version = "0.0.0"
@@ -21,38 +21,84 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+# Used by `export_report` alone, to say that what the JSON writers emit is JSON.
+# The library's own parser would be the wrong instrument: it reads the schema,
+# and the question here is the one below that.
+serde_json = "1"
 
-# The features the targets read through. `import-nmap` and `import-json` are what
-# put the document readers in reach; without them two of these targets would
-# compile against nothing.
+# Every reader and every writer, because a target per surface needs the surface
+# compiled in. `test-support` is deliberately absent: it swaps a real transport
+# for a synthetic one, and nothing here goes near a transport.
 [dependencies.zond-engine]
 path = ".."
-features = ["import-nmap", "import-json", "export-json"]
+features = ["import-all", "export-all"]
 
+# ---------------------------------------------------------------------------
+# Targets
+#
+# Named `<surface>_<what>`, and laid out under `fuzz_targets/<surface>/`, so
+# that `cargo fuzz list` groups them and a new one has an obvious home. The
+# surface is the boundary the target attacks, not the module it happens to call:
+# `export_report` reaches the writers by way of a reader, and it is an export
+# target because a writer is what it is asserting about.
+# ---------------------------------------------------------------------------
+
+# Bytes off the wire.
 [[bin]]
-name = "ethernet_frame"
-path = "fuzz_targets/ethernet_frame.rs"
+name = "wire_ethernet_frame"
+path = "fuzz_targets/wire/ethernet_frame.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
 name = "wire_buffer"
-path = "fuzz_targets/wire_buffer.rs"
+path = "fuzz_targets/wire/buffer.rs"
+test = false
+doc = false
+bench = false
+
+# Files somebody else wrote.
+[[bin]]
+name = "import_targets"
+path = "fuzz_targets/import/targets.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "nmap_document"
-path = "fuzz_targets/nmap_document.rs"
+name = "import_report"
+path = "fuzz_targets/import/report.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "report_document"
-path = "fuzz_targets/report_document.rs"
+name = "import_nmap"
+path = "fuzz_targets/import/nmap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "import_settings"
+path = "fuzz_targets/import/settings.rs"
+test = false
+doc = false
+bench = false
+
+# What this crate writes, and whether it can read it back.
+[[bin]]
+name = "export_report"
+path = "fuzz_targets/export/report.rs"
+test = false
+doc = false
+bench = false
+
+# The contract both directions share.
+[[bin]]
+name = "format_timestamp"
+path = "fuzz_targets/format/timestamp.rs"
 test = false
 doc = false
 bench = false

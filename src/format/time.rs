@@ -492,6 +492,12 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn at(secs: u64, nanos: u32) -> SystemTime {
+        UNIX_EPOCH + Duration::new(secs, nanos)
+    }
+
     /// A local time reads as one, and carries the offset that makes it
     /// comparable with anything else.
     ///
@@ -738,12 +744,6 @@ mod tests {
         // A leap day that exists still does.
         assert!(parse_rfc3339("2024-02-29T00:00:00Z").is_some());
     }
-    use super::*;
-
-    fn at(secs: u64, nanos: u32) -> SystemTime {
-        UNIX_EPOCH + Duration::new(secs, nanos)
-    }
-
     #[test]
     fn the_epoch_renders_as_the_epoch() {
         assert_eq!(rfc3339(UNIX_EPOCH), "1970-01-01T00:00:00.000000Z");
@@ -833,8 +833,11 @@ mod tests {
 
 #[cfg(test)]
 mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
 
     proptest! {
+
         /// Every moment the format can express survives the round trip.
         #[test]
         fn every_rendered_time_reads_back_as_itself(secs in MIN_SECS..=MAX_SECS, micros in 0u32..1_000_000) {
@@ -847,11 +850,8 @@ mod property_tests {
             let rendered = rfc3339(moment);
             prop_assert_eq!(parse_rfc3339(&rendered), Some(moment), "{}", rendered);
         }
-    }
-    use super::*;
-    use proptest::prelude::*;
 
-    proptest::proptest! {
+
         /// Whatever the input, the output is a timestamp of exactly the shape
         /// the schema promises. A consumer's parser is written once against
         /// this shape and must never meet another.
