@@ -40,10 +40,20 @@ const FORMAT: &str = "diff json";
 /// # }
 /// ```
 #[must_use]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct JsonDiffExporter {
     options: ExportOptions,
     pretty: bool,
+}
+
+/// Written out rather than derived, for the reason
+/// [`JsonExporter`](crate::export::JsonExporter)'s is: a derived one reads
+/// `pretty` as `false` and disagrees with [`JsonDiffExporter::new`] about what
+/// this exporter does by default.
+impl Default for JsonDiffExporter {
+    fn default() -> Self {
+        Self::new(ExportOptions::default())
+    }
 }
 
 impl JsonDiffExporter {
@@ -334,6 +344,35 @@ mod tests {
         assert_eq!(document["unchanged"], true);
         assert_eq!(document["hosts"].as_array().map(Vec::len), Some(0));
         assert_eq!(document["summary"]["hosts_changed"], 0);
+    }
+
+    /// The two ways of building one of these have to produce the same exporter,
+    /// for the reason the report exporter's own test gives: a derived `Default`
+    /// reads `pretty` as `false` and quietly disagrees with `new`.
+    #[test]
+    fn the_default_exporter_is_the_one_new_builds() {
+        let (before, after) = fixture::compared();
+        let diff = ScanDiff::between(&before, &after);
+
+        // Without the stamp, which is the one field that moves between two
+        // exports of one comparison.
+        let render = |exporter: &JsonDiffExporter| {
+            let mut bytes = Vec::new();
+            exporter.export(&diff, &mut bytes).expect("exports");
+            String::from_utf8(bytes)
+                .expect("utf-8")
+                .lines()
+                .filter(|line| !line.contains("\"generated_at\""))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let built = render(&JsonDiffExporter::new(ExportOptions::new()));
+        assert_eq!(render(&JsonDiffExporter::default()), built);
+        assert!(
+            built.contains("\n  "),
+            "the documented default is indented output"
+        );
     }
 
     /// The document ends with a newline, so a file of one is a well-formed text

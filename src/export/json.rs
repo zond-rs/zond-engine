@@ -41,10 +41,19 @@ const FORMAT: &str = "json";
 /// # }
 /// ```
 #[must_use]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct JsonExporter {
     options: ExportOptions,
     pretty: bool,
+}
+
+/// Written out rather than derived, because a derived one reads `pretty` as
+/// `false` and hands back the compact exporter [`JsonExporter::new`] documents
+/// as the thing it is not. Two constructors for one type have to agree.
+impl Default for JsonExporter {
+    fn default() -> Self {
+        Self::new(ExportOptions::default())
+    }
 }
 
 impl JsonExporter {
@@ -371,6 +380,39 @@ mod tests {
                 .as_str()
                 .expect("a timestamp")
                 .ends_with('Z')
+        );
+    }
+
+    /// The two ways of building one of these have to produce the same exporter.
+    ///
+    /// They did not. `Default` was derived, which reads `pretty` as `false`, so
+    /// `JsonExporter::default()` wrote the compact document while
+    /// `JsonExporter::new(ExportOptions::default())` wrote the indented one that
+    /// `new` documents as the default. Compared as bytes, because the difference
+    /// was only ever whitespace and every test that parsed the output first was
+    /// blind to it.
+    #[test]
+    fn the_default_exporter_is_the_one_new_builds() {
+        let report = fixture::report();
+
+        // Without the stamp, which is the one field that moves between two
+        // exports of one report.
+        let render = |exporter: &JsonExporter| {
+            let mut bytes = Vec::new();
+            exporter.export(&report, &mut bytes).expect("exports");
+            String::from_utf8(bytes)
+                .expect("utf-8")
+                .lines()
+                .filter(|line| !line.contains("\"generated_at\""))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let built = render(&JsonExporter::new(ExportOptions::new()));
+        assert_eq!(render(&JsonExporter::default()), built);
+        assert!(
+            built.contains("\n  "),
+            "the documented default is indented output"
         );
     }
 

@@ -80,6 +80,8 @@ impl Importer for NmapXmlImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
+        crate::import::skip_bom(input)?;
+
         let mut parser = Parser::new(input, self.limits.max_line_bytes, FORMAT, KEPT);
         let mut host: Option<Accumulator> = None;
         let mut saw_root = false;

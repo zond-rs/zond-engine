@@ -327,7 +327,10 @@ impl ReportFormat {
         const REPORT_TAG: &[u8] = br#""type":"report""#;
 
         let available = input.fill_buf()?;
-        let prefix = available.trim_ascii_start();
+        // Excel's mark, which says nothing about the format behind it. Stripped
+        // here as the target side strips it, or a document saved by a Windows
+        // editor is refused as neither format before either reader sees it.
+        let prefix = crate::import::without_bom(available).trim_ascii_start();
 
         // Bound before the arms, because a build with only one of the two
         // features has no arm to read it and an unused binding there is a
@@ -443,6 +446,43 @@ mod tests {
         assert!(
             report.is_ok(),
             "a sniff must not consume the bytes the reader needs: {report:?}"
+        );
+    }
+
+    /// A document a Windows editor saved is still the document it is.
+    ///
+    /// This side stripped no mark at all, so a report saved through
+    /// `Out-File` was refused as neither format — including nmap XML, which
+    /// the reader behind it would have read without complaint.
+    #[test]
+    fn a_byte_order_mark_hides_neither_format() {
+        let marked = |text: &str| {
+            let mut bytes = crate::format::UTF8_BOM.to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            Cursor::new(bytes)
+        };
+
+        for (document, expected) in [
+            (r#"{"schema_version":1}"#, ReportFormat::Json),
+            (
+                "{\"type\":\"report\",\"schema_version\":1}\n",
+                ReportFormat::JsonLines,
+            ),
+            (r#"<?xml version="1.0"?><nmaprun/>"#, ReportFormat::Nmap),
+        ] {
+            assert_eq!(
+                ReportFormat::sniff(&mut marked(document)).expect("sniffs"),
+                expected,
+                "{document}"
+            );
+        }
+
+        // And the reader named still reads what the sniff was looking at.
+        let mut input = marked(r#"<?xml version="1.0"?><nmaprun/>"#);
+        let format = ReportFormat::sniff(&mut input).expect("sniffs");
+        assert!(
+            format.read(&mut input, ReportOptions::new()).is_ok(),
+            "the format was recognised and then refused the same bytes"
         );
     }
 

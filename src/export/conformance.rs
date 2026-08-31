@@ -14,10 +14,17 @@
 //! string, an enum that gains a variant, and the file on disk quietly stops
 //! describing the thing it claims to.
 //!
-//! So the schema is strict - every object closed, every field required - and
-//! these tests run the real exporter against it. Adding a field to the DTO
-//! without describing it here fails the build, which is the only arrangement
-//! under which the schema stays true.
+//! So the schema is strict - every object closed, and every field required
+//! except the handful a writer omits when it has nothing to say - and these
+//! tests run the real exporter against it. Adding a field to the DTO without
+//! describing it here fails the build, which is the only arrangement under which
+//! the schema stays true.
+//!
+//! That handful is itself pinned, by
+//! `the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out`. The
+//! module documentation of [`schema`](super::schema) tells a consumer what an
+//! absent field means, and a `skip_serializing_if` added without a thought for
+//! that sentence is how the two stopped agreeing once already.
 
 use boon::{Compiler, Schemas};
 use regex::Regex;
@@ -344,6 +351,110 @@ fn the_schema_lists_exactly_the_enumerated_values_the_engine_writes() {
 #[test]
 fn a_full_report_matches_the_schema() {
     Validator::new().check(&document(ExportOptions::new()));
+}
+
+/// A scan that altered no packets, read no zombie's counter and found no
+/// managed equipment, which is most scans.
+///
+/// Every test above exports the fixture that has one of everything, so every
+/// optional block is present in all of them and the schema's `required` lists
+/// are only ever exercised in the direction where nothing is missing. A field
+/// the schema demands and this document omits would pass all of them and fail
+/// in a consumer's validator.
+#[test]
+fn an_ordinary_report_matches_the_schema() {
+    let plain = fixture::compared().0;
+    let mut bytes = Vec::new();
+    JsonExporter::new(ExportOptions::new())
+        .export(&plain, &mut bytes)
+        .expect("the export succeeds");
+    let document: Value = serde_json::from_slice(&bytes).expect("the export parses as JSON");
+
+    // Otherwise this validates the same document the test above does.
+    let settings = &document["phases"][0]["settings"];
+    assert!(settings["evasion"].is_null(), "the fixture altered packets");
+    assert!(settings["idle_scan"].is_null(), "the fixture read a zombie");
+    assert!(
+        document["phases"][0]["attachments"].is_null(),
+        "the fixture found managed equipment"
+    );
+
+    Validator::new().check(&document);
+}
+
+/// The fields a writer leaves out, as the schema lists them.
+///
+/// Everything else the document carries is present whatever its value: `null`
+/// for nothing, `[]` for nothing in a list. These are the exception, and
+/// [`schema`](super::schema) promises a consumer that reading an absent one as
+/// the empty value is always correct. A `skip_serializing_if` added to a field
+/// that does not belong on this list breaks that promise silently, so the list
+/// is written down here and compared.
+#[test]
+fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
+    /// `$defs` entry, then field.
+    const OMITTED: &[(&str, &str)] = &[
+        ("attachment", "device_mac"),
+        ("attachment", "device_name"),
+        ("attachment", "management_address"),
+        ("attachment", "native_vlan"),
+        ("attachment", "port"),
+        ("finding", "excerpt"),
+        ("finding", "remediation"),
+        ("origin", "label"),
+        ("phase", "attachments"),
+        ("phase", "origin"),
+        ("scope", "listened"),
+        ("settings", "evasion"),
+        ("settings", "idle_scan"),
+    ];
+
+    /// The two objects that are a technique's own profile, where every field
+    /// describes one part of it and any part may be absent.
+    const OMITTED_WHOLESALE: &[&str] = &["evasion", "idle_scan"];
+
+    let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
+    let definitions = schema["$defs"]
+        .as_object()
+        .expect("the schema defines types");
+
+    let mut optional: Vec<(String, String)> = Vec::new();
+    for (name, definition) in definitions {
+        let Some(properties) = definition["properties"].as_object() else {
+            continue;
+        };
+        let required: BTreeSet<&str> = definition["required"]
+            .as_array()
+            .map(|names| names.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+
+        if OMITTED_WHOLESALE.contains(&name.as_str()) {
+            assert!(
+                required.is_empty(),
+                "`{name}` describes one technique's profile and every part of it \
+                 is optional; `{required:?}` says otherwise"
+            );
+            continue;
+        }
+
+        for field in properties.keys() {
+            if !required.contains(field.as_str()) {
+                optional.push((name.clone(), field.clone()));
+            }
+        }
+    }
+    optional.sort();
+
+    let expected: Vec<(String, String)> = OMITTED
+        .iter()
+        .map(|(object, field)| ((*object).to_string(), (*field).to_string()))
+        .collect();
+
+    assert_eq!(
+        optional, expected,
+        "the schema's optional fields are not the ones `schema`'s module \
+         documentation tells a consumer to expect"
+    );
 }
 
 /// Redaction rewrites hostnames and hardware addresses. It must not rewrite

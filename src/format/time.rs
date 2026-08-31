@@ -294,6 +294,10 @@ fn civil_parts(secs: i64) -> Civil {
 /// would mean this engine's own documents and somebody else's read differently
 /// in the same field, and every timestamp this format defines is UTC.
 ///
+/// A date the calendar does not have is refused too. `2026-02-31` is a moment
+/// nobody can point at, and reading it as the third of March would hand back a
+/// timestamp that looks perfectly ordinary and names the wrong day.
+///
 /// ```
 /// use zond_engine::format::time::{parse_rfc3339, rfc3339};
 /// use std::time::{Duration, UNIX_EPOCH};
@@ -301,6 +305,7 @@ fn civil_parts(secs: i64) -> Civil {
 /// let moment = UNIX_EPOCH + Duration::new(1_770_000_000, 123_456_000);
 /// assert_eq!(parse_rfc3339(&rfc3339(moment)), Some(moment));
 /// assert_eq!(parse_rfc3339("not a timestamp"), None);
+/// assert_eq!(parse_rfc3339("2026-02-31T00:00:00Z"), None);
 /// ```
 pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     let text = text.trim();
@@ -309,10 +314,10 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     let (date, rest) = body.split_once(['T', 't'])?;
 
     let mut date = date.splitn(3, '-');
-    let year: i64 = date.next()?.parse().ok()?;
-    let month: u32 = date.next()?.parse().ok()?;
-    let day: u32 = date.next()?.parse().ok()?;
-    if date.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    let year = i64::from(field(date.next()?, 4)?);
+    let month = field(date.next()?, 2)?;
+    let day = field(date.next()?, 2)?;
+    if date.next().is_some() {
         return None;
     }
 
@@ -322,9 +327,9 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     };
 
     let mut clock = clock.splitn(3, ':');
-    let hour: i64 = clock.next()?.parse().ok()?;
-    let minute: i64 = clock.next()?.parse().ok()?;
-    let second: i64 = clock.next()?.parse().ok()?;
+    let hour = i64::from(field(clock.next()?, 2)?);
+    let minute = i64::from(field(clock.next()?, 2)?);
+    let second = i64::from(field(clock.next()?, 2)?);
     if clock.next().is_some() || hour > 23 || minute > 59 || second > 60 {
         return None;
     }
@@ -352,6 +357,14 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     };
 
     let days = days_from_civil(year, month, day)?;
+    // Whether the calendar has this date, asked of the inverse rather than of a
+    // table of month lengths. A day past the end of its month still counts to a
+    // real day number, and it is the only day number that does not count back to
+    // the date it was written as.
+    if civil_from_days(days) != (year, month, day) {
+        return None;
+    }
+
     let secs = days
         .checked_mul(SECS_PER_DAY)?
         .checked_add(hour * 3_600 + minute * 60 + second)?;
@@ -365,6 +378,21 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     } else {
         UNIX_EPOCH - Duration::new(secs.unsigned_abs(), 0) + Duration::new(0, nanos)
     })
+}
+
+/// One field of a timestamp: exactly `width` decimal digits, as the number they
+/// spell.
+///
+/// RFC 3339 fixes every field's width, and holding to that is what refuses the
+/// shapes an ordinary integer parse waves through. `-5` is an hour to
+/// `i64::from_str` and moves the timestamp into the previous day; `+2026` is a
+/// year. Neither is a timestamp anybody wrote on purpose, and neither failed to
+/// parse.
+fn field(text: &str, width: usize) -> Option<u32> {
+    if text.len() != width || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// Days from the Unix epoch to a civil date, the inverse of
@@ -673,6 +701,42 @@ mod tests {
             parse_rfc3339("2016-12-31T23:59:60Z"),
             parse_rfc3339("2016-12-31T23:59:59Z")
         );
+    }
+
+    /// The shapes that parsed and should not have.
+    ///
+    /// **Each of these came back as a perfectly ordinary moment on the wrong
+    /// day.** Every field went through an integer parse with only an upper
+    /// bound checked, so `-5` was an hour five hours before midnight and
+    /// `2026-02-31` was the third of March. Nothing failed, and the only reader
+    /// that calls this is the one that rebuilds a report out of a file somebody
+    /// else wrote — where a wrong `cert_not_after` is an expiry alert that fires
+    /// on the wrong date, or not at all.
+    #[test]
+    fn a_timestamp_that_is_not_one_is_refused_rather_than_reinterpreted() {
+        for text in [
+            // A negative field, which moves the moment into another day.
+            "2026-01-01T-5:00:00Z",
+            "2026-01-01T00:-30:00Z",
+            "2026-01-01T00:00:-1Z",
+            // A day the month does not have.
+            "2026-02-31T00:00:00Z",
+            "2025-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-01-00T00:00:00Z",
+            "2026-00-01T00:00:00Z",
+            "2026-13-01T00:00:00Z",
+            // Widths RFC 3339 does not have.
+            "2026-2-2T01:02:03Z",
+            "+2026-01-01T00:00:00Z",
+            "26-01-01T00:00:00Z",
+            "2026-01-01T1:02:03Z",
+        ] {
+            assert_eq!(parse_rfc3339(text), None, "{text} was read as a moment");
+        }
+
+        // A leap day that exists still does.
+        assert!(parse_rfc3339("2024-02-29T00:00:00Z").is_some());
     }
     use super::*;
 

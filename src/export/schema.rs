@@ -41,9 +41,16 @@
 //!   sweep's address count does not fit a JSON number as JavaScript implements
 //!   one, and a count that silently rounds is worse than one that needs
 //!   parsing. Everything narrow enough to be exact stays a number.
-//! - **Objects have a fixed shape.** A field that has no value is present and
-//!   `null`; a list with nothing in it is present and empty. A consumer never
-//!   has to distinguish "absent" from "empty" from "unknown".
+//! - **Objects have a fixed shape, and absence never means anything.** A field
+//!   that has no value is present and `null`, and a list with nothing in it is
+//!   present and empty. The exception is a field describing something the scan
+//!   did not do at all — an evasion profile on a scan that altered no packets,
+//!   a switch on a network with no managed equipment, an excerpt a detection did
+//!   not carry — which is left out rather than nulled. That is a saving on the
+//!   document and not a third state: a consumer reading an absent field as the
+//!   empty one, `null` or `[]` or `false`, reads every document correctly.
+//!   `assets/schema/zond-report-v1.schema.json` is the list, since every field
+//!   it does not mark `required` is one of these and every other field is.
 //! - **Order is deterministic.** Hosts sort by primary IP, ports by number, sets
 //!   by their natural order. Two scans that found the same things produce
 //!   documents that diff cleanly.

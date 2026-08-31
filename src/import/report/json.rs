@@ -142,6 +142,8 @@ impl JsonReportReader {
 
 impl ReportReader for JsonReportReader {
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
+        crate::import::skip_bom(input)?;
+
         let max_hosts = self.options.limits.max_addresses;
         let overrun = Cell::new(false);
 
@@ -185,6 +187,8 @@ impl JsonLinesReportReader {
 
 impl ReportReader for JsonLinesReportReader {
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
+        crate::import::skip_bom(input)?;
+
         let max_hosts = self.options.limits.max_addresses;
         let mut buffer = Vec::new();
         let mut line_number = 0u64;
@@ -1424,9 +1428,16 @@ mod tests {
         write(&crate::export::fixture::report())
     }
 
+    /// Compact, and asked for rather than inherited: several tests below reach
+    /// into the document for a value by its exact spelling, `"state":"open"`,
+    /// which the indented writer separates with a space. They used to get
+    /// compact output from `JsonExporter::default()` by accident, and a `Default`
+    /// that agrees with `new` turned each of those searches into a silent
+    /// no-op — the document went in unmodified and read back perfectly.
     fn write(report: &ScanReport) -> String {
         let mut out = Vec::new();
-        JsonExporter::default()
+        JsonExporter::new(crate::export::ExportOptions::new())
+            .compact()
             .export(report, &mut out)
             .expect("the fixture exports");
         String::from_utf8(out).expect("valid UTF-8")

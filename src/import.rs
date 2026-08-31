@@ -525,6 +525,38 @@ pub trait TargetSink {
     fn accept(&mut self, token: &str, origin: ImportOrigin) -> Result<(), ImportError>;
 }
 
+/// `bytes` with a byte-order mark taken off the front, for a reader looking at
+/// input it has not consumed.
+///
+/// The peeking half of [`skip_bom`]. Both exist because the mark has to be
+/// invisible at two different moments - when a format is being guessed at and
+/// when one is being read - and a rule applied at only one of them is what let
+/// [`ImportFormat::sniff`] name a reader that then refused the same bytes.
+pub(crate) fn without_bom(bytes: &[u8]) -> &[u8] {
+    bytes
+        .strip_prefix(&crate::format::UTF8_BOM)
+        .unwrap_or(bytes)
+}
+
+/// Consumes a byte-order mark at the very start of `input`, if there is one.
+///
+/// Called once, before anything else reads. A mark anywhere later is data, and a
+/// reader that stripped one there would accept a document that is not what it
+/// says it is.
+///
+/// The line-oriented and record-oriented readers do this for themselves, because
+/// each already holds the bytes in a buffer of its own by the time the question
+/// arises. This is for the readers that hand the stream straight to a parser
+/// that will refuse the mark: `serde_json` reports it as a value it did not
+/// expect at column 1, which names the wrong problem to whoever wrote the file.
+#[cfg(any(feature = "import-json", feature = "import-nmap"))]
+pub(crate) fn skip_bom(input: &mut dyn BufRead) -> Result<(), ImportError> {
+    if input.fill_buf()?.starts_with(&crate::format::UTF8_BOM) {
+        input.consume(crate::format::UTF8_BOM.len());
+    }
+    Ok(())
+}
+
 /// Writes the target expression naming `address` on `ports` into `token`.
 ///
 /// The one place the bracketing rule is written down. Every format that arrives
@@ -756,10 +788,7 @@ impl ImportFormat {
 
         let buffered = input.fill_buf()?;
         // Excel's mark, which says nothing about the format behind it.
-        let prefix = buffered
-            .strip_prefix(&crate::format::UTF8_BOM)
-            .unwrap_or(buffered);
-        let prefix = prefix.trim_ascii_start();
+        let prefix = without_bom(buffered).trim_ascii_start();
 
         // Bound before the arms, because a build with no structured format
         // compiled in has no arm to read it and an unused binding there is a
@@ -1222,6 +1251,79 @@ mod tests {
             assert_eq!(
                 ImportFormat::sniff(&mut Cursor::new(document)).expect("sniffs"),
                 expected,
+            );
+        }
+    }
+
+    /// A file a Windows editor saved reads as the format it is, in every format
+    /// there is.
+    ///
+    /// **Sniffing and reading disagreed about the same bytes.** `sniff` stripped
+    /// the mark and named `Json`, and the reader it named then refused the
+    /// document at column 1, because only the readers that hold a line in a
+    /// buffer of their own were stripping one. `Out-File` on Windows PowerShell
+    /// writes the mark by default, so `zond ... | Out-File scan.json` produced a
+    /// report this crate could not read back.
+    #[test]
+    fn a_byte_order_mark_costs_no_format_its_document() {
+        /// The same document each format would carry, as short as it can be.
+        fn documents() -> Vec<(ImportFormat, String)> {
+            let mut all = vec![(ImportFormat::List, "10.0.0.1\n".to_string())];
+
+            // The header in full, because recognising a table means recognising
+            // this crate's own; the row can stop after the address, since a
+            // column a record does not reach is a column it does not set.
+            #[cfg(feature = "import-csv")]
+            all.push((
+                ImportFormat::Csv,
+                format!("{}\n10.0.0.1\n", crate::format::csv::COLUMNS.join(",")),
+            ));
+            #[cfg(feature = "import-json")]
+            {
+                let hosts = r#"{"primary_ip":"10.0.0.1","ips":["10.0.0.1"],"ports":[]}"#;
+                all.push((
+                    ImportFormat::Json,
+                    format!(r#"{{"schema_version":1,"hosts":[{hosts}]}}"#),
+                ));
+                all.push((
+                    ImportFormat::JsonLines,
+                    format!(
+                        "{{\"type\":\"report\",\"schema_version\":1}}\n{{\"type\":\"host\",{}\n",
+                        &hosts[1..]
+                    ),
+                ));
+            }
+            #[cfg(feature = "import-nmap")]
+            all.push((
+                ImportFormat::NmapXml,
+                r#"<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/></host></nmaprun>"#
+                    .to_string(),
+            ));
+
+            all
+        }
+
+        for (format, document) in documents() {
+            let marked = |text: &str| {
+                let mut bytes = crate::format::UTF8_BOM.to_vec();
+                bytes.extend_from_slice(text.as_bytes());
+                Cursor::new(bytes)
+            };
+
+            assert_eq!(
+                ImportFormat::sniff(&mut marked(&document)).expect("sniffs"),
+                format,
+                "{format} was not recognised through a byte-order mark"
+            );
+
+            let imported = format
+                .read(&mut marked(&document), &options("80"))
+                .unwrap_or_else(|error| {
+                    panic!("{format} sniffed as itself and then refused itself: {error}")
+                });
+            assert_eq!(
+                imported.addresses, 1,
+                "{format} read no targets through a byte-order mark"
             );
         }
     }

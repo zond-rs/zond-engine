@@ -191,6 +191,8 @@ impl NmapXmlReportReader {
 
 impl ReportReader for NmapXmlReportReader {
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
+        crate::import::skip_bom(input)?;
+
         let mut parser = Parser::new(input, self.options.limits.max_line_bytes, FORMAT, KEPT)
             .with_max_value_bytes(MAX_VALUE_BYTES)
             .with_lossy(LOSSY);

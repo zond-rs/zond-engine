@@ -30,13 +30,15 @@ use crate::model::mac::MacAddr;
 /// Masks a hostname, keeping its first and last two characters so two masked
 /// names still read as two names.
 ///
-/// The middle becomes a fixed run of `X`, which hides the length as well as the
-/// content: a five-character name and a fifty-character one mask to the same
-/// width.
+/// The middle becomes a fixed run of `X` rather than one per character, so the
+/// length goes with it: `router` and a fifty-character name both mask to nine
+/// characters.
 ///
-/// A name with fewer than six characters is masked whole. Keeping two at each
-/// end of a five-character name would leave four of its five, which is not a
-/// masked name at all.
+/// A name with fewer than six characters is masked whole, and is the one case
+/// that does not come out nine wide. Keeping two at each end of a
+/// five-character name would leave four of its five, which is not a masked name
+/// at all, so those lose their ends as well - and a five-character mask is
+/// itself the tell that the name was short.
 ///
 /// # Examples
 /// ```
@@ -68,12 +70,14 @@ pub fn hostname(name: &str) -> String {
         .rev()
         .collect();
 
-    format!("{}XXXXX{}", first_two, last_two)
+    format!("{first_two}XXXXX{last_two}")
 }
 
-/// Redacts a MAC address to prevent hardware fingerprinting.
+/// Masks a hardware address, keeping the OUI.
 ///
-/// Returns a string where the last three octets are replaced by 'XX'.
+/// The first three octets are the vendor and the last three are the individual
+/// card, so this is the cut that leaves a report saying what a device is made
+/// by without saying which one it is.
 ///
 /// # Examples
 /// ```
@@ -105,9 +109,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mac_redaction_upper_boundary() {
+    fn an_address_of_every_octet_keeps_the_three_that_name_a_vendor() {
         let mac = MacAddr::new(0xff, 0xff, 0xff, 0x00, 0x11, 0x22);
         assert_eq!(mac_addr(&mac), "ff:ff:ff:XX:XX:XX");
+    }
+
+    /// A masked name is nine characters whatever went in, which is what makes
+    /// the mask hide the length rather than merely the letters. The short case
+    /// is the documented exception and is five.
+    #[test]
+    fn masking_a_name_hides_how_long_it_was() {
+        for name in ["router", "workstation", &"a".repeat(50)] {
+            assert_eq!(hostname(name).chars().count(), 9, "{name}");
+        }
+
+        assert_eq!(hostname("modem"), "XXXXX");
     }
 }
 
@@ -137,18 +153,21 @@ mod property_tests {
             prop_assert_eq!(hostname(&name), "XXXXX");
         }
 
-        /// Verify that MAC redaction always preserves only the first 3 octets (OUI).
+        /// The vendor survives and the card does not, for every address there
+        /// is.
         #[test]
-        fn mac_redaction_preserves_oui(
+        fn a_masked_address_keeps_its_oui_and_loses_the_rest(
             o1 in 0..=255u8, o2 in 0..=255u8, o3 in 0..=255u8,
             o4 in 0..=255u8, o5 in 0..=255u8, o6 in 0..=255u8
         ) {
-            let mac = MacAddr::new(o1, o2, o3, o4, o5, o6);
-            let redacted = mac_addr(&mac);
-            let expected_prefix = format!("{:02x}:{:02x}:{:02x}", o1, o2, o3);
-            prop_assert!(redacted.starts_with(&expected_prefix));
+            let redacted = mac_addr(&MacAddr::new(o1, o2, o3, o4, o5, o6));
+            // Built outside the assertion: `prop_assert!` re-expands its
+            // expression through `format_args!`, which cannot capture from
+            // around it.
+            let oui = format!("{o1:02x}:{o2:02x}:{o3:02x}");
+
+            prop_assert!(redacted.starts_with(&oui));
             prop_assert!(redacted.ends_with("XX:XX:XX"));
         }
-
     }
 }

@@ -307,6 +307,8 @@ impl Importer for JsonImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
+        crate::import::skip_bom(input)?;
+
         let mut emitter = Emitter::new(sink, self.limits);
         let mut deserializer = serde_json::Deserializer::from_reader(input);
 
@@ -459,6 +461,8 @@ impl Importer for JsonLinesImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
+        crate::import::skip_bom(input)?;
+
         let mut emitter = Emitter::new(sink, self.limits);
         let mut buffer = Vec::new();
         let mut line_number = 0u64;
