@@ -1750,10 +1750,28 @@ impl ScanReport {
     /// Distinct from [`started_at`](Self::started_at), which answers when the
     /// job began. The two differ by a scan's duration for an ordinary report and
     /// by however long the sources span for a merged one.
+    /// A phase whose end cannot be represented is placed at its start. The
+    /// addition is checked because a phase's `elapsed` is not always something
+    /// this engine measured: a report read out of another scanner's document
+    /// carries whatever that document claimed, and nmap's `elapsed` is a decimal
+    /// number of seconds with no bound on it. A [`Duration`] holds five hundred
+    /// billion years quite happily, a [`SystemTime`] does not, and `+` panics on
+    /// the difference — in a method a consumer calls to ask when a report is as
+    /// of.
+    ///
+    /// Placing such a phase at its start understates it, which is the safe
+    /// direction: taken with the `max` below it still says the report had not
+    /// finished before its latest phase began, and that much is true whatever
+    /// the document claimed.
     pub fn finished_at(&self) -> SystemTime {
         self.phases
             .iter()
-            .map(|phase| phase.started_at() + phase.elapsed())
+            .map(|phase| {
+                phase
+                    .started_at()
+                    .checked_add(phase.elapsed())
+                    .unwrap_or_else(|| phase.started_at())
+            })
             .max()
             .unwrap_or_else(SystemTime::now)
     }
@@ -2239,6 +2257,40 @@ mod tests {
             probes: Vec::new(),
             origin: None,
         }
+    }
+
+    /// A duration no clock can add to is a phase to place at its start, not a
+    /// process to end.
+    ///
+    /// **This crashed.** `finished_at` added a phase's `elapsed` to its start
+    /// with `+`, which panics on overflow, and a phase's `elapsed` is not always
+    /// something this engine measured: a report read out of nmap's XML carries
+    /// whatever `<finished elapsed="...">` claimed, and that is a decimal number
+    /// of seconds with no bound on it. A `Duration` holds five hundred billion
+    /// years and a `SystemTime` does not.
+    ///
+    /// It took the process down from inside `ScanDiff::between`, which is what
+    /// a nightly comparison calls on every report it reads. Found by the
+    /// `import_nmap` fuzz target on `elapsed="1222222222…"`.
+    #[test]
+    fn a_phase_claiming_more_time_than_a_clock_holds_does_not_end_the_process() {
+        let mut absurd = phase(ScanKind::PortScan);
+        absurd.started_at = SystemTime::UNIX_EPOCH;
+        absurd.elapsed = Duration::from_secs(u64::MAX);
+
+        let ordinary = phase(ScanKind::Discovery);
+        let ends_at = ordinary.started_at + ordinary.elapsed;
+
+        let report = ScanReport::recorded("zond", vec![absurd, ordinary], Vec::new());
+
+        assert_eq!(
+            report.finished_at(),
+            ends_at,
+            "the phase that could be placed is the one that should place the report"
+        );
+
+        // And the comparison that reads it, which is where the panic surfaced.
+        assert!(crate::diff::ScanDiff::between(&report, &report).is_empty());
     }
 
     fn ip_set(spec: &str) -> IpSet {

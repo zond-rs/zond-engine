@@ -2051,7 +2051,7 @@ pub fn zond_engine::export::diff::json::JsonDiffExporter::pretty(self) -> Self
 impl core::clone::Clone for zond_engine::export::diff::json::JsonDiffExporter
 pub fn zond_engine::export::diff::json::JsonDiffExporter::clone(&self) -> zond_engine::export::diff::json::JsonDiffExporter
 impl core::default::Default for zond_engine::export::diff::json::JsonDiffExporter
-pub fn zond_engine::export::diff::json::JsonDiffExporter::default() -> zond_engine::export::diff::json::JsonDiffExporter
+pub fn zond_engine::export::diff::json::JsonDiffExporter::default() -> Self
 impl core::fmt::Debug for zond_engine::export::diff::json::JsonDiffExporter
 pub fn zond_engine::export::diff::json::JsonDiffExporter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl zond_engine::export::diff::DiffExporter for zond_engine::export::diff::json::JsonDiffExporter
@@ -2307,7 +2307,7 @@ pub fn zond_engine::export::diff::json::JsonDiffExporter::pretty(self) -> Self
 impl core::clone::Clone for zond_engine::export::diff::json::JsonDiffExporter
 pub fn zond_engine::export::diff::json::JsonDiffExporter::clone(&self) -> zond_engine::export::diff::json::JsonDiffExporter
 impl core::default::Default for zond_engine::export::diff::json::JsonDiffExporter
-pub fn zond_engine::export::diff::json::JsonDiffExporter::default() -> zond_engine::export::diff::json::JsonDiffExporter
+pub fn zond_engine::export::diff::json::JsonDiffExporter::default() -> Self
 impl core::fmt::Debug for zond_engine::export::diff::json::JsonDiffExporter
 pub fn zond_engine::export::diff::json::JsonDiffExporter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl zond_engine::export::diff::DiffExporter for zond_engine::export::diff::json::JsonDiffExporter
@@ -2357,7 +2357,7 @@ pub fn zond_engine::export::json::JsonExporter::pretty(self) -> Self
 impl core::clone::Clone for zond_engine::export::json::JsonExporter
 pub fn zond_engine::export::json::JsonExporter::clone(&self) -> zond_engine::export::json::JsonExporter
 impl core::default::Default for zond_engine::export::json::JsonExporter
-pub fn zond_engine::export::json::JsonExporter::default() -> zond_engine::export::json::JsonExporter
+pub fn zond_engine::export::json::JsonExporter::default() -> Self
 impl core::fmt::Debug for zond_engine::export::json::JsonExporter
 pub fn zond_engine::export::json::JsonExporter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl zond_engine::export::Exporter for zond_engine::export::json::JsonExporter
@@ -3353,7 +3353,7 @@ pub fn zond_engine::export::json::JsonExporter::pretty(self) -> Self
 impl core::clone::Clone for zond_engine::export::json::JsonExporter
 pub fn zond_engine::export::json::JsonExporter::clone(&self) -> zond_engine::export::json::JsonExporter
 impl core::default::Default for zond_engine::export::json::JsonExporter
-pub fn zond_engine::export::json::JsonExporter::default() -> zond_engine::export::json::JsonExporter
+pub fn zond_engine::export::json::JsonExporter::default() -> Self
 impl core::fmt::Debug for zond_engine::export::json::JsonExporter
 pub fn zond_engine::export::json::JsonExporter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl zond_engine::export::Exporter for zond_engine::export::json::JsonExporter
@@ -9582,11 +9582,31 @@ impl core::marker::Unpin for zond_engine::protocols::tcp::QuotedProbe
 impl core::marker::UnsafeUnpin for zond_engine::protocols::tcp::QuotedProbe
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::tcp::QuotedProbe
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::tcp::QuotedProbe
+pub struct zond_engine::protocols::tcp::Segment<'a>
+impl<'a> zond_engine::protocols::tcp::Segment<'a>
+pub fn zond_engine::protocols::tcp::Segment<'a>::acknowledgement(&self) -> u32
+pub fn zond_engine::protocols::tcp::Segment<'a>::destination_port(&self) -> u16
+pub fn zond_engine::protocols::tcp::Segment<'a>::flags(&self) -> u8
+pub fn zond_engine::protocols::tcp::Segment<'a>::payload(&self) -> &'a [u8]
+pub fn zond_engine::protocols::tcp::Segment<'a>::sequence(&self) -> u32
+pub fn zond_engine::protocols::tcp::Segment<'a>::source_port(&self) -> u16
+impl<'a> core::clone::Clone for zond_engine::protocols::tcp::Segment<'a>
+pub fn zond_engine::protocols::tcp::Segment<'a>::clone(&self) -> zond_engine::protocols::tcp::Segment<'a>
+impl<'a> core::fmt::Debug for zond_engine::protocols::tcp::Segment<'a>
+pub fn zond_engine::protocols::tcp::Segment<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for zond_engine::protocols::tcp::Segment<'a>
+impl<'a> core::marker::Freeze for zond_engine::protocols::tcp::Segment<'a>
+impl<'a> core::marker::Send for zond_engine::protocols::tcp::Segment<'a>
+impl<'a> core::marker::Sync for zond_engine::protocols::tcp::Segment<'a>
+impl<'a> core::marker::Unpin for zond_engine::protocols::tcp::Segment<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::protocols::tcp::Segment<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::tcp::Segment<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::tcp::Segment<'a>
 pub fn zond_engine::protocols::tcp::build_probe(zond_engine::model::technique::TcpScanTechnique, &core::net::ip_addr::IpAddr, &core::net::ip_addr::IpAddr, u16, u16, u32) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::tcp::build_probe_shaped(zond_engine::model::technique::TcpScanTechnique, &core::net::ip_addr::IpAddr, &core::net::ip_addr::IpAddr, u16, u16, u32, core::option::Option<u16>, bool) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::tcp::classify_probe_response(&pnet_packet::tcp::TcpPacket<'_>) -> core::option::Option<zond_engine::model::technique::TcpReply>
-pub fn zond_engine::protocols::tcp::echoed_nonce(zond_engine::model::technique::TcpScanTechnique, &pnet_packet::tcp::TcpPacket<'_>, u16) -> u32
-pub fn zond_engine::protocols::tcp::parse(&[u8]) -> zond_engine::protocols::error::Result<pnet_packet::tcp::TcpPacket<'_>>
+pub fn zond_engine::protocols::tcp::classify_probe_response(&zond_engine::protocols::tcp::Segment<'_>) -> core::option::Option<zond_engine::model::technique::TcpReply>
+pub fn zond_engine::protocols::tcp::echoed_nonce(zond_engine::model::technique::TcpScanTechnique, &zond_engine::protocols::tcp::Segment<'_>, u16) -> u32
+pub fn zond_engine::protocols::tcp::parse(&[u8]) -> zond_engine::protocols::error::Result<zond_engine::protocols::tcp::Segment<'_>>
 pub const fn zond_engine::protocols::tcp::probe_flags(zond_engine::model::technique::TcpScanTechnique) -> u8
 pub fn zond_engine::protocols::tcp::quoted_nonce(zond_engine::model::technique::TcpScanTechnique, &zond_engine::protocols::tcp::QuotedProbe) -> core::option::Option<u32>
 pub fn zond_engine::protocols::tcp::quoted_probe(&[u8]) -> core::option::Option<zond_engine::protocols::tcp::QuotedProbe>

@@ -67,7 +67,6 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pnet_packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -298,7 +297,7 @@ impl IdlePortScanner {
                 self.audit.record_off_target();
                 continue;
             }
-            let Some(tcp) = TcpPacket::new(&reply.bytes) else {
+            let Ok(tcp) = tcp::parse(&reply.bytes) else {
                 continue;
             };
             // The reset takes its sequence from our probe's acknowledgement
@@ -316,8 +315,8 @@ impl IdlePortScanner {
             return Some(Reading {
                 ip_id: observation.identification,
                 at: Instant::now(),
-                flags: tcp.get_flags(),
-                sequence: tcp.get_sequence(),
+                flags: tcp.flags(),
+                sequence: tcp.sequence(),
             });
         }
     }
@@ -621,7 +620,7 @@ mod tests {
             dst: IpAddr,
             _emission: Emission,
         ) -> Result<(), SendError> {
-            let Some(tcp) = TcpPacket::new(segment) else {
+            let Ok(tcp) = tcp::parse(segment) else {
                 return Ok(());
             };
             if dst == ZOMBIE {
@@ -629,12 +628,12 @@ mod tests {
                 // probe's acknowledgement field, which is where a SYN+ACK's nonce
                 // rides, so the scanner reads it straight back.
                 let reset = reset(
-                    tcp.get_destination(),
-                    tcp.get_source(),
-                    tcp.get_acknowledgement(),
+                    tcp.destination_port(),
+                    tcp.source_port(),
+                    tcp.acknowledgement(),
                 );
                 let _ = self.replies.try_send(captured(reset, self.next_id()));
-            } else if dst == TARGET && self.open_ports.contains(&tcp.get_destination()) {
+            } else if dst == TARGET && self.open_ports.contains(&tcp.destination_port()) {
                 // An open target bounced a SYN+ACK off the zombie, which reset it
                 // and advanced the counter — a step this scan reads but never sees.
                 let _ = self.next_id();

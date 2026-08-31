@@ -546,7 +546,7 @@ impl OsSeriesScanner {
         let sample = SeriesSample {
             at,
             flags: observed.flags,
-            sequence: segment.get_sequence(),
+            sequence: segment.sequence(),
             ip_id: match observation {
                 IpObservation::V4(v4) => Some(v4.identification),
                 IpObservation::V6(_) => None,

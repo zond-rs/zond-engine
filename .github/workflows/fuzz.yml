@@ -75,16 +75,35 @@ jobs:
       # A target with no seeds reaches almost nothing, and `fuzz/README.md`
       # measures how much. A new one arriving without a directory is the way that
       # gets forgotten.
-      - name: Every target has seeds
+      #
+      # The second half runs each target over its seeds for zero iterations,
+      # which is what makes libFuzzer parse the dictionary and what runs every
+      # seed through the target's own assertions. Both failures are worth
+      # catching here rather than in a weekly job that finds them six days late:
+      # a dictionary with a raw non-ASCII byte in it is refused outright, and a
+      # seed that trips an assertion means the harness and the library disagree
+      # before any mutation has happened.
+      - name: Seeds and dictionaries are usable
         run: |
-          missing=0
+          status=0
           for target in $(cargo fuzz list); do
-            if [ ! -d "fuzz/seeds/$target" ] || [ -z "$(ls -A "fuzz/seeds/$target")" ]; then
+            seeds="fuzz/seeds/$target"
+            if [ ! -d "$seeds" ] || [ -z "$(ls -A "$seeds")" ]; then
               echo "::error::$target has no seeds; see fuzz/README.md"
-              missing=1
+              status=1
+              continue
+            fi
+
+            args=(-runs=0)
+            dict="fuzz/dictionaries/$target.dict"
+            [ -f "$dict" ] && args+=("-dict=$dict")
+
+            if ! cargo fuzz run "$target" "$seeds" -- "${args[@]}"; then
+              echo "::error::$target rejected its seeds or its dictionary"
+              status=1
             fi
           done
-          exit $missing
+          exit $status
 
   run:
     name: Fuzzing run
@@ -127,12 +146,24 @@ jobs:
       # between runs would find more, and it would also mean a cache nobody can
       # reason about deciding what got tested; the seeds are the tracked input
       # and they are the same every week.
+      # `-rss_limit_mb` and `-timeout` are what turn an allocation that runs away
+      # and an input that never returns into findings. Without them libFuzzer
+      # takes the default limits, and a run that dies to the OOM killer is a run
+      # that reports nothing at all.
       - name: Fuzz ${{ matrix.target }}
         run: |
+          args=(
+            -max_total_time="${{ github.event.inputs.seconds || 600 }}"
+            -rss_limit_mb=4096
+            -timeout=25
+          )
+          dict="fuzz/dictionaries/${{ matrix.target }}.dict"
+          [ -f "$dict" ] && args+=("-dict=$dict")
+
           cargo fuzz run "${{ matrix.target }}" \
             fuzz/corpus/${{ matrix.target }} \
             "fuzz/seeds/${{ matrix.target }}" \
-            -- -max_total_time="${{ github.event.inputs.seconds || 600 }}"
+            -- "${args[@]}"
 
       # The input, not the log. A crash somebody has to reconstruct from a
       # base64 blob in a scrolled-away job output is a crash that does not get

@@ -355,7 +355,18 @@ fn write_host(
 
     // Every address, so a dual-stack host is one record with two addresses,
     // which is how nmap describes the same thing.
-    for ip in host.ips() {
+    //
+    // The one the host is keyed by leads. Nmap has no attribute saying which
+    // that is and this document will not invent one, but the order is a channel
+    // the format already has and a reader takes the first address it sees as the
+    // host's. Writing them in the set's own order handed a multi-homed host back
+    // keyed by whichever of its addresses sorted lowest, so a scan exported to
+    // this format and read again compared against its own source as one host
+    // gone and one arrived.
+    let primary = host.primary_ip();
+    let addresses = std::iter::once(&primary).chain(host.ips().iter().filter(|ip| **ip != primary));
+
+    for ip in addresses {
         writeln!(
             out,
             r#"<address addr="{}" addrtype="{}"/>"#,
@@ -829,6 +840,54 @@ mod tests {
                 port_state(state)
             );
         }
+    }
+
+    /// A multi-homed host comes back keyed by the address it went out under.
+    ///
+    /// **It did not.** Nmap has no attribute for which address is the host's, so
+    /// the reader takes the first one in the document — and this writer emitted
+    /// them in the set's own ascending order. A host keyed by `192.168.0.10`
+    /// that also held `10.0.0.4` came back keyed by `10.0.0.4`, so a scan
+    /// exported here and read again compared against its own source as one host
+    /// removed and one added, which is the false alarm `diff` exists to prevent.
+    ///
+    /// Found by the `import_nmap` fuzz target, on a mangled document whose
+    /// broken markup put two addresses under one host.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn a_multi_homed_host_keeps_the_address_it_is_keyed_by() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let keyed = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 10));
+        let lower = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 4));
+
+        let mut host = Host::new(keyed);
+        host.add_ip(lower);
+        assert_eq!(
+            host.primary_ip(),
+            keyed,
+            "two addresses of one family rank alike, so the first seen leads"
+        );
+
+        let report = ScanReport::recorded("zond", Vec::new(), [host]);
+        let mut document = Vec::new();
+        NmapXmlExporter::new(ExportOptions::new())
+            .export(&report, &mut document)
+            .expect("the report exports");
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(document))
+            .expect("this crate's own document reads back");
+
+        let host = restored.hosts().next().expect("the host survived");
+        assert_eq!(
+            host.primary_ip(),
+            keyed,
+            "the round trip re-keyed the host onto its other address"
+        );
+        assert!(host.ips().contains(&lower), "and kept the other one");
     }
 
     /// Nmap has three host states where this engine has four, and a filtered

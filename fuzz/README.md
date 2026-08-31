@@ -6,23 +6,60 @@ entry point a hostile network or a hostile file reaches directly.
 
 ```
 cargo +nightly fuzz list
-cargo +nightly fuzz run <target> fuzz/corpus/<target> fuzz/seeds/<target>
+cargo +nightly fuzz run <target> fuzz/corpus/<target> fuzz/seeds/<target> \
+  -- -dict=fuzz/dictionaries/<target>.dict -rss_limit_mb=4096 -timeout=25
 ```
 
 **Both directories, in that order.** libFuzzer writes what it discovers into the
 *first* one and reads the rest, so passing the seeds alone buries the curated
 files under a few hundred generated ones. `fuzz/corpus/` is gitignored and is
-where the growing corpus belongs.
+where the growing corpus belongs — and where a campaign's real value
+accumulates, so it is the thing to keep between sessions.
+
+`-rss_limit_mb` and `-timeout` are not optional extras. Without them an
+allocation that runs away takes the run down with it and an input that never
+returns hangs it, and neither is reported as the finding it is.
 
 Needs a nightly toolchain and a sanitizer, which is why this is a crate of its
 own with its own `[workspace]`: nothing here is built by a `cargo build` at the
 repository root, and `Cargo.toml` excludes it from the published crate.
+
+## Watching a run
+
+libFuzzer has no status screen. Its only output controls are `verbosity` and a
+set of `print_*` flags that fire at exit, so the scroll is the interface —
+thousands of lines a minute, and the numbers that matter buried in them.
+
+`watch.py` renders the same stream in place:
+
+```
+cargo +nightly fuzz run import_nmap fuzz/corpus/import_nmap fuzz/seeds/import_nmap \
+  -- -dict=fuzz/dictionaries/import_nmap.dict -rss_limit_mb=4096 -timeout=25 \
+  2>&1 | python3 fuzz/watch.py import_nmap
+```
+
+It exists for one line of its output. **libFuzzer never says how long it has
+been since it last found anything**, and that is what a campaign is steered by:
+a target an hour into silence is a target to stop and swap out. Everything else
+on the screen is already in the scroll somewhere.
+
+A crash is never rendered. On the first sign of one it drops out of the way and
+passes the raw stream through, because a status screen that swallowed the report
+would be worse than the scroll it replaced.
+
+AFL++ has the status screen this imitates, and `cargo-afl` brings it to Rust —
+but it is a different fuzzer with its own instrumentation, harness macro and
+corpus format, and macOS on ARM is its weakest platform. Worth it for what AFL++
+finds; not worth it for the screen.
 
 ## Layout
 
 ```
 fuzz_targets/<surface>/<what>.rs      →  target named <surface>_<what>
 seeds/<surface>_<what>/               →  what that target starts from
+dictionaries/<surface>_<what>.dict    →  the tokens its format is made of
+src/lib.rs                            →  the oracles more than one target asks
+watch.py                              →  a libFuzzer run as a status screen
 ```
 
 Four surfaces, because a target is defined by the boundary it attacks rather
@@ -34,6 +71,58 @@ what it asserts about.
 
 A new target goes in the directory for its surface, takes the matching name, and
 brings a seed. Nothing else is arranged around any of them.
+
+## An oracle is worth more than an hour
+
+**A target that only calls and discards finds a panic and nothing else.** It will
+not notice a reader that drops a host, or one that reads a port as the wrong
+number, however long it runs — those return `Ok` and the harness is satisfied. So
+each target says what it holds true, in its own documentation, and the
+assertions are where the value is rather than in the machine time.
+
+Two rules for writing one:
+
+- **It has to hold for every input the target can reach.** A property that is
+  merely usually true stops the run on something that was never wrong, and the
+  night is spent on the harness rather than the engine. Prove it from the code
+  before asserting it — `import_nmap` deliberately does not assert a round trip,
+  and says why.
+- **Prefer an oracle that covers what has not been written yet.** `ScanDiff`
+  comparing a report against itself catches a field added in six months; a list
+  of field names checks the ones that exist today.
+
+[`src/lib.rs`](src/lib.rs) holds the ones more than one target asks.
+
+## Dictionaries, and what they are actually for
+
+`-dict=` gives libFuzzer the tokens a format is built from. Every dictionary here
+is generated from the thing it describes — the report's from the published JSON
+schema, the nmap one from the element names the reader looks for, the settings
+one from `KNOWN_KEYS` — so the tokens are the real ones rather than a
+transcription that can drift. They carry what a parser **refuses** as well as
+what it accepts: `<!ENTITY`, a `DOCTYPE` with an internal subset, `2026-02-31`, a
+bare `+2026`. A refusal nothing ever spells is a refusal nothing ever tests.
+
+**A dictionary substitutes for seeds. It does not add to them.** That is the
+opposite of the folklore, and it is measured, sixty seconds each way:
+
+| target | cold | cold + dict | seeded | seeded + dict |
+|---|---|---|---|---|
+| `import_nmap` | 495 | 1 222 | 3 674 | 3 848 |
+| `export_report` | 876 | 1 663 | 9 851 | 9 911 |
+| `import_report` | 2 159 | 2 844 | 10 133 | 10 105 |
+| `import_settings` | 2 980 | 3 170 | 4 045 | 4 109 |
+
+From nothing a dictionary is worth 6% to 150%, and it is worth most exactly where
+a seed is: a format with a header a fuzzer will not stumble into. Beside the
+seeds it is worth 0% to 5%, and for `import_report` it measured slightly
+negative — noise, which is the point. The seeds already contain every token, and
+splicing between corpus entries reproduces them without being told.
+
+So: pass the dictionary, because it costs nothing and the tail of a long run is
+not what sixty seconds measures. But do not expect it to be the lever. **It is
+insurance for the cold start** — a corpus thrown away, a format whose framing
+moved, or OSS-Fuzz beginning with nothing — and that is when it earns its place.
 
 ## The targets
 
@@ -106,7 +195,10 @@ run, and one checked in goes stale the moment a parser's framing changes.
 
 ## What has been found
 
-`import_nmap`, thirty seconds into the first run it was ever given seeds for:
+Two, both in `import_nmap`, both within minutes of it being given seeds and an
+oracle.
+
+A **panic**, thirty seconds into the first seeded run:
 `start="16847805878974283974"` in an `<nmaprun>` element panicked the process
 with `overflow when adding duration to SystemTime`. Nmap writes every time as
 seconds since the epoch, a `u64` of those reaches five hundred billion years, and
@@ -114,6 +206,20 @@ seconds since the epoch, a `u64` of those reaches five hundred billion years, an
 digits in one attribute took down whatever had embedded the engine. `epoch` now
 uses `checked_add`, and
 `a_time_past_what_a_clock_can_hold_is_dropped_rather_than_fatal` pins it.
+
+A **round trip that re-keyed a host**, three minutes after the target was given
+an oracle. Nmap has no attribute saying which of a host's addresses it is filed
+under, so the reader takes the first `<address>` in the document — and the writer
+was emitting them in the set's own ascending order. A multi-homed host exported
+to this format and read back came out keyed by whichever address sorted lowest,
+so a scan compared against its own source reported one host gone and one
+arrived. That is the false alarm `diff` is arranged to prevent, reintroduced at
+the last step. The writer now leads with the address the host is keyed by, which
+invents no attribute and costs the document nothing.
+
+That one is worth noting for what found it: no panic, no sanitizer report,
+nothing that would have surfaced without an assertion saying what the round trip
+owed. Machine time alone would have run past it forever.
 
 Since: two minutes per target from the seeds, no crashes.
 

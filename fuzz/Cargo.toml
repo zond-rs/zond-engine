@@ -19,6 +19,12 @@ cargo-fuzz = true
 
 [workspace]
 
+# The oracles more than one target asks. A target with nothing to assert finds a
+# panic and no more, and three of these read a document into a `ScanReport`,
+# where the questions worth asking are the same whichever reader built it.
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 libfuzzer-sys = "0.4"
 # Used by `export_report` alone, to say that what the JSON writers emit is JSON.

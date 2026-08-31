@@ -39,8 +39,6 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use pnet_packet::tcp::TcpPacket;
-
 use crate::model::host::Filtering;
 use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
@@ -351,7 +349,7 @@ async fn collect_replies(ctx: &ScanContext, transport: &mut ProbeTransport, awai
 /// is what keeps the pass from crediting a conclusion to a segment it never
 /// provoked.
 fn matched_conclusion(reply: &[u8], awaiting: &Awaiting) -> Option<(IpAddr, Filtering)> {
-    let tcp = TcpPacket::new(reply)?;
+    let tcp = tcp::parse(reply).ok()?;
     let as_syn = tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp, 0);
     let as_ack = tcp::echoed_nonce(TcpScanTechnique::Ack, &tcp, 0);
     awaiting

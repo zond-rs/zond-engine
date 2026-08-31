@@ -875,7 +875,7 @@ impl PassiveListener {
         );
 
         let detail = if served {
-            let port = Port::new(parsed.get_source(), Protocol::Tcp, PortState::Open)
+            let port = Port::new(parsed.source_port(), Protocol::Tcp, PortState::Open)
                 .with_discovery(
                     Discovery::new(ScanResponse::OverheardSynAck).seen_at(captured.observed_at),
                 );

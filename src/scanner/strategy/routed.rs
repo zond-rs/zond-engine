@@ -50,7 +50,6 @@ use crate::system::interface::RoutedTarget;
 use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport, SendError};
 use crate::{error, info, success};
 use async_trait::async_trait;
-use pnet_packet::tcp::TcpPacket;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::report::ScannerKind;
@@ -635,7 +634,8 @@ fn send_udp(
 /// The asymmetry is the point. Evidence usable where it can be tied to a probe
 /// is not usable where it cannot.
 fn answers_a_syn_probe(bytes: &[u8]) -> bool {
-    TcpPacket::new(bytes)
+    protocol::tcp::parse(bytes)
+        .ok()
         .and_then(|tcp| protocol::tcp::classify_probe_response(&tcp))
         .is_some_and(|reply| !matches!(reply, TcpReply::ChallengeAck))
 }
@@ -1138,13 +1138,13 @@ impl RoutedScanner {
     /// attempt. Retiring the probe either way is what stops a host that has
     /// already proved it exists from being asked again.
     fn resolve_probe(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) -> Option<Resolution> {
-        let token = TcpPacket::new(bytes).map(|tcp| SynToken {
+        let token = protocol::tcp::parse(bytes).ok().map(|tcp| SynToken {
             seq: protocol::tcp::echoed_nonce(
                 TcpScanTechnique::Syn,
                 &tcp,
                 self.shaping.padding.unwrap_or(0),
             ),
-            src_port: tcp.get_destination(),
+            src_port: tcp.destination_port(),
         });
 
         token

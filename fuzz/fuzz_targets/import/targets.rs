@@ -52,10 +52,32 @@ fuzz_target!(|data: &[u8]| {
     let format = formats[usize::from(selector >> 1) % formats.len()];
 
     if let Ok(imported) = format.read(&mut Cursor::new(document), &options) {
-        // Folded rather than merely returned: `into_ip_set` is the step between
-        // a file and what a discovery sweep takes, and it merges ranges the
-        // reader kept apart.
-        let _ = imported.into_ip_set().len();
+        // Abort is the default and its whole promise is that it does not carry
+        // on: a refusal it collected would be a bad expression the caller was
+        // never told about, in an import that reported success.
+        if selector & 1 == 0 {
+            assert!(
+                imported.refusals.is_empty(),
+                "an import that aborts on the first refusal returned {} of them",
+                imported.refusals.len()
+            );
+        }
+
+        assert!(
+            imported.refusals.len() as u64 <= imported.tokens,
+            "more expressions were refused than were read"
+        );
+
+        // `addresses` counts once per unit an address appears in, and the fold
+        // to a sweep merges those, so the merged set can only be smaller. The
+        // inequality is what says the two counts are answers to the same
+        // question — a fold that lost a whole unit would break it.
+        let counted = imported.addresses;
+        let swept = imported.into_ip_set().len();
+        assert!(
+            swept <= counted,
+            "a sweep of {swept} addresses came out of {counted} that were counted"
+        );
     }
 
     // And the format this crate works out for itself, on the same bytes.

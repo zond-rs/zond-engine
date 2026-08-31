@@ -39,8 +39,6 @@
 
 use std::net::IpAddr;
 
-use pnet_packet::tcp::TcpPacket;
-
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols::craft;
 use crate::protocols::error::{PacketError, Result};
@@ -312,7 +310,7 @@ fn syn_options(mss: u16) -> Vec<u8> {
 /// SYN; so the padding is subtracted from a reset's acknowledgement and left in
 /// place for a SYN+ACK. Without this a padded scan reads every closed port as
 /// filtered, because its reset never matches the nonce that was sent.
-pub fn echoed_nonce(technique: TcpScanTechnique, reply: &TcpPacket, padding: u16) -> u32 {
+pub fn echoed_nonce(technique: TcpScanTechnique, reply: &Segment<'_>, padding: u16) -> u32 {
     echoed_nonce_with_flags(probe_flags(technique), reply, padding)
 }
 
@@ -320,26 +318,26 @@ pub fn echoed_nonce(technique: TcpScanTechnique, reply: &TcpPacket, padding: u16
 /// own, for the arbitrary-flags evasion path. The span a reply's acknowledgement
 /// is advanced by is the sequence space the sent flags occupy, so it follows
 /// from the flags alone.
-pub(crate) fn echoed_nonce_with_flags(flags: u8, reply: &TcpPacket, padding: u16) -> u32 {
+pub(crate) fn echoed_nonce_with_flags(flags: u8, reply: &Segment<'_>, padding: u16) -> u32 {
     match nonce_field(flags) {
         NonceField::Sequence { span } => {
-            let acked_padding = if reply.get_flags() & flags::RST != 0 {
+            let acked_padding = if reply.flags() & flags::RST != 0 {
                 u32::from(padding)
             } else {
                 0
             };
             reply
-                .get_acknowledgement()
+                .acknowledgement()
                 .wrapping_sub(span)
                 .wrapping_sub(acked_padding)
         }
-        NonceField::Acknowledgement => reply.get_sequence(),
+        NonceField::Acknowledgement => reply.sequence(),
     }
 }
 
 /// A probe's header as an ICMP error quotes it back.
 ///
-/// Not a [`TcpPacket`], because there may not be one: RFC 792 requires an error
+/// Not a [`Segment`], because there may not be one: RFC 792 requires an error
 /// to quote the IP header plus the first **eight** bytes of the offending
 /// segment, and a TCP header is twenty. Those eight bytes are the two ports and
 /// the sequence number, which is enough to say which probe the error is about;
@@ -400,14 +398,85 @@ pub(crate) fn quoted_nonce_with_flags(flags: u8, quoted: &QuotedProbe) -> Option
     }
 }
 
+/// A TCP segment: the fixed header, and whatever follows it.
+///
+/// Borrows the bytes rather than copying them. Built by [`parse`], which is the
+/// only thing that guarantees the header is really there — every accessor below
+/// indexes into it without checking, and that is sound only because nothing else
+/// constructs one.
+///
+/// The counterpart of [`sctp::Segment`](super::sctp::Segment), and this crate's
+/// own type for the same reason: `parse` used to hand back a
+/// `pnet_packet::TcpPacket`, which put a pre-1.0 dependency's type in a public
+/// signature. A consumer reading a reply then had to name that crate, at that
+/// version, to say what it had — and this crate could not take a `pnet` upgrade
+/// without it being a breaking change for them.
+///
+/// Only the fields this engine reads are here. A scan correlates a reply and
+/// classifies it; the window, the options and the urgent pointer are the OS
+/// fingerprinter's business and it reads them off the bytes itself.
+#[derive(Debug, Clone, Copy)]
+pub struct Segment<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> Segment<'a> {
+    /// The port the segment came from, which for a reply is the port probed.
+    pub fn source_port(&self) -> u16 {
+        u16::from_be_bytes([self.bytes[0], self.bytes[1]])
+    }
+
+    /// The port it was aimed at, which for a reply is the source port the scan
+    /// sent from.
+    pub fn destination_port(&self) -> u16 {
+        u16::from_be_bytes([self.bytes[2], self.bytes[3]])
+    }
+
+    /// The sequence number.
+    pub fn sequence(&self) -> u32 {
+        u32::from_be_bytes([self.bytes[4], self.bytes[5], self.bytes[6], self.bytes[7]])
+    }
+
+    /// The acknowledgement number, significant only when [`ACK`](flags::ACK) is
+    /// set.
+    pub fn acknowledgement(&self) -> u32 {
+        u32::from_be_bytes([self.bytes[8], self.bytes[9], self.bytes[10], self.bytes[11]])
+    }
+
+    /// The flag bits, as [`flags`] names them.
+    pub fn flags(&self) -> u8 {
+        self.bytes[13]
+    }
+
+    /// Whatever follows the header.
+    ///
+    /// The data offset is a claim by the sender and is clamped to what is
+    /// actually present, both ways: a header shorter than the minimum cannot
+    /// name a payload, and one running past the buffer yields an empty payload
+    /// rather than a slice into whatever comes after it in memory.
+    pub fn payload(&self) -> &'a [u8] {
+        let offset = usize::from(self.bytes[12] >> 4) * 4;
+        if offset < TCP_HDR_LEN || offset > self.bytes.len() {
+            return &[];
+        }
+        &self.bytes[offset..]
+    }
+}
+
 /// Reads `bytes` as a TCP segment.
 ///
 /// # Errors
 ///
 /// [`PacketError::Truncated`] when there are too few bytes for a header.
-pub fn parse(bytes: &'_ [u8]) -> Result<TcpPacket<'_>> {
-    TcpPacket::new(bytes)
-        .ok_or_else(|| PacketError::truncated("a TCP segment", TCP_HDR_LEN, bytes.len()))
+pub fn parse(bytes: &'_ [u8]) -> Result<Segment<'_>> {
+    if bytes.len() < TCP_HDR_LEN {
+        return Err(PacketError::truncated(
+            "a TCP segment",
+            TCP_HDR_LEN,
+            bytes.len(),
+        ));
+    }
+    Ok(Segment { bytes })
 }
 
 /// Classifies a received segment as one of the two answers a port probe can
@@ -417,8 +486,8 @@ pub fn parse(bytes: &'_ [u8]) -> Result<TcpPacket<'_>> {
 /// flag combinations - which a caller should treat as noise. What a classified
 /// segment *proves* is technique-dependent and belongs to
 /// [`TcpScanTechnique::verdict`]: this says only what arrived.
-pub fn classify_probe_response(packet: &TcpPacket) -> Option<TcpReply> {
-    let flags = packet.get_flags();
+pub fn classify_probe_response(segment: &Segment<'_>) -> Option<TcpReply> {
+    let flags = segment.flags();
 
     // RST takes priority over the ACK bit: a reset answering a probe legitimately
     // carries ACK too (RFC 793 §3.4), and reading that as a handshake would turn
@@ -482,25 +551,25 @@ mod tests {
     /// its sequence number, and otherwise the reset acknowledges the sequence
     /// number plus the octets SYN and FIN occupy.
     fn conformant_rst(probe: &[u8]) -> Vec<u8> {
-        let sent = TcpPacket::new(probe).expect("the probe parses");
-        let sent_flags = sent.get_flags();
+        let sent = parse(probe).expect("the probe parses");
+        let sent_flags = sent.flags();
 
         let mut buffer = vec![0u8; TCP_HDR_LEN];
         let mut rst = MutableTcpPacket::new(&mut buffer).unwrap();
-        rst.set_source(sent.get_destination());
-        rst.set_destination(sent.get_source());
+        rst.set_source(sent.destination_port());
+        rst.set_destination(sent.source_port());
         rst.set_data_offset((TCP_HDR_LEN / WORD_IN_BYTES) as u8);
 
         if sent_flags & flags::ACK != 0 {
             rst.set_flags(flags::RST);
-            rst.set_sequence(sent.get_acknowledgement());
+            rst.set_sequence(sent.acknowledgement());
         } else {
             let control_octets = u32::from(sent_flags & flags::SYN != 0)
                 + u32::from(sent_flags & flags::FIN != 0)
                 + sent.payload().len() as u32;
             rst.set_flags(flags::RST | flags::ACK);
             rst.set_sequence(0);
-            rst.set_acknowledgement(sent.get_sequence().wrapping_add(control_octets));
+            rst.set_acknowledgement(sent.sequence().wrapping_add(control_octets));
         }
         buffer
     }
@@ -510,7 +579,7 @@ mod tests {
     #[test]
     fn each_technique_carries_its_own_flags() {
         use TcpScanTechnique::*;
-        let sent = |technique| TcpPacket::new(&probe(technique)).unwrap().get_flags();
+        let sent = |technique| parse(&probe(technique)).unwrap().flags();
 
         assert_eq!(sent(Syn), flags::SYN);
         assert_eq!(sent(Fin), flags::FIN);
@@ -528,10 +597,10 @@ mod tests {
 
         for technique in [Syn, Fin, Null, Xmas] {
             let bytes = probe(technique);
-            let sent = TcpPacket::new(&bytes).unwrap();
-            assert_eq!(sent.get_sequence(), NONCE, "{technique} nonce");
+            let sent = parse(&bytes).unwrap();
+            assert_eq!(sent.sequence(), NONCE, "{technique} nonce");
             assert_eq!(
-                sent.get_acknowledgement(),
+                sent.acknowledgement(),
                 0,
                 "{technique} must not claim to acknowledge anything"
             );
@@ -539,8 +608,8 @@ mod tests {
 
         for technique in [Maimon, Ack] {
             let bytes = probe(technique);
-            let sent = TcpPacket::new(&bytes).unwrap();
-            assert_eq!(sent.get_acknowledgement(), NONCE, "{technique} nonce");
+            let sent = parse(&bytes).unwrap();
+            assert_eq!(sent.acknowledgement(), NONCE, "{technique} nonce");
         }
     }
 
@@ -608,7 +677,7 @@ mod tests {
         for technique in TcpScanTechnique::ALL {
             let sent = probe(technique);
             let rst = conformant_rst(&sent);
-            let reply = TcpPacket::new(&rst).unwrap();
+            let reply = parse(&rst).unwrap();
 
             assert_eq!(
                 echoed_nonce(technique, &reply, 0),
@@ -632,15 +701,11 @@ mod tests {
 
         let sent = build_probe_with_flags(MASK, &SRC, &DST, 50_000, 80, NONCE, None, false)
             .expect("probe builds");
-        let parsed = TcpPacket::new(&sent).unwrap();
-        assert_eq!(
-            parsed.get_flags(),
-            MASK,
-            "the segment carries the chosen flags"
-        );
+        let parsed = parse(&sent).unwrap();
+        assert_eq!(parsed.flags(), MASK, "the segment carries the chosen flags");
 
         let rst = conformant_rst(&sent);
-        let reply = TcpPacket::new(&rst).unwrap();
+        let reply = parse(&rst).unwrap();
         assert_eq!(echoed_nonce_with_flags(MASK, &reply, 0), NONCE);
     }
 
@@ -660,7 +725,7 @@ mod tests {
         assert_ne!(ours, theirs);
 
         let reply_bytes = conformant_rst(&theirs);
-        let reply = TcpPacket::new(&reply_bytes).unwrap();
+        let reply = parse(&reply_bytes).unwrap();
         assert_ne!(echoed_nonce(TcpScanTechnique::Fin, &reply, 0), NONCE);
     }
 
@@ -690,7 +755,7 @@ mod tests {
 
         // Closed: the reset acknowledges the SYN and the padding.
         let rst = conformant_rst(&padded);
-        let reply = TcpPacket::new(&rst).unwrap();
+        let reply = parse(&rst).unwrap();
         assert_eq!(
             echoed_nonce(TcpScanTechnique::Syn, &reply, PADDING),
             NONCE,
@@ -698,16 +763,16 @@ mod tests {
         );
 
         // Open: the SYN+ACK acknowledges the SYN only.
-        let sent = TcpPacket::new(&padded).unwrap();
+        let sent = parse(&padded).unwrap();
         let mut buffer = vec![0u8; TCP_HDR_LEN];
         let mut syn_ack = MutableTcpPacket::new(&mut buffer).unwrap();
-        syn_ack.set_source(sent.get_destination());
-        syn_ack.set_destination(sent.get_source());
+        syn_ack.set_source(sent.destination_port());
+        syn_ack.set_destination(sent.source_port());
         syn_ack.set_data_offset((TCP_HDR_LEN / WORD_IN_BYTES) as u8);
         syn_ack.set_flags(flags::SYN | flags::ACK);
         syn_ack.set_sequence(0x5555_5555);
-        syn_ack.set_acknowledgement(sent.get_sequence().wrapping_add(1));
-        let reply = syn_ack.to_immutable();
+        syn_ack.set_acknowledgement(sent.sequence().wrapping_add(1));
+        let reply = parse(syn_ack.packet()).expect("the reply parses");
         assert_eq!(
             echoed_nonce(TcpScanTechnique::Syn, &reply, PADDING),
             NONCE,
@@ -759,11 +824,17 @@ mod tests {
         .unwrap();
 
         assert_eq!(padded.len(), bare.len() + usize::from(LEN));
-        let segment = TcpPacket::new(&padded).unwrap();
-        assert_eq!(segment.payload().len(), usize::from(LEN));
+        assert_eq!(parse(&padded).unwrap().payload().len(), usize::from(LEN));
         let (IpAddr::V4(src), IpAddr::V4(dst)) = (SRC, DST) else {
             unreachable!("the fixtures are IPv4")
         };
+        // Checked through `pnet`'s own reader rather than this module's. The
+        // question is whether the builder computed the checksum right, and
+        // asking the crate whose checksum function the builder used is a check
+        // against something other than itself. `Segment` deliberately does not
+        // carry the field: nothing in a scan reads it, because a capture only
+        // ever hands up segments the kernel already verified.
+        let segment = pnet_packet::tcp::TcpPacket::new(&padded).expect("the probe parses");
         assert_eq!(
             pnet_packet::tcp::ipv4_checksum(&segment, &src, &dst),
             segment.get_checksum(),
@@ -787,10 +858,12 @@ mod tests {
             true,
         )
         .unwrap();
-        let segment = TcpPacket::new(&bad).unwrap();
         let (IpAddr::V4(src), IpAddr::V4(dst)) = (SRC, DST) else {
             unreachable!("the fixtures are IPv4")
         };
+        // `pnet`'s reader, for the reason the test above gives: the checksum is
+        // a field this module's own `Segment` does not carry.
+        let segment = pnet_packet::tcp::TcpPacket::new(&bad).expect("the probe parses");
         let correct = pnet_packet::tcp::ipv4_checksum(&segment, &src, &dst);
         assert_ne!(
             segment.get_checksum(),
@@ -813,8 +886,8 @@ mod tests {
         let null = conformant_rst(&probe(TcpScanTechnique::Null));
         let fin = conformant_rst(&probe(TcpScanTechnique::Fin));
 
-        let null_ack = TcpPacket::new(&null).unwrap().get_acknowledgement();
-        let fin_ack = TcpPacket::new(&fin).unwrap().get_acknowledgement();
+        let null_ack = parse(&null).unwrap().acknowledgement();
+        let fin_ack = parse(&fin).unwrap().acknowledgement();
 
         assert_eq!(null_ack, NONCE);
         assert_eq!(fin_ack, NONCE.wrapping_add(1));
@@ -864,11 +937,11 @@ mod tests {
         let rst = packet_with_flags(flags::RST);
 
         assert_eq!(
-            classify_probe_response(&TcpPacket::new(&syn_ack).unwrap()),
+            classify_probe_response(&parse(&syn_ack).unwrap()),
             Some(TcpReply::SynAck)
         );
         assert_eq!(
-            classify_probe_response(&TcpPacket::new(&rst).unwrap()),
+            classify_probe_response(&parse(&rst).unwrap()),
             Some(TcpReply::Rst)
         );
     }
@@ -879,7 +952,7 @@ mod tests {
     fn classifies_rst_ack_as_a_reset() {
         let bytes = packet_with_flags(flags::RST | flags::ACK);
         assert_eq!(
-            classify_probe_response(&TcpPacket::new(&bytes).unwrap()),
+            classify_probe_response(&parse(&bytes).unwrap()),
             Some(TcpReply::Rst)
         );
     }
@@ -899,7 +972,7 @@ mod tests {
     fn classifies_a_bare_ack_as_a_challenge() {
         let bytes = packet_with_flags(flags::ACK);
         assert_eq!(
-            classify_probe_response(&TcpPacket::new(&bytes).unwrap()),
+            classify_probe_response(&parse(&bytes).unwrap()),
             Some(TcpReply::ChallengeAck)
         );
     }
@@ -919,7 +992,7 @@ mod tests {
         ] {
             let bytes = packet_with_flags(flags);
             assert_eq!(
-                classify_probe_response(&TcpPacket::new(&bytes).unwrap()),
+                classify_probe_response(&parse(&bytes).unwrap()),
                 None,
                 "flags {flags:#04b} answer no probe"
             );

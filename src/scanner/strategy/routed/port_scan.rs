@@ -49,7 +49,6 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pnet_packet::ip::IpNextHeaderProtocols;
-use pnet_packet::tcp::TcpPacket;
 use tokio::sync::mpsc;
 
 use crate::config::OsDetection;
@@ -270,7 +269,7 @@ impl TcpPortScanner {
     /// one, classifies it and records the port's state.
     fn handle_tcp_reply(&mut self, captured: &CapturedSegment, now: Instant) {
         let (ip, bytes) = (captured.source, &captured.bytes);
-        let Some(tcp_packet) = TcpPacket::new(bytes) else {
+        let Ok(tcp_packet) = tcp::parse(bytes) else {
             self.core.audit.record_off_target();
             return;
         };
@@ -280,7 +279,7 @@ impl TcpPortScanner {
         // it, but that is a performance boundary rather than a guarantee - a
         // transport can be built with no filter at all - and this is the only
         // thing making the reply ours.
-        if tcp_packet.get_destination() != self.core.src_port {
+        if tcp_packet.destination_port() != self.core.src_port {
             self.core.audit.record_off_target();
             return;
         }
@@ -316,7 +315,7 @@ impl TcpPortScanner {
                 self.core.shaping.padding.unwrap_or(0),
             ),
         };
-        let key = (ip, tcp_packet.get_source());
+        let key = (ip, tcp_packet.source_port());
         self.resolve_probe(
             key,
             Some(token),
@@ -1107,11 +1106,11 @@ mod tests {
     /// The nonce a recorded probe went out carrying, read from whichever field
     /// its technique writes it to.
     fn token_of(technique: TcpScanTechnique, segment: &[u8]) -> TcpToken {
-        let tcp = TcpPacket::new(segment).expect("probe is a TCP segment");
+        let tcp = tcp::parse(segment).expect("probe is a TCP segment");
         TcpToken {
             nonce: match technique {
-                TcpScanTechnique::Maimon | TcpScanTechnique::Ack => tcp.get_acknowledgement(),
-                _ => tcp.get_sequence(),
+                TcpScanTechnique::Maimon | TcpScanTechnique::Ack => tcp.acknowledgement(),
+                _ => tcp.sequence(),
             },
         }
     }
@@ -1766,7 +1765,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .map(|(segment, _, _)| TcpPacket::new(segment).unwrap().get_source())
+            .map(|(segment, _, _)| tcp::parse(segment).unwrap().source_port())
             .collect();
 
         assert_eq!(ports.len(), 2, "the probe was not retried");
