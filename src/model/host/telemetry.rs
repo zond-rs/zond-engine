@@ -12,11 +12,10 @@
 //! summaries a report draws from them: the fastest, the typical, and how much
 //! they vary.
 //!
-//! The whole design turns on one distinction. Not every reply is equally good
-//! evidence of a path, and the two kinds must not be pooled — see [`RttSource`]
-//! for what separates them and [`HostTelemetry`] for how the ranking is
-//! applied. Averaging them together is how a router answering in 7 ms came to
-//! be reported at 37.
+//! The design turns on one distinction. Not every reply is equally good evidence
+//! of a path, and the two kinds are not pooled. See [`RttSource`] for what
+//! separates them and [`HostTelemetry`] for how the ranking is applied. Averaging
+//! them together is how a router answering in 7 ms came to be reported at 37.
 
 use std::{
     collections::VecDeque,
@@ -50,7 +49,7 @@ const MIN_RTT_SAMPLES: usize = 1;
 /// Not every reply is equally good evidence of a path. A probe aimed at one
 /// address is answered as fast as the host and the link allow, so the elapsed
 /// time is the round trip and nothing else. A probe put to the whole segment is
-/// not: implementations deliberately spread their replies to keep every
+/// not: implementations spread their replies to keep every
 /// neighbour from answering at once, and a device asleep on wifi answers when it
 /// next wakes. Observed on a wireless segment, that difference is an order of
 /// magnitude. It shows up as several neighbours reporting the same figure to
@@ -77,9 +76,9 @@ pub enum RttSource {
 pub struct RttSample {
     /// When the reply arrived, on the monotonic clock.
     ///
-    /// [`Instant`] rather than the wall clock because this exists to order
-    /// samples against each other — [`HostTelemetry::merge`] sorts by it and
-    /// [`jitter`](HostTelemetry::jitter) differences consecutive pairs — and a
+    /// [`Instant`] rather than the wall clock, since this orders samples against
+    /// each other: [`HostTelemetry::merge`] sorts by it and
+    /// [`jitter`](HostTelemetry::jitter) differences consecutive pairs, and a
     /// clock adjustment mid-scan must not reorder a history.
     pub at: Instant,
     /// The elapsed time between sending the probe and reading the reply.
@@ -118,14 +117,14 @@ pub struct HostTelemetry {
     ///
     /// Not the value the host wrote: every router on the way decrements it, so
     /// what arrives is the starting value minus the distance. It is kept because
-    /// the scan reads it anyway — every captured reply carries one — and
+    /// every captured reply carries one and the scan reads it anyway, where
     /// re-obtaining it costs a probe and a round trip.
     ///
     /// What reads it is [`traceroute`](crate::scanner::strategy::routed::traceroute),
     /// which needs to know how far away a host is before it can measure the path
     /// backwards from it. Without this the trace has to send a probe of its own
     /// purely to be answered, which is a round trip spent re-learning something
-    /// the port scan already saw — and one more thing that can fail.
+    /// the port scan already saw, and one more thing that can fail.
     ///
     /// The most recent rather than the first: a route that changed mid-scan is
     /// better described by the reply that came after it.
@@ -296,8 +295,8 @@ impl HostTelemetry {
     /// The slowest round trip in the window.
     ///
     /// Taken over the [`RttSource::Direct`] samples, as every statistic here is.
-    /// **A host with only [`RttSource::SegmentWide`] samples has no slowest
-    /// round trip**, and this answers with the same one figure the rest do: the
+    /// A host with only [`RttSource::SegmentWide`] samples has no slowest round
+    /// trip, and this answers with the same one figure the rest do: the
     /// tightest bound those samples support, which is the *smallest* of them.
     /// That is the same fallback [`min_rtt`](Self::min_rtt) describes, and it is
     /// worth restating here because the name says the opposite. A caller
@@ -656,9 +655,9 @@ mod tests {
         assert_eq!(t.average_rtt(), Some(Duration::from_millis(15)));
     }
 
-    /// Jitter is the mean absolute difference between *consecutive* samples,
-    /// not the spread of the window — it measures instability over time, which
-    /// is why the history has to stay in time order.
+    /// Jitter is the mean absolute difference between consecutive samples rather
+    /// than the spread of the window. It measures instability over time, which is
+    /// why the history has to stay in time order.
     #[test]
     fn jitter_averages_the_gaps_between_consecutive_samples() {
         let mut t = HostTelemetry::new(5);
@@ -684,8 +683,8 @@ mod tests {
         assert_eq!(t.median_rtt(), Some(Duration::from_millis(20)));
     }
 
-    /// With no single middle sample, the two central ones are averaged — and
-    /// the subtraction is written to avoid overflowing on their sum.
+    /// With no single middle sample the two central ones are averaged, and the
+    /// subtraction is written to avoid overflowing on their sum.
     #[test]
     fn the_median_of_an_even_window_averages_the_two_central_samples() {
         let mut t = HostTelemetry::new(5);

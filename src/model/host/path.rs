@@ -14,9 +14,9 @@
 //!
 //! ## A hop is a distance, not an index
 //!
-//! Every [`Hop`] carries the [`distance`](Hop::distance) it was measured at —
-//! the hop limit whose expiry produced it — rather than being identified by its
-//! position in a list. The two come apart constantly and the difference matters:
+//! Every [`Hop`] carries the [`distance`](Hop::distance) it was measured at,
+//! meaning the hop limit whose expiry produced it, rather than being identified
+//! by its position in a list. The two come apart constantly:
 //!
 //! - **A router may decline to answer.** Many do not send Time Exceeded at all,
 //!   or rate-limit it to nothing. That leaves a gap, and a gap has to stay a gap:
@@ -24,7 +24,7 @@
 //!   report a five-hop path as four.
 //! - **A path may be spliced.** When one trace recognises a router another trace
 //!   already found, the rest is taken from the earlier one rather than measured
-//!   again — see [`Hop::inferred`]. Those hops keep the distance they were
+//!   again; see [`Hop::inferred`]. Those hops keep the distance they were
 //!   originally measured at.
 //!
 //! So a path is stored sorted by distance, may have holes in it, and a reader
@@ -33,22 +33,22 @@
 //!
 //! ## What a hop does and does not establish
 //!
-//! **It establishes that a router at that address discarded a packet of ours
-//! that had travelled that far.** That is a strong statement: a router is
+//! It establishes that a router at that address discarded a packet of ours that
+//! had travelled that far. That is a strong statement: a router is
 //! obliged to identify itself when it discards a packet (RFC 792, RFC 4443
 //! §3.3), where it is under no obligation at all when it forwards one.
 //!
-//! **It does not establish that the router is *on* the path in any other
-//! sense.** The address a router replies from is the one it chose, usually the
+//! It does not establish that the router is *on* the path in any other sense.
+//! The address a router replies from is the one it chose, usually the
 //! interface the probe arrived on but not always the same one on the way back.
 //! Two traces to neighbouring hosts can name different addresses for what is
 //! physically one device, and nothing here can tell.
 //!
-//! **A round-trip time is to the router, not between routers.** It is measured
-//! from this machine, so hop three's timing includes hops one and two. It is
-//! also the time a router took to generate an error, which many treat as the
-//! lowest-priority work they do — a hop slower than the one after it is
-//! ordinary and says nothing about the path.
+//! A round-trip time is to the router rather than between routers. It is measured
+//! from this machine, so hop three's timing includes hops one and two. It is also
+//! the time a router took to generate an error, which many treat as the
+//! lowest-priority work they do, so a hop slower than the one after it is ordinary
+//! and says nothing about the path.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -118,10 +118,10 @@ impl Hop {
     /// Whether this hop was measured on the way to *this* host, or copied from
     /// an earlier trace that passed through the same router.
     ///
-    /// Not decoration. A path assembled partly from another host's trace is a
-    /// weaker claim than one probed end to end — the two hosts were assumed to
-    /// share everything upstream of the router where the traces met, which is
-    /// true of nearly every network and is still an assumption. A reader acting
+    /// A path assembled partly from another host's trace is a weaker claim than
+    /// one probed end to end: the two hosts were assumed to share everything
+    /// upstream of the router where the traces met, which is true of nearly every
+    /// network and is still an assumption. A reader acting
     /// on a single hop should know which kind they are looking at, and a report
     /// that did not distinguish them would present an inference as a
     /// measurement.
@@ -148,7 +148,7 @@ impl NetworkPath {
 
     /// Records `hop`, replacing whatever was known at that distance.
     ///
-    /// **A measurement replaces an inference and never the reverse.** A trace
+    /// A measurement replaces an inference and never the reverse. A trace
     /// that spliced in another host's hops and then measured one of them for
     /// itself has learned something; the same in reverse would throw away the
     /// stronger of two claims about the same router. An answered hop likewise

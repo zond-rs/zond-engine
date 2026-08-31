@@ -13,13 +13,13 @@
 //! ranges, CIDR blocks, zones and keywords. [`target`] handles an address with
 //! a port specification after it.
 //!
-//! **These grammars live beside the model rather than beside the file formats
-//! because every way of naming a target ends here.** A command-line argument, a
+//! These grammars live beside the model rather than beside the file formats
+//! because every way of naming a target ends here. A command-line argument, a
 //! form field, a line of a target list, a row of somebody's CSV and a hostname
-//! read out of an nmap report are all the same expression arriving from
-//! different places; writing the grammar once means the formats above decide
-//! only where the tokens come from, and none of them can drift into accepting a
-//! slightly different dialect.
+//! read out of an nmap report are one expression arriving from different places.
+//! Writing the grammar once leaves the formats above deciding only where the
+//! tokens come from, with none of them able to drift into a slightly different
+//! dialect.
 //!
 //! Resolution that needs to ask the machine anything, such as what `lan` means
 //! or which interface a `%zone` names, arrives as a caller-supplied callback

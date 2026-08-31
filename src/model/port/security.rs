@@ -12,7 +12,7 @@
 //! version and cipher agreed, the protocols offered over ALPN, and a summary of
 //! the certificate presented.
 //!
-//! **The certificate is summarized, not stored.** A chain is kilobytes and a
+//! The certificate is summarized, not stored. A chain is kilobytes and a
 //! report may hold thousands; what a reader acts on is the name it was issued
 //! to, who issued it, when it expires and its fingerprint, so those are kept
 //! and the DER is not. A caller needing the chain itself has to re-fetch it,
@@ -159,9 +159,9 @@ impl Security {
 
     /// Whether the certificate is valid at `target_time`.
     ///
-    /// `false` for a certificate that is expired, not yet valid, or absent —
-    /// the three are different, and a caller that needs to tell them apart
-    /// reads [`certificate`](Self::certificate) directly.
+    /// `false` for a certificate that is expired, not yet valid, or absent. The
+    /// three are different, and a caller that needs to tell them apart reads
+    /// [`certificate`](Self::certificate) directly.
     pub fn is_cert_valid_at(&self, target_time: SystemTime) -> bool {
         self.certificate
             .as_ref()
@@ -209,10 +209,10 @@ impl Security {
     /// a renewal queue that was never true of the network it describes.
     /// A `threshold` no clock can reach reads as one that covers everything, and
     /// never as a panic. `SystemTime + Duration` is checked because the threshold
-    /// arrives from a caller — [`DiffOptions::with_expiry_threshold`] takes any
-    /// `Duration` there is — and a horizon past the end of representable time is
-    /// a caller saying every certificate is on the queue, which is an answer
-    /// rather than an error.
+    /// arrives from a caller and [`DiffOptions::with_expiry_threshold`] takes any
+    /// `Duration` there is. A horizon past the end of representable time is a
+    /// caller saying every certificate is on the queue, which is an answer rather
+    /// than an error.
     ///
     /// [`DiffOptions::with_expiry_threshold`]: crate::diff::DiffOptions::with_expiry_threshold
     pub fn is_cert_expiring_at(&self, threshold: Duration, at: SystemTime) -> bool {
@@ -455,7 +455,8 @@ mod tests {
     }
 
     /// ALPN is a list where the rest are single values, and it deduplicates on
-    /// the way in — a server offering the same protocol twice is one protocol.
+    /// the way in, since a server offering the same protocol twice is offering
+    /// one protocol.
     #[test]
     fn a_record_carries_what_the_handshake_agreed() {
         let sec = Security::new()
@@ -517,7 +518,7 @@ mod tests {
         assert!(!security.is_cert_expiring_at(day * 5, scanned_at));
 
         // Read a year later, the same record says the certificate had already
-        // expired — and an expired certificate is not an expiring one.
+        // expired, and an expired certificate is not an expiring one.
         let read_at = scanned_at + day * 365;
         assert!(!security.is_cert_valid_at(read_at));
         assert!(!security.is_cert_expiring_at(day * 30, read_at));

@@ -15,18 +15,18 @@
 //! [`Service`](crate::model::port::Service) does not: it holds the `0..=100`
 //! score [`as_score`](Confidence::as_score) projects onto, because a service
 //! identification is refined in place by several analyzers and the score is what
-//! [`Service::merge`](crate::model::port::Service::merge) ranks them by. So the
-//! two are comparable through that projection rather than directly, which is
-//! worth knowing before writing a report that puts them side by side.
+//! [`Service::merge`](crate::model::port::Service::merge) ranks them by. The two
+//! are comparable through that projection rather than directly, which is worth
+//! knowing before writing a report that puts them side by side.
 
 /// How much trust to place in a single piece of [`Evidence`](crate::fingerprint::Evidence).
 ///
 /// Ordered weakest-to-strongest, so evidence can be compared and ranked
 /// directly.
 ///
-/// Non-exhaustive, as [`Severity`](crate::model::finding::Severity) is and for
-/// the same reason: a grade added to the scale costs a recompile rather than a
-/// major version. [`ALL`](Self::ALL) is the list to iterate.
+/// Non-exhaustive, as [`Severity`](crate::model::finding::Severity) is: a grade
+/// added to the scale costs a recompile rather than a major version.
+/// [`ALL`](Self::ALL) is the list to iterate.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Confidence {
@@ -56,9 +56,8 @@ impl Confidence {
         }
     }
 
-    /// Every level, weakest-first, for a caller that iterates rather than
-    /// writing the list out — the round-trip that keeps the wire names in step
-    /// with the enum, among them.
+    /// Every level, weakest-first, for a caller that iterates rather than writing
+    /// the list out, the wire-name round trip among them.
     pub const ALL: [Confidence; 5] = [
         Self::Heuristic,
         Self::Weak,

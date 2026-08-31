@@ -46,9 +46,9 @@ pub enum ScanResponse {
     /// A TCP SYN/ACK from this endpoint to **somebody else**, read off the wire
     /// without anything having been sent to it.
     ///
-    /// It establishes the same thing [`TcpSynAck`](Self::TcpSynAck) does — a
-    /// listener accepted a connection — and it is in one respect the stronger
-    /// evidence, because what it accepted was a real client rather than a knock.
+    /// It establishes what [`TcpSynAck`](Self::TcpSynAck) does, that a listener
+    /// accepted a connection, and is in one respect the stronger evidence, since
+    /// what it accepted was a real client rather than a knock.
     /// Kept apart because it answers a narrower question: the endpoint served
     /// *that* peer over *that* path, and nothing here says it would answer this
     /// machine. A scan and a listener disagreeing about one port is a finding
@@ -95,9 +95,9 @@ pub struct Discovery {
     /// middlebox-generated reply is caught.
     ttl: Option<u8>,
 
-    /// Who sent the reply, when that is worth recording separately — a `Closed`
-    /// sourced from an address that is not the target's says something about
-    /// the path rather than about the port.
+    /// Who sent the reply, when that is worth recording separately. A `Closed`
+    /// sourced from an address that is not the target's says something about the
+    /// path rather than about the port.
     source_ip: Option<IpAddr>,
 }
 

@@ -34,7 +34,7 @@
 //! [`PortState::OpenFiltered`] is the honest verdict for silence here, and
 //! [`PortState::Filtered`] is not.
 //!
-//! **Not every stack obeys.** Windows, many Cisco devices, BSDI and IBM OS/400
+//! Not every stack obeys. Windows, many Cisco devices, BSDI and IBM OS/400
 //! answer every flag probe with a RST whatever the port state. Against those,
 //! [`Fin`](TcpScanTechnique::Fin), [`Null`](TcpScanTechnique::Null),
 //! [`Xmas`](TcpScanTechnique::Xmas) and [`Maimon`](TcpScanTechnique::Maimon)
@@ -85,11 +85,11 @@ pub enum TcpReply {
     /// window (RFC 793 §3.9 requires an acknowledgement for an unacceptable
     /// segment; RFC 5961 §4 makes it mandatory for a SYN specifically, to close
     /// the blind-reset window). It carries `RCV.NXT`, which acknowledges the
-    /// **earlier** attempt that opened the connection rather than the one that
+    /// earlier attempt that opened the connection rather than the one that
     /// provoked this.
     ///
-    /// **Only a host holding a half-open connection sends one, and only a
-    /// listener holds one.** A closed port has no state to challenge from; it
+    /// Only a host holding a half-open connection sends one, and only a
+    /// listener holds one. A closed port has no state to challenge from; it
     /// resets. So this is positive evidence of an open port, arriving by a
     /// different route than a handshake.
     ChallengeAck,
@@ -142,7 +142,7 @@ pub enum TcpScanTechnique {
     /// the segment when the port is open, and against those it works like a FIN
     /// scan while looking far more like ordinary connection teardown.
     ///
-    /// **Against a conformant stack it is actively misleading.** RFC 793
+    /// Against a conformant stack it is actively misleading. RFC 793
     /// requires a reset for any ACK-carrying segment on a connection that does
     /// not exist, whether or not the port is listening, so an open port answers
     /// exactly as a closed one does and is reported [`PortState::Closed`].
@@ -226,8 +226,8 @@ impl TcpScanTechnique {
             // path that matters: when a SYN+ACK is lost, this host never resets
             // it, the peer stays in SYN-RECEIVED, and every retransmission draws
             // one of these instead of a fresh handshake. Reading it as noise
-            // reported those ports filtered — an open port on a lossy path,
-            // which is exactly the case retransmission exists for.
+            // reported those ports filtered, which is an open port on a lossy
+            // path and the case retransmission exists for.
             (Self::Syn, TcpReply::ChallengeAck) => Some(PortState::Open),
 
             // No other technique opens a connection, so none can legitimately
@@ -378,9 +378,9 @@ mod tests {
         assert_eq!("  MAIMON ".parse(), Ok(TcpScanTechnique::Maimon));
     }
 
-    /// The error names the alternatives, since it is printed straight at a user
-    /// who has just mistyped a flag — and it names *every* one, because it is
-    /// built from `ALL` rather than from a list that has to be remembered.
+    /// The error names the alternatives, being printed straight at a user who has
+    /// just mistyped a flag, and it names every one, since it is built from `ALL`
+    /// rather than from a list somebody has to remember.
     #[test]
     fn an_unknown_name_is_rejected_with_the_ones_that_would_work() {
         let error = "stealth"

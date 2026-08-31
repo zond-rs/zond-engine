@@ -13,8 +13,8 @@
 //!
 //! Probes answer in an order nobody controls, so the verdict has to be
 //! independent of arrival order. That is what the ordering on `HostStatus` is
-//! for — a scan promotes along it and never lowers — and the type's own
-//! documentation has the rule that makes the ordering defensible.
+//! for, with a scan promoting along it and never lowering, and the type's own
+//! documentation carries the rule that makes the ordering defensible.
 //!
 //! A host keeps every reason it collected, not just the one that settled the
 //! verdict. Reachability is a claim someone will want to check, and "up" with
@@ -43,7 +43,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostStatus {
     /// Nothing was received that says anything about this host. This is what a
-    /// timeout means, and it is deliberately not [`HostStatus::Down`]: an
+    /// timeout means, and it is not [`HostStatus::Down`]: an
     /// address that answers nothing is indistinguishable from one that was never
     /// reachable in the first place, and the engine declines to guess between
     /// them.
@@ -113,10 +113,9 @@ pub enum StatusProtocol {
     /// kept apart from [`TcpSyn`](Self::TcpSyn): the two prove different things,
     /// and a reader of the evidence should not have to work out which. `Udp`
     /// names nothing above the transport because a reply to an arbitrary probed
-    /// port has nothing above it to name. This frame does — it is a DHCP server
-    /// reply — and naming it is the whole of what makes the line worth reading.
-    /// `udp` in an evidence list tells a reader that something answered; `dhcp`
-    /// tells them what.
+    /// port has nothing above it to name. This frame is a DHCP server reply, and
+    /// naming it is what makes the line worth reading. `udp` in an evidence list
+    /// tells a reader that something answered; `dhcp` tells them what.
     ///
     /// Unsolicited, like a router advertisement and unlike everything else here:
     /// a DHCP server answers the segment's own traffic and a sweep is listening

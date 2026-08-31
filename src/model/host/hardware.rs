@@ -11,8 +11,8 @@
 //! [`HardwareInfo`] records the MAC addresses a host has answered under and the
 //! vendor its OUI attributes it to.
 //!
-//! **A history rather than a single address, because one host genuinely has
-//! several.** A machine with two interfaces on one segment answers under two;
+//! A history rather than a single address, because one host genuinely has
+//! several. A machine with two interfaces on one segment answers under two;
 //! a phone or laptop randomizing its address answers under a series. Keeping
 //! only the newest would answer "which address is it using now" and lose
 //! "which has it used", and the second question is the one that identifies a
@@ -234,11 +234,10 @@ mod tests {
     /// A sighting resolves a vendor through the OUI database and records the
     /// address that produced it.
     ///
-    /// That *some* vendor resolves is the whole assertion. Naming the company
-    /// would pin a third-party database's spelling of it and break on a data
-    /// update this crate is not party to — see
-    /// [`mac::vendor`](crate::model::mac::vendor), whose own test says the
-    /// same.
+    /// That some vendor resolves is the whole assertion. Naming the company would
+    /// pin a third-party database's spelling of it and break on a data update
+    /// this crate is not party to. See [`mac::vendor`](crate::model::mac::vendor),
+    /// whose own test says the same.
     #[test]
     fn a_sighting_records_the_address_and_resolves_its_vendor() {
         let mac = MacAddr::new(0x00, 0x0C, 0x29, 0xAB, 0xCD, 0xEF);
@@ -248,8 +247,8 @@ mod tests {
         assert!(hw.macs().contains_key(&mac));
     }
 
-    /// "Which address is it using now" is answered from the timestamps, not
-    /// from the map's own order — that is keyed on the address so a report
+    /// Which address a host is using now is answered from the timestamps rather
+    /// than from the map's own order, which is keyed on the address so a report
     /// renders reproducibly. Reading the newest any other way would report the
     /// numerically largest MAC as the current one.
     ///

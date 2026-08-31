@@ -8,29 +8,28 @@
 
 //! # What is wrong with what is running
 //!
-//! [`Evidence`](crate::fingerprint::Evidence) says *what is running* on a port;
-//! a [`Finding`] says *what is wrong with it*. It is the model's second
-//! vocabulary — the typed result a detection produces, whether that detection is
-//! a signature, a declarative flow, a sandboxed module, or the built-in
-//! CVE correlator, so that all of them compose without knowing about one another.
+//! [`Evidence`](crate::fingerprint::Evidence) says what is running on a port and
+//! a [`Finding`] says what is wrong with it. It is the model's second vocabulary,
+//! the typed result a detection produces, whether that detection is a signature,
+//! a declarative flow, a sandboxed module or the built-in CVE correlator, so all
+//! of them compose without knowing about one another.
 //!
 //! A finding is a **positive claim, backed by evidence, about a subject the scan
-//! already holds** — a vulnerable service on a port, a weakness inferred across a
-//! host. It is carried by the thing it is about: a [`Host`](crate::model::host)
-//! and a [`Port`](crate::model::port) each hold their own findings, the way they
-//! already hold network roles and filtering conclusions. A finding that is *not*
-//! present is never a claim that the subject is clean — it is a detection that
-//! did not run, or ran and did not fire.
+//! already holds**: a vulnerable service on a port, a weakness inferred across a
+//! host. It is carried by the thing it is about, so a [`Host`](crate::model::host)
+//! and a [`Port`](crate::model::port) each hold their own findings the way they
+//! already hold network roles and filtering conclusions. A finding that is not
+//! present is never a claim that the subject is clean; it is a detection that did
+//! not run, or ran and did not fire.
 //!
 //! ## Two axes, not one
 //!
 //! Every finding carries two independent judgements, and keeping them apart is
 //! the whole reason a typed finding beats a printed string:
 //!
-//! - [`Severity`] — *how bad it is if true*.
-//! - [`Confidence`] — *how sure it is true*,
-//!   reused verbatim from the fingerprinting model so that one trust vocabulary
-//!   covers the whole engine.
+//! - [`Severity`], how bad it is if true.
+//! - [`Confidence`], how sure it is true, reused verbatim from the fingerprinting
+//!   model so one trust vocabulary covers the whole engine.
 //!
 //! A single "risk" number cannot say *Critical but unverified*, and that is
 //! precisely the common case: a distribution backports a security fix without
@@ -39,10 +38,11 @@
 //!
 //! ## Provenance is a first-class field
 //!
-//! A finding always names the [`DetectionId`] that produced it — an id, a
+//! A finding always names the [`DetectionId`] that produced it: an id, a
 //! [`Version`], and the content hash of the detection body. The report records
-//! that stamp, so a finding is reproducible and auditable long after the scan:
-//! *which detection, which version, which bytes*. This is the field an
+//! that stamp, so a finding is reproducible and auditable long after the scan,
+//! naming which detection and which version and which bytes. This is the field
+//! an
 //! unstructured script blob never has, and it is what lets a detection be
 //! accepted from a stranger and still answer for itself.
 
@@ -56,24 +56,24 @@ use crate::model::confidence::Confidence;
 
 /// The most justifying text a finding retains, in bytes.
 ///
-/// The excerpt is target-controlled — it is bytes a scanned host chose to send —
-/// and it travels into every export and every journal. Three things break
-/// without a bound: a multi-megabyte banner becomes a denial-of-service on the
+/// The excerpt is target-controlled, being bytes a scanned host chose to send,
+/// and it travels into every export and every journal. Three things break without
+/// a bound: a multi-megabyte banner becomes a denial-of-service on the
 /// report; a journal that must let two runs write byte-identical files cannot
 /// carry an unbounded string and stay comparable with itself; and the full
 /// bytes already live in the journal's recorded exchange, of which this is only
-/// the excerpt. Two kilobytes is past anything a person reads to see *why* a
+/// the excerpt. Two kilobytes is past anything a person reads to see why a
 /// finding fired and short of where the string stops being an excerpt.
 pub const MAX_EXCERPT_BYTES: usize = 2048;
 
-/// The most distinct findings one subject — a single host or a single port —
-/// retains.
+/// The most distinct findings one subject, meaning a single host or a single
+/// port, retains.
 ///
-/// Findings deduplicate by claim, so this bounds *distinct* claims, not
+/// Findings deduplicate by claim, so this bounds distinct claims rather than
 /// repetitions: a detection that fires the same claim a thousand times still
-/// occupies one slot. What it guards against is the other direction — a flooding
-/// detection, or a correlation against a service with a vast CVE history, making
-/// one subject allocate without limit. Past the finding count of any real
+/// occupies one slot. What it guards is the other direction: a flooding detection,
+/// or a correlation against a service with a vast CVE history, making one subject
+/// allocate without limit. Past the finding count of any real
 /// subject and short of where the map becomes a denial-of-service on the report
 /// it feeds.
 pub const MAX_FINDINGS_PER_SUBJECT: usize = 256;
@@ -81,9 +81,9 @@ pub const MAX_FINDINGS_PER_SUBJECT: usize = 256;
 /// How bad a [`Finding`] is if it is true.
 ///
 /// Ordered weakest-to-strongest, so a set of findings ranks by an ordinary
-/// comparison and the worst rises to the top of a report. This is the *impact*
-/// axis and it is deliberately independent of [`Confidence`], which is the
-/// *certainty* axis: a finding can be [`Critical`](Self::Critical) and only
+/// comparison and the worst rises to the top of a report. This is the impact
+/// axis and is independent of [`Confidence`], the certainty axis: a finding can
+/// be [`Critical`](Self::Critical) and only
 /// [`Probable`](Confidence::Probable), and a report that fuses the two into one
 /// number can no longer say so.
 ///
@@ -92,14 +92,14 @@ pub const MAX_FINDINGS_PER_SUBJECT: usize = 256;
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum Severity {
-    /// Not a weakness — a fact worth surfacing. An unencrypted service that is
+    /// Not a weakness but a fact worth surfacing: an unencrypted service that is
     /// meant to be unencrypted, a version banner, a reachable management port.
     Info,
     /// A weakness of little consequence on its own: information disclosure a
     /// determined attacker gains anyway, a hardening step left undone.
     Low,
-    /// A real weakness with a real precondition — exploitable given a foothold,
-    /// a position, or a second flaw to chain from.
+    /// A real weakness with a real precondition, exploitable given a foothold, a
+    /// position, or a second flaw to chain from.
     Medium,
     /// Directly exploitable, or a disclosure that hands an attacker materially
     /// more than they had.
@@ -154,10 +154,11 @@ impl Severity {
 
 /// The intrusiveness a detection ran under, recorded on the finding it produced.
 ///
-/// Not part of what the finding *claims* — the same weakness reached passively
-/// and then confirmed by an exploit is one finding, corroborated, not two — but
-/// a fact about *how it was learned*, so a report can say a finding was drawn by
-/// observation versus by an exploit that fired. The class a detection declares is
+/// Not part of what the finding claims, since the same weakness reached passively
+/// and then confirmed by an exploit is one finding corroborated rather than two.
+/// It is a fact about how the finding was learned, so a report can say whether it
+/// was drawn by observation or by an exploit that fired. The class a detection
+/// declares is
 /// exactly the set of capabilities the operator's envelope will serve it, which
 /// is what makes it an enforced boundary rather than a self-assigned label:
 /// [`Passive`](Self::Passive) is served no way to touch the network at all.
@@ -171,7 +172,7 @@ pub enum DetectionClass {
     /// Exchanges bytes with the scanned socket, within a byte budget. Reads;
     /// changes nothing.
     ActiveBenign,
-    /// Causes a state change on the target — a write, a login that is logged, a
+    /// Causes a state change on the target: a write, a login that is logged, a
     /// test record left behind.
     ActiveMutating,
     /// Attempts to trigger the weakness, not merely to detect it.
@@ -210,15 +211,15 @@ impl DetectionClass {
     ];
 }
 
-/// A detection's version — a provenance stamp that needs to be *ordered*, not a
-/// package resolver's input.
+/// A detection's version: a provenance stamp that has to be ordered, rather than
+/// a package resolver's input.
 ///
 /// "The newer detection's verdict wins" (which is how two accounts of one claim
 /// reconcile in a merge) needs a comparison, so this is a real type rather than a
-/// string. It is deliberately the common `major.minor.patch` subset of semver and
-/// nothing more — no pre-release grammar, no build metadata — because a detection
-/// version answers "which of these two is newer", and that is all. Hand-rolled so
-/// that no version-parsing dependency enters the model.
+/// string. It is the common `major.minor.patch` subset of semver and nothing
+/// more, with no pre-release grammar and no build metadata, since a detection
+/// version answers only which of two is newer. Hand-rolled so no version-parsing
+/// dependency enters the model.
 ///
 /// The `Ord` derive compares `major`, then `minor`, then `patch`, in field order,
 /// which is exactly the intended precedence.
@@ -292,14 +293,15 @@ impl fmt::Display for Version {
 
 /// An external reference a finding points at.
 ///
-/// The *kind* is typed because that is what a consumer switches on — an NVD entry
-/// for a CVE, a MITRE definition for a CWE, a bare link otherwise — and typing it
-/// costs nothing and buys the export, sorting, and deduplication behaviour. The
+/// The kind is typed because that is what a consumer switches on, whether an NVD
+/// entry for a CVE, a MITRE definition for a CWE, or a bare link otherwise, and
+/// typing it costs nothing and buys the export, sorting and deduplication
+/// behaviour. The
 /// payloads differ by kind: a CVE is an opaque identifier this vocabulary never
 /// computes over, a CWE *is* a number (its canonical MITRE URL is built from it),
 /// and a URL is arbitrary and untrusted.
 ///
-/// `Ord` so a finding's references live in a [`BTreeSet`] — deduplicated, and
+/// `Ord` so a finding's references live in a [`BTreeSet`], deduplicated and
 /// written in a stable order so two runs produce the same file.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -310,14 +312,14 @@ pub enum Reference {
     /// A CWE weakness number, e.g. `79` for `CWE-79`. The bare number, because
     /// the identifier is a number and its link is built from it.
     Cwe(u32),
-    /// Any other reference — an advisory, a vendor bulletin. Untrusted, and
-    /// rendered as inert escaped text on export, never as a live link target.
+    /// Any other reference, such as an advisory or a vendor bulletin. Untrusted,
+    /// and rendered as inert escaped text on export rather than as a live link.
     Url(String),
 }
 
 impl Reference {
     /// A CVE reference, if `id` has the shape `CVE-YYYY-N` (a four-digit year and
-    /// at least one digit of sequence). Returns [`None`] otherwise — a
+    /// at least one digit of sequence). Returns [`None`] otherwise, since a
     /// malformed identifier is not a reference.
     pub fn cve(id: impl Into<String>) -> Option<Self> {
         let id = id.into();
@@ -354,11 +356,11 @@ fn is_cve_shaped(id: &str) -> bool {
 
 /// The bytes that made a detection fire, bounded and safe to carry everywhere.
 ///
-/// A newtype rather than a bare `String` so that the [`MAX_EXCERPT_BYTES`] bound
-/// is enforced at the one place a value is made — [`Excerpt::new`] — and cannot
-/// be bypassed by a rebuild from a file or a value handed back from a sandboxed
-/// module. Over-length input is *truncated*, never rejected: dropping a real
-/// finding because its evidence ran long would be the wrong failure.
+/// A newtype rather than a bare `String`, so the [`MAX_EXCERPT_BYTES`] bound is
+/// enforced at [`Excerpt::new`], the one place a value is made, and cannot be
+/// bypassed by a rebuild from a file or a value handed back from a sandboxed
+/// module. Over-length input is truncated rather than rejected, since dropping a
+/// real finding because its evidence ran long would be the wrong failure.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Excerpt(String);
 
@@ -392,17 +394,18 @@ impl Excerpt {
 ///
 /// The provenance stamp the report records so a finding can be reproduced and
 /// audited: an author-chosen `id`, a [`Version`] that can be ordered, and the
-/// content hash of the detection body. The hash is carried as an opaque string —
-/// the model does not compute it, the detection subsystem does — the same way a
+/// content hash of the detection body. The hash is carried as an opaque string,
+/// computed by the detection subsystem rather than by the model, the way a
 /// certificate fingerprint is carried as a string rather than a typed digest.
 ///
 /// The `id` is **untrusted input**: an author chose it, and it reaches exported
 /// reports, so a consumer escapes it exactly as it escapes a scanned host's own
 /// banner. The reservation of the `zond:` prefix for the engine's own built-in
-/// detections is enforced where detections are *authored* — `build.rs` for the
-/// ones this project ships, [`detect::flow::validate`](crate::detect::flow) for
-/// the ones an operator writes — and not here, because the built-in correlator's
-/// own id lives in that namespace.
+/// detections is enforced where detections are authored, by `build.rs` for the
+/// ones this project ships and by
+/// [`detect::flow::validate`](crate::detect::flow) for the ones an operator
+/// writes, rather than here, since the built-in correlator's own id lives in that
+/// namespace.
 ///
 /// It is not enforced on a report read back either, and that is not a gap in the
 /// reservation so much as a fact about the document: everything in an imported
@@ -457,10 +460,10 @@ impl DetectionId {
 /// What makes two findings *the same finding*: the detection that asserts it and
 /// the thing it asserts.
 ///
-/// A key that deliberately excludes the version, the hash, the confidence, the
-/// severity, and the excerpt — for the reason the host's own `OsClaim` key
-/// excludes its confidence and evidence: those are *how sure*, *which build*, and
-/// *why*, none of which change *what is being claimed*. Keying on any of them
+/// A key that excludes the version, the hash, the confidence, the severity and
+/// the excerpt, for the reason the host's own `OsClaim` key excludes its
+/// confidence and evidence: those say how sure, which build and why, none of
+/// which change what is being claimed. Keying on any of them
 /// would let one claim in under several spellings, so a detection version bump
 /// would double every finding in a merge instead of updating it in place.
 ///
@@ -495,8 +498,8 @@ impl ClaimId {
 /// independent judgements ([`Severity`] and [`Confidence`]), holds a bounded
 /// [`Excerpt`] of the bytes that justify it, and points at zero or more typed
 /// [`Reference`]s. It is built through [`Finding::new`] and refined with the
-/// `with_*` builders, so every finding — scanned, rebuilt from a file, or handed
-/// back from a module — has passed the same checks.
+/// `with_*` builders, so every finding has passed the same checks whether it was
+/// scanned, rebuilt from a file, or handed back from a module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     detection: DetectionId,
@@ -515,8 +518,8 @@ impl Finding {
     ///
     /// The excerpt starts empty, the reference set empty, and remediation absent;
     /// each is added with a builder below. Severity and confidence are separate
-    /// arguments precisely because they are separate axes — neither is derived
-    /// from the other.
+    /// arguments because they are separate axes, and neither is derived from the
+    /// other.
     pub fn new(
         detection: DetectionId,
         title: impl Into<String>,
@@ -630,7 +633,7 @@ impl Finding {
     /// trusted to have matched the claims first; folding two different claims
     /// would be a caller's error, not this method's to police.
     ///
-    /// **A superseded detection does not supply the verdict.** Severity, title
+    /// A superseded detection does not supply the verdict. Severity, title
     /// and class are what a detection concluded, and the [`DetectionId`] beside
     /// them is the record of which one concluded it. Taking the verdict from
     /// whichever account arrived second while taking the stamp only from a newer
@@ -643,7 +646,7 @@ impl Finding {
     ///
     /// So an account at a lower version supplies nothing but what is missing.
     ///
-    /// **An account at the same version supplies the verdict**, and that is not
+    /// An account at the same version supplies the verdict, and that is not
     /// the same question. One detection grading one claim differently on two
     /// occasions has read different evidence, not changed its mind, so the
     /// reading to keep is the current one. Which is current is
@@ -738,8 +741,8 @@ impl Finding {
 
 /// Why a [`Finding`] or a [`DetectionId`] could not be constructed.
 ///
-/// Both cases are an empty identifier or title — a finding must be able to say
-/// what produced it and what it claims, and a blank string says neither.
+/// Both cases are an empty identifier or title. A finding has to say what
+/// produced it and what it claims, and a blank string says neither.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum FindingError {
@@ -807,7 +810,7 @@ mod tests {
         // A multi-byte char straddling the cap must not be split into invalid
         // UTF-8, and the result must be within the bound. A mutant that truncates
         // by byte index alone would panic or produce a broken string.
-        let big = "é".repeat(MAX_EXCERPT_BYTES); // two bytes each — 2x over the cap
+        let big = "é".repeat(MAX_EXCERPT_BYTES); // two bytes each, so twice the cap
         let excerpt = Excerpt::new(big);
         assert!(excerpt.as_str().len() <= MAX_EXCERPT_BYTES);
         // Still valid UTF-8: as_str returning at all proves it, but assert the
@@ -891,7 +894,7 @@ mod tests {
             DetectionId::new("redis-unauth-access", Version::new(1, 1, 0), "newhash").unwrap(),
             "Unauthenticated Redis access",
             Severity::Critical, // re-scored up
-            Confidence::Strong, // weaker than Certain — must not lower it
+            Confidence::Strong, // weaker than Certain, and must not lower it
             DetectionClass::ActiveBenign,
         )
         .unwrap()
@@ -1026,8 +1029,8 @@ mod tests {
 
     #[test]
     fn corroborate_reports_no_change_for_an_identical_refiring() {
-        // A detection firing the same claim twice is not new information — the
-        // signal a subject uses to know a finding was already recorded.
+        // A detection firing the same claim twice is not new information, which
+        // is how a subject knows a finding was already recorded.
         let mut base = finding();
         assert!(!base.corroborate(finding()));
     }

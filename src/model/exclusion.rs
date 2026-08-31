@@ -16,7 +16,7 @@
 //!
 //! The obvious implementation is to subtract the excluded addresses from the
 //! target set and be done. That is necessary and it is not sufficient, because
-//! **the target list is not the only way an address enters a scan.** A segment
+//! the target list is not the only way an address enters a scan. A segment
 //! sweep takes leads from the host's own IPv6 neighbour table, learns addresses
 //! from mDNS records and from ARP and neighbour-advertisement replies, and
 //! probes what it finds. None of those addresses was ever in the list, so none
@@ -37,21 +37,21 @@
 //!
 //! ## What it can and cannot promise
 //!
-//! **It promises that no packet is addressed to an excluded address, and that no
-//! excluded address appears in the report.** That second one is worth stating
+//! It promises that no packet is addressed to an excluded address, and that no
+//! excluded address appears in the report. That second one is worth stating
 //! plainly because it is checkable: a reader with the report in hand can
 //! confirm it against the ranges the report itself records, without trusting
 //! this module.
 //!
-//! **It does not promise that an excluded host never receives a packet.** A
-//! segment sweep's all-nodes echo is one datagram to `ff02::1` and an ARP
-//! request goes to the broadcast address; every machine on the link sees them,
-//! including the excluded one, and nothing this engine does after the fact can
-//! un-send them. What the gate does with the reply is drop it.
+//! It does not promise that an excluded host never receives a packet. A segment
+//! sweep's all-nodes echo is one datagram to `ff02::1` and an ARP request goes to
+//! the broadcast address, so every machine on the link sees them, the excluded
+//! one included, and nothing done afterwards can un-send them. What the gate does
+//! with the reply is drop it.
 //!
-//! That is the honest boundary, and a caller who needs the stronger property —
-//! that an excluded machine sees nothing at all — needs to not sweep the segment
-//! it is on, which is a decision about the scan rather than about this type.
+//! A caller who needs an excluded machine to see nothing at all has to not sweep
+//! the segment it is on, which is a decision about the scan rather than about
+//! this type.
 //!
 //! ## Zones
 //!
@@ -75,8 +75,8 @@ use crate::model::target::{TargetMap, TargetSet};
 /// [`extend`](Self::extend), which canonicalizes again. That invariant is not
 /// cosmetic: [`excludes`](Self::excludes) is consulted at every host finding, and
 /// an unmerged set answers that by scanning its ranges rather than by binary
-/// search. The type exists largely to make the fast path unconditional — the
-/// same argument [`TargetSet::new`](crate::model::target::TargetSet::new) makes
+/// search. The type exists largely to make the fast path unconditional, which is
+/// the argument [`TargetSet::new`](crate::model::target::TargetSet::new) makes
 /// for targets.
 ///
 /// It is also a distinct type from the [`IpSet`] it holds so that the two
@@ -117,10 +117,10 @@ impl Exclusions {
 
     /// Whether `ip` may not be probed or recorded.
     ///
-    /// The whole of the policy, asked one address at a time. A binary search
-    /// over merged ranges, and a bare `is_empty` check when no policy is in
-    /// force — which is the case on the overwhelming majority of scans and is
-    /// why this is affordable on the path every finding takes.
+    /// The whole of the policy, asked one address at a time. A binary search over
+    /// merged ranges, and a bare `is_empty` check when no policy is in force,
+    /// which is the case on most scans and is why this is affordable on the path
+    /// every finding takes.
     pub fn excludes(&self, ip: &IpAddr) -> bool {
         !self.set.is_empty() && self.set.contains(ip)
     }
@@ -138,14 +138,13 @@ impl Exclusions {
 
     /// Adds everything `other` excludes to this policy.
     ///
-    /// **Union, never replacement, and that is the whole reason this exists as a
-    /// method rather than as an assignment.** Exclusions arrive in layers — a
-    /// system-wide settings file, a user's own, a profile, the command line —
-    /// and every other setting in that stack is overridden by the layer above
-    /// it. Applying that rule here would let a user's file silently drop the
-    /// range an administrator put in `/etc/zond/engine.toml`, which is the one
-    /// key in the whole document where being overridden defeats the point of
-    /// setting it.
+    /// Union rather than replacement, which is why this is a method and not an
+    /// assignment. Exclusions arrive in layers, from a system-wide settings file
+    /// and a user's own and a profile and the command line, and every other
+    /// setting in that stack is overridden by the layer above it. Applying that
+    /// rule here would let a user's file drop the range an administrator put in
+    /// `/etc/zond/engine.toml`, which is the one key in the document where being
+    /// overridden defeats the point of setting it.
     ///
     /// Narrowing composes safely in a way that widening does not: layering
     /// exclusions can only ever make a scan smaller, so no combination of them
@@ -187,10 +186,10 @@ impl Exclusions {
     /// [`withhold`](Self::withhold), for a map that pairs addresses with ports.
     ///
     /// Each unit is narrowed on its own and rebuilt, and a unit left with no
-    /// address is dropped rather than kept as an empty question — a unit naming
-    /// only excluded addresses no longer asks anything. Rebuilding rather than
-    /// editing in place is not a choice: a [`TargetSet`] is immutable once
-    /// built, for the reason [`TargetSet::into_parts`] gives.
+    /// address is dropped rather than kept as an empty question, since a unit
+    /// naming only excluded addresses asks nothing. Rebuilding rather than editing
+    /// in place is not a choice: a [`TargetSet`] is immutable once built, for the
+    /// reason [`TargetSet::into_parts`] gives.
     ///
     /// The count is gross, as every count on a [`TargetMap`] is. Two units
     /// naming the same excluded address are two questions withheld, and the
@@ -248,9 +247,9 @@ mod tests {
 
     /// The engagement case: a range excluded out of the middle of the scope.
     ///
-    /// Both halves at once, because they are what the two enforcements each
-    /// guarantee and neither implies the other — the count says the plan shrank,
-    /// `excludes` says the gate will hold for an address the plan never held.
+    /// Both halves at once, since they are what the two enforcements each
+    /// guarantee and neither implies the other. The count says the plan shrank,
+    /// and `excludes` says the gate holds for an address the plan never held.
     #[test]
     fn an_excluded_range_leaves_the_scope_and_stays_out_of_the_gate() {
         let policy = Exclusions::new(ips("10.0.5.0/24"));

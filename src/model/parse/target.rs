@@ -1090,8 +1090,8 @@ mod tests {
     /// A resolver is whatever the caller has, not whatever fits in a function
     /// pointer. The host's interface table is read once and closed over here,
     /// which is the shape a caller resolving thousands of targets needs and
-    /// which `fn(&str) -> Option<u32>` cannot express — under that signature
-    /// this does not compile, and the lookup has to become a global.
+    /// which `fn(&str) -> Option<u32>` cannot express. Under that signature this
+    /// does not compile and the lookup has to become a global.
     #[test]
     fn a_resolver_may_close_over_what_it_needs_to_answer() {
         let interfaces = [("en0".to_string(), 7u32), ("utun3".to_string(), 12)];

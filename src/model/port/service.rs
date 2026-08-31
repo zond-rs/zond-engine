@@ -102,11 +102,11 @@ impl Service {
     ///
     /// A confidence of zero is what every scan path seeds a classified port
     /// with: the label the port number is registered under, or a placeholder
-    /// where it is registered under none. **It is not a finding.** Nothing was
-    /// asked and nothing answered, and a port called `http` on the strength of
-    /// being port 80 may be anything at all — which is the point
-    /// [`ServiceDetection::Off`](crate::config::ServiceDetection::Off) makes
-    /// about the same label.
+    /// where it is registered under none. It is not a finding. Nothing was asked
+    /// and nothing answered, and a port called `http` on the strength of being
+    /// port 80 may be anything at all, which is what
+    /// [`ServiceDetection::Off`](crate::config::ServiceDetection::Off) says about
+    /// the same label.
     ///
     /// Read by anything that must not mistake a guess for an identification:
     /// [`diff`](crate::diff) ignores an inferred service entirely, because two
@@ -283,10 +283,10 @@ mod tests {
         assert_eq!(Service::new("ssh", 101).confidence(), 100);
     }
 
-    /// The surer identification names the service; the other still fills what
-    /// it left blank. Both directions matter — a handshake that identified
-    /// `http` precisely should not lose the version a banner read, and a banner
-    /// guess should not rename what a handshake established.
+    /// The surer identification names the service and the other still fills what
+    /// it left blank. Both directions matter: a handshake that identified `http`
+    /// precisely should not lose the version a banner read, and a banner guess
+    /// should not rename what a handshake established.
     #[test]
     fn the_surer_identification_names_the_service_and_the_other_fills_its_gaps() {
         let mut guess = Service::new("http", 50).with_product("nginx");
@@ -311,11 +311,11 @@ mod tests {
         );
     }
 
-    /// A CPE claims that an identifier applies, not that this is the service,
-    /// so it is kept whatever the confidences were — the same rule
+    /// A CPE claims that an identifier applies rather than that this is the
+    /// service, so it is kept whatever the confidences were, which is the rule
     /// [`OsFingerprint::merge`](crate::model::host::OsFingerprint::merge)
-    /// follows. Repeats collapse, since two analyzers commonly extract the
-    /// same one.
+    /// follows. Repeats collapse, since two analyzers commonly extract the same
+    /// one.
     #[test]
     fn cpes_are_unioned_across_a_merge_whatever_the_confidence() {
         let mut ssh = Service::new("ssh", 100).with_cpe("cpe:/a:openbsd:openssh");

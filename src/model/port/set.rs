@@ -12,7 +12,7 @@
 //! wrote, such as `"80, 443, u:53, 1000-2000"`, held as disjoint ranges per
 //! protocol.
 //!
-//! **It is built once and never mutated.** Every construction path merges and
+//! It is built once and never mutated. Every construction path merges and
 //! sorts before returning, and there is no method that can undo that, so a
 //! `PortSet` is canonical from the moment it exists. Two consequences follow,
 //! and both are relied on elsewhere:
@@ -44,9 +44,8 @@ pub const COMMON_DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 ///
 /// One rather than zero. Port 0 is reserved and nothing listens on it, so
 /// including it in an open-ended range would spend a probe per host to
-/// re-establish that — and "everything" written as `-` is a specification people
-/// reach for precisely when the port count is already enormous. A caller who
-/// genuinely wants it can still name `0` outright.
+/// re-establish that, and `-` is the specification people reach for when the port
+/// count is already enormous. A caller who wants it can still name `0` outright.
 const FIRST_PORT: u16 = 1;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -159,8 +158,8 @@ impl PortSet {
 
     /// The `count` UDP ports this engine would ask about first.
     ///
-    /// The counterpart of [`top_tcp`](Self::top_tcp), and deliberately drawn
-    /// from a much shorter list: a UDP port costs far more to classify and far
+    /// The counterpart of [`top_tcp`](Self::top_tcp), drawn from a much shorter
+    /// list: a UDP port costs far more to classify and far
     /// more of them come back
     /// [`OpenFiltered`](crate::model::port::PortState::OpenFiltered) whatever is
     /// done, so the catalogue stops where the extra probes stop buying
@@ -344,8 +343,8 @@ impl Default for PortSet {
 /// The canonical form: TCP ranges first and UDP after them, each ascending, a
 /// single port written as itself and a run written `start-end`. Because the
 /// ranges are merged from construction, two sets holding the same ports render
-/// identically — which is what lets a written scope be compared with another
-/// one, and what lets a report record a port set as one field.
+/// identically, which is what lets a written scope be compared with another and
+/// what lets a report record a port set as one field.
 ///
 /// An empty set renders as the empty string, and reads back as an empty set.
 ///
@@ -396,8 +395,8 @@ impl TryFrom<&str> for PortSet {
     /// * **Open-ended ranges**: `-1024` is everything up to 1024, `1024-` is
     ///   everything from it, and a bare `-` is every port there is. The
     ///   convention every scanner's users already have in their fingers, and
-    ///   more use than a flag for the same thing would be — it applies to the
-    ///   UDP half (`u:-`) and to one side of a mixed specification just as
+    ///   more use than a flag for the same thing would be, since it applies to
+    ///   the UDP half (`u:-`) and to one side of a mixed specification just as
     ///   readily.
     /// * **Protocols**: Defaults to TCP. Use `u:` prefix for UDP (e.g., `u:53`).
     /// * **Mixed**: `80, 443, u:53, 161-162`
@@ -632,9 +631,9 @@ mod tests {
     }
 
     /// Port 0 is reserved and nothing listens on it, so an open-ended range
-    /// starts at 1 — a probe per host to re-establish that is a probe wasted,
-    /// and these are the specifications with the most hosts behind them. Naming
-    /// it outright still works.
+    /// starts at 1. A probe per host to re-establish that is a probe wasted, and
+    /// these are the specifications with the most hosts behind them. Naming it
+    /// outright still works.
     #[test]
     fn an_open_ended_range_starts_at_one_and_zero_must_be_asked_for() {
         assert!(!PortSet::try_from("-").unwrap().has_tcp(0));
@@ -668,7 +667,7 @@ mod tests {
         ));
     }
 
-    /// Whitespace names no ports, which is a valid thing to say — a caller
+    /// Whitespace names no ports, which is a valid thing to say. A caller
     /// supplying an empty default is not making a mistake, and the empty set is
     /// what `Default` means.
     #[test]
@@ -762,8 +761,8 @@ mod tests {
     /// disagree with nothing reporting it.
     ///
     /// And `Default` is empty. It named those same five ports once, which meant
-    /// every struct deriving `Default` around a `PortSet` — `TargetSet` among
-    /// them — silently carried a scan specification nobody wrote.
+    /// every struct deriving `Default` around a `PortSet`, `TargetSet` among
+    /// them, silently carried a scan specification nobody wrote.
     #[test]
     fn the_discovery_set_is_what_the_constant_names_and_default_stays_empty() {
         let set = PortSet::common_discovery();

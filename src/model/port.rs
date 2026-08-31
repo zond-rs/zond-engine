@@ -72,8 +72,8 @@ use crate::model::finding::{ClaimId, Finding, MAX_FINDINGS_PER_SUBJECT};
 /// A variant exists here only once a scanner can speak it. A protocol nobody
 /// can probe still forces every `match` over this enum to invent an answer for
 /// a case that never arises, and those invented answers fail quietly. Adding one
-/// is a deliberate act, and the compiler will walk you through every site that
-/// has to decide something about it.
+/// is a deliberate act, and the compiler names every site that has to decide
+/// something about it.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
@@ -123,7 +123,7 @@ pub enum PortState {
 
     /// Something dropped the probe. The lowest state a scan will record from
     /// silence alone, and only for the techniques every live stack would have
-    /// answered — see
+    /// answered. See
     /// [`silence_means`](crate::model::technique::TcpScanTechnique::silence_means).
     Filtered,
 
@@ -143,12 +143,12 @@ pub enum PortState {
     /// Something is listening and accepted the connection attempt. Only a SYN
     /// draws the SYN+ACK that establishes this.
     ///
-    /// **The SYN need not have been ours.** A listener reading a segment off the
-    /// wire sees the same handshake completed for somebody else, which
-    /// establishes the same thing — and in one respect more, since what was
-    /// accepted was a real client rather than a knock. What it does *not*
-    /// establish is that this machine could reach the endpoint: the peer and the
-    /// path were somebody else's.
+    /// The SYN need not have been this scan's. A listener reading a segment off
+    /// the wire sees the same handshake completed for somebody else, which
+    /// establishes the same thing and in one respect more, since what was
+    /// accepted was a real client rather than a knock. What it does not establish
+    /// is that this machine could reach the endpoint: the peer and the path were
+    /// somebody else's.
     ///
     /// [`Discovery::reason`](discovery::Discovery::reason) is what tells the two
     /// apart, and it is worth reading before acting on an open port from a
@@ -208,9 +208,9 @@ pub struct Port {
     /// What a detection concluded was wrong with this endpoint, keyed on the
     /// claim so that the same finding reached twice records once.
     ///
-    /// The per-port findings — a vulnerable service, a weak configuration on the
-    /// thing listening here — as distinct from the cross-host findings a
-    /// [`Host`](crate::model::host::Host) carries. Bounded by
+    /// The per-port findings, such as a vulnerable service or a weak
+    /// configuration on the thing listening here, as distinct from the cross-host
+    /// findings a [`Host`](crate::model::host::Host) carries. Bounded by
     /// [`MAX_FINDINGS_PER_SUBJECT`], and folded through [`Finding::corroborate`]
     /// when a detection re-fires.
     findings: BTreeMap<ClaimId, Finding>,
@@ -320,7 +320,7 @@ impl Port {
     }
 
     /// Records a finding about this port, and reports whether it was new
-    /// information — a claim not seen before, or a stronger reading of one that
+    /// information: a claim not seen before, or a stronger reading of one that
     /// was.
     ///
     /// A finding reached again folds into the one on record through
@@ -496,9 +496,9 @@ mod tests {
         );
     }
 
-    /// The telemetry explains the verdict, so when the verdict is replaced the
-    /// account of it has to be replaced too — the RTT and TTL of a `NoResponse`
-    /// say nothing about a port something has since answered on.
+    /// The telemetry explains the verdict, so replacing the verdict replaces the
+    /// account of it. The RTT and TTL of a `NoResponse` say nothing about a port
+    /// something has since answered on.
     #[test]
     fn telemetry_follows_the_verdict_it_explains() {
         let disc_filtered = Discovery::new(ScanResponse::NoResponse);

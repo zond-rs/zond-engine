@@ -14,16 +14,15 @@
 //! the interface it is valid on, without which an IPv6 link-local address
 //! cannot be connected to at all.
 //!
-//! What is left at this level is the one classification question more than one
-//! of those three has to agree about: **is this address globally scoped**, which
+//! What is left at this level is the one classification question more than one of
+//! those three has to agree about: whether an address is globally scoped, which
 //! decides whether it names its host from anywhere or only from one segment.
 //!
-//! That is a question about an address's *scope*, deliberately, and not about
-//! reachability. An address in a globally routed prefix may be firewalled to
-//! nothing; an address in a private one may be the only way to reach a host.
-//! Confusing the two is how a scanner ends up reporting a host under an address
-//! nobody can open a socket to, which is the failure [`scoped`] exists to
-//! prevent.
+//! That is a question about scope rather than about reachability. An address in a
+//! globally routed prefix may be firewalled to nothing, and an address in a
+//! private one may be the only way to reach a host. Confusing the two is how a
+//! scanner reports a host under an address nobody can open a socket to, which is
+//! the failure [`scoped`] exists to prevent.
 
 use std::net::Ipv6Addr;
 
@@ -38,11 +37,10 @@ pub use set::{IpSet, IpSetError, Positions};
 /// Whether `ipv6_addr` falls in `2000::/3`, the range IANA currently allocates
 /// global unicast from.
 ///
-/// **A membership test, not a routability claim**, and the difference is worth
-/// stating because the name invites the stronger reading. `2000::/3` is where
-/// global unicast is being handed out today; it is not the whole of what the
-/// address architecture reserves for it, and it contains several
-/// special-purpose prefixes this deliberately does not exclude:
+/// A membership test rather than a routability claim, which the name invites.
+/// `2000::/3` is where global unicast is being handed out today. It is not the
+/// whole of what the address architecture reserves for it, and it contains
+/// several special-purpose prefixes this does not exclude:
 ///
 /// - `2001:db8::/32`, documentation
 /// - `2001::/32`, Teredo, which does turn up on consumer segments
@@ -50,11 +48,11 @@ pub use set::{IpSet, IpSetError, Positions};
 /// - `2001:2::/48`, benchmarking, and `2001:20::/28`, ORCHIDv2
 ///
 /// Excluding them would be wrong for what this is asked. Every caller wants to
-/// know whether an address is globally scoped, meaning it names the host from
-/// off the segment rather than naming a different machine on every one the way
-/// a link-local does. A Teredo or 6to4 address is globally scoped: unusual, but
-/// not local. Filtering them here would report a host under a link-local address
-/// it cannot be reached at, in order to avoid one it can.
+/// know whether an address is globally scoped, meaning it names the host from off
+/// the segment rather than naming a different machine on every one, as a
+/// link-local does. A Teredo or 6to4 address is globally scoped: unusual, and not
+/// local. Filtering them here would report a host under a link-local address it
+/// cannot be reached at, to avoid one it can.
 ///
 /// Hand-rolled because `Ipv6Addr::is_unicast_global` is unstable in std, and
 /// has been for years.
@@ -65,16 +63,15 @@ pub fn is_global_unicast(ipv6_addr: &Ipv6Addr) -> bool {
 
 /// Whether `ipv6_addr` names its host from off the segment it is on.
 ///
-/// The question this module says it exists to answer, and the one more than one
-/// of [`range`], [`set`] and [`scoped`] has to agree about. Global unicast or
+/// The question this module exists to answer, and the one more than one of
+/// [`range`], [`set`] and [`scoped`] has to agree about. Global unicast or
 /// unique-local: the first names a host wherever the internet reaches and the
-/// second wherever an organization's routing does, and for the purpose of
-/// deciding which address identifies a host those are the same answer. A
-/// link-local names a different machine on every segment and is neither.
+/// second wherever an organization's routing does, and for deciding which address
+/// identifies a host those are one answer. A link-local names a different machine
+/// on every segment and is neither.
 ///
 /// [`Host::consider_primary_ip`](crate::model::host::Host::consider_primary_ip)
-/// is what reads it, and it used to carry the unique-local half itself, so the
-/// classification this module claims to hold in one place was in two.
+/// reads it, and once carried the unique-local half itself.
 pub fn is_globally_scoped(ipv6_addr: &Ipv6Addr) -> bool {
     is_global_unicast(ipv6_addr) || is_unique_local(ipv6_addr)
 }
@@ -99,7 +96,7 @@ mod tests {
     use super::*;
 
     /// The boundaries of `2000::/3`, and the special-purpose prefixes inside it
-    /// that this deliberately does not exclude. Both halves matter: an address
+    /// that this does not exclude. Both halves matter: an address
     /// wrongly called local costs a host its usable address, and one wrongly
     /// called global is reported at an address nobody can reach.
     #[test]

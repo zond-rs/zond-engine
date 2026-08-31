@@ -14,10 +14,10 @@
 //!
 //! The type is this crate's own rather than a packet library's, so that the
 //! vocabulary a report is written in does not change when the layer that reads
-//! frames does. A MAC crosses the whole engine — an ARP reply produces one, a
-//! host record keeps every one it has seen, and a report prints them — and
-//! borrowing the type from whichever crate happens to parse Ethernet today
-//! would put that crate in every one of those signatures.
+//! frames does. A MAC crosses the whole engine, since an ARP reply produces one
+//! and a host record keeps every one it has seen and a report prints them, so
+//! borrowing the type from whichever crate happens to parse Ethernet today would
+//! put that crate in every one of those signatures.
 
 use mac_oui::Oui;
 use std::fmt;
@@ -146,9 +146,9 @@ static OUI_DB: OnceLock<Option<Oui>> = OnceLock::new();
 ///
 /// A failure is recorded rather than retried or raised. The database is
 /// compiled in, so a load that fails once fails every time, and there is
-/// nothing a caller could do about it in any case. A scan that cannot name a
-/// manufacturer has still found every address it found — that is not worth
-/// taking down a process that embeds this crate.
+/// nothing a caller could do about it. A scan that cannot name a manufacturer has
+/// still found every address it found, which is not worth taking down a process
+/// that embeds this crate.
 fn oui_db() -> Option<&'static Oui> {
     OUI_DB.get_or_init(|| Oui::default().ok()).as_ref()
 }

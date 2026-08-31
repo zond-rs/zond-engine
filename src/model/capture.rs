@@ -14,22 +14,21 @@
 //! report. [`IpObservation`] is written by the capture and read by whatever
 //! wants to know what a stack put in its headers.
 //!
-//! Putting them here lets the record describe its own shape instead of
-//! borrowing it from the transport it happened to come from, and keeps a
-//! backend with no kernel buffer at all — a synthetic receive stream in a test
-//! — able to say so.
+//! Putting them here lets a record describe its own shape rather than borrowing
+//! it from the transport it came from, and leaves a backend with no kernel buffer
+//! at all, such as a synthetic receive stream in a test, able to say so.
 
 /// What a reply's IP header said, past the addressing the scanner needed to
 /// correlate it.
 ///
-/// A packet's headers carry two quite different kinds of information. The
-/// addresses and the protocol are *routing*: they say who sent this and how to
-/// read the rest, and the scanners have always kept them. Everything else — how
-/// many hops are left, whether the datagram may be fragmented, what identifier
-/// was stamped on it — is a fact about the *stack that emitted it*, chosen by
-/// its authors and nearly identical across every packet that stack will ever
-/// send. That second kind is what this carries, and it is why a reply to an
-/// ordinary port probe is enough to say something about the machine behind it.
+/// A packet's headers carry two kinds of information. The addresses and the
+/// protocol are routing: they say who sent this and how to read the rest, and the
+/// scanners have always kept them. Everything else, meaning how many hops are
+/// left and whether the datagram may be fragmented and what identifier was
+/// stamped on it, is a fact about the stack that emitted it, chosen by its
+/// authors and nearly identical across every packet that stack will ever send.
+/// That second kind is what this carries, and it is why a reply to an ordinary
+/// port probe says something about the machine behind it.
 ///
 /// # Split by family rather than flattened
 ///
@@ -38,10 +37,10 @@
 /// and not the other: there is no identification field in an IPv6 header, and no
 /// don't-fragment bit, because an IPv6 datagram is never fragmented in transit.
 /// Modelled as one flat struct, those become an `Option` that is always `None`
-/// for one family and a `bool` that is silently `false` for it — and a rule
-/// written against `dont_fragment == false` would then match every IPv6 packet
-/// ever captured while looking perfectly correct. An enum makes the question
-/// unaskable in the family where it has no answer.
+/// for one family and a `bool` that is silently `false` for it, and a rule
+/// written against `dont_fragment == false` would match every IPv6 packet ever
+/// captured while looking correct. An enum makes the question unaskable in the
+/// family where it has no answer.
 ///
 /// [`remaining_hops`](Self::remaining_hops) is the one field both families do
 /// have, under two different names, so it is the one thing worth reading without
@@ -57,7 +56,7 @@ pub enum IpObservation {
 impl IpObservation {
     /// The hop counter as it arrived: an IPv4 TTL or an IPv6 hop limit.
     ///
-    /// **This is not the value the sender wrote.** Every router on the path
+    /// This is not the value the sender wrote. Every router on the path
     /// decrements it, so what arrives is the initial value minus the hop count,
     /// and the initial value is the part that identifies a stack. Recovering it
     /// means knowing how far away the host is; rounding up to the nearest
@@ -73,10 +72,10 @@ impl IpObservation {
     /// Whether the reply arrived as a fragment rather than a whole datagram.
     ///
     /// Worth asking before reading anything else here. A fragment's header
-    /// describes the fragment, and the fields that identify a stack — the
-    /// window and options of the segment behind it especially — either belong to
-    /// a different piece of the datagram or are absent entirely. A fragmented
-    /// reply is evidence about the path, not about the sender.
+    /// describes the fragment, and the fields that identify a stack, above all
+    /// the window and options of the segment behind it, either belong to a
+    /// different piece of the datagram or are absent. A fragmented reply is
+    /// evidence about the path rather than about the sender.
     pub fn is_fragment(self) -> bool {
         match self {
             // True for the first fragment and no other, which is every fragment
@@ -145,10 +144,10 @@ pub struct Ipv6Observation {
 
     /// The flow label, twenty bits.
     ///
-    /// Whether a stack sets one *at all* is the signal. The specification allows
-    /// zero, several stacks always send zero, and others derive a value per
-    /// flow — so the distinction worth recording is not which label was chosen
-    /// but whether choosing one was attempted.
+    /// Whether a stack sets one at all is the signal. The specification allows
+    /// zero, several stacks always send zero, and others derive a value per flow,
+    /// so what is worth recording is whether choosing one was attempted rather
+    /// than which label was chosen.
     pub flow_label: u32,
 }
 

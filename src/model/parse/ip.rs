@@ -178,21 +178,21 @@ pub enum IpParseError {
 /// Expands a [`Keyword`] into the addresses it stands for.
 ///
 /// Supplied by the caller, because answering means reading the host's interface
-/// table and this module deliberately knows nothing about the machine it runs
-/// on. Writes into the set it is given rather than returning one, so a keyword
+/// table and this module knows nothing about the machine it runs on. Writes into
+/// the set it is given rather than returning one, so a keyword
 /// mixed with literal targets accumulates alongside them.
 ///
-/// A borrowed `dyn Fn` rather than a bare `fn` pointer, so that a resolver may
-/// close over what it needs — an interface table read once and reused, say —
-/// which a function pointer cannot. It stays `Copy`, so
+/// A borrowed `dyn Fn` rather than a bare `fn` pointer, so a resolver may close
+/// over what it needs, such as an interface table read once and reused, which a
+/// function pointer cannot. It stays `Copy`, so
 /// [`TargetContext`](super::target::TargetContext) does too.
 pub type ResolverFn<'a> = &'a dyn Fn(Keyword, &mut IpSet) -> Result<(), IpParseError>;
 
 /// Looks up an interface by name and returns its scope id.
 ///
 /// Injected for the same reason [`ResolverFn`] is: resolving a name means
-/// reading the host's interface list, and this module deliberately knows nothing
-/// about the host it runs on. `None` for a name no interface answers to.
+/// reading the host's interface list, and this module knows nothing about the
+/// host it runs on. `None` for a name no interface answers to.
 pub type ZoneResolverFn<'a> = &'a dyn Fn(&str) -> Option<u32>;
 
 /// Resolves a list of address expressions into one [`IpSet`].
@@ -405,9 +405,9 @@ fn parse_cidr(s: &str) -> Result<IpRange, IpParseError> {
 /// Restates a range error in this module's vocabulary, against the expression
 /// the caller wrote.
 ///
-/// `original` is threaded through because the remaining variants describe a
-/// token this module no longer holds — a bare "invalid IP range" leaves whoever
-/// is reading the error with nothing to search their input for.
+/// `original` is threaded through because the remaining variants describe a token
+/// this module no longer holds, and a bare "invalid IP range" leaves whoever is
+/// reading the error with nothing to search their input for.
 fn map_range_error(original: &str, e: IpError) -> IpParseError {
     match e {
         IpError::InvalidRange(s, e) => IpParseError::InvalidRange(s, e),
@@ -486,8 +486,8 @@ mod tests {
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
     }
 
-    /// A block is expanded to what it covers, not to what was written — the
-    /// difference a budget check depends on.
+    /// A block is expanded to what it covers rather than to what was written,
+    /// which is the difference a budget check depends on.
     #[test]
     fn a_cidr_block_covers_every_address_in_it() {
         let input = vec!["172.16.0.0/24"];

@@ -17,11 +17,11 @@
 //! is a few words to describe and more than any machine can hold; the set
 //! describes it and the iterator produces them one at a time.
 //!
-//! [`TargetMap`] is several of those, because one scan can ask different
-//! questions of different hosts — `10.0.0.1:22` and `10.0.0.0/24:80` are one
-//! job with two shapes. Each unit is a set of addresses *paired with a set of
-//! ports*, which is why the counts here are gross rather than net: two units
-//! naming one address are two different questions about it, and both get asked.
+//! [`TargetMap`] is several of those, since one scan can ask different questions
+//! of different hosts: `10.0.0.1:22` and `10.0.0.0/24:80` are one job with two
+//! shapes. Each unit is a set of addresses paired with a set of ports, which is
+//! why the counts here are gross rather than net. Two units naming one address
+//! are two questions about it, and both get asked.
 
 use crate::model::ip::set::IpSet;
 use crate::model::port::{PortSet, Protocol};
@@ -62,8 +62,8 @@ pub struct Target {
 /// A target together with its position in the plan it came from.
 ///
 /// The position is the target's index in [`TargetMap::iter`], which is
-/// reproducible for a given plan — so it names the target without storing an
-/// address, and a journal can record how far a scan got in a few bytes.
+/// reproducible for a given plan, so it names the target without storing an
+/// address and a journal records how far a scan got in a few bytes.
 ///
 /// Carried alongside [`Target`] rather than folded into it, because a target
 /// that came from a file or a hand-built set belongs to no plan and has no
@@ -148,12 +148,12 @@ impl TargetSet {
 
     /// Takes the set apart into the two halves it was built from.
     ///
-    /// For rebuilding one: a unit is immutable once constructed, so narrowing
-    /// the addresses of an existing set — which is what withholding an excluded
-    /// range from it amounts to — means taking it apart and building a new one
-    /// through [`new`](Self::new). That route is deliberate. Handing out a
-    /// `&mut IpSet` would let a caller leave the addresses unmerged, and every
-    /// count and every membership test downstream assumes they are not.
+    /// For rebuilding one. A unit is immutable once constructed, so narrowing the
+    /// addresses of an existing set, which is what withholding an excluded range
+    /// amounts to, means taking it apart and building a new one through
+    /// [`new`](Self::new). Handing out a `&mut IpSet` would let a caller leave
+    /// the addresses unmerged, and every count and membership test downstream
+    /// assumes they are not.
     pub fn into_parts(self) -> (IpSet, PortSet) {
         (self.ips, self.ports)
     }

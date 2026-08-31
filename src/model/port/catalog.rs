@@ -30,10 +30,10 @@
 //!
 //! ## Where the ranking comes from
 //!
-//! It is authored here, from IANA's registry and from what is deployed, and it
-//! is deliberately **not** derived from another scanner's frequency data — both
-//! because that data is licensed and because the widely-used one was collected
-//! from internet-wide scans in 2008. Its long tail is full of ports whose
+//! It is authored here, from IANA's registry and from what is deployed, rather
+//! than derived from another scanner's frequency data. That data is licensed, and
+//! the widely-used set was collected from internet-wide scans in 2008. Its long
+//! tail is full of ports whose
 //! services are gone, and it predates containers, the observability stack,
 //! message brokers, the modern development server, and the home lab. Those are
 //! most of what a 2026 scan meets, and they are what the tail here holds
@@ -41,11 +41,11 @@
 //!
 //! ## How precise the order is
 //!
-//! **Ranks 1 to 100 are ordered.** Those hundred are hand-ranked against each
+//! Ranks 1 to 100 are ordered. Those hundred are hand-ranked against each
 //! other, so a caller asking for the top ten gets the ten that answer most
 //! often, and `--top-ports 100` is a considered scan rather than a truncation.
 //!
-//! **Past 100, the tier is the claim and the position inside it is not.** Each
+//! Past 100, the tier is the claim and the position inside it is not. Each
 //! tier below holds ports of comparable likelihood, sorted numerically so the
 //! list can be read, searched and diffed by hand. Pretending to rank the 734th
 //! port against the 735th would be inventing precision from nothing; a reader
@@ -60,9 +60,9 @@
 //! | 3 | 376–647 | The dense bands: HTTP alternates, display and RPC ranges |
 //! | 4 | 648–1000 | The long tail still worth one packet |
 //!
-//! Tier 2 is where the modern self-hosted stack sits, and it is the tier that
-//! goes stale fastest — a media server, a subtitle fetcher, a photo library, a
-//! local model runner. Nineteen of them were missing from the first draft of
+//! Tier 2 is where the modern self-hosted stack sits, and it goes stale fastest:
+//! a media server, a subtitle fetcher, a photo library, a local model runner.
+//! Nineteen of them were missing from the first draft of
 //! this list, two being the ports every machine with a GPU now listens on, and
 //! they went in at the cost of nineteen registrations from the eighties that
 //! nothing has spoken this century. That trade is the maintenance this file
@@ -79,7 +79,7 @@
 //!
 //! Insert the port in the tier that describes it and keep the tier sorted; the
 //! tests below hold both the sorting and the total. A port whose service this
-//! engine can *identify* must appear somewhere in the list — the fingerprint
+//! engine can identify has to appear somewhere in the list. The fingerprint
 //! database and this catalogue are checked against each other, so authoring a
 //! signature for a service on a port nobody probes fails the test rather than
 //! shipping as an invisible gap.
@@ -327,7 +327,7 @@ mod tests {
     /// Bazarr came from exactly the feedback loop this list should have: a
     /// `-p-` run found it on a machine already known to be running its three
     /// sibling applications, all of which were in the catalogue. The two model
-    /// runners are the harder lesson — nothing found them, because nothing was
+    /// runners are the harder lesson: nothing found them because nothing was
     /// looking, and a list that misses what every machine with a GPU listens on
     /// is out of date rather than incomplete.
     #[test]

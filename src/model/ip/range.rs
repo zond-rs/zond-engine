@@ -20,7 +20,7 @@
 //! what a `u128` holds. [`IpRange`] is the enum over the two, for callers that
 //! do not care which family they were handed.
 //!
-//! **The two families are never comparable.** A v4 address is not in a v6 range
+//! The two families are never comparable. A v4 address is not in a v6 range
 //! whatever the numbers say, and `::ffff:10.0.0.1` is an IPv6 address here even
 //! though it names an IPv4 one. Membership across families is `false` rather
 //! than an error, because the callers are filtering received packets and a
@@ -60,7 +60,7 @@ pub enum IpError {
     #[error("Failed to parse IP address: {0}")]
     AddrParse(#[from] std::net::AddrParseError),
 
-    /// Recognisably a range — it has a separator — but not one this grammar
+    /// Recognisably a range, having a separator, but not one this grammar
     /// accepts.
     #[error("Invalid IP range format: {0}")]
     InvalidFormat(String),
@@ -159,7 +159,7 @@ impl Ipv4Range {
 
     /// How many addresses the range covers, never fewer than one.
     ///
-    /// There is deliberately no `is_empty`: both bounds are inclusive and
+    /// There is no `is_empty`: both bounds are inclusive and
     /// [`new`](Self::new) refuses an inverted range, so a range always holds at
     /// least one address and the answer would be `false` every time it was
     /// asked. [`IpSet::is_empty`](crate::model::ip::set::IpSet::is_empty) next
@@ -366,8 +366,8 @@ const LINK_LOCAL_LAST: u128 = (0xfebf << 112) | ((1u128 << 112) - 1);
 /// What [`FromStr`] produces, since the text decides the family and the caller
 /// writing it usually has no reason to branch on the answer.
 ///
-/// The one public enum in [`model`](crate::model) without `#[non_exhaustive]`,
-/// and deliberately. There is no third address family to add, so a caller
+/// The one public enum in [`model`](crate::model) without `#[non_exhaustive]`.
+/// There is no third address family to add, so a caller
 /// matching both arms is writing something exhaustive that will stay
 /// exhaustive, and the marker's whole effect would be to take away the compile
 /// error if that ever stopped being true. The same argument
@@ -614,10 +614,10 @@ mod tests {
     /// is one step from overflowing.
     ///
     /// `::/0` is the case the type cannot represent exactly: 2^128 addresses is
-    /// one more than a `u128` holds, so the count saturates. That undercount of
-    /// one is deliberate — the alternative is a wrapping subtraction reporting
-    /// the whole of IPv6 as *nothing*, and a budget check reading zero would
-    /// wave through precisely the target it exists to stop.
+    /// one more than a `u128` holds, so the count saturates. The undercount of
+    /// one beats the alternative, a wrapping subtraction reporting the whole of
+    /// IPv6 as nothing, where a budget check reading zero would wave through the
+    /// target it exists to stop.
     #[test]
     fn the_extremes_of_each_address_space_saturate_rather_than_wrap() {
         let top_of_v4 = Ipv4Range::new(
@@ -635,9 +635,9 @@ mod tests {
     }
 
     /// Ascending, with no address skipped or repeated. The order is what a scan
-    /// walks, so two runs over one target list probe in the same sequence — and
-    /// the values, not merely the count, are what the property tests below do
-    /// not pin.
+    /// walks, so two runs over one target list probe in the same sequence, and
+    /// the values rather than the count are what the property tests below leave
+    /// unpinned.
     #[test]
     fn iteration_yields_every_address_in_ascending_order() {
         let v4 = Ipv4Range::new(Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(1, 1, 1, 3)).unwrap();
@@ -663,10 +663,9 @@ mod tests {
 
     /// Every form the grammar accepts, and what each covers.
     ///
-    /// This is the whole of what a written range can mean, and everything in
-    /// the crate that reads one ends here — so a spelling that stops working
-    /// stops working for target files, imported reports and command lines at
-    /// once.
+    /// This is the whole of what a written range can mean, and everything in the
+    /// crate that reads one ends here, so a spelling that stops working stops
+    /// working for target files, imported reports and command lines at once.
     #[test]
     fn every_written_form_names_the_range_it_says_it_does() {
         for (written, first, last) in [

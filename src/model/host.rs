@@ -57,8 +57,8 @@ pub use telemetry::HostTelemetry;
 /// in [`Protocol::ALL`]. Derived rather than written out, so a transport added
 /// there widens this along with it.
 ///
-/// **It has to sit here and cannot sit lower, because anything lower truncates
-/// a scan somebody deliberately asked for.** It has been too low twice. It was a
+/// It has to sit here and cannot sit lower, because anything lower truncates a
+/// scan somebody deliberately asked for. It has been too low twice. It was a
 /// thousand, which is a number an ordinary scan reaches: probing `1-1024` on a
 /// host that answers, and a closed port is an answer, recorded a thousand ports,
 /// dropped the last twenty-four without a word, and marked a domestic router as
@@ -99,18 +99,19 @@ pub const TARPIT_OPEN_PORTS: usize = 1_000;
 
 /// What a host turned out to be, beyond an address with ports on it.
 ///
-/// Two kinds of claim share the enum. Most of it names a function *the rest of
-/// the network depends on* — forwarding, naming, addressing — and the last
+/// Two kinds of claim share the enum. Most of it names a function the rest of the
+/// network depends on, such as forwarding or naming or addressing, and the last
 /// three are claims about the record rather than about the machine. Both are
 /// things a reader acts on without reading anything else about the host, which
 /// is what a role is for.
 ///
-/// **A role is never a port number restated.** A host with 80 open is not a web
+/// A role is never a port number restated. A host with 80 open is not a web
 /// server here; that is [`Port::service`](crate::model::port::Port::service),
 /// which carries the confidence such an identification needs. Every role is
-/// concluded from evidence in its own protocol — an advertisement that says "I
-/// forward", a DNS message that parses as a response, a DHCP server naming
-/// itself — so a consumer can act on one without asking how sure it is. Letting
+/// concluded from evidence in its own protocol, whether an advertisement that
+/// says it forwards, a DNS message that parses as a response, or a DHCP server
+/// naming itself, so a consumer can act on one without asking how sure it is.
+/// Letting
 /// in a weaker claim would cost the set that property, since a `HashSet` cannot
 /// say which of its members was a guess.
 ///
@@ -141,11 +142,11 @@ pub enum NetworkRole {
     ///    gateway of an interface the scan runs on. IPv4 has neither message
     ///    above, so on a v4-only segment this is the only proof available.
     ///
-    /// Deliberately not called a gateway. A gateway is relational — somebody's
-    /// next hop — and two hosts on one segment can each be one for a different
-    /// neighbour. What every proof above establishes is the intrinsic half:
-    /// this box forwards. Which of them is *your* way out is a question about
-    /// your routing table, not about the network.
+    /// Not called a gateway. A gateway is relational, being somebody's next hop,
+    /// and two hosts on one segment can each be one for a different neighbour.
+    /// What every proof above establishes is the intrinsic half: this box
+    /// forwards. Which of them is a given machine's way out is a question about
+    /// that machine's routing table rather than about the network.
     Router,
 
     /// Answered a query on port 53 with a message that parses as a DNS
@@ -157,7 +158,7 @@ pub enum NetworkRole {
     /// registers one beside the service's match rules), so an answer is the
     /// ordinary outcome rather than a lucky one.
     ///
-    /// **Not mDNS or LLMNR.** Those answer on 5353 and 5355, and nearly every
+    /// Not mDNS or LLMNR. Those answer on 5353 and 5355, and nearly every
     /// laptop and printer on a segment responds to them. Counting one as a name
     /// server would put the role on half a network and make it worthless on the
     /// half that deserves it.
@@ -169,9 +170,9 @@ pub enum NetworkRole {
     /// `DHCPINFORM`, which asks for configuration without asking for an
     /// address, and reads the server identifier (option 54) out of the reply.
     /// A server names itself there, and the role goes on that address only when
-    /// the reply also came from it — where a relay agent forwards for a server
-    /// on another segment the two differ, and neither machine has then been
-    /// shown to serve DHCP on this one.
+    /// the reply also came from it. Where a relay agent forwards for a server on
+    /// another segment the two differ, and neither machine has been shown to
+    /// serve DHCP on this one.
     ///
     /// It cannot be concluded from port state. UDP/67 is `open|filtered` on
     /// silence like every other UDP port, and a DHCP server is found by
@@ -180,15 +181,15 @@ pub enum NetworkRole {
 
     /// Answered with a valid NTP response, so it serves time.
     ///
-    /// **Nothing assigns this yet.** The probe already goes out — the corpus
-    /// registers a client packet for port 123 — and what is missing is reading
-    /// the reply as NTP instead of counting it as "something answered". Until
-    /// that is wired, the variant is vocabulary rather than a finding.
+    /// Nothing assigns this yet. The probe goes out, since the corpus registers a
+    /// client packet for port 123, and what is missing is reading the reply as
+    /// NTP rather than counting it as something answering. Until that is wired,
+    /// the variant is vocabulary rather than a finding.
     NtpServer,
 
     /// Answered SNMP, so it is managed over it.
     ///
-    /// **Nothing assigns this yet**, for the reason [`NtpServer`](Self::NtpServer)
+    /// Nothing assigns this yet, for the reason [`NtpServer`](Self::NtpServer)
     /// gives: the probe for port 161 is sent and its reply is already parsed
     /// for operating-system evidence, but no strategy concludes the role from
     /// it.
@@ -196,22 +197,21 @@ pub enum NetworkRole {
 
     /// Switches frames on behalf of the machines attached to it.
     ///
-    /// Concluded from the device's own announcement — LLDP's bridge capability
-    /// or CDP's switch, transparent-bridge or source-route-bridge bits — and
-    /// only where the device reports the capability as **enabled** rather than
-    /// merely present. A switch with a routing licence nobody configured
+    /// Concluded from the device's own announcement, meaning LLDP's bridge
+    /// capability or CDP's switch, transparent-bridge or source-route-bridge
+    /// bits, and only where the device reports the capability as enabled rather
+    /// than merely present. A switch with a routing licence nobody configured
     /// advertises routing as supported and not enabled, and reading the wrong
     /// half of that field puts a router on every access switch in a building.
     ///
-    /// **This is testimony rather than observed behaviour**, which is unlike
+    /// This is testimony rather than observed behaviour, which is unlike
     /// [`Router`](Self::Router) and unlike [`DnsServer`](Self::DnsServer), and
     /// like [`DhcpServer`](Self::DhcpServer): a DHCP server is believed because
     /// it named itself in a DHCP server's message, and a switch is believed
     /// because it named itself in the protocol switches announce themselves
     /// over. Anything on a segment can send either, which is why neither is
-    /// evidence about a *distant* machine — see
-    /// [`crate::protocols::lldp`] for what a group address does and does not
-    /// prove.
+    /// evidence about a distant machine. See [`crate::protocols::lldp`] for what
+    /// a group address does and does not prove.
     ///
     /// Worth a variant despite that, because it is the one role naming
     /// infrastructure that a scan generally cannot see at all: a switch usually
@@ -221,11 +221,11 @@ pub enum NetworkRole {
 
     /// The machine this scan is running from.
     ///
-    /// A sweep of your own segment contains you, and the record it produces is
-    /// unlike every other one in it: services answer over the loopback path
-    /// that a neighbour would never reach, latency is not a network
-    /// measurement, and no probe of ours ever crossed a wire. Saying so is
-    /// cheaper than every consumer rediscovering it.
+    /// A sweep of the scanning machine's own segment reaches it, and the record
+    /// that produces is unlike every other one in it: services answer over the
+    /// loopback path a neighbour would never reach, latency is not a network
+    /// measurement, and no probe crossed a wire. Saying so is cheaper than every
+    /// consumer rediscovering it.
     ///
     /// Read from the addresses assigned to this machine's interfaces, so it is
     /// established without sending anything and holds for an address the scan
@@ -252,7 +252,7 @@ pub enum NetworkRole {
     /// host probed widely enough was reported as a tarpit, and a real tarpit
     /// answering a narrow scan was reported as nothing at all.
     ///
-    /// **No scan this build can run assigns it.** `MAX_PORTS_PER_HOST` is now
+    /// No scan this build can run assigns it. `MAX_PORTS_PER_HOST` is now
     /// derived from the port space and [`Protocol::ALL`], so it equals what a
     /// host's port map can hold and nothing a scan reports can pass it. The
     /// variant stays because the check does: a `Protocol` variant that never
@@ -270,12 +270,11 @@ impl NetworkRole {
     /// two answer to different masters: this one may be reworded whenever it
     /// reads better, and that one may never change at all.
     ///
-    /// **An acronym is capitals and a word is not.** `DNS` is a name written in
+    /// An acronym is capitals and a word is not. `DNS` is a name written in
     /// initials and `router` is an ordinary English noun, so capitalising the
-    /// second to match the first is shouting rather than spelling — the same
-    /// rule that makes `ICMP unreachable` the name of a thing and
-    /// `ICMP_UNREACHABLE` a shout. A list mixing the two reads as what it is:
-    /// `router, DNS, DHCP`.
+    /// second to match the first is shouting rather than spelling, the rule that
+    /// also makes `ICMP unreachable` the name of a thing and `ICMP_UNREACHABLE`
+    /// a shout. A list mixing the two reads as `router, DNS, DHCP`.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Router => "router",
@@ -317,10 +316,10 @@ impl NetworkRole {
 /// A conclusion about the *path to* a host rather than the host itself, which is
 /// what keeps it a separate claim from [`NetworkRole`]: a filter sits between the
 /// scanner and the machine, and saying a host "is" a middlebox the way it "is" a
-/// name server would be a different, usually wrong claim. Like a role, every
-/// member is a proven, confidence-free fact — held in a set, where there is
-/// nowhere to record a maybe — drawn from what a deliberately-shaped probe
-/// demonstrated, never from a port number.
+/// name server would be a different and usually wrong claim. Like a role, every
+/// member is a proven, confidence-free fact, held in a set where there is nowhere
+/// to record a maybe, drawn from what a deliberately shaped probe demonstrated
+/// rather than from a port number.
 ///
 /// Positive claims only. A probe that drew no reply, or was dropped like an
 /// ordinary one, proves nothing; the absence of a filter is not something a scan
@@ -332,7 +331,7 @@ pub enum Filtering {
     ///
     /// Proven by a reply to a probe carrying a deliberately wrong TCP checksum.
     /// A conformant host drops such a segment unread, so a reply to one was not
-    /// the host's — it was sent by something in the path that answered without
+    /// the host's. It was sent by something in the path that answered without
     /// validating: a firewall, an intrusion-prevention system, a transparent
     /// proxy, a load balancer. One reply is the whole proof, which is why this
     /// is the one filtering conclusion a single probe settles.
@@ -340,9 +339,9 @@ pub enum Filtering {
 
     /// A stateful filter: it passes a bare ACK but drops a SYN.
     ///
-    /// Proven by an ACK probe reaching the stack — a RST, which is
-    /// [`PortState::Unfiltered`] — for
-    /// a port the scan found filtered to a SYN. A filter that lets an ACK through
+    /// Proven by an ACK probe reaching the stack, meaning a RST and so
+    /// [`PortState::Unfiltered`], for a port the scan found filtered to a SYN. A
+    /// filter that lets an ACK through
     /// and refuses a SYN is keeping connection state and opening no new
     /// connections. Comparative: the SYN's fate is the port state the scan
     /// already recorded, and only the ACK is sent here.
@@ -352,8 +351,8 @@ pub enum Filtering {
     ///
     /// Proven by a SYN from a port such as 53, 20 or 88 reaching a port the scan
     /// found filtered to a SYN from an ephemeral one. The filter is honouring an
-    /// ACL written to let "returning" traffic back in — a door a chosen source
-    /// port holds open. Comparative in the same way as
+    /// ACL written to let returning traffic back in, which is a door a chosen
+    /// source port holds open. Comparative in the same way as
     /// [`StatefulFilter`](Self::StatefulFilter), and against the same recorded
     /// port state.
     PortTrustingAcl,
@@ -366,10 +365,10 @@ pub enum Filtering {
     /// judged only the first, where the ports are but the flags are not yet, and
     /// so is matching without keeping the state reassembly needs. Comparative
     /// against the same recorded port state as
-    /// [`StatefulFilter`](Self::StatefulFilter), and — because a fragmented probe
-    /// can only be sent over a self-built Ethernet frame — drawn only for a host
-    /// that path can reach; one it cannot simply goes without the conclusion,
-    /// never against it.
+    /// [`StatefulFilter`](Self::StatefulFilter). A fragmented probe can only be
+    /// sent over a self-built Ethernet frame, so this is drawn only for a host
+    /// that path can reach; one it cannot goes without the conclusion rather than
+    /// against it.
     StatelessFilter,
 }
 
@@ -381,7 +380,7 @@ impl Filtering {
     /// built from it, so a conclusion missing from here is one that survives a
     /// scan and disappears on the way to the report.
     ///
-    /// **The array's length is not the check against that**, though it read as
+    /// The array's length is not the check against that, though it read as
     /// one for a while. It catches an entry added here without the number being
     /// raised, and nothing else; a variant added to the enum and not to this
     /// list compiles, and was measured doing so. What the compiler does refuse
@@ -469,25 +468,24 @@ pub struct Host {
     /// The reason this is retained rather than collapsed on arrival: combining
     /// evidence is only meaningful over the evidence itself. A stack reading and
     /// a service banner are independent, and two independent sources agreeing on
-    /// a family are worth more than either — that is the whole design of
+    /// a family are worth more than either, which is the design of
     /// [`resolve`](crate::fingerprint::os::resolve). Keeping only the resulting
     /// [`OsFingerprint`] threw that away: the banner arrived after the stack
     /// reading, scored lower on its own, and was discarded whole, taking the
     /// release it alone could name with it.
     ///
-    /// **One item per distinct claim**, which is not the same as one per source
-    /// and the difference was worth a finding.
+    /// One item per distinct claim, which is not one per source.
     ///
     /// Keyed per source, an SSH banner naming `Debian 12` and an SNMP agent
-    /// naming `kernel 6.1.0` are both `ServiceBanner` — so the second evicted
-    /// the first, and a host that had told this engine two different things
+    /// naming `kernel 6.1.0` are both `ServiceBanner`, so the second evicted the
+    /// first and a host that had told this engine two different things
     /// about itself was reported from whichever arrived last. They are two
     /// services, on two ports, read from two protocols: two pieces of evidence
     /// by any reading.
     ///
-    /// Keyed on the *claim*, a stack read forty times — which is what a host
-    /// with forty open ports produces — is still forty identical claims and
-    /// still collapses to one. That is the property that has to hold: repeating
+    /// Keyed on the claim, a stack read forty times, which is what a host with
+    /// forty open ports produces, is forty identical claims and still collapses
+    /// to one. That is the property that has to hold: repeating
     /// an observation must never look like corroboration, because the
     /// arithmetic downstream cannot tell the difference.
     ///
@@ -517,8 +515,8 @@ pub struct Host {
 
     /// The routers between this machine and this host, when a trace ran.
     ///
-    /// Empty unless [`OsDetection`]-style effort was spent on it deliberately:
-    /// a path costs one probe per hop per host and nothing else in a scan needs
+    /// Empty unless [`OsDetection`]-style effort was asked for. A path costs one
+    /// probe per hop per host and nothing else in a scan needs
     /// one, so it is never gathered as a side effect. See
     /// [`ZondConfig::traceroute`](crate::config::ZondConfig::traceroute).
     ///
@@ -538,9 +536,10 @@ pub struct Host {
     /// What a detection concluded was wrong with this host, keyed on the claim so
     /// that the same finding reached twice records once.
     ///
-    /// Host-level findings are the cross-cutting ones — a weakness inferred from
-    /// several ports together, or a correlation over the host as a whole — as
-    /// distinct from the per-port findings a [`Port`] carries. Bounded by
+    /// Host-level findings are the cross-cutting ones, whether a weakness
+    /// inferred from several ports together or a correlation over the host as a
+    /// whole, as distinct from the per-port findings a [`Port`] carries. Bounded
+    /// by
     /// [`MAX_FINDINGS_PER_SUBJECT`], and keyed like [`os_evidence`](Self::os_evidence)
     /// so that a detection re-firing corroborates rather than accumulates.
     findings: BTreeMap<ClaimId, Finding>,
@@ -554,10 +553,10 @@ pub struct Host {
     /// The ports found on this host, in a stable order, bounded by
     /// [`MAX_PORTS_PER_HOST`].
     ///
-    /// Keyed on the number *and* the protocol, because a number names one
-    /// endpoint per transport and a scan can be asked about both — `PortSet`
-    /// spells the UDP half `u:53`, and the raw TCP and UDP scanners report into
-    /// this map independently. Keyed on the number alone, whichever arrived
+    /// Keyed on the number and the protocol, since a number names one endpoint
+    /// per transport and a scan can be asked about both: `PortSet` spells the UDP
+    /// half `u:53`, and the raw TCP and UDP scanners report into this map
+    /// independently. Keyed on the number alone, whichever arrived
     /// second would be merged into the first and reported under its protocol.
     ///
     /// Ordered by number first, so a report lists a host's ports the way a
@@ -585,9 +584,9 @@ pub struct Host {
 /// Rank 1 is what the documentation there calls globally scoped: an address that
 /// names the host from off its segment. That is
 /// [`is_global_unicast`](crate::model::ip::is_global_unicast) and unique-local,
-/// tested for rather than inferred from "not link-local" — the latter also
-/// admits loopback, multicast and the unspecified address, none of which name
-/// this host to anyone.
+/// tested for rather than inferred from not being link-local, which also admits
+/// loopback, multicast and the unspecified address, none of which name this host
+/// to anyone.
 fn identity_rank(ip: &IpAddr) -> u8 {
     match ip {
         IpAddr::V4(_) => 0,
@@ -763,7 +762,7 @@ impl Host {
     ///
     /// Returns whether the primary address changed.
     ///
-    /// **The rule, in one place.** A dual-stack host answers at several
+    /// The rule, in one place. A dual-stack host answers at several
     /// addresses and something has to choose which one names it. Left to
     /// whichever probe replied first, the same machine is reported under its
     /// IPv4 address on one run and its link-local on the next. For an inventory
@@ -811,12 +810,11 @@ impl Host {
 
     /// Records the name this host resolved to, replacing any already recorded.
     ///
-    /// The one field that *is* overwritten, and the exception is deliberate:
-    /// unlike a status or an address, a hostname has no ordering that says
-    /// which of two answers knows more, and a caller passing `None` is clearing
-    /// a name rather than declining to set one. [`merge`](Self::merge) keeps the
-    /// incumbent instead, because there neither record is the later word — they
-    /// are two accounts of the same host.
+    /// The one field that is overwritten. Unlike a status or an address, a
+    /// hostname has no ordering that says which of two answers knows more, and a
+    /// caller passing `None` is clearing a name rather than declining to set one.
+    /// [`merge`](Self::merge) keeps the incumbent instead, since there neither
+    /// record is the later word and the two are accounts of one host.
     pub fn set_hostname(&mut self, hostname: Option<String>) {
         self.hostname = hostname;
         self.last_seen = SystemTime::now();
@@ -884,8 +882,9 @@ impl Host {
 
     /// This host's findings, in a stable order.
     ///
-    /// The cross-host conclusions — a weakness of the host as a whole, not of one
-    /// of its ports. A port's own findings are on the [`Port`]. Ordered by claim,
+    /// The cross-host conclusions, meaning a weakness of the host as a whole
+    /// rather than of one of its ports, where a port's own findings are on the
+    /// [`Port`]. Ordered by claim,
     /// so two runs that found the same things render them the same way.
     pub fn findings(&self) -> impl Iterator<Item = &Finding> {
         self.findings.values()
@@ -897,11 +896,10 @@ impl Host {
     /// Returns whether this changed what is on record, so a caller can tell a
     /// genuine new finding from the same one arriving again.
     ///
-    /// **Per source, not per observation**, and that is what makes the
-    /// arithmetic downstream safe: a stack read once and a stack read forty
-    /// times — which is what a host with forty open ports produces — are the
-    /// same single piece of evidence, and counting them separately would turn
-    /// one observation into certainty.
+    /// Per source rather than per observation, which is what makes the arithmetic
+    /// downstream safe. A stack read once and a stack read forty times, which is
+    /// what a host with forty open ports produces, are one piece of evidence, and
+    /// counting them separately would turn one observation into certainty.
     pub fn record_os_evidence(&mut self, evidence: OsEvidence) -> bool {
         let claim: OsClaim = (
             evidence.source,
@@ -918,10 +916,10 @@ impl Host {
         let full = self.os_evidence.len() >= MAX_OS_EVIDENCE;
 
         match self.os_evidence.get_mut(&claim) {
-            // The same claim, reached again — but not necessarily by the same
-            // route. A stack read once off a port scan's reply and again as a
-            // series of them concludes the identical thing and shows *different*
-            // working for it, and the series reading is the one that cannot be
+            // The same claim reached again, not necessarily by the same route.
+            // A stack read once off a port scan's reply and again as a series of
+            // them concludes the identical thing and shows different working for
+            // it, and the series reading is the one that cannot be
             // got back. So the claim is not new and the reading may be: keep the
             // strongest confidence and every distinct line behind it.
             Some(existing) => {
@@ -942,7 +940,7 @@ impl Host {
     }
 
     /// Records a finding about this host, and reports whether it was new
-    /// information — a claim not seen before, or a stronger reading of one that
+    /// information: a claim not seen before, or a stronger reading of one that
     /// was.
     ///
     /// A finding reached again by the same detection is not a second finding: it
@@ -968,7 +966,7 @@ impl Host {
     }
 
     /// Records a finding about one of this host's ports, and reports whether it
-    /// was new — `false` if no such port is on record.
+    /// was new. `false` if no such port is on record.
     ///
     /// The path a report-level pass such as CVE correlation takes: it reads a
     /// port's service identification, concludes something about the software
@@ -1036,7 +1034,7 @@ impl Host {
     /// created by the port scanner, which has no MAC, can still be enriched by a
     /// scanner that learned one, whichever ran first.
     ///
-    /// **Adds rather than replaces, and that is what [`HardwareInfo`] is for.**
+    /// Adds rather than replaces, and that is what [`HardwareInfo`] is for.
     /// A device with two interfaces on one segment answers under two addresses,
     /// and a device randomizing its MAC answers under a series of them; both are
     /// one host, and which address it is currently using is a different question
@@ -1096,10 +1094,10 @@ impl Host {
     /// not already carry.
     ///
     /// The return is what a caller announces on. A role is concluded from
-    /// whatever evidence turns up, and the same evidence turns up repeatedly —
-    /// a router advertises on a timer, a name server answers every lookup —
-    /// so "recorded" and "learned" are different events and only the second is
-    /// news. Bumps `last_seen` either way: the host was heard from.
+    /// whatever evidence turns up, and the same evidence turns up repeatedly,
+    /// since a router advertises on a timer and a name server answers every
+    /// lookup, so recording one and learning one are different events and only
+    /// the second is news. Bumps `last_seen` either way: the host was heard from.
     pub fn add_network_role(&mut self, role: NetworkRole) -> bool {
         let is_new = self.network_roles.insert(role);
         self.last_seen = SystemTime::now();
@@ -1177,7 +1175,7 @@ impl Host {
     ///
     /// A host that crosses [`TARPIT_OPEN_PORTS`] open ports is marked
     /// [`NetworkRole::Tarpit`] and keeps recording. That is a different claim
-    /// from truncation and is deliberately not a reason to stop: the ports are
+    /// from truncation and is not a reason to stop: the ports are
     /// still what the host said, and a caller that wants to discard them can,
     /// where a caller handed a silently shortened list cannot.
     pub fn add_port(&mut self, new_port: Port) -> bool {
@@ -1321,11 +1319,11 @@ impl Host {
         // distance: a measurement beats an inference, an answer beats silence,
         // and neither side has to be the winner as a whole.
         //
-        // **A merge is where a path is most easily lost.** A port scan snapshots
-        // its hosts once for the liveness phase and again at the end, then folds
-        // the two together — and the trace runs between those two moments, so
-        // the earlier record has no path at all. Left out here, the empty half
-        // wins and the scan reports a path it measured and then discarded.
+        // A merge is where a path is most easily lost. A port scan snapshots its
+        // hosts once for the liveness phase and again at the end, then folds the
+        // two together, and the trace runs between those moments, so the earlier
+        // record has no path at all. Left out here, the empty half wins and the
+        // scan reports a path it measured and then discarded.
         for hop in path.hops() {
             self.path.record(*hop);
         }
@@ -1454,18 +1452,17 @@ mod tests {
 
     /// A merge folds in what only one side of it knows.
     ///
-    /// **This is the shape of defect the test exists for.** A port scan
-    /// snapshots its hosts twice — once for the liveness phase and once at the
-    /// end — and folds the two together, so anything learned *between* those
-    /// moments exists on only the later record. A field left out of `merge` is
+    /// A port scan snapshots its hosts twice, once for the liveness phase and
+    /// once at the end, and folds the two together, so anything learned between
+    /// those moments exists on only the later record. A field left out of `merge`
+    /// is
     /// then silently discarded, and the scan reports having found nothing of
     /// something it measured in full. The path and the hop counter both shipped
     /// with exactly that bug: the trace ran, recorded every router, and the
     /// empty earlier snapshot won.
     ///
-    /// Asserted in the direction the port scan actually merges — the record
-    /// without the finding on the left — because that is the direction that
-    /// loses it.
+    /// Asserted in the direction the port scan merges, with the record lacking
+    /// the finding on the left, since that is the direction that loses it.
     #[test]
     fn a_merge_keeps_what_only_the_other_record_learned() {
         let mut earlier = Host::new(IP_ADDR);
@@ -1540,9 +1537,9 @@ mod tests {
     /// A port number names two endpoints, and a scan can be asked about both:
     /// `PortSet` spells the UDP half `u:53`, and the raw TCP and UDP scanners
     /// each report their findings here. Keyed on the number alone, the second
-    /// arrival is merged into the first — so one result is lost and the
-    /// survivor is reported under the other's protocol, with a state maximised
-    /// across two unrelated questions.
+    /// arrival merges into the first, so one result is lost and the survivor is
+    /// reported under the other's protocol with a state maximised across two
+    /// unrelated questions.
     #[test]
     fn a_port_number_holds_one_endpoint_per_protocol() {
         let mut host = Host::new(IP_ADDR);
@@ -1571,10 +1568,9 @@ mod tests {
     }
 
     /// Roles are held in a `HashSet`, which iterates in whatever order its
-    /// hashing produced — so a line built by walking it directly differs
-    /// between two runs that found exactly the same things, and between two
-    /// machines reading the same journal. A report a reader diffs by eye has to
-    /// be stable.
+    /// hashing produced, so a line built by walking it directly differs between
+    /// two runs that found the same things and between two machines reading the
+    /// same journal. A report a reader diffs by eye has to be stable.
     #[test]
     fn a_host_prints_its_roles_in_one_order_however_they_were_recorded() {
         let expected = "192.168.0.100 (Up) [router, DNS, origin]";
@@ -1719,8 +1715,8 @@ mod tests {
         assert_eq!(host.open_port_count(), 1, "and counted once");
     }
 
-    /// `last_seen` answers when the host was last heard from, so a merge — which
-    /// hears from nothing — must not move it. Every mutator a merge runs stamps
+    /// `last_seen` answers when the host was last heard from, so a merge, which
+    /// hears from nothing, must not move it. Every mutator a merge runs stamps
     /// the current time, so without care both records' observation times are
     /// replaced by the moment they were folded together.
     ///
@@ -1889,10 +1885,10 @@ mod tests {
     }
 
     /// The ranking's middle tier is "names the host from off its segment", and
-    /// only addresses that do belong in it. Written as "not link-local" it also
-    /// admitted loopback, multicast and the unspecified address — none of which
-    /// name this host to anybody, and each of which would have displaced a
-    /// genuine link-local address that at least names it to its own segment.
+    /// only addresses that do belong in it. Written as not link-local it also
+    /// admitted loopback, multicast and the unspecified address, none of which
+    /// name this host to anybody and each of which would have displaced a genuine
+    /// link-local address that at least names it to its own segment.
     #[test]
     fn only_a_globally_scoped_address_outranks_a_link_local_one() {
         let lla: IpAddr = "fe80::10".parse().unwrap();

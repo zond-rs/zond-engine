@@ -37,7 +37,7 @@ use std::sync::Arc;
 /// what a report has to print for its reader to act on. Deriving either from the
 /// other costs a lookup at exactly the moments this is used in bulk.
 ///
-/// **A zone written down is not yet a zone found.** Parsing `%en0` yields a
+/// A zone written down is not yet a zone found. Parsing `%en0` yields a
 /// name and nothing else; only a lookup against the running host turns it into
 /// an index. [`unresolved`](Self::unresolved) is that first state, and
 /// [`index`](Self::index) is `None` for as long as it lasts.
@@ -46,9 +46,9 @@ use std::sync::Arc;
 /// alone: two of them naming the same interface are the same zone whatever
 /// string was recorded alongside, since an interface's index is unique on a host
 /// for longer than any one scan. An unresolved zone has only the name it was
-/// written under, so that is its identity — and a resolved zone is never equal
-/// to an unresolved one, because nothing here can know whether they name the
-/// same interface.
+/// written under, so that is its identity, and a resolved zone is never equal to
+/// an unresolved one, since nothing here can know whether they name the same
+/// interface.
 #[derive(Debug, Clone)]
 pub struct Zone {
     index: Option<u32>,
@@ -59,7 +59,7 @@ impl Zone {
     /// Names the interface with index `index`, as a lookup against the host
     /// reported it.
     ///
-    /// **An index of zero is a lookup that failed, and is read as one.** Zero is
+    /// An index of zero is a lookup that failed, and is read as one. Zero is
     /// not an interface on any platform this builds for: `if_nametoindex`
     /// returns it to report that there is no such name, and a `SocketAddrV6`
     /// carrying it is the unsendable address this whole module exists to keep
@@ -247,10 +247,10 @@ impl From<IpAddr> for ScopedIp {
 /// So that an address held by reference reaches anything taking
 /// `impl Into<ScopedIp>` without the caller spelling the conversion.
 ///
-/// The address the engine keys a host under is a `ScopedIp`, and the great
-/// majority of them need no zone — every IPv4 address, and every IPv6 address
-/// but a link-local. A caller holding one of those holds the whole key already,
-/// and this is what lets it pass the key it has.
+/// The address the engine keys a host under is a `ScopedIp`, and most need no
+/// zone: every IPv4 address, and every IPv6 address but a link-local. A caller
+/// holding one of those holds the whole key already, and this lets it pass the
+/// key it has.
 impl From<&IpAddr> for ScopedIp {
     fn from(addr: &IpAddr) -> Self {
         Self::unscoped(*addr)
@@ -400,10 +400,10 @@ mod tests {
         assert_ne!(Zone::new(4, "en0"), Zone::new(5, "en0"));
     }
 
-    /// Until something resolves it, a parsed zone has no index — and identity
-    /// by index alone made every one of them the same zone. Two link-local
-    /// targets written against two interfaces would then be one address, which
-    /// is precisely the collapse this type exists to prevent, reached from the
+    /// Until something resolves it, a parsed zone has no index, and identity by
+    /// index alone made every one of them the same zone. Two link-local targets
+    /// written against two interfaces would then be one address, which is the
+    /// collapse this type exists to prevent, reached from the
     /// other direction.
     #[test]
     fn an_unresolved_zone_is_identified_by_the_name_it_was_written_under() {

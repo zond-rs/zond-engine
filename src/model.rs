@@ -18,17 +18,17 @@
 //!
 //! # Usable on its own
 //!
-//! This module depends on nothing else in the crate. You can parse targets, do
-//! arithmetic on address sets, and hold hosts and ports without starting a scan
-//! or linking anything that would.
+//! This module depends on nothing else in the crate. Targets parse, address sets
+//! do arithmetic, and hosts and ports hold their values without a scan starting
+//! or anything that would start one being linked.
 //!
 //! Two consequences are worth knowing about.
 //!
 //! Nothing here resolves anything for itself. Expanding a keyword like `lan`,
 //! looking up an interface by name, and resolving a hostname all mean reading
-//! the machine the process runs on, so each arrives as a function you supply.
-//! An expression that needs a lookup you did not provide is refused rather than
-//! guessed at.
+//! the machine the process runs on, so each arrives as a caller-supplied
+//! function. An expression that needs a lookup the caller did not provide is
+//! refused rather than guessed at.
 //!
 //! Nothing here writes output. These functions return values and never log,
 //! because only the caller knows what it asked for and at what verbosity it
@@ -98,8 +98,8 @@ mod tests {
     ///
     /// `StatusProtocol` carries a name in one variant, so it cannot cast to its
     /// own index the way the fieldless vocabularies do and this match stands in
-    /// for the cast. Being exhaustive, it is also the one place in the module
-    /// where adding a variant is a compile error beside the list it has to join.
+    /// for the cast. Being exhaustive, it is also where adding a variant becomes
+    /// a compile error beside the list it has to join.
     fn status_protocol_index(value: &StatusProtocol) -> Option<usize> {
         match value {
             StatusProtocol::Arp => Some(0),
@@ -119,24 +119,21 @@ mod tests {
     /// Every `ALL` in this module, held to its enum's own order.
     ///
     /// The lists are the module's enumeration contract. The exported schema's
-    /// enums are built from them, the wire round trip iterates them, a
-    /// `FromStr`'s error message is composed from one, and a report's role line
-    /// is ordered by another. Nothing checked any of them, and one was wrong:
-    /// [`PortState::ALL`] transposed two pairs while its documentation said
-    /// declaration order.
+    /// enums are built from them, the wire round trip iterates them, a `FromStr`'s
+    /// error message is composed from one, and a report's role line is ordered by
+    /// another. Nothing checked any of them, and [`PortState::ALL`] transposed two
+    /// pairs while its documentation said declaration order.
     ///
-    /// **What this does not catch** is a variant appended to an enum and not to
-    /// its `ALL`, because a list that is right as far as it goes looks the same
-    /// from here as a complete one. Reaching that needs the variant count, which
-    /// no stable Rust reads without a derive macro, and adding one for this is a
-    /// dependency the crate would not otherwise carry. What stands in for it is
-    /// that every vocabulary here is spelled for the wire in
-    /// [`record::wire`](crate::record::wire) by an exhaustive `match`, so a new
-    /// variant cannot compile without its author being taken to a function whose
-    /// round trip is driven by the very `ALL` they have to update.
+    /// What this does not catch is a variant appended to an enum and not to its
+    /// `ALL`, since a list that is right as far as it goes looks complete from
+    /// here. Catching that needs the variant count, which no stable Rust reads
+    /// without a derive macro. What stands in for it is that every vocabulary here
+    /// is spelled for the wire in [`record::wire`](crate::record::wire) by an
+    /// exhaustive `match`, so a new variant cannot compile without its author
+    /// being taken to a function whose round trip is driven by the `ALL` they have
+    /// to update.
     ///
-    /// A vocabulary added to this module should be added below. That is the one
-    /// place it has to be remembered, and the list being short is the point.
+    /// A vocabulary added to this module belongs below.
     #[test]
     fn every_vocabulary_lists_itself_in_declaration_order() {
         holds_declaration_order("Confidence", &Confidence::ALL, |v| *v as usize);
