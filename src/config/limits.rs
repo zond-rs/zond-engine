@@ -15,7 +15,7 @@
 //! a budget gets tuned in one place and left behind in the others, and nothing
 //! reports the disagreement.
 //!
-//! **Only the connect paths need constants at all.** A raw scanner measures the
+//! Only the connect paths need constants at all. A raw scanner measures the
 //! round trips it is getting and sizes its own patience from them, through
 //! [`AdaptiveDeadline`](crate::scanner::pacing::deadline::AdaptiveDeadline). A
 //! connect probe cannot: it sends one SYN, the kernel owns the retransmission,

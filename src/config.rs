@@ -262,9 +262,9 @@ impl std::str::FromStr for ScanEffort {
 /// Four levels, ordered by what they put on the wire. The ordering is the point:
 /// each level is a superset of the one below it, so raising the level only ever
 /// adds evidence and never trades one technique for another. That is what makes
-/// [`is_active`](Self::is_active) — "may this send packets of its own?" — a
-/// question with a single answer, and what lets a front end offer this as a dial
-/// rather than a menu.
+/// [`is_active`](Self::is_active), asking whether a level may send packets of its
+/// own, a question with a single answer, and what lets a front end offer this as
+/// a dial rather than a menu.
 ///
 /// # Why the default is on
 ///
@@ -284,8 +284,8 @@ impl std::str::FromStr for ScanEffort {
 /// # Why the higher levels are not
 ///
 /// From [`Active`](Self::Active) upward this costs packets. Not, today, unusual
-/// ones — what it sends is a SYN and a ping, and the SYN is byte-for-byte the
-/// segment a port scan already sends. What it is, is **extra**: a host is asked
+/// ones: what it sends is a SYN and a ping, and the SYN is byte-for-byte the
+/// segment a port scan already sends. What it is, is extra. A host is asked
 /// several more times than classifying its ports required, and it is asked at
 /// addresses a caller may only have meant to enumerate. Traffic sent for a
 /// second purpose has to be asked for even when its shape gives nothing away,
@@ -293,7 +293,7 @@ impl std::str::FromStr for ScanEffort {
 ///
 /// It also becomes true in the older sense as the tiers fill in.
 /// [`Aggressive`](Self::Aggressive) is where a deliberately malformed probe
-/// would live — traffic identified by how a stack *mishandles* it, and so by
+/// would live, traffic identified by how a stack mishandles it and so by
 /// construction what an intrusion-detection system was written to notice. None
 /// is sent yet; the level is documented for what it does rather than for what it
 /// is named after.
@@ -307,8 +307,8 @@ pub enum OsDetection {
     /// Level 1, and the default. Read the operating system out of replies the
     /// scan already drew, and send nothing extra.
     ///
-    /// Answers at the level of a family — the shape of a stack, not its version
-    /// — and answers only for hosts that replied to something. A host that
+    /// Answers at the level of a family, meaning the shape of a stack rather than
+    /// its version, and only for hosts that replied to something. A host that
     /// answered no probe at all leaves nothing to read.
     #[default]
     Passive,
@@ -316,20 +316,19 @@ pub enum OsDetection {
     /// Level 2. Everything [`Passive`](Self::Passive) reads, plus probes of this
     /// engine's own aimed at the hosts whose replies were not enough.
     ///
-    /// Ordinary, well-formed packets — nothing here is malformed, and nothing
+    /// Ordinary, well-formed packets. Nothing here is malformed, and nothing
     /// carries a flag combination a real connection does not. Two probes:
     ///
     /// - **A series of SYNs**, to a host with an open or closed TCP port. The
     ///   same segment a SYN scan sends, repeated from a fresh source port each
     ///   time, because whether a stack's IP identifier counts or is random,
     ///   whether its sequence numbers are hashed or stepped, and how fast its
-    ///   timestamp clock ticks are *policies* — visible across several replies
-    ///   and in no single one. These are the features a release-level rule turns
-    ///   on.
+    ///   timestamp clock ticks are policies, visible across several replies and
+    ///   in no single one. These are the features a release-level rule turns on.
     /// - **One SNMP request**, to a host whose kernel is still unknown. On a Unix
     ///   host `sysDescr` is the output of `uname -a`, so an agent that answers
-    ///   states the exact kernel — the one thing no amount of packet analysis
-    ///   can establish, and what a known-vulnerability lookup keys on. Sent with
+    ///   states the exact kernel, the one thing no amount of packet analysis can
+    ///   establish and what a known-vulnerability lookup keys on. Sent with
     ///   the default `public` community, read-only, for one object.
     /// - **One ICMP echo**, to a host that answered no TCP probe at all. A stock
     ///   Windows firewall drops rather than refuses, so a desktop with nothing
@@ -349,17 +348,17 @@ pub enum OsDetection {
     /// and at every host rather than only the unsettled ones.
     ///
     /// Twice the samples per host, and hosts already named with high confidence
-    /// are followed too. That is what somebody *measuring* wants — a reading
-    /// from a machine whose operating system they already know is how a rule
-    /// gets authored — and it is more traffic, sustained longer, at more
+    /// are followed too. That is what somebody measuring wants, since a reading
+    /// from a machine whose operating system they already know is how a rule gets
+    /// authored, and it is more traffic, sustained longer, at more
     /// addresses, which is why it is a level of its own.
     ///
     /// # What this level does not yet do
     ///
     /// It sends no deliberately malformed probe. Reserved fields set, flag
-    /// combinations no connection produces, headers that disagree with their own
-    /// lengths — these separate stacks that agree on everything legal, and they
-    /// are the obvious next tier. They are not here because this engine authors
+    /// combinations no connection produces, and headers that disagree with their
+    /// own lengths separate stacks that agree on everything legal, and they are
+    /// the obvious next tier. They are not here because this engine authors
     /// rules from what it has measured through its own probes, and nothing has
     /// yet measured those. When they arrive they arrive at this level; until
     /// then this is the honest description of it rather than a promise.
@@ -407,9 +406,9 @@ impl OsDetection {
 
     /// The level with this number, or `None` past the highest there is.
     ///
-    /// Deliberately not saturating. A caller who writes `9` meaning "as much as
-    /// possible" has written something this engine does not offer, and silently
-    /// giving them the top level would hide it — the same reasoning that makes
+    /// Not saturating. A caller who writes `9` meaning as much as possible has
+    /// written something this engine does not offer, and giving them the top
+    /// level would hide that, which is the reasoning that makes
     /// [`from_str`](Self::from_str) refuse a name it does not know rather than
     /// fall back to the default.
     pub const fn from_level(level: u8) -> Option<Self> {
@@ -520,15 +519,15 @@ pub enum ServiceDetection {
     ///
     /// The fastest and the quietest: after a raw scan, no connection is ever
     /// completed, so nothing appears in the target's logs and nothing is read
-    /// from any service. What it costs is every version and every product — a
-    /// port reported `open http` on the strength of being port 80, which may be
+    /// from any service. What it costs is every version and every product: a port
+    /// reported `open http` on the strength of being port 80, which may be
     /// anything at all.
     Off,
     /// Level 1. Connect and listen. Send nothing.
     ///
-    /// For services that greet on connect — SSH, SMTP, FTP, IRC — this is the
-    /// whole of what a probe would have learned anyway, and it is obtained
-    /// without putting a single byte on the wire. For everything else it
+    /// For services that greet on connect, such as SSH, SMTP, FTP and IRC, this
+    /// is the whole of what a probe would have learned anyway, obtained without
+    /// putting a single byte on the wire. For everything else it
     /// establishes only that the port accepts connections.
     ///
     /// The level to reach for against equipment that must not be sent anything
@@ -538,8 +537,8 @@ pub enum ServiceDetection {
     Banner,
     /// Level 2, and the default. Connect, listen, and ask.
     ///
-    /// Sends each port the probes its service registered, and — where nothing
-    /// registers the port — the one generic request worth asking of anything.
+    /// Sends each port the probes its service registered and, where nothing
+    /// registers the port, the one generic request worth asking of anything.
     /// That last part is what identifies the long tail: an open port on a number
     /// nobody registered is most often an HTTP server, and one request names it.
     ///
@@ -764,7 +763,7 @@ impl Default for RetryConfig {
 /// Ethernet frames and so has no use for [`SendMode`], while every strategy that
 /// sends a probe at all has a use for [`RetryConfig`]. `max_probe_rate` is read
 /// by routed host discovery and by the raw port scanners, and it means something
-/// different to each — the sweep and the UDP scan are paced *by* it, while a TCP
+/// different to each: the sweep and the UDP scan are paced by it, while a TCP
 /// port scan paces itself by a congestion window and treats it only as a
 /// ceiling. The unprivileged paths pace themselves by their connection
 /// concurrency instead.
@@ -801,7 +800,7 @@ pub struct ProbeTuning {
     ///
     /// Read by the raw TCP port scanner, which is where the replies that carry a
     /// stack's shape arrive. At [`OsDetection::Passive`] it changes no packet and
-    /// no timing — it reads a reply the scan already drew — so it is here rather
+    /// no timing, reading a reply the scan already drew, so it is here rather
     /// than in a phase of its own.
     pub os_detection: OsDetection,
 
@@ -819,7 +818,7 @@ pub struct ProbeTuning {
     ///
     /// A default profile is inert: a strategy handed one sends exactly what it
     /// would without it. Read wherever a strategy chooses a field a caller may
-    /// override — the source port a probe leaves from today, and the hop limit,
+    /// override: the source port a probe leaves from today, and the hop limit,
     /// spoofed address, fragmentation and decoys as those land. See
     /// [`EvasionProfile`].
     pub evasion: EvasionProfile,
@@ -831,15 +830,15 @@ pub struct ProbeTuning {
 /// The idle (or zombie) scan is the quietest technique this engine has: it
 /// forges its probes to carry the zombie's source address, so the target's
 /// answers go to the zombie and never to the scanner. What the target said is
-/// read indirectly, off the one thing the zombie's replies leak — a global
-/// IP-ID counter that advances by one for every packet the zombie sends. Read
+/// read indirectly, off the one thing the zombie's replies leak: a global IP-ID
+/// counter that advances by one for every packet the zombie sends. Read
 /// the counter, forge a probe, read it again: an open port drew an answer the
 /// zombie had to reset, advancing the counter an extra step, and a closed or
 /// filtered one did not.
 ///
-/// It follows that the zombie has to be the right kind of host — one whose
-/// IP-ID is a single shared counter — and that the forged probe needs a
-/// self-built Ethernet frame to carry a source address the kernel would never
+/// It follows that the zombie has to be the right kind of host, one whose IP-ID
+/// is a single shared counter, and that the forged probe needs a self-built
+/// Ethernet frame to carry a source address the kernel would never
 /// choose. A scan that cannot have either is refused rather than run quietly
 /// wrong; see the idle port scanner.
 ///
@@ -851,8 +850,8 @@ pub struct ProbeTuning {
 pub struct IdleScan {
     /// The zombie's address.
     ///
-    /// It must be a host with a single global IP-ID counter — a *counting*
-    /// generator, in the terms the OS-detection series reads — and idle and
+    /// It has to be a host with a single global IP-ID counter, a counting
+    /// generator in the terms the OS-detection series reads, and idle and
     /// reachable enough that its counter moves for this scan's probes and little
     /// else. A busy zombie's own traffic is noise the scan has to see through,
     /// and one whose counter is random or per-connection carries no signal at
@@ -863,9 +862,9 @@ pub struct IdleScan {
     /// A port on the zombie to probe for its counter, or `None` for the engine's
     /// default.
     ///
-    /// Any port serves in principle — an unsolicited SYN/ACK draws a reset
-    /// whether the port is open or closed, and it is the reset's IP-ID the scan
-    /// reads — but the zombie's own filter must not drop the probe, so a caller
+    /// Any port serves in principle, since an unsolicited SYN/ACK draws a reset
+    /// whether the port is open or closed and it is the reset's IP-ID the scan
+    /// reads, but the zombie's own filter must not drop the probe, so a caller
     /// that knows a port the zombie answers on can name it here.
     pub zombie_port: Option<u16>,
 }
@@ -892,9 +891,9 @@ impl IdleScan {
 
 /// What a scan does, and what it is allowed to put on the wire.
 ///
-/// **Every field here changes packets or timing.** Nothing about rendering — no
-/// banner, no verbosity, no terminal or keyboard handling — because none of that
-/// is the engine's business: it emits `tracing` events and installs no
+/// Every field here changes packets or timing. Nothing about rendering, so no
+/// banner and no verbosity and no terminal or keyboard handling, since none of
+/// that is the engine's business: it emits `tracing` events and installs no
 /// subscriber, so what a run looks like is decided entirely by whoever embeds
 /// the crate. A front end's own settings belong to the front end; the engine
 /// carries them nowhere and holds no opinion about them.
@@ -906,7 +905,7 @@ impl IdleScan {
 ///
 /// Non-exhaustive and [`Default`]-constructed, so the next knob is an additive
 /// change rather than a major version. Start from
-/// [`default`](Default::default) and set what you want:
+/// [`default`](Default::default) and set the fields the scan needs:
 ///
 /// ```
 /// use zond_engine::ZondConfig;
@@ -920,7 +919,7 @@ pub struct ZondConfig {
     /// Forbids the scan from generating any DNS traffic of its own: no A, AAAA
     /// or PTR queries, and no name resolution to go with the addresses it finds.
     ///
-    /// Set when the traffic itself is the problem — a query to a resolver the
+    /// Set when the traffic itself is the problem. A query to a resolver the
     /// target operates announces the scan to whoever runs it, and on an
     /// engagement that can be the whole of what goes wrong. The cost is hosts
     /// reported by address alone.
@@ -935,17 +934,18 @@ pub struct ZondConfig {
     ///
     /// A segment sweep sends the ICMPv6 all-nodes echo, which every IPv6
     /// neighbour may answer, and records the ones that do even though nobody
-    /// named them. That is the right behaviour for `zond lan` — the caller asked
-    /// about a network, and an IPv6 neighbour with no address in the IPv4 range
-    /// is found through this and nothing else. It is the wrong behaviour for
+    /// named them. That is the right behaviour for `zond lan`, where the caller
+    /// asked about a network and an IPv6 neighbour with no address in the IPv4
+    /// range is found through this and nothing else. It is the wrong behaviour
+    /// for
     /// `zond <address>`: scanning one host should not wake its neighbours, and a
     /// report listing eight machines when one was asked about is both surprising
     /// and, on someone else's network, indiscreet.
     ///
     /// Off by default, so the surprising behaviour is the one that has to be
-    /// asked for. Only the front end knows which the user meant — the engine
+    /// asked for. Only the front end knows which the user meant, since the engine
     /// receives an already-resolved set of addresses and cannot tell `lan` from
-    /// the range it expanded to — so this has to be set by whoever parsed the
+    /// the range it expanded to, so this has to be set by whoever parsed the
     /// target expression.
     pub segment_sweep: bool,
 
@@ -955,14 +955,14 @@ pub struct ZondConfig {
     /// Off by default, so [`scan`](crate::scan) establishes that a target is
     /// there before spending a probe on each of its ports. An address nothing
     /// answers for otherwise comes back with every port filtered, which is a
-    /// thousand lines of the scan reporting its own silence — and on a wide port
+    /// thousand lines of the scan reporting its own silence, and on a wide port
     /// range it is most of the run's cost.
     ///
     /// Set it when the liveness probe is the thing that is wrong: a host behind
     /// a firewall that drops ICMP and answers nothing on the discovery ports is
-    /// reported down and never scanned, and it may well be up. That is the
-    /// trade — the check is what stops a dead address costing a full scan, and
-    /// turning it off is what reaches a host that will not answer a knock.
+    /// reported down and never scanned, and it may well be up. That is the trade:
+    /// the check is what stops a dead address costing a full scan, and turning it
+    /// off is what reaches a host that will not answer a knock.
     ///
     /// The liveness phase probes the addresses it was given and nothing else. It
     /// is not a segment sweep; see [`segment_sweep`](Self::segment_sweep).
@@ -972,17 +972,17 @@ pub struct ZondConfig {
     ///
     /// Off by default, and it is the one detection setting that is off for a
     /// reason other than traffic volume. A trace costs roughly one probe per
-    /// router per host and tells you nothing about the host itself: it is a
-    /// finding about the network in between, which is a different question from
+    /// router per host and says nothing about the host itself. It is a finding
+    /// about the network in between, which is a different question from
     /// the one a port scan was asked. Somebody mapping a network wants it and
     /// somebody auditing a server does not, and neither should pay for the
     /// other's answer.
     ///
-    /// **Only hosts that answered something are traced.** A path is measured
+    /// Only hosts that answered something are traced. A path is measured
     /// backwards from the target, which needs the target's distance, which is
-    /// read out of a reply it sent — so a host that answered nothing has no
-    /// path this engine can measure and is skipped rather than probed thirty
-    /// times for nothing. See
+    /// read out of a reply it sent, so a host that answered nothing has no path
+    /// this engine can measure and is skipped rather than probed thirty times for
+    /// nothing. See
     /// [`traceroute`](crate::scanner::strategy::routed::traceroute).
     ///
     /// Needs raw sockets, like every other probe this engine builds by hand. An
@@ -994,16 +994,16 @@ pub struct ZondConfig {
     ///
     /// Off by default, and off for the same reason a traceroute is: it costs a
     /// handful of extra probes per live host and answers a different question
-    /// from the one a port scan was asked — what the filtering *between* the
-    /// scanner and a host is doing, rather than what the host runs. A firewall
+    /// from the one a port scan was asked: what the filtering between the scanner
+    /// and a host is doing, rather than what the host runs. A firewall
     /// tester wants it; an inventory scan does not.
     ///
     /// A pass of its own, run after the ports are known and only against hosts
     /// that answered, sending deliberately-shaped diagnostic probes whose results
     /// it reads as [`Filtering`](crate::model::host::Filtering) conclusions. It
-    /// does not touch the port verdicts — a bad-checksum probe, the one it sends
+    /// does not touch the port verdicts. A bad-checksum probe, the one it sends
     /// today, would report every port filtered if it were the setting a scan ran
-    /// under, which is exactly why it is a separate pass and not a scan option.
+    /// under, which is why it is a separate pass rather than a scan option.
     pub characterise: bool,
 
     /// Scan TCP ports through a third-party zombie rather than by addressing the
@@ -1012,7 +1012,7 @@ pub struct ZondConfig {
     /// This replaces the ordinary TCP port scan wholesale: the technique in
     /// [`tcp_technique`](Self::tcp_technique) does not apply, because every probe
     /// is a forged SYN read through the zombie's counter rather than a segment
-    /// whose own reply is classified. It is TCP-only — a UDP port cannot be read
+    /// whose own reply is classified. It is TCP-only: a UDP port cannot be read
     /// this way, and probing one directly would announce the scanner the idle
     /// technique exists to hide, so UDP targets are left unprobed. It needs the
     /// privilege and the self-built frame a spoofed source address requires, and
@@ -1035,20 +1035,19 @@ pub struct ZondConfig {
     /// learns addresses that were never in the target list, and losing it turns
     /// a guarantee back into a filter.
     ///
-    /// **Narrowing only.** No value here can make a scan send a packet it would
-    /// not otherwise have sent, which is what makes it safe to accept from a
-    /// settings file when [`segment_sweep`](Self::segment_sweep) is not — see
-    /// `import::settings::Settings`, where that asymmetry is the whole
-    /// argument for which keys a document is allowed to carry.
+    /// Narrowing only. No value here can make a scan send a packet it would not
+    /// otherwise have sent, which is what makes it safe to accept from a settings
+    /// file when [`segment_sweep`](Self::segment_sweep) is not. See
+    /// `import::settings::Settings`, where that asymmetry is the argument for
+    /// which keys a document is allowed to carry.
     pub exclusions: Exclusions,
 
     /// Whether identifying detail should be masked wherever the scan's findings
     /// leave the process: hostnames, hardware addresses, and the host part of an
     /// IPv6 address.
     ///
-    /// For a report going somewhere that needs to know a network's shape without
-    /// knowing which device is which — a client, an auditor, a screenshot in an
-    /// issue.
+    /// For a report going somewhere that needs a network's shape without knowing
+    /// which device is which: a client, an auditor, a screenshot in an issue.
     ///
     /// The engine does not mask anything itself; a scan holds what it found. This
     /// records the caller's intent, and it reaches the point of use through
@@ -1073,7 +1072,7 @@ pub struct ZondConfig {
     /// coverage on the first attempt instead, and raising it trades coverage
     /// for the time a large range takes to emit.
     ///
-    /// **It is a ceiling on a TCP port scan rather than its pace.** That scan
+    /// It is a ceiling on a TCP port scan rather than its pace. That scan
     /// discovers how fast each target will answer and settles there, which is
     /// almost always well below any rate worth configuring; see
     /// [`congestion`](crate::scanner::pacing::congestion). Setting this lowers
@@ -1120,9 +1119,9 @@ pub struct ZondConfig {
     /// port.
     ///
     /// Defaults to [`ServiceDetection::Probe`], which connects to every open
-    /// port and asks it what it is. That is the level worth having — a port
-    /// state without a service name answers half the question — but it is also
-    /// the one that completes connections, so a scan that must stay out of the
+    /// port and asks it what it is. That is the level worth having, since a port
+    /// state without a service name answers half the question, but it is also the
+    /// one that completes connections, so a scan that must stay out of the
     /// target's application logs turns it off. Affects the port-scan phase only.
     pub service_detection: ServiceDetection,
 
@@ -1138,7 +1137,7 @@ pub struct ZondConfig {
 
     /// What the scan changes about the packets it emits, over the defaults.
     ///
-    /// Defaults to an inert profile — a scan that set nothing here is
+    /// Defaults to an inert profile, so a scan that set nothing here is
     /// indistinguishable from one run before the option existed. Carried into
     /// [`probe_tuning`](Self::probe_tuning) for the strategies to read, and (once
     /// the provenance surface lands) into the report, so a scan that evaded
@@ -1392,8 +1391,8 @@ mod tests {
     }
 
     /// Where the wire cost begins. The default level promises to emit nothing at
-    /// all, and that promise is what makes it safe to leave on for every scan —
-    /// so which levels answer `true` here is a behavioural contract, not an
+    /// all, and that promise is what makes it safe to leave on for every scan, so
+    /// which levels answer `true` here is a behavioural contract rather than an
     /// implementation detail.
     #[test]
     fn os_detection_sends_nothing_below_the_active_level() {

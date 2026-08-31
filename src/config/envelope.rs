@@ -11,7 +11,7 @@
 //! What the operator *grants* a detection, against what a detection *asks for*.
 //! A [`Finding`](crate::model::finding::Finding)-producing detection declares an
 //! intrusiveness [class](DetectionClass); it runs only where the envelope permits
-//! that class, so intrusiveness is enforced rather than advised — a passive read
+//! that class, so intrusiveness is enforced rather than advised: a passive read
 //! and an exploit are not the same permission, and the operator decides which are
 //! on.
 //!
