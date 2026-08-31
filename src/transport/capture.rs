@@ -45,6 +45,8 @@ use tokio::sync::mpsc;
 
 use crate::model::capture::{CaptureCounts, IpObservation};
 use crate::model::ip::scoped::Zone;
+use crate::protocols::ethernet::VLAN_TAG_LEN;
+use crate::protocols::sizes::{ETH_HDR_LEN, IP_V6_HDR_LEN};
 use crate::transport::frame::{self, LinkType};
 use crate::{error, info, warn};
 use pnet_base::MacAddr;
@@ -53,6 +55,36 @@ use pnet_base::MacAddr;
 /// segment, but snapping generously costs nothing against a filter this narrow
 /// and avoids ever truncating one.
 pub const REPLY_SNAP_LEN: u32 = 65_535;
+
+/// The shortest snapshot length worth opening a capture at.
+///
+/// Derived rather than chosen: the deepest header stack this crate reads before
+/// it has an answer is an Ethernet header with two VLAN tags, the larger of the
+/// two IP headers, and a TCP header with its full options. A capture snapped
+/// below that truncates the reply it was opened for, and reports the resulting
+/// silence as a network that said nothing.
+///
+/// It is a floor and not a default. [`CaptureOptions::with_snaplen`] raises
+/// anything lower to it, which is also what keeps a zero from reaching
+/// `libpcap`, whose treatment of one is undefined by its own manual page.
+pub const MIN_SNAP_LEN: u32 =
+    (ETH_HDR_LEN + 2 * VLAN_TAG_LEN + IP_V6_HDR_LEN + TCP_MAX_HDR_LEN) as u32;
+
+/// A TCP header with the full forty bytes of options its data offset can
+/// describe.
+const TCP_MAX_HDR_LEN: usize = 60;
+
+// Both halves of the floor's argument, held at compile time because both sides
+// are constants: a test could only restate what the compiler already knows, and
+// a build is where a wrong one should stop.
+const _: () = assert!(
+    MIN_SNAP_LEN as usize >= ETH_HDR_LEN + 2 * VLAN_TAG_LEN + IP_V6_HDR_LEN + TCP_MAX_HDR_LEN,
+    "the snapshot floor is below a header stack this crate parses"
+);
+const _: () = assert!(
+    REPLY_SNAP_LEN > MIN_SNAP_LEN,
+    "the snapshot length a scanner takes unchanged is below the floor"
+);
 
 /// How a capture is opened: what the kernel admits, how much of each frame it
 /// keeps, and whose traffic it accepts at all.
@@ -149,8 +181,16 @@ impl CaptureOptions {
     /// this process can see of a payload it has no business reading — the
     /// second being a limit the kernel enforces rather than one userspace
     /// promises to keep.
+    ///
+    /// Raised to [`MIN_SNAP_LEN`] where it is lower, since below that a capture
+    /// cannot see the headers it exists to read and every frame arrives as a
+    /// truncation. `libpcap` does not define what a snapshot length of zero
+    /// means — the manual page does not say, and it has not meant the same thing
+    /// across versions — so a setting whose whole argument is that the kernel
+    /// enforces it is not handed over at a value the kernel is free to
+    /// reinterpret.
     pub fn with_snaplen(mut self, bytes: u32) -> Self {
-        self.snaplen = bytes;
+        self.snaplen = bytes.max(MIN_SNAP_LEN);
         self
     }
 
@@ -544,7 +584,7 @@ pub fn segments(
     let guard = spawn_captures(links, options, move |_zone, link, stop| {
         let tx = tx.clone();
         move |packet: &pcap::Packet<'_>| {
-            let Some(parsed) = frame::parse_captured_segment(link, packet.data) else {
+            let Some((parsed, source_mac)) = frame::parse_captured(link, packet.data) else {
                 return ControlFlow::Continue(());
             };
 
@@ -553,7 +593,7 @@ pub fn segments(
                 protocol: parsed.protocol,
                 bytes: parsed.payload.to_vec(),
                 observation: Some(parsed.observation),
-                source_mac: frame::source_mac(link, packet.data),
+                source_mac,
             };
 
             // Waits rather than drops, for the reason `frames` gives.
@@ -856,7 +896,15 @@ fn reader_loop(
             Err(pcap::Error::TimeoutExpired) => {}
             Err(pcap::Error::NoMorePackets) => break,
             Err(e) => {
-                error!("capture read error: {e}");
+                // Said as what it costs rather than as what went wrong. This
+                // thread is the only thing reading this interface, so ending
+                // here makes the link deaf for the rest of the scan, and every
+                // reply that would have arrived on it is silence a scanner
+                // cannot tell from a host that did not answer.
+                error!(
+                    "capture on {name} stopped and will hear nothing further \
+                     ({e}); replies arriving on this link are lost from here on"
+                );
                 break;
             }
         }
@@ -1061,6 +1109,36 @@ impl FrameSink for FrameChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A snapshot length below what the deepest header stack needs is raised to
+    /// it.
+    ///
+    /// The field carries an explicit claim: it bounds what this process can see
+    /// of a payload it has no business reading, and the kernel enforces that
+    /// rather than userspace promising it. A zero handed to `libpcap` is a value
+    /// its own manual page does not define, so the claim rested on a number the
+    /// library was free to reinterpret.
+    #[test]
+    fn a_snapshot_length_too_short_to_read_a_reply_is_raised_to_one_that_can() {
+        for asked in [0, 1, MIN_SNAP_LEN - 1] {
+            let options = CaptureOptions::for_replies("tcp").with_snaplen(asked);
+            assert_eq!(
+                options.snaplen, MIN_SNAP_LEN,
+                "a snapshot length of {asked} reached libpcap"
+            );
+        }
+
+        // A length the caller meant is the length they get, in both directions
+        // from the floor.
+        for asked in [MIN_SNAP_LEN, MIN_SNAP_LEN + 1, REPLY_SNAP_LEN] {
+            assert_eq!(
+                CaptureOptions::for_replies("tcp")
+                    .with_snaplen(asked)
+                    .snaplen,
+                asked
+            );
+        }
+    }
 
     /// A guard over fabricated counters, standing in for one whose capture
     /// threads would need an interface and root to exist.

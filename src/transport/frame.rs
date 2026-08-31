@@ -110,15 +110,53 @@ const IPV4_MORE_FRAGMENTS: u8 = 0b001;
 
 /// Strips `frame`'s link-layer header according to `link`, returning the IP
 /// packet within, or `None` if the frame is too short, carries a non-IP
-/// payload (e.g. ARP on an Ethernet link), or rides an unsupported link type.
+/// payload (ARP on an Ethernet link, a non-IP address family on a tunnel), or
+/// rides an unsupported link type.
+///
+/// Both link types that carry a protocol label are held to it. The Ethernet arm
+/// reads the EtherType and the tunnel arm reads the address-family word, which
+/// it used to skip: a `DLT_NULL` frame carrying something else was handed on as
+/// an IP packet and refused only if its first nibble happened not to be 4 or 6.
 pub fn strip_to_ip(link: LinkType, frame: &[u8]) -> Option<&[u8]> {
     match link {
         LinkType::Ethernet => strip_ethernet(frame),
-        LinkType::NullLoop => frame.get(NULL_LOOP_HDR_LEN..),
+        LinkType::NullLoop => strip_null_loop(frame),
         LinkType::Raw => Some(frame),
         LinkType::Unsupported(_) => None,
     }
 }
+
+/// Reads the address-family word a `DLT_NULL`/`DLT_LOOP` link prepends and
+/// returns the IP packet behind it, or `None` for a family this does not parse.
+///
+/// **The word's byte order is not fixed**, which is why this reads it both ways
+/// rather than picking one. `DLT_NULL` writes the host's own order, so the same
+/// capture file means different things on two machines; `DLT_LOOP` was defined
+/// later precisely to settle that, and writes network order. `libpcap` reports
+/// them as different link types and this crate maps both to
+/// [`NullLoop`](LinkType::NullLoop), so the value has to be recognised whichever
+/// way round it arrived.
+///
+/// That is safe to do rather than sloppy: the four families involved are small
+/// numbers whose byte-swapped forms are enormous, so no reading of one is a
+/// valid reading of another.
+fn strip_null_loop(frame: &[u8]) -> Option<&[u8]> {
+    let word = u32::from_ne_bytes(*frame.first_chunk::<NULL_LOOP_HDR_LEN>()?);
+    if !IP_ADDRESS_FAMILIES.contains(&word) && !IP_ADDRESS_FAMILIES.contains(&word.swap_bytes()) {
+        return None;
+    }
+
+    frame.get(NULL_LOOP_HDR_LEN..)
+}
+
+/// The address-family numbers a `DLT_NULL`/`DLT_LOOP` word may carry for an IP
+/// packet.
+///
+/// `AF_INET` is 2 everywhere. `AF_INET6` is not: 30 on macOS and the BSDs, 28 on
+/// FreeBSD, 10 on Linux, and 24 on OpenBSD. A tunnel link is read on whichever
+/// of those wrote it, and a capture written on one machine may be read on
+/// another, so all four are recognised rather than the running platform's alone.
+const IP_ADDRESS_FAMILIES: [u32; 5] = [2, 30, 28, 10, 24];
 
 /// Walks an Ethernet header, transparently skipping any VLAN tags, and returns
 /// the payload only if the EtherType marks it as IPv4 or IPv6.
@@ -355,6 +393,22 @@ pub fn parse_captured_segment(link: LinkType, frame: &[u8]) -> Option<IpSegment<
     parse_ip_segment(strip_to_ip(link, frame)?)
 }
 
+/// The [`IpSegment`] within a captured frame, and the hardware address the frame
+/// came from where the link has one.
+///
+/// The two answers a receive path wants from one frame, taken in one pass.
+/// Asking for them separately walks the link header twice, once to reach the IP
+/// packet and once to reach an address six bytes into the same header, for every
+/// frame a capture admits.
+///
+/// `None` on the same terms [`parse_captured_segment`] is: the source address is
+/// absent for a link that carries none (see [`source_mac`]) and never a reason to
+/// refuse the segment.
+pub fn parse_captured(link: LinkType, frame: &[u8]) -> Option<(IpSegment<'_>, Option<MacAddr>)> {
+    let segment = parse_captured_segment(link, frame)?;
+    Some((segment, source_mac(link, frame)))
+}
+
 /// Everything a frame needs except its payload: where it goes at both layers,
 /// what it carries, and how far it may travel.
 #[derive(Debug, Clone, Copy)]
@@ -484,6 +538,72 @@ pub fn build_fragmented_ethernet_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tunnel link labels what it carries, and the label is read.
+    ///
+    /// The arm used to skip the four bytes without looking at them, so a frame
+    /// carrying something other than IP was handed on as an IP packet and
+    /// refused only where its first nibble happened not to be 4 or 6. The
+    /// Ethernet arm beside it has always read its EtherType.
+    #[test]
+    fn a_tunnel_frame_is_held_to_the_family_it_names() {
+        let packet = [
+            0x45u8, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+        ];
+
+        // AF_INET is 2 on every platform, and a tunnel writes the word in
+        // whichever order the machine that captured it uses.
+        for word in [2u32.to_ne_bytes(), 2u32.to_be_bytes(), 2u32.to_le_bytes()] {
+            let frame = [&word[..], &packet[..]].concat();
+            assert_eq!(
+                strip_to_ip(LinkType::NullLoop, &frame),
+                Some(&packet[..]),
+                "an AF_INET frame was refused"
+            );
+        }
+
+        // AF_INET6 differs by platform, and a capture is read on whichever
+        // machine happens to have it rather than the one that wrote it.
+        for family in [30u32, 28, 10, 24] {
+            let frame = [&family.to_ne_bytes()[..], &packet[..]].concat();
+            assert_eq!(strip_to_ip(LinkType::NullLoop, &frame), Some(&packet[..]));
+        }
+
+        // And a family this does not read is refused rather than handed on.
+        for family in [1u32, 17, 0xDEAD_BEEF] {
+            let frame = [&family.to_ne_bytes()[..], &packet[..]].concat();
+            assert_eq!(
+                strip_to_ip(LinkType::NullLoop, &frame),
+                None,
+                "address family {family} was read as an IP packet"
+            );
+        }
+
+        // Too short to carry the word at all.
+        assert_eq!(strip_to_ip(LinkType::NullLoop, &[0, 0, 0]), None);
+    }
+
+    /// One walk of the link header answers both questions a receive path asks
+    /// of a frame, and gives the same answers the two separate walks did.
+    #[test]
+    fn one_pass_yields_the_segment_and_the_address_the_two_passes_did() {
+        let mut frame = vec![
+            0x02, 0, 0, 0, 0, 1, // destination
+            0x02, 0, 0, 0, 0, 2, // source
+            0x08, 0x00, // IPv4
+        ];
+        frame.extend_from_slice(&[
+            0x45, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+        ]);
+
+        let (segment, mac) = parse_captured(LinkType::Ethernet, &frame).expect("a segment");
+        assert_eq!(
+            Some(segment),
+            parse_captured_segment(LinkType::Ethernet, &frame)
+        );
+        assert_eq!(mac, source_mac(LinkType::Ethernet, &frame));
+        assert_eq!(mac, Some(MacAddr::new(0x02, 0, 0, 0, 0, 2)));
+    }
     use pnet_packet::ip::IpNextHeaderProtocols;
     use std::net::{Ipv4Addr, Ipv6Addr};
 

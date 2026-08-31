@@ -102,36 +102,37 @@ impl EthernetHandle {
 /// The variants name the interface, because a scan opens one channel per segment
 /// it means to sweep and "opening a channel failed" is not actionable without
 /// knowing which.
+/// Two halves open here and either can refuse, so which one did is the whole of
+/// what this says. Both usually fail for the same underlying reason — sending
+/// and receiving raw frames needs root everywhere this engine runs — and a
+/// person reading the message needs to know whether their probes would have
+/// left, not only that something went wrong.
+///
+/// There were three variants and one of them was ever constructed. `NoCapture`
+/// carried both failures, including the send half's, while its own
+/// documentation said the send half had already opened; `Open` and
+/// `NotEthernet` were named, documented and unreachable.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
-    /// The operating system refused the channel. Usually missing privileges:
-    /// sending and receiving raw frames needs root everywhere this engine runs.
-    #[error("opening a link-layer channel on {interface} failed: {source}")]
-    Open {
+    /// The link would not open for sending, so no probe could leave by it.
+    #[error("{interface} would not open for sending, so no probe could leave by it: {source}")]
+    Send {
         /// The interface that refused.
         interface: String,
-        /// What the operating system said.
+        /// What the capture layer said.
         #[source]
-        source: std::io::Error,
-    },
-
-    /// The interface opened but is not Ethernet, so the frames this scanner
-    /// builds mean nothing on it.
-    #[error("{interface} is not an Ethernet interface")]
-    NotEthernet {
-        /// The interface in question.
-        interface: String,
+        source: capture::CaptureError,
     },
 
     /// The send half opened but nothing could be captured on the interface, so
     /// probes would leave and no answer could ever be heard.
     ///
-    /// Separate from [`Open`](Self::Open) because it fails for a different
-    /// reason and at a different layer: the link-layer channel is already
-    /// working by the time this happens.
+    /// Separate from [`Send`](Self::Send) because it fails at a different point
+    /// and costs something different: the link is already carrying this scan's
+    /// frames by the time this happens.
     #[error("nothing could be captured on {interface}, so no reply could be heard: {source}")]
-    NoCapture {
+    Receive {
         /// The interface in question.
         interface: String,
         /// What the capture layer said.
@@ -156,7 +157,7 @@ pub fn start_capture(link: &Link, filter: &str) -> Result<EthernetHandle, Channe
     // Two handles on the one library, rather than one handle each on two. See
     // `FrameSender`: this used to open a `pnet` channel for the sending half and
     // discard its receiver, leaving a kernel buffer nothing drained.
-    let tx = capture::FrameSender::open(link.name()).map_err(|source| ChannelError::NoCapture {
+    let tx = capture::FrameSender::open(link.name()).map_err(|source| ChannelError::Send {
         interface: link.name().to_owned(),
         source,
     })?;
@@ -167,7 +168,7 @@ pub fn start_capture(link: &Link, filter: &str) -> Result<EthernetHandle, Channe
         &CaptureOptions::for_link_traffic(filter),
         QUEUE_DEPTH,
     )
-    .map_err(|source| ChannelError::NoCapture {
+    .map_err(|source| ChannelError::Receive {
         interface: link.name().to_owned(),
         source,
     })?;

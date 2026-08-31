@@ -13803,6 +13803,7 @@ impl core::marker::Unpin for zond_engine::transport::capture::FrameSender
 impl core::marker::UnsafeUnpin for zond_engine::transport::capture::FrameSender
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::FrameSender
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::FrameSender
+pub const zond_engine::transport::capture::MIN_SNAP_LEN: u32
 pub const zond_engine::transport::capture::REPLY_SNAP_LEN: u32
 pub trait zond_engine::transport::capture::FrameSink: core::marker::Send
 pub fn zond_engine::transport::capture::FrameSink::send_frame(&mut self, &[u8]) -> core::result::Result<(), alloc::string::String>
@@ -13816,14 +13817,12 @@ pub type zond_engine::transport::capture::CaptureStream = tokio::sync::mpsc::bou
 pub type zond_engine::transport::capture::FrameStream = tokio::sync::mpsc::bounded::Receiver<zond_engine::transport::capture::CapturedFrame>
 pub mod zond_engine::transport::channel
 #[non_exhaustive] pub enum zond_engine::transport::channel::ChannelError
-pub zond_engine::transport::channel::ChannelError::NoCapture
-pub zond_engine::transport::channel::ChannelError::NoCapture::interface: alloc::string::String
-pub zond_engine::transport::channel::ChannelError::NoCapture::source: zond_engine::transport::capture::CaptureError
-pub zond_engine::transport::channel::ChannelError::NotEthernet
-pub zond_engine::transport::channel::ChannelError::NotEthernet::interface: alloc::string::String
-pub zond_engine::transport::channel::ChannelError::Open
-pub zond_engine::transport::channel::ChannelError::Open::interface: alloc::string::String
-pub zond_engine::transport::channel::ChannelError::Open::source: core::io::error::Error
+pub zond_engine::transport::channel::ChannelError::Receive
+pub zond_engine::transport::channel::ChannelError::Receive::interface: alloc::string::String
+pub zond_engine::transport::channel::ChannelError::Receive::source: zond_engine::transport::capture::CaptureError
+pub zond_engine::transport::channel::ChannelError::Send
+pub zond_engine::transport::channel::ChannelError::Send::interface: alloc::string::String
+pub zond_engine::transport::channel::ChannelError::Send::source: zond_engine::transport::capture::CaptureError
 impl core::convert::From<zond_engine::transport::channel::ChannelError> for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::from(zond_engine::transport::channel::ChannelError) -> Self
 impl core::error::Error for zond_engine::transport::channel::ChannelError
@@ -13920,6 +13919,7 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::fra
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::transport::frame::IpSegment<'a>
 pub fn zond_engine::transport::frame::build_ethernet_frame(&zond_engine::transport::frame::FrameSpec, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, zond_engine::protocols::error::PacketError>
 pub fn zond_engine::transport::frame::build_fragmented_ethernet_frames(&zond_engine::transport::frame::FrameSpec, &[u8], u16) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, zond_engine::protocols::error::PacketError>
+pub fn zond_engine::transport::frame::parse_captured(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<(zond_engine::transport::frame::IpSegment<'_>, core::option::Option<pnet_base::macaddr::MacAddr>)>
 pub fn zond_engine::transport::frame::parse_captured_segment(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<zond_engine::transport::frame::IpSegment<'_>>
 pub fn zond_engine::transport::frame::parse_ip_segment(&[u8]) -> core::option::Option<zond_engine::transport::frame::IpSegment<'_>>
 pub fn zond_engine::transport::frame::source_mac(zond_engine::transport::frame::LinkType, &[u8]) -> core::option::Option<pnet_base::macaddr::MacAddr>
