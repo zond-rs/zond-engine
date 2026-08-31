@@ -15,16 +15,16 @@
 //! ## Usable on its own
 //!
 //! Nothing here opens a socket, spawns a task, holds a runtime or touches the
-//! scanner. A [`StackObservation`] is built by a function from bytes to a value,
-//! so a caller who already has packets — a saved capture, their own raw socket,
-//! a fixture — can use this without going anywhere near
+//! scanner. A [`StackObservation`] is built by a function from bytes to a
+//! value, so a caller who already has packets, a saved capture, their own raw
+//! socket, a fixture, can use this without going anywhere near
 //! [`scanner`](crate::scanner):
 //!
 //! ```
 //! use zond_engine::fingerprint::os::StackObservation;
 //!
 //! # fn main() {
-//! // An IPv4 packet carrying a TCP segment, from wherever you got it.
+//! // An IPv4 packet carrying a TCP segment, from wherever it was captured.
 //! let packet: &[u8] = &[
 //!     0x45, 0x00, 0x00, 0x2c, 0xbe, 0xef, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00,
 //!     192, 168, 0, 1, 192, 168, 0, 100,
@@ -44,7 +44,7 @@
 //! kept honest by the imports: this module reaches for the vocabulary in
 //! [`model`](crate::model) and the header parsing in
 //! [`protocols`](crate::protocols) and for nothing else. What it does *not* yet
-//! buy is a smaller build — the crate still compiles its capture and its runtime
+//! buy is a smaller build, the crate still compiles its capture and its runtime
 //! whatever a consumer imports, because those are unconditional dependencies.
 //! Turning this into a feature that costs nothing to leave out is a change to
 //! the dependency set rather than to this module, and the module is written so
@@ -70,11 +70,12 @@
 //! ## Two axes: what it runs, and what it is
 //!
 //! A verdict answers two questions, and a source may answer either without the
-//! other. [`OsEvidence::family`](crate::model::host::OsEvidence::family) is what the machine *runs*, [`OsEvidence::device`](crate::model::host::OsEvidence::device)
-//! is what it *is* — printer, switch, camera — and neither stands in for the
-//! other. A hop counter of 255 reaches the first and never the second; an SNMP
-//! agent reading `Brother NC-8700w` reaches the second and genuinely does not
-//! know the first.
+//! other. [`OsEvidence::family`](crate::model::host::OsEvidence::family) is
+//! what the machine *runs*,
+//! [`OsEvidence::device`](crate::model::host::OsEvidence::device) is what it
+//! *is*, printer, switch, camera, and neither stands in for the other. A hop
+//! counter of 255 reaches the first and never the second; an SNMP agent reading
+//! `Brother NC-8700w` reaches the second and genuinely does not know the first.
 //!
 //! [`resolve`] settles the family by vote and everything else by agreement, so a
 //! source with nothing to say about the family says nothing there rather than
@@ -93,7 +94,7 @@
 //! What the second one buys is **specificity, not confidence**. A series is
 //! still one stack, so it is still one piece of evidence and still bounded by
 //! [`MAX_STACK_ACCURACY`]; what it adds is the three features a single reply
-//! cannot carry — the identifier policy, the sequence generator and the clock —
+//! cannot carry, the identifier policy, the sequence generator and the clock,
 //! and those are what a rule naming a *release* rather than a family has to
 //! predicate on.
 //!

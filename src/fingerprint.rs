@@ -24,7 +24,7 @@
 //!
 //! * [`model`] is the shared vocabulary: [`Evidence`], [`ServiceVerdict`],
 //!   [`Confidence`](crate::model::confidence::Confidence).
-//! * [`SignatureDb`] is the runtime view of the signature database — a cheap
+//! * [`SignatureDb`] is the runtime view of the signature database: a cheap
 //!   `port -> name` index plus lazily compiled, cached matchers.
 //! * [`Analyzer`]s are the extension point; [`BannerRegexAnalyzer`] is the first.
 //!
@@ -33,7 +33,7 @@
 //! Every analyzer runs in two phases and `analyze` enforces the split: the
 //! transport's first-contact I/O and each analyzer's own `collect` probes run on
 //! the async reactor; all `analyze` (CPU) work is handed to the blocking pool.
-//! Nothing in this module compiles a regex on a reactor thread — see
+//! Nothing in this module compiles a regex on a reactor thread; see
 //! `SignatureDb` for why that matters.
 
 pub mod model;
@@ -103,7 +103,7 @@ const PROBE_READ_TIMEOUT: Duration = Duration::from_millis(1_000);
 /// Not a second timeout on the response: the response has already begun, and
 /// this is only how long its remainder is worth waiting for. What it has to
 /// bridge is the gap between a server writing its headers and writing its body,
-/// which is a segment boundary rather than a delay — sub-millisecond on a
+/// which is a segment boundary rather than a delay, so sub-millisecond on a
 /// segment and one round trip at worst anywhere else.
 ///
 /// It is paid in full by every response that is *already* complete, since a
@@ -122,7 +122,7 @@ const USER_AGENT: &str = "ZondScanner/1.0";
 /// How long to wait for the second connection a speculative TLS handshake needs.
 ///
 /// The first one already completed to this same port, so this either succeeds
-/// immediately or the port has stopped accepting — there is nothing here worth
+/// immediately or the port has stopped accepting, so there is nothing here worth
 /// a long wait.
 const CONNECT_RETRY_TIMEOUT: Duration = Duration::from_millis(500);
 /// Upper bound on how much of a single response we read/keep.
@@ -136,15 +136,15 @@ const MAX_RESPONSE_BYTES: usize = 4096;
 /// and a 1500-byte `extrainfo`, and both travelled into the store, the journal,
 /// the JSON, the CSV, the HTML and the nmap XML.
 ///
-/// **Refused rather than truncated**, which is the argument
+/// Refused rather than truncated, which is the argument
 /// the SNMP reader already makes about `sysDescr`: half a value matched
 /// against a corpus of whole ones is a match nobody can reproduce, and a
 /// truncated version is a version that is simply wrong. A field this long is a
 /// pattern that ran away or a peer being difficult, and neither is worth
 /// reporting.
 ///
-/// Every sibling reading here already bounded itself — 255 bytes for a system
-/// description, 40 for a document title, 32 for a last-resort banner label —
+/// Every sibling reading here already bounded itself, at 255 bytes for a system
+/// description, 40 for a document title and 32 for a last-resort banner label,
 /// and each said why. These three had no argument for being unbounded, only no
 /// author.
 pub const MAX_IDENTITY_BYTES: usize = 256;
@@ -164,7 +164,7 @@ pub(crate) fn identity_field(value: &str) -> Option<&str> {
 /// [`CONTINUATION_GRACE`] bounds the gap between two reads and nothing bounded
 /// how many of them there could be, so a peer writing one byte every forty
 /// milliseconds stayed permanently inside the grace and held a task for
-/// **ninety-seven seconds**. Measured, against a loopback server doing exactly
+/// ninety-seven seconds. Measured, against a loopback server doing exactly
 /// that, and it costs an attacker one socket.
 ///
 /// Set where a legitimate response cannot reach it. What this has to cover is a
@@ -194,7 +194,7 @@ const COLLECTION_BUDGET: Duration = Duration::from_secs(15);
 /// What decides whether a port is worth the exchange a service pass costs. A TCP
 /// port always is: any of them may volunteer a banner, and reading one costs a
 /// connection. A UDP port is worth a datagram only where something here can turn
-/// the answer into text — otherwise the reply proves the port open, which the
+/// the answer into text. Otherwise the reply proves the port open, which the
 /// scan that found it already knew.
 #[must_use]
 pub fn reads_replies(port: u16, protocol: Protocol) -> bool {
@@ -226,7 +226,7 @@ pub fn lookup_service_name(port: u16) -> Option<String> {
 /// can read is still proof the port is open, and that is what the scan already
 /// took from it.
 ///
-/// Returns owned text because decoding is not always a borrow — a value lifted
+/// Returns owned text because decoding is not always a borrow: a value lifted
 /// out of a binary encoding has no text in the datagram to point at.
 pub fn decode_udp_reply(port: u16, datagram: &[u8]) -> Option<String> {
     extract::from_datagram(port, datagram)
@@ -236,7 +236,7 @@ pub fn decode_udp_reply(port: u16, datagram: &[u8]) -> Option<String> {
 ///
 /// A summary rather than the chain: who the certificate claims to be, who
 /// vouched for it, when it stops being valid, and a fingerprint to compare two
-/// sightings by. **Nothing here is a trust decision** — validity is recorded as
+/// sightings by. Nothing here is a trust decision: validity is recorded as
 /// two instants and left for the reader to compare against whatever time they
 /// care about, precisely so that expired, self-signed and wrong-host
 /// certificates are reported rather than rejected.
@@ -288,8 +288,9 @@ pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
 
 /// Actively fingerprints an open TCP `stream` and refines `port`'s service.
 ///
-/// Network I/O — the banner grab and any active probes — runs here on the async
-/// reactor with bounded reads and per-stage timeouts. The CPU-bound signature
+/// Network I/O, meaning the banner grab and any active probes, runs here on the
+/// async reactor with bounded reads and per-stage timeouts. The CPU-bound
+/// signature
 /// matching is handed to `analyze`, which runs on the blocking pool so a large
 /// match set can never stall the scheduler.
 ///
@@ -302,8 +303,9 @@ pub async fn fingerprint_tcp(stream: TcpStream, port: Port, detection: ServiceDe
 /// [`fingerprint_tcp`], also returning what the service said about the *machine*.
 ///
 /// Over half the shipped signature corpus carries operating-system metadata, and
-/// a banner naming a distribution — `OpenSSH_9.6p1 Debian` — is the most direct
-/// statement a host ever makes about itself. It is read here because this is
+/// a banner naming a distribution, such as `OpenSSH_9.6p1 Debian`, is the most
+/// direct statement a host ever makes about itself. It is read here because this
+/// is
 /// where the text already is; no probe is added to collect it.
 ///
 /// Separate from [`fingerprint_tcp`] rather than replacing it because the two
@@ -343,8 +345,8 @@ pub async fn fingerprint_tcp_detailed(
         port.set_security(tls_summary::security(tls));
     }
 
-    // Analysis runs off the reactor. Keep a last-resort banner label — and the
-    // gathered responses a later detection may read — before the response set is
+    // Analysis runs off the reactor. Keep a last-resort banner label, and the
+    // gathered responses a later detection may read, before the response set is
     // handed to the blocking pool.
     let fallback = first_printable(&responses.banners);
     let banners = responses.banners.clone();
@@ -374,7 +376,7 @@ pub async fn fingerprint_tcp_detailed(
 /// Fingerprints an open **UDP** port, returning the upgraded [`Port`] and
 /// whatever the reply said about the machine behind it.
 ///
-/// The sibling of [`fingerprint_tcp_detailed`], and deliberately the same shape:
+/// The sibling of [`fingerprint_tcp_detailed`], and the same shape:
 /// draw a response, turn it into the text the corpus is written against, and
 /// hand it to the same analyzers. Only the drawing differs, because UDP has no
 /// connection to open and no banner to wait for.
@@ -382,8 +384,8 @@ pub async fn fingerprint_tcp_detailed(
 /// # Why this is a second datagram rather than the scan's own
 ///
 /// The UDP port scan already sends this exact payload and already sees this
-/// exact reply — it is how the port was known to be open at all — and then
-/// discards the body, because what it needed was the *fact* of an answer. Wiring
+/// exact reply, which is how the port was known to be open at all, and then
+/// discards the body, since what it needed was the fact of an answer. Wiring
 /// that reply through would save a datagram and cost the thing that makes the
 /// scan fast: the scanner would have to hold every response body for every port
 /// it probed, through a paced run, against the chance that a later phase wants
@@ -392,12 +394,12 @@ pub async fn fingerprint_tcp_detailed(
 ///
 /// # What it will not do
 ///
-/// **Speak to a port it cannot read.** A datagram is only worth sending where
-/// something here could turn the answer into text — see
-/// [`reads_replies`] — because unlike a TCP banner grab, an unread UDP reply
-/// teaches nothing the scan does not already know.
+/// Speak to a port it cannot read. A datagram is only worth sending where
+/// something here could turn the answer into text, for which see
+/// [`reads_replies`], since unlike a TCP banner grab an unread UDP reply teaches
+/// nothing the scan does not already know.
 ///
-/// **Claim a port answered when it did not.** `None` means silence, and silence
+/// Claim a port answered when it did not. `None` means silence, and silence
 /// over UDP is the ordinary case: no connection is refused and no banner is
 /// withheld, so nothing distinguishes a filtered port from one with nothing
 /// behind it. A caller that dialled a port on its own account uses this to tell
@@ -410,9 +412,9 @@ pub async fn fingerprint_udp_detailed(
     let responses = ResponseSet::from_banners(vec![text]);
     let banners = responses.banners.clone();
 
-    // No tunnel: nothing here carries UDP over TLS. No peer address handed to
-    // the analyzers either — an active analyzer dials TCP, and this port's
-    // address is not one it could speak to.
+    // No tunnel: nothing here carries UDP over TLS, and no peer address is
+    // handed to the analyzers either, since an active analyzer dials TCP and
+    // this port's address is not one it could speak to.
     let verdict = analyze(addr.port(), Protocol::Udp, None, responses, None)
         .await
         .filter(|verdict| !verdict.is_empty())?;
@@ -433,7 +435,7 @@ pub async fn fingerprint_udp_detailed(
 /// carries, or `None` if it carried none.
 ///
 /// Bound to an ephemeral port of the same family as the target, and
-/// **connected**, so the kernel drops anything from another address before it
+/// connected, so the kernel drops anything from another address before it
 /// reaches here: a scanner reading unsolicited datagrams off an unconnected
 /// socket would attribute one host's answer to another's port.
 async fn probe_udp(addr: std::net::SocketAddr) -> Option<String> {
@@ -465,10 +467,10 @@ async fn probe_udp(addr: std::net::SocketAddr) -> Option<String> {
 /// Three shapes, and which one a port gets is decided by whether anything in the
 /// signature database claims it.
 ///
-/// An **implicit-TLS** port handshakes straight away and collects through the
-/// tunnel. A **claimed** port — one some service registered a probe for — is
-/// listened to and then asked, in that order, because a service that greets on
-/// connect should be heard before it is interrupted. An **unclaimed** port is
+/// An implicit-TLS port handshakes straight away and collects through the
+/// tunnel. A claimed port, meaning one some service registered a probe for, is
+/// listened to and then asked, in that order, since a service that greets on
+/// connect should be heard before it is interrupted. An unclaimed port is
 /// asked generically; see [`ask_generically`].
 ///
 /// Whenever a handshake succeeds the collection re-runs *inside* the tunnel, so
@@ -490,8 +492,8 @@ async fn gather(
         return (ResponseSet::default(), None);
     }
 
-    // Listen only. Everything below this line puts bytes on the wire — the
-    // ClientHello of a handshake as much as the probes — so the level that
+    // Listen only. Everything below this line puts bytes on the wire, the
+    // ClientHello of a handshake as much as the probes, so the level that
     // promises to send nothing has to stop here rather than further in.
     if !detection.sends() {
         let banner = read_response(&mut stream, BANNER_READ_TIMEOUT).await;
@@ -510,11 +512,10 @@ async fn gather(
         return match tls::handshake(stream, ip).await {
             Some(completed) => tunneled(Some(completed), port).await,
             // The handshake failed, and on a port numbered for TLS that is worth
-            // one more question. rustls implements 1.2 and 1.3 and deliberately
-            // implements neither 1.0 nor 1.1, so a legacy-only server lands here
-            // and used to be reported as a port that answered nothing — losing
-            // the identification *and* the finding, which for a security scanner
-            // is the wrong way round.
+            // one more question. rustls implements 1.2 and 1.3 and implements
+            // neither 1.0 nor 1.1, so a legacy-only server lands here and was
+            // once reported as a port that answered nothing, losing both the
+            // identification and the finding.
             None => (legacy_tls(socket).await, None),
         };
     }
@@ -529,10 +530,10 @@ async fn gather(
     // A port nothing claims. Ask it the one question worth asking of anything.
     match ask_generically(&mut stream, socket).await {
         GenericReply::Spoke(banners) => (ResponseSet::from_banners(banners), None),
-        // Either it answered in TLS or it answered nothing, and both are reasons
-        // to try a handshake. The socket cannot be reused for one — it has our
-        // plaintext request on it — so this costs a second connection, paid only
-        // on the ports that have already declined to speak.
+        // Either it answered in TLS or it answered nothing, and both are
+        // reasons to try a handshake. The socket cannot be reused for one, it
+        // has our plaintext request on it, so this costs a second connection,
+        // paid only on the ports that have already declined to speak.
         GenericReply::Tls | GenericReply::Silent => match (peer, socket) {
             (Some(ip), Some(socket)) => {
                 let Ok(Ok(fresh)) =
@@ -551,7 +552,7 @@ async fn gather(
 enum GenericReply {
     /// It answered in something we can read. Whatever it said is here.
     Spoke(Vec<String>),
-    /// It answered in TLS — an alert, most likely, since what we sent was not a
+    /// It answered in TLS, most likely an alert, since what went out was not a
     /// ClientHello. The port speaks, just not to that question.
     Tls,
     /// Nothing came back at all.
@@ -561,12 +562,12 @@ enum GenericReply {
 /// Asks an unclaimed port the one question worth asking of any open port, and
 /// reads whatever comes back.
 ///
-/// **The request goes out before anything is read**, which inverts the order the
+/// The request goes out before anything is read, which inverts the order the
 /// claimed-port path uses, and the inversion is safe for a reason worth writing
-/// down: a service that greets on connect has *already sent* its greeting by the
-/// time we write, and TCP will deliver it whether or not we asked for something
-/// else first. So writing first cannot lose a banner — it can only save the
-/// timeout that waiting for a banner nobody is going to send would cost.
+/// down: a service that greets on connect has already sent its greeting by the
+/// time anything is written, and TCP delivers it whether or not it was asked for
+/// first. So writing first cannot lose a banner, and it saves the timeout that
+/// waiting for a banner nobody is going to send would cost.
 ///
 /// That saving is the whole point. The old path waited half a second for a
 /// greeting, sent nothing, concluded the port was silent, and then spent up to
@@ -590,8 +591,8 @@ async fn ask_generically(stream: &mut TcpStream, socket: Option<SocketAddr>) -> 
 
     let first = String::from_utf8_lossy(&bytes).into_owned();
 
-    // A redirect is not an answer, it is a forwarding address — and for a great
-    // many self-hosted applications it is the *only* thing the root serves. See
+    // A redirect is not an answer but a forwarding address, and for a great
+    // many self-hosted applications it is the only thing the root serves. See
     // `redirect_path`.
     let followed = match (socket, redirect_path(&first)) {
         (Some(socket), Some(path)) => follow_redirect(socket, &path).await,
@@ -604,22 +605,22 @@ async fn ask_generically(stream: &mut TcpStream, socket: Option<SocketAddr>) -> 
 /// Where a response says to look instead, when that is somewhere on the same
 /// host and reachable by the same means.
 ///
-/// **The root of a self-hosted application is very often a redirect and nothing
-/// else.** Jellyfin's is a 302 to `/web/index.html`, Sonarr's to its login page;
-/// the page that names either of them is one hop away, and a scanner that stops
-/// at the first response sees only the framework underneath — `Kestrel`, for
-/// both, and for a dozen others.
+/// The root of a self-hosted application is very often a redirect and nothing
+/// else. Jellyfin's is a 302 to `/web/index.html` and Sonarr's is one to its
+/// login page, so the page that names either is one hop away and a scanner that
+/// stops at the first response sees only the framework underneath, which for
+/// both of those and a dozen others is `Kestrel`.
 ///
 /// Refused unless the destination is on the host already being scanned. A
 /// redirect naming somewhere else is an instruction to go and talk to a third
 /// party, which is not something a scan of *this* address should do on its own
 /// account: it would put traffic on somebody uninvolved and attribute what came
-/// back to a host that never served it. A scheme change is refused for the same
-/// species of reason — `https://` would need a handshake this path has no
-/// socket for, and guessing is worse than declining.
+/// back to a host that never served it. A scheme change is refused on the same
+/// reasoning: `https://` would need a handshake this path has no socket for, and
+/// guessing is worse than declining.
 fn redirect_path(response: &str) -> Option<String> {
     let (status, headers) = response.split_once("\r\n").or(response.split_once('\n'))?;
-    // `HTTP/1.1 302 Found` — the code is the second field.
+    // `HTTP/1.1 302 Found`: the code is the second field.
     let code: u16 = status.split_whitespace().nth(1)?.parse().ok()?;
     if !(300..400).contains(&code) {
         return None;
@@ -641,9 +642,9 @@ fn redirect_path(response: &str) -> Option<String> {
         // A control character is refused rather than carried. `lines()` has
         // already made a CRLF impossible, but a lone carriage return survives in
         // the middle of a value and some servers still treat one as a line
-        // terminator — so this would be a remote value spliced into a request
+        // terminator, so this would be a remote value spliced into a request
         // line. The blast radius is the peer's own socket, which is why this is
-        // hygiene rather than a hole; the class is worth removing all the same.
+        // hygiene rather than a hole, though the class is worth removing.
         path if path.starts_with('/') && !path.chars().any(char::is_control) => {
             Some(path.to_string())
         }
@@ -699,7 +700,7 @@ fn looks_like_tls(bytes: &[u8]) -> bool {
 ///
 /// The result carries no certificate and no tunnel. A legacy handshake sends its
 /// certificate in the clear and reading it would be possible, and it is
-/// deliberately not done here: the finding is the version, and a second binary
+/// not done here: the finding is the version, and a second binary
 /// parser over remote bytes wants an argument of its own before it exists.
 async fn legacy_tls(socket: SocketAddr) -> ResponseSet {
     let Ok(Ok(fresh)) = timeout(CONNECT_RETRY_TIMEOUT, TcpStream::connect(socket)).await else {
@@ -723,7 +724,7 @@ async fn tunneled(
         return (ResponseSet::default(), None);
     };
     // Inside the tunnel the port's own probes apply if it has any, and the
-    // generic question if it does not — the protocol under TLS is as
+    // generic question if it does not, since the protocol under TLS is as
     // unidentified as it would have been in the clear. A caller who asked to
     // send nothing never reaches here: `gather` returns before the handshake.
     let db = SignatureDb::global();
@@ -770,7 +771,7 @@ where
 }
 
 /// The analyzer registry. New evidence sources (HTTP, JARM, SNMP, nerva binary
-/// handlers, ...) are added here — the only place the set is enumerated. The
+/// handlers, ...) are added here, the only place the set is enumerated. The
 /// instances are stateless zero-sized values, so a `'static` slice of shared
 /// references is free and lets both phases (and the blocking task) reference the
 /// same set.
@@ -829,9 +830,9 @@ async fn analyze(
 /// the blocking pool (CPU). Returns `None` if analysis produced nothing, or if
 /// the blocking task failed to join.
 ///
-/// **This is where an analyzer of your own goes.** Gather responses however you
-/// like — [`fingerprint_tcp_detailed`] hands back the ones it read — and pass
-/// [`analyzers()`] plus your own:
+/// This is where a caller's own analyzer goes. Gather responses by whatever
+/// means, with [`fingerprint_tcp_detailed`] handing back the ones it read, then
+/// pass [`analyzers()`] alongside it:
 ///
 /// ```no_run
 /// # use zond_engine::fingerprint::{Analyzer, PortContext, ResponseSet, analyze_with, analyzers};
@@ -857,9 +858,9 @@ pub async fn analyze_with(
     responses: ResponseSet,
     analyzers: &'static [&'static dyn Analyzer],
 ) -> Option<ServiceVerdict> {
-    // Phase 1 — I/O on the reactor: let each interested analyzer run its own
-    // probes. Passive analyzers return an empty `Collected` (their inputs are in
-    // the shared `responses`).
+    // Phase 1, I/O on the reactor: let each interested analyzer run its own
+    // probes. Passive analyzers return an empty `Collected`, their inputs being
+    // in the shared `responses`.
     //
     // `interested` is asked once and the answer kept, rather than asked again in
     // the CPU phase: it is documented as a cheap gate, and a gate answering
@@ -877,7 +878,7 @@ pub async fn analyze_with(
         ));
     }
 
-    // Phase 2 — CPU off the reactor: parse the shared responses plus each
+    // Phase 2, CPU off the reactor: parse the shared responses plus each
     // analyzer's own frames into evidence, then resolve. A large match set can
     // never stall the scheduler from here.
     tokio::task::spawn_blocking(move || {
@@ -910,9 +911,9 @@ where
 ///
 /// For a reply that may be a *document* rather than a line. One `read` returns
 /// one segment, and an HTTP server that writes its headers and its body
-/// separately hands over the headers alone — so the `Server` header arrives and
-/// the `<title>` that names the application does not, on exactly the ports where
-/// the title is the only thing that would have named it.
+/// separately hands over the headers alone, so the `Server` header arrives and
+/// the `<title>` that names the application does not, on the ports where the
+/// title is the only thing that would have named it.
 ///
 /// Deliberately not what a banner grab uses. A greeting is one short write and
 /// waiting on for a second one costs [`CONTINUATION_GRACE`] on every port that
@@ -1008,8 +1009,8 @@ mod tests {
     /// A port number nothing is registered under yields no service at all.
     ///
     /// The alternative was a placeholder, and a placeholder is a service name as
-    /// far as every consumer is concerned — the exported JSON, the CSV, the HTML
-    /// page and the nmap XML another tool ingests each then say the port is
+    /// far as every consumer is concerned. The exported JSON, the CSV, the HTML
+    /// page and the nmap XML another tool ingests would each say the port is
     /// running something called `???`.
     #[test]
     fn an_unregistered_port_is_seeded_with_nothing() {
@@ -1114,8 +1115,8 @@ mod tests {
 
     #[tokio::test]
     async fn analyze_runs_both_phases_and_resolves() {
-        // Drives the real orchestration — the collect phase (a no-op for the two
-        // passive analyzers) followed by the off-reactor analyze phase — over a
+        // Drives the real orchestration, the collect phase (a no-op for the two
+        // passive analyzers) followed by the off-reactor analyze phase, over a
         // recorded SSH banner, and asserts it resolves through to a verdict.
         let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1 Debian".to_string()]);
         let verdict = analyze(22, Protocol::Tcp, None, responses, None)
@@ -1185,7 +1186,7 @@ mod tests {
         assert_eq!(verdict.product.as_deref(), Some("cloudflare"));
     }
 
-    /// **A hostile response cannot put a kilobyte into a report.**
+    /// A hostile response cannot put a kilobyte into a report.
     ///
     /// Measured before [`MAX_IDENTITY_BYTES`] existed: one reply produced a
     /// 1500-byte `product` and a 1500-byte `extrainfo`, and both travelled into
@@ -1250,9 +1251,9 @@ mod tests {
         assert_eq!(identity_field(&"A".repeat(MAX_IDENTITY_BYTES + 1)), None);
     }
 
-    /// **A legacy-only TLS server is reported, not lost.**
+    /// A legacy-only TLS server is reported, not lost.
     ///
-    /// rustls implements TLS 1.2 and 1.3 and deliberately implements neither 1.0
+    /// rustls implements TLS 1.2 and 1.3 and implements neither 1.0
     /// nor 1.1, so a server offering only the older versions fails the modern
     /// handshake. It used to be reported as a port that answered nothing at all,
     /// which loses the identification and the finding together.
@@ -1310,7 +1311,7 @@ mod tests {
         assert_eq!(tls_security(tls).tls_version(), Some("TLSv1.0"));
     }
 
-    /// **A port that trickles cannot hold a scan.**
+    /// A port that trickles cannot hold a scan.
     ///
     /// One byte every forty milliseconds sits permanently inside
     /// [`CONTINUATION_GRACE`], so before [`MAX_CONTINUATION`] existed this read

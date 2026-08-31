@@ -8,25 +8,25 @@
 
 //! # HTTP header analyzer
 //!
-//! Identifies HTTP servers by **parsing the response structurally** — splitting
-//! the status line and headers, then reading named fields — rather than running
-//! a regex over the raw banner. Its headline contribution is *long-tail* server
-//! coverage: it lifts product and version out of the `Server` header for *any*
+//! Identifies HTTP servers by parsing the response structurally, splitting the
+//! status line and headers and then reading named fields, rather than running a
+//! regex over the raw banner. Its headline contribution is long-tail server
+//! coverage: it lifts product and version out of the `Server` header for any
 //! server (`gunicorn/21.2.0`, `Microsoft-IIS/10.0`, `openresty/1.25.3.1`,
-//! `Caddy`), with no hand-authored regex per product. That is exactly where the
-//! banner-regex analyzer is weakest — its curated `Server:` rules cover only the
-//! handful of servers someone wrote a pattern for.
+//! `Caddy`), with no hand-authored regex per product. That is where the
+//! banner-regex analyzer is weakest, its curated `Server:` rules covering only
+//! the handful of servers someone wrote a pattern for.
 //!
 //! ## Passive, by design
 //!
 //! The analyzer reads the HTTP response the transport already captured (the
-//! shared [`ResponseSet`] — the reply to the `get_root` probe) instead of
+//! shared [`ResponseSet`], being the reply to the `get_root` probe) instead of
 //! sending its own `GET`. On the standard HTTP ports the probe has already run,
 //! so re-probing here would only double the request count on the busiest ports.
 //! It therefore keeps the default no-op `collect` and does all its work in
-//! [`analyze`](Analyzer::analyze). (Active HTTP probing on non-standard ports —
-//! where no probe is configured — is a separate, later step; it needs the
-//! collect phase to know the port is worth a `GET`.)
+//! [`analyze`](Analyzer::analyze). Active HTTP probing on non-standard ports,
+//! where no probe is configured, is a separate and later step: it needs the
+//! collect phase to know the port is worth a `GET`.
 //!
 //! ## Scope of the evidence it emits
 //!
@@ -65,7 +65,7 @@ impl Analyzer for HttpHeadersAnalyzer {
         true
     }
 
-    // Passive: the default no-op `collect` is exactly right — see the module docs.
+    // Passive, so the default no-op `collect` stands. See the module docs.
 
     fn analyze(
         &self,
@@ -94,11 +94,11 @@ impl Analyzer for HttpHeadersAnalyzer {
 
         // Baseline: a valid HTTP response is itself the evidence that the port
         // speaks HTTP, even when the server does not name itself. It asserts only
-        // the *service* — deliberately no product. Naming a product here (e.g.
-        // "http") would, being equal-confidence with a versionless `Server`
-        // match, win the resolver's single product slot on the stable-sort tie
-        // and bury the real server name (`cloudflare`, `Caddy`, bare `nginx`) —
-        // exactly the long tail this analyzer exists to surface.
+        // the service and no product. Naming a product here (say "http") would,
+        // being equal-confidence with a versionless `Server` match, win the
+        // resolver's single product slot on the stable-sort tie and bury the
+        // real server name (`cloudflare`, `Caddy`, bare `nginx`), which is the
+        // long tail this analyzer exists to surface.
         let mut evidence = vec![stamp(
             Evidence::new(SourceId::HttpHeaders, Confidence::Probable).with_service("http"),
             ctx,
@@ -119,17 +119,17 @@ impl Analyzer for HttpHeadersAnalyzer {
                 evidence.push(stamp(server, ctx));
             }
 
-            // And the same header, whole, against the signature set — which is
-            // what reaches the imported rules that name an *operating system*.
+            // And the same header, whole, against the signature set, which is
+            // what reaches the imported rules naming an operating system.
             //
             // They cannot be reached any other way. Those patterns are written
             // against a `Server` value and anchored at both ends
             // (`^Microsoft-IIS/6.0$`), so matching them against a whole response
             // fails however much of the response is right. That single mismatch
             // hid the largest family of operating-system-bearing rules in the
-            // corpus — the web servers, which map a server version to a precise
-            // Windows release — behind an analyzer that had the exact text they
-            // wanted sitting in a local.
+            // corpus, the web servers that map a server version to a precise
+            // Windows release, behind an analyzer that had the text they wanted
+            // sitting in a local.
             if let Some(os) = os_from(header) {
                 let mut carrier =
                     Evidence::new(SourceId::HttpHeaders, Confidence::Probable).with_service("http");
@@ -138,9 +138,9 @@ impl Analyzer for HttpHeadersAnalyzer {
             }
         }
 
-        // `X-Powered-By`: a *secondary* technology (PHP, ASP.NET, Express). It
-        // names a component running behind the server, not the server itself, so
-        // it goes to `extrainfo` — never the product slot the server owns.
+        // `X-Powered-By`: a secondary technology (PHP, ASP.NET, Express). It
+        // names a component running behind the server rather than the server
+        // itself, so it goes to `extrainfo` and never the server's product slot.
         if let Some(powered_by) = http.header("x-powered-by").and_then(super::identity_field) {
             evidence.push(stamp(
                 Evidence::new(SourceId::HttpHeaders, Confidence::Probable)
@@ -177,19 +177,19 @@ impl Analyzer for HttpHeadersAnalyzer {
 ///
 /// This is the answer to a question the corpus scales badly against. A signature
 /// per product identifies the products somebody has written a signature for, and
-/// the long tail of self-hosted software is precisely the part nobody has —
-/// which is also the part a scan of somebody's own network is mostly made of. So
-/// the two signals here are chosen for being *structural*: they identify by
+/// the long tail of self-hosted software is the part nobody has, which is also
+/// the part a scan of somebody's own network is mostly made of. So the two
+/// signals here are chosen for being structural: they identify by
 /// where a name appears, not by matching a name that was known in advance.
 ///
-/// **A vendor prefix on a header name.** `X-Emby-Token`, `X-Plex-Protocol`,
-/// `X-Jenkins`, `X-Drupal-Cache`, `X-Shopify-Stage` — the convention of
-/// prefixing one's own headers with one's own name is near-universal and it
+/// A vendor prefix on a header name. In `X-Emby-Token`, `X-Plex-Protocol`,
+/// `X-Jenkins`, `X-Drupal-Cache` and `X-Shopify-Stage`, the convention of
+/// prefixing one's own headers with one's own name is near-universal and
 /// hands over the vendor for free. Read across the CORS allow-list too, which is
 /// where a server enumerates the vocabulary it accepts and so names itself even
 /// when its response body is a bare redirect.
 ///
-/// **The document title.** For a self-hosted application serving its own web
+/// The document title. For a self-hosted application serving its own web
 /// interface, the `<title>` is very often the product name and nothing else:
 /// `Sonarr`, `Netdata`, `Grafana`, `Squoosh`. It is user-controlled text and so
 /// is never allowed near the product slot; as supplementary detail it is the
@@ -200,8 +200,9 @@ impl Analyzer for HttpHeadersAnalyzer {
 ///
 /// `named` is the product the `Server` header already gave up, and a title that
 /// mentions it is discarded. Almost every default landing page on the internet
-/// is titled after the server serving it — `Welcome to nginx!`, `Apache2 Ubuntu
-/// Default Page` — and repeating a name the row already carries is at best noise
+/// is titled after the server serving it, as `Welcome to nginx!` and `Apache2
+/// Ubuntu Default Page` are, and repeating a name the row already carries is at
+/// best noise
 /// and at worst the claim that an unconfigured web server is an application. A
 /// title naming something *else* is the case this exists for, and survives.
 fn application_hint(http: &HttpResponse<'_>, named: Option<&str>) -> Option<String> {
@@ -222,9 +223,9 @@ fn application_hint(http: &HttpResponse<'_>, named: Option<&str>) -> Option<Stri
 ///
 /// The list is what makes the prefix rule usable: without it `X-Frame-Options`
 /// reports a product called "Frame". These are the de-facto standard extension
-/// headers — a closed, slow-moving set that has nothing to do with how many
-/// products exist, which is the whole reason this approach scales where a
-/// signature per product does not.
+/// headers, a closed and slow-moving set that has nothing to do with how many
+/// products exist, which is why this approach scales where a signature per
+/// product does not.
 const NOT_A_VENDOR: &[&str] = &[
     "accel",
     "access",
@@ -267,9 +268,9 @@ const NOT_A_VENDOR: &[&str] = &[
 
 /// The vendor a response names by prefixing its own headers with it.
 ///
-/// The **most repeated** prefix wins, not the first. A server that has its own
+/// The most repeated prefix wins rather than the first. A server that has its own
 /// header namespace uses it several times over, while a stray prefix from a
-/// proxy, a framework or a former product name appears once — so counting
+/// proxy, a framework or a former product name appears once, so counting
 /// separates the software that is running here from everything else that
 /// touched the response. Emby is the case that settled it: its allow-list leads
 /// with the single `X-MediaBrowser-Token` it kept for compatibility and then
@@ -301,8 +302,8 @@ fn vendor_prefix(http: &HttpResponse<'_>) -> Option<String> {
     }
 
     // `counts` is in first-seen order, and the index breaks the tie toward the
-    // front — `max_by_key` alone would take the last of equal maxima and make
-    // the answer depend on header order for no reason.
+    // front. `max_by_key` alone would take the last of equal maxima and make the
+    // answer depend on header order for no reason.
     counts
         .iter()
         .enumerate()
@@ -385,15 +386,14 @@ const NAME_CONNECTIVES: &[&str] = &["of", "the", "and", "for", "de", "la", "du"]
 /// whether every word is capitalised: `Home Assistant`, `Proxmox Virtual
 /// Environment`, `Uptime Kuma` are names, and `Yo whats up` is somebody talking.
 /// A single word is taken as a name whatever its case, because that is how a
-/// great many of them are actually written — `phpMyAdmin`, `openHAB`,
-/// `code-server`.
+/// great many of them are written: `phpMyAdmin`, `openHAB`, `code-server`.
 ///
 /// A title carrying a separator is declined outright. `Dashboard - Grafana` and
 /// `Sonarr - Series` both name their product, and they name it on *opposite
 /// sides*; with one page to look at there is no way to tell which convention is
 /// in use, and picking wrong reports the page as the product. Declining costs a
 /// name the row would have liked; guessing costs a name that is wrong, and this
-/// is the weakest signal the engine has — it has no business guessing.
+/// is the weakest signal the engine has, so it has no business guessing.
 fn reads_as_a_name(title: &str) -> bool {
     if title.contains(['-', '|', ':', '·', '—', '–', '/', '(']) {
         return false;
@@ -425,14 +425,14 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
 /// Matched globally rather than through the port index: a rule naming a system
 /// from a `Server` value is registered under whatever service it belongs to, not
 /// under port 80, so narrowing by port would skip exactly the rules wanted here.
-/// The literal prefilter keeps that affordable — it selects a handful of
+/// The literal prefilter keeps that affordable by selecting a handful of
 /// candidates out of thousands before any regex is compiled.
 ///
 /// Only the most complete match contributes. A `Server` value that matches
 /// several rules has matched several statements about one machine, and taking
 /// them all would count one header as corroborating itself.
 ///
-/// **Ranked by how much a reading says, not by how sure it is**, which is the
+/// Ranked by how much a reading says, not by how sure it is, which is the
 /// same choice `SignatureDb::identify` makes and for the same reason: a rule
 /// pinning a product exactly outranks one that also happens to name a release,
 /// so ranking by confidence throws the release away. Two functions answering one
@@ -440,8 +440,9 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
 /// currently produces at most one match per header, which is exactly the
 /// condition under which such a divergence goes unnoticed.
 ///
-/// Costs 22–37 µs per header, measured — slowest when nothing matches, since a
-/// miss compiles and tries every candidate the prefilter selected. Paid once per
+/// Costs 22–37 µs per header, measured, and is slowest when nothing matches,
+/// since a miss compiles and tries every candidate the prefilter selected. Paid
+/// once per
 /// open HTTP port, against a path that has already spent a TCP connect and up to
 /// half a second waiting for the banner, so it does not show.
 fn os_from(header: &str) -> Option<crate::model::host::OsEvidence> {
@@ -498,9 +499,9 @@ fn parse_server(value: &str) -> Option<(String, Option<String>)> {
 
 /// Whether a server token is a null-ish placeholder rather than a real product
 /// name. Some devices (notably embedded/router HTTP stacks) emit `Server: null`,
-/// `unknown`, `-`, and the like — a captured value, but no identification. We
-/// drop it so the resolver keeps the clean `http` baseline instead of surfacing
-/// a bogus product.
+/// `unknown`, `-` and the like, which is a captured value and no identification.
+/// Dropping it leaves the resolver the clean `http` baseline rather than a bogus
+/// product.
 fn is_placeholder(product: &str) -> bool {
     matches!(
         product.trim().to_ascii_lowercase().as_str(),
@@ -509,8 +510,8 @@ fn is_placeholder(product: &str) -> bool {
 }
 
 /// A minimally-parsed HTTP response: enough to read headers by name. The body is
-/// discarded — only the status line (as the marker that this *is* HTTP) and the
-/// header block are retained.
+/// discarded, leaving the status line as the marker that this is HTTP, and the
+/// header block.
 struct HttpResponse<'a> {
     /// `(lowercased name, trimmed value)` in wire order.
     headers: Vec<(String, String)>,
@@ -560,7 +561,7 @@ impl<'a> HttpResponse<'a> {
     ///
     /// The allow-list is included because it is a list of header names the
     /// server expects a client to send, which is the server enumerating its own
-    /// vocabulary — and a server's vocabulary names it. One media server was
+    /// vocabulary, and a server's vocabulary names it. One media server was
     /// identified from nothing else: it sent no product anywhere in its
     /// response, and then listed `X-Emby-Token` among the headers it would
     /// accept.
@@ -664,7 +665,7 @@ mod tests {
     }
 
     /// A media server that names no product anywhere in its response, and then
-    /// lists the headers it will accept — among them its own.
+    /// lists the headers it will accept, its own among them.
     ///
     /// Captured from a real Emby server on port 8097, which nmap reported as
     /// `upnp` from the `Server` header of its embedded DLNA stack. The DLNA
@@ -688,8 +689,8 @@ mod tests {
     }
 
     /// The standard extension headers name no vendor, and reporting one as a
-    /// product would make the whole rule unusable — every response on the
-    /// internet carries some of these.
+    /// product would make the rule unusable, since every response on the internet
+    /// carries some of these.
     #[test]
     fn the_standard_extension_headers_name_nothing() {
         let banner = "HTTP/1.1 200 OK\r\n\
@@ -708,8 +709,8 @@ mod tests {
     /// identifying it is the only place the name appears.
     ///
     /// Captured from a real server on port 7778, which nmap reported as
-    /// `interwise?` — unrecognised — with `<title>Squoosh</title>` in the body
-    /// it had already read.
+    /// `interwise?`, unrecognised, with `<title>Squoosh</title>` in the body it
+    /// had already read.
     #[test]
     fn the_document_title_names_an_application_nobody_wrote_a_rule_for() {
         let banner = "HTTP/1.1 200 OK\r\n\
@@ -784,9 +785,8 @@ mod tests {
         }
     }
 
-    /// A product name is a proper noun and is written like one — including the
-    /// several-word ones, and including the single words that are not
-    /// capitalised at all.
+    /// A product name is a proper noun and is written like one, including the
+    /// several-word ones and the single words that are not capitalised at all.
     #[test]
     fn a_title_shaped_like_a_name_is_taken_as_one() {
         for title in [
@@ -870,8 +870,9 @@ mod tests {
 
     #[test]
     fn iis_ten_is_covered_where_the_curated_regexes_stop() {
-        // The imported `^Microsoft-IIS/[1234]\.0$` rules never reach 10.0 — and
-        // are anchored to a bare value they never see in a full response anyway.
+        // The imported `^Microsoft-IIS/[1234]\.0$` rules never reach 10.0, and
+        // are anchored to a bare value they never see in a full response
+        // anyway.
         let evidence = analyze(80, "HTTP/1.1 200 OK\r\nServer: Microsoft-IIS/10.0\r\n\r\n");
         let server = evidence
             .iter()
@@ -963,7 +964,7 @@ mod tests {
     }
 
     proptest! {
-        /// The response parser must never panic on arbitrary input — banners come
+        /// The response parser never panics on arbitrary input, banners coming
         /// off the wire. `(?s)` lets `.` match newlines, so CRLF/LF framing edge
         /// cases (empty lines, colon-less lines, unterminated headers) are fuzzed.
         #[test]
@@ -1060,10 +1061,10 @@ mod os_from_headers {
         );
     }
 
-    /// The failure mode this replaced. Matching the whole response against rules
-    /// anchored to a header value cannot succeed, and looks exactly like a corpus
-    /// that has no such rule — so the check is that the *response* form still
-    /// fails while the extracted form works.
+    /// The failure mode this replaced. Matching the whole response against
+    /// rules anchored to a header value cannot succeed, and looks exactly like
+    /// a corpus that has no such rule, so the check is that the *response* form
+    /// still fails while the extracted form works.
     #[test]
     fn the_whole_response_is_not_what_those_rules_match() {
         use crate::fingerprint::prefilter::Prefilter;

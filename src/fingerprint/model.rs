@@ -17,7 +17,7 @@
 //! another. [`ServiceVerdict`] is how a set of evidence is reconciled into a
 //! single answer, retaining the evidence it was drawn from for explainability.
 //!
-//! These types are deliberately independent of *how* evidence is produced, so
+//! These types are independent of how evidence is produced, so
 //! adding a new kind of detector never changes them.
 
 use crate::model::confidence::Confidence;
@@ -51,7 +51,7 @@ pub enum SourceId {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tunnel {
-    /// A completed TLS handshake — the payload was decrypted before analysis.
+    /// A completed TLS handshake, the payload was decrypted before analysis.
     Tls,
 }
 
@@ -100,8 +100,9 @@ pub struct Evidence {
     /// The transport this observation was read through, if any. Set when the
     /// data was decrypted from a tunnel (e.g. banner matched inside TLS).
     pub tunnel: Option<Tunnel>,
-    /// Whether this match is corroborated by the port it was found on — i.e. the
-    /// signature was one registered for this port, not one found only by global
+    /// Whether this match is corroborated by the port it was found on, meaning
+    /// the signature was registered for this port rather than found only by
+    /// global
     /// content search. A port-confirmed match carries a stronger prior (the
     /// service was *expected* here), so the resolver ranks it above a
     /// global-only match of equal confidence. Analyzers that do not consult the
@@ -117,12 +118,12 @@ pub struct Evidence {
     /// service.
     ///
     /// Carried alongside rather than folded into the fields above because it
-    /// answers a different question and is resolved by different rules. A banner
-    /// identifies a service directly; that it also implies an operating system is
-    /// a second, weaker inference — a container names the image it was built
-    /// from, not the kernel it runs on. `ServiceVerdict` retains its whole
-    /// evidence set, so this reaches a caller without the resolver having to
-    /// rank it.
+    /// answers a different question and is resolved by different rules. A
+    /// banner identifies a service directly; that it also implies an operating
+    /// system is a second, weaker inference, a container names the image it was
+    /// built from, not the kernel it runs on. `ServiceVerdict` retains its
+    /// whole evidence set, so this reaches a caller without the resolver having
+    /// to rank it.
     pub os: Option<crate::model::host::OsEvidence>,
 }
 
@@ -204,9 +205,8 @@ impl Evidence {
 /// The reconciled answer for a port, plus the full evidence it was drawn from.
 ///
 /// Keeping every contributing [`Evidence`] (not just the winner) is deliberate:
-/// provenance is a product feature — it makes results explainable and
-/// signatures tunable.
-/// Comparable but not [`Eq`], for the reason [`Evidence`] is not: the
+/// provenance is a product feature, it makes results explainable and signatures
+/// tunable. Comparable but not [`Eq`], for the reason [`Evidence`] is not: the
 /// observations it retains carry a confidence, and a float is not something two
 /// verdicts should be claimed to share exactly.
 #[non_exhaustive]
@@ -256,7 +256,7 @@ impl ServiceVerdict {
         // Rank strongest-first. Confidence dominates: a genuinely stronger
         // identification is never buried by port context. Within one confidence
         // level, a port-confirmed match (its signature was registered for this
-        // port) outranks a global-only one — a coincidental cross-protocol
+        // port) outranks a global-only one, a coincidental cross-protocol
         // banner match (the classic bare-`220` FTP-vs-SMTP ambiguity) loses to
         // the service actually expected on the port. The sort is stable, so a
         // full tie keeps the order produced and stays independent of analyzer
@@ -289,7 +289,7 @@ impl ServiceVerdict {
 
         // Product needs more than "first that carries it". A product that merely
         // echoes the service ("http" for service http) is what a *generic* match
-        // emits — the `generic_http` signature, a protocol baseline. It conveys
+        // emits, as the `generic_http` protocol baseline does. It conveys
         // no product, so it must not bury a real name ("cloudflare", bare
         // "nginx") that a more specific analyzer supplied at the *same*
         // confidence.
@@ -298,8 +298,8 @@ impl ServiceVerdict {
         // as the software behind DNS is a claim nothing made: it disagrees with
         // every other scanner's answer for the same port, and a comparison then
         // reports a difference between two tools that found the same thing. The
-        // one thing an echo is good for — naming the port where no service was
-        // identified at all — is already covered, because a product is only an
+        // one thing an echo is good for, naming the port where no service was
+        // identified at all, is already covered, because a product is only an
         // echo when there *is* a service for it to echo.
         let named = evidence
             .iter()
@@ -314,10 +314,10 @@ impl ServiceVerdict {
         // product and version in a single string, already resolved against its
         // own observation's version. Filled independently of the product, a
         // verdict reported `gunicorn 21.2.0` beside
-        // `cpe:/a:apache:http_server:2.4.49` — measured — and `cve` joins on the
+        // `cpe:/a:apache:http_server:2.4.49`, measured, and `cve` joins on the
         // CPE, so the port was matched against Apache's vulnerabilities while
-        // the report named something else entirely. That is a false finding in a
-        // security report, which is the most expensive thing this crate can
+        // the report named something else entirely. That is a false finding in
+        // a security report, which is the most expensive thing this crate can
         // produce.
         //
         // Where nothing named a product there is nothing for a CPE to
@@ -340,8 +340,8 @@ impl ServiceVerdict {
     /// anything. Returns `None` for an empty verdict.
     ///
     /// A tunnelled service is labelled `<scheme>/<name>` (e.g. `ssl/http`),
-    /// keeping both observed facts visible — the protocol *and* that it was
-    /// carried inside TLS — without renaming the bare protocol. An untunnelled
+    /// keeping both observed facts visible, the protocol *and* that it was
+    /// carried inside TLS, without renaming the bare protocol. An untunnelled
     /// service, or the tunnel's own `ssl` verdict, is labelled plainly.
     pub fn to_service(&self) -> Option<Service> {
         let name = self.service.clone().or_else(|| self.product.clone())?;
@@ -405,7 +405,8 @@ mod tests {
     #[test]
     fn a_cpe_flows_from_evidence_through_the_verdict_into_the_service() {
         // Before `to_service` carried it, the verdict resolved the cpe and then
-        // dropped it on the way to the `Service` — so every service CPE was lost.
+        // dropped it on the way to the `Service`, so every service CPE was
+        // lost.
         let mut evidence = ev(Confidence::Strong).with_product("nginx");
         evidence.cpe = Some("cpe:/a:nginx:nginx:1.24.0".to_string());
 
@@ -491,7 +492,7 @@ mod tests {
     fn port_confirmed_match_wins_the_service_at_equal_confidence() {
         // Insertion order puts the global match first, so without the
         // port-confirmation tie-break the stable sort would keep "smtp". The
-        // port-confirmed "ftp" — the service actually expected on this port —
+        // port-confirmed "ftp", the service actually expected on this port,
         // must win. This is the bare-`220` FTP-vs-SMTP residue.
         let global_smtp = ev(Confidence::Probable).with_service("smtp");
         let mut port_ftp = ev(Confidence::Probable).with_service("ftp");
@@ -504,7 +505,7 @@ mod tests {
     #[test]
     fn confidence_still_dominates_port_confirmation() {
         // A weak port-confirmed match must not bury a genuinely stronger global
-        // identification — confidence is the primary key, port-confirmation only
+        // identification. Confidence is the primary key, port-confirmation only
         // breaks ties within a level.
         let mut weak_port = ev(Confidence::Probable).with_service("ftp");
         weak_port.port_confirmed = true;
@@ -516,7 +517,7 @@ mod tests {
         assert_eq!(verdict.service.as_deref(), Some("smtp"));
     }
 
-    /// **A platform identifier belongs to the product it names.**
+    /// A platform identifier belongs to the product it names.
     ///
     /// The HTTP analyzer never sets a CPE and a banner rule often does, so a
     /// versioned `Server` header outranking a versionless curated rule left the

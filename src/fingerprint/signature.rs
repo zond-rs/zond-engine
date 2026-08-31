@@ -10,8 +10,8 @@
 //!
 //! What an `assets/fingerprinting` TOML file is allowed to say, as types.
 //!
-//! Compiled into the build script as well as the library — `build.rs` loads this
-//! very file with `#[path]` — so the schema the build validates against and the
+//! Compiled into the build script as well as the library, `build.rs` loads this
+//! very file with `#[path]`, so the schema the build validates against and the
 //! schema the runtime reads are the same code rather than two descriptions of
 //! one idea. A field added here is a field both halves see at once, and a field
 //! either half could disagree about does not exist.
@@ -39,10 +39,10 @@ pub const MAX_UDP_PROBE_BYTES: usize = 512;
 
 /// Decodes the backslash escapes in an authored probe payload into raw bytes.
 ///
-/// Payloads are authored as readable TOML *literal* strings (e.g.
-/// `'GET / HTTP/1.1\r\n\r\n'`), so escapes arrive verbatim — a literal `\`, `r`
-/// — and would go on the wire malformed if sent as-is. This resolves the common
-/// set (`\r`, `\n`, `\t`, `\0`, `\xHH`, `\\`) to the bytes they denote; any other
+/// Payloads are authored as readable TOML *literal* strings (e.g. `'GET /
+/// HTTP/1.1\r\n\r\n'`), so escapes arrive verbatim, a literal `\`, `r`, and
+/// would go on the wire malformed if sent as-is. This resolves the common set
+/// (`\r`, `\n`, `\t`, `\0`, `\xHH`, `\\`) to the bytes they denote; any other
 /// escape is preserved literally so nothing is silently lost.
 ///
 /// Lives beside the schema, rather than in the runtime database, because
@@ -117,7 +117,7 @@ pub struct ServiceSignature {
     /// grows. A detection names the protocol instead, through
     /// [`Rule::speaks`](crate::detect::manifest::Rule::speaks).
     ///
-    /// **It says what this signature matched on, not what the product offers.**
+    /// It says what this signature matched on, not what the product offers.
     /// Riak, Neo4j and RethinkDB all have HTTP APIs and are fingerprinted here
     /// by their binary wire protocols, so none of them sets it: a port
     /// identified from those bytes is not a port answering HTTP.
@@ -154,10 +154,9 @@ pub struct Probe {
     /// every scan and high-rarity ones only when explicitly asked for.
     ///
     /// Reserved ahead of the intensity and softmatch work: the runtime does not
-    /// yet gate on it.
-    /// `#[serde(default)]` makes it backward-compatible — every existing probe
-    /// deserializes at rarity `0` (common, always sent), so current behaviour is
-    /// unchanged until an intensity cap is wired in.
+    /// yet gate on it. `#[serde(default)]` makes it backward-compatible, every
+    /// existing probe deserializes at rarity `0` (common, always sent), so
+    /// current behaviour is unchanged until an intensity cap is wired in.
     #[serde(default)]
     pub rarity: u8,
 
@@ -169,15 +168,15 @@ pub struct Probe {
     /// question worth asking of any open port at all, because the answer
     /// identifies whatever gave it.
     ///
-    /// In practice that is one probe — an HTTP request — and the reason is that
+    /// In practice that is one probe, an HTTP request, and the reason is that
     /// HTTP is what an unrecognised open port usually turns out to be speaking.
     /// A scan that sends nothing to those ports learns nothing about them and
-    /// still pays a full timeout finding that out; measured against one ordinary
-    /// home server, seven of eleven open ports were unidentified and each cost
-    /// two seconds to leave unidentified.
+    /// still pays a full timeout finding that out; measured against one
+    /// ordinary home server, seven of eleven open ports were unidentified and
+    /// each cost two seconds to leave unidentified.
     ///
-    /// **Adding a second one is a real cost, paid on every unknown port of every
-    /// scan**, so it wants the same evidence the first had. TCP only: a generic
+    /// Adding a second one is a real cost, paid on every unknown port of every
+    /// scan, so it wants the same evidence the first had. TCP only: a generic
     /// UDP probe would be a payload sent to every UDP port in the scan, which is
     /// a different and much larger claim. `build.rs` refuses one.
     #[serde(default)]
@@ -250,7 +249,7 @@ pub struct ServiceDefinition {
 
 /// Why an authored service definition cannot be used.
 ///
-/// **Every variant is a defect that degrades detection silently.** A pattern
+/// Every variant is a defect that degrades detection silently. A pattern
 /// neither engine compiles is a signature that never fires; a `version_group`
 /// past the pattern's groups is a version never captured; a probe over a
 /// transport this engine does not speak is a probe never sent. None of them is
@@ -358,7 +357,7 @@ impl std::error::Error for DefinitionError {}
 impl ServiceDefinition {
     /// Whether this definition is one the engine may use.
     ///
-    /// **Shared with `build.rs`**, which loads this very file, so the definitions
+    /// Shared with `build.rs`, which loads this very file, so the definitions
     /// the build accepts and the definitions
     /// [`SignatureDb::try_from_definitions`](crate::fingerprint::SignatureDb::try_from_definitions)
     /// accepts are one set rather than two descriptions of one idea.

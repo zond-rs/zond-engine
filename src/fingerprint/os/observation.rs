@@ -11,7 +11,7 @@
 //! A [`StackObservation`] is the typed feature vector a rule is matched
 //! against: everything readable off a single TCP segment and the IP header it
 //! arrived under, and nothing else. Building one involves no sockets, no
-//! scanner, no runtime and no state — it is a function from bytes to a value,
+//! scanner, no runtime and no state, it is a function from bytes to a value,
 //! and that is deliberate. See the [module documentation](super) for why.
 //!
 //! ## Read the reply kind before anything else
@@ -26,16 +26,16 @@
 //!
 //! ## Two fields are not what they look like
 //!
-//! **The option layout is decided as much by the probe as by the peer.** TCP
-//! option negotiation is reciprocal — RFC 7323 §2.2 and §3.2, RFC 2018 §2 — so a
-//! SYN+ACK names window scale, timestamps or SACK-permitted only if the SYN did.
-//! Against a labelled segment, a SYN offering only a maximum segment size drew
-//! back only a maximum segment size from Linux, from a router and from a
+//! The option layout is decided as much by the probe as by the peer. TCP
+//! option negotiation is reciprocal, RFC 7323 §2.2 and §3.2, RFC 2018 §2, so a
+//! SYN+ACK names window scale, timestamps or SACK-permitted only if the SYN
+//! did. Against a labelled segment, a SYN offering only a maximum segment size
+//! drew back only a maximum segment size from Linux, from a router and from a
 //! wide-area server alike. What this type records is therefore a joint fact
 //! about the peer *and* the question asked, and it is only comparable across
 //! observations that asked the same question.
 //!
-//! **The advertised window is a function of the negotiated options.** A stack
+//! The advertised window is a function of the negotiated options. A stack
 //! sizes its receive window in units of the effective segment size, and
 //! negotiating timestamps costs twelve bytes of every segment, so the unit
 //! shrinks and the window moves with it. Measured, on four hosts:
@@ -73,8 +73,8 @@ const TIMESTAMP_OVERHEAD: u16 = 12;
 /// A TCP option, by kind, in the order it appeared.
 ///
 /// The *order* is the signal. Which options a stack supports is mostly a
-/// question of era and configuration, but the sequence it writes them in — and
-/// where it puts its padding — is a decision one group of authors made once and
+/// question of era and configuration, but the sequence it writes them in, and
+/// where it puts its padding, is a decision one group of authors made once and
 /// nobody else copied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
@@ -135,7 +135,7 @@ impl TcpOptionKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamps {
     /// The sender's own clock. Two of these from one host, with the interval
-    /// between them, give the clock's frequency — which is a stack-build
+    /// between them, give the clock's frequency, which is a stack-build
     /// constant. One is not enough and this type holds one.
     pub value: u32,
     /// The value being echoed back. Zero in a segment that has nothing to echo.
@@ -147,7 +147,7 @@ pub struct Timestamps {
 ///
 /// Separated from the ordinary fields because they are read differently: an
 /// ordinary field is compared, and a quirk is a thing a conformant stack simply
-/// does not do. All of them are cheap — every one is a comparison against a
+/// does not do. All of them are cheap, every one is a comparison against a
 /// field already parsed.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -163,13 +163,13 @@ pub struct Quirks {
     /// A segment announcing an *initial* sequence number announced zero. Legal,
     /// and vanishingly rare from a stack that generates them the way it should.
     ///
-    /// **Read only off a segment carrying SYN**, because only there is the
-    /// sequence field a generated value. RFC 793 §3.4 requires a reset answering
-    /// a segment without an ACK to carry sequence zero — and this engine's probe
-    /// is a bare SYN, so every conformant stack alive answers its closed ports
-    /// that way. Flagged there, this would fire on every reset ever drawn: noise
-    /// in a report, and a rule keyed on it would match every host on earth while
-    /// looking like it had found something.
+    /// Read only off a segment carrying SYN, because only there is the
+    /// sequence field a generated value. RFC 793 §3.4 requires a reset
+    /// answering a segment without an ACK to carry sequence zero, and this
+    /// engine's probe is a bare SYN, so every conformant stack alive answers
+    /// its closed ports that way. Flagged there, this would fire on every reset
+    /// ever drawn: noise in a report, and a rule keyed on it would match every
+    /// host on earth while looking like it had found something.
     pub zero_sequence: bool,
     /// The option list ended with a length that ran past the header, so what
     /// this observation holds is what could be read before it did.
@@ -185,7 +185,7 @@ pub struct Quirks {
     /// Reachable: forty single-byte no-ops fill the header's option space and
     /// are forty options. Without this the observation reported a twenty-option
     /// layout for them and flagged nothing, which is the one parse defect in
-    /// this walk that used to be invisible — and a rule keyed on
+    /// this walk that used to be invisible, and a rule keyed on
     /// [`option_layout`](StackObservation::option_layout) would have compared
     /// against a truncated string.
     pub options_truncated: bool,
@@ -210,7 +210,7 @@ pub struct StackObservation {
     /// Kept raw rather than classified because a classification is a decision
     /// and this type does not make decisions. [`is_syn_ack`](Self::is_syn_ack)
     /// and [`is_reset`](Self::is_reset) are the two readings that matter, and a
-    /// segment that is neither is a fact worth keeping rather than discarding —
+    /// segment that is neither is a fact worth keeping rather than discarding,
     /// a bare ACK answering a SYN is a challenge ACK, which only a host holding
     /// a half-open connection sends.
     pub flags: u8,
@@ -245,8 +245,8 @@ pub struct StackObservation {
 impl StackObservation {
     /// Reads one TCP `segment`, given what its IP header said.
     ///
-    /// `segment` is the Layer-4 bytes with the IP header already stripped —
-    /// exactly what [`CapturedSegment::bytes`] holds. `None` when there are too
+    /// `segment` is the Layer-4 bytes with the IP header already stripped, which
+    /// is what [`CapturedSegment::bytes`] holds. `None` when there are too
     /// few bytes for a TCP header, or when the header claims a length the bytes
     /// do not support.
     ///
@@ -292,7 +292,7 @@ impl StackObservation {
     /// Reads a whole IP packet: the IP header for [`IpObservation`], and the TCP
     /// segment behind it.
     ///
-    /// The entry point for a caller who has bytes and nothing else — a saved
+    /// The entry point for a caller who has bytes and nothing else, a saved
     /// capture, their own socket, a fixture in a test. `None` for anything that
     /// is not an IP packet carrying a TCP segment this can read.
     pub fn from_ip_packet(packet: &[u8]) -> Option<Self> {
@@ -333,11 +333,11 @@ impl StackObservation {
     /// The advertised window as a multiple of [`effective_mss`](Self::effective_mss),
     /// and what is left over.
     ///
-    /// **This, not [`window`](Self::window), is what a rule should compare.** The
-    /// raw value moves when the probe changes what it offers, because the unit
-    /// moves with it; the multiplier is the stack's own and does not. Measured on
-    /// one host across two different probes: `29200 = 20 x 1460` and
-    /// `28960 = 20 x 1448` — the same twenty either way.
+    /// This, not [`window`](Self::window), is what a rule should compare.
+    /// The raw value moves when the probe changes what it offers, because the
+    /// unit moves with it; the multiplier is the stack's own and does not.
+    /// Measured on one host across two different probes: `29200 = 20 x 1460`
+    /// and `28960 = 20 x 1448`, the same twenty either way.
     ///
     /// The remainder is returned rather than hidden because not every stack
     /// chooses a clean multiple. A wide-area server measured `47 x 1360 + 940`
@@ -354,13 +354,13 @@ impl StackObservation {
     /// The smallest common initial hop counter the observed value could have been
     /// decremented from.
     ///
-    /// **A lower bound, not the value the sender wrote.** Every router on the
+    /// A lower bound, not the value the sender wrote. Every router on the
     /// path decrements the counter, and the initial value is the part that
     /// identifies a stack, so recovering it exactly needs a hop count this type
     /// does not have. What it gives instead is true without one: a reply that
     /// arrives at 57 cannot have started below 64.
     ///
-    /// The bound stops being useful — not wrong, but uninformative — once a path
+    /// The bound stops being useful, not wrong, but uninformative, once a path
     /// is longer than the gap to the next starting value. A host 40 hops away
     /// that started at 64 arrives at 24 and is reported as "at least 32", which
     /// is correct and says nothing. A rule needing better than that is a rule
@@ -372,9 +372,9 @@ impl StackObservation {
     /// One line saying what this observation held, for a report to carry beside a
     /// verdict.
     ///
-    /// Written for a person: it is what somebody disputing a finding needs to see
-    /// without re-running the scan, and what turns a false positive into a corpus
-    /// entry. Nothing should parse it — the typed fields are right here.
+    /// Written for a person: it is what somebody disputing a finding needs to
+    /// see without re-running the scan, and what turns a false positive into a
+    /// corpus entry. Nothing should parse it, the typed fields are right here.
     ///
     /// The window is rendered as its multiple of the effective segment size,
     /// because that is what a rule compared and what a reader needs in order to
@@ -423,7 +423,7 @@ impl StackObservation {
     }
 
     /// The option layout as the letters the public corpora write it in, comma
-    /// separated — `M,S,T,N,W` for a stack that sends a maximum segment size,
+    /// separated: `M,S,T,N,W` for a stack that sends a maximum segment size,
     /// SACK-permitted, a timestamp, a no-op and a window scale in that order.
     ///
     /// For display and for translating rules. Matching should go through
@@ -452,7 +452,7 @@ impl StackObservation {
 /// optional would make every reader ask "which kind is this?" at every field
 /// instead of once.
 ///
-/// **The reason to send one at all** is the host a TCP scan cannot describe. A
+/// The reason to send one at all is the host a TCP scan cannot describe. A
 /// machine with no open and no closed port answers nothing this crate's port
 /// scanner sends, and every feature the passive path reads starts from a reply.
 /// A great many such hosts still answer a ping.
@@ -470,7 +470,7 @@ pub struct EchoObservation {
     /// zero, and neither says what a responder should do when a request arrives
     /// carrying something else. Stacks disagree: some echo the request's code
     /// back, some write zero regardless. That disagreement is only visible if
-    /// the request asked the question — a probe sending code zero learns
+    /// the request asked the question, a probe sending code zero learns
     /// nothing, since both behaviours produce zero.
     pub code: u8,
 
@@ -480,7 +480,7 @@ pub struct EchoObservation {
     /// Whether those bytes are the ones that were sent.
     ///
     /// Both RFCs require the data of an echo request to be returned unchanged,
-    /// so this is conformance rather than preference — but a responder that
+    /// so this is conformance rather than preference, but a responder that
     /// truncates, pads, or rewrites has said something about itself, and a
     /// scanner that never checked would read the reply as ordinary.
     pub payload_intact: bool,
@@ -489,8 +489,8 @@ pub struct EchoObservation {
 impl EchoObservation {
     /// Reads an echo reply, given what its IP header said and what was sent.
     ///
-    /// `message` is the ICMP message with the IP header already stripped —
-    /// exactly what [`CapturedSegment::bytes`] holds. `sent_payload` is the
+    /// `message` is the ICMP message with the IP header already stripped, which
+    /// is what [`CapturedSegment::bytes`] holds. `sent_payload` is the
     /// payload of the request this answers, which is the only way to know
     /// whether what came back is what went out.
     ///
@@ -498,7 +498,7 @@ impl EchoObservation {
     ///
     /// [`CapturedSegment::bytes`]: crate::transport::capture::CapturedSegment::bytes
     pub fn from_echo_reply(ip: IpObservation, message: &[u8], sent_payload: &[u8]) -> Option<Self> {
-        // Type, code, checksum, identifier, sequence — then the payload.
+        // Type, code, checksum, identifier, sequence, then the payload.
         let header: &[u8; 8] = message.first_chunk()?;
         let payload = &message[8..];
         Some(Self {
@@ -884,9 +884,9 @@ mod tests {
             assert_eq!(observed.window_in_units(), Some((expected, 0)));
         }
 
-        // The same hosts answering a negotiating SYN: a timestamp is in play, so
-        // the unit is twelve bytes smaller and the raw window differs — and the
-        // multiplier is unchanged.
+        // The same hosts answering a negotiating SYN: a timestamp is in play,
+        // so the unit is twelve bytes smaller and the raw window differs, and
+        // the multiplier is unchanged.
         let router =
             StackObservation::from_tcp(ip(), &segment(SYN_ACK, 65_160, &recorded::ROUTER)).unwrap();
         assert_eq!(router.effective_mss(), Some(1448));
@@ -961,9 +961,10 @@ mod tests {
         );
     }
 
-    /// These bytes are chosen by a remote host, so a length that runs off the end
-    /// must stop the walk rather than panic — and must be *recorded*, because a
-    /// stack that emits one is far more distinctive than any well-formed field.
+    /// These bytes are chosen by a remote host, so a length that runs off the
+    /// end must stop the walk rather than panic, and must be *recorded*,
+    /// because a stack that emits one is far more distinctive than any
+    /// well-formed field.
     #[test]
     fn a_length_running_past_the_end_is_kept_as_a_quirk_not_a_panic() {
         // MSS, then a window scale claiming sixty-four bytes of value.
@@ -1013,7 +1014,7 @@ mod tests {
     }
 
     /// A handshake answer's sequence number *is* the stack's initial sequence
-    /// number, so zero there is a stack that generates none — a real oddity.
+    /// number, so zero there is a stack that generates none, a real oddity.
     #[test]
     fn a_handshake_announcing_sequence_zero_is_an_oddity() {
         let mut bytes = segment(SYN_ACK, 1024, &[]);
@@ -1024,11 +1025,11 @@ mod tests {
     }
 
     /// A reset's is not, and this is the false positive that made the quirk
-    /// useless: RFC 793 §3.4 requires a reset answering a segment without an ACK
-    /// to carry sequence zero, and this engine's probe is a bare SYN. Flagged
-    /// here it fired on every closed port of every conformant host alive —
-    /// measured, on a stock Debian guest, where it put `quirks` on a reading
-    /// that held nothing unusual whatsoever.
+    /// useless: RFC 793 §3.4 requires a reset answering a segment without an
+    /// ACK to carry sequence zero, and this engine's probe is a bare SYN.
+    /// Flagged here it fired on every closed port of every conformant host
+    /// alive, measured, on a stock Debian guest, where it put `quirks` on a
+    /// reading that held nothing unusual whatsoever.
     #[test]
     fn a_reset_carrying_the_sequence_the_rfc_demands_is_not_an_oddity() {
         let bytes = segment(RST_ACK, 0, &[]); // sequence already zero

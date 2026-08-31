@@ -10,8 +10,8 @@
 //!
 //! [`ResponseSet`] is everything the transport gathered from a port, handed to
 //! the analyzers as one value. It replaces the bare `Vec<String>` the engine
-//! started with so that non-banner evidence — a TLS certificate now, raw binary
-//! protocol frames later — has a typed home instead of being squeezed through a
+//! started with so that non-banner evidence, a TLS certificate now, raw binary
+//! protocol frames later, has a typed home instead of being squeezed through a
 //! lossy `String`.
 //!
 //! The transport owns collection (I/O); analyzers own interpretation (CPU). So
@@ -25,8 +25,8 @@
 /// What a TLS handshake yielded: what was negotiated, and the certificate chain
 /// the peer presented as raw DER, leaf first.
 ///
-/// Empty `certificates` still means "this port completed a TLS handshake" — a
-/// signal in itself — but the analyzers here need a leaf cert to say anything.
+/// Empty `certificates` still means "this port completed a TLS handshake", a
+/// signal in itself, but the analyzers here need a leaf cert to say anything.
 ///
 /// The negotiated parameters are captured here rather than re-derived later
 /// because they exist only on the live connection: once the tunnel is dropped,
@@ -38,7 +38,7 @@ pub struct TlsInfo {
     /// The presented chain in DER form, leaf first. Owned so nothing borrows the
     /// live connection.
     pub certificates: Vec<Vec<u8>>,
-    /// The protocol version agreed, as it is written in the RFCs — `"TLSv1.3"`.
+    /// The protocol version agreed, as the RFCs write it: `"TLSv1.3"`.
     ///
     /// `None` for a version this engine does not offer, which cannot happen
     /// through its own connector and can if a caller supplies its own.
@@ -122,7 +122,7 @@ impl ResponseSet {
         self
     }
 
-    /// Whether nothing at all was collected — no banners and no TLS.
+    /// Whether nothing at all was collected: no banners and no TLS.
     pub fn is_empty(&self) -> bool {
         self.banners.is_empty() && self.tls.is_none()
     }
@@ -135,8 +135,8 @@ impl ResponseSet {
 /// Bytes, not text: an active analyzer speaks a specific protocol (a JARM
 /// ClientHello sweep, an SSH `KEXINIT`, a Modbus request, and the future
 /// nerva-derived binary handlers) and parses the reply byte-for-byte, so there
-/// is no lossy `String` in the way. A passive analyzer — one that reads only the
-/// shared [`ResponseSet`] — never overrides `collect`, so its `Collected` is
+/// is no lossy `String` in the way. A passive analyzer, one that reads only the
+/// shared [`ResponseSet`], never overrides `collect`, so its `Collected` is
 /// simply empty.
 ///
 /// [`Analyzer`]: super::analyzer::Analyzer

@@ -13,7 +13,7 @@
 //! An [`Analyzer`] turns response data into zero or more [`Evidence`] records,
 //! independently of every other analyzer. Adding TLS-certificate, HTTP-header,
 //! JARM, SNMP, or nerva-derived binary detection means adding an `Analyzer` and
-//! registering it — not touching the orchestration or the other analyzers.
+//! registering it, not touching the orchestration or the other analyzers.
 //!
 //! ## Two phases
 //!
@@ -21,12 +21,12 @@
 //! ("network I/O on the reactor, CPU on the blocking pool") is enforced by the
 //! orchestrator in [`super`] rather than trusted to each analyzer:
 //!
-//! 1. [`collect`](Analyzer::collect) — **async, on the reactor.** An analyzer
+//! 1. [`collect`](Analyzer::collect), async and on the reactor. An analyzer
 //!    that needs its own probe exchange (beyond the shared first-contact the
 //!    transport already did) runs it here and returns raw [`Collected`] frames.
 //!    The default does no I/O, which is exactly right for *passive* analyzers
 //!    that read only the shared [`ResponseSet`].
-//! 2. [`analyze`](Analyzer::analyze) — **sync, off the reactor.** Pure CPU: turn
+//! 2. [`analyze`](Analyzer::analyze), sync and off the reactor. Pure CPU: turn
 //!    the shared responses and this analyzer's own collected frames into
 //!    evidence. No network here, ever.
 //!
@@ -60,7 +60,7 @@ pub struct PortContext {
     /// Load-bearing for an **active** analyzer: one gated on a port number alone
     /// would dial TCP 22 because UDP 22 was scanned, probing a service nobody
     /// asked about at an address that never offered one. Passive analyzers
-    /// mostly ignore it — what they read is already in the responses.
+    /// mostly ignore it, since what they read is already in the responses.
     pub protocol: Protocol,
     /// The address of the peer being fingerprinted, when known. An *active*
     /// analyzer whose [`collect`](Analyzer::collect) opens its own connection
@@ -118,8 +118,8 @@ pub trait Analyzer: Send + Sync {
     /// port). Applies to both phases.
     fn interested(&self, ctx: &PortContext) -> bool;
 
-    /// **I/O phase, on the reactor.** Runs this analyzer's own probe exchange —
-    /// beyond the shared first-contact the transport already performed — and
+    /// I/O phase, on the reactor. Runs this analyzer's own probe exchange,
+    /// beyond the shared first-contact the transport already performed, and
     /// returns the raw frames it read.
     ///
     /// The default does no I/O and returns nothing: *passive* analyzers (banner
@@ -130,7 +130,7 @@ pub trait Analyzer: Send + Sync {
         Collected::default()
     }
 
-    /// **CPU phase, off the reactor.** Turns the shared first-contact
+    /// CPU phase, off the reactor. Turns the shared first-contact
     /// `responses` and this analyzer's own `collected` frames into evidence. An
     /// analyzer reads only the inputs it understands and ignores the rest; this
     /// method must not perform network I/O.
@@ -148,7 +148,7 @@ pub trait Analyzer: Send + Sync {
 ///
 /// Matching is tiered: each response is checked first against the signatures
 /// linked to its port, and only if none match is it checked against the global
-/// set — narrowed by the prefilter — so a service on a non-standard port is
+/// set, narrowed by the prefilter, so a service on a non-standard port is
 /// still identified without scanning every signature. The prefilter is built
 /// lazily; most responses match on their port and never trigger it.
 ///
@@ -168,8 +168,8 @@ impl Analyzer for BannerRegexAnalyzer {
         true
     }
 
-    // Passive: reads the shared banners, runs no probes of its own — the default
-    // `collect` is exactly right.
+    // Passive: reads the shared banners and runs no probes of its own, so the
+    // default `collect` stands.
     fn analyze(
         &self,
         ctx: &PortContext,
@@ -213,7 +213,7 @@ mod tests {
     use crate::model::confidence::Confidence;
 
     /// An active analyzer: its `collect` produces raw frames that its `analyze`
-    /// turns into evidence. Proves the two-phase wiring end to end — the frames
+    /// turns into evidence. Proves the two-phase wiring end to end: the frames
     /// gathered in the I/O phase reach the CPU phase intact, as raw bytes.
     struct EchoAnalyzer;
 

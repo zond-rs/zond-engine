@@ -14,7 +14,7 @@
 //! them by index, so a candidate set from either can be matched uniformly.
 //!
 //! A signature's regex is compiled **lazily, once, on first match**, guarded by
-//! a `OnceLock` — never eagerly for the whole set, never per connection. Which
+//! a `OnceLock`, never eagerly for the whole set, never per connection. Which
 //! engine compiles it (the linear `regex` engine, or the bounded `fancy-regex`
 //! backtracking engine for backref/lookaround patterns) is decided by
 //! [`pattern::compile`](super::pattern::compile); see that module for the
@@ -57,13 +57,13 @@ pub struct Signature {
     os: Option<Box<OsMetadata>>,
 
     /// The service's CPE, as the corpus writes it: either a literal, or a
-    /// template naming `{service.version}` — the one variable any of the 1226
-    /// `service.cpe23` rules uses — resolved against the matched version when the
-    /// signature fires. Absent on a rule that names no platform identifier.
+    /// template naming `{service.version}`, the one variable any of the 1226
+    /// `service.cpe23` rules uses, resolved against the matched version when
+    /// the signature fires. Absent on a rule that names no platform identifier.
     cpe: Option<String>,
 
-    /// A version the signature states outright, filling `{service.version}` for a
-    /// rule whose pattern captures none — an IIS 5.0 banner that says `5.0` in
+    /// A version the signature states outright, filling `{service.version}` for
+    /// a rule whose pattern captures none, an IIS 5.0 banner that says `5.0` in
     /// prose the regex does not group.
     service_version: Option<String>,
 }
@@ -80,10 +80,10 @@ fn metadata_value(rule: &MatchRule, key: &str) -> Option<String> {
 /// Resolves a `service.cpe23` template against `version`.
 ///
 /// The corpus uses exactly one variable, `{service.version}`; a literal CPE is
-/// returned unchanged. A template whose variable has no version to fill resolves
-/// to [`None`], because a CPE ending in an empty version — `cpe:/a:perl:perl:` —
-/// is worse than none: a consumer tries to match on it and matches the wrong
-/// thing.
+/// returned unchanged. A template whose variable has no version to fill
+/// resolves to [`None`], because a CPE ending in an empty version,
+/// `cpe:/a:perl:perl:`, is worse than none: a consumer tries to match on it and
+/// matches the wrong thing.
 fn resolve_service_cpe(template: &str, version: Option<&str>) -> Option<String> {
     const VERSION: &str = "{service.version}";
     if !template.contains(VERSION) {
@@ -93,7 +93,7 @@ fn resolve_service_cpe(template: &str, version: Option<&str>) -> Option<String> 
 }
 
 impl Signature {
-    /// Builds a signature from a rule owned by `service`. Stores metadata only —
+    /// Builds a signature from a rule owned by `service`. Stores metadata only:
     /// no regex is compiled until [`Signature::identify`] is first called.
     pub fn new(service: &str, rule: &MatchRule) -> Self {
         Self {
@@ -146,10 +146,10 @@ impl Signature {
     /// [`MatchQuality`] for ranking it against other signatures that match the
     /// same response. `None` if the pattern does not match.
     ///
-    /// `attested_by` says what kind of text this is — a daemon's banner, a
-    /// management agent's own description of its machine — and decides what a
-    /// match is worth as evidence *about the host*. It does not touch the service
-    /// reading, which is the same match either way.
+    /// `attested_by` says what kind of text this is, a daemon's banner, a
+    /// management agent's own description of its machine, and decides what a
+    /// match is worth as evidence *about the host*. It does not touch the
+    /// service reading, which is the same match either way.
     pub fn identify(&self, response: &str, attested_by: OsSource) -> Option<Match> {
         // Capture groups are collected only for a signature whose operating-system
         // metadata has templates to fill from them. Most have neither, and this
@@ -174,7 +174,7 @@ impl Signature {
         };
 
         // Detail counts the identity fields the signature *itself* supplies,
-        // beyond what confidence already conveys — an explicit product and an
+        // beyond what confidence already conveys, an explicit product and an
         // explicit vendor. It breaks ties between equal-confidence matches so a
         // signature that names a product outranks a bare protocol match.
         let detail = self.product.is_some() as u8 + self.vendor.is_some() as u8;
@@ -182,12 +182,12 @@ impl Signature {
         // A signature that names no product leaves none. Filling it with the
         // service name would put "dns" in a field meaning "the software behind
         // the protocol", which is a different claim and not one anything
-        // established — the `detail` score above already reads
-        // `self.product.is_some()` to rank a rule that does name one, so nothing
-        // here depends on the field being populated.
-        // The platform identifier the corpus carries beside the product, resolved
-        // against the version this match found — the field CVE correlation joins
-        // on, and one a report consumer such as DefectDojo reads directly.
+        // established. The `detail` score above already reads
+        // `self.product.is_some()` to rank a rule that does name one, so
+        // nothing here depends on the field being populated. The platform
+        // identifier the corpus carries beside the product, resolved against
+        // the version this match found, the field CVE correlation joins on, and
+        // one a report consumer such as DefectDojo reads directly.
         let cpe = self.cpe.as_deref().and_then(|template| {
             resolve_service_cpe(
                 template,
@@ -238,8 +238,8 @@ pub struct Match {
 ///
 /// `confidence` is compared first: a captured version (`Strong`) is the
 /// strongest identity signal, so it outranks any versionless match regardless
-/// of other fields. Within one confidence level, `detail` — the number of
-/// identity fields the signature supplies (an explicit product, a vendor) —
+/// of other fields. Within one confidence level, `detail`, the number of
+/// identity fields the signature supplies (an explicit product, a vendor),
 /// breaks the tie, so a specific `Server: Apache` match outranks a bare
 /// `HTTP/1.1` protocol match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn a_service_cpe_is_resolved_carried_and_dropped_when_unfillable() {
-        // A template resolves against the captured version — the wiring that was
+        // A template resolves against the captured version, the wiring that was
         // dropping 1226 corpus CPEs before Evidence.cpe was ever set.
         let ev = Signature::new(
             "http",
@@ -376,9 +376,9 @@ mod tests {
     /// A rule that recognised the protocol and nothing else names no product.
     ///
     /// The service name is what protocol was spoken; the product is what
-    /// software spoke it. Copying the first into the second reports `dns` as the
-    /// software behind DNS, which is a claim nothing made — and one that then
-    /// disagrees with every other scanner's answer for the same port.
+    /// software spoke it. Copying the first into the second reports `dns` as
+    /// the software behind DNS, which is a claim nothing made, and one that
+    /// then disagrees with every other scanner's answer for the same port.
     #[test]
     fn bare_match_is_probable_and_names_no_product() {
         let sig = Signature::new("http", &rule("^HTTP/1.1", None, None));

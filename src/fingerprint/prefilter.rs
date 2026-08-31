@@ -10,7 +10,7 @@
 //!
 //! Selecting matching signatures on a non-standard port means matching against
 //! the *whole* set. Running every regex would be O(number of signatures) per
-//! response — fine at a few thousand, not future-proof as the set grows. A
+//! response, which is fine at a few thousand and not as the set grows. A
 //! [`Prefilter`] narrows the field to a small candidate set first, so global
 //! matching stays sublinear in the size of the database.
 //!
@@ -25,8 +25,8 @@
 //!
 //! ### Soundness
 //!
-//! Only *required* literals are used — extracted from a pattern's prefix
-//! (handling alternations), its longest guaranteed inner run, or its suffix.
+//! Only required literals are used, extracted from a pattern's prefix (handling
+//! alternations), its longest guaranteed inner run, or its suffix.
 //! Each is a substring every match must contain, so a signature is never
 //! wrongly excluded. This is checked against the recorded-example corpus
 //! (`corpus.rs`): every example that matches its pattern must select that

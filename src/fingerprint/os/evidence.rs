@@ -21,10 +21,10 @@
 //! with each other by construction. Scoring them separately would triple-count
 //! one observation.
 //!
-//! So [`classify`](super::classify) already collapses a whole reply into **one**
-//! item. What arrives here is one item per genuinely distinct source, and
-//! independence is claimed only between those — a stack, a banner, a hardware
-//! address — where it is close enough to true to build on.
+//! So [`classify`](super::classify) already collapses a whole reply into
+//! one item. What arrives here is one item per genuinely distinct source,
+//! and independence is claimed only between those, a stack, a banner, a
+//! hardware address, where it is close enough to true to build on.
 //!
 //! That is also why the arithmetic below is [noisy-OR] rather than a sum. Two
 //! sources agreeing raise confidence without either being trusted more than it
@@ -34,11 +34,11 @@
 //!
 //! ## Two axes, because they are two questions
 //!
-//! What a machine *runs* and what it *is* are independent, and a source may know
-//! either without the other. A hop counter says infrastructure and never a
+//! What a machine *runs* and what it *is* are independent, and a source may
+//! know either without the other. A hop counter says infrastructure and never a
 //! vendor; an SNMP agent names a printer down to its firmware and never its
 //! kernel. So the family is one axis, the device class another, and a source
-//! with nothing to say on either simply says nothing there — see
+//! with nothing to say on either simply says nothing there; see
 //! [`OsEvidence::family`].
 //!
 //! ## Disagreement lowers the answer rather than picking a winner
@@ -64,7 +64,7 @@ use super::verdict::{MIN_REPORTABLE_ACCURACY, OsVerdict};
 /// something none of its sources said.
 ///
 /// Above the 85 that marks high confidence, so agreement between genuinely
-/// independent sources can still get there — that is the whole point of having
+/// independent sources can still get there, that is the whole point of having
 /// more than one. Below 100, which stays reserved for a host that identified
 /// itself rather than one that was worked out.
 pub const MAX_FUSED_ACCURACY: u8 = 95;
@@ -79,11 +79,11 @@ pub const MAX_FUSED_ACCURACY: u8 = 95;
 ///
 /// Only the sources that [name a family](OsEvidence::family) vote on it. The
 /// rest fold their finer parts into whichever family wins and never count
-/// against it — which is the difference between a second opinion and a second
+/// against it, which is the difference between a second opinion and a second
 /// question. A hop counter of 255 says *network device*; an SNMP agent saying
 /// `Brother NC-8700w` says which one. Scored as rival families those two
-/// readings annihilated each other and the host was reported as nothing, on real
-/// hardware, with both answers sitting in the record.
+/// readings annihilated each other and the host was reported as nothing, on
+/// real hardware, with both answers sitting in the record.
 ///
 /// Where nobody names a family the abstentions are the whole answer, and it is
 /// reported without one.
@@ -132,7 +132,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     // A family that cannot clear the floor is not an answer, but it is also not
     // the only thing on the table. What abstained never competed for it, was
     // never reduced by the dissent that sank it, and can still be worth
-    // reporting on its own — an agent naming a make and model outright while two
+    // reporting on its own, an agent naming a make and model outright while two
     // stack rules argue about what class of box it is. Dropping the whole
     // verdict there would discard the best-attested thing the scan learned
     // because of a quarrel it took no part in.
@@ -163,8 +163,8 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     // dissenting: a stack rule can name a family and never a release, so
     // counting its silence as disagreement would mean a banner that read
     // "Ubuntu 22.04" off the wire loses it the moment a stack rule corroborates
-    // the family — more evidence producing a less specific answer. Two sources
-    // naming *different* values still yield nothing.
+    // the family, which is more evidence producing a less specific answer. Two
+    // sources naming different values still yield nothing.
     let agreed = |part: fn(&OsEvidence) -> &Option<String>| -> Option<String> {
         let mut stated = items.iter().filter_map(|item| part(item).as_deref());
         let candidate = stated.next()?;
@@ -216,7 +216,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     // Every source can speak to a family, and `accuracy` above is their
     // agreement about it. A release is usually named by exactly one of them, so
     // reporting it under that figure launders one weaker claim through the
-    // agreement of several stronger ones — measured, on a real host: two sources
+    // agreement of several stronger ones, measured, on a real host: two sources
     // agreeing on Linux scored 84 while the release rested on a single banner
     // worth 55.
     //
@@ -272,8 +272,8 @@ fn percent(probability: f32) -> u8 {
 /// least one* of them is right.
 ///
 /// `1 - Π(1 - p)`. Two sources at 0.5 give 0.75 rather than 1.0, and nothing
-/// short of a certain source ever reaches 1 — which is the property that matters,
-/// because a stack of agreeing guesses must not become a fact.
+/// short of a certain source ever reaches 1, which is the property that
+/// matters, because a stack of agreeing guesses must not become a fact.
 fn combine(confidences: impl Iterator<Item = f32>) -> f32 {
     let doubt = confidences
         .map(|confidence| 1.0 - confidence.clamp(0.0, 1.0))
@@ -406,8 +406,8 @@ mod tests {
     /// A hardware vendor is read out of an address registration and has no way
     /// to hold an opinion about a distribution. Counting its silence as
     /// disagreement would mean the only source capable of naming one loses the
-    /// name the moment anything else corroborates the family — more evidence
-    /// producing a less specific answer, which is the wrong direction for
+    /// name the moment anything else corroborates the family, which is more
+    /// evidence producing a less specific answer and the wrong direction for
     /// evidence to move.
     ///
     /// This is the same rule the matcher already applies one layer down, where a
@@ -429,9 +429,9 @@ mod tests {
     }
 
     /// Abstention is not agreement with anything, though. Two sources naming
-    /// *different* products cannot both be right, and nothing here can say which
-    /// is — so the answer keeps the family they share and drops the part they
-    /// contest.
+    /// *different* products cannot both be right, and nothing here can say
+    /// which is, so the answer keeps the family they share and drops the part
+    /// they contest.
     #[test]
     fn two_sources_naming_different_products_keep_neither() {
         let mut stack = evidence("Linux", 0.65, OsSource::TcpStack);
@@ -489,7 +489,7 @@ mod tests {
     }
 
     /// And the abstention carries the answer where nothing else can name a
-    /// family at all — a device on a segment whose stack said nothing.
+    /// family at all, a device on a segment whose stack said nothing.
     #[test]
     fn an_abstention_alone_is_still_an_answer() {
         let resolved = resolve(vec![a_named_appliance()]).expect("named");

@@ -15,13 +15,13 @@
 //!
 //! ## Why we complete a real handshake
 //!
-//! In TLS 1.3 the server's `Certificate` message is *encrypted*, so a cert cannot
-//! be scraped by parsing raw handshake records — the handshake must actually
-//! complete. We therefore run a real rustls client, but with a verifier that
-//! [accepts any certificate](AcceptAnyServerCert): a scanner wants the *presented*
-//! chain, not a trust decision, and the ports we probe routinely serve expired,
-//! self-signed, or wrong-host certs that a validating client would reject before
-//! we ever see them.
+//! In TLS 1.3 the server's `Certificate` message is *encrypted*, so a cert
+//! cannot be scraped by parsing raw handshake records, the handshake must
+//! actually complete. We therefore run a real rustls client, but with a
+//! verifier that [accepts any certificate](AcceptAnyServerCert): a scanner
+//! wants the *presented* chain, not a trust decision, and the ports we probe
+//! routinely serve expired, self-signed, or wrong-host certs that a validating
+//! client would reject before we ever see them.
 //!
 //! ## Crypto provider
 //!
@@ -157,7 +157,7 @@ fn connector() -> &'static TlsConnector {
     })
 }
 
-/// Handshake on a port where TLS is *expected* — an implicit-TLS port. Patient
+/// Handshake on a port where TLS is *expected*, an implicit-TLS port. Patient
 /// (see [`TLS_HANDSHAKE_TIMEOUT`]).
 pub async fn handshake(stream: TcpStream, peer: IpAddr) -> Option<(TlsTunnel, TlsInfo)> {
     handshake_within(stream, peer, TLS_HANDSHAKE_TIMEOUT).await
@@ -187,8 +187,8 @@ pub async fn speculative_handshake(
 /// # What that costs, and why it is not fixed here
 ///
 /// On a shared address the certificate recorded is the fallback one and not the
-/// operator's, and a growing number of hosts refuse a no-SNI handshake outright
-/// — which reads, from a scan, as a port that does not speak TLS.
+/// operator's, and a growing number of hosts refuse a no-SNI handshake
+/// outright, which reads, from a scan, as a port that does not speak TLS.
 ///
 /// This used to say the engine scans by IP, as though that settled it. It does
 /// not: [`resolve`](crate::resolve) turns names into addresses before a scan and
@@ -268,15 +268,15 @@ const LEGACY_CLIENT_HELLO: &[u8] = &[
 
 /// What a peer that refused a modern handshake turns out to speak.
 ///
-/// **rustls implements TLS 1.2 and 1.3 and deliberately implements neither 1.0
-/// nor 1.1**, so a server offering only the older versions fails
+/// rustls implements TLS 1.2 and 1.3 and implements neither 1.0
+/// nor 1.1, so a server offering only the older versions fails
 /// [`handshake`] and is reported as a port that answered nothing at all. For a
 /// security scanner that is the wrong way round: "this host still negotiates TLS
 /// 1.0" is among the most actionable single facts a scan can report, and it was
 /// the one configuration this engine could not see.
 ///
 /// One ClientHello and the version out of the answer. No tunnel comes back and
-/// none is wanted — the finding *is* the version, and nothing is worth carrying
+/// none is wanted, the finding *is* the version, and nothing is worth carrying
 /// over a channel this weak anyway.
 ///
 /// `None` where the peer said nothing, or said something that is not TLS. A
@@ -322,7 +322,7 @@ async fn legacy_exchange(mut stream: TcpStream) -> Option<&'static str> {
 /// ```
 fn server_version(record: &[u8]) -> Option<&'static str> {
     // Record header: content type, version, length. The record's own version is
-    // not the answer — servers write the negotiated one in the ServerHello and
+    // not the answer: servers write the negotiated one in the ServerHello and
     // a conservative one here.
     let content_type = *record.first()?;
 
@@ -360,7 +360,7 @@ fn version_name(version: u16) -> Option<&'static str> {
 
 /// The negotiated version under the name the RFCs give it.
 ///
-/// Spelled out rather than taken from `Debug`, which renders `TLSv1_3` — a
+/// Spelled out rather than taken from `Debug`, which renders `TLSv1_3`, a
 /// string no reader of a report expects and no other tool prints. Only the two
 /// versions [`connector`] offers are named; anything else is reported as
 /// unknown rather than guessed at.
@@ -393,12 +393,12 @@ mod tests {
         assert!(!is_tls_port(22));
     }
 
-    /// **A server that speaks only TLS 1.0 is a finding, not a silence.**
+    /// A server that speaks only TLS 1.0 is a finding, not a silence.
     ///
-    /// rustls implements 1.2 and 1.3 and deliberately implements neither 1.0 nor
-    /// 1.1, so such a server fails the modern handshake. Before this probe it
-    /// was reported as a port that answered nothing, which loses the
-    /// identification and the finding together — and "this host still negotiates
+    /// rustls implements 1.2 and 1.3 and implements neither 1.0
+    /// nor 1.1, so such a server fails the modern handshake. Before this probe
+    /// it was reported as a port that answered nothing, which loses the
+    /// identification and the finding together, and "this host still negotiates
     /// TLS 1.0" is among the most actionable things a scan can say.
     #[test]
     fn a_legacy_server_hello_names_its_version() {

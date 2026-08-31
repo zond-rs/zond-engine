@@ -19,7 +19,7 @@
 //! [`no_example_matches_another_familys_rule`] catches the failure that is
 //! *silent*. A rule with too few predicates matches hosts it was never written
 //! for and names them confidently, and nothing downstream can tell that from a
-//! detection that worked — the report says "Linux" either way. The build refuses
+//! detection that worked, the report says "Linux" either way. The build refuses
 //! a rule with **no** predicates; only running each example against every other
 //! family's rules catches one with merely too few.
 //!
@@ -39,8 +39,8 @@ use super::signature::{Example, Provenance, ReplyKind};
 /// Builds the observation an example describes.
 ///
 /// The option layout is reconstructed from its letters rather than re-parsed
-/// from bytes, because an example records what was *observed* — the values a
-/// host answered with — and not the frame they arrived in. The parse from bytes
+/// from bytes, because an example records what was *observed*, the values a
+/// host answered with, and not the frame they arrived in. The parse from bytes
 /// has its own tests, against option lists recorded verbatim off the wire; this
 /// tests the rules.
 fn observation_from(example: &Example) -> StackReply {
@@ -208,12 +208,13 @@ fn every_example_matches_its_own_rule() {
 /// Linux builds sharing a shape is a fact about Linux, not a defect. Across
 /// families it is always wrong.
 ///
-/// **Inert while the corpus holds one family**, which it does today: every pair
-/// is skipped and this passes without comparing anything. That is not a reason to
-/// drop it — it starts working the moment a second family is measured, which is
-/// exactly when it is needed — but a test that cannot fail proves nothing while
-/// it cannot, so [`the_cross_family_check_catches_a_rule_that_is_too_loose`]
-/// exercises the same comparison against a rule built to fail it.
+/// Inert while the corpus holds one family, which it does today: every pair
+/// is skipped and this passes without comparing anything. That is not a reason
+/// to drop it, it starts working the moment a second family is measured, which
+/// is exactly when it is needed, but a test that cannot fail proves nothing
+/// while it cannot, so
+/// [`the_cross_family_check_catches_a_rule_that_is_too_loose`] exercises the
+/// same comparison against a rule built to fail it.
 #[test]
 fn no_example_matches_another_familys_rule() {
     let db = RuleDb::global();
@@ -243,12 +244,12 @@ fn no_example_matches_another_familys_rule() {
 /// A rule claiming to be **measured** must ship the observation it was measured
 /// from.
 ///
-/// This is where the honesty guarantee actually lives, now that the corpus mixes
-/// two kinds of rule. A published rule is allowed to have no example — there is
-/// no local observation to record, which is precisely what `published` means —
-/// but a rule asserting somebody saw this on real hardware has to say what they
-/// saw, or the claim is unfalsifiable and scores higher than a published rule for
-/// no reason anyone can check.
+/// This is where the honesty guarantee actually lives, now that the corpus
+/// mixes two kinds of rule. A published rule is allowed to have no example,
+/// there is no local observation to record, which is precisely what `published`
+/// means, but a rule asserting somebody saw this on real hardware has to say
+/// what they saw, or the claim is unfalsifiable and scores higher than a
+/// published rule for no reason anyone can check.
 #[test]
 fn every_measured_rule_ships_what_it_measured() {
     let mut offenders = Vec::new();
@@ -267,9 +268,9 @@ fn every_measured_rule_ships_what_it_measured() {
 
 /// A published rule must say where its values came from.
 ///
-/// Its whole cost is that nobody here has confirmed it, so the note is what lets
-/// the next person confirm or correct it — and what stops a guess from being
-/// indistinguishable from a documented default six months later.
+/// Its whole cost is that nobody here has confirmed it, so the note is what
+/// lets the next person confirm or correct it, and what stops a guess from
+/// being indistinguishable from a documented default six months later.
 #[test]
 fn every_published_rule_says_what_it_rests_on() {
     let mut offenders = Vec::new();
@@ -289,7 +290,7 @@ fn every_published_rule_says_what_it_rests_on() {
 
 /// The families the corpus covers, pinned so growth is a deliberate edit.
 ///
-/// Not a claim that each has been *verified* — most are published defaults, and
+/// Not a claim that each has been verified: most are published defaults, and
 /// [`every_measured_rule_ships_what_it_measured`] is what polices that
 /// distinction. This is here so that adding or losing a family is something
 /// somebody chose rather than something that drifted in.
@@ -375,8 +376,8 @@ fn a_handshake_rule_is_never_satisfied_by_a_reset() {
 /// Proof that the check above has teeth, since the corpus cannot currently give
 /// it any.
 ///
-/// **A rule that reads a series is checked against its example the way the
-/// active path would run it.**
+/// A rule that reads a series is checked against its example the way the active
+/// path would run it.
 ///
 /// A series rule is matched only through `matches_with_series`; against the
 /// single-reply matcher it fails by the ordinary "the peer did not say" rule.
@@ -465,10 +466,10 @@ fn an_example_naming_a_class_nothing_produces_is_caught() {
     let _ = series_from(&example);
 }
 
-/// Builds the mistake it exists to catch — a rule naming a different family and
-/// stating one weak predicate, so it matches almost any handshake — and asserts
-/// the comparison flags it. Without this, a bug in `rules::matches` that made it
-/// return `false` unconditionally would leave every corpus test passing.
+/// Builds the mistake it exists to catch, a rule naming a different family and
+/// stating one weak predicate, so it matches almost any handshake, and asserts
+/// the comparison flags it. Without this, a bug in `rules::matches` that made
+/// it return `false` unconditionally would leave every corpus test passing.
 #[test]
 fn the_cross_family_check_catches_a_rule_that_is_too_loose() {
     use super::signature::{MatchRule, OsDefinition, OsIdentity, Predicate};
@@ -516,12 +517,13 @@ fn the_cross_family_check_catches_a_rule_that_is_too_loose() {
     // declined by all of them.
     //
     // The mutation has to be one no rule can accept, which is narrower than it
-    // sounds. Moving the *window* is not enough — the BSD and Darwin rules state
+    // sounds. Moving the *window* is not enough, the BSD and Darwin rules state
     // no window predicate at all, because what identifies those families is the
-    // order they write their options in, and a rule is right not to test a field
-    // it is not about. Nor is moving the hop counter to 255, which is precisely
-    // what the network-device rule looks for. So this changes the option layout
-    // to one nothing emits, and leaves the counter where no rule keys on it.
+    // order they write their options in, and a rule is right not to test a
+    // field it is not about. Nor is moving the hop counter to 255, which is
+    // precisely what the network-device rule looks for. So this changes the
+    // option layout to one nothing emits, and leaves the counter where no rule
+    // keys on it.
     let mut elsewhere = match observed.clone() {
         StackReply::Tcp(observed) => observed,
         StackReply::Echo(_) => unreachable!("the example was chosen as a handshake"),
@@ -543,10 +545,10 @@ fn the_cross_family_check_catches_a_rule_that_is_too_loose() {
     );
 }
 
-/// **The corpus is published.** `assets/` is deliberately not excluded from the
-/// packaged crate — `build.rs` compiles the rules out of it, so a package without
-/// it does not build — which means every word authored there goes to crates.io
-/// and stays there.
+/// The corpus is published. `assets/` is not excluded from the
+/// packaged crate, `build.rs` compiles the rules out of it, so a package
+/// without it does not build, which means every word authored there goes to
+/// crates.io and stays there.
 ///
 /// A rule's provenance has to say what *kind* of machine was measured, because
 /// that is what makes the rule attributable. It must not say *whose*: an address,
@@ -630,18 +632,18 @@ fn an_echo_reply_alone_can_name_a_host() {
     assert_eq!(verdict.label(), "Network device");
 }
 
-/// A ping from a Unix-alike is deliberately **not** named, and this test is the
+/// A ping from a Unix-alike is not named, and this test is the
 /// record of why.
 ///
-/// Linux, macOS and the BSDs all start the counter at 64, so on an echo reply —
-/// which carries no options, no window and no sequence number — there is nothing
+/// Linux, macOS and the BSDs all start the counter at 64, so on an echo reply,
+/// which carries no options, no window and no sequence number, there is nothing
 /// left to tell them apart. A rule keyed on 64 alone would name every one of
 /// them as whichever family it happened to claim, and would be confidently
 /// wrong for most hosts it matched. Reporting nothing is the correct answer.
 ///
 /// This fails the moment somebody adds that rule, which is the intent: the fix
-/// is a second field the reply actually carries — whether a non-zero request
-/// code comes back, whether the payload returns unchanged — not a looser rule.
+/// is a second field the reply actually carries, whether a non-zero request
+/// code comes back, whether the payload returns unchanged, not a looser rule.
 #[test]
 fn an_echo_reply_from_a_unix_hop_counter_names_nothing() {
     let unix_like = echo_reply(64);

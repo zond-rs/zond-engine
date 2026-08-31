@@ -10,15 +10,15 @@
 //!
 //! Usually nothing, and saying so is most of this module's job.
 //!
-//! ## Only a vendor whose hardware implies something tells you anything
+//! ## Only a vendor whose hardware implies something says anything
 //!
 //! A hardware address names whoever registered the address block. For a machine
 //! whose maker also writes what runs on it, that is a real signal: an address
 //! belonging to Apple is on Apple hardware, and Apple hardware runs Apple's
 //! operating system unless somebody went out of their way. For a commodity
-//! network adapter it is no signal at all — an Intel or Realtek chip is in
-//! machines running every operating system there is, and a laptop vendor's block
-//! says who assembled the case.
+//! network adapter it is no signal at all, an Intel or Realtek chip is in
+//! machines running every operating system there is, and a laptop vendor's
+//! block says who assembled the case.
 //!
 //! So this maps the first kind and **declines the second**, rather than reaching
 //! for the nearest plausible answer. Declining is the whole value: an OUI source
@@ -41,7 +41,7 @@
 //! ## Randomised addresses have no vendor at all
 //!
 //! Measured on a labelled segment: **five of eight hosts answered from a
-//! locally-administered address** — one made up by the device rather than
+//! locally-administered address**, one made up by the device rather than
 //! assigned from a registered block. Address randomisation is a privacy default
 //! on modern mobile platforms, and a vendor lookup against such an address
 //! returns nothing, or worse, a coincidental match against whoever holds the
@@ -67,7 +67,7 @@ use crate::model::host::OsSource;
 /// What a vendor match contributes on its own.
 ///
 /// Deliberately below the floor [`resolve`](super::resolve) reports at, so this
-/// source can never name a host by itself. Hardware and software are separable —
+/// source can never name a host by itself. Hardware and software are separable,
 /// the address says who made the machine, and somebody may have installed
 /// anything on it. What it is good for is confirming a reading taken from the
 /// wire, and for that it does not need to be large.
@@ -77,16 +77,16 @@ pub const CONFIDENCE: f32 = 0.3;
 /// that implies.
 ///
 /// Matched case-insensitively on a prefix of the registered company name, which
-/// is how these appear in the OUI registry — "Apple, Inc." and "Apple" are the
-/// same organisation across decades of registrations.
+/// is how these appear in the OUI registry, where "Apple, Inc." and "Apple" are
+/// the same organisation across decades of registrations.
 ///
-/// **The list is short on purpose.** Every entry is a vendor who makes both the
+/// The list is short on purpose. Every entry is a vendor who makes both the
 /// machine and what runs on it; the moment that stops being true the entry is a
-/// guess wearing the clothes of a measurement. Commodity adapter and PC makers —
-/// Intel, Realtek, Broadcom, Dell, Lenovo, HP — are deliberately absent, because
+/// guess wearing the clothes of a measurement. Commodity adapter and PC makers,
+/// Intel, Realtek, Broadcom, Dell, Lenovo, HP, are absent, because
 /// their silicon is in machines running everything.
 const VENDOR_FAMILIES: &[(&str, &str)] = &[
-    // Apple hardware runs Apple's systems. Which one — macOS, iOS, iPadOS — the
+    // Apple hardware runs Apple's systems. Which one, macOS, iOS, iPadOS, the
     // address cannot say, and the stack cannot either: they share a kernel.
     ("apple", "macOS"),
     // The Foundation's boards are sold to run Linux and overwhelmingly do.
@@ -96,8 +96,8 @@ const VENDOR_FAMILIES: &[(&str, &str)] = &[
 /// Vendors whose blocks are attached to network equipment, and the class that
 /// implies.
 ///
-/// **A class, not a family, and the difference is the whole reason this table is
-/// separate from the one above.** These vendors ship an operating system too,
+/// A class, not a family, and the difference is the whole reason this table is
+/// separate from the one above. These vendors ship an operating system too,
 /// but a great many of their boxes run Linux and say so out loud over SSH. Read
 /// as a family, `Network device` runs against `Linux` on the ballot
 /// [`resolve`](super::resolve) settles by vote and both lose.
@@ -126,7 +126,7 @@ const VENDOR_DEVICES: &[(&str, &str)] = &[
 /// who ships the system on its own machines, a device class for one whose blocks
 /// are attached to network equipment.
 ///
-/// `None` — which is the common answer — when the address was randomised and has
+/// `None`, which is the common answer, when the address was randomised and has
 /// no vendor, when the vendor is in neither table, or when no hardware was
 /// recorded at all.
 ///
@@ -167,19 +167,19 @@ pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
         // used to carry and it reads like the obvious value for it.
         //
         // `vendor` here means whoever publishes the *operating system*, and an
-        // address block establishes whoever built the *hardware*. Those coincide
-        // for Apple and come apart the moment they do not: a Raspberry Pi runs
-        // Debian, so the address said `Raspberry Pi Trading Ltd`, the SSH banner
-        // said `Debian`, and the resolver — correctly, given what it was told —
-        // treated two answers to two different questions as a contradiction and
-        // kept neither. The host was reported as `Linux 12.0`: a version number
-        // no Linux has, because the name that belonged with it had been thrown
-        // away.
+        // address block establishes whoever built the *hardware*. Those
+        // coincide for Apple and come apart the moment they do not: a Raspberry
+        // Pi runs Debian, so the address said `Raspberry Pi Trading Ltd`, the
+        // SSH banner said `Debian`, and the resolver, correctly, given what it
+        // was told, treated two answers to two different questions as a
+        // contradiction and kept neither. The host was reported as `Linux
+        // 12.0`: a version number no Linux has, because the name that belonged
+        // with it had been thrown away.
         //
         // What an address block genuinely supports is one broad claim, which is
         // what this evidence makes and all it makes: a family for a vendor who
         // ships the system, a device class for one whose boxes are
-        // infrastructure. The company is not lost — it is recorded on the host's
+        // infrastructure. The company is not lost, it is recorded on the host's
         // hardware, where it describes the thing it is actually about, and this
         // evidence line still names it.
         vendor: None,
@@ -229,7 +229,7 @@ mod tests {
         }
     }
 
-    /// **The regression this split exists for.**
+    /// The regression this split exists for.
     ///
     /// A Linux-based router, switch or access point announces `Debian 12` over
     /// SSH and answers from a registered infrastructure block. Both observations

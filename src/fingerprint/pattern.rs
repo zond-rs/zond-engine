@@ -11,18 +11,18 @@
 //! One [`CompiledPattern`] is a signature's compiled regex, built by whichever
 //! engine can handle it. Two engines back it, tried in order:
 //!
-//! * **[`CompiledPattern::Fast`]** — the linear-time `regex` (RE2) engine. The
+//! * **[`CompiledPattern::Fast`]**, the linear-time `regex` (RE2) engine. The
 //!   primary: it does not backtrack, so its match time is linear in the input
 //!   no matter the pattern. Every pattern it accepts runs here.
-//! * **[`CompiledPattern::Fancy`]** — the `fancy-regex` backtracking engine,
+//! * **[`CompiledPattern::Fancy`]**, the `fancy-regex` backtracking engine,
 //!   reached *only* when the fast engine rejects a pattern (backreferences,
 //!   lookaround). Backtracking can be superlinear, so it is bounded by a
 //!   backtrack-step limit ([`BACKTRACK_LIMIT`]): a match that would exceed it is
 //!   reported as "no match" rather than allowed to run away.
 //!
 //! Trying the fast engine first keeps the overwhelming majority of signatures on
-//! the linear path and confines the backtracking engine — and its
-//! runtime-failure semantics — to the few patterns that genuinely need it.
+//! the linear path and confines the backtracking engine, and its
+//! runtime-failure semantics, to the few patterns that genuinely need it.
 //!
 //! ## Why a step limit, not a wall clock
 //!
@@ -38,12 +38,12 @@
 //!
 //! ## Shared with the build
 //!
-//! This module is deliberately free of any crate-internal dependency (logging,
+//! This module is free of any crate-internal dependency (logging,
 //! models, ...) so `build.rs` can `include!` it and validate authored patterns
 //! with the *exact* engine-selection logic the runtime uses. The build and the
-//! runtime therefore can never disagree on which patterns are accepted — a
-//! signature that compiles at build time is one the runtime can compile, and a
-//! signature the build rejects never ships.
+//! runtime therefore cannot disagree on which patterns are accepted: a signature
+//! that compiles at build time is one the runtime can compile, and a signature
+//! the build rejects never ships.
 
 use fancy_regex::RegexBuilder as FancyRegexBuilder;
 use regex::{Regex, RegexBuilder};
@@ -61,9 +61,9 @@ const BACKTRACK_LIMIT: usize = 1_000_000;
 /// module docs for how the engine is chosen and bounded.
 #[derive(Debug)]
 pub enum CompiledPattern {
-    /// The linear-time `regex` engine — used for every pattern it accepts.
+    /// The linear-time `regex` engine, used for every pattern it accepts.
     Fast(Regex),
-    /// The bounded `fancy-regex` backtracking engine — used only for patterns
+    /// The bounded `fancy-regex` backtracking engine, used only for patterns
     /// the fast engine rejects (backreferences, lookaround).
     Fancy(fancy_regex::Regex),
 }
@@ -91,8 +91,8 @@ impl std::fmt::Display for PatternError {
 /// A signature's successful match: the text of its version capture group, if the
 /// signature asked for one and it was present.
 ///
-/// `allow(dead_code)`: read by the runtime matcher, not `build.rs` — this module
-/// is shared by both, and each uses a different subset.
+/// `allow(dead_code)`: read by the runtime matcher rather than `build.rs`. This
+/// module is shared by both, and each uses a different subset.
 #[allow(dead_code)]
 pub struct PatternMatch {
     /// The captured version string. `None` means the pattern matched but named
@@ -103,8 +103,8 @@ pub struct PatternMatch {
     /// for them via
     /// [`identify_with_captures`](CompiledPattern::identify_with_captures).
     ///
-    /// `None` means they were not requested, never that the pattern had none —
-    /// collecting them allocates, and the rules that need them are a minority of
+    /// `None` means they were not requested, never that the pattern had none.
+    /// Collecting them allocates, and the rules that need them are a minority of
     /// a corpus matched thousands of times per banner.
     pub captures: Option<Vec<String>>,
 }
@@ -141,8 +141,9 @@ impl CompiledPattern {
     /// validate a signature's `version_group` at build time against both engines
     /// uniformly.
     ///
-    /// `allow(dead_code)`: consumed by `build.rs` (validation), not the runtime
-    /// matcher — this module is shared by both, and each uses a different subset.
+    /// `allow(dead_code)`: consumed by `build.rs` validation rather than the
+    /// runtime matcher. This module is shared by both, and each uses a different
+    /// subset.
     #[allow(dead_code)]
     pub fn captures_len(&self) -> usize {
         match self {
@@ -155,8 +156,9 @@ impl CompiledPattern {
     /// skipped. Lets a build check that a `(?<name>…)` a `bind` expects actually
     /// exists in the pattern, without text to match it against.
     ///
-    /// `allow(dead_code)`: consumed by `build.rs` (validation), not the runtime
-    /// matcher — this module is shared by both, and each uses a different subset.
+    /// `allow(dead_code)`: consumed by `build.rs` validation rather than the
+    /// runtime matcher. This module is shared by both, and each uses a different
+    /// subset.
     #[allow(dead_code)]
     pub fn capture_names(&self) -> Vec<String> {
         match self {
@@ -170,7 +172,7 @@ impl CompiledPattern {
     }
 
     /// The value of the named capture group `name`, if the pattern matches `text`
-    /// and the group participated — how a Tier-1 `bind` pulls a value out of a
+    /// and the group participated. How a Tier-1 `bind` pulls a value out of a
     /// match by name rather than by numeric index.
     ///
     /// `allow(dead_code)`: consumed by the flow interpreter, not `build.rs`.
@@ -194,11 +196,12 @@ impl CompiledPattern {
     /// `version_group` capture if requested) or `None` if the pattern does not
     /// match.
     ///
-    /// A fancy-engine runtime failure — the backtrack limit or the recursion
-    /// stack being exceeded — is reported as *no match*: the outcome is bounded
-    /// and safe, never a hang. (The linear engine has no such failure mode.)
+    /// A fancy-engine runtime failure, meaning the backtrack limit or the
+    /// recursion stack being exceeded, is reported as no match: the outcome is
+    /// bounded and safe rather than a hang. The linear engine has no such failure
+    /// mode.
     ///
-    /// `allow(dead_code)`: consumed by the runtime matcher, not `build.rs` — this
+    /// `allow(dead_code)`: consumed by the runtime matcher, not `build.rs`. This
     /// module is shared by both, and each uses a different subset.
     #[allow(dead_code)]
     pub fn identify(&self, text: &str, version_group: Option<u8>) -> Option<PatternMatch> {
@@ -208,7 +211,7 @@ impl CompiledPattern {
     /// [`identify`](Self::identify), optionally keeping every capture group.
     ///
     /// The groups are wanted only by the rules that carry `{capture:N}` templates
-    /// in their metadata, which is a minority of a large corpus — so collecting
+    /// in their metadata, which is a minority of a large corpus, so collecting
     /// them is asked for rather than always done. On the hot path of a scan that
     /// matches thousands of signatures against a banner, the allocation per match
     /// is the whole cost of this function.
@@ -315,7 +318,7 @@ mod tests {
     fn catastrophic_backtracking_is_bounded_not_a_hang() {
         // A backref forces the fancy engine; the nested quantifier makes the
         // match backtrack. With no terminating 'c' the engine would explore
-        // exponentially — the step limit turns that into a prompt "no match".
+        // exponentially, and the step limit turns that into a prompt no-match.
         let compiled = compile(r"(a+)+\1c", LIMIT).expect("compiles via fancy");
         assert!(matches!(compiled, CompiledPattern::Fancy(_)));
         let adversarial = "a".repeat(40);

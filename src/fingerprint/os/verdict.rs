@@ -9,7 +9,7 @@
 //! # Turning matched rules into an answer
 //!
 //! [`classify`] takes an observation, asks the rule database about it, and
-//! returns what can honestly be said — which is sometimes nothing.
+//! returns what can honestly be said, which is sometimes nothing.
 //!
 //! ## One packet is one piece of evidence, not nine
 //!
@@ -20,8 +20,8 @@
 //! single observation and manufactures confidence out of nothing.
 //!
 //! So a whole observation is matched jointly against a rule and yields **one**
-//! result. Independence is claimed only *between* genuinely different sources —
-//! a stack, a service banner, a hardware address, a DHCP option — where it is
+//! result. Independence is claimed only *between* genuinely different sources,
+//! a stack, a service banner, a hardware address, a DHCP option, where it is
 //! close enough to true to build on. That is phase 5's work and this module is
 //! shaped to receive it: [`OsVerdict`] carries a source and a confidence rather
 //! than a bare name.
@@ -29,12 +29,12 @@
 //! ## Why the ceiling is where it is
 //!
 //! [`MAX_STACK_ACCURACY`] caps what this evidence alone may claim, and it sits
-//! deliberately below the 85 that
+//! below the 85 that
 //! [`OsFingerprint::is_highly_confident`](crate::model::host::OsFingerprint::is_highly_confident)
 //! reads. That threshold is what a caller uses to decide whether to stop and
-//! accept an answer or send something more intrusive, so a number reachable from
-//! one correlated packet would make it meaningless — every host with an open
-//! port would look settled and no further probe would ever be justified.
+//! accept an answer or send something more intrusive, so a number reachable
+//! from one correlated packet would make it meaningless, every host with an
+//! open port would look settled and no further probe would ever be justified.
 //!
 //! Reaching high confidence has to take corroboration from a second, genuinely
 //! independent source. Today there is none, so nothing this module produces is
@@ -71,20 +71,21 @@ pub const MIN_REPORTABLE_ACCURACY: u8 = 40;
 /// What a rule measured by this engine is worth before its own weight applies.
 ///
 /// A rule that matched said everything it tests is true of this host. What it
-/// does *not* establish is that no other rule would have said the same, which is
-/// why several matches do not raise the score — see [`classify`].
+/// does *not* establish is that no other rule would have said the same, which
+/// is why several matches do not raise the score; see [`classify`].
 const MEASURED_ACCURACY: f32 = 65.0;
 
 /// What a rule taken from published stack characteristics is worth.
 ///
-/// Lower, and not because published defaults are unreliable — an initial hop
-/// counter and an option order are ordinary engineering facts. Lower because the
-/// rule has not been seen *through this engine's own probe on a real network*,
-/// which is the gap that has already caught this project out once: option
-/// negotiation is reciprocal, so a documented layout is documented against some
-/// probe, and against a different one it is wrong while looking right.
+/// Lower, and not because published defaults are unreliable, an initial hop
+/// counter and an option order are ordinary engineering facts. Lower because
+/// the rule has not been seen *through this engine's own probe on a real
+/// network*, which is the gap that has already caught this project out once:
+/// option negotiation is reciprocal, so a documented layout is documented
+/// against some probe, and against a different one it is wrong while looking
+/// right.
 ///
-/// Above [`MIN_REPORTABLE_ACCURACY`], so such a rule reports rather than hides —
+/// Above [`MIN_REPORTABLE_ACCURACY`], so such a rule reports rather than hides,
 /// a plausible answer that says how sure it is beats no answer. Confirming one
 /// on real hardware is what promotes it.
 const PUBLISHED_ACCURACY: f32 = 50.0;
@@ -95,7 +96,7 @@ const PUBLISHED_ACCURACY: f32 = 50.0;
 pub struct OsVerdict {
     /// The broad family, where anything could name one.
     ///
-    /// `None` where every source abstained — a host identified down to its make
+    /// `None` where every source abstained, a host identified down to its make
     /// and model by an agent that never said what it runs. See
     /// [`OsEvidence::family`](crate::model::host::OsEvidence::family).
     pub family: Option<String>,
@@ -119,7 +120,7 @@ pub struct OsVerdict {
     /// How sure this is, on the `0..=100` scale
     /// [`OsFingerprint`] uses. Bounded by [`MAX_STACK_ACCURACY`].
     ///
-    /// **About the family**, which is the part every source can speak to.
+    /// About the family, which is the part every source can speak to.
     pub accuracy: u8,
     /// How sure the parts *past* the family are, where this names any.
     ///
@@ -142,7 +143,7 @@ impl OsVerdict {
     /// against other sources.
     ///
     /// The accuracy becomes a probability, because that is the scale the
-    /// combining arithmetic works on — a percentage summed against another
+    /// combining arithmetic works on, a percentage summed against another
     /// percentage means nothing, where two probabilities for one hypothesis
     /// combine exactly.
     ///
@@ -172,14 +173,14 @@ impl OsVerdict {
     pub fn label(&self) -> String {
         // A corpus that sets `product` to the family name is *declining* to name
         // a product, and for a Linux distribution it puts the distribution in
-        // `vendor` — 993 shipped rules are written that way, which is why a host
+        // `vendor`. 993 shipped rules are written that way, which is why a host
         // running Debian 12 was reported as `Linux 12.0`: a version number no
         // Linux has ever had, attached to the wrong noun.
         //
         // A rule with **no** product at all is a different case and must not be
         // read the same way. There, `vendor` is often the maker of a device
-        // rather than the publisher of an operating system — Ubiquiti, AXIS,
-        // Crestron — and seventeen rules pair `Microsoft` with `Windows`, which
+        // rather than the publisher of an operating system, Ubiquiti, AXIS,
+        // Crestron, and seventeen rules pair `Microsoft` with `Windows`, which
         // this would otherwise render as `Microsoft 10`. Those keep the family.
         match (&self.product, &self.vendor) {
             (Some(product), Some(vendor)) if Some(product.as_str()) == self.family.as_deref() => {
@@ -253,7 +254,7 @@ impl OsVerdict {
 ///   from the same measurements are not two pieces of evidence.
 /// - **Several matched and contradict each other.** Two rules naming different
 ///   families, or different device classes, cannot both be right and nothing
-///   here can say which is. Reported as nothing, deliberately: a tie broken by
+///   here can say which is. Reported as nothing: a tie broken by
 ///   weight would be reporting an authoring decision as a measurement.
 ///
 /// A rule that names a family and one that names only a device class are not in
@@ -270,9 +271,9 @@ pub fn classify(db: &RuleDb, reply: &StackReply) -> Option<OsVerdict> {
 
 /// Names the operating system behind a host that was asked more than once.
 ///
-/// The active counterpart of [`classify`]. Each reading is one reply paired with
-/// what the series it belongs to turned out to be, and a host contributes as
-/// many readings as it gave distinct kinds of answer — a SYN+ACK from an open
+/// The active counterpart of [`classify`]. Each reading is one reply paired
+/// with what the series it belongs to turned out to be, and a host contributes
+/// as many readings as it gave distinct kinds of answer, a SYN+ACK from an open
 /// port, a reset from a closed one. Rules are gathered across all of them and
 /// scored together.
 ///
@@ -287,7 +288,7 @@ pub fn classify(db: &RuleDb, reply: &StackReply) -> Option<OsVerdict> {
 /// # Why the readings are kept apart rather than pooled
 ///
 /// A stack's resets and its handshake answers come from different code paths
-/// that disagree about the same fields — measured, on one host: identifier zero
+/// that disagree about the same fields, measured, on one host: identifier zero
 /// on the SYN+ACK path and a global counter on the reset path. So each reply
 /// carries the series read from replies of *its own kind*, and a rule sees the
 /// classes belonging to the segment it declares. Pooling them would compare a
@@ -297,10 +298,10 @@ pub fn classify(db: &RuleDb, reply: &StackReply) -> Option<OsVerdict> {
 ///
 /// The evidence line carries what each series turned out to be whether or not a
 /// rule read it. That is deliberate and it is most of this function's value
-/// today: the corpus holds no rule written for a reset, so a host's reset series
-/// currently names nothing — and it is precisely the measurement somebody needs
-/// in front of them to write the first one. A reading dropped for matching
-/// nothing is a reading nobody can author from.
+/// today: the corpus holds no rule written for a reset, so a host's reset
+/// series currently names nothing, and it is precisely the measurement somebody
+/// needs in front of them to write the first one. A reading dropped for
+/// matching nothing is a reading nobody can author from.
 pub fn classify_series(db: &RuleDb, readings: &[(StackReply, SeriesClasses)]) -> Option<OsVerdict> {
     let matched: Vec<&OsDefinition> = readings
         .iter()
@@ -327,7 +328,7 @@ struct Contradiction;
 /// The one value every rule that states `part` gives, or `None` where none
 /// states it.
 ///
-/// **Silence abstains and dissent is fatal**, and keeping the two apart is what
+/// Silence abstains and dissent is fatal, and keeping the two apart is what
 /// this exists for. A rule that leaves a part empty is not disagreeing: a
 /// family-level rule and a version-level one that both matched are a refinement,
 /// and reading the broader one's silence as dissent would erase every version a
@@ -527,7 +528,7 @@ mod tests {
         assert_eq!(fingerprint.family(), Some("Linux"));
     }
 
-    /// **The weight bound is where the knob stops turning.**
+    /// The weight bound is where the knob stops turning.
     ///
     /// A verdict's accuracy is a base worth times the weight, clamped at
     /// [`MAX_STACK_ACCURACY`]. Past the point where that clamp bites, every
@@ -584,10 +585,10 @@ mod tests {
         // no stack writes, and padding. Well-formed, and belonging to no family
         // in the corpus.
         //
-        // The *layout* rather than the window, deliberately — see the test
-        // below. A window nothing has been measured at is an ordinary Linux host
-        // whose owner tuned it, and naming that one nothing was the defect this
-        // pair now guards from both sides.
+        // The layout rather than the window; see the test
+        // below. A window nothing has been measured at is an ordinary Linux
+        // host whose owner tuned it, and naming that one nothing was the defect
+        // this pair now guards from both sides.
         let nothing_emits = [2, 4, 0x05, 0xb4, 99, 2, 1, 1];
         let verdict = classify_reply(
             ip(),
@@ -599,7 +600,7 @@ mod tests {
     /// And the other side of it: a host is not disqualified for having been
     /// tuned.
     ///
-    /// Measured 2026-08-21 — one `sysctl -w net.ipv4.tcp_rmem=...` on an
+    /// Measured 2026-08-21: one `sysctl -w net.ipv4.tcp_rmem=...` on an
     /// untouched kernel moved a Debian guest's window and window scale together,
     /// and the rule that pinned them stopped matching. A machine went from
     /// `Linux [65%]` to no operating system at all because somebody had raised
@@ -623,8 +624,8 @@ mod tests {
     /// A distribution is named by its distribution, not by its kernel.
     ///
     /// The imported corpus writes a Linux distro as `vendor = "Debian"`,
-    /// `product = "Linux"`, `family = "Linux"` — 993 rules set `product` to the
-    /// family name like that — and reading `product` as the label reported a
+    /// `product = "Linux"`, `family = "Linux"`, 993 rules set `product` to the
+    /// family name like that, and reading `product` as the label reported a
     /// real Debian 12 host as `Linux 12.0`, a version number no Linux has ever
     /// carried.
     #[test]
@@ -686,8 +687,8 @@ mod tests {
         assert_eq!(spelled_out.label(), "Brother HL-1660e");
     }
 
-    /// A verdict with no family at all — an agent that named a box outright and
-    /// never said what it runs — still labels itself off what it did establish.
+    /// A verdict with no family at all, an agent that named a box outright and
+    /// never said what it runs, still labels itself off what it did establish.
     #[test]
     fn a_verdict_without_a_family_is_still_named() {
         let verdict = OsVerdict {
@@ -710,9 +711,9 @@ mod tests {
     }
 
     /// And the case that rule must not break. A rule naming no product leaves
-    /// `vendor` meaning whoever made the *machine* as often as whoever published
-    /// the system — so `Microsoft` + `Windows`, of which the corpus holds
-    /// seventeen, has to stay `Windows`.
+    /// `vendor` meaning whoever made the *machine* as often as whoever
+    /// published the system, so `Microsoft` + `Windows`, of which the corpus
+    /// holds seventeen, has to stay `Windows`.
     #[test]
     fn a_vendor_without_a_product_does_not_replace_the_family() {
         let verdict = OsVerdict {
@@ -1003,7 +1004,7 @@ mod series_backed {
     /// A rule naming a release is necessarily *narrower* than the family rule
     /// that describes the same stack, so both match, every time. Treating the
     /// family rule's silence about the version as disagreement would erase the
-    /// version on exactly the hosts the finer rule was written for — more
+    /// version on the hosts the finer rule was written for, which is more
     /// evidence yielding a less specific answer.
     #[test]
     fn a_broader_rule_matching_beside_a_finer_one_does_not_erase_the_version() {

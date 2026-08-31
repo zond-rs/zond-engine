@@ -60,13 +60,13 @@ const SSH_PORTS: &[u16] = &[22, 2222];
 /// line is not one.
 ///
 /// RFC 4253 §4.2 defines the line as `SSH-protoversion-softwareversion SP
-/// comments`, and **the fingerprint corpus is written against the part after the
-/// protocol version** — `OpenSSH_9.2p1 Debian-2+deb12u10` — because that is what
-/// a stack actually chose. Its patterns anchor on it: `^OpenSSH_...$`.
+/// comments`, and **the fingerprint corpus is written against the part after
+/// the protocol version**, `OpenSSH_9.2p1 Debian-2+deb12u10`, because that is
+/// what a stack actually chose. Its patterns anchor on it: `^OpenSSH_...$`.
 ///
 /// So a rule naming a release can never match the whole line, and that is not a
 /// hypothetical. Fed the complete banner, every version-bearing Debian rule
-/// failed and only a loose rule naming the family fired — a host announcing
+/// failed and only a loose rule naming the family fired, a host announcing
 /// `SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10` was reported as `Linux` when the
 /// corpus held a rule mapping that exact string to Debian 12 with a CPE.
 ///
@@ -94,8 +94,8 @@ pub(crate) fn software_version(line: &str) -> Option<&str> {
 /// §4.2); the software name is ours.
 const CLIENT_ID: &[u8] = b"SSH-2.0-Zond_1.0\r\n";
 
-/// Whole-exchange budget: connect, read the banner, read one packet. Kept tight
-/// — a reachable SSH server completes this well under a second.
+/// Whole-exchange budget: connect, read the banner, read one packet. Kept
+/// tight, a reachable SSH server completes this well under a second.
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// RFC 4253 caps an (uncompressed) packet at 35 000 bytes; we never accept a
@@ -137,7 +137,7 @@ impl Analyzer for SshAnalyzer {
         // not carried over TLS here).
         //
         // The protocol test is not redundant with the port test. Without it a
-        // scan that found UDP 22 open would have this dial *TCP* 22 — a service
+        // scan that found UDP 22 open would have this dial *TCP* 22, a service
         // nobody asked about, at an address that never offered one.
         ctx.protocol == crate::model::port::Protocol::Tcp
             && ctx.tunnel.is_none()
@@ -145,7 +145,7 @@ impl Analyzer for SshAnalyzer {
             && SSH_PORTS.contains(&ctx.port)
     }
 
-    /// **I/O phase.** Runs the exchange and returns the raw `KEXINIT` packet as a
+    /// I/O phase. Runs the exchange and returns the raw `KEXINIT` packet as a
     /// single frame, or nothing if the peer is not reachable / not SSH.
     async fn collect(&self, ctx: &PortContext) -> Collected {
         let Some(addr) = ctx.addr else {
@@ -157,7 +157,7 @@ impl Analyzer for SshAnalyzer {
         }
     }
 
-    /// **CPU phase.** Parses the collected `KEXINIT` into evidence: protocol
+    /// CPU phase. Parses the collected `KEXINIT` into evidence: protocol
     /// confirmation plus the server's host-key algorithm list.
     fn analyze(
         &self,
@@ -182,10 +182,10 @@ impl Analyzer for SshAnalyzer {
     }
 }
 
-/// Performs the exchange against `addr`: connect, send our identification string,
-/// read the server's, then read one binary packet (its `KEXINIT`). Returns the
-/// raw packet payload (message byte onward), or `None` on any I/O or protocol
-/// error — the caller treats that as "not SSH here".
+/// Performs the exchange against `addr`: connect, send our identification
+/// string, read the server's, then read one binary packet (its `KEXINIT`).
+/// Returns the raw packet payload (message byte onward), or `None` on any I/O
+/// or protocol error, the caller treats that as "not SSH here".
 async fn kexinit_exchange(addr: SocketAddr) -> Option<Vec<u8>> {
     let stream = TcpStream::connect(addr).await.ok()?;
     let mut reader = BufReader::new(stream);
@@ -205,7 +205,7 @@ async fn kexinit_exchange(addr: SocketAddr) -> Option<Vec<u8>> {
 /// Reads the server's `SSH-…` identification string, skipping whatever it sends
 /// before one.
 ///
-/// **RFC 4253 §4.2 permits a server to send other lines first**, and requires a
+/// RFC 4253 §4.2 permits a server to send other lines first, and requires a
 /// client to be able to skip them. A login banner ahead of the identifier is
 /// near-universal on hardened and enterprise hosts, which is to say on exactly
 /// the fleet an operator most wants a scanner to work against. Reading one line
@@ -253,7 +253,7 @@ where
     None // line too long: not a well-formed SSH line
 }
 
-/// Reads one SSH binary packet (RFC 4253 §6) and returns its payload — the bytes
+/// Reads one SSH binary packet (RFC 4253 §6) and returns its payload, the bytes
 /// after the padding-length field, before the random padding. `None` on a
 /// malformed or over-long packet.
 ///
@@ -268,7 +268,7 @@ where
     let packet_length = u32::from_be_bytes(length) as usize;
 
     // A valid packet has at least a padding-length byte and one payload byte,
-    // and never exceeds the RFC cap — which also bounds the allocation below.
+    // and never exceeds the RFC cap, which also bounds the allocation below.
     if !(2..=MAX_PACKET_LEN).contains(&packet_length) {
         return None;
     }
@@ -454,9 +454,9 @@ mod tests {
 
     proptest! {
         /// The `KEXINIT` parser runs on bytes straight off an untrusted socket,
-        /// so on *any* input it must return cleanly — never panic, never read out
-        /// of bounds, never allocate on a hostile length. If this completes for
-        /// every generated buffer, parsing is both safe and bounded.
+        /// so on *any* input it must return cleanly, never panic, never read
+        /// out of bounds, never allocate on a hostile length. If this completes
+        /// for every generated buffer, parsing is both safe and bounded.
         #[test]
         fn kexinit_parser_never_panics_on_arbitrary_bytes(
             bytes in proptest::collection::vec(any::<u8>(), 0..4096)
@@ -478,7 +478,7 @@ mod tests {
         }
     }
 
-    /// **A server with a login banner is still an SSH server.**
+    /// A server with a login banner is still an SSH server.
     ///
     /// RFC 4253 §4.2 lets a server send lines before its identification string
     /// and requires a client to skip them; a legal notice ahead of the

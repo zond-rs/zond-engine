@@ -17,13 +17,13 @@
 //!
 //! The classifiers here are the measurement half. They were written and tested
 //! against real hosts first, and moved here once rules needed to predicate on
-//! what they read — the same graduation the recorded option layouts took into
+//! what they read, the same graduation the recorded option layouts took into
 //! [`StackObservation`](super::StackObservation). A rule that wants to say
 //! "Linux 5.x has a hashed ISN generator" needs this vocabulary to say it with.
 //!
-//! ## The comparison key, and where it is deliberately coarse
+//! ## The comparison key, and where it is coarse
 //!
-//! Every class carries a *name* — a short, stable string, and the only thing a
+//! Every class carries a *name*, a short, stable string, and the only thing a
 //! rule or a comparison should match on. The raw figures are kept beside it for
 //! the report, because a person disputing a class needs the numbers behind it;
 //! but a rate like "how fast the identifier counter advances" is a fact about
@@ -43,7 +43,7 @@
 //! ## One code path per series
 //!
 //! A stack's resets and its SYN+ACKs come from different code paths that
-//! disagree about the same fields — measured, on one host: identifier zero on
+//! disagree about the same fields, measured, on one host: identifier zero on
 //! its SYN+ACK path, a global counter on its reset path. A series that mixed
 //! the two would compare a host against itself under two policies, so every
 //! classifier takes the reply kind alongside the values and refuses to read a
@@ -58,7 +58,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeriesSample {
     /// When the reply was read. The interval between two of these is what a
-    /// clock rate and an identifier step are computed against — a nominal
+    /// clock rate and an identifier step are computed against, a nominal
     /// spacing is what the sender intended, not what happened.
     pub at: Instant,
     /// The TCP flag byte, so a series can say whether it is reading SYN+ACKs or
@@ -95,11 +95,10 @@ pub const MAX_INTERVAL_FOR_ID: Duration = Duration::from_millis(500);
 
 /// The largest identifier step per sample still consistent with a counter.
 ///
-/// A counter can be advanced by other traffic between two samples — the host
-/// was busy — but not by more than its own output can plausibly account for.
-/// 20 000 identifiers a second is far beyond any interface a scanner shares a
-/// segment with, so a larger step is noise or randomness wearing a counter's
-/// shape.
+/// A counter can be advanced by other traffic between two samples, the host was
+/// busy, but not by more than its own output can plausibly account for. 20 000
+/// identifiers a second is far beyond any interface a scanner shares a segment
+/// with, so a larger step is noise or randomness wearing a counter's shape.
 const PLAUSIBLE_ID_RATE: f64 = 20_000.0;
 
 /// The largest interval still consistent with reading a clock rate.
@@ -110,7 +109,8 @@ const PLAUSIBLE_ID_RATE: f64 = 20_000.0;
 const MAX_INTERVAL_FOR_CLOCK: Duration = Duration::from_millis(500);
 
 /// The fastest tick still reported as a frequency. Above this the values are
-/// random or corrupted, not a clock — real timestamp clocks run at 100 Hz to
+/// random or corrupted rather than a clock: real timestamp clocks run at 100 Hz
+/// to
 /// 1 kHz, and anything beyond an order of magnitude past that is the
 /// per-connection offset of RFC 7323 §5.4.
 const CLOCK_CEILING: f64 = 10_000.0;
@@ -203,11 +203,11 @@ pub enum IsnClass {
     /// Fewer than three handshake answers, which cannot show whether the
     /// differences between them repeat.
     TooFew,
-    /// Zero throughout — a stack that generates no initial sequence numbers,
+    /// Zero throughout, a stack that generates no initial sequence numbers,
     /// which is a quirk worth a rule of its own.
     Zero,
     /// The generator advances by a constant, which *is* a stack constant.
-    /// The step is carried for the report and deliberately kept out of the
+    /// The step is carried for the report and kept out of the
     /// [name](Self::name): two machines running one build differ in load, not
     /// in step.
     FixedStep(u32),
@@ -221,7 +221,7 @@ impl IsnClass {
     /// The class a stable name refers to, or `None` for a name nothing here
     /// produces.
     ///
-    /// **A rebuilt class carries no figure.** [`name`](Self::name) deliberately
+    /// A rebuilt class carries no figure. [`name`](Self::name)
     /// drops the step, because how fast a stepping generator advances is a fact
     /// about the machine's activity rather than about the stack, and a rule
     /// matches on the name alone. So a class read back from one is the right
@@ -241,10 +241,10 @@ impl IsnClass {
 
     /// The class with the figure behind it, for a person reading a report.
     ///
-    /// The other half of what [`name`](Self::name) deliberately drops. A rule
-    /// must not key on the step — that is the machine's activity, not the stack
-    /// — but somebody disputing the class, or authoring a rule from it, needs
-    /// the number in front of them.
+    /// The other half of what [`name`](Self::name) drops. A rule must not key on
+    /// the step, which is the machine's activity rather than the stack's, but
+    /// somebody disputing the class, or authoring a rule from it, needs the
+    /// number in front of them.
     pub fn detail(self) -> String {
         match self {
             IsnClass::FixedStep(step) => format!("fixed-step({step})"),
@@ -283,10 +283,10 @@ pub enum ClockClass {
     TooFew,
     /// The values move, but not as one clock read repeatedly does.
     ///
-    /// **This is a finding, not a failure.** RFC 7323 §5.4 recommends a sender
+    /// This is a finding, not a failure. RFC 7323 §5.4 recommends a sender
     /// add a *per-connection* random offset to its timestamp clock, and every
     /// sample in a series drawn by separate connections sees a different
-    /// offset. Whether a stack does this is itself a discriminator — and it
+    /// offset. Whether a stack does this is itself a discriminator, and it
     /// means the clock's *rate* cannot be recovered from separate connections
     /// at all. Recovering that needs two timestamps from **one** connection,
     /// which needs a completed handshake.
@@ -327,8 +327,8 @@ impl ClockClass {
     ///
     /// The rate is the whole reason to look: it is a stack-build constant, and
     /// the one that moved when Linux stopped deriving its timestamp clock from
-    /// the tick rate. A rule cannot key on it — the sampling's own jitter is in
-    /// the figure, so an exact hertz would match one network and not the next —
+    /// the tick rate. A rule cannot key on it, the sampling's own jitter is in
+    /// the figure, so an exact hertz would match one network and not the next,
     /// but a person deciding *what rule to write* has nothing else to go on.
     pub fn detail(self) -> String {
         match self {
@@ -354,9 +354,9 @@ impl ClockClass {
 /// consume.
 ///
 /// Built from the samples by whoever collected them; a passive path has no
-/// series and no `SeriesClasses`, which is the ordinary case — a rule naming a
-/// series predicate then fails to match by the same "the peer did not say"
-/// rule that governs every other absent field.
+/// series and no `SeriesClasses`, which is the ordinary case, a rule naming a
+/// series predicate then fails to match by the same "the peer did not say" rule
+/// that governs every other absent field.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeriesClasses {
@@ -371,8 +371,8 @@ pub struct SeriesClasses {
 impl SeriesClasses {
     /// Reads all three series from one set of samples.
     ///
-    /// The classifiers refuse more than they answer — too few samples, sampled
-    /// too slowly, the field absent — and a refusal is a class like any other:
+    /// The classifiers refuse more than they answer, too few samples, sampled
+    /// too slowly, the field absent, and a refusal is a class like any other:
     /// it matches no rule that predicates on the field, which is exactly the
     /// behaviour a series collected badly should have.
     pub fn from_samples(series: &[SeriesSample]) -> Self {
@@ -412,7 +412,7 @@ pub struct Reading<T> {
     /// The class itself.
     pub class: T,
     /// The raw values, rendered for a person. A class this classifier declined
-    /// to give — or gave wrongly — can be overruled by reading these.
+    /// to give, or gave wrongly, can be overruled by reading these.
     pub line: String,
 }
 
@@ -473,8 +473,8 @@ pub fn read_identifiers(series: &[SeriesSample]) -> Reading<IdClass> {
     //
     // Judged per interval, not over the whole span. A counter never jumps, so
     // one step implying an implausible rate is enough to say this is not one
-    // being followed — where a total advance divided by a total span would let
-    // a single large jump hide behind several small ones and report a tidy
+    // being followed, where a total advance divided by a total span would let a
+    // single large jump hide behind several small ones and report a tidy
     // average describing nothing that happened.
     let steps: Vec<u16> = sampled
         .windows(2)
@@ -661,7 +661,7 @@ fn gcd(a: u32, b: u32) -> u32 {
 #[cfg(test)]
 mod tests {
 
-    /// **The regression the fastest-interval reading exists for.**
+    /// The regression the fastest-interval reading exists for.
     ///
     /// A counter never jumps, so one step implying an implausible rate settles
     /// it. Reading the *slowest* interval instead asks whether any step looks
@@ -769,12 +769,12 @@ mod tests {
     /// the three fields each reply held. Absent slices mean the field was not
     /// present in those replies, which is a different thing from a zero.
     ///
-    /// The base instant is read **once**. Reading it per sample made the offsets
-    /// approximate rather than exact — each call advances by however long the
-    /// loop took — and every reading here divides a counter's movement by the
-    /// interval between samples, so a machine under load could push a rate
-    /// across a bucket boundary and fail a test about arithmetic for reasons
-    /// that had nothing to do with it.
+    /// The base instant is read **once**. Reading it per sample made the
+    /// offsets approximate rather than exact, each call advances by however
+    /// long the loop took, and every reading here divides a counter's movement
+    /// by the interval between samples, so a machine under load could push a
+    /// rate across a bucket boundary and fail a test about arithmetic for
+    /// reasons that had nothing to do with it.
     fn series(
         offsets: &[Duration],
         identifiers: &[u16],
@@ -869,7 +869,7 @@ mod tests {
     }
 
     /// A reset opens no connection, so there is no generator behind its
-    /// sequence number to describe — whatever the values happen to be.
+    /// sequence number to describe, whatever the values happen to be.
     #[test]
     fn a_resets_sequence_number_is_not_read() {
         use crate::protocols::tcp::flags;
@@ -938,8 +938,8 @@ mod tests {
 
     /// The case that decides whether checking every interval was worth it. The
     /// endpoints are five hundred ticks apart across half a second, so an
-    /// endpoint-only reading reports a tidy 1000 Hz — while every step in
-    /// between is nonsense.
+    /// endpoint-only reading reports a tidy 1000 Hz while every step in between
+    /// is nonsense.
     #[test]
     fn endpoints_that_agree_do_not_make_the_middle_a_clock() {
         let plausible = series(
@@ -975,7 +975,7 @@ mod tests {
         // Both intervals sit inside `MAX_INTERVAL_FOR_CLOCK`, which is the
         // point: this test is about the *naming* being coarse, and a sample
         // spaced beyond that ceiling is refused a rate before any naming
-        // happens. The pair used to straddle it — 500 ms and 502 ms — so both
+        // happens. The pair used to straddle it, 500 ms and 502 ms, so both
         // readings came back refused and the assertion compared one rejection
         // against another, agreeing for a reason that had nothing to do with
         // clocks.

@@ -15,14 +15,14 @@
 //! prefilter both hand back index lists, matched uniformly by the caller. Three
 //! access patterns, separated by cost:
 //!
-//! * **Name lookup** ([`SignatureDb::service_name`]) — a `port -> name` index
-//!   built once at load, no regex compilation. The scanners call it for every
-//!   classified port, so it must be free.
-//! * **Port matching** ([`SignatureDb::signatures_for_port`]) — the
+//! * **Name lookup** ([`SignatureDb::service_name`]): a `port -> name` index
+//!   built once at load, with no regex compilation. The scanners call it for
+//!   every classified port, so it has to be free.
+//! * **Port matching** ([`SignatureDb::signatures_for_port`]): the
 //!   service-linked signatures for a port. Their regexes compile lazily (once
 //!   each, on first match); [`SignatureDb::warm`] can force a set to compile in
 //!   parallel.
-//! * **Global matching** ([`SignatureDb::prefilter`]) — for services on
+//! * **Global matching** ([`SignatureDb::prefilter`]): for services on
 //!   non-standard ports, an Aho-Corasick prefilter narrows the whole set to a
 //!   small candidate list so matching stays sublinear in the database size.
 //!
@@ -93,19 +93,19 @@ pub struct SignatureDb {
     /// `port -> signature indices` matchable on that port.
     ///
     /// Service-linked: the union, over every service reachable on the port, of
-    /// all that service's signatures — so a service's port-less supplementary
+    /// all that service's signatures, so a service's port-less supplementary
     /// signatures are matched alongside its port-indexed ones.
     by_port: HashMap<u16, Vec<usize>>,
     /// `port -> TCP active-probe payloads` of the services reachable on it.
     /// Payloads are decoded bytes (escapes resolved, see [`unescape`]), ready to
-    /// go on the wire as-is — including non-UTF-8 binary probes.
+    /// go on the wire as they are, non-UTF-8 binary probes included.
     tcp_probes: HashMap<u16, Vec<Vec<u8>>>,
     /// The TCP probes worth sending to a port that registered none of its own,
     /// decoded to wire bytes.
     ///
     /// Authored with `generic = true`; see
     /// [`Probe::generic`](crate::fingerprint::signature::Probe::generic) for
-    /// what earns a probe that mark and why the set is deliberately tiny.
+    /// what earns a probe that mark and why the set is tiny.
     generic_tcp_probes: Vec<Vec<u8>>,
     /// `port -> UDP probe payloads`, indexed exactly like [`Self::tcp_probes`]
     /// but kept apart, because the two are sent by different machinery for
@@ -142,7 +142,7 @@ impl SignatureDb {
     /// Builds a database from definitions given directly, refusing any the build
     /// would refuse.
     ///
-    /// **This is how a caller supplies signatures of their own**, and the reason
+    /// This is how a caller supplies signatures of their own, and the reason
     /// the authoring schema is exported at all. The checks are the ones in
     /// [`ServiceDefinition::validate`], which `build.rs` runs over the shipped
     /// corpus from the same code, so a definition that would fail the build fails
@@ -282,7 +282,7 @@ impl SignatureDb {
 
     /// What this signature set makes of one `response` read from `port`.
     ///
-    /// **The whole per-response decision**: text extraction, both matching
+    /// The whole per-response decision: text extraction, both matching
     /// tiers, and the separate choice of a service reading and an
     /// operating-system reading. A caller who has loaded signatures of their own
     /// through [`try_from_definitions`](Self::try_from_definitions) matches with
@@ -293,16 +293,16 @@ impl SignatureDb {
     /// # Two tiers
     ///
     /// The response is checked first against the signatures registered for its
-    /// port, which is a small set and the common case. The global set — narrowed
-    /// by the prefilter to a bounded candidate list, compiled on demand — is
-    /// consulted when the port set identified nothing, **and also when it named a
+    /// port, which is a small set and the common case. The global set, narrowed
+    /// by the prefilter to a bounded candidate list and compiled on demand, is
+    /// consulted when the port set identified nothing, and also when it named a
     /// service but said nothing about the machine**.
     ///
     /// That second case is not a special case. A banner identifies a service, and
     /// what it implies about the host is a separate inference, so the signature
     /// that answers one is very often not the signature that answers the other.
     /// Stopping at the port tier discarded every operating-system reading that
-    /// lives only in the global set — measured, on a real host, whose release was
+    /// lives only in the global set, measured on a real host whose release was
     /// sitting there unread.
     ///
     /// [`Evidence::port_confirmed`](crate::fingerprint::Evidence::port_confirmed)
@@ -324,8 +324,8 @@ impl SignatureDb {
     /// Every port some service registers, in no particular order.
     ///
     /// What this engine can put a name to, which is a different set from what a
-    /// scan asks about. Exposed so the two can be held against each other — a
-    /// signature authored for a service on a port nothing probes is a coverage
+    /// scan asks about. Exposed so the two can be held against each other, since
+    /// a signature authored for a service on a port nothing probes is a coverage
     /// gap that ships silently, and the catalogue test in this module is what
     /// stops it.
     pub fn indexed_ports(&self) -> impl Iterator<Item = u16> + '_ {
@@ -395,9 +395,9 @@ impl SignatureDb {
             .get_or_init(|| LiteralPrefilter::build(&self.signatures))
     }
 
-    /// Forces the regexes of `indices` to compile, in parallel. Idempotent —
-    /// already-compiled signatures are untouched — so a candidate set can be
-    /// warmed before matching to spread compilation across cores.
+    /// Forces the regexes of `indices` to compile, in parallel. Idempotent, since
+    /// already-compiled signatures are untouched, so a candidate set can be warmed
+    /// before matching to spread compilation across cores.
     ///
     /// Crate-visible: the indices only mean anything against this set, and
     /// [`identify`](Self::identify) already warms what it is about to match.
@@ -423,14 +423,14 @@ impl SignatureDb {
 /// signature listed earlier cannot shadow a more specific one (e.g. a bare
 /// `HTTP/1.1` match hiding a `Server:`-header match that names a product and
 /// version). Ties keep the earliest text and the lowest-indexed signature, so
-/// the result stays deterministic. Candidate sets are bounded — the linked port
-/// set, or the prefilter-narrowed global set — so evaluating all of them stays
+/// the result stays deterministic. Candidate sets are bounded, being the linked
+/// port set or the prefilter-narrowed global set, so evaluating all of them stays
 /// cheap.
 ///
-/// **Several texts, for one banner, for the same reason.** A structured banner
-/// carries a field the corpus is actually written against, and that field is
-/// where the specific rules live — so both the whole banner and the field are
-/// offered, and the better match wins. Taking the *first* match instead would
+/// Several texts for one banner, on the same reasoning. A structured banner
+/// carries a field the corpus is written against, and that field is where the
+/// specific rules live, so both the whole banner and the field are offered and
+/// the better match wins. Taking the first match instead would
 /// reinstate exactly the shadowing this function exists to prevent: the whole
 /// line matches a loose rule naming a family, and the field matches the rule
 /// naming the release.
@@ -455,9 +455,9 @@ fn best_match(
         .iter()
         .reduce(|best, m| if m.quality > best.quality { m } else { best })?;
 
-    // **Chosen separately, and that is the point.** `quality` ranks how well a
-    // signature identified the *service*, which is a different question from how
-    // much it managed to say about the machine — and the two disagree. A rule
+    // Chosen separately. `quality` ranks how well a signature identified the
+    // service, which is a different question from how much it managed to say
+    // about the machine, and the two disagree. A rule
     // pinning `OpenSSH_9.2p1` exactly outranks one that also happens to name
     // Debian 12, so ranking the operating system by service quality threw the
     // release away and reported a bare family.
@@ -489,10 +489,10 @@ fn best_match(
 ///
 /// Ranks readings against each other and nothing else. A reading that names a
 /// release says strictly more than one that stops at the family, and where two
-/// say the same amount the first stands — so the answer does not depend on which
+/// say the same amount the first stands, so the answer does not depend on which
 /// signature happened to be indexed earlier.
 ///
-/// **Every part counts, including the ones added later.** A field left out here
+/// Every part counts, including the ones added later. A field left out here
 /// is a field that cannot win a rule its ranking: when the kernel was first
 /// given a home of its own, the rule that read one lost to an imported rule that
 /// had crammed the same string into `version`, purely because this function had
@@ -508,9 +508,9 @@ pub(super) fn os_detail(os: &crate::model::host::OsEvidence) -> u8 {
 /// Everything one banner yields: the evidence, and whether the signature that
 /// named the service was registered for this port.
 ///
-/// The whole per-banner decision in one place — text extraction, both tiers, and
+/// The whole per-banner decision in one place: text extraction, both tiers, and
 /// the separate choice of service and operating-system readings. `analyze` is a
-/// loop around it and the tests call it directly, which is deliberate: a test
+/// loop around it and the tests call it directly, which is on purpose: a test
 /// that reproduced this logic instead of calling it is what let the release-
 /// naming SSH rules go unreachable while a test asserting "real banners name an
 /// operating system" went on passing.
@@ -526,15 +526,15 @@ fn identify_within(
     let mut found = best_match(db, port_signatures, &texts, attested_by);
     let mut port_confirmed = found.is_some();
 
-    // The global set — narrowed by the prefilter to a small candidate list,
-    // compiled on demand — is consulted when the port set identified nothing,
-    // and **also when it named a service but said nothing about the machine**.
+    // The global set, narrowed by the prefilter to a small candidate list and
+    // compiled on demand, is consulted when the port set identified nothing, and
+    // also when it named a service but said nothing about the machine.
     //
     // That second case is not a special case: a banner identifies a service, and
     // what it implies about the host is a separate inference, so the signature
     // that answers one is very often not the signature that answers the other.
     // Stopping at the port tier discarded every operating-system reading that
-    // lives only in the global set — measured, on a real host, whose release was
+    // lives only in the global set, measured on a real host whose release was
     // sitting there unread.
     //
     // It costs an Aho-Corasick pass over the banner and a bounded candidate
@@ -683,9 +683,9 @@ mod tests {
     /// Every port this engine can name a service on is a port it asks about by
     /// default.
     ///
-    /// The two lists are authored in different places for different reasons —
-    /// `assets/fingerprinting/` says what can be identified, and
-    /// [`catalog`](crate::model::port::catalog) says what gets probed — and
+    /// The two lists are authored in different places for different reasons,
+    /// `assets/fingerprinting/` saying what can be identified and
+    /// [`catalog`](crate::model::port::catalog) saying what gets probed, and
     /// nothing but this connects them. Authoring a signature for a service on a
     /// port outside the catalogue is not an error the build could catch: the
     /// signature simply never matches, because no scan ever reaches the port.
@@ -716,8 +716,8 @@ mod tests {
     }
 
     /// The generic probe is what an unrecognised open port is asked, and losing
-    /// it would not fail anything — it would quietly return the engine to
-    /// reporting those ports with no service at all, two seconds at a time.
+    /// it would fail nothing. It would quietly return the engine to reporting
+    /// those ports with no service at all, two seconds at a time.
     ///
     /// Held as a property of the shipped database rather than of any one asset
     /// file, so moving the probe between services keeps the test passing and
@@ -744,7 +744,7 @@ mod tests {
         );
     }
 
-    /// A generic probe is only meaningful over TCP — see the schema — and the
+    /// A generic probe is only meaningful over TCP, see the schema, and the
     /// index has to agree with the build-time rule that enforces it.
     #[test]
     fn a_generic_udp_probe_is_not_indexed_as_generic() {
@@ -764,7 +764,7 @@ mod tests {
         );
     }
 
-    /// **The other half of the same door.**
+    /// The other half of the same door.
     ///
     /// The authoring schema is exported so a consumer writing signatures of
     /// their own is held to the same bounds as the shipped corpus. Until this

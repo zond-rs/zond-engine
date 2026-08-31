@@ -21,8 +21,8 @@
 //!
 //! That is the **exact kernel version**, stated by the machine itself. Nothing
 //! else this engine can reach comes close: a TCP stack's shape identifies a
-//! family and cannot separate two kernels eleven releases apart — measured, on
-//! two labelled hosts — and a service banner names a distribution release at
+//! family and cannot separate two kernels eleven releases apart, measured, on
+//! two labelled hosts, and a service banner names a distribution release at
 //! best. An agent that answers this question answers it outright.
 //!
 //! ## What is parsed, and what is refused
@@ -32,7 +32,7 @@
 //! actually follow it, and the returned identifier has to be the one that was
 //! asked for. A reply that disagrees anywhere yields nothing.
 //!
-//! It parses **only the shape this engine's own probe draws** — an SNMPv1
+//! It parses **only the shape this engine's own probe draws**, an SNMPv1
 //! `GetResponse` carrying a single variable binding whose value is an octet
 //! string. That is a deliberate limit rather than an unfinished job: a general
 //! ASN.1 decoder is a large piece of attack surface for a scanner to carry, and
@@ -40,15 +40,16 @@
 //!
 //! ## The value is a field, not a response
 //!
-//! The corpus writes its rules against the decoded string — `context =
-//! "snmp.sys_description"`, patterns anchored on the text itself. Feeding it the
+//! The corpus writes its rules against the decoded string, with `context =
+//! "snmp.sys_description"` and patterns anchored on the text itself. Feeding it
+//! the
 //! datagram would match nothing, for the same reason feeding a whole SSH
 //! identification line to rules anchored on the software identifier matched
 //! nothing. See [`extract`](super::extract).
 
 /// The identifier this engine's probe asks for: `1.3.6.1.2.1.1.1.0`, sysDescr
-/// instance zero, as BER packs it — the first two arcs into one byte,
-/// `1 * 40 + 3 = 0x2b`.
+/// instance zero, as BER packs it, the first two arcs into one byte, `1 * 40 +
+/// 3 = 0x2b`.
 ///
 /// Checked against what came back rather than assumed. An agent is free to
 /// answer with a binding for something else entirely, and reading that as a
@@ -143,9 +144,9 @@ impl<'a> Reader<'a> {
 /// The message must be a sequence carrying a version, a community and a
 /// `GetResponse`; the response must carry exactly the three integers a PDU
 /// begins with and then its bindings; the first binding must name
-/// [`SYS_DESCR_OID`] and carry an octet string. Anything else — an error PDU
+/// [`SYS_DESCR_OID`] and carry an octet string. Anything else, an error PDU
 /// from a wrong community, a trap, a binding for another object, a value of
-/// another type — is not a system description and is refused as one.
+/// another type, is not a system description and is refused as one.
 ///
 /// The string must also be valid UTF-8. `sysDescr` is defined as
 /// `DisplayString`, which is ASCII, so bytes that are not are a peer sending
@@ -199,7 +200,7 @@ mod tests {
     }
 
     /// The reply an agent sends to this engine's probe, assembled from RFC 1157
-    /// §4.1 rather than through anything in this module — so a misreading here
+    /// §4.1 rather than through anything in this module, so a misreading here
     /// cannot write the fixture that confirms it.
     fn get_response(oid: &[u8], value_tag: u8, value: &[u8]) -> Vec<u8> {
         let mut binding = tlv(tag::OID, oid);
@@ -250,10 +251,10 @@ mod tests {
         assert_eq!(sys_descr(&reply), None);
     }
 
-    /// Every byte is chosen by an unauthenticated peer on a port anyone can send
-    /// to, so the walk has to survive anything — a length claiming more than
-    /// arrived, a truncation at every offset, a tag that belongs to another
-    /// message.
+    /// Every byte is chosen by an unauthenticated peer on a port anyone can
+    /// send to, so the walk has to survive anything, a length claiming more
+    /// than arrived, a truncation at every offset, a tag that belongs to
+    /// another message.
     #[test]
     fn nothing_a_peer_can_send_makes_this_panic() {
         let whole = sys_descr_reply("Linux test 6.1.0 aarch64");
@@ -327,8 +328,8 @@ mod tests {
     }
 
     /// A request is not a response. The probe this engine sends is a
-    /// `GetRequest`, and reading one back — from a reflection, or from a scan of
-    /// this host's own traffic — must not be mistaken for an answer.
+    /// `GetRequest`, and reading one back, from a reflection, or from a scan of
+    /// this host's own traffic, must not be mistaken for an answer.
     #[test]
     fn a_request_is_not_an_answer() {
         let mut reply = sys_descr_reply("Linux test");

@@ -12,17 +12,17 @@
 //! [`Evidence`], proving out the extension point on a source that is structured
 //! binary rather than a text banner.
 //!
-//! What a certificate reliably tells us about *what a port runs* is deliberately
+//! What a certificate reliably says about what a port runs is
 //! modest, and this analyzer claims only that much:
 //!
-//! * **The port speaks TLS** — reported as service `ssl` at [`Probable`]
+//! * **The port speaks TLS**, reported as service `ssl` at [`Probable`]
 //!   confidence. That is a real, useful label (far better than a raw handshake
 //!   blob) but shallow: it does not name the application protocol inside the
 //!   tunnel. A later phase re-probes *through* the tunnel and will override this
 //!   with a stronger, more specific verdict.
 //! * **A self-signed cert's organization names its operator/vendor.** When the
-//!   subject equals the issuer (self-signed — typical of appliances and internal
-//!   services) the subject `O=` reliably names who stood the service up, so it is
+//!   subject equals the issuer, which is typical of appliances and internal
+//!   services, the subject `O=` reliably names who stood the service up, so it is
 //!   surfaced as `vendor`. For CA-signed certs `O=` names the CA or the cert
 //!   owner, neither of which is the product vendor, so we do not guess.
 //!

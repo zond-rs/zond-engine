@@ -12,11 +12,11 @@
 //! carries in the report.
 //!
 //! Distinct from [`TlsCertAnalyzer`](super::tls_cert::TlsCertAnalyzer), which
-//! reads the same certificate to answer a different question. That analyzer asks
-//! *what is this service* and emits `Evidence` competing with every other
+//! reads the same certificate to answer a different question. That analyzer
+//! asks *what is this service* and emits `Evidence` competing with every other
 //! analyzer's; this asks *what did the handshake establish* and emits a record
-//! nothing competes with. One port can want both — `ssl` as its service name and
-//! a certificate expiring in nine days — and folding them together would make
+//! nothing competes with. One port can want both, `ssl` as its service name and
+//! a certificate expiring in nine days, and folding them together would make
 //! the certificate's existence contingent on winning a confidence contest it is
 //! not part of.
 //!
@@ -27,9 +27,9 @@
 //! claims to be, who vouched for it, when it stops being valid, and a
 //! fingerprint to compare two sightings by.
 //!
-//! **Nothing here is a trust decision.** The handshake ran with a verifier that
+//! Nothing here is a trust decision. The handshake ran with a verifier that
 //! accepts any certificate, precisely so that expired, self-signed and
-//! wrong-host certificates are seen rather than rejected — those are the ones
+//! wrong-host certificates are seen rather than rejected, those being the ones
 //! worth reporting. Validity is recorded as two instants and left for the reader
 //! to compare against whatever time they care about.
 
@@ -95,10 +95,10 @@ fn certificate_info(der: &[u8]) -> Option<CertificateInfo> {
 /// The first `CN=` in a distinguished name.
 ///
 /// A DN can carry several; the first is the one every other tool prints, and a
-/// certificate with two common names is malformed in a way this does not need to
-/// have an opinion about. Non-UTF-8 attributes are skipped rather than rendered
-/// lossily — a mangled name compares unequal to itself across two scans, which
-/// is worse than an absent one.
+/// certificate with two common names is malformed in a way this does not need
+/// to have an opinion about. Non-UTF-8 attributes are skipped rather than
+/// rendered lossily, a mangled name compares unequal to itself across two
+/// scans, which is worse than an absent one.
 fn first_common_name(name: &X509Name<'_>) -> Option<Arc<str>> {
     name.iter_common_name()
         .next()
@@ -157,7 +157,7 @@ fn render_ip_san(bytes: &[u8]) -> Option<Arc<str>> {
 ///
 /// A key this cannot parse is reported as `unknown` with zero bits rather than
 /// omitted, so a consumer never has to tell "no key" apart from "a key we could
-/// not read" — and zero bits is not a size any real key has, so it cannot be
+/// not read", and zero bits is not a size any real key has, so it cannot be
 /// mistaken for a measurement.
 fn public_key_summary(cert: &X509Certificate<'_>) -> (&'static str, u32) {
     let Ok(key) = cert.public_key().parsed() else {
@@ -279,7 +279,7 @@ mod tests {
     }
 
     /// A handshake that produced no readable certificate still established that
-    /// the port speaks TLS, and at what version — which is the whole reason the
+    /// the port speaks TLS, and at what version, which is the whole reason the
     /// negotiated parameters are captured separately from the chain.
     #[test]
     fn a_handshake_without_a_usable_certificate_still_records_what_was_negotiated() {

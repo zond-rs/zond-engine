@@ -24,7 +24,7 @@
 //!
 //! ## A predicate over a value the observation does not have
 //!
-//! A rule may ask about a maximum segment size on a reply that carries none — a
+//! A rule may ask about a maximum segment size on a reply that carries none, a
 //! reset carries no options whatever the probe offered. That is a **failure to
 //! match**, never a match: "the peer did not say" and "the peer said something
 //! this rule accepts" are different, and treating the first as the second would
@@ -96,7 +96,7 @@ fn accepts_str(predicate: &Predicate<String>, name: &str) -> bool {
 ///
 /// The reason this exists is measurable and was measured. Rendering the option
 /// layout allocates, and doing it inside the per-rule test made matching cost
-/// **3.2 ms per host against ten thousand rules** — 210 seconds of pure CPU for a
+/// 3.2 ms per host against ten thousand rules, or 210 seconds of pure CPU for a
 /// `/16`, all of it spent building the same short string ten thousand times.
 /// Hoisting it is the difference between linear-with-a-big-constant and
 /// linear-with-a-small-one.
@@ -104,7 +104,7 @@ fn accepts_str(predicate: &Predicate<String>, name: &str) -> bool {
 /// It is the same principle the service signatures run on next door, where a
 /// regex is compiled once and cached rather than per match; only the expensive
 /// thing differs. Two rules do not need this. Ten thousand, which is what
-/// translating a public corpus would bring, very much do — and the shape of the
+/// translating a public corpus would bring, very much do, and the shape of the
 /// code should not have to change when they arrive.
 struct Prepared<'a> {
     reply: &'a StackReply,

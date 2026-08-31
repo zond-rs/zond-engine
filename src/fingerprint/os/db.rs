@@ -13,11 +13,11 @@
 //! ## What it costs, measured
 //!
 //! Held flat and walked. That is a different shape from the service signatures
-//! next door, and deliberately so: those carry thousands of regexes whose
+//! next door: those carry thousands of regexes whose
 //! *compilation* dominates everything, which is why they are compiled lazily,
 //! cached, warmed in parallel, and narrowed by a port index and an Aho-Corasick
-//! literal prefilter before any of it happens. A rule here compiles to nothing —
-//! it is a handful of integer comparisons — so the same machinery would cost
+//! literal prefilter before any of it happens. A rule here compiles to nothing,
+//! it is a handful of integer comparisons, so the same machinery would cost
 //! more than it saves.
 //!
 //! Measured on this machine, one observation against a synthetic rule set:
@@ -29,13 +29,13 @@
 //! | 10 000 | 278 µs |
 //!
 //! Linear, with a small constant. At the two rules that ship it is not
-//! measurable against anything else a scan does; at ten thousand — which is what
-//! translating a public corpus would bring — it is 18 seconds of CPU across a
+//! measurable against anything else a scan does; at ten thousand, which is what
+//! translating a public corpus would bring, it is 18 seconds of CPU across a
 //! `/16`, which is real but not disqualifying.
 //!
 //! Getting there took one fix worth naming, because it is the mistake this shape
 //! invites. Rendering the option layout allocates, and doing it inside the
-//! per-rule test cost **3.2 ms per host** at ten thousand rules — 210 seconds
+//! per-rule test cost 3.2 ms per host at ten thousand rules, or 210 seconds
 //! across a `/16`, essentially all of it spent building the same short string
 //! ten thousand times over. [`rules::matching`](super::rules) now works the
 //! derived values out once for the whole set and orders the cheap integer
@@ -126,7 +126,7 @@ impl RuleDb {
     /// Builds a database from rules given directly, refusing any the build would
     /// refuse.
     ///
-    /// **This is how a caller supplies their own corpus.** The checks are the
+    /// This is how a caller supplies their own corpus. The checks are the
     /// ones in [`OsDefinition::validate`], which `build.rs` runs over the shipped
     /// rules from the same code, so a rule that would fail the build fails here
     /// with the same stated reason rather than shipping into a scan.
@@ -173,9 +173,9 @@ impl RuleDb {
     ///
     /// Returns all of them rather than the best one. Which of several matching
     /// rules should name the host is a question about weights and about the other
-    /// evidence in hand, and it is not this layer's to answer — two rules
-    /// agreeing on a family and disagreeing on a version is a *result*, not a
-    /// tie to be broken here.
+    /// evidence in hand, and it is not this layer's to answer. Two rules agreeing
+    /// on a family and disagreeing on a version is a result rather than a tie to
+    /// be broken here.
     pub fn matching<'a>(&'a self, reply: &'a StackReply) -> impl Iterator<Item = &'a OsDefinition> {
         rules::matching(&self.rules, reply, None)
     }
@@ -245,7 +245,7 @@ mod tests {
         }
     }
 
-    /// **The door the build spent a panic closing.**
+    /// The door the build spent a panic closing.
     ///
     /// `build.rs` refuses a rule that states no predicates and calls it the one
     /// defect worse than a build failure, because it matches every reply of its

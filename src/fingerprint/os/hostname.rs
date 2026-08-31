@@ -22,7 +22,7 @@
 //!
 //! This is the **only** signal a large class of host ever emits. Measured, on a
 //! labelled segment: a stock Windows desktop drops every TCP probe and every
-//! ICMP echo — its firewall declines rather than refuses — so no stack rule and
+//! ICMP echo, its firewall declines rather than refuses, so no stack rule and
 //! no echo rule can reach it. It still announces its name over mDNS, and the
 //! name carries the `DESKTOP-` prefix. For that host there is no other route.
 //!
@@ -32,7 +32,7 @@
 //! family-level facts at best. And it is weak: a hostname is a label, and
 //! whoever set the machine up could have typed anything. [`CONFIDENCE`] is set
 //! where a lone hit stays below the floor [`resolve`](super::resolve) reports
-//! at, so this can never name a host by itself — it earns its place by agreeing
+//! at, so this can never name a host by itself, it earns its place by agreeing
 //! with a stack reading, or with the hardware vendor, and pushing a verdict
 //! past what one source could support.
 //!
@@ -41,18 +41,18 @@
 //! Only patterns an operating system *generates by default* are listed, because
 //! only those are authored by the system rather than by a person. `DESKTOP-`
 //! qualifies; `web01` does not, and neither does a hostname that happens to
-//! start with `linux` — that was a choice, and treating choices as defaults
+//! start with `linux`, that was a choice, and treating choices as defaults
 //! would make this source confidently wrong about every carefully-named machine
 //! on the network.
 //!
-//! **A prefix is not a convention, and for a while this table treated it as
-//! one.** Every entry was matched with `starts_with`, so `DESKTOP-` took
+//! A prefix is not a convention, and for a while this table treated it as one.
+//! Every entry was matched with `starts_with`, so `DESKTOP-` took
 //! `desktop-erik` and `sm-` took `sm-prod-db01`: ten of twelve ordinary
 //! hand-typed names matched something. The cost was not the wrong family on its
 //! own, since a lone hit stays under the reporting floor by design. It was what
 //! a wrong vote does to a reading that was right, because
-//! [`resolve`](super::resolve) reduces a leader by whatever dissents from it —
-//! a Linux stack reading fell from 65 to 42 on a `desktop-` hostname, and to
+//! [`resolve`](super::resolve) reduces a leader by whatever dissents from it, a
+//! Linux stack reading fell from 65 to 42 on a `desktop-` hostname, and to
 //! nothing at all with a second mistaken source beside it.
 //!
 //! So an entry now states the shape of the tail its convention generates, and
@@ -170,7 +170,7 @@ const WITHDRAWN: &[&str] = &[
 
 /// The token a naming convention appends to its prefix.
 ///
-/// **This is what makes a generated name evidence.** A system that names a
+/// This is what makes a generated name evidence. A system that names a
 /// machine draws the tail from an alphabet at a fixed width; a person types a
 /// word. Without a shape to check, `DESKTOP-` matched `desktop-erik` and the
 /// table said Windows about somebody's Linux workstation.
@@ -221,7 +221,7 @@ enum Pattern {
     /// separates that from `macbook-of-erik`, which a prefix alone cannot. The
     /// suffix is bounded because an owner's name can be numeric too; two digits
     /// is Apple's own longest default, and the same shape fits the distributions
-    /// that set a bare default of their own — `openwrt`, `pfsense`, `freebsd`.
+    /// that set a bare default of their own: `openwrt`, `pfsense`, `freebsd`.
     Model(&'static str),
     /// The hostname is the prefix and then a token the system generated.
     ///
@@ -263,10 +263,10 @@ impl Pattern {
 
 /// What a host's name suggests it runs, if anything.
 ///
-/// `None` — the common answer — when there is no hostname, or when the name is
-/// not one an operating system generates by default. Declining is the point:
-/// a person's hostname says what the person chose, not what the machine runs,
-/// and a source that treated choice as evidence would be wrong about every
+/// `None`, the common answer, when there is no hostname, or when the name is
+/// not one an operating system generates by default. Declining is the point: a
+/// person's hostname says what the person chose, not what the machine runs, and
+/// a source that treated choice as evidence would be wrong about every
 /// deliberately-named host on the network.
 pub fn evidence_from(hostname: Option<&str>) -> Option<OsEvidence> {
     let hostname = hostname?;
@@ -327,7 +327,7 @@ mod tests {
     }
 
     /// The model names the platform, and this is the one source that can tell
-    /// them apart — the hardware address and the Darwin stack rules cannot,
+    /// them apart, the hardware address and the Darwin stack rules cannot,
     /// since macOS, iOS, iPadOS and tvOS share a kernel. The `.local` suffix
     /// mDNS appends is tolerated, not matched.
     #[test]
@@ -368,7 +368,7 @@ mod tests {
         }
     }
 
-    /// Below the reporting floor on its own, so agreement is what it is for —
+    /// Below the reporting floor on its own, so agreement is what it is for,
     /// the same reasoning as the hardware vendor, and pinned the same way.
     #[test]
     fn a_hostname_alone_never_reaches_the_reporting_floor() {
@@ -411,7 +411,7 @@ mod tests {
         }
     }
 
-    /// **The regression the token shapes exist for.**
+    /// The regression the token shapes exist for.
     ///
     /// Every one of these matched before the tails were checked, and every one
     /// is a name somebody typed. Ten of the twelve names this was measured

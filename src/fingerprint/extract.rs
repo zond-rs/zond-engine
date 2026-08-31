@@ -8,9 +8,9 @@
 
 //! # Turning a response into the text the corpus is written against
 //!
-//! **A signature matches a field, not a reply.** Every rule declares the
-//! `context` it reads — `ssh.banner`, `snmp.sys_description`,
-//! `http.server_header` — and anchors its pattern on that field's text alone.
+//! A signature matches a field, not a reply. Every rule declares the
+//! `context` it reads, `ssh.banner`, `snmp.sys_description`,
+//! `http.server_header`, and anchors its pattern on that field's text alone.
 //! Something has to produce that field from what actually arrived, and this is
 //! where that happens.
 //!
@@ -19,19 +19,19 @@
 //! It has been made twice, silently, and cost a working corpus both times.
 //!
 //! RFC 4253 §4.2 gives an SSH identification line as
-//! `SSH-protoversion-softwareversion SP comments`, and the corpus anchors on the
-//! software identifier: `^OpenSSH_(9\.2p1) (Debian-\d\d?\+deb12u\d+)$`. Fed the
-//! whole line, that `^` can never match — so **every release-naming SSH rule was
-//! unreachable**, and a host announcing `SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10`
-//! was reported as `Linux` while the corpus held a rule mapping that exact
-//! string to Debian 12.
+//! `SSH-protoversion-softwareversion SP comments`, and the corpus anchors on
+//! the software identifier: `^OpenSSH_(9\.2p1) (Debian-\d\d?\+deb12u\d+)$`. Fed
+//! the whole line, that `^` can never match, so **every release-naming SSH rule
+//! was unreachable**, and a host announcing `SSH-2.0-OpenSSH_9.2p1
+//! Debian-2+deb12u10` was reported as `Linux` while the corpus held a rule
+//! mapping that exact string to Debian 12.
 //!
 //! SNMP is the same shape one protocol over: `sysDescr` is a BER-encoded octet
 //! string inside a `GetResponse`, and the rules match the decoded text. A
 //! datagram handed to them matches nothing.
 //!
-//! Both failures look identical from outside — a scan that names a family and
-//! stops — and neither shows up as a broken test, because a test that feeds the
+//! Both failures look identical from outside, a scan that names a family and
+//! stops, and neither shows up as a broken test, because a test that feeds the
 //! matcher a field directly passes while the engine feeds it a whole response.
 //!
 //! ## Keyed on the port, because that is what is known
@@ -62,7 +62,7 @@ pub(crate) fn texts(banner: &str) -> Vec<&str> {
 /// datagram nothing can read is still proof the port is open, and that is what
 /// the scan already took from it.
 ///
-/// Returns an owned string because decoding is not always a borrow — a value
+/// Returns an owned string because decoding is not always a borrow, a value
 /// lifted out of a binary encoding has no text in the datagram to point at.
 pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Option<String> {
     match port {
@@ -77,7 +77,7 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Option<String> {
 ///
 /// What decides whether a UDP port is worth a second datagram: there is no
 /// point dialling one whose answer nothing here could turn into text. A TCP
-/// port always qualifies — every one of them can be read for a banner.
+/// port always qualifies, every one of them can be read for a banner.
 pub(crate) fn reads(port: u16, protocol: Protocol) -> bool {
     match protocol {
         Protocol::Tcp => true,
@@ -90,8 +90,8 @@ pub(crate) fn reads(port: u16, protocol: Protocol) -> bool {
 ///
 /// Almost everything a scan reads is a banner: a string a daemon carries from
 /// its own build, which is why [`ceiling`](super::os::ceiling) holds it below a
-/// stack reading. SNMP is the exception this exists for — `sysDescr` is the
-/// machine's management agent describing the machine — and it is keyed on the
+/// stack reading. SNMP is the exception this exists for, `sysDescr` is the
+/// machine's management agent describing the machine, and it is keyed on the
 /// same port [`from_datagram`] decodes, so the decoder and the weight put on
 /// what it decodes cannot drift apart.
 pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::OsSource {
@@ -121,7 +121,7 @@ const DECODED_UDP_PORTS: &[u16] = &[161];
 mod tests {
     use super::*;
 
-    /// The whole line and the field, both offered — because a rule may be
+    /// The whole line and the field, both offered, because a rule may be
     /// written against either and only the matcher can say which fits better.
     #[test]
     fn a_structured_banner_offers_its_field_as_well_as_itself() {
@@ -154,8 +154,8 @@ mod tests {
         assert!(!reads(9_999, Protocol::Udp));
     }
 
-    /// **Every port the corpus sends a UDP probe to has a decoder for the answer,
-    /// or is named here as one that does not.**
+    /// Every port the corpus sends a UDP probe to has a decoder for the answer,
+    /// or is named here as one that does not.
     ///
     /// The two lists are authored in different places for different reasons.
     /// `assets/fingerprinting` says what to send, [`DECODED_UDP_PORTS`] says what

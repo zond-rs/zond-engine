@@ -10,13 +10,13 @@
 //!
 //! What an `assets/fingerprinting/os` TOML file is allowed to say, as types.
 //!
-//! Compiled into the build script as well as the library — `build.rs` loads this
-//! very file with `#[path]` — so a rule the build accepts is exactly a rule the
+//! Compiled into the build script as well as the library, `build.rs` loads this
+//! very file with `#[path]`, so a rule the build accepts is exactly a rule the
 //! runtime can match. Nothing here may reach for anything the build script
 //! cannot compile, which in practice means `serde` and the standard library.
 //!
 //! A rule is a table of predicates over the fields of a
-//! [`StackObservation`](super::StackObservation), and deliberately not a regex:
+//! [`StackObservation`](super::StackObservation), and not a regex:
 //! an operating-system rule matches a typed feature vector rather than text. The
 //! three predicate forms are the intersection of what nmap-os-db, p0f and Satori
 //! can express, so a translator from any of them never has to invent semantics
@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 /// from dominating every other piece of evidence about a host, which is the same
 /// reasoning that clamps `OsFingerprint::accuracy` at construction.
 ///
-/// **Two, because that is where the knob stops turning.** A verdict's accuracy
+/// Two, because that is where the knob stops turning. A verdict's accuracy
 /// is a base worth times this, clamped at
 /// [`MAX_STACK_ACCURACY`](super::MAX_STACK_ACCURACY), so a measured rule
 /// saturates at about 1.08 and a published one at about 1.4. This was ten, and
@@ -75,12 +75,12 @@ impl<T> Predicate<T> {
 
 /// Which segment a rule describes.
 ///
-/// Required on every authored rule. A reset carries no TCP options at
-/// all whatever the probe offered, and the two replies come from different code
-/// paths in one stack that can disagree about the same field — a host measured
-/// on a real segment wrote identifier zero on its SYN+ACK path and ran a counter
-/// on its reset path. A rule that does not say which segment it reads is
-/// matching two different things at once.
+/// Required on every authored rule. A reset carries no TCP options at all
+/// whatever the probe offered, and the two replies come from different code
+/// paths in one stack that can disagree about the same field, a host measured
+/// on a real segment wrote identifier zero on its SYN+ACK path and ran a
+/// counter on its reset path. A rule that does not say which segment it reads
+/// is matching two different things at once.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -115,12 +115,13 @@ pub enum ReplyKind {
 /// decades and stable across releases; refusing to use them would mean
 /// re-deriving the whole of p0f from scratch to arrive at the same table.
 ///
-/// The distinction is that a published value has not been seen **by this engine,
-/// through this probe, on a real network** — and that gap is exactly where this
-/// project has already been caught out. Option negotiation is reciprocal, so a
-/// layout the literature records is the layout a peer sends *to a probe that
-/// asked for those options*; against a probe that asked for less it is simply
-/// wrong, and it fails by matching nothing while looking perfectly correct.
+/// The distinction is that a published value has not been seen **by this
+/// engine, through this probe, on a real network**, and that gap is exactly
+/// where this project has already been caught out. Option negotiation is
+/// reciprocal, so a layout the literature records is the layout a peer sends
+/// *to a probe that asked for those options*; against a probe that asked for
+/// less it is simply wrong, and it fails by matching nothing while looking
+/// perfectly correct.
 ///
 /// So a published rule ships, and scores lower until somebody confirms it here.
 #[non_exhaustive]
@@ -131,8 +132,8 @@ pub enum Provenance {
     /// known independently. Must ship an example; the build warns otherwise.
     Measured,
 
-    /// Taken from published characteristics of the stack — the documented
-    /// defaults a family is known to have — and not yet confirmed here.
+    /// Taken from published characteristics of the stack, the documented
+    /// defaults a family is known to have, and not yet confirmed here.
     ///
     /// Scores below a measured rule, and says where it came from in `notes`.
     #[default]
@@ -204,8 +205,8 @@ impl OsIdentity {
 /// The predicates a rule tests, all optional: a field not named is not tested.
 ///
 /// Absence is "do not care", never "must be absent". A rule that needs a field
-/// to be missing says so with the field's own predicate — `mss` unset on a reset
-/// is a property of resets, not something a rule has to assert.
+/// to be missing says so with the field's own predicate: `mss` unset on a reset
+/// is a property of resets rather than something a rule has to assert.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchRule {
@@ -222,16 +223,16 @@ pub struct MatchRule {
 
     /// Whether the sender forbade fragmentation in transit.
     ///
-    /// **Measured to be unreliable on a reset.** The same labelled devices
+    /// Measured to be unreliable on a reset. The same labelled devices
     /// answered two scanners on one segment with opposite values within the
     /// hour. Authored on a reset rule only with evidence that it holds from more
     /// than one vantage point.
     pub dont_fragment: Option<Predicate<bool>>,
 
     /// The option layout, as the comma-separated letters
-    /// [`StackObservation::layout_string`] renders — `"M,S,T,N,W"`.
+    /// [`StackObservation::layout_string`] renders them: `"M,S,T,N,W"`.
     ///
-    /// **Only comparable between observations that asked the same question.**
+    /// Only comparable between observations that asked the same question.
     /// Option negotiation is reciprocal, so this is a joint fact about the peer
     /// and the probe. Every rule shipped here is written against the option set
     /// `tcp::build_probe` sends.
@@ -241,15 +242,14 @@ pub struct MatchRule {
 
     /// The advertised window exactly as written.
     ///
-    /// **For stacks that advertise a constant**, which is the other of the two
+    /// For stacks that advertise a constant, which is the other of the two
     /// ways a stack picks a window and the one
     /// [`window_units`](Self::window_units) cannot express. Darwin announces
-    /// 65535 — the largest value the field holds — whatever the path's segment
+    /// 65535, the largest value the field holds, whatever the path's segment
     /// size is, so its window is not a multiple of anything and the derived
     /// figures move with the path for no reason belonging to the sender: at an
-    /// MSS of 1460 it reads `45 x 1448 + 375`, and at 1360 it reads
-    /// `48 x 1348 + 831`. A rule keyed on those would match one path and not the
-    /// next.
+    /// MSS of 1460 it reads `45 x 1448 + 375`, and at 1360 it reads `48 x 1348
+    /// + 831`. A rule keyed on those would match one path and not the next.
     ///
     /// Use this where the stack picks a number, and
     /// [`window_units`](Self::window_units) where it picks a multiple. Using
@@ -259,9 +259,9 @@ pub struct MatchRule {
 
     /// The advertised window as a multiple of the effective segment size.
     ///
-    /// **This rather than the raw window.** A stack counts its window in units
+    /// This rather than the raw window. A stack counts its window in units
     /// of the segment size it can actually use, and negotiating a timestamp
-    /// shrinks that unit by twelve bytes — so the raw value moves with the probe
+    /// shrinks that unit by twelve bytes, so the raw value moves with the probe
     /// and the multiplier does not. Measured on one host: `20 x 1460` under one
     /// probe and `20 x 1448` under another, the same twenty either way.
     pub window_units: Option<Predicate<u16>>,
@@ -286,10 +286,10 @@ pub struct MatchRule {
     pub sack_permitted: Option<Predicate<bool>>,
 
     /// What a series of IP identifiers turned out to be, as the stable name
-    /// [`IdClass::name`](super::IdClass::name) renders — `"counting"`,
+    /// [`IdClass::name`](super::IdClass::name) renders it: `"counting"`,
     /// `"zero"`, `"scattered"`.
     ///
-    /// **A series feature, not a one-reply feature.** A rule naming it is
+    /// A series feature, not a one-reply feature. A rule naming it is
     /// matched against the classes read from several replies, which only the
     /// active path collects; the passive matcher has no series and a rule
     /// naming this predicate fails against it by the ordinary "the peer did
@@ -299,7 +299,7 @@ pub struct MatchRule {
     pub identifier_class: Option<Predicate<String>>,
 
     /// What a series of initial sequence numbers turned out to be, as
-    /// [`IsnClass::name`](super::IsnClass::name) renders — `"fixed-step"`,
+    /// [`IsnClass::name`](super::IsnClass::name) renders it: `"fixed-step"`,
     /// `"hashed"`.
     ///
     /// Version-level rules start here: whether a generator hashes (RFC 6528),
@@ -311,9 +311,9 @@ pub struct MatchRule {
 
     /// Whether the timestamp clock is shared across connections or offset
     /// randomly per one, as [`ClockClass::name`](super::ClockClass::name)
-    /// renders — `"ticking"` against `"randomised"`.
+    /// renders it: `"ticking"` against `"randomised"`.
     ///
-    /// The *rate* is deliberately not predicate-able: it is a stack constant,
+    /// The rate is not predicate-able: it is a stack constant,
     /// but the sampling jitter of a scan is not, and a rule keyed on an exact
     /// hertz would match one network and not the next.
     ///
@@ -322,11 +322,11 @@ pub struct MatchRule {
 
     /// The code byte an echo reply carried.
     ///
-    /// **Only meaningful against a probe that sent a non-zero code.** RFC 792
+    /// Only meaningful against a probe that sent a non-zero code. RFC 792
     /// and RFC 4443 §4.2 define an echo's code as zero and say nothing about
     /// what a responder should do with anything else, so stacks differ: some
     /// echo the request's code back and some write zero. A probe sending zero
-    /// cannot tell the two apart, because both answer zero — the same
+    /// cannot tell the two apart, because both answer zero, the same
     /// reciprocity trap the TCP option layout fell into, in a different field.
     /// Every rule shipped here is written against the code
     /// [`ECHO_PROBE_CODE`](crate::protocols::icmp::ECHO_PROBE_CODE) sends.
@@ -368,8 +368,8 @@ pub struct Example {
     /// Optional in the schema and **required for a TCP example**, which
     /// `build.rs` enforces. An echo reply has no window, and defaulting the
     /// field to zero instead would let a handshake example omit the single most
-    /// load-bearing value it records and still parse — recording a window of
-    /// zero, which no stack advertises, as though it had been measured.
+    /// load-bearing value it records and still parse, recording a window of zero,
+    /// which no stack advertises, as though it had been measured.
     #[serde(default)]
     pub window: Option<u16>,
     /// The announced maximum segment size.
@@ -386,7 +386,7 @@ pub struct Example {
     #[serde(default)]
     pub echo_code: u8,
     /// Whether an echo reply returned its payload unchanged. Ignored for a TCP
-    /// example, and `true` by default because that is what both RFCs require —
+    /// example, and `true` by default because that is what both RFCs require,
     /// an example recording the conformant case should not have to say so.
     #[serde(default = "yes")]
     pub echo_payload_intact: bool,
@@ -394,7 +394,7 @@ pub struct Example {
     /// What the identifier series read, as
     /// [`IdClass::name`](super::IdClass::name) renders it.
     ///
-    /// **A series rule could be matched and could not be exampled**, and the two
+    /// A series rule could be matched and could not be exampled, and the two
     /// corpus tests that catch a rule which stopped matching, or started
     /// matching the wrong family, run off examples. So the first rule to
     /// predicate on a series shipped with nothing checking it, at the moment the
@@ -500,7 +500,7 @@ impl std::fmt::Display for PredicateDefect {
 
 /// Why an authored rule cannot be used.
 ///
-/// **Every variant is a defect whose cost is invisible at runtime.** A rule with
+/// Every variant is a defect whose cost is invisible at runtime. A rule with
 /// no predicates matches every reply of its kind and names every host that ever
 /// answers; one with a backwards range matches nothing while looking perfectly
 /// correct. Neither is distinguishable downstream from detection that worked,
@@ -638,12 +638,12 @@ impl MatchRule {
 impl OsDefinition {
     /// Whether this rule is one the engine may use.
     ///
-    /// **Shared with `build.rs`**, which loads this very file, so the rules the
+    /// Shared with `build.rs`, which loads this very file, so the rules the
     /// build accepts and the rules a caller may load through
     /// [`RuleDb::try_from_rules`](super::RuleDb::try_from_rules) are one set
     /// rather than two descriptions of one idea. The build additionally *warns*
-    /// about softer things — a measured rule with no example, an unconfirmed one
-    /// that does not say what it rests on — which are advisory and stay there.
+    /// about softer things, a measured rule with no example, an unconfirmed one
+    /// that does not say what it rests on, which are advisory and stay there.
     ///
     /// [`MatchRule::validate`] does the per-predicate half.
     pub fn validate(&self) -> Result<(), RuleError> {

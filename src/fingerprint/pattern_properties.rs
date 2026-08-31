@@ -11,13 +11,14 @@
 //! Apart from [`pattern`](super::pattern) itself, and only because of where that
 //! file has to live.
 //!
-//! `build.rs` loads `pattern.rs` with `#[path]`, so the build script compiles the
-//! very same source the library does — which is what stops the patterns the build
-//! validates from drifting away from the patterns the engine can match. The build
-//! script's dependency set is its own, though, and `proptest` is a
-//! dev-dependency that is not in it. Cargo strips `#[cfg(test)]` before the build
-//! script is compiled so nothing breaks, but any tool reading that file in the
-//! build script's context sees an import it cannot resolve, and reports it.
+//! `build.rs` loads `pattern.rs` with `#[path]`, so the build script compiles
+//! the very same source the library does, which is what stops the patterns the
+//! build validates from drifting away from the patterns the engine can match.
+//! The build script's dependency set is its own, though, and `proptest` is a
+//! dev-dependency that is not in it. Cargo strips `#[cfg(test)]` before the
+//! build script is compiled so nothing breaks, but any tool reading that file
+//! in the build script's context sees an import it cannot resolve, and reports
+//! it.
 //!
 //! Keeping the property tests here rather than there costs nothing and removes
 //! that: this module is declared only by the library, so the build script never
@@ -30,7 +31,7 @@ use proptest::prelude::*;
 const LIMIT: usize = 32 * 1024 * 1024;
 
 proptest! {
-    /// The backtracking engine must *terminate* on any input — the
+    /// The backtracking engine must *terminate* on any input, the
     /// backtrack-step limit is what guarantees it. This drives a backref
     /// pattern (which forces the fancy engine) against arbitrary strings; the
     /// test completing at all is the evidence that no input hangs or panics.
