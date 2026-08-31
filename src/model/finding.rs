@@ -578,49 +578,110 @@ impl Finding {
     /// Folds another account of the same claim into this one, keeping the
     /// stronger reading, and reports whether anything changed.
     ///
-    /// Called when a detection asserts a claim a subject already carries — the
-    /// same producer, the same [`claim_id`](Self::claim_id). Certainty can only
-    /// rise, so [`Confidence`] takes the maximum; the references union; and the
-    /// newer account supplies the current verdict — its severity, its version and
-    /// hash, its title, class, and any excerpt or remediation it carries — because
-    /// a later reading is the one that cannot be recovered. The caller is trusted
-    /// to have matched the claims first; folding two different claims would be a
-    /// caller's error, not this method's to police.
+    /// Called when a detection asserts a claim a subject already carries: the
+    /// same producer, the same [`claim_id`](Self::claim_id). The caller is
+    /// trusted to have matched the claims first; folding two different claims
+    /// would be a caller's error, not this method's to police.
+    ///
+    /// **A superseded detection does not supply the verdict.** Severity, title
+    /// and class are what a detection concluded, and the [`DetectionId`] beside
+    /// them is the record of which one concluded it. Taking the verdict from
+    /// whichever account arrived second while taking the stamp only from a newer
+    /// one put the two out of step: folding a `1.0.0` reading of a claim into a
+    /// `2.0.0` one left a finding that read `2.0.0` and `Low` where `2.0.0` had
+    /// said `Critical`, which is the one thing a provenance stamp exists to make
+    /// impossible. Two reports written by two builds are enough to reach it, and
+    /// the direction that loses is the common one, since the record being folded
+    /// in is usually the older.
+    ///
+    /// So an account at a lower version supplies nothing but what is missing.
+    ///
+    /// **An account at the same version supplies the verdict**, and that is not
+    /// the same question. One detection grading one claim differently on two
+    /// occasions has read different evidence, not changed its mind, so the
+    /// reading to keep is the current one. Which is current is
+    /// [`merge`](crate::merge)'s to know: it folds documents in the order their
+    /// own clocks give, so the account arriving here second is the later scan's,
+    /// and a cipher that was `Low` in January and `Critical` in June is
+    /// `Critical`. Nothing is out of step either way, the stamps being equal.
+    ///
+    /// Two things never follow the version. **Certainty rises whatever reached
+    /// it**, because [`Confidence`] says how sure the claim is rather than what
+    /// the claim is, and a second account agreeing is worth something whichever
+    /// build produced it. **References union**, for the same reason
+    /// [`Service::merge`](crate::model::port::Service::merge) unions CPEs: a
+    /// reference is a pointer that applies, not a verdict that competes.
+    ///
+    /// The excerpt and the remediation travel with the verdict where there is
+    /// one to take, and fill a gap where there is not.
     pub fn corroborate(&mut self, other: Finding) -> bool {
+        // Destructured rather than reached through `other.…`, so a field added
+        // to this struct is a compile error here and not a value that quietly
+        // stops being folded.
+        let Finding {
+            detection,
+            title,
+            severity,
+            confidence,
+            class,
+            excerpt,
+            references,
+            remediation,
+        } = other;
+
         let mut changed = false;
 
-        let stronger = self.confidence.max(other.confidence);
+        let stronger = self.confidence.max(confidence);
         if stronger != self.confidence {
             self.confidence = stronger;
             changed = true;
         }
-        if other.severity != self.severity {
-            self.severity = other.severity;
-            changed = true;
+
+        // Same claim means the same detection id, so the version is what orders
+        // the two accounts.
+        if detection.version >= self.detection.version {
+            // Only a strictly newer detection replaces the stamp, and it brings
+            // its own content hash with it. At the same version the hashes are
+            // the same detection's, so the incumbent's stands.
+            if detection.version > self.detection.version {
+                self.detection = detection;
+                changed = true;
+            }
+
+            if severity != self.severity {
+                self.severity = severity;
+                changed = true;
+            }
+            if title != self.title {
+                self.title = title;
+                changed = true;
+            }
+            if class != self.class {
+                self.class = class;
+                changed = true;
+            }
+            if !excerpt.is_empty() && excerpt != self.excerpt {
+                self.excerpt = excerpt;
+                changed = true;
+            }
+            if remediation.is_some() && remediation != self.remediation {
+                self.remediation = remediation;
+                changed = true;
+            }
+        } else {
+            // Superseded. What it justified itself with is still better than
+            // nothing where nothing is recorded, and cannot displace what is.
+            if self.excerpt.is_empty() && !excerpt.is_empty() {
+                self.excerpt = excerpt;
+                changed = true;
+            }
+            if self.remediation.is_none() && remediation.is_some() {
+                self.remediation = remediation;
+                changed = true;
+            }
         }
-        // Same claim means the same detection id; only a newer version supersedes,
-        // and it brings its own content hash with it.
-        if other.detection.version > self.detection.version {
-            self.detection = other.detection;
-            changed = true;
-        }
-        if other.title != self.title {
-            self.title = other.title;
-            changed = true;
-        }
-        if other.class != self.class {
-            self.class = other.class;
-            changed = true;
-        }
-        if !other.excerpt.is_empty() && other.excerpt != self.excerpt {
-            self.excerpt = other.excerpt;
-            changed = true;
-        }
-        if other.remediation.is_some() && other.remediation != self.remediation {
-            self.remediation = other.remediation;
-            changed = true;
-        }
-        for reference in other.references {
+
+        for reference in references {
             changed |= self.references.insert(reference);
         }
 
@@ -804,6 +865,116 @@ mod tests {
         let refs: Vec<_> = base.references().cloned().collect();
         assert_eq!(refs.len(), 2, "references union, not replace");
         assert!(refs.contains(&Reference::Cwe(306)));
+    }
+
+    /// The direction nothing was checking, and the one a merge usually takes.
+    ///
+    /// A record being folded in is normally the older of the two: a journal read
+    /// back into a newer run, or a report written by an earlier build. The
+    /// verdict was taken from whichever account arrived second and the stamp
+    /// only from a newer one, so an older reading landed under a newer version's
+    /// name. The finding then said `2.0.0` produced a `Low`, where `2.0.0` had
+    /// said `Critical` and `1.0.0` had said `Low`, and nothing in the document
+    /// showed which had happened.
+    #[test]
+    fn an_older_account_does_not_supply_a_newer_versions_verdict() {
+        let account = |version: Version, severity: Severity, title: &str| {
+            Finding::new(
+                DetectionId::new("redis-unauth-access", version, "hash").unwrap(),
+                title,
+                severity,
+                Confidence::Probable,
+                DetectionClass::ActiveBenign,
+            )
+            .unwrap()
+        };
+
+        let mut current = account(
+            Version::new(2, 0, 0),
+            Severity::Critical,
+            "Redis, wide open",
+        );
+        let superseded = account(Version::new(1, 0, 0), Severity::Low, "Redis reachable");
+
+        current.corroborate(superseded);
+
+        assert_eq!(current.detection().version(), Version::new(2, 0, 0));
+        assert_eq!(
+            current.severity(),
+            Severity::Critical,
+            "the stamp and the verdict have to name one version"
+        );
+        assert_eq!(current.title(), "Redis, wide open");
+    }
+
+    /// One detection at one version grading a claim two ways has read two lots
+    /// of evidence, so the account arriving second stands.
+    ///
+    /// The counterpart of the test above and a different question from it. That
+    /// one is about two *detections*, settled by which of them is superseded;
+    /// this is about two *readings* by one detection, where nothing supersedes
+    /// anything and the one to keep is the current one.
+    ///
+    /// Which is current is [`merge`](crate::merge)'s to know, and it folds
+    /// documents in the order their own clocks give. `merge`'s
+    /// `two_accounts_of_one_host_keep_every_claim_and_grade_it_as_the_newer_did`
+    /// is this rule read from the other end: a cipher graded `Low` in January
+    /// and `Critical` in June is `Critical`.
+    #[test]
+    fn an_account_at_the_same_version_supplies_the_current_reading() {
+        let account = |severity: Severity| {
+            Finding::new(
+                DetectionId::new("tls-weak-cipher", Version::new(1, 0, 0), "hash").unwrap(),
+                "a weak cipher is offered",
+                severity,
+                Confidence::Probable,
+                DetectionClass::Passive,
+            )
+            .unwrap()
+        };
+
+        let mut january = account(Severity::Low);
+        assert!(january.corroborate(account(Severity::Critical)));
+        assert_eq!(january.severity(), Severity::Critical);
+
+        // And a claim that was downgraded is downgraded. The later reading is
+        // kept because it is later, not because it is worse.
+        let mut worse_before = account(Severity::Critical);
+        assert!(worse_before.corroborate(account(Severity::Low)));
+        assert_eq!(worse_before.severity(), Severity::Low);
+
+        // The stamp does not move, there being nothing newer to move it to.
+        assert_eq!(january.detection().version(), Version::new(1, 0, 0));
+    }
+
+    /// A superseded account still justifies itself, and that is worth keeping
+    /// where the record has nothing.
+    #[test]
+    fn an_older_account_fills_a_gap_it_cannot_overwrite() {
+        let account = |version: Version| {
+            Finding::new(
+                DetectionId::new("redis-unauth-access", version, "hash").unwrap(),
+                "Unauthenticated Redis access",
+                Severity::High,
+                Confidence::Probable,
+                DetectionClass::ActiveBenign,
+            )
+            .unwrap()
+        };
+
+        let mut current = account(Version::new(2, 0, 0));
+        let older = account(Version::new(1, 0, 0))
+            .with_excerpt(Excerpt::new("-ERR unknown command"))
+            .with_remediation("Require a password.");
+
+        assert!(current.corroborate(older), "a gap was filled");
+        assert_eq!(current.excerpt().as_str(), "-ERR unknown command");
+        assert_eq!(current.remediation(), Some("Require a password."));
+
+        // But it does not displace an excerpt the newer account already carried.
+        let mut carrying = account(Version::new(2, 0, 0)).with_excerpt(Excerpt::new("READONLY"));
+        carrying.corroborate(account(Version::new(1, 0, 0)).with_excerpt(Excerpt::new("older")));
+        assert_eq!(carrying.excerpt().as_str(), "READONLY");
     }
 
     #[test]

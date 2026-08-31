@@ -216,10 +216,6 @@ impl PortSet {
         self.iter().collect()
     }
 
-    /// Whether `port` is in the TCP half of the set.
-    ///
-    /// A binary search over disjoint sorted ranges, which the type is
-    /// canonical-by-construction in order to allow.
     /// The ports on one transport, as the merged ranges they are stored as.
     ///
     /// Ascending and non-overlapping from construction. Exposed as ranges rather

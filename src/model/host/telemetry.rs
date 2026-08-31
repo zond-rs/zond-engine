@@ -257,7 +257,17 @@ impl HostTelemetry {
         }
     }
 
-    /// Returns the maximum (slowest) RTT recorded in the current window.
+    /// The slowest round trip in the window.
+    ///
+    /// Taken over the [`RttSource::Direct`] samples, as every statistic here is.
+    /// **A host with only [`RttSource::SegmentWide`] samples has no slowest
+    /// round trip**, and this answers with the same one figure the rest do: the
+    /// tightest bound those samples support, which is the *smallest* of them.
+    /// That is the same fallback [`min_rtt`](Self::min_rtt) describes, and it is
+    /// worth restating here because the name says the opposite. A caller
+    /// computing
+    /// spread from `max_rtt() - min_rtt()` gets zero for such a host, which is
+    /// the honest answer: there is one bound and no spread to report.
     pub fn max_rtt(&self) -> Option<Duration> {
         if self.has_direct() {
             self.direct().max()
@@ -266,15 +276,21 @@ impl HostTelemetry {
         }
     }
 
-    /// Returns the median RTT across all samples in the current window.
+    /// The typical round trip in the window.
     ///
     /// Unlike [`average_rtt`](Self::average_rtt), the median is robust against
-    /// outliers: a single anomalously slow sample (a retransmit, a scheduling
-    /// hiccup) barely moves it, making it a better single-number summary of a
-    /// host's typical latency. For an even number of samples the two middle
-    /// values are averaged.
+    /// outliers: a single anomalously slow sample, a retransmit or a scheduling
+    /// hiccup, barely moves it, which makes it the better single-number summary
+    /// of a host's latency. For an even number of samples the two middle values
+    /// are averaged.
     ///
-    /// Returns `None` if no samples have been recorded yet.
+    /// Taken over the [`RttSource::Direct`] samples. A host with only
+    /// [`RttSource::SegmentWide`] ones gets the same tightest bound
+    /// [`min_rtt`](Self::min_rtt) describes, because their median is a figure no
+    /// reply supports and every host answering the same pair of probes would
+    /// report it.
+    ///
+    /// `None` until something has answered.
     pub fn median_rtt(&self) -> Option<Duration> {
         if !self.has_direct() {
             return self.tightest_bound();
@@ -295,7 +311,13 @@ impl HostTelemetry {
         }
     }
 
-    /// Calculates the arithmetic mean RTT from all samples in the window.
+    /// The arithmetic mean of the window's round trips.
+    ///
+    /// Taken over the [`RttSource::Direct`] samples, and replaced by the same
+    /// tightest bound for a host that produced none, exactly as
+    /// [`median_rtt`](Self::median_rtt) is. Averaging segment-wide replies is
+    /// the specific mistake this type was reshaped to prevent: it is how a
+    /// router answering in 7 ms came to be reported at 37.
     pub fn average_rtt(&self) -> Option<Duration> {
         if !self.has_direct() {
             return self.tightest_bound();
@@ -409,6 +431,33 @@ impl Default for HostTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host with nothing but segment-wide replies is described by one figure,
+    /// and every statistic answers with it.
+    ///
+    /// The behaviour was right and three of the four documents describing it
+    /// were three revisions behind: `max_rtt` said it returned the slowest,
+    /// `median_rtt` the median and `average_rtt` the mean, where all three
+    /// return the smallest. This pins what they do so the sentences and the code
+    /// cannot drift apart again, and `max_rtt` is the one worth having in a test
+    /// at all, since a caller reading its name would predict 90.
+    #[test]
+    fn segment_wide_samples_alone_give_every_statistic_one_figure() {
+        let mut bounded = HostTelemetry::new(10);
+        bounded.add_segment_wide_rtt(Duration::from_millis(10));
+        bounded.add_segment_wide_rtt(Duration::from_millis(90));
+
+        let tightest = Some(Duration::from_millis(10));
+        assert_eq!(bounded.min_rtt(), tightest);
+        assert_eq!(bounded.max_rtt(), tightest, "not the slowest of the two");
+        assert_eq!(bounded.median_rtt(), tightest, "not their median, 50");
+        assert_eq!(bounded.average_rtt(), tightest, "not their mean, 50");
+
+        // One direct reply retires the class, and the four part company again.
+        bounded.add_rtt(Duration::from_millis(20));
+        assert_eq!(bounded.min_rtt(), Some(Duration::from_millis(20)));
+        assert_eq!(bounded.max_rtt(), Some(Duration::from_millis(20)));
+    }
 
     /// Every statistic is `Option`, and an empty window is the case that makes
     /// that necessary: there is no average of nothing, and returning zero would

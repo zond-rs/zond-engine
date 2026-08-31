@@ -8,12 +8,14 @@
 
 //! # Writing a running scan down as it runs
 //!
-//! The timer that carries what a scan has found into its [`Journal`], and the
+//! The timer that carries what a scan has found into its
+//! [`Journal`](crate::journal::store::Journal), and the
 //! handle that stops it.
 //!
 //! ## Why this is the scanner's and not the journal's
 //!
-//! It reads a [`ScanProgress`] and writes a [`Journal`], and only one of those
+//! It reads a [`ScanProgress`](crate::scanner::session::ScanProgress) and writes
+//! a [`Journal`](crate::journal::store::Journal), and only one of those
 //! is something the journal knows about. Living beside the journal meant a
 //! public signature there naming a scanner type, which inverts the order
 //! `src/lib.rs` sets out and put the two modules in a cycle: `scanner` needs a

@@ -58,10 +58,27 @@ pub struct Zone {
 impl Zone {
     /// Names the interface with index `index`, as a lookup against the host
     /// reported it.
+    ///
+    /// **An index of zero is a lookup that failed, and is read as one.** Zero is
+    /// not an interface on any platform this builds for: `if_nametoindex`
+    /// returns it to report that there is no such name, and a `SocketAddrV6`
+    /// carrying it is the unsendable address this whole module exists to keep
+    /// out of a scan. So a zone built from one is
+    /// [`unresolved`](Self::unresolved), which is what it is, and the address
+    /// scoped to it answers [`is_unusable`](ScopedIp::is_unusable) rather than
+    /// being handed to a connect that fails with an error about the network.
+    ///
+    /// Taken here rather than refused, because there is only one honest reading
+    /// of a zero and a caller that has to unwrap a `Result` to say what it
+    /// already meant is worse off. A caller with a name and no index should say
+    /// so directly.
     pub fn new(index: u32, name: impl Into<Arc<str>>) -> Self {
-        Self {
-            index: Some(index),
-            name: name.into(),
+        match index {
+            0 => Self::unresolved(name),
+            index => Self {
+                index: Some(index),
+                name: name.into(),
+            },
         }
     }
 
@@ -416,6 +433,32 @@ mod tests {
             SocketAddr::V6(v6) => assert_eq!(v6.scope_id(), 4),
             SocketAddr::V4(_) => panic!("an IPv6 address produced a V4 socket address"),
         }
+    }
+
+    /// A scope id of zero is a lookup that failed, and it has to read as one.
+    ///
+    /// Zero is not an interface: it is what `if_nametoindex` returns to say
+    /// there is no such name. Taken at face value it produced a *resolved* zone
+    /// whose index cannot open a socket, so `is_unusable` answered false and
+    /// `to_socket_addr` handed back `[fe80::1]:22` with a zero scope id, which
+    /// is the exact address the first paragraph of this module says the kernel
+    /// refuses. A journal or a report naming index zero is enough to get one.
+    #[test]
+    fn a_zone_whose_index_is_zero_is_a_zone_nothing_found() {
+        let failed = ScopedIp::scoped(link_local(), Zone::new(0, "en0"));
+
+        assert_eq!(
+            failed.zone().and_then(Zone::index),
+            None,
+            "zero is not found"
+        );
+        assert!(failed.is_unusable());
+        assert_eq!(failed.to_socket_addr(22), None);
+
+        // The name survives, so a report still says which interface was meant
+        // and the address still renders the way it was written.
+        assert_eq!(failed.to_string(), "fe80::1%en0");
+        assert_eq!(failed, "fe80::1%en0".parse().expect("parses"));
     }
 
     /// A link-local address with no zone cannot be connected to, and saying so

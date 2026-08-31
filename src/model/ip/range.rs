@@ -215,6 +215,12 @@ impl Ipv6Range {
 
     /// Creates an `Ipv6Range` valid on the interface with scope id `zone`.
     ///
+    /// `Some(0)` is read as `None`, for the reason
+    /// [`Zone::new`](crate::model::ip::scoped::Zone::new) gives: zero is what a
+    /// name lookup returns when there is no such interface, so a range carrying
+    /// it names no segment. Kept as `Some(0)` it would read as scoped, which is
+    /// the one answer that stops [`is_ambiguous`](Self::is_ambiguous) saying so.
+    ///
     /// # Errors
     ///
     /// Returns [`IpError::InvalidRange`] if `start` is numerically greater than
@@ -224,7 +230,7 @@ impl Ipv6Range {
             Ok(Self {
                 start_addr: start,
                 end_addr: end,
-                zone,
+                zone: zone.filter(|index| *index != 0),
             })
         } else {
             Err(IpError::InvalidRange(IpAddr::V6(start), IpAddr::V6(end)))
@@ -618,10 +624,34 @@ mod tests {
         }
     }
 
+    /// A scope id of zero names no interface, so a range carrying one is not
+    /// scoped and has to say so.
+    ///
+    /// `is_ambiguous` is what a caller asks before deciding a link-local range
+    /// can be attributed to a segment, and it reads the zone. A `Some(0)` left
+    /// as written made the range look answered, so the question the classifier
+    /// exists to ask was never asked.
+    #[test]
+    fn a_zone_of_zero_is_no_zone_at_all() {
+        let link_local: Ipv6Addr = "fe80::1".parse().expect("literal");
+        let range = Ipv6Range::scoped(link_local, link_local, Some(0)).expect("one address");
+
+        assert_eq!(range.zone(), None);
+        assert!(
+            range.is_ambiguous(),
+            "a link-local range nothing resolved is ambiguous"
+        );
+
+        // A real index is untouched.
+        let found = Ipv6Range::scoped(link_local, link_local, Some(7)).expect("one address");
+        assert_eq!(found.zone(), Some(7));
+        assert!(!found.is_ambiguous());
+    }
+
     /// `new` is the only way to build a range, so the ordering it checks is a
     /// property of every range that exists. Without that, an inverted one is
     /// constructible and disagrees with itself: `len` cannot represent a
-    /// negative count and `to_iter` yields nothing, so a budget check and a scan
+    /// negative count and `iter` yields nothing, so a budget check and a scan
     /// read the same value differently.
     #[test]
     fn a_range_can_only_be_built_in_order() {

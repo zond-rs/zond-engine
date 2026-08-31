@@ -6490,6 +6490,7 @@ impl core::marker::Unpin for zond_engine::model::host::hardware::HardwareInfo
 impl core::marker::UnsafeUnpin for zond_engine::model::host::hardware::HardwareInfo
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::hardware::HardwareInfo
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::hardware::HardwareInfo
+pub const zond_engine::model::host::hardware::MAX_MACS_PER_HOST: usize
 pub mod zond_engine::model::host::os
 #[non_exhaustive] pub enum zond_engine::model::host::os::OsSource
 pub zond_engine::model::host::os::OsSource::HardwareVendor

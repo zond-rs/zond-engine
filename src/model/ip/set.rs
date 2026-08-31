@@ -279,12 +279,16 @@ impl IpSet {
     /// it is bound to one segment already, so the scope is established by which
     /// scanner is asking rather than by this test.
     ///
-    /// Correct whatever state the set is in: a binary search when it is merged,
-    /// and a linear scan of the unmerged ranges when it is not. The slow path
-    /// allocates nothing, because a membership test is not a reason to merge a
-    /// set the caller has not finished building.
+    /// Correct whatever state the set is in: a binary search when the address's
+    /// own family is merged, and a linear scan of that family's unmerged ranges
+    /// when it is not. The slow path allocates nothing, because a membership
+    /// test is not a reason to merge a set the caller has not finished building.
+    ///
+    /// **Per family, because the merge is.** Asking about both put every IPv6
+    /// lookup on the linear path for as long as one unmerged IPv4 range sat
+    /// beside it, which is the path a received reply takes.
     pub fn contains(&self, ip: &IpAddr) -> bool {
-        if !self.v4_dirty && !self.v6_dirty {
+        if self.is_merged(ip) {
             return self.contains_canonical(ip);
         }
         match ip {
@@ -349,7 +353,28 @@ impl IpSet {
 
     // ─── Query API (Read-Only / Sync) ────────────────────────────────────────
 
-    /// The fast path [`contains`](Self::contains) takes on a merged set.
+    /// Whether the family `ip` belongs to has been merged.
+    ///
+    /// The question [`contains`](Self::contains) asks before taking its fast
+    /// path, and it is per family because the merge is. A set that has just
+    /// gained an IPv4 range holds an IPv6 half as canonical as it was a moment
+    /// earlier, and a binary search over that half is as valid as it ever was;
+    /// [`canonicalize`](Self::canonicalize) has always known this and merged
+    /// only the family that needed it.
+    ///
+    /// Asking `!v4_dirty && !v6_dirty` instead put every IPv6 membership test on
+    /// a linear scan for as long as one unmerged IPv4 range sat beside it, which
+    /// is the path a received reply takes. Over a thousand merged IPv6 ranges
+    /// with one IPv4 address pushed after canonicalizing, twenty thousand
+    /// lookups took 276 ms where the merged set took 6.5 ms.
+    fn is_merged(&self, ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(_) => !self.v4_dirty,
+            IpAddr::V6(_) => !self.v6_dirty,
+        }
+    }
+
+    /// The fast path [`contains`](Self::contains) takes on a merged family.
     ///
     /// Private, because the assertion below is the only thing separating a
     /// binary search over sorted ranges from a binary search over unsorted
@@ -359,10 +384,12 @@ impl IpSet {
     ///
     /// # Panics
     ///
-    /// In debug builds, if the set has unmerged ranges pending.
+    /// In debug builds, if the address's own family has unmerged ranges
+    /// pending. The other family's state is not its business, for the reason
+    /// [`is_merged`](Self::is_merged) gives.
     fn contains_canonical(&self, ip: &IpAddr) -> bool {
         debug_assert!(
-            !self.v4_dirty && !self.v6_dirty,
+            self.is_merged(ip),
             "IpSet must be canonicalized before calling contains_canonical"
         );
         match ip {
@@ -987,6 +1014,10 @@ impl Extend<IpAddr> for IpSet {
     /// A set is merged per family, so extending with IPv4 addresses alone must
     /// not put IPv6 membership back on its slow path, and extending with
     /// nothing must not undo a `canonicalize` that has already run.
+    ///
+    /// Marking the family is half of that; the other half is that every read
+    /// asks about the family it is reading, which is
+    /// [`IpSet::contains`]'s to do and was the half that was missing.
     fn extend<T: IntoIterator<Item = IpAddr>>(&mut self, iter: T) {
         for ip in iter {
             match ip {
@@ -1176,6 +1207,13 @@ mod tests {
     /// A set is merged per family, so work on one must not undo the other's
     /// canonical state. Marking both put IPv6 membership back on its linear
     /// path every time an IPv4 address arrived.
+    ///
+    /// The flags are half of it and were the half that already worked. The
+    /// assertion that matters is the last one: that a read of the untouched
+    /// family still takes its fast path. Marking the family and then asking
+    /// about both is the same linear scan by a longer route, and it is what
+    /// this test used to allow, because it checked the bookkeeping and never
+    /// the thing the bookkeeping is for.
     #[test]
     fn extending_one_family_leaves_the_other_canonical() {
         let mut set = IpSet::from_iter(vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]);
@@ -1190,6 +1228,17 @@ mod tests {
         let mut untouched = IpSet::from_iter(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
         untouched.extend([]);
         assert!(!untouched.v4_dirty && !untouched.v6_dirty);
+
+        // The point of marking one family: the other keeps its binary search.
+        let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        let v4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert!(set.is_merged(&v6), "an unmerged IPv4 range is not IPv6's");
+        assert!(!set.is_merged(&v4), "and IPv4's own half is not merged");
+
+        // Which the guarded fast path is entitled to be handed, and answers.
+        assert!(set.contains_canonical(&v6));
+        assert!(set.contains(&v6));
+        assert!(set.contains(&v4), "the slow path is still correct");
     }
 
     /// One string naming both families, with a duplicate across two spellings

@@ -152,7 +152,18 @@ fn oui_db() -> Option<&'static Oui> {
 /// `None` for a [locally administered](MacAddr::is_locally_administered)
 /// address, which is allocated to nobody, and for an address whose OUI is not
 /// in the database.
+///
+/// The first of those is answered here rather than left to the database. It is a
+/// property of the address, readable from one bit, and reading it is what makes
+/// the sentence above true of this function instead of true of a data file this
+/// crate does not maintain. It is also the cheap answer for the case that asks
+/// most often: a device randomizing its address produces a new one per rotation,
+/// and each would otherwise be rendered to a string and looked up to establish
+/// what its second bit already said.
 pub fn vendor(mac: &MacAddr) -> Option<String> {
+    if mac.is_locally_administered() {
+        return None;
+    }
     let entry = oui_db()?.lookup_by_mac(&mac.to_string()).ok()??;
     Some(entry.company_name.clone())
 }
@@ -260,9 +271,20 @@ mod tests {
     /// administered, which means it was assigned by whoever is using it rather
     /// than allocated to a manufacturer. There is no OUI to resolve, and no
     /// data update can give it one.
+    ///
+    /// Answered by reading the bit, so this asserts something about the two
+    /// lines above it. It used to assert that the OUI database happens to hold
+    /// no entry for `02:…`, which is the dependency's business and not this
+    /// crate's, and which the test beside it declines to do for the same
+    /// reason. The second address here is a registered OUI with the local bit
+    /// set, which no database can answer for either way.
     #[test]
     fn a_locally_administered_address_has_no_vendor() {
         let local = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x00);
         assert_eq!(vendor(&local), None);
+
+        let registered_but_local = MacAddr::new(0x02, 0x0C, 0x29, 0xAB, 0xCD, 0xEF);
+        assert!(registered_but_local.is_locally_administered());
+        assert_eq!(vendor(&registered_but_local), None);
     }
 }

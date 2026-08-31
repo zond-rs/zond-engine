@@ -20,8 +20,13 @@
 //!
 //! Each address carries when it was last seen, so
 //! [`HardwareInfo::most_recent_mac`] can answer the first question and
-//! [`HardwareInfo::prune_stale_macs`] can bound the record on a monitor that
-//! runs for days against a segment full of randomizing devices.
+//! [`HardwareInfo::prune_stale_macs`] can drop what a caller has stopped caring
+//! about.
+//!
+//! The history is bounded by [`MAX_MACS_PER_HOST`] whether or not anybody
+//! prunes it, because the addresses in it are chosen by whoever is sending
+//! frames. `prune_stale_macs` is the caller's policy on top of that and not the
+//! thing that makes the record safe to hold.
 //!
 //! Those timestamps are wall-clock [`SystemTime`], matching
 //! [`Host::first_seen`](crate::model::host::Host::first_seen), so they mean the
@@ -30,6 +35,28 @@
 
 use crate::model::mac::{self, MacAddr};
 use std::{collections::BTreeMap, sync::Arc, time::SystemTime};
+
+/// The most hardware addresses one host will have recorded against it.
+///
+/// A bound on what a single target can make this process allocate, in the one
+/// place the addresses are entirely the target's to choose: a source MAC is a
+/// field in a frame, and a host that sends gratuitous ARP under a fresh one each
+/// time grows this record for as long as it is listening. Every other collection
+/// in the model has such a bound. This one did not, and a segment sweep holds a
+/// record per address on it.
+///
+/// Sixty-four is past every legitimate reason one address answers under several.
+/// A multi-homed machine offers two or three, a first-hop redundancy pair
+/// exchanging a virtual address offers a handful more, and a device randomizing
+/// its address on one segment offers one per rotation, which is tens over a week
+/// rather than thousands. It is short of where the list stops describing a
+/// device and starts logging a flood.
+///
+/// A record at the bound drops its least recently seen address to take a new
+/// one, rather than refusing the new one: the newest sighting is what
+/// [`HardwareInfo::most_recent_mac`] answers with, and a record that refused it
+/// would answer with an address the host has stopped using.
+pub const MAX_MACS_PER_HOST: usize = 64;
 
 /// The MAC addresses a host has answered under, and who made its hardware.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,11 +108,46 @@ impl HardwareInfo {
     /// [`prune_stale_macs`](Self::prune_stale_macs) removes, so stamping them
     /// with the time of the rebuild would reorder a host's addresses and make
     /// every one of them look fresh.
+    ///
+    /// Past [`MAX_MACS_PER_HOST`] the least recently seen address makes room.
+    /// A rebuild replaying more sightings than the bound therefore keeps the
+    /// most recent of them, which is the same set a live capture would have
+    /// been left holding.
     pub fn record_mac_seen_at(&mut self, mac: MacAddr, at: SystemTime) {
-        self.macs.insert(mac, at);
+        let is_new = self.macs.insert(mac, at).is_none();
+        if is_new {
+            self.evict_oldest_past_the_bound();
 
-        if self.vendor.is_none() {
-            self.vendor = mac::vendor(&mac).map(Arc::from);
+            // Only on an address this record had not already seen. A repeated
+            // sighting cannot resolve a vendor a previous one could not, and
+            // the lookup renders the address to a string and queries a database
+            // to answer, which is a cost worth paying once per address rather
+            // than once per frame.
+            if self.vendor.is_none() {
+                self.vendor = mac::vendor(&mac).map(Arc::from);
+            }
+        }
+    }
+
+    /// Drops the least recently seen addresses until the record is within
+    /// [`MAX_MACS_PER_HOST`].
+    ///
+    /// The oldest goes, including where that is the address just recorded: a
+    /// rebuild replaying an old sighting into a full record has not learned
+    /// anything newer than what is already there. Ties break on the address, so
+    /// two sightings a clock could not separate are still resolved the same way
+    /// twice and a report does not depend on which arrived first.
+    fn evict_oldest_past_the_bound(&mut self) {
+        while self.macs.len() > MAX_MACS_PER_HOST {
+            let Some(oldest) = self
+                .macs
+                .iter()
+                .min_by_key(|(mac, seen)| (*seen, *mac))
+                .map(|(mac, _)| *mac)
+            else {
+                return;
+            };
+            self.macs.remove(&oldest);
         }
     }
 
@@ -118,19 +180,24 @@ impl HardwareInfo {
     /// The record grows by one address every time a device randomizes its MAC,
     /// and on a segment full of phones that is a steady trickle with no natural
     /// end. A scan is short enough not to care; a monitor watching one segment
-    /// for days is not, and this is what bounds it.
+    /// for days is not.
     ///
+    /// A policy rather than a safety bound. [`MAX_MACS_PER_HOST`] is what stops
+    /// the record growing without limit, and it applies whether this is ever
+    /// called; what this expresses is an age, which only the caller knows.
     /// Discarding an address discards the evidence that the host ever used it,
-    /// so the cutoff is the caller's to choose: it is the age past which they
-    /// would no longer act on the information.
+    /// so the cutoff is theirs to choose: it is the age past which they would no
+    /// longer act on the information.
     pub fn prune_stale_macs(&mut self, cutoff: SystemTime) {
         self.macs.retain(|_, last_seen| *last_seen >= cutoff);
     }
 
-    /// Merges architectural findings from another hardware record.
+    /// Folds another record of this host's hardware into this one.
     ///
-    /// MAC addresses are interleaved, with the newest timestamp prevailing
-    /// for each unique address to prevent timeline regressions.
+    /// The addresses are interleaved and the newer sighting of each wins, so
+    /// neither record's timeline runs backwards. The union is held to
+    /// [`MAX_MACS_PER_HOST`] afterwards, since two records that each fit the
+    /// bound need not fit it together.
     pub fn merge(&mut self, other: HardwareInfo) {
         for (mac, time) in other.macs {
             self.macs
@@ -142,6 +209,7 @@ impl HardwareInfo {
                 })
                 .or_insert(time);
         }
+        self.evict_oldest_past_the_bound();
 
         if self.vendor.is_none() {
             self.vendor = other.vendor;
@@ -197,6 +265,71 @@ mod tests {
             .insert(newest, SystemTime::now() + Duration::from_secs(60));
 
         assert_eq!(hw.most_recent_mac(), Some(newest));
+    }
+
+    /// A source MAC is a field in a frame, so the number of them a host answers
+    /// under is whatever the sender chooses. The record has to be bounded by
+    /// something this crate decides.
+    ///
+    /// It was not. `prune_stale_macs` was named as the bound and has never had a
+    /// caller, so the map grew for as long as anything was listening: two
+    /// hundred thousand sightings left two hundred thousand entries, held per
+    /// address on the segment.
+    ///
+    /// The newest survive, since the oldest is what makes room. That is the half
+    /// worth asserting: a bound that kept the *first* sixty-four addresses would
+    /// leave `most_recent_mac` naming one the host stopped using.
+    #[test]
+    fn a_flood_of_addresses_is_held_to_the_bound_and_keeps_the_newest() {
+        let start = SystemTime::now();
+        let mut hw = HardwareInfo::new(MacAddr::new(0x02, 0, 0, 0, 0, 0));
+
+        let sightings = u32::try_from(MAX_MACS_PER_HOST).expect("a small bound") * 4;
+        for i in 0..sightings {
+            let b = i.to_be_bytes();
+            hw.record_mac_seen_at(
+                MacAddr::new(0x02, b[0], b[1], b[2], b[3], 0xff),
+                start + Duration::from_secs(u64::from(i) + 1),
+            );
+        }
+
+        assert_eq!(hw.macs().len(), MAX_MACS_PER_HOST);
+
+        let last = sightings - 1;
+        let b = last.to_be_bytes();
+        let newest = MacAddr::new(0x02, b[0], b[1], b[2], b[3], 0xff);
+        assert_eq!(hw.most_recent_mac(), Some(newest), "the newest survives");
+        assert!(
+            !hw.macs().contains_key(&MacAddr::new(0x02, 0, 0, 0, 0, 0)),
+            "and the first sighting is what made room"
+        );
+    }
+
+    /// Two records that each fit the bound need not fit it together, so the
+    /// union is held to it as well. A fold is otherwise the way past a cap.
+    #[test]
+    fn merging_two_records_holds_their_union_to_the_bound() {
+        let start = SystemTime::now();
+
+        let fill = |first: u8| {
+            let mut hw = HardwareInfo::new(MacAddr::new(0x02, first, 0, 0, 0, 0));
+            for i in 0..u8::try_from(MAX_MACS_PER_HOST).expect("a small bound") {
+                hw.record_mac_seen_at(
+                    MacAddr::new(0x02, first, 0, 0, 0, i),
+                    start + Duration::from_secs(u64::from(i) + 1),
+                );
+            }
+            hw
+        };
+
+        let mut a = fill(0xaa);
+        let b = fill(0xbb);
+        assert_eq!(a.macs().len(), MAX_MACS_PER_HOST);
+        assert_eq!(b.macs().len(), MAX_MACS_PER_HOST);
+
+        a.merge(b);
+
+        assert_eq!(a.macs().len(), MAX_MACS_PER_HOST);
     }
 
     /// [`HardwareInfo::prune_stale_macs`] can empty the map, so the accessor

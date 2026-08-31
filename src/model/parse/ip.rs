@@ -301,8 +301,15 @@ fn parse_scoped(
         return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
     }
 
+    // A resolver answering zero has not found an interface: zero is what a name
+    // lookup returns to say there is no such name, and a range carrying it names
+    // no segment. Refused here rather than passed on, since this is the one
+    // place that still holds the name the caller wrote and can say which one
+    // went unanswered.
     let lookup = zones.ok_or_else(|| IpParseError::UnknownInterface(zone.to_string()))?;
-    let index = lookup(zone).ok_or_else(|| IpParseError::UnknownInterface(zone.to_string()))?;
+    let index = lookup(zone)
+        .filter(|index| *index != 0)
+        .ok_or_else(|| IpParseError::UnknownInterface(zone.to_string()))?;
 
     let scoped =
         crate::model::ip::range::Ipv6Range::scoped(v6.start_addr(), v6.end_addr(), Some(index))
@@ -495,6 +502,28 @@ mod tests {
         let set = to_set(&["fe80::aa"], None, None).expect("parses");
 
         assert!(set.v6()[0].is_ambiguous());
+    }
+
+    /// A resolver answering zero has not answered.
+    ///
+    /// Zero is what a name lookup returns to say there is no such interface, so
+    /// a resolver that passes it on is reporting a failure as a success. Taken
+    /// at face value it built a range that reads as scoped, which stops
+    /// `is_ambiguous` reporting the problem, and a scan then sent probes at
+    /// `fe80::` on whichever link the kernel picked.
+    ///
+    /// Refused here rather than downstream, because this is the last place that
+    /// still holds the name the target was written with.
+    #[test]
+    fn a_resolver_that_answers_zero_has_not_found_an_interface() {
+        fn zones(_: &str) -> Option<u32> {
+            Some(0)
+        }
+
+        assert!(matches!(
+            to_set(&["fe80::aa%en0"], None, Some(&zones)),
+            Err(IpParseError::UnknownInterface(name)) if name == "en0"
+        ));
     }
 
     /// An interface nobody recognizes is a target that does not mean what it

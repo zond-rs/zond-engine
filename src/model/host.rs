@@ -53,25 +53,35 @@ pub use telemetry::HostTelemetry;
 
 /// The most ports one host will have recorded against it.
 ///
-/// A bound on what a single target can make this process allocate. A host
-/// answering on every endpoint of a full scan is a record two orders of
-/// magnitude larger than any real one, multiplied by however many such devices
-/// sit on the segment.
+/// Every endpoint this build can probe: one whole port space for each transport
+/// in [`Protocol::ALL`]. Derived rather than written out, so a transport added
+/// there widens this along with it.
 ///
-/// **It is one protocol's whole port space, because anything less truncates a
-/// scan somebody deliberately asked for.** It used to be a thousand, which is a
-/// number an ordinary scan reaches: probing `1-1024` on a host that answers —
-/// and a closed port is an answer — recorded a thousand ports, dropped the last
-/// twenty-four without a word, and marked a domestic router as a tarpit. The cap
-/// has to sit above every port set a person would write, and the largest of
-/// those is the whole of TCP.
+/// **It has to sit here and cannot sit lower, because anything lower truncates
+/// a scan somebody deliberately asked for.** It has been too low twice. It was a
+/// thousand, which is a number an ordinary scan reaches: probing `1-1024` on a
+/// host that answers, and a closed port is an answer, recorded a thousand ports,
+/// dropped the last twenty-four without a word, and marked a domestic router as
+/// a tarpit. It was then one protocol's port space, which is not the largest
+/// port set a person can write either: [`PortSet`](crate::model::port::PortSet)
+/// spells the UDP half, so `1-65535,u:1-65535` is one specification and twice
+/// that number, and half of it was dropped.
 ///
 /// A host that reaches it is marked [`NetworkRole::Truncated`] and further ports
-/// are dropped. The ports already recorded are real observations, and the
-/// marking is what says the list is not complete. That is a separate claim from
-/// [`NetworkRole::Tarpit`], which is about what the host did rather than about
-/// what this process would hold.
-pub const MAX_PORTS_PER_HOST: usize = u16::MAX as usize + 1;
+/// are dropped. **No scan can reach it**, since the map is keyed on a port
+/// number and a transport and so holds exactly this many endpoints; what the
+/// check still guards is a `Protocol` variant that never reached
+/// [`Protocol::ALL`], which would leave this derivation short of the key space
+/// it is meant to match. The ports already recorded are real observations either
+/// way, and the marking is what says the list is not complete.
+///
+/// It is not the bound on what a single target can make this process allocate,
+/// though it reads like one. That bound is the key space, and it is the map's to
+/// enforce rather than this constant's; a host answering on every endpoint of a
+/// scan that asked about every endpoint is a large record the operator asked
+/// for. [`NetworkRole::Tarpit`] is the claim about the host, and it is a
+/// separate one.
+pub const MAX_PORTS_PER_HOST: usize = (u16::MAX as usize + 1) * Protocol::ALL.len();
 
 /// How many **open** ports make a host implausible as a host.
 ///
@@ -238,9 +248,16 @@ pub enum NetworkRole {
     /// A claim about the *scan* rather than about the host: it says only that
     /// [`MAX_PORTS_PER_HOST`] was reached and that findings past it were
     /// dropped. Kept apart from [`Tarpit`](Self::Tarpit) because the two used to
-    /// be one thing and the conflation was wrong in both directions — an
-    /// ordinary host probed widely enough was reported as a tarpit, and a real
-    /// tarpit answering a narrow scan was reported as nothing at all.
+    /// be one thing and the conflation was wrong in both directions: an ordinary
+    /// host probed widely enough was reported as a tarpit, and a real tarpit
+    /// answering a narrow scan was reported as nothing at all.
+    ///
+    /// **No scan this build can run assigns it.** `MAX_PORTS_PER_HOST` is now
+    /// derived from the port space and [`Protocol::ALL`], so it equals what a
+    /// host's port map can hold and nothing a scan reports can pass it. The
+    /// variant stays because the check does: a `Protocol` variant that never
+    /// reached `Protocol::ALL` puts the cap below the key space, and this is
+    /// what a report would then say about the ports that went missing.
     Truncated,
 }
 
@@ -370,16 +387,6 @@ impl Filtering {
     ];
 }
 
-/// A single machine, and what a scan established about it.
-///
-/// Identity first: the addresses it answers at, its name and its hardware. Then
-/// what was found on it.
-///
-/// A host holds every address it is known by. A dual-stack machine answering at
-/// three of them is one device, and reporting it as three is the failure this
-/// type is shaped to avoid. See
-/// [`consider_primary_ip`](Self::consider_primary_ip) for which address leads.
-///
 /// What one source concluded, reduced to the parts that make it a *distinct*
 /// claim.
 ///
@@ -410,9 +417,15 @@ type OsClaim = (
 /// meaning anything.
 const MAX_OS_EVIDENCE: usize = 8;
 
-/// [`OsFingerprint`] is boxed. It is both the largest thing a host can carry and
-/// one of the rarest, since most hosts in a scan never get one, so holding it by
-/// reference keeps a `Host` cheap to move in collections of thousands.
+/// A single machine, and what a scan established about it.
+///
+/// Identity first: the addresses it answers at, its name and its hardware. Then
+/// what was found on it.
+///
+/// A host holds every address it is known by. A dual-stack machine answering at
+/// three of them is one device, and reporting it as three is the failure this
+/// type is shaped to avoid. See
+/// [`consider_primary_ip`](Self::consider_primary_ip) for which address leads.
 #[must_use]
 #[derive(Debug, Clone)]
 pub struct Host {
@@ -432,6 +445,10 @@ pub struct Host {
     reasons: HashSet<StatusReason>,
 
     /// Identified operating system metadata.
+    ///
+    /// Boxed. [`OsFingerprint`] is both the largest thing a host can carry and
+    /// one of the rarest, since most hosts in a scan never get one, so holding
+    /// it by reference keeps a `Host` cheap to move in collections of thousands.
     os: Option<Box<OsFingerprint>>,
 
     /// What each source concluded about this host's operating system, kept so a
@@ -851,7 +868,6 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
-    /// Sets the OS fingerprint and bumps `last_seen`.
     /// What each source has concluded about this host's operating system.
     ///
     /// The input [`resolve`](crate::fingerprint::os::resolve) is run over, and
@@ -1017,6 +1033,9 @@ impl Host {
     /// address's last-seen time, which is what makes the two methods above mean
     /// anything.
     ///
+    /// Bounded by [`MAX_MACS_PER_HOST`](hardware::MAX_MACS_PER_HOST), because a
+    /// source address is a field in a frame and a series has no natural end.
+    ///
     /// [`most_recent_mac`]: HardwareInfo::most_recent_mac
     /// [`prune_stale_macs`]: HardwareInfo::prune_stale_macs
     pub fn record_mac(&mut self, mac: MacAddr) {
@@ -1136,6 +1155,9 @@ impl Host {
     /// Returns whether the finding was recorded. `false` means the host is at
     /// [`MAX_PORTS_PER_HOST`] and has been marked [`NetworkRole::Truncated`];
     /// the caller is told rather than left to assume the port list is complete.
+    /// No scan reaches that cap, for the reason
+    /// [`Truncated`](NetworkRole::Truncated) gives, so a caller checking this
+    /// return is checking a guard rather than an outcome.
     ///
     /// A host that crosses [`TARPIT_OPEN_PORTS`] open ports is marked
     /// [`NetworkRole::Tarpit`] and keeps recording. That is a different claim
@@ -1574,33 +1596,48 @@ mod tests {
         assert_eq!(host.to_string(), "192.168.0.100 (Up) [tarpit]");
     }
 
-    /// A dropped port is a truncated list, and the caller is the only one that
-    /// can decide what to do about it.
+    /// The largest scan a person can write, recorded whole.
+    ///
+    /// `1-65535,u:1-65535` is one port specification, and against a host that
+    /// answers on all of it, and a closed port is an answer, it is
+    /// `MAX_PORTS_PER_HOST` endpoints. Every one has to be kept and the record
+    /// has to say it is complete.
+    ///
+    /// The cap was one protocol's port space and the map holds two, so this
+    /// scan recorded its TCP half, refused all 65 536 UDP findings, and reported
+    /// the host as truncated. The operator was told the list was short and not
+    /// which half was missing.
     #[test]
-    fn add_port_reports_whether_the_finding_was_recorded() {
+    fn a_full_scan_of_both_transports_is_recorded_whole() {
         let mut host = Host::new(IP_ADDR);
-        for i in 0..MAX_PORTS_PER_HOST {
-            assert!(host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Closed)));
+
+        for protocol in Protocol::ALL {
+            for port in u16::MIN..=u16::MAX {
+                assert!(
+                    host.add_port(Port::new(port, protocol, PortState::Closed)),
+                    "{protocol:?}/{port} was refused by a scan that asked for it"
+                );
+            }
         }
 
-        assert!(!host.add_port(Port::new(1, Protocol::Udp, PortState::Closed)));
-        assert!(host.network_roles().contains(&NetworkRole::Truncated));
+        assert_eq!(host.port_count(), MAX_PORTS_PER_HOST);
+        assert!(
+            !host.network_roles().contains(&NetworkRole::Truncated),
+            "a complete port list was reported as truncated"
+        );
     }
 
-    /// The cap is exact: the host takes ports up to it and is marked only once
-    /// one is actually refused. Marking a host at the boundary would label a
-    /// complete port list as truncated.
+    /// The cap sits exactly at what the map can hold, so no scan reaches it.
+    ///
+    /// Pinned because that is the property, not an accident of the number: the
+    /// map is keyed on a port number and a transport, and the cap is derived
+    /// from the same two. A cap written as a literal, or one that stopped
+    /// counting the transports, is a scan silently cut short, which is what it
+    /// was twice.
     #[test]
-    fn the_truncation_marking_appears_only_once_a_port_is_refused() {
-        let mut host = Host::new(IP_ADDR);
-        for i in 0..MAX_PORTS_PER_HOST {
-            host.add_port(Port::new(i as u16, Protocol::Tcp, PortState::Closed));
-        }
-        assert!(!host.network_roles.contains(&NetworkRole::Truncated));
-
-        host.add_port(Port::new(1, Protocol::Udp, PortState::Closed));
-        assert!(host.network_roles.contains(&NetworkRole::Truncated));
-        assert_eq!(host.port_count(), MAX_PORTS_PER_HOST);
+    fn the_cap_is_what_the_port_map_can_hold() {
+        let endpoints = (usize::from(u16::MAX) + 1) * Protocol::ALL.len();
+        assert_eq!(MAX_PORTS_PER_HOST, endpoints);
     }
 
     /// The regression the two markings were split apart over.
@@ -1752,20 +1789,26 @@ mod tests {
         );
     }
 
-    /// A merge folds one record's ports into another's through the same
-    /// entry point, so the cap and both markings apply there too — an overlap is
-    /// not two ports, and the total that reaches the cap is the union.
+    /// A merge folds one record's ports into another's through the same entry
+    /// point, so an overlap is not two ports and an endpoint on the other
+    /// transport is not a collision.
+    ///
+    /// The second half is the one that was wrong. A UDP endpoint folded into a
+    /// record holding the whole of TCP was refused and marked the merged host
+    /// truncated, because the cap counted both transports against one
+    /// transport's port space.
     #[test]
-    fn merging_two_records_applies_the_cap_to_their_union() {
-        // The whole of TCP, which is exactly the cap and so is kept whole.
+    fn merging_two_records_keeps_the_union_of_their_ports() {
+        // The whole of TCP, half of what the map can hold.
         let mut h1 = Host::new(IP_ADDR);
         for port in u16::MIN..=u16::MAX {
             h1.add_port(Port::new(port, Protocol::Tcp, PortState::Closed));
         }
-        assert_eq!(h1.port_count(), MAX_PORTS_PER_HOST);
+        assert_eq!(h1.port_count(), usize::from(u16::MAX) + 1);
         assert!(!h1.network_roles.contains(&NetworkRole::Truncated));
 
-        // An overlapping half, which adds nothing, and one endpoint that does.
+        // An overlapping thousand, which adds nothing, and one endpoint on the
+        // other transport, which does.
         let mut h2 = Host::new(IP_ADDR);
         for port in 0..1_000u16 {
             h2.add_port(Port::new(port, Protocol::Tcp, PortState::Closed));
@@ -1774,11 +1817,18 @@ mod tests {
 
         h1.merge(h2);
 
-        assert_eq!(h1.port_count(), MAX_PORTS_PER_HOST, "the union, capped");
-        assert!(h1.network_roles.contains(&NetworkRole::Truncated));
+        assert_eq!(
+            h1.port_count(),
+            usize::from(u16::MAX) + 2,
+            "the union: the whole of TCP and one UDP endpoint"
+        );
+        assert!(
+            !h1.network_roles.contains(&NetworkRole::Truncated),
+            "nothing was dropped, so nothing here is truncated"
+        );
         assert!(
             !h1.network_roles.contains(&NetworkRole::Tarpit),
-            "nothing that was kept is open, so nothing here is a tarpit"
+            "one open port is not a tarpit"
         );
     }
 
