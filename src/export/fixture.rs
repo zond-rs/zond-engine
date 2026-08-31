@@ -201,6 +201,7 @@ fn probe_stats() -> ProbeStats {
             received: 271,
             dropped: 0,
             if_dropped: 0,
+            stopped_early: 0,
         }),
     }
 }

@@ -151,8 +151,8 @@ pub struct Ipv6Observation {
     pub flow_label: u32,
 }
 
-/// What the kernel did with the frames its BPF filter admitted, cumulative over
-/// a capture's lifetime.
+/// What became of the frames a capture's BPF filter admitted, cumulative over its
+/// lifetime, and whether it lasted the scan.
 ///
 /// `dropped` is the field this exists for. It counts frames that matched the
 /// filter, reached the kernel's buffer, and were discarded because this process
@@ -177,6 +177,22 @@ pub struct CaptureCounts {
     /// them. Not every platform reports this, so a zero is weaker evidence here
     /// than in [`dropped`](Self::dropped).
     pub if_dropped: u64,
+    /// How many captures ended before they were told to.
+    ///
+    /// **Counted in captures, not frames**, unlike the three above, and here for
+    /// the same reason [`dropped`](Self::dropped) is: it is a loss the scanner
+    /// cannot infer. A capture whose reader stops is an interface that hears
+    /// nothing for the rest of the run, and every reply that would have arrived
+    /// on it is silence indistinguishable from a host that did not answer.
+    ///
+    /// Where [`dropped`](Self::dropped) says frames were lost, this says a link
+    /// was. Non-zero means part of the receive path was not there for part of
+    /// the scan, and the counts beside it describe less of the network than they
+    /// appear to.
+    ///
+    /// A scan that opened one capture reports at most one. A scan across eight
+    /// interfaces reports how many of the eight went deaf.
+    pub stopped_early: u64,
 }
 
 impl std::ops::Add for CaptureCounts {
@@ -192,6 +208,7 @@ impl std::ops::Add for CaptureCounts {
             received: self.received.saturating_add(other.received),
             dropped: self.dropped.saturating_add(other.dropped),
             if_dropped: self.if_dropped.saturating_add(other.if_dropped),
+            stopped_early: self.stopped_early.saturating_add(other.stopped_early),
         }
     }
 }
@@ -230,11 +247,13 @@ mod tests {
                 received: 10,
                 dropped: 1,
                 if_dropped: 0,
+                stopped_early: 0,
             },
             CaptureCounts {
                 received: 5,
                 dropped: 0,
                 if_dropped: 2,
+                stopped_early: 0,
             },
         ]
         .into_iter()
@@ -253,11 +272,13 @@ mod tests {
             received: u64::MAX,
             dropped: u64::MAX,
             if_dropped: u64::MAX,
+            stopped_early: 0,
         };
         let one = CaptureCounts {
             received: 1,
             dropped: 1,
             if_dropped: 1,
+            stopped_early: 0,
         };
 
         let total = huge + one;

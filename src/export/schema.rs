@@ -1220,6 +1220,12 @@ pub struct CaptureDto {
     /// Not every platform reports this, so a zero is weaker evidence here than
     /// in `dropped`.
     pub if_dropped: u64,
+    /// How many captures ended before they were told to.
+    ///
+    /// Counted in captures rather than frames, unlike the three above. Non-zero
+    /// means an interface stopped hearing part-way through, so the counts beside
+    /// it describe less of the network than they appear to.
+    pub stopped_early: u64,
 }
 
 impl CaptureDto {
@@ -1229,6 +1235,7 @@ impl CaptureDto {
             received: counts.received,
             dropped: counts.dropped,
             if_dropped: counts.if_dropped,
+            stopped_early: counts.stopped_early,
         }
     }
 }

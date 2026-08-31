@@ -1265,6 +1265,15 @@ fn write_probe_stats(out: &mut dyn Write, stats: &ProbeStatsDto) -> Result<(), E
         if capture.if_dropped > 0 {
             counts.push(format!("{} dropped by the interface", capture.if_dropped));
         }
+        // Last, and phrased as a link rather than a number, because it is the
+        // one entry here that says the counts beside it describe less of the
+        // network than they look like they do.
+        if capture.stopped_early > 0 {
+            counts.push(match capture.stopped_early {
+                1 => "one capture stopped early and heard nothing after".to_string(),
+                many => format!("{many} captures stopped early and heard nothing after"),
+            });
+        }
         fact(out, "capture", &counts.join(" · "))?;
     }
 

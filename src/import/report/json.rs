@@ -923,6 +923,8 @@ struct CaptureDto {
     received: u64,
     dropped: u64,
     if_dropped: u64,
+    #[serde(default)]
+    stopped_early: u64,
 }
 
 impl CaptureDto {
@@ -931,6 +933,7 @@ impl CaptureDto {
             received: self.received,
             dropped: self.dropped,
             if_dropped: self.if_dropped,
+            stopped_early: self.stopped_early,
         }
     }
 }

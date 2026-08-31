@@ -630,6 +630,7 @@ mod tests {
             received: 40,
             dropped: 2,
             if_dropped: 0,
+            stopped_early: 0,
         };
         let stats = audit.stats(
             ScannerKind::Routed,
@@ -684,6 +685,7 @@ mod tests {
             received: 881,
             dropped: 17,
             if_dropped: 0,
+            stopped_early: 0,
         };
 
         assert_eq!(

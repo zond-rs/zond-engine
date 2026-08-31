@@ -2556,6 +2556,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::Bucke
 pub zond_engine::export::schema::CaptureDto::dropped: u64
 pub zond_engine::export::schema::CaptureDto::if_dropped: u64
 pub zond_engine::export::schema::CaptureDto::received: u64
+pub zond_engine::export::schema::CaptureDto::stopped_early: u64
 impl zond_engine::export::schema::CaptureDto
 pub fn zond_engine::export::schema::CaptureDto::new(zond_engine::model::capture::CaptureCounts) -> Self
 impl core::clone::Clone for zond_engine::export::schema::CaptureDto
@@ -6319,6 +6320,7 @@ pub struct zond_engine::model::capture::CaptureCounts
 pub zond_engine::model::capture::CaptureCounts::dropped: u64
 pub zond_engine::model::capture::CaptureCounts::if_dropped: u64
 pub zond_engine::model::capture::CaptureCounts::received: u64
+pub zond_engine::model::capture::CaptureCounts::stopped_early: u64
 impl core::clone::Clone for zond_engine::model::capture::CaptureCounts
 pub fn zond_engine::model::capture::CaptureCounts::clone(&self) -> zond_engine::model::capture::CaptureCounts
 impl core::cmp::Eq for zond_engine::model::capture::CaptureCounts
@@ -10492,6 +10494,7 @@ pub struct zond_engine::record::CaptureRecord
 pub zond_engine::record::CaptureRecord::dropped: u64
 pub zond_engine::record::CaptureRecord::if_dropped: u64
 pub zond_engine::record::CaptureRecord::received: u64
+pub zond_engine::record::CaptureRecord::stopped_early: u64
 impl core::clone::Clone for zond_engine::record::CaptureRecord
 pub fn zond_engine::record::CaptureRecord::clone(&self) -> zond_engine::record::CaptureRecord
 impl core::cmp::Eq for zond_engine::record::CaptureRecord

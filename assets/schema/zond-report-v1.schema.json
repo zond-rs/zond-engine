@@ -180,7 +180,8 @@
       "required": [
         "received",
         "dropped",
-        "if_dropped"
+        "if_dropped",
+        "stopped_early"
       ],
       "properties": {
         "received": {
@@ -192,6 +193,10 @@
         },
         "if_dropped": {
           "description": "Frames discarded by the interface or driver before the capture saw them. Not every platform reports this, so a zero is weaker evidence here than in `dropped`.",
+          "$ref": "#/$defs/count"
+        },
+        "stopped_early": {
+          "description": "How many captures ended before they were told to, counted in captures rather than frames. Non-zero means an interface stopped hearing part-way through the scan, so the counts beside it describe less of the network than they appear to.",
           "$ref": "#/$defs/count"
         }
       }

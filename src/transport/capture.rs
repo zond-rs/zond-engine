@@ -374,6 +374,12 @@ struct CaptureStats {
     received: AtomicU64,
     dropped: AtomicU64,
     if_dropped: AtomicU64,
+    /// Whether this reader ended before it was told to.
+    ///
+    /// A flag here and a count in [`CaptureCounts`], because one capture either
+    /// lasted or it did not, and what a report wants to know is how many of them
+    /// did.
+    stopped_early: AtomicBool,
 }
 
 impl CaptureStats {
@@ -392,6 +398,7 @@ impl CaptureStats {
             received: self.received.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
             if_dropped: self.if_dropped.load(Ordering::Relaxed),
+            stopped_early: u64::from(self.stopped_early.load(Ordering::Relaxed)),
         }
     }
 }
@@ -894,17 +901,21 @@ fn reader_loop(
                 }
             }
             Err(pcap::Error::TimeoutExpired) => {}
-            Err(pcap::Error::NoMorePackets) => break,
             Err(e) => {
-                // Said as what it costs rather than as what went wrong. This
-                // thread is the only thing reading this interface, so ending
-                // here makes the link deaf for the rest of the scan, and every
+                // Recorded as well as logged, where the link is actually lost.
+                // This thread is the only thing reading this interface, so
+                // ending here makes it deaf for the rest of the scan, and every
                 // reply that would have arrived on it is silence a scanner
-                // cannot tell from a host that did not answer.
-                error!(
-                    "capture on {name} stopped and will hear nothing further \
-                     ({e}); replies arriving on this link are lost from here on"
-                );
+                // cannot tell from a host that did not answer. That is the loss
+                // `CaptureCounts` exists to carry, and a log line is not the
+                // record.
+                if ends_the_link(&e) {
+                    counters.stopped_early.store(true, Ordering::Relaxed);
+                    error!(
+                        "capture on {name} stopped and will hear nothing further \
+                         ({e}); replies arriving on this link are lost from here on"
+                    );
+                }
                 break;
             }
         }
@@ -936,6 +947,23 @@ fn reader_loop(
             counts.received
         );
     }
+}
+
+/// Whether a capture ending on `error` leaves the link deaf, or merely reached
+/// the end of what it had to give.
+///
+/// The distinction is the whole of what [`CaptureCounts::stopped_early`] means,
+/// and it is a function so that it can be stated and tested rather than living
+/// in the shape of a match nothing can reach. A live capture never runs out of
+/// packets, so `NoMorePackets` is a savefile ending normally; everything else
+/// is a receive path that stopped part-way through a scan.
+///
+/// [`CaptureCounts::stopped_early`]: crate::model::capture::CaptureCounts::stopped_early
+fn ends_the_link(error: &pcap::Error) -> bool {
+    !matches!(
+        error,
+        pcap::Error::NoMorePackets | pcap::Error::TimeoutExpired
+    )
 }
 
 /// Copies `libpcap`'s current counters into `counters`.
@@ -1174,7 +1202,73 @@ mod tests {
                 received: 140,
                 dropped: 3,
                 if_dropped: 1,
+                stopped_early: 0,
             })
+        );
+    }
+
+    /// Which endings leave a link deaf, and which are a capture finishing.
+    ///
+    /// The test the counting one below could not be: setting the flag happens
+    /// inside a loop that needs a live capture, so the decision is a function
+    /// and this is what holds it. A version that counted every `Err` would
+    /// report a savefile read to its end as a lost interface; one that counted
+    /// none would put the count back where it was, which is nowhere.
+    #[test]
+    fn a_capture_that_ran_out_of_packets_did_not_lose_its_link() {
+        assert!(!ends_the_link(&pcap::Error::NoMorePackets));
+        assert!(!ends_the_link(&pcap::Error::TimeoutExpired));
+
+        for failure in [
+            pcap::Error::PcapError("the device went away".to_string()),
+            pcap::Error::InvalidString,
+            pcap::Error::IoError(std::io::ErrorKind::PermissionDenied),
+        ] {
+            assert!(
+                ends_the_link(&failure),
+                "{failure:?} left the link readable"
+            );
+        }
+    }
+
+    /// A capture that stopped is counted, and counted in captures rather than
+    /// frames, so a scan across several interfaces says how many went deaf.
+    ///
+    /// This was a log line and nothing else. The counters are what a report
+    /// carries, and a capture that ended is the most total form of the loss they
+    /// exist to make visible: an interface that hears nothing more, whose
+    /// silence a scanner cannot tell from hosts that did not answer. A run could
+    /// report a healthy receive path with one of eight links dead since the
+    /// first second.
+    #[test]
+    fn a_capture_that_stopped_early_is_counted_as_one() {
+        let lasted = stats_of(100, 0, 0);
+        let stopped = stats_of(4, 0, 0);
+        stopped.stopped_early.store(true, Ordering::Relaxed);
+
+        assert_eq!(lasted.snapshot().stopped_early, 0);
+        assert_eq!(stopped.snapshot().stopped_early, 1);
+
+        // Summed across the guard's captures, so the number is how many links
+        // were lost rather than whether any were.
+        let guard = guard_over(vec![lasted, stopped, stats_of(7, 0, 0)]);
+        let counts = guard.counts().expect("three captures");
+        assert_eq!(counts.stopped_early, 1);
+        assert_eq!(counts.received, 111, "the frames they did hear still count");
+
+        let all_stopped: Vec<_> = (0..3)
+            .map(|_| {
+                let stats = stats_of(1, 0, 0);
+                stats.stopped_early.store(true, Ordering::Relaxed);
+                stats
+            })
+            .collect();
+        assert_eq!(
+            guard_over(all_stopped)
+                .counts()
+                .expect("three captures")
+                .stopped_early,
+            3
         );
     }
 
@@ -1210,6 +1304,7 @@ mod tests {
                 received: 900,
                 dropped: 9,
                 if_dropped: 0,
+                stopped_early: 0,
             }
         );
     }
