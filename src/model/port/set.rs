@@ -55,7 +55,7 @@ const FIRST_PORT: u16 = 1;
 
 /// Errors that can occur when parsing a port range string.
 #[non_exhaustive]
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PortSetParseError {
     /// A port was not a number, or was too large to be one. Ports are 16-bit,
     /// so `70000` fails here rather than wrapping to `4464`.

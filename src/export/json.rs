@@ -47,9 +47,8 @@ pub struct JsonExporter {
     pretty: bool,
 }
 
-/// Written out rather than derived, because a derived one reads `pretty` as
-/// `false` and hands back the compact exporter [`JsonExporter::new`] documents
-/// as the thing it is not. Two constructors for one type have to agree.
+/// Written out rather than derived: a derived one reads `pretty` as `false` and
+/// hands back a compact exporter, which is not what [`JsonExporter::new`] gives.
 impl Default for JsonExporter {
     fn default() -> Self {
         Self::new(ExportOptions::default())
@@ -61,9 +60,8 @@ impl JsonExporter {
     ///
     /// Indented is the default because the usual destination is a file somebody
     /// will open, and because a report that diffs line by line is worth more
-    /// than one that saves bytes. The engine already sorts hosts, ports and
-    /// every set it exports for exactly that reason; emitting them all on one
-    /// line would throw the property away at the last step.
+    /// than one that saves bytes. The engine sorts hosts, ports and every set it
+    /// exports for the same reason.
     pub fn new(options: ExportOptions) -> Self {
         Self {
             options,
@@ -96,9 +94,6 @@ impl Exporter for JsonExporter {
     fn export(&self, report: &ScanReport, out: &mut dyn Write) -> Result<(), ExportError> {
         let document = ReportDto::new(report, &self.options);
 
-        // `serde_json` writes straight through to the writer as it serializes,
-        // and `ReportDto` yields hosts from an iterator, so the document is
-        // never assembled anywhere - not as a string, not as a `Value`.
         let written = if self.pretty {
             serde_json::to_writer_pretty(&mut *out, &document)
         } else {
@@ -106,8 +101,8 @@ impl Exporter for JsonExporter {
         };
         written.map_err(|error| write::render_error(FORMAT, error))?;
 
-        // A trailing newline, so the file is a well-formed POSIX text file and
-        // appending output after it does not produce a broken line.
+        // A POSIX text file ends in a newline, and appending after one that
+        // does not would join two documents on a line.
         out.write_all(b"\n")?;
         Ok(())
     }
@@ -150,11 +145,10 @@ mod tests {
     /// The two halves of `engine` name the same build, whoever produced the
     /// findings.
     ///
-    /// They did not. `name` was fixed at this engine's and `version` was the
-    /// report's own attribution, so exporting a report read out of nmap's XML
-    /// wrote `zond-engine` paired with `nmap 7.94` — a build that never existed.
-    /// What produced the findings is a different question and `produced_by` is
-    /// where it is answered.
+    /// They once did not. `name` was fixed at this engine's while `version` was
+    /// the report's own attribution, so exporting a report read out of nmap's
+    /// XML wrote `zond-engine` paired with `nmap 7.94`, a build that never
+    /// existed. What produced the findings is `produced_by`.
     #[test]
     fn the_engine_object_names_the_build_that_wrote_the_document() {
         let foreign =

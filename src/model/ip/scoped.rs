@@ -272,7 +272,7 @@ impl fmt::Display for ScopedIp {
 
 /// Why a scoped address could not be read from a string.
 #[non_exhaustive]
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ScopedIpError {
     /// What sits before the `%`, or the whole string where there is none, is
     /// not an address in either family. Carries the input as it was written.

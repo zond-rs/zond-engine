@@ -12,9 +12,7 @@
 //! Both directions read this list rather than each keeping their own. The writer
 //! emits it as the header row and fills a field per entry; the reader matches an
 //! incoming header against it to decide whether the table is one this engine
-//! wrote, and maps each column it recognises by name. Two copies of this list
-//! would let a rename land in one direction and not the other, which produces no
-//! error at all — just a table that stops being recognised as its own.
+//! wrote, then maps each column it recognises by name.
 
 /// The column names, in order. Host columns first, then the port columns that
 /// are empty on a host with no ports.
@@ -49,21 +47,19 @@ pub const COLUMNS: [&str; 25] = [
 /// The characters that make a spreadsheet read a cell as a formula, which the
 /// writer hides behind an apostrophe and the reader takes back off.
 ///
-/// Here rather than in either direction for the reason [`COLUMNS`] is: a
-/// character one side guards and the other does not know to unguard is a cell
-/// that reads back with a stray apostrophe in it, and nothing errors. The two
-/// lists had already drifted while each carried a comment claiming they were
-/// kept in step.
+/// A character one side guards and the other does not know to unguard reads back
+/// with a stray apostrophe in it, and nothing errors, so the list is shared for
+/// the same reason [`COLUMNS`] is.
 ///
-/// A carriage return is in the list and is not a formula character. It belongs
-/// here anyway, because it is guarded for the same reason and by the same
-/// apostrophe: a cell beginning with one is a cell a spreadsheet mangles.
+/// The carriage return is not a formula character. It is guarded by the same
+/// apostrophe because a cell beginning with one is a cell a spreadsheet
+/// mangles.
 #[cfg(any(feature = "export-csv", feature = "import-csv"))]
 pub const FORMULA_LEADERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
 
 /// How many of [`COLUMNS`] describe the port rather than the host.
 ///
-/// A count, not a second list and not an index: the port columns are the last
-/// `PORT_COLUMNS` of [`COLUMNS`] and the host columns are everything before
-/// them, so the boundary sits at `COLUMNS.len() - PORT_COLUMNS`.
+/// The port columns are the last `PORT_COLUMNS` entries and the host columns are
+/// everything before them, so the boundary sits at
+/// `COLUMNS.len() - PORT_COLUMNS`.
 pub const PORT_COLUMNS: usize = 12;

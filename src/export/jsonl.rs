@@ -13,10 +13,10 @@
 //! ## What this buys over a JSON document
 //!
 //! A JSON document is only valid when it is complete. Kill the process, fill the
-//! disk, or lose the pipe half way through writing a /16 and what is on disk is
-//! not a shorter report - it is not JSON at all, and every host already written
-//! is unreadable. That is the wrong failure mode for the output of a scan that
-//! may have taken an hour.
+//! disk or lose the pipe half way through writing a /16 and what is on disk is
+//! not a shorter report but a file that is not JSON, with every host already
+//! written unreadable. That is the wrong failure mode for a scan that may have
+//! taken an hour.
 //!
 //! Here every line stands alone. A truncated file is a complete file with fewer
 //! hosts in it, a consumer can process the first host before the last is
@@ -37,13 +37,12 @@
 //!
 //! Strip `type` from a `host` line and it is byte-identical to an element of the
 //! document's `hosts` array, so one parser reads both formats. The tag is a
-//! field rather than a position because a line that has to be the first line to
-//! mean anything is a line that cannot be `grep`ed out, concatenated, or
-//! reordered - which is most of the reason to choose this format.
+//! field rather than a position, since a line that has to come first to mean
+//! anything cannot be grepped out, concatenated or reordered.
 //!
-//! The `report` record carries everything the document has except the hosts. It
-//! is written first because that is the only order in which a consumer reading
-//! progressively learns what it is reading before it reads it.
+//! The `report` record carries everything the document has except the hosts, and
+//! is written first so a consumer reading progressively learns what it is
+//! reading before it reads it.
 
 use std::io::Write;
 
@@ -98,9 +97,6 @@ impl Exporter for JsonLinesExporter {
         let header = ReportHeaderDto::new(report, &self.options);
         write_line(out, &tagged(REPORT_RECORD, &header))?;
 
-        // One host is rendered, written and dropped before the next is built,
-        // which is what keeps a scan of any size costing a host's worth of
-        // memory to export.
         for host in report.hosts() {
             let host = HostDto::new(host, &self.options);
             write_line(out, &tagged(HOST_RECORD, &host))?;
@@ -112,10 +108,9 @@ impl Exporter for JsonLinesExporter {
 
 /// Serializes one record and terminates the line.
 ///
-/// The newline is written separately rather than being part of the record so
-/// that a serialization failure cannot leave a half-written object followed by
-/// a line break, which a consumer would read as a complete but malformed
-/// record.
+/// The newline is written separately rather than being part of the record, so a
+/// serialization failure cannot leave a half-written object followed by a line
+/// break that a consumer reads as a complete record.
 fn write_line<T: Serialize>(out: &mut dyn Write, record: &T) -> Result<(), ExportError> {
     serde_json::to_writer(&mut *out, record).map_err(|error| write::render_error(FORMAT, error))?;
     out.write_all(b"\n")?;
@@ -131,9 +126,8 @@ fn tagged<'a, T: Serialize>(tag: &'static str, body: &'a T) -> Tagged<'a, T> {
 /// object.
 ///
 /// The tag is emitted first so a consumer can dispatch on it without buffering
-/// the rest of the line. Flattening rather than nesting is what makes a `host`
-/// line the document's host object with one field added, instead of a different
-/// shape that happens to contain it.
+/// the rest of the line. Flattening rather than nesting makes a `host` line the
+/// document's host object with one field added.
 #[derive(Serialize)]
 struct Tagged<'a, T: Serialize> {
     #[serde(rename = "type")]

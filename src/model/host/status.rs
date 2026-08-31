@@ -137,6 +137,39 @@ pub enum StatusProtocol {
     Custom(Arc<str>),
 }
 
+impl StatusProtocol {
+    /// Every protocol event this build names, in declaration order.
+    ///
+    /// [`Custom`](Self::Custom) is not here and cannot be: it carries a name a
+    /// strategy chose, so there is no fixed set of them to list. What a document
+    /// says about it is a `custom:` prefix rather than a member of an
+    /// enumeration, and the exported schema matches on the prefix.
+    ///
+    /// Here because the schema does hold the eight below as a closed list, and
+    /// until this existed that list was maintained by hand against this enum
+    /// with nothing comparing the two. The export conformance suite reads only
+    /// the vocabularies that publish an `ALL`, and its own documentation says
+    /// why: a name the schema advertises and the engine cannot produce is a
+    /// promise to a third party that both report readers then refuse, and it is
+    /// how `sctp` sat in `$defs/protocol` for a release. This was the one closed
+    /// enum in the document the suite could not see.
+    ///
+    /// A slice where every other `ALL` in the module is a fixed-size array. The
+    /// difference is `Custom`: a variant holding an `Arc<str>` makes this enum
+    /// the one vocabulary that is not `Copy`, and an array would be moved out of
+    /// by the first `for` loop to read it.
+    pub const ALL: &'static [StatusProtocol] = &[
+        Self::Arp,
+        Self::Ndp,
+        Self::IcmpEcho,
+        Self::IcmpUnreachable,
+        Self::TcpSyn,
+        Self::Tcp,
+        Self::Dhcp,
+        Self::Udp,
+    ];
+}
+
 /// A structured rationale for a host's reachability state.
 ///
 /// `StatusReason` pairs a protocol event with optional human-readable or machine-parsable

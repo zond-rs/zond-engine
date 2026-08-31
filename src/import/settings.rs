@@ -29,17 +29,15 @@
 //!
 //! ## The engine never reads the filesystem on its own
 //!
-//! This is the rule the whole module is arranged around, and it is not a
-//! preference. A library that silently absorbs whatever is in the running
-//! account's home directory is a supply-chain problem wearing a convenience
-//! feature's clothes: an embedder who links this crate into a web service has
-//! not agreed to have that service's behaviour changed by a file they never
+//! A library that absorbs whatever is in the running account's home directory is
+//! a supply-chain problem: an embedder who links this crate into a web service
+//! has not agreed to have that service's behaviour changed by a file they never
 //! looked at.
 //!
 //! So nothing here happens unless a caller asks for it, by name:
 //!
-//! - [`paths::user`] and [`paths::system`] *compute* where a settings file
-//!   would live. They read environment variables and touch no disk.
+//! - [`paths::user`] and [`paths::system`] compute where a settings file would
+//!   live. They read environment variables and touch no disk.
 //! - [`load`] opens a path the caller passes. [`read`] takes a reader and does
 //!   not open anything, for a front end whose settings live in a database or an
 //!   upload.
@@ -82,34 +80,30 @@
 //! # }
 //! ```
 //!
-//! A front end that wants none of this constructs [`ZondConfig`] itself and
-//! never calls into this module, which is exactly what an embedded engine
-//! should do.
+//! A front end that wants none of this constructs [`ZondConfig`] itself and never
+//! calls into this module, which is what an embedded engine should do.
 //!
 //! ## TOML, and why that barely matters
 //!
-//! The on-disk form is TOML: it is already an unconditional dependency of this
-//! crate, it has comments - which is what lets [`provision`] write a file that
-//! explains itself - and `[profiles.<name>]` is exactly the shape of the
-//! feature.
+//! The on-disk form is TOML. It is already an unconditional dependency of this
+//! crate, it has comments, which lets [`provision`] write a file that explains
+//! itself, and `[profiles.<name>]` is the shape of the feature.
 //!
-//! But the format is only a serialization. [`Settings`] is an ordinary struct of
-//! `Option` fields, so a front end keeping its settings in Postgres, in a
-//! browser's local storage, or in memory constructs one directly and never
-//! touches TOML or a filesystem at all.
+//! The format is only a serialization, though. [`Settings`] is an ordinary struct
+//! of `Option` fields, so a front end keeping its settings in Postgres, in a
+//! browser's local storage or in memory constructs one directly and never touches
+//! TOML or a filesystem.
 //!
 //! ## Every field that overrides is optional, and that is the whole design
 //!
-//! [`Settings`] holds `Option` for everything a later layer replaces, so that
-//! *unset* and *set to the default value* stay distinguishable. Without that,
-//! layering is impossible: a user file could never override a system file back
-//! to a default, because "back to the default" would be indistinguishable from
-//! "said nothing".
+//! [`Settings`] holds `Option` for everything a later layer replaces, so unset and
+//! set to the default value stay distinguishable. Without that a user file could
+//! never override a system file back to a default, since doing so would be
+//! indistinguishable from saying nothing.
 //!
-//! [`exclude`](Settings::exclude) is the exception and is a bare
-//! [`Exclusions`]. It is the one key that accumulates rather than overrides, so
-//! there is no "said nothing" for it to be told apart from: an empty set adds
-//! nothing, which is exactly what silence means. See
+//! [`exclude`](Settings::exclude) is the exception and is a bare [`Exclusions`].
+//! It is the one key that accumulates rather than overrides, so it has no silence
+//! to be told apart from: an empty set adds nothing. See
 //! [`overlay`](Settings::overlay) for why that key accumulates.
 //!
 //! Layers, each overriding the one before:
@@ -121,21 +115,20 @@
 //! ## Never `#[derive(Deserialize)]` on `ZondConfig`
 //!
 //! The same argument that keeps `Serialize` off `Host`. Deriving welds the file
-//! format to the struct layout, and the first field rename turns into a breaking
+//! format to the struct layout, and the first field rename becomes a breaking
 //! change for every profile anybody has written. This module is the hand-written
 //! boundary that costs one file and buys the freedom to move.
 //!
 //! ## What a settings file may not do
 //!
-//! It sets numbers and chooses between named alternatives. That is the entire
+//! It sets numbers and chooses between named alternatives, and that is the entire
 //! vocabulary. There is no include directive, no key naming a path that gets
 //! opened, and no key naming a command. A file synced from a team repository is
-//! input nobody vouches for, and the way to keep that safe is for there to be
-//! nothing in the grammar worth attacking.
+//! input nobody vouches for, so there is nothing in the grammar worth attacking.
 //!
 //! Nor may it be enormous. [`read`] and [`load`] refuse a document past
-//! [`MAX_DOCUMENT_BYTES`], which is a constant rather than a parameter because
-//! there is nothing here anybody has a reason to tune; see that constant.
+//! [`MAX_DOCUMENT_BYTES`], a constant rather than a parameter since there is
+//! nothing here worth tuning.
 
 pub mod paths;
 
@@ -161,24 +154,20 @@ pub const FILE_NAME: &str = "engine.toml";
 ///
 /// A constant rather than a parameter, unlike
 /// [`ImportLimits`](crate::import::ImportLimits) on a target list. A target list
-/// is a file whose size is the caller's business: a scope document may name a
-/// million addresses and a caller who has vetted it lifts the bound. A settings
-/// file is a handful of keys somebody typed, [`TEMPLATE`] is under four
-/// kilobytes with every key in it, and no caller has a reason to want a larger
-/// one. There is nothing here to tune.
+/// is a file whose size is the caller's business, where a settings file is a
+/// handful of keys somebody typed and [`TEMPLATE`] is under four kilobytes with
+/// every key in it.
 ///
-/// What it stops is the one thing that could happen by accident or on purpose:
-/// [`read`] and [`load`] hold the whole document, and [`parse`] then holds two
-/// parsed copies of it, so an enormous file costs several times its own size in
-/// memory before anything reads a key.
+/// [`read`] and [`load`] hold the whole document and [`parse`] then holds two
+/// parsed copies, so an enormous file costs several times its own size in memory
+/// before anything reads a key.
 pub const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
 
 /// The template [`provision`] writes.
 ///
-/// Every key is present and every key is commented out, so a freshly created
-/// file documents the whole vocabulary and changes nothing. That property is
-/// deliberate and is pinned by a test: creating a settings file must never
-/// change what a scan does.
+/// Every key is present and every key is commented out, so a freshly created file
+/// documents the whole vocabulary and changes nothing. A test pins that: creating
+/// a settings file must never change what a scan does.
 pub const TEMPLATE: &str = include_str!("../../assets/settings/engine.toml");
 
 /// What went wrong reading, writing or applying settings.
@@ -243,9 +232,9 @@ impl Provisioned {
 /// Something a document said that this build did not understand.
 ///
 /// Reported rather than dropped, and rather than fatal. A misspelled
-/// `max_probe_rate` that silently does nothing means a scan runs at a rate the
-/// user believes they changed, which is the worst kind of failure because
-/// everything appears to work. Making it fatal is also wrong: it would stop an
+/// `max_probe_rate` that does nothing means a scan runs at a rate the user
+/// believes they changed, with everything appearing to work. Fatal is wrong too:
+/// it would stop an
 /// older engine from reading a profile a colleague wrote with a newer one.
 ///
 /// So the caller is handed these and decides. A CLI prints them; a CI harness
@@ -281,7 +270,7 @@ impl fmt::Display for SettingsWarning {
 pub struct Loaded {
     /// The document.
     pub document: SettingsDocument,
-    /// Keys this build does not know. Never empty-checked for you: a caller
+    /// Keys this build does not know. Not empty-checked for the caller: one
     /// that wants to ignore them has to hold them first.
     pub warnings: Vec<SettingsWarning>,
 }
@@ -302,9 +291,9 @@ pub struct SettingsDocument {
 impl SettingsDocument {
     /// The settings for `profile`, layered onto the document's defaults.
     ///
-    /// `None` asks for the defaults alone. A name the document does not define
-    /// is an error listing the names that would have worked, rather than a
-    /// silent fall back to the defaults - a user who asked for `stealth` and
+    /// `None` asks for the defaults alone. A name the document does not define is
+    /// an error listing the names that would have worked, rather than a silent
+    /// fall back to the defaults. A user who asked for `stealth` and
     /// quietly got a full-rate scan has been failed badly.
     pub fn resolve(&self, profile: Option<&str>) -> Result<Settings, SettingsError> {
         let mut settings = self.defaults.clone();
@@ -332,24 +321,21 @@ impl SettingsDocument {
 /// for why that is the design rather than a convenience.
 ///
 /// Mirrors the fields of [`ZondConfig`] that are worth setting once and
-/// forgetting. Deliberately not all of them, and deliberately nothing beyond
-/// them:
+/// forgetting, which is not all of them:
 ///
-/// - **`segment_sweep` is missing** because it is decided by the target
-///   expression the user typed and belongs to the front end that parsed it. A
-///   file must not be able to turn a single-host scan into a segment sweep
-///   behind the user's back.
-/// - **`exclude` is present, and it is the same argument read the other way.**
-///   A document may narrow a scan and may not widen one. Nothing it can say
-///   here puts a packet on the wire that would not otherwise have been sent, so
-///   a file the user has not read cannot surprise them the way `segment_sweep`
-///   would — and an administrator with a range that must never be scanned has
-///   nowhere else to put it. Layering it unions rather than overrides; see
+/// - **`segment_sweep` is missing.** It is decided by the target expression the
+///   user typed and belongs to the front end that parsed it. A file must not be
+///   able to turn a single-host scan into a segment sweep behind the user's back.
+/// - **`exclude` is present**, which is the same argument read the other way. A
+///   document may narrow a scan and may not widen one. Nothing it says here puts
+///   a packet on the wire that would not otherwise have gone out, and an
+///   administrator with a range that must never be scanned has nowhere else to
+///   put it. Layering it unions rather than overrides; see
 ///   [`overlay`](Self::overlay).
-/// - **Nothing about presentation is here at all** — no banner, no verbosity, no
-///   terminal handling. This document configures a scan. How a scan is displayed
-///   belongs to whatever program is displaying it, in a file of its own; see
-///   [`ZondConfig`] for where that line is drawn and why.
+/// - **Nothing about presentation is here.** No banner, no verbosity, no terminal
+///   handling. This document configures a scan, and how one is displayed belongs
+///   to whatever program is displaying it, in a file of its own. See
+///   [`ZondConfig`] for where that line is drawn.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -377,7 +363,7 @@ pub struct Settings {
     pub dampen_silent_hosts: Option<bool>,
     /// The ports a scan covers when the caller names none.
     ///
-    /// Held as written rather than parsed on the way in, because a port
+    /// Held as written rather than parsed on the way in, since a port
     /// specification is a [`PortSet`] grammar and this struct is a document.
     /// [`ports`](Self::ports) parses it.
     pub default_ports: Option<String>,
@@ -389,16 +375,16 @@ pub struct Settings {
     /// exclude = ["10.0.5.0/24", "192.168.1.10-20", "2001:db8::/64"]
     /// ```
     ///
-    /// **Parsed on the way in, unlike [`default_ports`](Self::default_ports),
-    /// and the difference is deliberate.** A malformed port specification
-    /// degrades to the built-in list, which is visible in the result and costs
-    /// nothing but a wider scan. A malformed exclusion that degraded the same
-    /// way would scan the range somebody wrote down to keep out of, and nothing
-    /// in the output would say so. So it is a document error, raised where the
+    /// Parsed on the way in, unlike [`default_ports`](Self::default_ports). A
+    /// malformed port specification degrades to the built-in list, which is
+    /// visible in the result and costs nothing but a wider scan. A malformed
+    /// exclusion degrading the same way would scan the range somebody wrote down
+    /// to keep out of, with nothing in the output saying so. So it is a document
+    /// error, raised where the
     /// document is read, and there is no accessor to forget to call.
     ///
-    /// **Names and keywords are refused.** `lan` names a different network on
-    /// every machine that reads the file and `db.internal` a different address
+    /// Names and keywords are refused. `lan` names a different network on every
+    /// machine that reads the file and `db.internal` a different address
     /// every time it is looked up, and neither belongs in a value written once
     /// and applied to every scan afterwards. A front end resolving an exclusion
     /// typed at the moment it is used has
@@ -440,20 +426,18 @@ impl Settings {
             default_ports,
         );
 
-        // The one key that accumulates. Every setting above answers "how should
-        // a scan be run", and the latest answer wins; `exclude` answers "where
-        // may it not go", and a later layer overriding that would let a user's
-        // file drop the range an administrator wrote into the system-wide one —
-        // producing a scan indistinguishable from a correct one. Unioning is
-        // safe in the direction overriding is not: it can only ever make a scan
-        // smaller. See [`Exclusions::extend`].
+        // The one key that accumulates. Every setting above says how a scan
+        // should be run and the latest answer wins; `exclude` says where it may
+        // not go, and a later layer overriding that would let a user's file drop
+        // the range an administrator wrote into the system-wide one. Unioning
+        // can only ever make a scan smaller. See `Exclusions::extend`.
         self.exclude.extend(&other.exclude);
     }
 
     /// The default port set this document names, if it names one.
     ///
-    /// Separate from the field because a malformed specification is the
-    /// caller's to report, and a document is worth loading even when one key in
+    /// Separate from the field: a malformed specification is the caller's to
+    /// report, and a document is worth loading even when one key in
     /// it is wrong.
     pub fn ports(&self) -> Option<Result<PortSet, SettingsError>> {
         self.default_ports.as_deref().map(|spec| {
@@ -497,8 +481,8 @@ impl Settings {
             config.retry.dampen_silent_hosts = value;
         }
         // Added to what the configuration already forbids rather than replacing
-        // it, for the reason `overlay` gives: a caller who resolved an
-        // exclusion from the command line before applying a document must not
+        // it, for the reason `overlay` gives. A caller who resolved an exclusion
+        // from the command line before applying a document must not
         // lose it to one, and the reverse order must not lose the document's.
         config.exclusions.extend(&self.exclude);
     }
@@ -542,9 +526,9 @@ pub fn read(input: &mut dyn BufRead) -> Result<Loaded, SettingsError> {
 /// Reads at most [`MAX_DOCUMENT_BYTES`] from `input`, naming `path` if it
 /// refuses.
 ///
-/// Bounded before the read rather than measured after it, for the reason
-/// [`crate::import::list`] bounds a line the same way: a document with no end to
-/// it must not be held in memory to discover that it is too long. One byte past
+/// Bounded before the read rather than measured after, as [`crate::import::list`]
+/// bounds a line: a document with no end must not be held in memory to discover
+/// it is too long. One byte past
 /// the ceiling is read so that a document exactly at it is still accepted.
 fn read_bounded(input: &mut dyn BufRead, path: &Path) -> Result<Loaded, SettingsError> {
     use std::io::Read as _;
@@ -569,8 +553,8 @@ fn read_bounded(input: &mut dyn BufRead, path: &Path) -> Result<Loaded, Settings
 
 /// Reads a settings document from a path.
 ///
-/// The one function in this module that opens a file, and it opens the one it
-/// was handed. See the module documentation for why that distinction is the
+/// The one function in this module that opens a file, and it opens the one it was
+/// handed. See the module documentation for why that distinction is the
 /// whole design.
 pub fn load(path: &Path) -> Result<Loaded, SettingsError> {
     let file = std::fs::File::open(path).map_err(|source| SettingsError::Io {
@@ -583,8 +567,8 @@ pub fn load(path: &Path) -> Result<Loaded, SettingsError> {
 
 /// Parses a document and collects the keys this build does not know.
 pub fn parse(text: &str) -> Result<Loaded, SettingsError> {
-    // Parsed twice on purpose. The typed pass is the document; the untyped pass
-    // is the only way to see the keys the typed one silently ignored, and
+    // Parsed twice on purpose. The typed pass is the document, and the untyped
+    // pass is the only way to see the keys the typed one ignored, and
     // silence is exactly what makes a misspelled setting dangerous.
     let raw: toml::Table = text
         .parse()
@@ -632,7 +616,7 @@ fn warn_unknown_keys(table: &str, value: &toml::Value, warnings: &mut Vec<Settin
         }
         warnings.push(SettingsWarning {
             key: format!("{table}.{key}"),
-            // The nearest key, not merely the first one close enough: a user
+            // The nearest key rather than the first one close enough: a user
             // who wrote `no_dn` should be pointed at `no_dns` rather than at
             // whichever candidate this list happens to name first.
             suggestion: KNOWN_KEYS
@@ -680,18 +664,18 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// Creates a settings file at `path` if there is not one already.
 ///
-/// This is the only function in this crate that writes to a filesystem, and it
-/// is arranged so that calling it can never cost anybody their configuration:
+/// The only function in this crate that writes to a filesystem, arranged so that
+/// calling it cannot cost anybody their configuration:
 ///
 /// - **It never overwrites.** The file is created with `create_new`, which fails
-///   if anything is already there - atomically, so two processes racing cannot
-///   both decide the file was missing.
-/// - **It never edits.** An existing file is not read, reformatted, or extended
+///   atomically if anything is already there, so two processes racing cannot both
+///   decide the file was missing.
+/// - **It never edits.** An existing file is not read, reformatted or extended
 ///   with a profile it lacks. Rewriting somebody's configuration to add a table
-///   loses their comments and their ordering, and no convenience is worth that.
+///   loses their comments and their ordering.
 /// - **What it writes changes nothing.** [`TEMPLATE`] has every key commented
-///   out, so a scan run immediately after provisioning behaves exactly as it did
-///   before. A test pins that.
+///   out, so a scan run immediately after provisioning behaves as it did before.
+///   A test pins that.
 ///
 /// Parent directories are created as needed. On Unix the directory is created
 /// `0700` and the file `0600`: a settings file records which networks somebody
@@ -720,7 +704,7 @@ pub fn provision(path: &Path) -> Result<Provisioned, SettingsError> {
                 })?;
             Ok(Provisioned::Created)
         }
-        // The one error that is not a failure: somebody else's file, or our own
+        // The one error that is not a failure: somebody else's file, or this
         // from last time, is exactly what this function wants to find.
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(Provisioned::Existed),
         Err(source) => Err(SettingsError::Io {
@@ -751,8 +735,8 @@ fn create_directory(path: &Path) -> Result<(), SettingsError> {
 /// is.
 ///
 /// The convenience a front end wants at startup: one call that leaves the user
-/// with a file to edit and tells the caller nothing surprising happened. It
-/// still has to be *called* - see the module documentation.
+/// with a file to edit. It still has to be called; see the module
+/// documentation.
 pub fn provision_user() -> Result<(PathBuf, Provisioned), SettingsError> {
     let path = paths::user().ok_or(SettingsError::NoPath)?;
     let outcome = provision(&path)?;
@@ -761,20 +745,20 @@ pub fn provision_user() -> Result<(PathBuf, Provisioned), SettingsError> {
 
 /// Loads the settings a caller should run under, from the files that exist.
 ///
-/// Reads the system file then the user file, skipping either if it is not
-/// there, layers them in that order, and then applies `profile`. A file that
-/// exists but cannot be parsed is an error: an unreadable settings file is not
-/// the same as an absent one, and treating it as absent would run a scan under
+/// Reads the system file then the user file, skipping either if it is not there,
+/// layers them in that order, then applies `profile`. A file that exists but
+/// cannot be parsed is an error: an unreadable settings file is not an absent
+/// one, and treating it as absent would run a scan under
 /// settings the user believes they wrote.
 ///
 /// Returns the resolved settings and every warning from every file. Nothing is
-/// applied to anything - hand the result to [`Settings::apply_to`].
+/// applied anywhere; hand the result to [`Settings::apply_to`].
 pub fn resolve(profile: Option<&str>) -> Result<(Settings, Vec<SettingsWarning>), SettingsError> {
     let mut settings = Settings::new();
     let mut warnings = Vec::new();
     let mut found_profile = profile.is_none();
-    // Gathered across every file so that a name nobody defined is reported
-    // against everything that *was* defined, rather than against one file's
+    // Gathered across every file so a name nobody defined is reported against
+    // everything that was defined rather than against one file's
     // half of the picture.
     let mut available: Vec<String> = Vec::new();
 
@@ -819,9 +803,9 @@ pub fn resolve(profile: Option<&str>) -> Result<(Settings, Vec<SettingsWarning>)
 
 /// Reads a value written as one of a fixed set of names.
 ///
-/// The error names what was written and what would have worked, which is the
-/// whole reason these are not plain strings in the struct: a settings file that
-/// says `tcp_technique = "stealth"` should say so at load, not scan with the
+/// The error names what was written and what would have worked, which is why
+/// these are not plain strings in the struct. A settings file that says
+/// `tcp_technique = "stealth"` should say so at load rather than scan with the
 /// wrong technique.
 fn de_named<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -852,10 +836,9 @@ fn de_effort<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ScanEffort
 /// Reads `exclude` as a list of address expressions, refusing anything the
 /// document cannot settle by itself.
 ///
-/// [`IpSet`]'s own grammar, which takes a literal address, an inclusive range
-/// and a CIDR block and nothing else — so a keyword or a hostname arrives here
-/// as a parse failure, which is the intended answer rather than a limitation
-/// worked around. See [`Settings::exclude`] for why a file is the wrong place
+/// [`IpSet`]'s own grammar takes a literal address, an inclusive range and a CIDR
+/// block and nothing else, so a keyword or a hostname arrives here as a parse
+/// failure. See [`Settings::exclude`] for why a file is the wrong place
 /// for either.
 fn de_exclusions<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Exclusions, D::Error> {
     let written = Vec::<String>::deserialize(d)?;
@@ -900,13 +883,11 @@ mod tests {
     /// Exclusions accumulate across every layer, where every other key is
     /// replaced by the one above it.
     ///
-    /// The scenario is the reason the rule exists. An administrator's
-    /// system-wide file forbids the cardholder segment; a user's file forbids a
-    /// fragile appliance of their own; a profile adds a third range. Under the
-    /// ordinary overlay rule the administrator's range would be gone the moment
-    /// the user named one, and the scan that followed would look exactly like a
-    /// correct one — which is why this is asserted rather than left to the
-    /// reader of `overlay`.
+    /// An administrator's system-wide file forbids the cardholder segment, a
+    /// user's file forbids a fragile appliance of their own, and a profile adds a
+    /// third range. Under the ordinary overlay rule the administrator's range
+    /// would be gone the moment the user named one, and the scan that followed
+    /// would look like a correct one.
     #[test]
     fn every_layer_adds_its_exclusions_and_none_replaces_another() {
         let mut administrator = document(
@@ -986,12 +967,11 @@ mod tests {
     /// A malformed exclusion stops the document, where a malformed port
     /// specification does not.
     ///
-    /// The asymmetry is the design. A bad `default_ports` degrades to the
-    /// built-in list and the result says what was scanned; a bad `exclude` that
-    /// degraded the same way would scan the range somebody wrote down to keep
-    /// out of, and nothing in the output would mention it. So the document
-    /// refuses to load — and the same refusal covers `lan` and hostnames, which
-    /// this file is the wrong place for at all.
+    /// A bad `default_ports` degrades to the built-in list and the result says
+    /// what was scanned. A bad `exclude` degrading the same way would scan the
+    /// range somebody wrote down to keep out of, with nothing in the output
+    /// mentioning it, so the document refuses to load. The same refusal covers
+    /// `lan` and hostnames, which this file is the wrong place for.
     #[test]
     fn a_malformed_exclusion_refuses_the_document() {
         for written in ["lan", "db.internal", "10.0.5.0/33"] {
@@ -1232,10 +1212,9 @@ mod tests {
     ///
     /// One direction is that the template documents everything this build reads,
     /// or a user editing the file it was handed cannot find the key they want.
-    /// The other is that the template documents nothing this build ignores, or
-    /// the file promises a setting that does nothing — which is the failure the
-    /// warnings exist to prevent, arriving from the one file the engine wrote
-    /// itself.
+    /// The other is that it documents nothing this build ignores, or the file
+    /// promises a setting that does nothing, which is the failure the warnings
+    /// exist to prevent arriving from the one file the engine wrote itself.
     #[test]
     fn the_template_documents_every_key_and_no_others() {
         let known: std::collections::BTreeSet<&str> = KNOWN_KEYS.into_iter().collect();

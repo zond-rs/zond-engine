@@ -158,16 +158,22 @@ pub enum PortState {
 
 impl PortState {
     /// Every verdict a probe can reach, in declaration order, which is least
-    /// definitive first.
+    /// definitive first and is the order this type's [`Ord`] ranks by.
     ///
-    /// Here for the reason [`Protocol::ALL`] gives, and used by everything that
-    /// has to name all six at once: a summary's distribution, a legend, and the
-    /// gate holding the exported schema to what this build can write.
+    /// Here for the reason [`Protocol::ALL`] gives, and read by the gate holding
+    /// the exported schema to what this build can write.
+    ///
+    /// It was written in neither the declaration's order nor any other, with
+    /// `Filtered` before `ClosedFiltered` and `Closed` before `Unfiltered`. The
+    /// gate compares names as a set and did not care, so nothing said so; a
+    /// caller rendering a legend from it would have got the six in an order the
+    /// type says is wrong. `model`'s own test now holds every `ALL` to its
+    /// enum's declaration order.
     pub const ALL: [PortState; 6] = [
-        Self::Filtered,
         Self::ClosedFiltered,
-        Self::Closed,
+        Self::Filtered,
         Self::Unfiltered,
+        Self::Closed,
         Self::OpenFiltered,
         Self::Open,
     ];
@@ -179,7 +185,7 @@ impl PortState {
 /// absent until something establishes it. See the module documentation for what
 /// the four optional halves each answer and why they are kept apart.
 #[must_use]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Port {
     /// The 16-bit port number.
     number: u16,
@@ -357,34 +363,41 @@ impl Port {
             "merging two different endpoints into one record"
         );
 
-        // The state this port held before the merge. Step 4 has to judge the
-        // incoming telemetry against what it actually had to beat, and step 1
-        // has already overwritten `self.state` by the time it runs.
+        // Destructured rather than reached through `other.…`, so a field added
+        // to this struct is a compile error here and not a value that quietly
+        // stops being folded.
+        let Port {
+            // The endpoint, which the assertion above has just established is
+            // this one's.
+            number: _,
+            protocol: _,
+            state,
+            service,
+            security,
+            discovery,
+            findings,
+        } = other;
+
+        // Taken before the state moves, because the telemetry below has to be
+        // judged against what it actually had to beat.
         let previous_state = self.state;
 
-        // 1. Merge State (Upgrades ambiguous states to definitive ones)
-        self.state = std::cmp::max(self.state, other.state);
+        self.state = std::cmp::max(self.state, state);
 
-        // 2. Merge Service Info (Relies on Service's internal confidence logic)
-        if let Some(other_service) = other.service {
-            if let Some(ref mut self_service) = self.service {
-                self_service.merge(other_service);
-            } else {
-                self.service = Some(other_service);
+        if let Some(service) = service {
+            match &mut self.service {
+                Some(recorded) => recorded.merge(service),
+                None => self.service = Some(service),
             }
         }
 
-        // 3. Merge Security Info
-        if let Some(other_security) = other.security {
-            if let Some(ref mut self_security) = self.security {
-                self_security.merge(other_security);
-            } else {
-                self.security = Some(other_security);
+        if let Some(security) = security {
+            match &mut self.security {
+                Some(recorded) => recorded.merge(security),
+                None => self.security = Some(security),
             }
         }
 
-        // 4. Merge Discovery.
-        //
         // The telemetry explains the state, so it follows the state. A probe
         // that upgraded this port carries the account of why it is now Open,
         // and that account replaces whatever explained the weaker verdict; a
@@ -399,14 +412,14 @@ impl Port {
         //
         // A port with no telemetry at all takes whatever is offered: an
         // explanation of a weaker verdict still beats none.
-        if other.discovery.is_some() && (other.state > previous_state || self.discovery.is_none()) {
-            self.discovery = other.discovery;
+        if discovery.is_some() && (state > previous_state || self.discovery.is_none()) {
+            self.discovery = discovery;
         }
 
-        // 5. Merge findings. A claim missing from one record is a detection that
-        // did not run there, not a retraction, so a fold adds and never removes;
-        // a claim on both corroborates through `add_finding`.
-        for finding in other.findings.into_values() {
+        // A claim missing from one record is a detection that did not run there,
+        // not a retraction, so a fold adds and never removes; a claim on both
+        // corroborates through `add_finding`.
+        for finding in findings.into_values() {
             self.add_finding(finding);
         }
     }

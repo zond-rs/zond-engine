@@ -8,11 +8,11 @@
 
 //! # Where a settings file lives
 //!
-//! Pure computation. Every function here reads environment variables and
-//! returns a path; none of them opens anything, checks whether anything exists,
-//! or creates anything. That separation is what lets a caller ask "where would
-//! my settings be?" without the asking having a side effect - and it is what
-//! keeps the engine from ever touching a filesystem it was not pointed at.
+//! Pure computation. Every function here reads environment variables and returns
+//! a path; none of them opens anything, checks whether anything exists, or
+//! creates anything. A caller can ask where its settings would be without the
+//! asking having a side effect, and the engine never touches a filesystem it was
+//! not pointed at.
 //!
 //! ## The locations
 //!
@@ -25,18 +25,17 @@
 //! that will want a file there: a front end belongs beside it as `cli.toml` or
 //! whatever it calls itself, in one directory a user can find and back up.
 //!
-//! macOS follows the Unix path rather than `~/Library/Application Support`.
-//! That is a deliberate break from the platform convention: the people who write
-//! these files reach for `~/.config`, and a scanner's configuration sitting
-//! where every other command-line tool's configuration sits is worth more than
-//! matching a convention aimed at bundled applications.
+//! macOS follows the Unix path rather than `~/Library/Application Support`. The
+//! people who write these files reach for `~/.config`, and a scanner's
+//! configuration sitting where every other command-line tool's sits is worth more
+//! than matching a convention aimed at bundled applications.
 //!
 //! ## `$XDG_CONFIG_HOME` is only honoured when it is absolute
 //!
-//! The specification requires it, and it matters more here than it does
-//! elsewhere: a relative value would put a settings file under whatever
-//! directory the process happens to be running in, which for a tool run with
-//! `sudo` from an arbitrary shell is not a location anybody chose.
+//! The specification requires it, and it matters more here than elsewhere. A
+//! relative value would put a settings file under whatever directory the process
+//! happens to be running in, which for a tool run with `sudo` from an arbitrary
+//! shell is not a location anybody chose.
 
 use std::path::PathBuf;
 
@@ -57,15 +56,12 @@ pub fn user() -> Option<PathBuf> {
 
 /// Where this user's settings *directory* would be.
 ///
-/// `%APPDATA%` is the roaming one, deliberately: settings are what a person
-/// chose and should follow them between machines on a domain, unlike the journal
-/// in `%LOCALAPPDATA%`, which is a record of what one machine did.
+/// `%APPDATA%` is the roaming one: settings are what a person chose and should
+/// follow them between machines on a domain, unlike the journal in
+/// `%LOCALAPPDATA%`, which is a record of what one machine did.
 ///
-/// Written as two whole functions rather than one with two `cfg` blocks in it,
-/// for the reason `journal::paths::state_root` gives: the block form needs a
-/// `return` that becomes the function's last expression on the platform where
-/// the other block does not exist, and that is a lint nobody sees until somebody
-/// lints for that platform.
+/// Written as two whole functions rather than one with two `cfg` blocks, for the
+/// reason `journal::paths::state_root` gives.
 #[cfg(windows)]
 pub fn user_directory() -> Option<PathBuf> {
     std::env::var_os("APPDATA")

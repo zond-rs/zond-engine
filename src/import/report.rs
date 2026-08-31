@@ -8,32 +8,31 @@
 
 //! # Reading a document as findings
 //!
-//! The rest of [`import`](crate::import) reads a document for the **targets to
-//! scan next**: addresses and ports, everything else skipped. This reads the
-//! same kind of document for **what the scan that produced it found**, and
-//! builds the [`ScanReport`] that scan would have produced.
+//! The rest of [`import`](crate::import) reads a document for the targets to scan
+//! next: addresses and ports, everything else skipped. This reads the same kind
+//! of document for what the scan that produced it found, and builds the
+//! [`ScanReport`] that scan would have produced.
 //!
 //! ## Why both, and why they stay apart
 //!
-//! "Rescan what I found" and "tell me what this scan found" are different jobs
-//! with opposite instincts. The target readers are narrow on purpose and say so:
-//! [`import::json`](crate::import::json) reads four fields and calls that
-//! narrowness the feature, because the exported schema stays free to move while
-//! nothing promises to read most of it. Widening them to carry findings would
-//! spend that freedom to serve a different caller.
+//! Rescanning what a document found and reading what it found are different jobs
+//! with opposite instincts. The target readers are narrow on purpose:
+//! [`import::json`](crate::import::json) reads four fields, which leaves the
+//! exported schema free to move while nothing promises to read most of it.
+//! Widening them to carry findings would spend that freedom on a different
+//! caller.
 //!
 //! So the readers here are separate, and the two directions share only the
-//! parsing machinery that has no opinion about either — `xml` for
-//! the documents that are XML.
+//! parsing machinery that has no opinion about either, meaning `xml` for the
+//! documents that are XML.
 //!
 //! ## What this unlocks
 //!
 //! [`diff`](crate::diff) compares two [`ScanReport`]s and asks nothing about
 //! where either came from. A scan this process ran, a scan read back out of a
-//! [`journal`](crate::journal), and a scan read back out of a *file* are the
-//! same input to it. This module is what puts the third one in reach — and a
-//! file is what people actually archive, where a journal is state a machine
-//! keeps and prunes.
+//! [`journal`](crate::journal) and a scan read back out of a file are the same
+//! input to it. This module puts the third in reach, and a file is what people
+//! archive, where a journal is state a machine keeps and prunes.
 //!
 //! So: last quarter's nmap output against tonight's scan is one call, two nmap
 //! files against each other is one call, and an exported report from a build
@@ -41,8 +40,8 @@
 //!
 //! ## A report is not evidence that this engine produced it
 //!
-//! A [`ScanReport`] built here is attributed to whatever wrote the document —
-//! `nmap 7.94`, not this crate — through
+//! A [`ScanReport`] built here is attributed to whatever wrote the document, so
+//! `nmap 7.94` rather than this crate, through
 //! [`ScanReport::recorded`](crate::report::ScanReport::recorded), and
 //! [`Provenance::engine_version`](crate::diff::Provenance::engine_version) hands
 //! that back unchanged. Nothing downstream should read a report as proof this
@@ -51,7 +50,7 @@
 //! ## The same bounds, and the same refusal to open anything
 //!
 //! Everything the module documentation of [`import`](crate::import) says applies
-//! here without exception. A reader takes a [`BufRead`] and never opens a file,
+//! here. A reader takes a [`BufRead`] and never opens a file,
 //! [`ImportLimits`] are part of the call rather than a constant, and exceeding
 //! one is an error naming what exceeded it.
 
@@ -69,10 +68,10 @@ use crate::report::ScanReport;
 
 /// Reads a document as the report of the scan that produced it.
 ///
-/// The mirror of [`Exporter`](crate::export::Exporter), which writes one. A
-/// reader takes bytes from wherever the caller got them and returns the whole
-/// report, because a report is a document with a shape rather than a stream of
-/// independent records: the phase it belongs to is stated once, at the top.
+/// The mirror of [`Exporter`](crate::export::Exporter), which writes one. A reader
+/// takes bytes from wherever the caller got them and returns the whole report,
+/// since a report is a document with a shape rather than a stream of independent
+/// records: the phase it belongs to is stated once, at the top.
 pub trait ReportReader {
     /// Reads `input` as one report.
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError>;
@@ -154,11 +153,11 @@ impl ReportOptions {
 struct Bounded<'a> {
     inner: &'a mut dyn BufRead,
     left: u64,
-    /// Whether the budget ran out, which is the only thing the dispatch needs
-    /// back. A flag rather than a distinguishable error, because the refusal
-    /// travels out through `serde_json` and through
-    /// [`xml`](crate::import::xml), and both rewrite an I/O failure into an
-    /// error of their own. Asking this afterwards is exact where reading the
+    /// Whether the budget ran out, which is all the dispatch needs back. A flag
+    /// rather than a distinguishable error: the refusal travels out through
+    /// `serde_json` and through [`xml`](crate::import::xml), and both rewrite an
+    /// I/O failure into an error of their own. Asking afterwards is exact where
+    /// reading the
     /// message that came back would be a guess.
     exhausted: bool,
 }
@@ -239,9 +238,9 @@ pub enum ReportFormat {
     /// The same data one record per line, which is what
     /// [`export::jsonl`](crate::export::jsonl) writes.
     ///
-    /// Read here as well as in [`ImportFormat`](crate::import::ImportFormat),
-    /// because the format's whole argument for existing is that a scan cut short
-    /// still leaves a readable file, and a file that can only be read as the
+    /// Read here as well as in [`ImportFormat`](crate::import::ImportFormat).
+    /// The format exists so a scan cut short still leaves a readable file, and a
+    /// file that can only be read as the
     /// targets it names is not that.
     #[cfg(feature = "import-json")]
     JsonLines,
@@ -284,8 +283,8 @@ impl ReportFormat {
 
     /// Every report format this build can read.
     ///
-    /// Front ends use this to describe their own capabilities, for the reason
-    /// [`ImportFormat::all`](crate::import::ImportFormat::all) gives: a help
+    /// Front ends use this to describe their own capabilities, as
+    /// [`ImportFormat::all`](crate::import::ImportFormat::all) does: a help
     /// text listing formats the binary was not built with is worse than none.
     pub fn all() -> &'static [ReportFormat] {
         &[
@@ -307,9 +306,9 @@ impl ReportFormat {
 
     /// The format the start of `input` implies, without consuming it.
     ///
-    /// Almost one byte: a report document is an object or an element, and
-    /// nothing else. Deliberately not a content sniff beyond that — which
-    /// document *this* is is the reader's question, and each refuses one it does
+    /// Almost one byte: a report document is an object or an element and nothing
+    /// else. Not a content sniff beyond that, since which document this is
+    /// belongs to the reader, and each refuses one it does
     /// not recognise by naming what it found.
     ///
     /// The exception is the two JSON shapes, which both open with a brace. The
@@ -452,7 +451,7 @@ mod tests {
     /// A document a Windows editor saved is still the document it is.
     ///
     /// This side stripped no mark at all, so a report saved through
-    /// `Out-File` was refused as neither format — including nmap XML, which
+    /// `Out-File` was refused as neither format, nmap XML included, which
     /// the reader behind it would have read without complaint.
     #[test]
     fn a_byte_order_mark_hides_neither_format() {

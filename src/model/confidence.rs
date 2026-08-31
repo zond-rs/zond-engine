@@ -8,9 +8,16 @@
 
 //! # How sure a claim is
 //!
-//! A grade rather than a percentage. Both a service identification and a
-//! [`Finding`](crate::model::finding::Finding) carry one, and the vocabulary is
-//! shared so that a report can rank them against each other.
+//! A grade rather than a percentage, so that two claims reached by different
+//! routes can be ranked without either knowing how the other was arrived at.
+//!
+//! A [`Finding`](crate::model::finding::Finding) carries one. A
+//! [`Service`](crate::model::port::Service) does not: it holds the `0..=100`
+//! score [`as_score`](Confidence::as_score) projects onto, because a service
+//! identification is refined in place by several analyzers and the score is what
+//! [`Service::merge`](crate::model::port::Service::merge) ranks them by. So the
+//! two are comparable through that projection rather than directly, which is
+//! worth knowing before writing a report that puts them side by side.
 
 /// How much trust to place in a single piece of [`Evidence`](crate::fingerprint::Evidence).
 ///

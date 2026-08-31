@@ -15,32 +15,24 @@
 //!
 //! ## What belongs here
 //!
-//! A piece two writers would otherwise each keep a copy of, and whose output
-//! is fixed rather than a choice the format makes. The escaper is why this
-//! module exists at all: two escapers means one of them gets a fix and the
-//! other does not, and the one that does not is a hostname that executes on
-//! whoever opened the report.
+//! A piece two writers would otherwise each keep a copy of, whose output is
+//! fixed rather than a choice the format makes. The escaper is the clearest
+//! case: two escapers means one of them gets a fix and the other does not, and
+//! the one that does not is a hostname that executes on whoever opened the
+//! report.
 //!
 //! ## What does not
 //!
-//! Anything that decides what a document says. There is no templating layer
-//! here and there will not be one. `Cargo.toml` argues that a template crate
-//! costs more than it saves for the two pages this crate writes, and a
-//! template engine grown quietly inside this module would cost the same
-//! without being written down as a dependency. Each format keeps its own
-//! markup, its own order and its own vocabulary, and borrows only the pieces
-//! that have exactly one right spelling.
-//!
-//! Nor does anything a single format is the only caller of. A helper here that
-//! one writer uses is a helper in the wrong file.
+//! Anything that decides what a document says. Each format keeps its own markup,
+//! its own order and its own vocabulary, and borrows only the pieces that have
+//! one right spelling. Nor does anything a single format is the only caller of.
 //!
 //! ## Features
 //!
-//! Every item is gated by the formats that call it and by nothing wider.
-//! Sharing a module must not make `export-csv` compile a stylesheet or
-//! `export-html` compile `serde_json`, so the gates are per item rather than
-//! on the module, and `cargo hack check --each-feature` is what holds them
-//! honest.
+//! Every item is gated by the formats that call it and by nothing wider, so
+//! sharing a module does not make `export-csv` compile a stylesheet or
+//! `export-html` compile `serde_json`. `cargo hack check --each-feature` holds
+//! the gates honest.
 
 #[cfg(feature = "export-html")]
 use std::fmt::{self, Write as _};
@@ -58,16 +50,14 @@ use crate::export::schema::ENGINE_NAME;
 /// Report text, escaped for a page as it is written.
 ///
 /// Everything a scanned network chose to call itself passes through here.
-/// Beyond the five characters that carry markup, this renders the characters
-/// that carry *direction* - U+202E and the rest of the bidirectional set - as
-/// their code points instead of emitting them, because a hostname that reverses
+/// Beyond the five characters that carry markup, the bidirectional set is
+/// rendered as code points rather than emitted, since a hostname that reverses
 /// the text after it makes a report display one thing and mean another. The
-/// remaining control characters are shown the same way for the same reason:
-/// what a report claims to have found should be legible as bytes.
+/// remaining control characters are shown the same way, so that what a report
+/// claims to have found stays legible as bytes.
 ///
 /// This writes markup, so it belongs in element content and nowhere else. No
-/// value from a report is written into an attribute by any writer in this
-/// crate, which is what keeps that a rule rather than something to remember.
+/// writer in this crate puts a report value into an attribute.
 #[cfg(feature = "export-html")]
 pub(crate) struct Text<'a>(pub(crate) &'a str);
 
@@ -96,9 +86,8 @@ impl fmt::Display for Text<'_> {
 /// Report text for somewhere markup cannot go.
 ///
 /// A document's title is text, not content: a `<span>` written into it renders
-/// as its own source. A neutralized character therefore becomes the replacement
-/// character, which already means "something was here that this cannot show"
-/// everywhere else.
+/// as its own source. A neutralized character becomes the replacement character
+/// instead.
 #[cfg(feature = "export-html")]
 pub(crate) struct Plain<'a>(pub(crate) &'a str);
 
@@ -122,14 +111,13 @@ impl fmt::Display for Plain<'_> {
 
 /// Whether a character is shown as its code point rather than emitted.
 ///
-/// The bidirectional formatting characters are the reason this exists: they
-/// reorder the text around them, and a reader cannot see that they are there.
-/// The control characters are included because a page renders them as nothing,
-/// so a banner containing one would silently lose it.
+/// The bidirectional formatting characters reorder the text around them and a
+/// reader cannot see they are there. The control characters are included because
+/// a page renders them as nothing, so a banner containing one would silently
+/// lose it.
 ///
 /// Tab, newline and carriage return pass through. They are ordinary whitespace
-/// in HTML, they cannot spoof anything, and a script's multi-line output is
-/// worth keeping the shape of.
+/// in HTML and a script's multi-line output is worth keeping the shape of.
 #[cfg(feature = "export-html")]
 fn is_neutralized(character: char) -> bool {
     matches!(character,
@@ -155,18 +143,17 @@ pub(crate) fn esc(text: &str) -> String {
 
 /// The stylesheet inlined into every page this crate writes.
 ///
-/// A file of its own rather than a string in a source file: it is a stylesheet,
-/// it is edited as a stylesheet, and a test pins the class names it defines to
-/// the ones the report page writes.
+/// A file of its own rather than a string in a source file, so it is edited as a
+/// stylesheet. A test pins the class names it defines to the ones the report
+/// page writes.
 #[cfg(feature = "export-html")]
 pub(crate) const STYLE: &str = include_str!("../../assets/html/report.css");
 
 /// Something is there and answering: `up`, `open`, a host that appeared.
 ///
-/// Four tones, rather than one colour per state name. The state's name is
-/// always printed beside its colour, so the colour is free to carry something
-/// the name does not: how much the finding is worth a second look. Both pages
-/// draw from the same four because the stylesheet they share defines four.
+/// Four tones rather than one colour per state name. The state's name is always
+/// printed beside its colour, so the colour carries something else: how much the
+/// finding is worth a second look.
 #[cfg(feature = "export-html")]
 pub(crate) const TONE_FOUND: &str = "s-found";
 
@@ -191,9 +178,9 @@ pub(crate) const TONE_NONE: &str = "s-none";
 
 /// The head, the stylesheet, the theme checkbox, and the open page container.
 ///
-/// Takes no report: the `generator` is what wrote the page, which is this build
-/// whoever the findings came from. Who that was belongs in the page's own
-/// colophon, which is the one part of the frame each format writes for itself.
+/// Takes no report. The `generator` is what wrote the page, which is this build
+/// whoever the findings came from; who that was belongs in the page's own
+/// colophon, the one part of the frame each format writes for itself.
 #[cfg(feature = "export-html")]
 pub(crate) fn head(out: &mut dyn Write, title: &str) -> Result<(), ExportError> {
     writeln!(
@@ -303,11 +290,10 @@ pub(crate) fn foot(out: &mut dyn Write) -> Result<(), ExportError> {
 ///
 /// `serde_json` reports a failed write and an unrepresentable value through the
 /// same error type, and they call for opposite responses: retrying against a
-/// different destination can fix the first and can never fix the second.
+/// different destination can fix the first and never the second.
 ///
 /// `format` is the name the caller carries in an
-/// [`ExportError::Render`](crate::export::ExportError::Render), which is the
-/// only thing that differs between the formats built on `serde_json`.
+/// [`ExportError::Render`](crate::export::ExportError::Render).
 #[cfg(any(feature = "export-json", feature = "export-jsonl"))]
 pub(crate) fn render_error(format: &'static str, error: serde_json::Error) -> ExportError {
     if error.is_io() {

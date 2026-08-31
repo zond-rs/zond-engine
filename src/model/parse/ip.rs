@@ -104,16 +104,24 @@ pub fn names_keyword<S: AsRef<str>>(targets: &[S], keyword: Keyword) -> bool {
 
 /// Errors encountered during the parsing or resolution of IP-related strings.
 #[non_exhaustive]
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IpParseError {
-    /// The provided CIDR prefix is longer than its address family allows.
+    /// The CIDR prefix is longer than its address family allows.
     ///
     /// Both bounds are named because the variant carries the prefix and not the
     /// family it was written against, and a reader told only the IPv4 rule after
     /// mistyping an IPv6 prefix is being sent to shorten an address that was
     /// never too long.
+    ///
+    /// Wider than the `u8` a prefix fits in, because what a person types is not
+    /// bounded by what a prefix is. `/999` was reported as
+    /// [`Malformed`](Self::Malformed) purely because the number did not fit,
+    /// and `Malformed` is the signal a caller takes as "this might be a
+    /// hostname": a mistyped prefix went to a DNS lookup and came back as a name
+    /// that could not be resolved, which sends its author to look at their
+    /// resolver over a typo.
     #[error("Invalid CIDR prefix: {0} (0-32 for IPv4, 0-128 for IPv6)")]
-    InvalidPrefix(u8),
+    InvalidPrefix(u32),
 
     /// The start address of a range is numerically higher than the end address.
     #[error("Invalid range: start address {0} is greater than end address {1}")]
@@ -237,6 +245,14 @@ pub fn insert_expression(
     resolver: Option<ResolverFn<'_>>,
     zones: Option<ZoneResolverFn<'_>>,
 ) -> Result<(), IpParseError> {
+    // Trimmed here rather than by `to_set`, which is the only caller that was
+    // doing it. This function is public and its documentation invites an
+    // importer to call it directly with a token it has already split out, and
+    // such a caller got a grammar split in two: `Keyword::from_token` trims, so
+    // ` lan ` resolved, and `IpAddr::from_str` does not, so ` 10.0.0.1 ` came
+    // back malformed and was tried as a hostname.
+    let s = s.trim();
+
     // The interface suffix is stripped first and applied to whatever the rest
     // parses to, so `fe80::1%en0` and `fe80::1-fe80::5%en0` are both expressible
     // and mean the obvious thing.
@@ -344,9 +360,14 @@ fn parse_cidr(s: &str) -> Result<IpRange, IpParseError> {
         .parse::<IpAddr>()
         .map_err(|_| IpParseError::Malformed(s.into()))?;
 
+    // Read as a `u32` and narrowed, so that a number too large to be a prefix is
+    // a prefix that is too large rather than a token this grammar did not
+    // recognise. The difference is the whole of what a caller does next: an
+    // unrecognised token is tried as a hostname.
     let prefix = prefix_str
-        .parse::<u8>()
+        .parse::<u32>()
         .map_err(|_| IpParseError::Malformed(s.into()))?;
+    let prefix = u8::try_from(prefix).map_err(|_| IpParseError::InvalidPrefix(prefix))?;
 
     crate::model::ip::range::cidr_range(ip, prefix).map_err(|e| map_range_error(s, e))
 }
@@ -360,7 +381,7 @@ fn parse_cidr(s: &str) -> Result<IpRange, IpParseError> {
 fn map_range_error(original: &str, e: IpError) -> IpParseError {
     match e {
         IpError::InvalidRange(s, e) => IpParseError::InvalidRange(s, e),
-        IpError::InvalidPrefix(p) => IpParseError::InvalidPrefix(p),
+        IpError::InvalidPrefix(p) => IpParseError::InvalidPrefix(u32::from(p)),
         _ => IpParseError::Malformed(original.to_string()),
     }
 }
@@ -385,6 +406,11 @@ mod tests {
     /// the same grammar, and a spelling either accepts the other has to accept
     /// too, or a target file works through one API and silently fails through
     /// the other.
+    ///
+    /// Compares the sets rather than their sizes. Two ranges of equal length are
+    /// equal lengths and nothing more, and the divergence this exists to catch
+    /// was one entry point reading a spelling the other refused outright, which
+    /// a size comparison would have seen only as a panic on the unwrap.
     #[test]
     fn both_ways_into_the_parser_accept_the_same_spellings() {
         for expression in [
@@ -394,6 +420,9 @@ mod tests {
             "192.168.1.0/24",
             "2001:db8::1-2001:db8::5",
             "8.8.8.8",
+            // Spellings one of the two used to take and the other did not.
+            "10.0.0.0-0",
+            "  10.0.0.1  ",
         ] {
             let direct = to_set(&[expression], None, None)
                 .unwrap_or_else(|e| panic!("to_set rejected `{expression}`: {e}"));
@@ -401,8 +430,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("IpSet::from_str rejected `{expression}`: {e}"));
 
             assert_eq!(
-                direct.len(),
-                via_set.len(),
+                direct, via_set,
                 "`{expression}` means different things through the two entry points"
             );
         }
@@ -453,6 +481,30 @@ mod tests {
         let input = vec!["192.168.1.1/33"];
         let result = to_set(&input, None, None);
         assert_eq!(result.unwrap_err(), IpParseError::InvalidPrefix(33));
+    }
+
+    /// A prefix too large to be a prefix at all is still a prefix.
+    ///
+    /// `/999` does not fit a `u8`, and the parse failing on the width was read
+    /// as [`Malformed`](IpParseError::Malformed), which is the one error a
+    /// caller treats as "this might be a hostname". So a mistyped prefix went to
+    /// a DNS lookup and came back reported as a name nothing could resolve,
+    /// which is the wrong thing to hand somebody who typed one digit too many.
+    ///
+    /// `/33` and `/999` are the same mistake made twice as far as a person is
+    /// concerned, and the two now say the same thing.
+    #[test]
+    fn a_prefix_too_large_for_a_u8_is_still_a_prefix() {
+        let too_large = to_set(&["10.0.0.0/999"], None, None).unwrap_err();
+        assert_eq!(too_large, IpParseError::InvalidPrefix(999));
+        assert!(too_large.to_string().contains("0-32"), "{too_large}");
+
+        // Text that is not a number at all stays malformed, which is what lets
+        // a hostname reach the lookup that resolves it.
+        assert!(matches!(
+            to_set(&["10.0.0.0/wide"], None, None),
+            Err(IpParseError::Malformed(_))
+        ));
     }
 
     /// The error carries the prefix and not the family it was written against,
@@ -524,6 +576,36 @@ mod tests {
             to_set(&["fe80::aa%en0"], None, Some(&zones)),
             Err(IpParseError::UnknownInterface(name)) if name == "en0"
         ));
+    }
+
+    /// One grammar, whatever whitespace the caller left on the token.
+    ///
+    /// [`insert_expression`] is public and its documentation invites an importer
+    /// reading a file to call it with a token it has already split out. Such a
+    /// caller met a grammar split in two, because `to_set` was the only thing
+    /// trimming: `Keyword::from_token` trims of its own accord so ` lan `
+    /// resolved, and `IpAddr::from_str` does not, so ` 10.0.0.1 ` came back
+    /// malformed and was then tried as a hostname by the builder above it.
+    #[test]
+    fn an_untrimmed_token_reads_the_same_as_a_trimmed_one() {
+        let mut set = IpSet::new();
+        insert_expression(" 10.0.0.1 ", &mut set, None, None).expect("an address with space");
+        insert_expression("\t192.168.1.0/24\n", &mut set, None, None).expect("a block with space");
+        insert_expression(" 10.0.0.5-10 ", &mut set, None, None).expect("a range with space");
+
+        assert_eq!(set.len(), 1 + 256 + 6);
+
+        fn keywords(_: Keyword, set: &mut IpSet) -> Result<(), IpParseError> {
+            set.insert("172.16.0.1".parse().expect("an address"));
+            Ok(())
+        }
+        let mut keyword = IpSet::new();
+        insert_expression(" lan ", &mut keyword, Some(&keywords), None).expect("a keyword");
+        assert_eq!(
+            keyword.len(),
+            1,
+            "which already worked, and is the half it matched"
+        );
     }
 
     /// An interface nobody recognizes is a target that does not mean what it

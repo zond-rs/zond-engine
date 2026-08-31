@@ -9,16 +9,14 @@
 //! Holds the exported document to the published schema.
 //!
 //! `assets/schema/zond-report-v1.schema.json` ships with the crate and is what
-//! a consumer validates against. A schema nobody checks is documentation, and
-//! documentation drifts: a field added to a DTO, a `null` that becomes a
-//! string, an enum that gains a variant, and the file on disk quietly stops
-//! describing the thing it claims to.
+//! a consumer validates against. A schema nobody checks drifts: a field added to
+//! a DTO, a `null` that becomes a string, an enum that gains a variant, and the
+//! file on disk stops describing the thing it claims to.
 //!
-//! So the schema is strict - every object closed, and every field required
-//! except the handful a writer omits when it has nothing to say - and these
-//! tests run the real exporter against it. Adding a field to the DTO without
-//! describing it here fails the build, which is the only arrangement under which
-//! the schema stays true.
+//! The schema is strict, with every object closed and every field required
+//! except the handful a writer omits when it has nothing to say, and these tests
+//! run the real exporter against it. Adding a field to a DTO without describing
+//! it here fails the build.
 //!
 //! That handful is itself pinned, by
 //! `the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out`. The
@@ -36,6 +34,7 @@ use crate::export::schema::{SCHEMA_VERSION, scan_effort_name, send_mode_name};
 use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, Severity};
+use crate::model::host::status::StatusProtocol;
 use crate::model::host::{Filtering, HostStatus, NetworkRole};
 use crate::model::port::{PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
@@ -84,10 +83,9 @@ impl Validator {
 
     /// Compiles both schemas and points a validator at one of them.
     ///
-    /// All three are registered whichever is being compiled, because the lines
-    /// and comparison schemas are written in terms of the report schema's
-    /// definitions - which is what stops them drifting apart - and cannot
-    /// resolve without it.
+    /// All three are registered whichever is being compiled. The lines and
+    /// comparison schemas are written in terms of the report schema's
+    /// definitions and cannot resolve without it.
     fn over(url: &str) -> Self {
         let mut schemas = Schemas::new();
         let mut compiler = Compiler::new();
@@ -112,7 +110,7 @@ impl Validator {
     }
 
     /// Fails with the validator's own explanation, which names the offending
-    /// path - the useful half of a schema failure.
+    /// path.
     fn check(&self, document: &Value) {
         if let Err(error) = self.schemas.validate(document, self.index) {
             panic!("the exported document does not match the published schema:\n{error:#}");
@@ -154,24 +152,28 @@ fn the_schema_pins_the_version_the_code_emits() {
 }
 
 /// Every enumerated value in the report document, as the schema lists it and as
-/// this build spells it, compared **both ways**.
+/// this build spells it, compared both ways.
 ///
-/// One direction is the obvious one: a variant the engine can write and the
-/// schema does not accept produces documents no consumer's validator takes. The
-/// document tests below cannot see it, because they only ever exercise whichever
-/// variant the fixture happens to carry.
+/// A variant the engine can write and the schema does not accept produces
+/// documents no consumer's validator takes, and the document tests below cannot
+/// see it since they exercise whichever variant the fixture happens to carry.
 ///
-/// The other direction is the one that was missing, and it is how `sctp` came to
-/// sit in `$defs/protocol` for a release: a name the schema advertises and the
+/// The reverse direction matters as much: a name the schema advertises and the
 /// engine cannot produce is a promise to a third party writing this format that
-/// both report readers then refuse. Nothing else in this crate looks at it.
+/// both report readers then refuse. That is how `sctp` came to sit in
+/// `$defs/protocol` for a release.
 ///
 /// Only the enums whose type publishes an `ALL` are here, and every closed enum
-/// in the schema now has one except `port_scope`, whose variants carry data. That
-/// is not a shortcut: an exhaustive list written out in this file would be a
-/// third copy of the variants, which is the arrangement this test exists to
-/// catch. Adding a variant somewhere and an `ALL` nowhere is what leaves a gap,
-/// so a new enum in the document should arrive with one.
+/// in the schema has one except `port_scope`, whose variants carry data. An
+/// exhaustive list written out in this file would be a third copy of the
+/// variants, which is the arrangement this test exists to catch, so a new enum
+/// in the document should arrive with an `ALL`.
+///
+/// `reason.protocol` was that gap for a while. Its eight built-in names sat in
+/// the schema as a closed list with no `ALL` to compare against.
+/// [`StatusProtocol::ALL`] now exists and is read below. The enum's ninth variant
+/// carries a strategy-chosen name and is the schema's other `anyOf` arm, a
+/// `custom:` prefix, which is a pattern rather than an enumeration.
 fn enumerations() -> Vec<(&'static str, Vec<String>)> {
     let named = |names: Vec<&'static str>| names.into_iter().map(str::to_owned).collect();
 
@@ -231,6 +233,16 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
                     .map(network_role_name)
                     .collect(),
             ),
+        ),
+        (
+            // Inside an `anyOf`. The other arm is the `custom:` prefix a
+            // strategy-supplied name is written under, a pattern rather than an
+            // enumeration.
+            "/$defs/reason/properties/protocol/anyOf/0/enum",
+            StatusProtocol::ALL
+                .iter()
+                .map(|protocol| crate::record::wire::status_protocol_name(protocol).into_owned())
+                .collect(),
         ),
         (
             "/$defs/host/properties/filtering/items/enum",
@@ -346,8 +358,8 @@ fn the_schema_lists_exactly_the_enumerated_values_the_engine_writes() {
     }
 }
 
-/// A fully populated report - every optional block present, a failed strategy,
-/// an instrumented scanner, a certificate, nested script output.
+/// A fully populated report: every optional block present, a failed strategy, an
+/// instrumented scanner, a certificate, nested script output.
 #[test]
 fn a_full_report_matches_the_schema() {
     Validator::new().check(&document(ExportOptions::new()));
@@ -356,11 +368,10 @@ fn a_full_report_matches_the_schema() {
 /// A scan that altered no packets, read no zombie's counter and found no
 /// managed equipment, which is most scans.
 ///
-/// Every test above exports the fixture that has one of everything, so every
-/// optional block is present in all of them and the schema's `required` lists
-/// are only ever exercised in the direction where nothing is missing. A field
-/// the schema demands and this document omits would pass all of them and fail
-/// in a consumer's validator.
+/// Every test above exports the fixture that has one of everything, so the
+/// schema's `required` lists are only exercised where nothing is missing. A field
+/// the schema demands and this document omits would pass all of them and fail in
+/// a consumer's validator.
 #[test]
 fn an_ordinary_report_matches_the_schema() {
     let plain = fixture::compared().0;
@@ -384,12 +395,11 @@ fn an_ordinary_report_matches_the_schema() {
 
 /// The fields a writer leaves out, as the schema lists them.
 ///
-/// Everything else the document carries is present whatever its value: `null`
-/// for nothing, `[]` for nothing in a list. These are the exception, and
+/// Everything else the document carries is present whatever its value: `null` for
+/// nothing, `[]` for nothing in a list. These are the exception, and
 /// [`schema`](super::schema) promises a consumer that reading an absent one as
 /// the empty value is always correct. A `skip_serializing_if` added to a field
-/// that does not belong on this list breaks that promise silently, so the list
-/// is written down here and compared.
+/// not on this list breaks that promise silently.
 #[test]
 fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
     /// `$defs` entry, then field.
@@ -466,8 +476,8 @@ fn a_redacted_report_matches_the_schema() {
     ));
 }
 
-/// The strictness is the point: if the schema accepted anything, passing it
-/// would prove nothing. This checks it actually rejects.
+/// If the schema accepted anything, passing it would prove nothing. This checks
+/// that it rejects.
 #[test]
 fn the_schema_rejects_a_document_it_should_reject() {
     let validator = Validator::new();
@@ -534,8 +544,8 @@ fn every_exported_line_matches_the_lines_schema() {
     }
 }
 
-/// The lines schema is written in terms of the report schema, so it must reject
-/// on the same grounds - and reject a record that names no type at all.
+/// The lines schema is written in terms of the report schema, so it rejects on
+/// the same grounds, and also rejects a record naming no type.
 #[cfg(feature = "export-jsonl")]
 #[test]
 fn the_lines_schema_rejects_a_record_it_should_reject() {
@@ -655,11 +665,10 @@ fn a_redacted_comparison_masks_what_a_redacted_report_masks() {
 /// attachment, which names a device and its hardware address.
 ///
 /// Neither is less identifying for describing a switch rather than a
-/// workstation — a switch name is an internal hostname and a chassis address is
-/// a real MAC — and both sit outside the `hosts` array, where every existing
-/// redaction test was looking. The JSON Lines writer is checked alongside
-/// because it renders the header through a different type, and a policy applied
-/// to one document and not the other is the shape this failure takes.
+/// workstation: a switch name is an internal hostname and a chassis address is a
+/// real MAC. Both sit outside the `hosts` array, where every other redaction test
+/// looks. The JSON Lines writer is checked alongside because it renders the
+/// header through a different type.
 #[test]
 fn redaction_masks_the_switch_a_phase_says_it_was_plugged_into() {
     let report = fixture::report();
@@ -710,10 +719,9 @@ fn redaction_masks_the_switch_a_phase_says_it_was_plugged_into() {
 /// Every token the change vocabulary can emit is a value the published schema
 /// accepts.
 ///
-/// The document tests above only exercise whichever changes the fixtures happen
-/// to produce, so a token added to `ChangeDto` could ship and pass all of them
-/// while producing documents no consumer's validator accepts. This is the check
-/// that fails instead.
+/// The document tests above exercise whichever changes the fixtures happen to
+/// produce, so a token added to `ChangeDto` could ship past all of them while
+/// producing documents no consumer's validator accepts.
 #[test]
 fn every_change_the_fixtures_produce_is_a_token_the_schema_accepts() {
     let schema: Value = serde_json::from_str(DIFF_SCHEMA).expect("valid JSON");
@@ -749,9 +757,8 @@ fn every_change_the_fixtures_produce_is_a_token_the_schema_accepts() {
 /// The change kinds the comparison exporter emits, read out of its own source.
 ///
 /// Every kind reaches the document through one of these constructors, and
-/// [`ChangeDto::set`] names two. Reading the source rather than driving every
-/// variant keeps this from needing one of every change constructed by hand,
-/// which is a thing that rots faster than the list it would be checking.
+/// [`ChangeDto::set`] names two. Reading the source avoids needing one of every
+/// change constructed by hand, which would rot faster than the list it checks.
 fn emitted_change_kinds() -> BTreeSet<String> {
     const SOURCE: &str = include_str!("diff/schema.rs");
 
@@ -784,11 +791,10 @@ fn accepted_change_kinds() -> BTreeSet<String> {
 
 /// The exporter and the schema name the same set of change kinds.
 ///
-/// `a_comparison_matches_the_published_schema` only sees the kinds the fixture
-/// happens to produce, so a kind the fixture omits is a kind nothing checks.
-/// That is not hypothetical: `finding_appeared` and `finding_resolved` were
-/// emitted for a while by code the schema would have rejected, and the
-/// conformance suite stayed green. This compares the two lists directly.
+/// `a_comparison_matches_the_published_schema` sees only the kinds the fixture
+/// produces, so a kind the fixture omits is a kind nothing checks.
+/// `finding_appeared` and `finding_resolved` were emitted for a while by code the
+/// schema would have rejected while the conformance suite stayed green.
 #[test]
 fn the_schema_accepts_exactly_the_change_kinds_the_exporter_emits() {
     let emitted = emitted_change_kinds();
@@ -816,24 +822,23 @@ fn the_schema_accepts_exactly_the_change_kinds_the_exporter_emits() {
 ///
 /// A `Host` reaches a file twice: as a [`HostRecord`](crate::record::HostRecord)
 /// in the journal, and as a `HostDto` in an exported report. They differ in
-/// encoding on purpose — a duration is a `Duration` in one and an integer of
+/// encoding on purpose, since a duration is a `Duration` in one and an integer of
 /// microseconds in the other, and the exported document carries derived fields
-/// the journal has no reason to store — but where both name the same thing they
-/// must spell it the same way. Otherwise a consumer who reads both learns two
-/// vocabularies for one domain, and the two drift apart a field at a time.
+/// the journal has no reason to store. Where both name the same thing they have
+/// to spell it the same way, or a consumer who reads both learns two vocabularies
+/// for one domain.
 ///
-/// This compares the field names the two actually emit. Encoding differences are
-/// listed below and are the only permitted divergence; anything else is a
-/// vocabulary that has started to drift.
+/// This compares the field names the two emit. The encoding differences listed
+/// below are the only permitted divergence.
 #[test]
 fn the_journal_and_the_report_spell_a_host_the_same_way() {
     use crate::record::HostRecord;
 
     /// Fields one side carries and the other has no reason to.
     ///
-    /// Each is a decision rather than an oversight, and each is named here so
-    /// that adding a field to one side without the other fails this test until
-    /// somebody says which it is.
+    /// Each is a decision rather than an oversight, named here so that adding a
+    /// field to one side without the other fails this test until somebody says
+    /// which it is.
     const RECORD_ONLY: &[&str] = &[
         // The document carries the OS verdict and not the sources behind it.
         "os_evidence",

@@ -79,11 +79,22 @@ impl IpObservation {
     /// reply is evidence about the path, not about the sender.
     pub fn is_fragment(self) -> bool {
         match self {
+            // True for the first fragment and no other, which is every fragment
+            // that gets this far. `parse_ip_segment` refuses a datagram whose
+            // fragment offset is non-zero, on both families and for the same
+            // reason: what follows the header of a later fragment is the middle
+            // of somebody's payload rather than a Layer-4 header.
+            //
+            // Without that refusal this answered the More Fragments bit, which
+            // the *last* fragment of a fragmented datagram does not set, so the
+            // one reply whose segment fields belong to a different piece of the
+            // datagram was the one reply this reported as whole.
             IpObservation::V4(observed) => observed.more_fragments,
-            // An IPv6 datagram fragmented by its sender carries a fragment
-            // extension header, which `parse_ip_segment` refuses to look past
-            // for any fragment but the first. Nothing that reaches here is a
-            // later fragment.
+            // An IPv6 sender's fragments carry a fragment extension header, and
+            // `walk_ipv6_headers` stops at any whose offset is non-zero, so the
+            // first fragment is the only one that arrives and it is not
+            // distinguishable here from a whole datagram. A caller that needs to
+            // know reads the extension header, which this does not carry.
             IpObservation::V6(_) => false,
         }
     }

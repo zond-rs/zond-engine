@@ -13,21 +13,19 @@
 //! what its pipeline ingests.
 //!
 //! Everything [`export::html`](crate::export::html) commits to holds here
-//! unchanged, and for the same reasons: the stylesheet is inlined and nothing
-//! is fetched from anywhere, there is no JavaScript at all, printing is a
-//! first-class output, and every value a scanned network chose goes through the
-//! same escaping writer. The escaper, the stylesheet and the frame the two
-//! pages share all live in `export::write`, so there is one of each and no
-//! second copy to keep in step.
+//! unchanged: the stylesheet is inlined and nothing is fetched from anywhere,
+//! there is no JavaScript, printing is a first-class output, and every value a
+//! scanned network chose goes through the same escaping writer. The escaper, the
+//! stylesheet and the frame the two pages share live in `export::write`, so there
+//! is one of each.
 //!
 //! ## What a comparison page leads with
 //!
 //! Not the hosts. A report's reader is looking for a host; a comparison's reader
 //! is asking whether anything happened, and usually wants the answer without
-//! scrolling. So the page opens with the counts, and each headline count states
-//! how much of it the other scan is known to have looked for — the number the
-//! whole comparison is arranged to protect, and the one an email skims past if
-//! it is not said out loud.
+//! scrolling. The page opens with the counts, and each headline count states how
+//! much of it the other scan is known to have looked for, which is the number the
+//! whole comparison is arranged to protect.
 //!
 //! ## Three states, carried by colour
 //!
@@ -132,8 +130,8 @@ fn write_masthead(
 
 /// The things that change how the rest of the page should be read.
 ///
-/// Each is a fact about the two *scans* rather than about the network, and each
-/// makes what follows mean something other than it appears to: a comparison
+/// Each is a fact about the two scans rather than about the network, and each
+/// makes what follows mean something other than it appears to. A comparison
 /// against a scan that stated no scope can confirm nothing, and one between two
 /// different kinds of scan reports every port only one of them looked at.
 fn write_notices(
@@ -204,9 +202,9 @@ fn write_notices(
 
 /// The figures somebody reads before they read anything else.
 ///
-/// Each headline count says how much of it the other scan is known to have
-/// looked for. A page that printed only the total would be the one place this
-/// whole comparison's care about coverage is thrown away.
+/// Each headline count says how much of it the other scan is known to have looked
+/// for. A page printing only the total would throw away the coverage the rest of
+/// the comparison is careful about.
 fn write_tiles(out: &mut dyn Write, document: &DiffDto<'_>) -> Result<(), ExportError> {
     let summary = &document.summary;
 
@@ -217,8 +215,8 @@ fn write_tiles(out: &mut dyn Write, document: &DiffDto<'_>) -> Result<(), Export
         (&summary.ports_opened, "ports opened"),
         (&summary.ports_closed, "ports closed"),
     ] {
-        // A count of nothing has nothing to qualify, and "all confirmed" under a
-        // zero reads as an answer to a question nobody asked.
+        // A count of nothing has nothing to qualify, and "all confirmed" under
+        // a zero answers a question nobody asked.
         let note = match (count.total, count.total - count.confirmed) {
             (0, _) => "none".to_string(),
             (_, 0) => "all confirmed".to_string(),
@@ -265,9 +263,6 @@ fn write_hosts(
         deltas.len()
     )?;
 
-    // One delta is rendered, written and dropped before the next is built, for
-    // the reason the report page gives: each carries both sides' whole records,
-    // and holding every one of them at once is a second copy of both scans.
     for delta in deltas {
         write_host(out, delta, &HostDeltaDto::new(delta, options))?;
     }
@@ -294,9 +289,9 @@ fn write_host(
         ip = Text(&dto.address),
     )?;
 
-    // From the rendered record rather than the host itself: the masking policy
-    // is applied on the way into the document, and reaching past it for a
-    // hostname would put an unredacted one on a page meant to carry none.
+    // From the rendered record rather than the host itself. Masking is applied
+    // on the way into the document, so reaching past it for a hostname would put
+    // an unredacted one on a page meant to carry none.
     let named = dto
         .current
         .as_ref()
@@ -393,9 +388,8 @@ fn write_change(out: &mut dyn Write, change: &ChangeDto) -> Result<(), ExportErr
             now = Text(after),
         )?,
         (None, Some(after)) => write!(out, "<span class=\"mono\">{}</span>", Text(after))?,
-        // A set member that went is said once: the kind above already reads
-        // "address lost", and an arrow pointing at "nothing" after it says the
-        // same thing a second time.
+        // A set member that went is said once. The kind above already reads
+        // "address lost", and an arrow pointing at nothing repeats it.
         (Some(before), None) if change.kind.ends_with("_lost") => {
             write!(
                 out,

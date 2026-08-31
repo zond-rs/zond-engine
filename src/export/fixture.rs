@@ -8,15 +8,15 @@
 
 //! A report that exercises every corner of the exported document.
 //!
-//! Export tests need a report containing each shape the schema can produce -
-//! a fully described host and a bare one, a port with a certificate and one
-//! without, a strategy that failed, a scanner that filed counters, a script
-//! value JSON cannot represent. Driving a real scan produces none of that
-//! reliably, and building it inline in each test would leave every test
-//! covering a slightly different document.
+//! Export tests need a report containing each shape the schema can produce: a
+//! fully described host and a bare one, a port with a certificate and one
+//! without, a strategy that failed, a scanner that filed counters, a script value
+//! JSON cannot represent. Driving a real scan produces none of that reliably, and
+//! building it inline would leave every test covering a slightly different
+//! document.
 //!
-//! So it is built once, here. Anything a test asserts about the output is
-//! traceable to a value set below.
+//! It is built once, here, so anything a test asserts about the output traces to
+//! a value set below.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -65,13 +65,11 @@ fn router() -> Host {
 
     let mut os = OsFingerprint::new("Linux", 95)
         .with_family("Unix-like")
-        // Both axes populated at once, which is the case a consumer has to
-        // handle and the one a fixture is most likely to leave out: a Linux
-        // print server is what it runs *and* what it is.
+        // Both axes at once, the case a fixture is most likely to leave out.
         .with_device("Printer")
         .with_generation("5.15.0")
-        // Shaped like what the stack fingerprinter renders, so the full-report
-        // document exercises a populated evidence line rather than a null.
+        // Shaped like what the stack fingerprinter renders, so the document
+        // exercises a populated evidence line rather than a null.
         .with_evidence("syn-ack hops>=64 opts=M,S,T,N,W win=65160=45x1448 ws=7 mss=1460");
     os.add_cpe("cpe:/o:linux:linux_kernel:5.15.0");
     host.set_os(os);
@@ -80,10 +78,9 @@ fn router() -> Host {
     host.add_rtt(Duration::from_micros(1_800));
     host.add_rtt(Duration::from_micros(3_000));
 
-    // Every shape a path can hold, so the document exercises all three rather
-    // than the one a healthy trace produces: a measured hop, a router that
-    // would not identify itself, and a hop inherited from another host's trace.
-    // Recorded out of order for the same reason the ports below are.
+    // Every shape a path can hold: a measured hop, a router that would not
+    // identify itself, and a hop inherited from another host's trace. Recorded
+    // out of order for the same reason the ports below are.
     host.record_hop(Hop::answered(
         3,
         IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
@@ -160,8 +157,8 @@ fn filtered_host() -> Host {
     host
 }
 
-/// A host with nothing on it, which is what proves the document keeps a fixed
-/// shape when there is nothing to put in it.
+/// A host with nothing on it, so the document is held to a fixed shape when
+/// there is nothing to put in it.
 fn bare_host() -> Host {
     let mut host = Host::new(ip(9));
     host.set_status(HostStatus::Down);
@@ -176,9 +173,8 @@ fn probe_stats() -> ProbeStats {
     found_at[BUCKET_BOUNDS_MS.len()] = 2;
 
     ProbeStats {
-        // A paced scanner, cut back twice and still short of its ceiling: what a
-        // consumer has to be able to read to know the silence in this fixture is
-        // a scan's limit rather than a firewall.
+        // A paced scanner, cut back twice and still short of its ceiling: what
+        // a consumer reads to tell this fixture's silence from a firewall.
         window: Some(WindowSummary {
             capacity: 48,
             peak: 256,
@@ -223,10 +219,9 @@ pub(crate) fn report() -> ScanReport {
     let mut excluded = IpSet::new();
     excluded.insert_range("192.168.0.128/25".parse().expect("a valid range"));
 
-    // This phase evaded something, so the exported document carries an evasion
-    // record and every writer — and the published schema — is held to what one
-    // looks like. The port-scan phase below keeps the defaults, so the fixture
-    // exercises a phase that recorded evasion beside one that did not.
+    // This phase evaded something, so the document carries an evasion record
+    // and every writer is held to what one looks like. The port-scan phase
+    // below keeps the defaults, giving the fixture one of each.
     let config = ZondConfig {
         evasion: EvasionProfile::default()
             .with_source_port(53)
@@ -241,8 +236,7 @@ pub(crate) fn report() -> ScanReport {
             ])
             .with_flags(flags::SYN | flags::FIN),
         // For the schema rather than for plausibility: a phase carries the
-        // idle-scan record beside the evasion one, so both serialized forms are
-        // exercised.
+        // idle-scan record beside the evasion one.
         idle_scan: Some(IdleScan {
             zombie: "192.0.2.9".parse().expect("a valid zombie address"),
             zombie_port: Some(113),
@@ -259,16 +253,13 @@ pub(crate) fn report() -> ScanReport {
 
     ctx.record_failure(ScannerKind::Local, "raw socket unavailable".to_string());
     ctx.record_probe_stats(probe_stats());
-    // A sweep covers the link it ran on as well as the addresses it was handed,
-    // so the exported scope carries one — otherwise every test of that field
-    // compares an empty list with an empty list.
+    // A sweep covers the link it ran on as well as the addresses it was handed.
+    // Without one, every test of that field compares two empty lists.
     ctx.record_sweep(Zone::new(3, "en0"));
 
-    // A managed switch's announcement, so the exported document carries an
-    // attachment and every writer — and the published schema — is held to what
-    // one looks like. Recorded through the context rather than assembled into
-    // the phase directly, so the path a real announcement takes is the path
-    // under test.
+    // A managed switch's announcement, so the document carries an attachment.
+    // Recorded through the context rather than assembled into the phase, so the
+    // path a real announcement takes is the path under test.
     ctx.record_attachment(
         Attachment::new(
             Zone::new(3, "en0"),
@@ -286,9 +277,8 @@ pub(crate) fn report() -> ScanReport {
         ctx.store.insert(host.scoped_ip(), host);
     }
 
-    // Correlated explicitly, as a scan does since W10 made this a step rather
-    // than something `finish` did on the way past. The fixture wants a report
-    // carrying a vulnerability finding, and it now has to say so.
+    // Correlation is its own step rather than something `finish` does on the
+    // way past, so a fixture wanting a vulnerability finding has to ask.
     for mut entry in ctx.store.iter_mut() {
         crate::cve::correlate(entry.value_mut());
     }
@@ -314,20 +304,18 @@ const COMPARED_PORTS: &str = "22,80,443,8080,8443";
 ///
 /// Built for a schema rather than for plausibility: a host gone, a host arrived,
 /// a port opened, a port shut, a service moved a version, a certificate rotated,
-/// a certificate that nobody touched crossing its expiry threshold, an operating
+/// a certificate nobody touched crossing its expiry threshold, an operating
 /// system reidentified and a name resolved differently. A comparison of the two
-/// therefore carries at least one change of nearly every kind, which is what
-/// lets a test assert the whole document rather than the corner of it one change
-/// happens to reach.
+/// carries at least one change of nearly every kind, so a test can assert the
+/// whole document.
 ///
-/// Both phases are port scans that state which ports they walked, because a
-/// discovery sweep walks none — and against one of those every endpoint change
-/// reads as ground nobody covered, which exercises the coverage rules rather
-/// than the change vocabulary.
+/// Both phases are port scans that state which ports they walked. A discovery
+/// sweep walks none, and against one of those every endpoint change reads as
+/// ground nobody covered, which exercises the coverage rules instead.
 ///
 /// Times are fixed rather than taken from the clock. A certificate crossing a
-/// threshold *between* two scans is only expressible if the two scans are a
-/// known distance apart.
+/// threshold between two scans is only expressible if the two are a known
+/// distance apart.
 pub(crate) fn compared() -> (ScanReport, ScanReport) {
     (
         compared_phase(0, before_hosts()),
@@ -351,9 +339,8 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
     ));
 
     let phase = ScanPhase::from_parts(PhaseParts {
-        // No attachment: these two are a comparison of a network, and where the
-        // machine measuring it was plugged in has nothing to do with what
-        // changed between them.
+        // No attachment: where the measuring machine was plugged in has
+        // nothing to do with what changed between the two scans.
         attachments: Vec::new(),
         kind: ScanKind::PortScan,
         started_at: std::time::UNIX_EPOCH + BASELINE_AT + DAY * days as u32,
@@ -496,9 +483,9 @@ fn compared_expiring() -> Host {
     host.set_status(HostStatus::Up);
     host.add_port(
         Port::new(8443, Protocol::Tcp, PortState::Open)
-            // Sixty days of life at the baseline, twenty-five at the later scan:
-            // outside a thirty-day threshold and then inside it, with nothing
-            // about the certificate having moved.
+            // Sixty days of life at the baseline and twenty-five at the later
+            // scan: outside a thirty-day threshold and then inside it, with
+            // nothing about the certificate having moved.
             .with_security(certificate(
                 "cccc7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
                 "Local CA",
@@ -539,14 +526,14 @@ fn after_hosts() -> Vec<Host> {
 /// and XML, a leading `=` for a spreadsheet, and a right-to-left override, which
 /// reverses the text after it so one address can be made to read as another.
 ///
-/// Deliberately one string rather than one per field. A test asserting that this
-/// never survives intact does not have to know which field it came from, which
-/// is what lets it cover fields nobody has written yet.
+/// One string rather than one per field, so a test asserting it never survives
+/// intact does not have to know which field it came from and covers fields
+/// nobody has written yet.
 pub(crate) const HOSTILE: &str = "=<script>alert(\"x\")</script>&'\u{202e}";
 
 /// A host on the hostile fixture's network.
 /// A finding whose every describable string is hostile, including a `url`
-/// reference — the one reference kind that carries attacker-controlled text.
+/// reference, the one reference kind carrying attacker-controlled text.
 fn hostile_finding() -> Finding {
     Finding::new(
         DetectionId::new(HOSTILE, Version::new(1, 0, 0), HOSTILE).unwrap(),
@@ -567,17 +554,14 @@ fn hostile_host() -> Host {
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, HOSTILE));
     host.record_mac(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x01));
-    // The one role anything assigns, carried here so the corpus still exercises
-    // a non-empty `roles` array through every exporter.
+    // The one role anything assigns, so the corpus still exercises a non-empty
+    // `roles` array through every exporter.
     host.add_network_role(NetworkRole::Tarpit);
 
     let mut os = OsFingerprint::new(HOSTILE, 90)
         .with_family(HOSTILE)
         .with_device(HOSTILE)
         .with_generation(HOSTILE)
-        // Every string a report carries has to survive being written into JSON,
-        // CSV, HTML and XML, and this one is no different for being meant for a
-        // reader rather than a parser.
         .with_evidence(HOSTILE);
     os.add_cpe(HOSTILE);
     host.set_os(os);
@@ -623,8 +607,8 @@ fn hostile_port() -> Port {
 /// A report whose every attacker-controlled string is [`HOSTILE`].
 ///
 /// The same shape as [`report`], so a writer that handles one handles the other.
-/// What it is for is the question the per-field tests cannot answer: not "does
-/// the escaper work" but "does every field go through it".
+/// It answers the question the per-field tests cannot: not whether the escaper
+/// works, but whether every field goes through it.
 pub(crate) fn hostile() -> ScanReport {
     let (_session, ctx) = ScanSession::new();
 

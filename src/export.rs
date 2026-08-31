@@ -13,18 +13,16 @@
 //!
 //! ## Why the engine owns this
 //!
-//! Export could live in whatever front end is driving the scan, and then there
-//! would be one format per front end, all subtly different. A file written by
-//! the CLI, by a library consumer and by a web UI have to be the same file, or
-//! the format is not a format. So the schema and its implementation live here,
-//! once, and a front end chooses only a format and a destination.
+//! A file written by the CLI, by a library consumer and by a web UI has to be
+//! the same file, or the format is not a format. The schema and its
+//! implementation live here, once, and a front end chooses only a format and a
+//! destination.
 //!
 //! ## The shape of the thing
 //!
-//! - [`schema`] holds the data transfer objects. They are the wire format, and
-//!   they are written by hand rather than derived from the engine's working
-//!   types. That boundary is the whole point; see the module's own
-//!   documentation for what it buys.
+//! - [`schema`] holds the data transfer objects. They are the wire format,
+//!   written by hand rather than derived from the engine's working types. See
+//!   that module for what the boundary buys.
 //! - [`Exporter`] is the one trait a format implements. It takes a report and
 //!   somewhere to write, and it streams.
 //! - [`ExportOptions`] carries policy that is not the format's business, most
@@ -32,12 +30,11 @@
 //!
 //! ## Writing your own
 //!
-//! There is no plugin system and there will not be one. Dynamic loading in a
-//! process that holds raw-socket privileges is a liability, and it buys nothing
-//! a trait does not: [`Exporter`] is public, the DTOs are public and
-//! `Serialize`, so a consumer who wants PDF output or their own branded HTML
-//! writes an exporter in their own crate, with their own templating engine,
-//! type-checked at compile time and costing this crate no dependency at all.
+//! [`Exporter`] is public, and the DTOs are public and `Serialize`. A consumer
+//! who wants PDF output or their own branded HTML writes an exporter in their
+//! own crate, with their own templating engine, and this crate takes on no
+//! dependency for it. There is no plugin system: dynamic loading in a process
+//! holding raw-socket privileges buys nothing a trait does not.
 //!
 //! ```
 //! use std::io::{self, Write};
@@ -60,18 +57,17 @@
 //! ## Always to a writer, never to a string
 //!
 //! [`Exporter::export`] writes into a `dyn Write` and nothing in this module
-//! returns a `String`. A /16 with a host on every address is a document far
-//! larger than anything worth holding in memory to hand back, and an exporter
-//! that builds one in a `String` has already lost. Writing incrementally also
-//! means a consumer piping output somewhere sees the first host before the last
-//! one is scanned out of the report.
+//! returns a `String`. A /16 with a host on every address is a document larger
+//! than anything worth holding in memory, and writing incrementally means a
+//! consumer piping output somewhere sees the first host before the last one is
+//! scanned out of the report.
 //!
 //! ## Features
 //!
-//! The DTOs and the trait are always available - they cost nothing beyond
-//! `serde`, which the engine already depends on. Each concrete format sits
-//! behind a cargo feature so a consumer who wants none of them pays for none of
-//! them. `export-json` is on by default.
+//! The DTOs and the trait are always available, costing nothing beyond `serde`,
+//! which the engine already depends on. Each concrete format sits behind a cargo
+//! feature so a consumer who wants none of them pays for none. `export-json` is
+//! on by default.
 
 pub mod diff;
 pub mod redact;
@@ -153,11 +149,10 @@ pub enum ExportError {
 
 /// One output format.
 ///
-/// The single method is deliberate. An exporter is a rendering of a report onto
-/// a writer, and every other decision it needs - how much to redact, whether to
-/// indent - belongs to the value implementing this trait, chosen when it is
-/// constructed. That keeps the trait implementable by a consumer who has never
-/// read this crate's options type.
+/// An exporter is a rendering of a report onto a writer. Every other decision it
+/// needs, how much to redact or whether to indent, belongs to the value
+/// implementing this trait and is chosen when that value is constructed, so a
+/// consumer can implement it without reading this crate's options type.
 pub trait Exporter {
     /// Writes `report` to `out`.
     ///
@@ -169,30 +164,27 @@ pub trait Exporter {
 /// How much identifying detail to strip on the way out.
 ///
 /// Redaction is an export-time policy rather than something a caller does to a
-/// report afterwards, because "afterwards" is where it gets forgotten. A report
-/// destined for a third party - a client, an auditor, a bug tracker - should be
-/// masked by construction, at the one point where the data leaves the process.
+/// report afterwards, because afterwards is where it gets forgotten. A report
+/// destined for a client, an auditor or a bug tracker is masked at the one point
+/// where the data leaves the process.
 ///
 /// ## What is masked and what is not
 ///
-/// [`Standard`](Self::Standard) masks the two things that identify a *person or
-/// a device*: hostnames and hardware addresses. Hostnames keep their first and
-/// last two characters, so `workstation` and `wifi-printer` stay
-/// distinguishable without either being readable. MAC addresses keep their OUI,
-/// so the vendor survives and the individual NIC does not.
+/// [`Standard`](Self::Standard) masks the two things that identify a person or a
+/// device: hostnames and hardware addresses. Hostnames keep their first and last
+/// two characters, so `workstation` and `wifi-printer` stay distinguishable
+/// without either being readable. MAC addresses keep their OUI, so the vendor
+/// survives and the individual NIC does not.
 ///
-/// IP addresses are deliberately left alone. Masking them would be
-/// self-defeating: a report is a list of hosts, and every masking scheme that
-/// hides which host is which collapses ten records on a /24 into ten copies of
-/// the same string. The addresses are also the only thing making the findings
-/// actionable to the recipient, who by construction already knows the network
-/// they asked to have scanned.
+/// IP addresses are left alone. A report is a list of hosts, and a masking
+/// scheme that hides which host is which collapses ten records on a /24 into ten
+/// copies of the same string. The addresses are also what makes the findings
+/// actionable to a recipient who already knows the network they asked to have
+/// scanned.
 ///
-/// One residual leak is worth stating plainly: an IPv6 address formed the old
-/// EUI-64 way embeds the MAC that redaction just masked elsewhere. Masking the
-/// address would cost the record its identity, so it is not masked, and a
-/// report from a network with EUI-64 addressing is not free of hardware
-/// identifiers however this is set.
+/// One residual leak is worth stating: an IPv6 address formed the old EUI-64 way
+/// embeds the MAC that redaction masks elsewhere. A report from a network with
+/// EUI-64 addressing is not free of hardware identifiers however this is set.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Redaction {
@@ -259,10 +251,9 @@ impl ExportOptions {
 
 /// The formats this build can write.
 ///
-/// Front ends pick a format from a file extension rather than from a flag,
-/// because `-o report.json` already says what the user wants and a second flag
-/// saying it again is a second thing that can disagree. This lives in the
-/// engine so every front end resolves the same extension to the same format.
+/// Front ends pick a format from a file extension rather than from a flag, since
+/// `-o report.json` already says what the user wants. It lives in the engine so
+/// every front end resolves the same extension to the same format.
 ///
 /// Which variants exist depends on the cargo features the crate was built with.
 #[non_exhaustive]
@@ -304,14 +295,12 @@ impl ExportFormat {
         match extension.to_ascii_lowercase().as_str() {
             #[cfg(feature = "export-json")]
             "json" => Some(ExportFormat::Json),
-            // `ndjson` is the other name the same format goes by, and a caller
-            // who writes it means this. The canonical spelling stays `jsonl`.
+            // `ndjson` is the other name the same format goes by. The
+            // canonical spelling stays `jsonl`.
             #[cfg(feature = "export-jsonl")]
             "jsonl" | "ndjson" => Some(ExportFormat::JsonLines),
             #[cfg(feature = "export-csv")]
             "csv" => Some(ExportFormat::Csv),
-            // Both spellings, because a caller who wrote `report.htm` on a
-            // system that still shortens extensions means this.
             #[cfg(feature = "export-html")]
             "html" | "htm" => Some(ExportFormat::Html),
             #[cfg(feature = "export-nmap")]
@@ -322,9 +311,8 @@ impl ExportFormat {
 
     /// Resolves a path by its extension.
     ///
-    /// A path with no extension has no format, rather than a default one: a
-    /// caller who wrote `-o report` has not said what they want, and guessing
-    /// is how a file ends up in a format nobody chose.
+    /// A path with no extension has no format rather than a default one. A
+    /// caller who wrote `-o report` has not said what they want.
     pub fn from_path(path: &Path) -> Option<Self> {
         path.extension()
             .and_then(|extension| extension.to_str())
@@ -349,8 +337,8 @@ impl ExportFormat {
 
     /// Every format this build can write.
     ///
-    /// Front ends use this to describe their own capabilities - a help text
-    /// listing formats the binary was not built with is worse than none.
+    /// Front ends use this to describe their own capabilities, since a help
+    /// text listing formats the binary was not built with is worse than none.
     pub fn all() -> &'static [ExportFormat] {
         &[
             #[cfg(feature = "export-json")]
@@ -368,11 +356,9 @@ impl ExportFormat {
 
     /// Builds an exporter for this format under the given options.
     pub fn exporter(self, options: ExportOptions) -> Box<dyn Exporter> {
-        // Bound before the match because a build with no format feature turned
-        // on has no arms to hand the options to, and an unused parameter there
-        // is a warning nobody can act on. Such a build cannot reach this
-        // function at all: `ExportFormat` has no variants, so no value of it
-        // exists to call it on.
+        // A build with no format feature on has no match arm to hand the
+        // options to, and an unused parameter would warn. Such a build cannot
+        // reach here anyway: `ExportFormat` has no variants to construct.
         let _ = &options;
 
         match self {
@@ -403,9 +389,9 @@ impl fmt::Display for ExportFormat {
 /// the same way.
 ///
 /// Returns `None` if the extension names no format this build supports, leaving
-/// the caller to decide what to tell the user. Note that the report is written
-/// to `out`, not to `path` - opening the destination, and deciding whether
-/// overwriting it is acceptable, stays with the caller.
+/// the caller to decide what to tell the user. The report is written to `out`,
+/// not to `path`; opening the destination, and deciding whether overwriting it
+/// is acceptable, stays with the caller.
 pub fn export_to(
     path: &Path,
     report: &ScanReport,
@@ -450,9 +436,9 @@ mod tests {
         assert!(Redaction::Standard.is_active());
     }
 
-    /// The vendor has to survive masking, because it is the OUI - which is
-    /// exactly what masking keeps - and a report without vendors is much less
-    /// useful for no privacy gained.
+    /// The vendor has to survive masking. It is the OUI, which is what masking
+    /// keeps, and a report without vendors is much less useful for no privacy
+    /// gained.
     #[test]
     fn standard_redaction_keeps_the_oui_and_drops_the_device() {
         let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3);

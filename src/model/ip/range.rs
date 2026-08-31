@@ -40,7 +40,7 @@ use thiserror::Error;
 /// "this is not a range", which is also what a hostname looks like from here,
 /// while the other two mean "this is a range, and it is wrong".
 #[non_exhaustive]
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IpError {
     /// The start address is above the end. Both are named, since which of the
     /// two was mistyped is the reader's to work out.
@@ -406,8 +406,15 @@ impl FromStr for IpRange {
 
         // Handle hyphenated range
         if let Some(pos) = s.find('-') {
-            let start_str = s[..pos].trim();
-            let end_str = s[pos + 1..].trim();
+            // Not trimmed around the separator, so `10.0.0.1 - 10.0.0.5` is not
+            // a range here either. It was, and nothing that reads a written
+            // range through this crate could express it: `IpSet` splits its
+            // input on spaces as well as commas, so that spelling arrived as
+            // three tokens and the middle one was a bare `-`. The module
+            // documentation above claims one grammar with no second dialect, and
+            // this was the second dialect.
+            let start_str = &s[..pos];
+            let end_str = &s[pos + 1..];
 
             if let Ok(start) = start_str.parse::<Ipv4Addr>() {
                 let end = expand_v4_end(start, end_str)
@@ -444,11 +451,7 @@ fn expand_v4_end(start: Ipv4Addr, end_str: &str) -> Option<Ipv4Addr> {
         return Some(full);
     }
 
-    let suffix: Vec<u8> = end_str
-        .split('.')
-        .map(|part| part.parse::<u8>())
-        .collect::<Result<_, _>>()
-        .ok()?;
+    let suffix: Vec<u8> = end_str.split('.').map(octet).collect::<Option<_>>()?;
 
     if suffix.is_empty() || suffix.len() > 4 {
         return None;
@@ -457,6 +460,25 @@ fn expand_v4_end(start: Ipv4Addr, end_str: &str) -> Option<Ipv4Addr> {
     let mut octets = start.octets();
     octets[4 - suffix.len()..].copy_from_slice(&suffix);
     Some(Ipv4Addr::from(octets))
+}
+
+/// One octet of a shortened range's end, read as strictly as an address's own.
+///
+/// `u8::from_str` is not that: it takes a leading `+` and a leading zero, where
+/// `Ipv4Addr::from_str` has refused a leading zero since 1.53 because `010` is
+/// octal to enough software to matter. Reading the two halves of one range with
+/// two grammars meant `010.0.0.50` was refused as a start and accepted as an
+/// end, which is the ambiguity the address parser rejects it for arriving by the
+/// other door. In a scanner the addresses a range covers are the machines that
+/// receive packets.
+fn octet(part: &str) -> Option<u8> {
+    if part.len() > 1 && part.starts_with('0') {
+        return None;
+    }
+    if !part.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    part.parse().ok()
 }
 
 /// Constructs an [`IpRange`] from an IP address and a CIDR prefix length.
@@ -622,6 +644,61 @@ mod tests {
             assert_eq!(range.start_addr().to_string(), first, "{written} starts");
             assert_eq!(range.end_addr().to_string(), last, "{written} ends");
         }
+    }
+
+    /// One grammar for both halves of a range.
+    ///
+    /// The end of a shortened range was read by `u8::from_str` where the start
+    /// was read by `Ipv4Addr::from_str`, and the two disagree about a leading
+    /// zero: the address parser has refused it since 1.53 because `010` is octal
+    /// to enough software to matter, and the integer parser takes it, along with
+    /// a leading `+`. So one token was read by two grammars, and the spelling
+    /// refused on the left of the hyphen was accepted on the right.
+    #[test]
+    fn both_halves_of_a_range_read_octets_the_same_way() {
+        for spelling in [
+            "010.0.0.1",         // as a start
+            "10.0.0.1-010",      // and as an end
+            "10.0.0.1-0.0.0.50", // in a longer suffix
+            "10.0.0.1-+50",      // a sign is not an octet either
+            "10.0.0.1- 50",      // nor is one with space around it
+        ] {
+            assert!(
+                spelling.parse::<IpRange>().is_err(),
+                "`{spelling}` was read as a range"
+            );
+        }
+
+        // A single zero is a zero, and the forms that always worked still do.
+        for (spelling, last) in [
+            ("10.0.0.0-0", "10.0.0.0"),
+            ("10.0.0.1-50", "10.0.0.50"),
+            ("192.168.1.1-2.254", "192.168.2.254"),
+        ] {
+            let range: IpRange = spelling
+                .parse()
+                .unwrap_or_else(|e| panic!("{spelling}: {e}"));
+            assert_eq!(range.end_addr().to_string(), last, "{spelling}");
+        }
+    }
+
+    /// A range has no spaces in it, whichever door it arrives through.
+    ///
+    /// `IpRange::from_str` trimmed around the separator and `IpSet::from_str`
+    /// splits its input on spaces as well as commas, so `10.0.0.1 - 10.0.0.5`
+    /// was a range through one entry point and three tokens through the other.
+    /// The module documentation says there is one grammar and no two entry
+    /// points that accept different spellings of the same thing.
+    #[test]
+    fn a_range_written_with_spaces_is_not_a_range() {
+        assert!("10.0.0.1 - 10.0.0.5".parse::<IpRange>().is_err());
+        assert!("10.0.0.1 -10.0.0.5".parse::<IpRange>().is_err());
+
+        // The whole token is still trimmed, which is a different question: a
+        // caller that split a file on newlines has trailing whitespace and no
+        // second dialect.
+        let padded: IpRange = "  10.0.0.1-10.0.0.5  ".parse().expect("trimmed as a whole");
+        assert_eq!(padded.len(), 5);
     }
 
     /// A scope id of zero names no interface, so a range carrying one is not

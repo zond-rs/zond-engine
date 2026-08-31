@@ -546,78 +546,52 @@ mod tests {
 
     /// Every variant survives being written down and read back.
     ///
-    /// Listing the variants by hand is the point: a variant added to the model
-    /// without a name here will not appear in this list either, and the match
-    /// arms above are what the compiler makes exhaustive. What this catches is
-    /// the other mistake — a name and a parser that disagree.
+    /// What it catches is a name and a parser that disagree. What it does not
+    /// catch, and never did, is a variant with no name at all: the match arms
+    /// above are exhaustive, so the compiler refuses that before this runs.
+    ///
+    /// Driven from each vocabulary's `ALL` rather than from lists written out
+    /// here. Half of it already was, with a comment saying why, and the halves
+    /// argued opposite policies in one function. `ALL` wins the argument because
+    /// a list written here is a second hand-maintained list with one reader,
+    /// where `ALL` is the same list with five: the exported schema's enums, a
+    /// report's ordering, a `FromStr`'s error message, and this. A vocabulary
+    /// missing from `ALL` goes untested here either way, and being missing from
+    /// `ALL` is the more visible mistake of the two.
     #[test]
     fn every_name_parses_back() {
-        for value in [
-            HostStatus::Unknown,
-            HostStatus::Down,
-            HostStatus::Filtered,
-            HostStatus::Up,
-        ] {
+        for value in HostStatus::ALL {
             assert_eq!(host_status(host_status_name(value)), Some(value));
         }
 
-        for value in [
-            PortState::ClosedFiltered,
-            PortState::Filtered,
-            PortState::Unfiltered,
-            PortState::Closed,
-            PortState::OpenFiltered,
-            PortState::Open,
-        ] {
+        for value in PortState::ALL {
             assert_eq!(port_state(port_state_name(value)), Some(value));
         }
 
-        for value in [ScanKind::Discovery, ScanKind::PortScan, ScanKind::Listen] {
+        for value in ScanKind::ALL {
             assert_eq!(scan_kind(scan_kind_name(value)), Some(value));
         }
 
-        // Driven by `Filtering::ALL`, which the enum keeps exhaustive, so a new
-        // conclusion is round-tripped here the moment it is added there.
         for value in Filtering::ALL {
             assert_eq!(filtering(filtering_name(value)), Some(value));
         }
 
-        for value in [AttachmentSource::Lldp, AttachmentSource::Cdp] {
+        for value in AttachmentSource::ALL {
             assert_eq!(
                 attachment_source(attachment_source_name(value)),
                 Some(value)
             );
         }
 
-        for value in [
-            ScannerKind::Local,
-            ScannerKind::Passive,
-            ScannerKind::Routed,
-            ScannerKind::SynPort,
-            ScannerKind::TcpPort,
-            ScannerKind::Connect,
-            ScannerKind::ConnectUdp,
-            ScannerKind::UdpPort,
-            ScannerKind::OsEcho,
-            ScannerKind::OsSeries,
-            ScannerKind::OsSnmp,
-            ScannerKind::Idle,
-            ScannerKind::Composite,
-        ] {
+        for value in ScannerKind::ALL {
             assert_eq!(scanner_kind(scanner_kind_name(value)), Some(value));
         }
 
-        for value in [
-            StopReason::Aborted,
-            StopReason::AllResponded,
-            StopReason::AttemptsSpent,
-            StopReason::DeadlineExpired,
-            StopReason::StreamClosed,
-        ] {
+        for value in StopReason::ALL {
             assert_eq!(stop_reason(stop_reason_name(value)), Some(value));
         }
 
-        for value in [Protocol::Tcp, Protocol::Udp] {
+        for value in Protocol::ALL {
             assert_eq!(protocol(protocol_name(value)), Some(value));
         }
 
@@ -661,17 +635,13 @@ mod tests {
             assert_eq!(os_source(os_source_name(value)), Some(value));
         }
 
-        for value in [
-            StatusProtocol::Arp,
-            StatusProtocol::Ndp,
-            StatusProtocol::IcmpEcho,
-            StatusProtocol::IcmpUnreachable,
-            StatusProtocol::TcpSyn,
-            StatusProtocol::Tcp,
-            StatusProtocol::Dhcp,
-            StatusProtocol::Udp,
-            StatusProtocol::Custom("a-strategy".into()),
-        ] {
+        // `ALL` and then the variant it cannot hold, which carries a name a
+        // strategy chose rather than one this enum knows.
+        for value in StatusProtocol::ALL
+            .iter()
+            .cloned()
+            .chain([StatusProtocol::Custom("a-strategy".into())])
+        {
             let name = status_protocol_name(&value);
             assert_eq!(status_protocol(&name), Some(value.clone()), "{name}");
         }

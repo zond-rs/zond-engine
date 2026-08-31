@@ -9,14 +9,12 @@
 //! # A pull parser that declares nothing
 //!
 //! The XML reader behind every format in this module that has one. It reads a
-//! file somebody else wrote, and what makes that defensible is not care in the
-//! parsing; it is that the dangerous constructs have no representation here at
-//! all.
+//! file somebody else wrote, and what makes that defensible is that the dangerous
+//! constructs have no representation here rather than care in the parsing.
 //!
 //! - **`<!ENTITY` is refused anywhere, unconditionally.** No entity is ever
 //!   declared, so none can be expanded, so the billion-laughs expansion has
-//!   nothing to expand and an external entity has nothing to fetch. Not
-//!   mitigated - absent.
+//!   nothing to expand and an external entity has nothing to fetch.
 //! - **A `DOCTYPE` is accepted only in its inert form**: a bare name, no
 //!   internal subset, no `SYSTEM` or `PUBLIC` identifier. Any of those is
 //!   refused.
@@ -43,31 +41,30 @@
 //! <?xml-stylesheet href="file:///usr/share/nmap/nmap.xsl" type="text/xsl"?>
 //! ```
 //!
-//! and a rule that turned all three away would have left this parser unable to
-//! read its own subject. `<!DOCTYPE nmaprun>` declares nothing and references
-//! nothing; it is inert. The narrower rule is also the stronger one, because a
-//! blanket refusal is the kind that acquires an option to disable it the first
-//! time somebody needs their file read.
+//! and a rule that turned all three away would leave this parser unable to read
+//! its own subject. `<!DOCTYPE nmaprun>` declares nothing and references nothing.
+//! The narrower rule is also the stronger one: a blanket refusal is the kind that
+//! acquires an option to disable it the first time somebody needs their file
+//! read.
 //!
 //! ## What a caller reads, and what is skipped unbuffered
 //!
 //! A caller names the attributes it wants when it builds the parser, and every
-//! other value is scanned past without being stored. That is what lets nmap's
-//! very long `args` and `services` attributes through without a limit tuned
-//! around them: only the element's total markup is bounded, not the value.
+//! other value is scanned past without being stored. That lets nmap's very long
+//! `args` and `services` attributes through without a limit tuned around them,
+//! since only the element's total markup is bounded rather than the value.
 //!
 //! Text between elements is skipped the same way until a caller asks for it with
-//! [`Parser::begin_text`], which it does on entering an element whose content it
-//! wants. Entity references are resolved - and refused - only in text that was
-//! asked for, on the same principle: nothing is interpreted that nobody reads.
+//! [`Parser::begin_text`], on entering an element whose content it wants. Entity
+//! references are resolved, and refused, only in text that was asked for. Nothing
+//! is interpreted that nobody reads.
 //!
 //! ## Who uses it
 //!
 //! [`nmap`](super::nmap) reads a document as the targets to scan next.
-//! [`report::nmap`](crate::import::report::nmap) reads the same document as the findings
-//! of the scan that produced it. One audited parser rather than two, because two
-//! hand-rolled XML parsers kept hardened in step is the failure this module's
-//! refusals exist to prevent.
+//! [`report::nmap`](crate::import::report::nmap) reads the same document as the
+//! findings of the scan that produced it. One audited parser rather than two, so
+//! there is no second one to keep hardened in step.
 
 use std::io::BufRead;
 
@@ -75,9 +72,9 @@ use crate::import::{ImportError, ImportOrigin};
 
 /// How deeply elements may nest.
 ///
-/// Real nmap output reaches five. Sixty-four is unreachable by anything honest
-/// and bounds the parser's own bookkeeping, which is the only thing depth costs
-/// here - element content is never accumulated.
+/// Real nmap output reaches five. Sixty-four is unreachable by anything honest and
+/// bounds the parser's own bookkeeping, which is all depth costs here, since
+/// element content is never accumulated.
 pub(crate) const MAX_DEPTH: usize = 64;
 
 /// The longest element or attribute name accepted, in bytes.
@@ -139,8 +136,8 @@ impl Element {
 
     /// One attribute's value as text, if the element carried it.
     ///
-    /// `None` means the element did not carry the attribute, and nothing else:
-    /// a value that is not UTF-8 refused the document when it was read, so no
+    /// `None` means the element did not carry the attribute and nothing else. A
+    /// value that is not UTF-8 refused the document when it was read, so no
     /// unreadable value ever reaches here.
     pub(crate) fn value(&self, name: &[u8]) -> Option<&str> {
         self.values
@@ -183,9 +180,9 @@ pub(crate) struct Parser<'a> {
 
 /// What to do with one attribute's value.
 ///
-/// Three states rather than the two independent flags this used to be. They
-/// were never independent: a value was only ever lossy if it was also kept, so
-/// one of the four combinations the old signature could express did not exist,
+/// Three states rather than two independent flags. A value is only lossy if it is
+/// also kept, so one of the four combinations two flags could express does not
+/// exist,
 /// and two adjacent `bool`s could be swapped at a call site with no diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValuePolicy {
@@ -246,13 +243,13 @@ impl<'a> Parser<'a> {
     ///
     /// For a value that enriches a record without deciding what it says. Nmap
     /// lists the ports it found uninteresting, and that list is bounded only by
-    /// how many ports were scanned — a sparse sweep of all 65 535 could write
+    /// how many ports were scanned, so a sparse sweep of all 65 535 could write
     /// several hundred kilobytes of it. Refusing the file over an attribute
     /// nothing depends on would be the wrong trade, and so would raising every
     /// bound to fit the worst case.
     ///
-    /// **Dropped whole, never truncated.** A prefix of a port list is a claim
-    /// that the ports past the cut were not probed, which is a different and
+    /// Dropped whole, never truncated. A prefix of a port list is a claim that
+    /// the ports past the cut were not probed, which is a different and
     /// worse answer than not knowing.
     pub(crate) fn with_lossy(mut self, lossy: &'static [&'static [u8]]) -> Self {
         self.lossy = lossy;
@@ -365,8 +362,8 @@ impl<'a> Parser<'a> {
     /// Reads the next element, skipping text, comments and instructions.
     pub(crate) fn next_event(&mut self) -> Result<Event, ImportError> {
         loop {
-            // Text between elements is never read. Nothing here needs it, and
-            // not reading it is what makes an entity reference in content
+            // Text between elements is never read, which is what makes an
+            // entity reference in content
             // harmless whatever it says.
             loop {
                 match self.peek()? {
@@ -431,9 +428,9 @@ impl<'a> Parser<'a> {
 
     /// Handles everything opening `<!`.
     ///
-    /// This is where the refusals live. A comment and a CDATA section are inert
-    /// and are skipped; a `DOCTYPE` is inert only in the one form nmap writes;
-    /// everything else that can appear here declares something, and declaring
+    /// Where the refusals live. A comment and a CDATA section are inert and are
+    /// skipped, a `DOCTYPE` is inert only in the one form nmap writes, and
+    /// everything else that can appear here declares something. Declaring
     /// anything is what this parser exists not to do.
     fn declaration(&mut self) -> Result<(), ImportError> {
         self.bump()?; // '!'
@@ -579,10 +576,10 @@ impl<'a> Parser<'a> {
         if let Some(value) = self.read_value(policy)?
             && policy != ValuePolicy::Skip
         {
-            // Checked here rather than where the value is read out, because
-            // `None` there would mean "the element did not carry this
-            // attribute" and a host whose address is not text would vanish
-            // instead of refusing the document. Every other format in this
+            // Checked here rather than where the value is read out: `None`
+            // there would mean the element did not carry the attribute, and a
+            // host whose address is not text would vanish instead of refusing
+            // the document. Every other format in this
             // module answers the same bytes with the same error.
             if std::str::from_utf8(&value).is_err() {
                 return Err(ImportError::InvalidUtf8 {
@@ -597,8 +594,8 @@ impl<'a> Parser<'a> {
 
     /// Reads a quoted attribute value under `policy`.
     ///
-    /// An unwanted value is not accumulated at all, which is what lets nmap's
-    /// very long `args` and `services` attributes through without any limit
+    /// An unwanted value is not accumulated at all, which lets nmap's very long
+    /// `args` and `services` attributes through without any limit
     /// tuned around them: only the element's total markup is bounded.
     fn read_value(&mut self, policy: ValuePolicy) -> Result<Option<Vec<u8>>, ImportError> {
         let keep = policy != ValuePolicy::Skip;
@@ -657,9 +654,9 @@ impl<'a> Parser<'a> {
     /// Resolves one entity reference, or refuses it.
     ///
     /// The five predefined references and numeric character references are the
-    /// whole of what an attribute may contain, because no others can have been
-    /// declared - this parser refuses every declaration. A reference to
-    /// something undeclared is the shape an external-entity attack takes, so it
+    /// whole of what an attribute may contain, since this parser refuses every
+    /// declaration and no others can exist. A reference to something undeclared
+    /// is the shape an external-entity attack takes, so it
     /// is named in the error rather than skipped.
     fn entity(&mut self) -> Result<Vec<u8>, ImportError> {
         self.bump()?; // '&'
@@ -737,10 +734,10 @@ impl<'a> Parser<'a> {
     /// Skips everything up to and including `terminator`.
     ///
     /// Compares a sliding window of the last few bytes rather than advancing a
-    /// match counter. A counter has to decide, on a mismatch, how much of the
-    /// partial match to keep, and every cheap answer is wrong here: `]]]>` ends
-    /// a CDATA section whose content is `]`, and dropping back to one matched
-    /// byte on the third `]` runs past it to the end of the document. The window
+    /// match counter. On a mismatch a counter has to decide how much of the
+    /// partial match to keep, and the cheap answers are wrong here: `]]]>` ends a
+    /// CDATA section whose content is `]`, and dropping back to one matched byte
+    /// on the third `]` runs past it to the end of the document. The window
     /// is at most [`MAX_TERMINATOR_BYTES`] wide, so the comparison costs less
     /// than the arithmetic it replaces.
     fn skip_until(&mut self, terminator: &[u8]) -> Result<(), ImportError> {
@@ -789,9 +786,9 @@ impl Parser<'_> {
 
 /// Whether a byte may appear in an element or attribute name.
 ///
-/// Deliberately permissive about what a name may contain and strict about what
-/// ends one: everything this parser does with a name is compare it against a
-/// fixed list, so a name it does not recognise is skipped whatever it is made
+/// Permissive about what a name may contain and strict about what ends one.
+/// Everything this parser does with a name is compare it against a fixed list, so
+/// a name it does not recognise is skipped whatever it is made
 /// of.
 fn is_name_byte(byte: u8) -> bool {
     !matches!(

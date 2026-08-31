@@ -15,48 +15,42 @@
 //!
 //! A scan report is a tree and a CSV is a table, so this format throws things
 //! away: the phases, the settings, the probe instrumentation, the per-script
-//! output, the full address list of a multi-homed host. That is not a gap to be
-//! filled by adding columns until the file is unreadable - it is what makes the
-//! format worth having. A compliance reviewer wants to sort by port and filter
-//! by service, and [`json`](super::json) is where the record of the scan lives
-//! when a question needs the whole answer.
+//! output, the full address list of a multi-homed host. Adding columns until the
+//! file is unreadable would cost the format what makes it worth having. A
+//! compliance reviewer wants to sort by port and filter by service, and
+//! [`json`](super::json) is where the whole record lives.
 //!
-//! What survives is one row per *finding*: a host paired with a port. A host
-//! with no ports still gets a row with the port columns empty, because a
-//! discovery sweep otherwise exports an empty file.
+//! What survives is one row per finding: a host paired with a port. A host with
+//! no ports still gets a row with the port columns empty, since a discovery
+//! sweep would otherwise export an empty file.
 //!
 //! ## Formula injection
 //!
-//! A scanner writes attacker-controlled text - hostnames, service banners,
-//! certificate subjects - and a spreadsheet treats a cell beginning with `=`,
+//! A scanner writes attacker-controlled text, such as hostnames, service banners
+//! and certificate subjects, and a spreadsheet treats a cell beginning with `=`,
 //! `+`, `-`, `@`, a tab or a carriage return as a formula to execute. A device
 //! named `=cmd|'/c calc'!A1` is a working attack on whoever opens the report.
 //!
-//! Every field is therefore checked against
-//! [`crate::format::csv::FORMULA_LEADERS`] and, where it starts
-//! with one of those, prefixed with an apostrophe, which is the escape
-//! spreadsheets themselves use for "this is text". The list lives beside the
-//! header rather than here, because the reader has to take back off exactly what
-//! this puts on. It is unconditional. There is no option to turn it off,
-//! because the person who would turn it off is not the person who opens the
-//! file, and a consumer who needs the bytes exactly as the scanner saw them has
-//! JSON.
+//! Every field is checked against [`crate::format::csv::FORMULA_LEADERS`] and,
+//! where it starts with one of those, prefixed with an apostrophe, the escape
+//! spreadsheets themselves use for text. The list lives beside the header rather
+//! than here because the reader has to take back off exactly what this puts on.
 //!
-//! No numeric field the engine emits is ever negative, so the guard never fires
-//! on a legitimate number.
+//! The guard is unconditional and cannot be turned off. A consumer who needs the
+//! bytes exactly as the scanner saw them has JSON. No numeric field the engine
+//! emits is ever negative, so it never fires on a legitimate number.
 //!
 //! ## Dialect
 //!
-//! RFC 4180 quoting - fields containing a delimiter, a quote or a line break are
-//! quoted, and quotes inside them are doubled - with LF line endings rather than
+//! RFC 4180 quoting, so a field containing a delimiter, a quote or a line break
+//! is quoted and quotes inside it are doubled, with LF line endings rather than
 //! the RFC's CRLF. Every parser and spreadsheet in use accepts LF, and CRLF
-//! leaves a stray carriage return in every last column for the Unix tools that
-//! are the other half of this format's audience.
+//! leaves a stray carriage return in the last column for the Unix tools that are
+//! the other half of this format's audience.
 //!
 //! Output is UTF-8 with no byte-order mark. Excel on Windows needs one to read
-//! UTF-8 correctly, and a BOM breaks naive parsers everywhere else, so it is
-//! opt-in through [`CsvExporter::with_excel_bom`] rather than a default that is
-//! wrong for one audience or the other.
+//! UTF-8 correctly and a BOM breaks naive parsers everywhere else, so it is
+//! opt-in through [`CsvExporter::with_excel_bom`].
 
 use std::io::Write;
 
@@ -286,10 +280,10 @@ fn write_port(row: &mut Row, port: &Port, options: &ExportOptions) {
 /// The port's findings as one cell: each finding as `severity: title (refs)`,
 /// worst-first, joined by `; `.
 ///
-/// The excerpt is left out — it is for a reader of the richer formats, not a
-/// spreadsheet cell. The cell always leads with a severity word, so it can never
-/// begin with a formula character; `push` quotes any cell carrying a `;`, so the
-/// summary survives a spreadsheet locale that reads `;` as the column delimiter.
+/// The excerpt is left out, being for a reader of the richer formats rather than
+/// a spreadsheet cell. The cell always leads with a severity word, so it never
+/// begins with a formula character, and `push` quotes any cell carrying a `;`,
+/// so the summary survives a locale that reads `;` as the column delimiter.
 fn findings_cell(port: &Port) -> String {
     let mut findings: Vec<&Finding> = port.findings().collect();
     findings.sort_by(|a, b| {
@@ -320,18 +314,18 @@ fn bool_cell(value: bool) -> &'static str {
 
 /// Joins several values into one cell, space separated.
 ///
-/// A space rather than a comma or a semicolon: a comma would need the cell
+/// A space rather than a comma or a semicolon. A comma would need the cell
 /// quoted for no gain, and a semicolon is the field delimiter in the locales
-/// that use a comma for the decimal point, so it reads as a broken row there.
+/// that use a comma for the decimal point.
 fn join(values: impl Iterator<Item = String>) -> String {
     values.collect::<Vec<_>>().join(" ")
 }
 
 /// One row under construction.
 ///
-/// Buffers the row rather than writing field by field so that a row either
-/// reaches the destination whole or not at all - a half-written row followed by
-/// a line break parses as a complete row with missing columns.
+/// Buffers the row rather than writing field by field, so a row reaches the
+/// destination whole or not at all. A half-written row followed by a line break
+/// parses as a complete row with missing columns.
 struct Row {
     text: String,
     fields: usize,
@@ -354,10 +348,9 @@ impl Row {
 
         let field = field.as_ref();
         let needs_formula_guard = field.starts_with(FORMULA_LEADERS);
-        // A `;` is quoted alongside the delimiters proper because a spreadsheet
-        // in a comma-for-decimal locale reads `;` as the column separator, and a
-        // quoted field survives that reading — which is what lets the findings
-        // column join its entries with `; `.
+        // A spreadsheet in a comma-for-decimal locale reads `;` as the column
+        // separator, so a field carrying one is quoted alongside the delimiters
+        // proper. That is what lets the findings column join with `; `.
         let needs_quotes = needs_formula_guard
             || field.contains([',', ';', '"', '\n', '\r'])
             || field.starts_with(' ')
@@ -647,12 +640,11 @@ mod tests {
 
     /// A field a spreadsheet would execute is neutralized before it gets there.
     ///
-    /// **The control this pins had no test at all.** A cell beginning `=`, `+`,
-    /// `-`, `@` or a tab is a formula to Excel, LibreOffice and Sheets alike, and
-    /// a scanned host chooses its own banner — so `=HYPERLINK(...)` in a service
-    /// version is a scan report that exfiltrates on open. The guard quotes the
-    /// field and prefixes an apostrophe, which the spreadsheet strips on display
-    /// and never evaluates.
+    /// A cell beginning `=`, `+`, `-`, `@` or a tab is a formula to Excel,
+    /// LibreOffice and Sheets alike, and a scanned host chooses its own banner,
+    /// so `=HYPERLINK(...)` in a service version is a scan report that
+    /// exfiltrates on open. The guard quotes the field and prefixes an
+    /// apostrophe, which the spreadsheet strips on display and never evaluates.
     ///
     /// Asserted over the whole document rather than one call, so a column added
     /// later without going through the writer fails this too.

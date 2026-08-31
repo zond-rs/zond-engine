@@ -9,11 +9,10 @@
 //! # Writing a comparison out
 //!
 //! What [`export`](crate::export) is to a [`ScanReport`](crate::ScanReport),
-//! this is to a
-//! [`ScanDiff`]: the document somebody else reads. A comparison that only ever
-//! reaches a terminal serves the person who ran it and nobody downstream, and
-//! downstream is where a nightly comparison earns its keep — an alerting rule, a
-//! ticket, a review queue, a dashboard.
+//! this is to a [`ScanDiff`]: the document somebody else reads. A comparison
+//! that only reaches a terminal serves the person who ran it and nobody
+//! downstream, and downstream is where a nightly comparison earns its keep, in
+//! an alerting rule or a ticket or a review queue.
 //!
 //! ## Every change is one scalar fact
 //!
@@ -22,22 +21,23 @@
 //! moved, and the two values, either of which may be `null`. A host that gained
 //! three addresses produces three changes rather than one carrying a list.
 //!
-//! That costs some faithfulness to the engine's own [`HostChange`](crate::diff::HostChange)
-//! and [`PortChange`](crate::diff::PortChange), which group set changes together. It buys a document a rule
-//! engine can act on without a parser per variant: one shape, one code path,
-//! and a `kind` that maps directly onto "alert me when this happens". The same
-//! flattening produces a front end's per-line output, so a comparison printed in
-//! a terminal and one posted to a queue name the same events the same way.
+//! That costs some faithfulness to the engine's own
+//! [`HostChange`](crate::diff::HostChange) and
+//! [`PortChange`](crate::diff::PortChange), which group set changes together. It
+//! buys a document a rule engine can act on without a parser per variant: one
+//! shape, one code path, and a `kind` that maps onto "alert me when this
+//! happens". The same flattening produces a front end's per-line output, so a
+//! comparison printed in a terminal and one posted to a queue name the same
+//! events the same way.
 //!
 //! ## What a consumer must not lose
 //!
-//! Every host and every endpoint carries `confirmed`. It is derived — from the
-//! presence and the other scan's coverage — and it is stated anyway, because it
-//! is the field an alerting rule keys on and re-deriving it is exactly the step
-//! somebody will skip. A comparison whose `confirmed` is ignored reports hosts
-//! as gone every time a scan is narrowed, which is the failure
-//! [`diff`](crate::diff) is arranged to prevent and which this document must not
-//! reintroduce at the last step.
+//! Every host and every endpoint carries `confirmed`. It is derived, from the
+//! presence and the other scan's coverage, and stated anyway, because it is the
+//! field an alerting rule keys on and re-deriving it is the step somebody will
+//! skip. A comparison whose `confirmed` is ignored reports hosts as gone every
+//! time a scan is narrowed, which is the failure [`diff`](crate::diff) is
+//! arranged to prevent.
 //!
 //! ## The records on either side
 //!
@@ -58,8 +58,8 @@
 //!
 //! ## Versioned apart from the report
 //!
-//! The document declares [`DIFF_SCHEMA_VERSION`](schema::DIFF_SCHEMA_VERSION), which is counted separately
-//! from the report's. See that constant for why.
+//! The document declares [`DIFF_SCHEMA_VERSION`](schema::DIFF_SCHEMA_VERSION),
+//! which is counted separately from the report's. See that constant for why.
 
 pub mod schema;
 
@@ -84,28 +84,25 @@ pub use json::JsonDiffExporter;
 
 /// One output format for a comparison.
 ///
-/// The counterpart of [`Exporter`](crate::export::Exporter), and separate from
-/// it because the two take different things: a report is what a scan found, and
-/// a comparison is what changed between two of them. A type could implement both
-/// and several will.
+/// The counterpart of [`Exporter`](crate::export::Exporter), separate because
+/// the two take different things: a report is what a scan found, a comparison is
+/// what changed between two of them. One type may implement both.
 pub trait DiffExporter {
     /// Writes `diff` to `out`.
     ///
-    /// Implementations must stream, for the reason
-    /// [`Exporter::export`](crate::export::Exporter::export) gives: the memory a
-    /// comparison costs to write should be a function of the largest single
-    /// host, not of how many of them moved.
+    /// Implementations must stream: the memory a comparison costs to write
+    /// should be a function of the largest single host, not of how many of them
+    /// moved.
     fn export(&self, diff: &ScanDiff, out: &mut dyn Write) -> Result<(), ExportError>;
 }
 
 /// The comparison formats this build can write.
 ///
-/// The counterpart of [`ExportFormat`](crate::export::ExportFormat), and the
-/// same shape down to the extension rule: a front end resolves `-o changes.json`
-/// to a format rather than taking a second flag that can disagree with the
-/// destination. A front end offering the user a choice reads [`all`](Self::all)
-/// rather than naming the exporters itself, so a build without one of them lists
-/// what it can actually write.
+/// The counterpart of [`ExportFormat`](crate::export::ExportFormat), down to the
+/// extension rule: a front end resolves `-o changes.json` to a format rather
+/// than taking a second flag. A front end offering the user a choice reads
+/// [`all`](Self::all) rather than naming the exporters itself, so a build
+/// without one of them lists what it can actually write.
 ///
 /// Which variants exist depends on the cargo features the crate was built with.
 #[non_exhaustive]
@@ -125,8 +122,8 @@ impl DiffFormat {
     /// Resolves a file extension, case-insensitively and without a leading dot.
     ///
     /// Returns `None` for an extension no compiled-in format claims, which the
-    /// caller should report rather than silently writing one format into a file
-    /// named for another.
+    /// caller should report rather than writing one format into a file named for
+    /// another.
     pub fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
             #[cfg(feature = "export-json")]
@@ -171,9 +168,7 @@ impl DiffFormat {
 
     /// Builds an exporter for this format under the given options.
     pub fn exporter(self, options: ExportOptions) -> Box<dyn DiffExporter> {
-        // Bound before the match for the reason `ExportFormat::exporter` gives:
-        // a build with neither format has no arm to hand the options to, and
-        // cannot reach this function at all.
+        // Bound before the match for the reason `ExportFormat::exporter` gives.
         let _ = &options;
 
         match self {

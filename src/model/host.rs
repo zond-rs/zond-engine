@@ -374,11 +374,22 @@ pub enum Filtering {
 }
 
 impl Filtering {
-    /// Every conclusion this build knows, in the order they are reported.
+    /// Every conclusion this build knows, in declaration order, which is the
+    /// order they are reported in.
     ///
-    /// The array's length is the compile-time check that a conclusion added to
-    /// the enum was added here too: a set is rendered through this order, and a
-    /// member missing from it would be silently dropped from every report.
+    /// A set is rendered through this order and the exported schema's list is
+    /// built from it, so a conclusion missing from here is one that survives a
+    /// scan and disappears on the way to the report.
+    ///
+    /// **The array's length is not the check against that**, though it read as
+    /// one for a while. It catches an entry added here without the number being
+    /// raised, and nothing else; a variant added to the enum and not to this
+    /// list compiles, and was measured doing so. What the compiler does refuse
+    /// is a variant with no wire name, in
+    /// [`record::wire`](crate::record::wire), which is a function whose round
+    /// trip is driven by this list. The order and the absence of repeats are
+    /// held by `model`'s own test. Completeness is held by neither, and closing
+    /// it needs a derive macro this crate does not carry.
     pub const ALL: [Filtering; 4] = [
         Self::InlineMiddlebox,
         Self::StatefulFilter,

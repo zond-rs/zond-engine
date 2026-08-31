@@ -6,42 +6,28 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # What the two directions have to agree on
+//! # What the two directions agree on
 //!
-//! The constants that define this engine's own file formats, separated from the
-//! code that writes them ([`crate::export`]) and the code that reads them
-//! ([`crate::import`]).
-//!
-//! ## Why the contract is not kept with the writer
+//! Constants that define this engine's own file formats, shared by the writers
+//! in [`crate::export`] and the readers in [`crate::import`].
 //!
 //! A reader and a writer of the same format have to agree on a handful of
 //! values: the schema version a document declares, the name it is written under,
-//! the exact header row a table starts with. There are only two places that
-//! agreement can live. Either the reader reaches into the writer for it, or both
-//! reach into something neither of them owns.
+//! the exact header row a table starts with. Those live here, below both
+//! directions, so neither owns them and a consumer that only ever imports does
+//! not compile an exporter to reach a string constant.
 //!
-//! The first is what this module exists to stop. It makes reading a format
-//! depend on being able to write it, which is untrue — recognising a header is
-//! not emitting one — and the dependency is not merely cosmetic: it reaches the
-//! feature list, where a consumer who only ever imports ends up compiling every
-//! exporter to get at a string constant. It also puts the definition somewhere
-//! nobody looks. A value the reader consults and the writer emits is the
-//! *format's*, and finding it under the writer suggests the writer may change it
-//! unilaterally, which is exactly what must not happen.
-//!
-//! So the contract sits here, below both, and the rule is short: **a value
-//! belongs in this module when changing it would break the other direction.**
-//! Everything else — how a document is streamed, how a field is quoted, which
-//! DTOs a writer borrows through — is one direction's own business and stays
-//! where it is used.
+//! The rule for what belongs here is short: a value belongs in this module when
+//! changing it would break the other direction. How a document is streamed, how
+//! a field is quoted, which DTOs a writer borrows through are one direction's
+//! own business and stay where they are used.
 
 /// The version a document declares in its `schema_version` field, and the
 /// highest version a reader in this build understands.
 ///
 /// It changes only when a document that a previous reader would misinterpret
-/// becomes possible. Adding a field does not bump it, because a consumer that
-/// ignores what it does not recognise is unaffected — and one that does not
-/// ignore it was going to break on the next scanner either way.
+/// becomes possible. Adding a field does not bump it, since a consumer that
+/// ignores what it does not recognise is unaffected.
 ///
 /// The engine's own version travels alongside it in `engine.version`, so a
 /// report can be attributed to a build without the schema having to move every
@@ -51,13 +37,10 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The version a comparison document declares, and the highest a reader in this
 /// build understands.
 ///
-/// Counted separately from [`SCHEMA_VERSION`] on the same reasoning the journal's
-/// version is counted separately from both: the two answer different questions —
-/// one is "what did this scan find", the other is "what changed between two of
-/// them" — and coupling them would mean a report gaining a field invalidating
-/// every stored comparison. A comparison document *quotes* report documents for
-/// the records on either side of a change, so the two move together often; that
-/// they usually agree is not a reason to make them the same number.
+/// Counted separately from [`SCHEMA_VERSION`], which answers a different
+/// question: one says what a scan found, the other says what changed between two
+/// of them. Tying the numbers together would mean a report gaining a field
+/// invalidates every stored comparison.
 pub const DIFF_SCHEMA_VERSION: u32 = 1;
 
 /// The name reported in a document's `engine.name` field, and the name a reader
@@ -67,12 +50,10 @@ pub const ENGINE_NAME: &str = "zond-engine";
 /// The mark a Windows editor leaves at the start of a file, as UTF-8.
 ///
 /// Every reader in [`crate::import`] strips it from the first thing it reads and
-/// nowhere else, and the CSV writer emits it on request. It is here rather than
-/// in each of them because it was written down four times, and a byte sequence
-/// spelled out per file is a byte sequence one file eventually spells wrong.
+/// nowhere else, and the CSV writer emits it on request.
 ///
-/// Compiled in unconditionally, like [`time`]: the list reader is always
-/// present and always strips one.
+/// Compiled in unconditionally, like [`time`]: the list reader is always present
+/// and always strips one.
 pub const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 /// [`UTF8_BOM`] as the character it encodes, for a reader holding text rather
@@ -84,9 +65,8 @@ pub mod time;
 /// The header row of this engine's CSV, which the writer emits and the reader
 /// recognises.
 ///
-/// Compiled in whenever either direction is, since it is the one thing they must
-/// not disagree about: a reader matching a stale header does not fail, it
-/// declines to recognise a table this engine wrote and falls through to treating
-/// it as a plain target list.
+/// Compiled in whenever either direction is. A reader matching a stale header
+/// does not fail; it declines to recognise a table this engine wrote and falls
+/// through to treating it as a plain target list.
 #[cfg(any(feature = "export-csv", feature = "import-csv"))]
 pub mod csv;

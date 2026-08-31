@@ -115,23 +115,32 @@ impl Security {
         self
     }
 
-    /// Merges another security record into this one.
+    /// Folds another handshake's account of this endpoint into this one.
     ///
-    /// Preserves existing TLS version and cipher suite if already populated,
-    /// but safely deduplicates and merges ALPN arrays.
+    /// Every field fills a gap and displaces nothing: the version, the cipher
+    /// suite and the certificate are kept where they are already recorded, and
+    /// the ALPN lists union without repeating. That is the module's rule that a
+    /// tie keeps what is on record, applied to a type where there is no
+    /// confidence to break the tie with, since a completed handshake is a
+    /// completed handshake.
     pub fn merge(&mut self, other: Security) {
-        if self.tls_version.is_none() {
-            self.tls_version = other.tls_version;
-        }
-        if self.cipher_suite.is_none() {
-            self.cipher_suite = other.cipher_suite;
-        }
-        if self.certificate.is_none() {
-            self.certificate = other.certificate;
-        }
+        // Destructured rather than reached through `other.…`, so a field added
+        // to this struct is a compile error here and not a value that quietly
+        // stops being folded. The doc above used to name the version and the
+        // cipher suite and not the certificate, which is the field a caller is
+        // most likely to be reading the record for.
+        let Security {
+            tls_version,
+            cipher_suite,
+            alpn,
+            certificate,
+        } = other;
 
-        // Merge and deduplicate ALPN protocols
-        for protocol in other.alpn {
+        self.tls_version = self.tls_version.take().or(tls_version);
+        self.cipher_suite = self.cipher_suite.take().or(cipher_suite);
+        self.certificate = self.certificate.take().or(certificate);
+
+        for protocol in alpn {
             if !self.alpn.contains(&protocol) {
                 self.alpn.push(protocol);
             }

@@ -13,73 +13,69 @@
 //! engine's JSON, so this is the file that puts a zond scan into somebody's
 //! existing workflow without asking them to change it.
 //!
-//! That is the whole justification. Nothing here is a better description of a
-//! scan than [`super::json`] - it is a narrower one, in somebody else's
-//! vocabulary, and it earns its place purely by being understood downstream.
+//! That is the whole justification. Nothing here describes a scan better than
+//! [`super::json`] does; it is a narrower description in somebody else's
+//! vocabulary, and it earns its place by being understood downstream.
 //!
 //! ## It says who wrote it
 //!
 //! `scanner="zond"`, never `scanner="nmap"`.
 //!
-//! This is not a detail to be traded for compatibility. A scan report is
-//! evidence: it says a particular tool observed a particular thing at a
-//! particular time, and somebody downstream will act on it, cite it in an audit,
-//! or attach it to a finding. A document claiming to be nmap's output when it is
-//! not is a fabricated record, and no amount of parser convenience is worth
-//! producing one.
+//! A scan report is evidence: it says a particular tool observed a particular
+//! thing at a particular time, and somebody downstream will act on it, cite it in
+//! an audit or attach it to a finding. A document claiming to be nmap's output
+//! when it is not is a fabricated record, and no amount of parser convenience is
+//! worth producing one.
 //!
-//! `xmloutputversion` is still nmap's, because that names the *format* and this
+//! `xmloutputversion` is still nmap's, since that names the format and this
 //! document really is in it.
 //!
-//! ## The one place this deviates from nmap's DTD, and why
+//! ## The one place this deviates from nmap's DTD
 //!
-//! Nmap's own DTD declares `scanner (nmap) #REQUIRED` - an enumeration with
-//! exactly one member. **No honest producer of this format can be DTD-valid**,
-//! and every other tool that emits it is in the same position.
+//! Nmap's own DTD declares `scanner (nmap) #REQUIRED`, an enumeration with one
+//! member, so no honest producer of this format can be DTD-valid. Every other
+//! tool that emits it is in the same position.
 //!
-//! Measured against `nmap.dtd` from nmap 7.99: this document validates
-//! completely - every element, every ordering, every required attribute - with
-//! the scanner name changed to `nmap` and nothing else. That deviation is the
-//! whole of it, and it is deliberate. The alternative is a document that says
-//! nmap observed something nmap never saw.
+//! Measured against `nmap.dtd` from nmap 7.99, this document validates
+//! completely, every element and ordering and required attribute, with the
+//! scanner name changed to `nmap` and nothing else. That deviation is the whole
+//! of it.
 //!
-//! It costs nothing that matters. Consumers of this format parse it
-//! structurally, with lenient parsers, and do not validate against the DTD; a
-//! document this one produces reads correctly through a standard XML parser,
-//! yielding the hosts, addresses and port states the scan recorded.
+//! It costs nothing that matters. Consumers of this format parse it structurally
+//! with lenient parsers rather than validating against the DTD, and a document
+//! this one produces reads correctly through a standard XML parser, yielding the
+//! hosts, addresses and port states the scan recorded.
 //!
-//! Do not "fix" this by writing `nmap`. There is a test whose only job is to
-//! stop that.
+//! Writing `nmap` here fails a test that exists for the purpose.
 //!
 //! ## What survives
 //!
 //! Nmap's vocabulary is not this engine's, and where the two disagree the
 //! document says less rather than saying something false. Port states map
-//! exactly - nmap and this engine name the same six. Host status has to be
-//! flattened: nmap knows `up`, `down` and `unknown`, so a host this engine calls
-//! `filtered` is exported `up`, which is what it is, with the distinction
-//! carried in the `reason`.
+//! exactly, both naming the same six. Host status is flattened: nmap knows `up`,
+//! `down` and `unknown`, so a host this engine calls `filtered` is exported `up`,
+//! with the distinction carried in the `reason`.
 //!
-//! Everything the format has no place for - the phases, the probe
-//! instrumentation, the TLS detail, the per-address timing - is simply absent.
-//! [`super::json`] remains where the whole record lives.
+//! Everything the format has no place for, the phases and the probe
+//! instrumentation and the TLS detail and the per-address timing, is absent.
+//! [`super::json`] is where the whole record lives.
 //!
 //! ## Characters XML cannot carry
 //!
 //! A scanner writes attacker-controlled text: hostnames, service banners,
-//! certificate subjects. Two separate problems come with putting that in an XML
-//! attribute, and only one of them is escaping.
+//! certificate subjects. Putting that in an XML attribute brings two problems,
+//! and only one of them is escaping.
 //!
-//! The first is ordinary: `&`, `<`, `>`, `"` and `'` are escaped, everywhere,
+//! The first is ordinary. `&`, `<`, `>`, `"` and `'` are escaped everywhere,
 //! unconditionally.
 //!
 //! The second has no escape. XML 1.0 forbids most C0 control characters from a
-//! document *at all* - and forbids a numeric character reference to one just as
-//! firmly, so `&#1;` is not a way out. A banner containing a `0x01` therefore
-//! cannot be represented, and emitting it raw produces a file that no parser
-//! downstream will open. They are dropped, along with the bidirectional
-//! formatting characters, which reorder the text around them and would let a
-//! hostname make a report display one thing and mean another.
+//! document at all, and forbids a numeric character reference to one just as
+//! firmly, so `&#1;` is not a way out. A banner containing a `0x01` cannot be
+//! represented, and emitting it raw produces a file no parser downstream will
+//! open. Those are dropped, along with the bidirectional formatting characters,
+//! which reorder the text around them and would let a hostname make a report
+//! display one thing and mean another.
 
 use std::fmt::{self, Write as _};
 use std::io::Write;
@@ -146,38 +142,30 @@ impl Exporter for NmapXmlExporter {
             ),
             started,
             Attr(&time_string(report.started_at())),
-            // This build's, because the attribute beside it says `scanner="zond"`.
-            // Writing the report's own attribution here put a foreign scanner's
-            // version on zond's name, and reading the file back turned the pair
-            // into one string: `zond 0.13.0` became the *version* of the next
-            // document exported from it.
+            // This build's, since the attribute beside it says
+            // `scanner="zond"`. Writing the report's own attribution here put a
+            // foreign scanner's version on zond's name.
             Attr(crate::report::ENGINE_VERSION),
             XML_OUTPUT_VERSION,
         )?;
 
-        // One per transport per phase, as nmap writes them. This is the
-        // element that tells a consumer which ports were looked at, and so the
-        // difference between a port absent because it was closed and one absent
-        // because nobody asked.
+        // One per transport per phase, as nmap writes them. This is what tells
+        // a consumer which ports were looked at, and so the difference between
+        // a port absent because it was closed and one nobody asked about.
         for phase in report.phases() {
             write_scan_info(out, phase)?;
         }
 
-        // Written because every consumer reads it and a missing one is an
-        // awkward absence.
         writeln!(out, r#"<verbose level="0"/>"#)?;
         writeln!(out, r#"<debugging level="0"/>"#)?;
 
-        // One host is written and dropped before the next is rendered, which is
-        // what keeps a scan of any size costing a host's worth of memory.
         for host in report.hosts() {
             write_host(out, host, &self.options)?;
         }
 
         let summary = report.summary();
-        // One reading, used twice: `time` and `timestr` are the same instant
-        // said two ways, and two calls to the clock can straddle a second and
-        // name two.
+        // One reading used twice: two calls to the clock can straddle a second
+        // and leave `time` and `timestr` naming different instants.
         let finished = SystemTime::now();
 
         writeln!(out, "<runstats>")?;
@@ -213,24 +201,17 @@ impl Exporter for NmapXmlExporter {
 
 /// Records an exclusion policy as an XML comment, when there was one.
 ///
-/// **A comment because this format has nowhere else to put it.** Nmap has no
-/// element for an exclusion — its own `--exclude` survives only inside the
-/// `args` attribute, which is the command line, and this engine is a library
-/// that was never handed one. Writing a plausible command line into `args` would
-/// be inventing a record of what somebody typed, which is the same objection
-/// this module makes to `scanner="nmap"` and is refused for the same reason.
-/// Inventing an element instead would cost the property the module documentation
-/// claims: that this document validates against `nmap.dtd` with nothing changed
-/// but the scanner name.
+/// A comment because this format has nowhere else to put it. Nmap's own
+/// `--exclude` survives only inside the `args` attribute, which is a command line
+/// this engine was never handed, and inventing an element instead would cost the
+/// document its validity against `nmap.dtd`.
 ///
 /// A comment costs neither. It is valid anywhere in XML content, invisible to
 /// every consumer that parses this file, and legible to the person who opens it.
 ///
-/// Silence was the alternative and it is not acceptable. Somebody exporting only
-/// this format would otherwise hold a file that reports a scan of a range while
-/// omitting that part of the range was deliberately not covered, and a report
-/// that overstates its own coverage is the exact failure this policy exists to
-/// prevent.
+/// Saying nothing is not an option: a file reporting a scan of a range while
+/// omitting that part of it was deliberately skipped overstates its own
+/// coverage.
 fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), ExportError> {
     let mut excluded: Vec<String> = Vec::new();
     for phase in report.phases() {
@@ -246,9 +227,9 @@ fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), 
         return Ok(());
     }
 
-    // Rendered from addresses rather than from anything a caller wrote, so no
-    // attacker-controlled text reaches this line and `--` cannot appear in it to
-    // close the comment early.
+    // Rendered from addresses rather than anything a caller wrote, so no
+    // attacker-controlled text reaches this line and `--` cannot appear in it
+    // to close the comment early.
     writeln!(
         out,
         "<!-- zond: excluded by policy, not scanned: {} -->",
@@ -261,8 +242,8 @@ fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), 
 /// Writes one `<scaninfo>` per transport the phase walked ports on.
 ///
 /// Nothing is written for a phase whose port scope is not recorded, and nothing
-/// for a discovery sweep: an element claiming zero services would read as a scan
-/// that looked at no ports, which is a different statement from not saying.
+/// for a discovery sweep. An element claiming zero services would read as a scan
+/// that looked at no ports, which is a different statement from staying silent.
 fn write_scan_info(out: &mut dyn Write, phase: &ScanPhase) -> Result<(), ExportError> {
     let Some(ports) = phase.targets().ports().ports() else {
         return Ok(());
@@ -309,9 +290,7 @@ fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
         return "udp";
     }
     // Only where the phase is known to have been unprivileged. A phase this
-    // engine did not measure keeps whatever technique its own document named,
-    // since calling it `connect` would describe a probe on no better evidence
-    // than that this engine was not there to see it.
+    // engine did not measure keeps whatever technique its own document named.
     if phase.privilege() == Some(Privilege::Connect) {
         return "connect";
     }
@@ -346,23 +325,20 @@ fn write_host(
         r#"<status state="{}" reason="{}" reason_ttl="{}"/>"#,
         host_state(host.status()),
         Attr(status_reason(host.status())),
-        // nmap puts the TTL of the packet that established the host's state
-        // here. This engine does not record one, and the attribute is required,
-        // so it is written as zero -- which is also what nmap writes when its
-        // own probe did not carry a usable TTL.
+        // Nmap puts the TTL of the packet that established the host's state
+        // here, and the attribute is required. This engine records none, so it
+        // writes zero, which is what nmap writes for the same absence.
         0,
     )?;
 
-    // Every address, so a dual-stack host is one record with two addresses,
-    // which is how nmap describes the same thing.
+    // Every address, so a dual-stack host is one record with two of them, as
+    // nmap describes the same thing.
     //
-    // The one the host is keyed by leads. Nmap has no attribute saying which
-    // that is and this document will not invent one, but the order is a channel
-    // the format already has and a reader takes the first address it sees as the
-    // host's. Writing them in the set's own order handed a multi-homed host back
-    // keyed by whichever of its addresses sorted lowest, so a scan exported to
-    // this format and read again compared against its own source as one host
-    // gone and one arrived.
+    // The address the host is keyed by leads. Nmap has no attribute naming that
+    // one, but a reader takes the first address it sees as the host's. In the
+    // set's own order a multi-homed host came back keyed by whichever address
+    // sorted lowest, so a scan exported and read again compared against its own
+    // source as one host gone and one arrived.
     let primary = host.primary_ip();
     let addresses = std::iter::once(&primary).chain(host.ips().iter().filter(|ip| **ip != primary));
 
@@ -412,8 +388,8 @@ fn write_host(
     if let Some(os) = host.os() {
         writeln!(out, "<os>")?;
         // `line` is required by nmap's DTD and names the row in `nmap-os-db`
-        // the match came from. This engine has no such database, so there is no
-        // row to name: 0 is not a line number and reads as the absence it is.
+        // a match came from. This engine has no such database, and 0 is not a
+        // line number.
         writeln!(
             out,
             r#"<osmatch name="{}" accuracy="{}" line="0"/>"#,
@@ -423,9 +399,8 @@ fn write_host(
         writeln!(out, "</os>")?;
     }
 
-    // `<distance>` and `<trace>` in that order, and both after `<os>`: nmap's
-    // DTD fixes the sequence of a host's children, and this document claims to
-    // validate against it.
+    // Nmap's DTD fixes the sequence of a host's children: `<distance>` then
+    // `<trace>`, both after `<os>`.
     if let Some(distance) = host.path().length() {
         writeln!(out, r#"<distance value="{distance}"/>"#)?;
     }
@@ -440,8 +415,7 @@ fn write_host(
 
     write_trace(out, host)?;
 
-    // Nmap reports these in microseconds, which is also what the engine keeps,
-    // so nothing is converted and nothing is lost.
+    // Nmap reports these in microseconds, which is what the engine keeps.
     if let Some(rtt) = host.median_rtt() {
         writeln!(
             out,
@@ -457,27 +431,22 @@ fn write_host(
 
 /// Writes the `<trace>` element, when a path was measured.
 ///
-/// **The one finding this engine produces that nmap's format already has a
-/// first-class place for**, which makes it the one worth the most here: a
-/// consumer that draws network topology from nmap XML draws this without being
-/// taught anything new.
+/// This is the one finding the engine produces that nmap's format has a
+/// first-class place for, so a consumer that draws network topology from nmap XML
+/// draws this without being taught anything new.
 ///
-/// A silent hop is written as a `<hop>` carrying only its `ttl`. That is what
-/// nmap does and the DTD allows it — `ipaddr` is implied — and it is the whole
-/// reason the element is emitted rather than the gap being closed: a consumer
+/// A silent hop is written as a `<hop>` carrying only its `ttl`, which is what
+/// nmap does and what the DTD allows, since `ipaddr` is implied. A consumer
 /// counting hops has to see that a router is there and would not name itself.
 ///
-/// `rtt` is milliseconds with two decimals, which is nmap's own rendering.
-/// Converted rather than kept in the microseconds the engine holds, because a
-/// consumer reading this attribute is a consumer expecting nmap's units, and a
-/// number in the wrong ones would be read as a path a thousand times slower.
+/// `rtt` is milliseconds with two decimals, nmap's own rendering. A consumer
+/// reading this attribute expects nmap's units, and the engine's microseconds
+/// would read as a path a thousand times slower.
 ///
-/// **`inferred` has nowhere to go.** Nmap has no attribute for it and inventing
-/// one would cost this document its DTD validity, so a hop copied from another
-/// host's trace is written here exactly like a measured one. That is a real loss
-/// of fidelity against this engine's own JSON, and it is the trade the format
-/// is: nmap's vocabulary, not this engine's. Anybody who needs the distinction
-/// has [`super::json`].
+/// `inferred` has nowhere to go. Nmap has no attribute for it and inventing one
+/// would cost this document its DTD validity, so a hop copied from another host's
+/// trace is written like a measured one. Anybody who needs the distinction has
+/// [`super::json`].
 fn write_trace(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
     let hops = host.path().hops();
     if hops.is_empty() {
@@ -568,11 +537,9 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
             write!(out, r#" extrainfo="{}""#, Attr(extrainfo))?;
         }
         // `probed` is nmap's word for a service identified by talking to the
-        // port, and `table` for one read out of a port-number list. This engine
-        // makes the same distinction and must not lose it here: every classified
-        // port is seeded with a port-number label, and writing those as `probed`
-        // would tell every consumer of this document that a thousand closed
-        // ports had been interrogated.
+        // port, `table` for one read out of a port-number list. Every classified
+        // port is seeded with a port-number label, so writing those as `probed`
+        // would claim a thousand closed ports had been interrogated.
         writeln!(
             out,
             r#" method="{}" conf="{}"/>"#,
@@ -598,9 +565,9 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
 
 /// This engine's port states in nmap's spelling.
 ///
-/// An exhaustive match, so a new state cannot be added without somebody
-/// deciding what this format calls it. All six correspond exactly, which is not
-/// a coincidence: they are the six states a probe can distinguish.
+/// An exhaustive match, so a new state cannot be added without somebody deciding
+/// what this format calls it. All six correspond exactly: they are the six states
+/// a probe can distinguish.
 fn port_state(state: PortState) -> &'static str {
     match state {
         PortState::Open => "open",
@@ -614,9 +581,9 @@ fn port_state(state: PortState) -> &'static str {
 
 /// What nmap would have written as the evidence for a state.
 ///
-/// Nmap's `reason` names the packet that decided it. This engine records its
-/// evidence differently and per host rather than per port, so rather than invent
-/// a packet that was never seen, these say only as much as is certainly true.
+/// Nmap's `reason` names the packet that decided a state. This engine records its
+/// evidence per host rather than per port, so these say only as much as is
+/// certainly true rather than naming a packet nobody saw.
 fn port_reason(state: PortState) -> &'static str {
     match state {
         PortState::Open => "syn-ack",
@@ -630,9 +597,9 @@ fn port_reason(state: PortState) -> &'static str {
 
 /// This engine's host statuses in nmap's spelling.
 ///
-/// Nmap has three where this engine has four. `filtered` means the host is
-/// there and its probes are being dropped, which nmap has no separate word for
-/// and which is unambiguously `up`; the distinction survives in the reason.
+/// Nmap has three where this engine has four. `filtered` means the host is there
+/// and its probes are being dropped, which nmap has no separate word for and
+/// which is unambiguously `up`. The distinction survives in the reason.
 fn host_state(status: HostStatus) -> &'static str {
     match status {
         HostStatus::Up | HostStatus::Filtered => "up",
@@ -668,9 +635,8 @@ fn transport(protocol: Protocol) -> &'static str {
 /// so the mapping is arithmetic rather than a judgement. It never reaches 0,
 /// which is not a value nmap's scale has.
 fn nmap_confidence(confidence: u8) -> u8 {
-    // Three is what nmap records for a port-number lookup, and zero is how this
-    // engine spells the same thing. Mapping it anywhere else would put a
-    // guess and a weak identification on the same footing.
+    // Three is what nmap records for a port-number lookup, and zero is this
+    // engine's spelling of the same thing.
     if confidence == 0 {
         return TABLE_CONFIDENCE;
     }
@@ -687,8 +653,8 @@ const TABLE_CONFIDENCE: u8 = 3;
 
 /// A time as nmap writes it: whole seconds since the epoch.
 ///
-/// A time before the epoch has no representation here and becomes 0, which is
-/// the only value in range and cannot arise from a scan that has happened.
+/// A time before the epoch has no representation here and becomes 0, which
+/// cannot arise from a scan that has happened.
 fn epoch_seconds(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map(|since| since.as_secs())
@@ -697,10 +663,10 @@ fn epoch_seconds(time: SystemTime) -> u64 {
 
 /// The human-readable companion nmap writes beside every timestamp.
 ///
-/// Nmap writes a local-time C `ctime` string here. This writes RFC 3339 in UTC:
-/// it is the same instant, it is unambiguous about its zone, and it is what
-/// every other document this engine emits already says. Consumers parse the
-/// numeric field beside it; this one is for a person.
+/// Nmap writes a local-time C `ctime` string here. This writes RFC 3339 in UTC,
+/// the same instant, unambiguous about its zone and matching every other document
+/// this engine emits. Consumers parse the numeric field beside it; this one is
+/// for a person.
 fn time_string(time: SystemTime) -> String {
     crate::format::time::rfc3339(time)
 }
@@ -711,12 +677,10 @@ fn time_string(time: SystemTime) -> String {
 
 /// Report text on its way into an XML attribute value.
 ///
-/// Escapes the five characters that have meaning, and **drops** the characters
-/// XML 1.0 cannot carry at all. That second half is the one worth stating: there
-/// is no escape for a `0x01` in XML 1.0 - a numeric reference to one is as
-/// illegal as the byte - so a service banner containing one has to lose it or
-/// the whole document becomes unparseable. Losing a control character from a
-/// banner costs nothing anybody can read; losing the file costs the export.
+/// Escapes the five characters that have meaning and drops the ones XML 1.0
+/// cannot carry. There is no escape for a `0x01` in XML 1.0, a numeric reference
+/// to one being as illegal as the byte, so a service banner containing one has to
+/// lose it or the whole document becomes unparseable.
 struct Attr<'a>(&'a str);
 
 impl fmt::Display for Attr<'_> {
@@ -745,9 +709,8 @@ impl fmt::Display for Attr<'_> {
 /// excludes the surrogates.
 ///
 /// The second group is a judgement rather than a rule. The bidirectional
-/// formatting characters are legal XML and are dropped anyway, because they
-/// reorder the text around them without being visible: a hostname carrying one
-/// can make a report display something other than what it says.
+/// formatting characters are legal XML and dropped anyway, since they reorder the
+/// text around them without being visible.
 fn is_forbidden(character: char) -> bool {
     let code = u32::from(character);
 
@@ -812,9 +775,9 @@ mod tests {
         );
     }
 
-    /// Every state has to have a name in this vocabulary, and the six
-    /// correspond exactly - so a document is never less specific about a port
-    /// than the scan was.
+    /// Every state has a name in this vocabulary and the six correspond
+    /// exactly, so a document is never less specific about a port than the scan
+    /// was.
     #[test]
     fn every_port_state_maps_to_a_state_nmap_defines() {
         const NMAP_STATES: [&str; 6] = [
@@ -844,12 +807,12 @@ mod tests {
 
     /// A multi-homed host comes back keyed by the address it went out under.
     ///
-    /// **It did not.** Nmap has no attribute for which address is the host's, so
-    /// the reader takes the first one in the document — and this writer emitted
+    /// It once did not. Nmap has no attribute for which address is the host's,
+    /// so a reader takes the first one in the document, and this writer emitted
     /// them in the set's own ascending order. A host keyed by `192.168.0.10`
     /// that also held `10.0.0.4` came back keyed by `10.0.0.4`, so a scan
     /// exported here and read again compared against its own source as one host
-    /// removed and one added, which is the false alarm `diff` exists to prevent.
+    /// removed and one added.
     ///
     /// Found by the `import_nmap` fuzz target, on a mangled document whose
     /// broken markup put two addresses under one host.

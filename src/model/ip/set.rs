@@ -41,7 +41,7 @@ use std::{
 
 /// Errors that can occur when processing an [`IpSet`].
 #[non_exhaustive]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IpSetError {
     /// Indicates that an invalid IP range or address was provided.
     #[error("Invalid target in set: {0}")]

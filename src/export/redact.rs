@@ -9,21 +9,14 @@
 //! # The masking [`Redaction::Standard`](super::Redaction::Standard) applies
 //!
 //! One function per thing a report carries that names a person or a device: a
-//! hostname and a hardware address, which are the two
-//! [`Redaction::Standard`](super::Redaction::Standard) masks.
+//! hostname and a hardware address.
 //!
-//! Addresses are not here. [`Redaction`](super::Redaction) states why, and it is
-//! not an omission waiting to be filled: a report is a list of hosts, and a
-//! masking scheme that hides which host is which collapses ten records on a /24
-//! into ten copies of one string.
+//! [`Redaction`](super::Redaction) states the policy and its limits, including
+//! why addresses are not masked. Read that first; these are the mechanics.
 //!
-//! [`Redaction`](super::Redaction) is where the policy is stated and where its
-//! limits are, and it is the doc to read first. These are the mechanics.
-//!
-//! **The goal is not anonymity.** A masked hostname stays distinguishable from
-//! the next one so a reader can still follow a host through a report, and that
-//! is the whole of what is promised. Nothing here defeats somebody who knows the
-//! network.
+//! The goal is not anonymity. A masked hostname stays distinguishable from the
+//! next one so a reader can still follow a host through a report, and that is
+//! the whole of what is promised.
 
 use crate::model::mac::MacAddr;
 
@@ -35,10 +28,8 @@ use crate::model::mac::MacAddr;
 /// characters.
 ///
 /// A name with fewer than six characters is masked whole, and is the one case
-/// that does not come out nine wide. Keeping two at each end of a
-/// five-character name would leave four of its five, which is not a masked name
-/// at all, so those lose their ends as well - and a five-character mask is
-/// itself the tell that the name was short.
+/// that does not come out nine wide. Keeping two at each end of a five-character
+/// name would leave four of its five, so a short name loses its ends as well.
 ///
 /// # Examples
 /// ```
@@ -114,9 +105,9 @@ mod tests {
         assert_eq!(mac_addr(&mac), "ff:ff:ff:XX:XX:XX");
     }
 
-    /// A masked name is nine characters whatever went in, which is what makes
-    /// the mask hide the length rather than merely the letters. The short case
-    /// is the documented exception and is five.
+    /// A masked name is nine characters whatever went in, so the mask hides the
+    /// length as well as the letters. The short case is the documented
+    /// exception and is five.
     #[test]
     fn masking_a_name_hides_how_long_it_was() {
         for name in ["router", "workstation", &"a".repeat(50)] {

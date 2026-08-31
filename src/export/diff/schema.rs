@@ -9,10 +9,10 @@
 //! # The comparison document
 //!
 //! What a consumer parses, and the single site where a change is given its name.
-//! [`ChangeDto::of_host`] and [`ChangeDto::of_port`] are how the engine's typed
-//! deltas become that vocabulary, and a front end printing one line per change
-//! calls them too — so a comparison in a terminal and one in a queue name the
-//! same event the same way.
+//! [`ChangeDto::of_host`] and [`ChangeDto::of_port`] turn the engine's typed
+//! deltas into that vocabulary, and a front end printing one line per change
+//! calls them too, so a comparison in a terminal and one in a queue name the same
+//! event the same way.
 //!
 //! The conventions of the report document hold here without exception:
 //! timestamps are RFC 3339 in UTC, objects have a fixed shape with `null` rather
@@ -77,8 +77,8 @@ pub fn coverage_name(coverage: Coverage) -> &'static str {
 pub struct DiffDto<'a> {
     /// The version of this document's shape. Counted apart from the report's.
     pub schema_version: u32,
-    /// Which build wrote the document — not which produced either scan, for
-    /// which see `baseline` and `current`.
+    /// Which build wrote the document. Which produced either scan is `baseline`
+    /// and `current`.
     pub engine: EngineDto,
     /// When the comparison was taken.
     pub generated_at: String,
@@ -89,7 +89,7 @@ pub struct DiffDto<'a> {
     /// Whether the two scans describe the same network.
     ///
     /// Derivable from an empty `hosts`, and stated because it is the first
-    /// question every consumer asks and the cheapest one to answer.
+    /// question every consumer asks.
     pub unchanged: bool,
     /// Counts over everything below.
     pub summary: SummaryDto,
@@ -100,11 +100,10 @@ pub struct DiffDto<'a> {
 
 /// The comparison's host deltas, serialized one at a time.
 ///
-/// The counterpart of the report document's host array, and for the same reason.
-/// Each delta carries the whole record from each side that has one, so a
-/// comparison where every host moved would otherwise hold a second copy of both
-/// reports at once, on top of the comparison it was built from. One is rendered,
-/// written and dropped before the next is built.
+/// The counterpart of the report document's host array. Each delta carries the
+/// whole record from each side that has one, so collecting them would hold a
+/// second copy of both reports on top of the comparison they came from. One is
+/// rendered, written and dropped before the next is built.
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct HostDeltasDto<'a> {
@@ -167,8 +166,8 @@ impl<'a> DiffDto<'a> {
 #[derive(Debug, Serialize)]
 pub struct ProvenanceDto {
     /// The engine that produced the report, as it attributed itself. A report
-    /// built from another tool's output says so — `nmap 7.94` and not this
-    /// crate.
+    /// built from another tool's output says so, giving `nmap 7.94` rather than
+    /// this crate.
     pub engine_version: String,
     /// The moment the scan is judged to have happened, and the moment its
     /// certificates were judged against.
@@ -208,8 +207,8 @@ impl ProvenanceDto {
 pub struct ConfirmedDto {
     /// How many, whatever the other scan covered.
     pub total: usize,
-    /// How many the other scan is known to have covered. **A consumer that
-    /// alerts on one of these numbers should alert on this one.**
+    /// How many the other scan is known to have covered. A consumer alerting on
+    /// one of these numbers should alert on this one.
     pub confirmed: usize,
 }
 
@@ -284,8 +283,7 @@ pub struct HostDeltaDto<'a> {
     /// Whether this is a finding about the network rather than about the scan.
     ///
     /// True when both scans hold a record, and when the one that does not is
-    /// known to have covered the address anyway. **This is the field to alert
-    /// on.**
+    /// known to have covered the address anyway. This is the field to alert on.
     pub confirmed: bool,
     /// How many records each scan held for this host. `{1, 1}` ordinarily.
     pub records: RecordsDto,
@@ -357,7 +355,7 @@ pub struct PortDeltaDto {
     /// What the scan lacking a record says about having probed this endpoint.
     /// `null` when both hold one.
     pub coverage: Option<&'static str>,
-    /// Whether this is a finding about the network. **The field to alert on.**
+    /// Whether this is a finding about the network. The field to alert on.
     pub confirmed: bool,
     /// Whether the endpoint accepts connections now and did not before.
     pub opened: bool,
@@ -390,7 +388,7 @@ impl PortDeltaDto {
 /// One field that moved, as one scalar fact.
 ///
 /// The document's unit of change, and the vocabulary a rule keys on. A set that
-/// gained two members produces two of these rather than one carrying a list; see
+/// gained two members produces two of these rather than one carrying a list. See
 /// the [module documentation](super) for why.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -398,11 +396,11 @@ pub struct ChangeDto {
     /// Which field moved, by wire name. The whole list is in
     /// [`of_host`](Self::of_host) and [`of_port`](Self::of_port).
     pub kind: &'static str,
-    /// What the earlier scan found. `null` where it found nothing — a value
+    /// What the earlier scan found. `null` where it found nothing: a value
     /// gained, a service identified, a certificate first presented.
     pub before: Option<String>,
-    /// What the later scan found. `null` where it finds nothing — a value lost,
-    /// a service no longer identified, a certificate withdrawn.
+    /// What the later scan found. `null` where it finds nothing: a value lost, a
+    /// service no longer identified, a certificate withdrawn.
     pub after: Option<String>,
 }
 
@@ -476,8 +474,8 @@ impl ChangeDto {
     ///
     /// Matched exhaustively and with no wildcard, so a variant added to
     /// [`HostChange`] stops this compiling until somebody decides what it is
-    /// called on the wire — the same arrangement
-    /// [`export::schema`](crate::export::schema) makes for the report document.
+    /// called on the wire, as [`export::schema`](crate::export::schema) does for
+    /// the report document.
     pub fn of_host(change: &HostChange, options: &ExportOptions) -> Vec<Self> {
         let redaction = options.redaction;
 
@@ -575,14 +573,14 @@ impl ChangeDto {
     /// | `certificate_presented`, `certificate_withdrawn`, `certificate_rotated` | by SHA-256 fingerprint |
     /// | `certificate_expiring`, `certificate_expired` | a threshold crossed since the earlier scan; `after` is the validity end |
     ///
-    /// **`options` is not read, and the parameter stays.** Nothing an endpoint
-    /// change carries is what [`Redaction`](crate::export::Redaction) masks: a
-    /// certificate change is rendered by fingerprint, never by subject, and a
+    /// `options` is not read, and the parameter stays. Nothing an endpoint change
+    /// carries is what [`Redaction`](crate::export::Redaction) masks: a
+    /// certificate change is rendered by fingerprint rather than subject, and a
     /// service's name and version identify software rather than a person or a
-    /// device. The two sides' whole host records travel on the
-    /// [`HostDeltaDto`] above and are masked there. Taking the parameter away
-    /// would make a caller reading these two functions side by side wonder which
-    /// of them forgot, and would have to come back the first time a change
+    /// device. The two sides' whole host records travel on the [`HostDeltaDto`]
+    /// above and are masked there. Taking the parameter away would leave a caller
+    /// reading these two functions side by side wondering which forgot, and it
+    /// would have to come back the first time a change
     /// carries a subject.
     pub fn of_port(change: &PortChange, _options: &ExportOptions) -> Vec<Self> {
         match change {
@@ -675,9 +673,8 @@ impl ChangeDto {
                 before.fingerprint_sha256(),
                 after.fingerprint_sha256(),
             )],
-            // The certificate did not move; the clock did. `after` is when it
-            // lapses, absolute, so a consumer computes whatever window it wants
-            // without this document choosing a unit.
+            // The certificate did not move, the clock did. `after` is when it
+            // lapses, absolute, so a consumer picks its own window.
             CertificateChange::Expiring { certificate, .. } => vec![Self::gained(
                 "certificate_expiring",
                 rfc3339(certificate.validity_end()),
@@ -696,9 +693,9 @@ impl ChangeDto {
 /// person reads in an alert.
 fn identify(os: &OsFingerprint) -> String {
     // A name carrying a digit already says which version, and appending the
-    // generation to it produces "Linux 5.0 - 5.14 5.X". A bare family name does
-    // not, and "Linux" alone is worth less than "Linux 6.1.0". The two shapes
-    // come from different fingerprinters and both reach this.
+    // generation gives "Linux 5.0 - 5.14 5.X". A bare family name does not, and
+    // "Linux" alone is worth less than "Linux 6.1.0". Both shapes reach this,
+    // from different fingerprinters.
     match os.generation() {
         Some(generation)
             if !os.name().contains(generation)

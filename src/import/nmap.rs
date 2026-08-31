@@ -9,17 +9,16 @@
 //! # Reading nmap's XML as targets
 //!
 //! The file somebody already has. `-oX` is what gets saved into an engagement
-//! repository, so reading it is how a previous scan - nmap's or this engine's,
-//! since this engine's nmap exporter writes the same format - becomes the
-//! target list for the next one, hosts and per-host ports together.
+//! repository, so reading it turns a previous scan into the target list for the
+//! next one, hosts and per-host ports together. Nmap's own output and this
+//! engine's nmap export are the same format here.
 //!
 //! ## The refusals are the security control
 //!
-//! The parsing is `xml`'s, and so are the refusals that make
-//! reading a file somebody else wrote defensible: no declaration of any kind is
-//! accepted, so no entity can be expanded or fetched, and depth, element count,
-//! name length and attribute length are all bounded. That module is where the
-//! whole argument lives.
+//! The parsing is `xml`'s, and so are the refusals that make reading a file
+//! somebody else wrote defensible: no declaration of any kind is accepted, so no
+//! entity can be expanded or fetched, and depth, element count, name length and
+//! attribute length are all bounded. That module states the whole of it.
 //!
 //! ## What it reads
 //!
@@ -34,17 +33,17 @@
 //! | `ports`, `port` | `protocol` and `portid` |
 //! | `state`, `hostnames` | nothing; named so their content is skipped knowingly |
 //!
-//! Reading the same document for what the scan *found* rather than for what to
-//! scan next is [`report::nmap`](crate::import::report::nmap), which shares this
+//! Reading the same document for what the scan found rather than for what to scan
+//! next is [`report::nmap`](crate::import::report::nmap), which shares this
 //! module's parser and keeps a much longer list of attributes.
 //!
 //! A hardware address is skipped: a MAC is not something to scan. Hostnames are
 //! skipped too, because every nmap host record carries an address and resolving
 //! a name again would be work with a worse answer.
 //!
-//! Ports are not filtered by state, for the same reason the JSON reader does not
-//! filter: the file is the caller's own selection, and "rescan what nmap found"
-//! should not quietly mean "rescan some of it".
+//! Ports are not filtered by state, as the JSON reader does not filter. The file
+//! is the caller's own selection, and rescanning what nmap found should not
+//! quietly mean rescanning some of it.
 
 use std::io::BufRead;
 
@@ -56,9 +55,9 @@ const FORMAT: &str = "nmap XML";
 
 /// The attributes worth keeping. Everything else is skipped unbuffered.
 ///
-/// Four, because reading a document as targets needs an address and a port and
-/// nothing else. The reader that takes the same document as *findings* names a
-/// much longer list; see [`report::nmap`](crate::import::report::nmap).
+/// Four, since reading a document as targets needs an address and a port and
+/// nothing else. The reader that takes the same document as findings names a much
+/// longer list; see [`report::nmap`](crate::import::report::nmap).
 const KEPT: &[&[u8]] = &[b"addr", b"addrtype", b"protocol", b"portid"];
 
 /// Reads an nmap XML document as targets.
@@ -174,10 +173,9 @@ impl Accumulator {
         let udp = match protocol {
             "tcp" => false,
             "udp" => true,
-            // Not skippable, for the reason `super::json` gives: a transport
-            // this build cannot name is a port it cannot probe correctly, and
-            // reading it as TCP would scan something else and call it a
-            // success.
+            // A transport this build cannot name is a port it cannot probe
+            // correctly, and reading it as TCP would scan something else and
+            // call that a success.
             other => {
                 return Err(parser.malformed(format!(
                     "port {number} names transport '{other}', which this build cannot probe"

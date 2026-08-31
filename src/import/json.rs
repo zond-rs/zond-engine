@@ -8,39 +8,34 @@
 
 //! # Reading a report back as targets
 //!
-//! Scan, export, and feed the report in again: the same hosts, on the ports
-//! they were found on. It is the shortest path to "check whether anything
-//! changed", and it is why both the document format and the record-per-line
-//! one have a reader here.
+//! Scan, export, and feed the report in again: the same hosts, on the ports they
+//! were found on. It is the shortest path to checking whether anything changed,
+//! and it is why both the document format and the record-per-line one have a
+//! reader here.
 //!
 //! ## The input schema is a narrower contract than the output one
 //!
-//! The export DTOs are not reused, and cannot be. They are borrowing,
-//! write-only types - `&'static str` for every enum name, `&'a str` for every
-//! borrowed field - and the export side's `ReportDto` is not a data structure
-//! at all but a streaming adapter holding `&ScanReport`. There
-//! is nothing there for `serde` to deserialize *into*, and giving them owned
-//! fields would cost the export path an allocation per enum name per port to
-//! serve a reader that wants four fields.
+//! The export DTOs are not reused and cannot be. They are borrowing, write-only
+//! types, `&'static str` for every enum name and `&'a str` for every borrowed
+//! field, and the export side's `ReportDto` is a streaming adapter holding a
+//! `&ScanReport` rather than a data structure. There is nothing there for `serde`
+//! to deserialize into, and giving them owned fields would cost the export path
+//! an allocation per enum name per port to serve a reader that wants four fields.
 //!
 //! So the records below are written by hand and read only what a rescan needs:
 //! the addresses, the zone that makes a link-local address reachable, and the
-//! ports with their transport. Everything else in the document is skipped
-//! without being built.
-//!
-//! That narrowness is the feature. The exported schema stays free to move,
-//! because this side has never promised to read most of it.
+//! ports with their transport. Everything else in the document is skipped without
+//! being built, which leaves the exported schema free to move.
 //!
 //! ## What this side promises
 //!
 //! - **Unknown fields are ignored.** A report from a newer engine stays
 //!   readable, which is the same forward-compatibility bargain the emitted
 //!   document already offers its consumers.
-//! - **An unknown enum string is an error naming it.** The opposite choice, and
-//!   deliberately: a `protocol` this build does not recognise is not a field a
-//!   reader can skip, it is a value that decides what the record *says*.
-//!   Quietly reading an unknown transport as TCP would scan the wrong thing and
-//!   report success.
+//! - **An unknown enum string is an error naming it.** The opposite choice, on
+//!   purpose: a `protocol` this build does not recognise is not a field a reader
+//!   can skip but a value that decides what the record says. Reading an unknown
+//!   transport as TCP would scan the wrong thing and report success.
 //! - **`schema_version` is required and checked.** A document from a future
 //!   major version is refused, because by construction its fields mean
 //!   something else. Its absence is how a report is told apart from any other
@@ -50,16 +45,15 @@
 //!
 //! The document is not read into memory. A `hosts` array is consumed element by
 //! element through a [`serde::de::DeserializeSeed`], and each host becomes a
-//! target and is dropped before the next is parsed, so a report of a /16 costs
-//! one host's worth of memory to import - the same bargain the exporter makes
-//! writing it.
+//! target and is dropped before the next is parsed, so a report of a /16 costs one
+//! host's worth of memory to import.
 //!
 //! ## What it does not do
 //!
-//! It does not filter on `state`. Every port in the document is a target,
-//! because a report is the caller's own selection and "rescan what I found"
-//! should not quietly mean "rescan some of what I found". A caller who wants
-//! only the open ones filters the document, which is one line of `jq`.
+//! It does not filter on `state`. Every port in the document is a target, since a
+//! report is the caller's own selection and rescanning what it found should not
+//! quietly mean rescanning some of it. A caller who wants only the open ones
+//! filters the document, which is one line of `jq`.
 
 use std::fmt;
 use std::io::BufRead;
@@ -153,19 +147,19 @@ struct Emitter<'a> {
     versioned: bool,
     /// The most addresses one host record may name.
     ///
-    /// The sink counts the running total across the whole import, which is the
-    /// bound that matters for a scan. This one is about the document: a record
-    /// naming more addresses than the whole import may cover is a record nothing
+    /// The sink counts the running total across the whole import, the bound that
+    /// matters for a scan. This one is about the document: a record naming more
+    /// addresses than the whole import may cover is a record nothing
     /// good comes of building the rest of.
     max_addresses: u128,
     /// Whether the document carried a `hosts` array at all.
     ///
-    /// Required, and it is what tells a document from one *record* of a
-    /// record-per-line file. That file's first line is a complete object
-    /// carrying `schema_version` and nothing that names a host, so a reader that
-    /// let it pass would parse it, never look at the lines the hosts are on, and
-    /// return `Ok` with no targets and nothing said. A scan of an empty report
-    /// writes `"hosts": []`, so present-and-empty is how a document means it.
+    /// Required, and what tells a document from one record of a record-per-line
+    /// file. That file's first line is a complete object carrying
+    /// `schema_version` and nothing that names a host, so a reader letting it
+    /// pass would parse it, never reach the lines the hosts are on, and return
+    /// `Ok` with no targets. A scan of an empty report writes `"hosts": []`, so
+    /// present-and-empty is how a document means it.
     hosted: bool,
 }
 
@@ -206,8 +200,8 @@ impl<'a> Emitter<'a> {
             let prefix = match port.protocol.to_ascii_lowercase().as_str() {
                 "tcp" => "",
                 "udp" => "u:",
-                // Not skippable. A transport this build cannot name is a port
-                // it cannot probe correctly, and reading it as TCP would scan
+                // A transport this build cannot name is a port it cannot probe
+                // correctly, and reading it as TCP would scan
                 // something else and call it a success.
                 other => {
                     self.failure = Some(ImportError::Malformed {
@@ -441,7 +435,7 @@ impl<'de, 'a, 'e> Visitor<'de> for Hosts<'a, 'e> {
 /// Reads a report written one record per line.
 ///
 /// Every line stands alone, so a report whose scan was killed half way through
-/// still reads - which is the whole reason that format exists, and it would be
+/// still reads, which is why that format exists and would be
 /// a poor reader that could not take advantage of it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsonLinesImporter {

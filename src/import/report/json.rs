@@ -16,17 +16,16 @@
 //! ## It translates a shape and nothing more
 //!
 //! [`record`](crate::record) is already the model as data that can be written
-//! down and read back, and every one of its types already rebuilds a model value
-//! through the model's own constructors — so a rebuilt host passed the same
-//! checks a scanned one did. Repeating that here would be a second place that
-//! knows how to assemble a [`Host`], and the two would
-//! drift.
+//! down and read back, and every one of its types rebuilds a model value through
+//! the model's own constructors, so a rebuilt host passed the same checks a
+//! scanned one did. Repeating that here would be a second place that knows how to
+//! assemble a [`Host`].
 //!
-//! So this module maps the *exported* shape onto the *recorded* shape and stops.
-//! The two differ only in encoding: timestamps are RFC 3339 strings rather than
-//! epoch pairs, durations are integers of microseconds rather than
-//! [`Duration`]s, and counts too large for a JSON number are decimal strings.
-//! Everything past that is `record`'s.
+//! So this module maps the exported shape onto the recorded shape and stops. The
+//! two differ only in encoding: timestamps are RFC 3339 strings rather than epoch
+//! pairs, durations are integers of microseconds rather than [`Duration`]s, and
+//! counts too large for a JSON number are decimal strings. Everything past that
+//! is `record`'s.
 //!
 //! ## What it promises
 //!
@@ -35,7 +34,7 @@
 //!
 //! - **Unknown fields are ignored.** A report from a newer engine stays readable.
 //! - **An unknown enum string is an error naming it.** Not a field a reader may
-//!   skip: it is the value that decides what the record *says*.
+//!   skip, but the value that decides what the record says.
 //! - **`schema_version` is required and checked**, and a document from a version
 //!   past this build's is refused rather than read approximately.
 //! - **`engine.name` is required and checked.** It is how a report is told apart
@@ -47,12 +46,11 @@
 //!
 //! Three things, and the export is right about all of them.
 //!
-//! **Round-trip samples.** The document carries the summary statistics — least,
-//! median, mean, greatest, jitter — and not the measurements they were computed
-//! from, because a sample's timestamp is a monotonic
-//! [`Instant`](std::time::Instant) that means nothing outside the process that
-//! took it. A host read back here therefore reports no round trips at all rather
-//! than a fabricated set that averages correctly.
+//! **Round-trip samples.** The document carries the summary statistics, meaning
+//! least, median, mean, greatest and jitter, and not the measurements behind them,
+//! since a sample's timestamp is a monotonic [`Instant`](std::time::Instant) that
+//! means nothing outside the process that took it. A host read back here reports
+//! no round trips rather than a fabricated set that averages correctly.
 //!
 //! **Per-source operating-system evidence.** The document carries the verdict
 //! and not the sources that corroborated it. A host read back keeps what it was
@@ -63,15 +61,13 @@
 //!
 //! **Where the machine that scanned was plugged in.** A phase's
 //! [`attachments`](crate::report::Attachment) are dropped rather than rebuilt.
-//! They name a switch port on the network the scan ran *from*, so a document
-//! read on another machine describes a place this process was never standing,
-//! and inventing that is worse than leaving it empty.
+//! They name a switch port on the network the scan ran from, so a document read
+//! on another machine describes a place this process was never standing.
 //!
 //! ## Streaming, and the ceiling on it
 //!
-//! Hosts are converted one at a time as the array is parsed, so a report of a
-//! /16 costs one host's worth of document on top of the report being built — the
-//! same bargain the exporter makes writing it.
+//! Hosts are converted one at a time as the array is parsed, so a report of a /16
+//! costs one host's worth of document on top of the report being built.
 //!
 //! [`ImportLimits::max_addresses`](crate::import::ImportLimits::max_addresses)
 //! is counted against as they arrive rather than against the finished list. A
@@ -81,11 +77,10 @@
 //!
 //! ## Both shapes, one mapping
 //!
-//! [`JsonReportReader`] reads the single document and
-//! [`JsonLinesReportReader`] the record-per-line one. They share every record
-//! type below, because a `host` line is the document's host object with a `type`
-//! field added and nothing else. What differs is only how the records are found
-//! in the bytes.
+//! [`JsonReportReader`] reads the single document and [`JsonLinesReportReader`]
+//! the record-per-line one. They share every record type below, since a `host`
+//! line is the document's host object with a `type` field added. Only how the
+//! records are found in the bytes differs.
 
 use std::fmt;
 use std::io::BufRead;
@@ -170,8 +165,8 @@ impl ReportReader for JsonReportReader {
 ///
 /// The format exists because a JSON document is only valid when it is complete,
 /// and a scan killed half way through a `/16` should leave something readable
-/// behind. A reader that could not take advantage of that would be a poor one:
-/// a file whose last line is truncated reads here as the hosts before it, and
+/// behind. A file whose last line is truncated reads here as the hosts before it,
+/// and
 /// the truncated line is what refuses.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsonLinesReportReader {
@@ -223,10 +218,10 @@ impl ReportReader for JsonLinesReportReader {
                 })?;
 
             match record {
-                // Wherever it appears, not necessarily first: the whole point of
-                // the format is that a record means the same thing wherever it
-                // sits, so that these files split, filter and concatenate. Two
-                // of them is different, and is refused: they describe one scan
+                // Wherever it appears, not necessarily first: a record means
+                // the same thing wherever it sits, which is what lets these
+                // files split, filter and concatenate. Two of them is refused,
+                // since they describe one scan
                 // and cannot both be it.
                 LineRecord::Report(next) => {
                     if header.is_some() {
@@ -366,9 +361,8 @@ impl Document {
             .map_err(|message| refuse(format, message))?;
 
         // `produced_by` where the document has one. A document written before
-        // that field existed put the same value in `engine.version`, which is
-        // why the fallback is exactly right rather than merely close: back then
-        // that field *was* the attribution, which is the thing this release
+        // that field existed put the same value in `engine.version`, which back
+        // then was the attribution, which is the thing this release
         // stopped it from being.
         let produced_by = self.produced_by.unwrap_or(self.engine.version);
 
@@ -387,9 +381,9 @@ fn refuse(format: &'static str, message: String) -> ImportError {
 
 /// Reads the document under a ceiling on how many hosts it may name.
 ///
-/// A seed rather than a [`Deserialize`] impl because the ceiling has to reach
-/// the `hosts` array while it is being walked. Checking it afterwards would
-/// report the overrun from the far side of the allocation the ceiling exists to
+/// A seed rather than a [`Deserialize`] impl, since the ceiling has to reach the
+/// `hosts` array while it is being walked. Checking afterwards would report the
+/// overrun from the far side of the allocation it exists to
 /// bound.
 struct DocumentSeed<'a> {
     max_hosts: u128,
@@ -434,9 +428,10 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
                         overrun: self.overrun,
                     })?);
                 }
-                // Everything else in the document is derived from what is read
-                // here — the summary, the totals, whether the run was partial —
-                // and a reader that trusted them could report counts its own
+                // Everything else in the document, the summary and the totals
+                // and whether the run was partial, is derived from what is read
+                // here, and a reader that trusted them could report counts its
+                // own
                 // hosts disagree with.
                 _ => {
                     map.next_value::<IgnoredAny>()?;
@@ -450,11 +445,11 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
             engine: engine.ok_or_else(|| de::Error::missing_field("engine"))?,
             produced_by,
             phases,
-            // Required, and it is what tells this document from one *record* of
-            // a record-per-line file. That file's first line is a complete
-            // object carrying `schema_version` and `engine` and nothing else, so
-            // a reader that let `hosts` default would parse it, never look at
-            // the lines holding the hosts, and hand back a correctly attributed
+            // Required, and what tells this document from one record of a
+            // record-per-line file. That file's first line is a complete object
+            // carrying `schema_version` and `engine` and nothing else, so a
+            // reader letting `hosts` default would parse it, never reach the
+            // lines holding the hosts, and hand back a correctly attributed
             // report of a scan that found nothing. An empty scan writes
             // `"hosts": []`, so present-and-empty is the shape that means it.
             hosts: hosts.ok_or_else(|| de::Error::missing_field("hosts"))?,
@@ -526,10 +521,10 @@ fn address(text: &str) -> Result<IpAddr, String> {
 /// An enumerated value this build recognises, or an error naming the one it does
 /// not.
 ///
-/// The opposite of what [`record`](crate::record) does with the same string, and
-/// deliberately. A journal is a file this engine wrote, so a value it cannot read
-/// there belongs to a newer build of itself and the format's version bargain
-/// covers it. A document handed in from outside has made no such promise, and a
+/// The opposite of what [`record`](crate::record) does with the same string. A
+/// journal is a file this engine wrote, so a value it cannot read there belongs
+/// to a newer build of itself and the format's version bargain covers it. A
+/// document handed in from outside has made no such promise, and a
 /// port state read as `filtered` because this build did not recognise the word
 /// is a report claiming something the scan never established.
 fn known<T>(parsed: Option<T>, what: &str, value: &str) -> Result<(), String> {
@@ -695,8 +690,8 @@ impl PortScopeDto {
             &self.kind,
         )?;
 
-        // A specification that will not parse would rebuild as a scope that
-        // states nothing, which is a comparison quietly losing its ability to
+        // A specification that will not parse would rebuild as a scope stating
+        // nothing, which is a comparison losing its ability to
         // say an endpoint was probed. Refused instead.
         if !self.spec.is_empty() {
             known(
@@ -1121,8 +1116,8 @@ struct HardwareDto {
 
 impl HardwareDto {
     /// The document records which addresses were seen and not when each was, so
-    /// they are all placed at the host's last sighting — the latest moment any
-    /// of them can have been seen.
+    /// they are all placed at the host's last sighting, the latest moment any of
+    /// them can have been seen.
     fn record(self, seen: SystemTime) -> Result<HardwareRecord, String> {
         let mut macs: Vec<String> = self.macs;
         if let Some(mac) = self.mac
@@ -1428,12 +1423,11 @@ mod tests {
         write(&crate::export::fixture::report())
     }
 
-    /// Compact, and asked for rather than inherited: several tests below reach
+    /// Compact, and asked for rather than inherited. Several tests below reach
     /// into the document for a value by its exact spelling, `"state":"open"`,
-    /// which the indented writer separates with a space. They used to get
-    /// compact output from `JsonExporter::default()` by accident, and a `Default`
-    /// that agrees with `new` turned each of those searches into a silent
-    /// no-op — the document went in unmodified and read back perfectly.
+    /// which the indented writer separates with a space. They once got compact
+    /// output from `JsonExporter::default()` by accident, and a `Default` that
+    /// agrees with `new` turned each of those searches into a silent no-op.
     fn write(report: &ScanReport) -> String {
         let mut out = Vec::new();
         JsonExporter::new(crate::export::ExportOptions::new())
@@ -1552,10 +1546,10 @@ mod tests {
 
     /// A record-per-line export read back as the report it was written from.
     ///
-    /// The reader this exercises did not exist: `export-jsonl` wrote a complete
-    /// report and nothing read one back, so the format's own argument for
-    /// existing — a scan cut short still leaves a readable file — stopped at the
-    /// file.
+    /// The reader this exercises once did not exist. `export-jsonl` wrote a
+    /// complete report and nothing read one back, so the format's argument for
+    /// existing, that a scan cut short still leaves a readable file, stopped at
+    /// the file.
     #[test]
     fn a_record_per_line_export_reads_back_as_the_scan_it_records() {
         use crate::export::JsonLinesExporter;
@@ -1662,9 +1656,9 @@ mod tests {
     /// The one property that matters: a report written out and read back
     /// describes the same network.
     ///
-    /// Asserted through [`ScanDiff`] rather than field by field, because that is
-    /// exactly the question the reader exists to answer — and because a field
-    /// the reader drops shows up here as a change, whatever field it was.
+    /// Asserted through [`ScanDiff`] rather than field by field, since that is
+    /// the question the reader exists to answer, and a field the reader drops
+    /// shows up here as a change whatever field it was.
     #[test]
     fn a_report_read_back_compares_equal_to_itself() {
         let (original, restored) = round_trip();
@@ -1818,11 +1812,11 @@ mod tests {
     /// A foreign scanner's attribution survives the round trip, and does not
     /// land on this engine's name on the way.
     ///
-    /// The failure: `engine.version` carried the attribution, so a report read
-    /// out of nmap's XML exported as `engine: {name: zond-engine, version: nmap
-    /// 7.94}`. Through the nmap *writer*, whose `scanner="zond"` is fixed the
-    /// same way, the pair collapsed further — `zond 0.13.0` came back as the
-    /// version of the next document exported from it.
+    /// `engine.version` once carried the attribution, so a report read out of
+    /// nmap's XML exported as `engine: {name: zond-engine, version: nmap 7.94}`.
+    /// Through the nmap writer, whose `scanner="zond"` is fixed the same way, the
+    /// pair collapsed further and `zond 0.13.0` came back as the version of the
+    /// next document exported from it.
     #[test]
     fn what_produced_the_findings_round_trips_apart_from_who_wrote_the_file() {
         let foreign = ScanReport::recorded(
@@ -1835,9 +1829,9 @@ mod tests {
         assert_eq!(restored.engine_version(), "nmap 7.94");
     }
 
-    /// A document written before `produced_by` existed still reads, because back
-    /// then `engine.version` was the attribution — which is exactly what the
-    /// fallback takes it for.
+    /// A document written before `produced_by` existed still reads. Back then
+    /// `engine.version` was the attribution, which is what the fallback takes it
+    /// for.
     #[test]
     fn a_document_written_before_produced_by_falls_back_to_the_engine_version() {
         let document = write(&crate::export::fixture::report());

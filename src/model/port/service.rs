@@ -183,52 +183,51 @@ impl Service {
         self
     }
 
-    /// Merges another service record into this one safely.
+    /// Folds another identification of this endpoint into this one.
     ///
-    /// The merge strategy is confidence-driven. If the incoming `other` service
-    /// has a strictly higher confidence score, it will overwrite the primary
-    /// identity (`name`, `product`, `version`). Otherwise, it behaves additively,
-    /// filling in `None` fields and deduplicating CPEs.
+    /// Confidence decides. A strictly surer `other` names the service and
+    /// supplies every detail it carries: `name`, `product`, `vendor`, `version`
+    /// and `extrainfo`. An equally sure or less sure one fills the gaps it finds
+    /// and displaces nothing, which is the module's rule that a tie keeps what
+    /// is already recorded.
+    ///
+    /// CPEs union whatever the confidences were, since a CPE claims that an
+    /// identifier applies rather than that this is the service, and a probe that
+    /// was less sure of the name can still have extracted a valid one. The cap
+    /// still applies, so a fold cannot smuggle past what
+    /// [`add_cpe`](Self::add_cpe) refuses.
     pub fn merge(&mut self, other: Service) {
-        let higher_confidence = other.confidence > self.confidence;
+        // Destructured rather than reached through `other.…`, so a field added
+        // to this struct is a compile error here and not a value that quietly
+        // stops being folded. The doc above used to name three of the five
+        // details and the body moved all five, which is the same omission one
+        // step earlier.
+        let Service {
+            name,
+            confidence,
+            product,
+            vendor,
+            version,
+            extrainfo,
+            cpe,
+        } = other;
 
-        if higher_confidence {
-            self.name = other.name;
-            self.confidence = other.confidence;
+        if confidence > self.confidence {
+            self.name = name;
+            self.confidence = confidence;
 
-            // Overwrite existing data with the higher-confidence payload
-            if other.product.is_some() {
-                self.product = other.product;
-            }
-            if other.vendor.is_some() {
-                self.vendor = other.vendor;
-            }
-            if other.version.is_some() {
-                self.version = other.version;
-            }
-            if other.extrainfo.is_some() {
-                self.extrainfo = other.extrainfo;
-            }
+            self.product = product.or(self.product.take());
+            self.vendor = vendor.or(self.vendor.take());
+            self.version = version.or(self.version.take());
+            self.extrainfo = extrainfo.or(self.extrainfo.take());
         } else {
-            // Additive merge for equal or lower confidence probes
-            if self.product.is_none() {
-                self.product = other.product;
-            }
-            if self.vendor.is_none() {
-                self.vendor = other.vendor;
-            }
-            if self.version.is_none() {
-                self.version = other.version;
-            }
-            if self.extrainfo.is_none() {
-                self.extrainfo = other.extrainfo;
-            }
+            self.product = self.product.take().or(product);
+            self.vendor = self.vendor.take().or(vendor);
+            self.version = self.version.take().or(version);
+            self.extrainfo = self.extrainfo.take().or(extrainfo);
         }
 
-        // CPEs are always merged, regardless of confidence: even a
-        // low-confidence probe might extract a valid identifier. The cap still
-        // applies, so a merge cannot smuggle past what `add_cpe` refuses.
-        for cpe in other.cpe {
+        for cpe in cpe {
             if self.cpe.len() >= MAX_CPES_PER_SERVICE {
                 break;
             }

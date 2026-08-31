@@ -694,7 +694,7 @@ impl Finding {
 /// Both cases are an empty identifier or title — a finding must be able to say
 /// what produced it and what it claims, and a blank string says neither.
 #[non_exhaustive]
-#[derive(Debug, Error, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum FindingError {
     /// A [`DetectionId`] was given a blank `id`.
     #[error("a detection id cannot be empty")]

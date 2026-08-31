@@ -6697,6 +6697,8 @@ pub zond_engine::model::host::status::StatusProtocol::Ndp
 pub zond_engine::model::host::status::StatusProtocol::Tcp
 pub zond_engine::model::host::status::StatusProtocol::TcpSyn
 pub zond_engine::model::host::status::StatusProtocol::Udp
+impl zond_engine::model::host::status::StatusProtocol
+pub const zond_engine::model::host::status::StatusProtocol::ALL: &'static [zond_engine::model::host::status::StatusProtocol]
 impl core::clone::Clone for zond_engine::model::host::status::StatusProtocol
 pub fn zond_engine::model::host::status::StatusProtocol::clone(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::cmp::Eq for zond_engine::model::host::status::StatusProtocol
@@ -6957,6 +6959,8 @@ pub zond_engine::model::host::StatusProtocol::Ndp
 pub zond_engine::model::host::StatusProtocol::Tcp
 pub zond_engine::model::host::StatusProtocol::TcpSyn
 pub zond_engine::model::host::StatusProtocol::Udp
+impl zond_engine::model::host::status::StatusProtocol
+pub const zond_engine::model::host::status::StatusProtocol::ALL: &'static [zond_engine::model::host::status::StatusProtocol]
 impl core::clone::Clone for zond_engine::model::host::status::StatusProtocol
 pub fn zond_engine::model::host::status::StatusProtocol::clone(&self) -> zond_engine::model::host::status::StatusProtocol
 impl core::cmp::Eq for zond_engine::model::host::status::StatusProtocol
@@ -7280,6 +7284,9 @@ pub zond_engine::model::ip::range::IpError::InvalidFormat(alloc::string::String)
 pub zond_engine::model::ip::range::IpError::InvalidPrefix(u8)
 pub zond_engine::model::ip::range::IpError::InvalidRange(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr)
 pub zond_engine::model::ip::range::IpError::PrefixParse(core::num::error::ParseIntError)
+impl core::clone::Clone for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::clone(&self) -> zond_engine::model::ip::range::IpError
+impl core::cmp::Eq for zond_engine::model::ip::range::IpError
 impl core::cmp::PartialEq for zond_engine::model::ip::range::IpError
 pub fn zond_engine::model::ip::range::IpError::eq(&self, &zond_engine::model::ip::range::IpError) -> bool
 impl core::convert::From<core::net::parser::AddrParseError> for zond_engine::model::ip::range::IpError
@@ -7402,6 +7409,8 @@ pub mod zond_engine::model::ip::scoped
 pub zond_engine::model::ip::scoped::ScopedIpError::EmptyZone
 pub zond_engine::model::ip::scoped::ScopedIpError::NotAnAddress(alloc::string::String)
 pub zond_engine::model::ip::scoped::ScopedIpError::ZoneOnUnscopedAddress(core::net::ip_addr::IpAddr, alloc::string::String)
+impl core::clone::Clone for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::clone(&self) -> zond_engine::model::ip::scoped::ScopedIpError
 impl core::cmp::Eq for zond_engine::model::ip::scoped::ScopedIpError
 impl core::cmp::PartialEq for zond_engine::model::ip::scoped::ScopedIpError
 pub fn zond_engine::model::ip::scoped::ScopedIpError::eq(&self, &zond_engine::model::ip::scoped::ScopedIpError) -> bool
@@ -7496,6 +7505,11 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::scoped::Zo
 pub mod zond_engine::model::ip::set
 #[non_exhaustive] pub enum zond_engine::model::ip::set::IpSetError
 pub zond_engine::model::ip::set::IpSetError::InvalidTarget(zond_engine::model::ip::range::IpError)
+impl core::clone::Clone for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::clone(&self) -> zond_engine::model::ip::set::IpSetError
+impl core::cmp::Eq for zond_engine::model::ip::set::IpSetError
+impl core::cmp::PartialEq for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::eq(&self, &zond_engine::model::ip::set::IpSetError) -> bool
 impl core::convert::From<zond_engine::model::ip::range::IpError> for zond_engine::model::ip::set::IpSetError
 pub fn zond_engine::model::ip::set::IpSetError::from(zond_engine::model::ip::range::IpError) -> Self
 impl core::error::Error for zond_engine::model::ip::set::IpSetError
@@ -7504,6 +7518,7 @@ impl core::fmt::Debug for zond_engine::model::ip::set::IpSetError
 pub fn zond_engine::model::ip::set::IpSetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::model::ip::set::IpSetError
 pub fn zond_engine::model::ip::set::IpSetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::set::IpSetError
 impl core::marker::Freeze for zond_engine::model::ip::set::IpSetError
 impl core::marker::Send for zond_engine::model::ip::set::IpSetError
 impl core::marker::Sync for zond_engine::model::ip::set::IpSetError
@@ -7661,12 +7676,14 @@ pub mod zond_engine::model::parse
 pub mod zond_engine::model::parse::ip
 #[non_exhaustive] pub enum zond_engine::model::parse::ip::IpParseError
 pub zond_engine::model::parse::ip::IpParseError::EmptySet
-pub zond_engine::model::parse::ip::IpParseError::InvalidPrefix(u8)
+pub zond_engine::model::parse::ip::IpParseError::InvalidPrefix(u32)
 pub zond_engine::model::parse::ip::IpParseError::InvalidRange(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr)
 pub zond_engine::model::parse::ip::IpParseError::LanError(alloc::string::String)
 pub zond_engine::model::parse::ip::IpParseError::Malformed(alloc::string::String)
 pub zond_engine::model::parse::ip::IpParseError::UnknownInterface(alloc::string::String)
 pub zond_engine::model::parse::ip::IpParseError::ZoneOnUnscopedTarget(alloc::string::String)
+impl core::clone::Clone for zond_engine::model::parse::ip::IpParseError
+pub fn zond_engine::model::parse::ip::IpParseError::clone(&self) -> zond_engine::model::parse::ip::IpParseError
 impl core::cmp::Eq for zond_engine::model::parse::ip::IpParseError
 impl core::cmp::PartialEq for zond_engine::model::parse::ip::IpParseError
 pub fn zond_engine::model::parse::ip::IpParseError::eq(&self, &zond_engine::model::parse::ip::IpParseError) -> bool
@@ -7721,16 +7738,23 @@ pub zond_engine::model::parse::target::TargetParseError::NoHostLookup(alloc::str
 pub zond_engine::model::parse::target::TargetParseError::Ports
 pub zond_engine::model::parse::target::TargetParseError::Ports::expression: alloc::string::String
 pub zond_engine::model::parse::target::TargetParseError::Ports::source: zond_engine::model::port::set::PortSetParseError
+pub zond_engine::model::parse::target::TargetParseError::ResolvedToNothing(alloc::string::String)
 pub zond_engine::model::parse::target::TargetParseError::TrailingText(alloc::string::String)
 pub zond_engine::model::parse::target::TargetParseError::UnbalancedBracket(alloc::string::String)
 pub zond_engine::model::parse::target::TargetParseError::UnbracketedAddress(alloc::string::String)
 pub zond_engine::model::parse::target::TargetParseError::UnknownHost(alloc::string::String)
+impl core::clone::Clone for zond_engine::model::parse::target::TargetParseError
+pub fn zond_engine::model::parse::target::TargetParseError::clone(&self) -> zond_engine::model::parse::target::TargetParseError
+impl core::cmp::Eq for zond_engine::model::parse::target::TargetParseError
+impl core::cmp::PartialEq for zond_engine::model::parse::target::TargetParseError
+pub fn zond_engine::model::parse::target::TargetParseError::eq(&self, &zond_engine::model::parse::target::TargetParseError) -> bool
 impl core::error::Error for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::model::parse::target::TargetParseError
 impl core::marker::Freeze for zond_engine::model::parse::target::TargetParseError
 impl core::marker::Send for zond_engine::model::parse::target::TargetParseError
 impl core::marker::Sync for zond_engine::model::parse::target::TargetParseError
@@ -7809,12 +7833,14 @@ pub fn zond_engine::model::parse::target::to_target_map<S>(&[S], zond_engine::mo
 pub type zond_engine::model::parse::target::HostLookup<'a> = &'a dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::IpAddr>>
 #[non_exhaustive] pub enum zond_engine::model::parse::IpParseError
 pub zond_engine::model::parse::IpParseError::EmptySet
-pub zond_engine::model::parse::IpParseError::InvalidPrefix(u8)
+pub zond_engine::model::parse::IpParseError::InvalidPrefix(u32)
 pub zond_engine::model::parse::IpParseError::InvalidRange(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr)
 pub zond_engine::model::parse::IpParseError::LanError(alloc::string::String)
 pub zond_engine::model::parse::IpParseError::Malformed(alloc::string::String)
 pub zond_engine::model::parse::IpParseError::UnknownInterface(alloc::string::String)
 pub zond_engine::model::parse::IpParseError::ZoneOnUnscopedTarget(alloc::string::String)
+impl core::clone::Clone for zond_engine::model::parse::ip::IpParseError
+pub fn zond_engine::model::parse::ip::IpParseError::clone(&self) -> zond_engine::model::parse::ip::IpParseError
 impl core::cmp::Eq for zond_engine::model::parse::ip::IpParseError
 impl core::cmp::PartialEq for zond_engine::model::parse::ip::IpParseError
 pub fn zond_engine::model::parse::ip::IpParseError::eq(&self, &zond_engine::model::parse::ip::IpParseError) -> bool
@@ -8018,6 +8044,8 @@ pub zond_engine::model::port::set::PortSetParseError::InvalidRange
 pub zond_engine::model::port::set::PortSetParseError::InvalidRange::end: u16
 pub zond_engine::model::port::set::PortSetParseError::InvalidRange::start: u16
 pub zond_engine::model::port::set::PortSetParseError::MalformedSpec(alloc::string::String)
+impl core::clone::Clone for zond_engine::model::port::set::PortSetParseError
+pub fn zond_engine::model::port::set::PortSetParseError::clone(&self) -> zond_engine::model::port::set::PortSetParseError
 impl core::cmp::Eq for zond_engine::model::port::set::PortSetParseError
 impl core::cmp::PartialEq for zond_engine::model::port::set::PortSetParseError
 pub fn zond_engine::model::port::set::PortSetParseError::eq(&self, &zond_engine::model::port::set::PortSetParseError) -> bool
@@ -8092,6 +8120,8 @@ pub zond_engine::model::port::PortSetParseError::InvalidRange
 pub zond_engine::model::port::PortSetParseError::InvalidRange::end: u16
 pub zond_engine::model::port::PortSetParseError::InvalidRange::start: u16
 pub zond_engine::model::port::PortSetParseError::MalformedSpec(alloc::string::String)
+impl core::clone::Clone for zond_engine::model::port::set::PortSetParseError
+pub fn zond_engine::model::port::set::PortSetParseError::clone(&self) -> zond_engine::model::port::set::PortSetParseError
 impl core::cmp::Eq for zond_engine::model::port::set::PortSetParseError
 impl core::cmp::PartialEq for zond_engine::model::port::set::PortSetParseError
 pub fn zond_engine::model::port::set::PortSetParseError::eq(&self, &zond_engine::model::port::set::PortSetParseError) -> bool
@@ -8275,6 +8305,7 @@ pub fn zond_engine::model::port::Port::with_security(self, zond_engine::model::p
 pub fn zond_engine::model::port::Port::with_service(self, zond_engine::model::port::service::Service) -> Self
 impl core::clone::Clone for zond_engine::model::port::Port
 pub fn zond_engine::model::port::Port::clone(&self) -> zond_engine::model::port::Port
+impl core::cmp::Eq for zond_engine::model::port::Port
 impl core::cmp::PartialEq for zond_engine::model::port::Port
 pub fn zond_engine::model::port::Port::eq(&self, &zond_engine::model::port::Port) -> bool
 impl core::convert::From<&zond_engine::model::port::Port> for zond_engine::record::PortRecord
@@ -8419,6 +8450,8 @@ pub static zond_engine::model::port::UDP_BY_PREVALENCE: [u16; 250]
 pub mod zond_engine::model::target
 #[non_exhaustive] pub enum zond_engine::model::target::TargetError
 pub zond_engine::model::target::TargetError::CapacityOverflow
+impl core::clone::Clone for zond_engine::model::target::TargetError
+pub fn zond_engine::model::target::TargetError::clone(&self) -> zond_engine::model::target::TargetError
 impl core::cmp::Eq for zond_engine::model::target::TargetError
 impl core::cmp::PartialEq for zond_engine::model::target::TargetError
 pub fn zond_engine::model::target::TargetError::eq(&self, &zond_engine::model::target::TargetError) -> bool
@@ -13981,6 +14014,7 @@ pub fn zond_engine::model::port::Port::with_security(self, zond_engine::model::p
 pub fn zond_engine::model::port::Port::with_service(self, zond_engine::model::port::service::Service) -> Self
 impl core::clone::Clone for zond_engine::model::port::Port
 pub fn zond_engine::model::port::Port::clone(&self) -> zond_engine::model::port::Port
+impl core::cmp::Eq for zond_engine::model::port::Port
 impl core::cmp::PartialEq for zond_engine::model::port::Port
 pub fn zond_engine::model::port::Port::eq(&self, &zond_engine::model::port::Port) -> bool
 impl core::convert::From<&zond_engine::model::port::Port> for zond_engine::record::PortRecord

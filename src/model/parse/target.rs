@@ -211,7 +211,7 @@ impl fmt::Debug for TargetContext<'_> {
 /// reports the line as well, and between the two a user can find what to fix
 /// without re-reading their own input.
 #[non_exhaustive]
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TargetParseError {
     /// The token was empty or nothing but whitespace.
     #[error("a target expression cannot be empty")]
@@ -276,6 +276,21 @@ pub enum TargetParseError {
     /// The lookup returned nothing for the name.
     #[error("'{0}': no address could be resolved for this name")]
     UnknownHost(String),
+
+    /// The expression parsed and named nothing to scan.
+    ///
+    /// A keyword is how it is reached: a [`ResolverFn`] that returns without
+    /// inserting an address, which is the honest answer for `lan` on a host that
+    /// has no LAN. Distinct from [`Empty`](Self::Empty), which is a token with
+    /// no expression in it, and from [`UnknownHost`](Self::UnknownHost), which
+    /// is a name nothing answered to.
+    ///
+    /// Reported as `Empty` this said "a target expression cannot be empty" about
+    /// `lan`, which is neither empty nor the problem. The engine's own resolver
+    /// always inserts on success, so it took a caller supplying their own to
+    /// reach, which is every consumer of this crate that is not the CLI.
+    #[error("'{0}': this named no addresses to scan")]
+    ResolvedToNothing(String),
 }
 
 /// A target expression split into the part that says *what* and the part that
@@ -528,7 +543,9 @@ impl TargetMapBuilder {
         }
 
         if resolved.is_empty() {
-            return Err(TargetParseError::Empty);
+            return Err(TargetParseError::ResolvedToNothing(
+                token.trim().to_string(),
+            ));
         }
 
         // Counted from this expression's own ranges, which are a handful at
@@ -725,6 +742,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::parse::ip::Keyword;
     use crate::model::target::Target;
     use std::net::Ipv4Addr;
 
@@ -932,6 +950,38 @@ mod tests {
             builder.group_count(),
             2,
             "80 with 443 once, 80 through 81 with 443 once"
+        );
+    }
+
+    /// A keyword that resolved to nothing is not an empty expression.
+    ///
+    /// A [`ResolverFn`] belongs to the caller, and one that returns without
+    /// inserting is the honest answer for `lan` on a host with no LAN. It was
+    /// reported as [`TargetParseError::Empty`], whose message is "a target
+    /// expression cannot be empty", said about the word `lan`. The engine's own
+    /// resolver always inserts on success, so only a consumer supplying its own
+    /// could meet it, which is every consumer that is not the CLI.
+    #[test]
+    fn a_keyword_that_resolves_to_nothing_says_what_went_wrong() {
+        fn resolves_to_nothing(_: Keyword, _: &mut IpSet) -> Result<(), IpParseError> {
+            Ok(())
+        }
+
+        let ctx = TargetContext::new().with_keywords(&resolves_to_nothing);
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let error = builder.push("lan", &ctx).expect_err("nothing was named");
+
+        assert_eq!(
+            error,
+            TargetParseError::ResolvedToNothing("lan".to_string()),
+            "the word it was said about has to be in it"
+        );
+        assert!(!error.to_string().contains("cannot be empty"), "{error}");
+
+        // And a token that really is empty keeps its own error.
+        assert_eq!(
+            builder.push("   ", &ctx).expect_err("nothing was written"),
+            TargetParseError::Empty
         );
     }
 

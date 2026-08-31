@@ -20,13 +20,13 @@
 //! as a format, and the first refactor after the first customer would be a
 //! breaking change to their parser rather than a private matter.
 //!
-//! So the mapping is written out by hand, once, here. It costs a file. It buys
-//! the freedom to move a field, rename a variant, or split a struct without
-//! anyone outside noticing - and, in the other direction, it makes changing the
-//! wire format a deliberate edit to a file whose whole purpose is to be stable,
-//! rather than a side effect of a refactor. Every enum is mapped by an
-//! exhaustive `match`, so adding a variant to a core type fails to compile until
-//! somebody decides what it is called in JSON.
+//! So the mapping is written out by hand, once, here. It costs a file and buys
+//! the freedom to move a field, rename a variant or split a struct without
+//! anyone outside noticing. In the other direction, changing the wire format
+//! becomes a deliberate edit to a file whose purpose is to be stable rather than
+//! a side effect of a refactor. Every enum is mapped by an exhaustive `match`, so
+//! adding a variant to a core type fails to compile until somebody decides what
+//! it is called in JSON.
 //!
 //! ## Conventions the whole document obeys
 //!
@@ -35,41 +35,37 @@
 //! - **Timestamps are RFC 3339 strings in UTC**, to microsecond precision. Never
 //!   epoch floats; see [`time`](crate::format::time) for why.
 //! - **Durations are integers of microseconds**, in a field whose name ends in
-//!   `_us`. The unit is in the name because a bare `timeout` field is a
-//!   support ticket waiting to happen.
+//!   `_us`. The unit is in the name because a bare `timeout` field is a support
+//!   ticket waiting to happen.
 //! - **Counts that can exceed 2^53 are decimal strings**, not numbers. An IPv6
 //!   sweep's address count does not fit a JSON number as JavaScript implements
-//!   one, and a count that silently rounds is worse than one that needs
-//!   parsing. Everything narrow enough to be exact stays a number.
+//!   one, and a count that rounds silently is worse than one that needs parsing.
+//!   Everything narrow enough to be exact stays a number.
 //! - **Objects have a fixed shape, and absence never means anything.** A field
-//!   that has no value is present and `null`, and a list with nothing in it is
+//!   with no value is present and `null`, and a list with nothing in it is
 //!   present and empty. The exception is a field describing something the scan
-//!   did not do at all — an evasion profile on a scan that altered no packets,
-//!   a switch on a network with no managed equipment, an excerpt a detection did
-//!   not carry — which is left out rather than nulled. That is a saving on the
-//!   document and not a third state: a consumer reading an absent field as the
-//!   empty one, `null` or `[]` or `false`, reads every document correctly.
-//!   `assets/schema/zond-report-v1.schema.json` is the list, since every field
-//!   it does not mark `required` is one of these and every other field is.
+//!   did not do at all, such as an evasion profile on a scan that altered no
+//!   packets or a switch on a network with no managed equipment, which is left
+//!   out rather than nulled. A consumer reading an absent field as the empty one,
+//!   `null` or `[]` or `false`, reads every document correctly.
+//!   `assets/schema/zond-report-v1.schema.json` is the list: every field it does
+//!   not mark `required` is one of these.
 //! - **Order is deterministic.** Hosts sort by primary IP, ports by number, sets
 //!   by their natural order. Two scans that found the same things produce
 //!   documents that diff cleanly.
 //! - **Unknown fields may appear.** Additive changes do not bump
-//!   [`SCHEMA_VERSION`]; a consumer must ignore what it does not recognise.
+//!   [`SCHEMA_VERSION`], so a consumer must ignore what it does not recognise.
 //!
 //! ## Every type here is `#[non_exhaustive]`
 //!
-//! That rule is what the attribute is for. Adding a field to the document is
-//! additive for a consumer parsing JSON and would be a breaking change for one
-//! writing Rust, because a struct with public fields can be built by name from
-//! outside this crate and the next field breaks every such expression. The two
-//! halves of the same contract would then disagree about what an addition
-//! costs.
+//! Adding a field to the document is additive for a consumer parsing JSON and
+//! would break one writing Rust, since a struct with public fields can be built
+//! by name from outside this crate and the next field breaks every such
+//! expression.
 //!
-//! Nothing is lost by it. Every field stays public and readable, which is what a
-//! consumer rendering a report in their own format does; what stops is
-//! constructing one by name, and each of these already has a constructor that
-//! takes the engine value it describes.
+//! Every field stays public and readable, which is what a consumer rendering a
+//! report in their own format does. What stops is constructing one by name, and
+//! each of these has a constructor taking the engine value it describes.
 //!
 //! ## Streaming
 //!
@@ -104,28 +100,25 @@ use crate::report::{
 use crate::system::privilege::Privilege;
 use crate::transport::probe::SendMode;
 
-// The two values a reader of this document has to agree with are defined in
-// [`crate::format`] rather than here, because a reader that had to reach into
-// the writer for them would be depending on being able to write a format it only
-// ever reads. Re-exported so this module still reads as the whole description of
-// the document.
+// The two values a reader of this document has to agree with live in
+// `crate::format` rather than here, so a reader does not depend on the writer.
+// Re-exported so this module still reads as the whole description of the
+// document.
 pub use crate::format::{ENGINE_NAME, SCHEMA_VERSION};
 pub use crate::report::ENGINE_VERSION;
 
 // ---------------------------------------------------------------------------
 // Enum names
 //
-// The wire spelling of every enumerated value in the document. Public because a
-// third-party exporter rendering the same data in its own format should spell
-// these the same way the JSON does, and because the alternative is each
-// exporter inventing its own strings.
+// The wire spelling of every enumerated value in the document. Public so a
+// third-party exporter rendering the same data in its own format spells them the
+// way the JSON does.
 // ---------------------------------------------------------------------------
 
 /// The wire name of a host's reachability status.
-// The names below are defined in [`record::wire`](crate::record::wire), beside
-// the parsers that read them back, so that a name and its inverse cannot drift
-// apart. Re-exported rather than called through, since these appear in the
-// export's hot paths and a caller should not have to know where they live.
+// The names below are defined in `record::wire`, beside the parsers that read
+// them back, so a name and its inverse cannot drift apart. Re-exported rather
+// than called through, since a caller should not have to know where they live.
 pub use crate::record::wire::{
     attachment_source_name, confidence_name, detection_class_name, filtering_name,
     host_status_name, network_role_name, port_scope_name, port_state_name, protocol_name,
@@ -154,10 +147,9 @@ pub fn scan_effort_name(effort: ScanEffort) -> &'static str {
 
 /// Renders a duration as whole microseconds.
 ///
-/// Saturates rather than wrapping. The bound is roughly 585,000 years, so
-/// nothing the engine measures approaches it; saturating is simply what a
-/// measurement should do when it cannot be represented, rather than silently
-/// reporting a small number.
+/// Saturates rather than wrapping. The bound is roughly 585,000 years, so nothing
+/// the engine measures approaches it, and a measurement that cannot be
+/// represented should not come out small.
 fn micros(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
@@ -205,9 +197,9 @@ impl<'a> ReportDto<'a> {
 
     /// Describes a report with an explicit generation time.
     ///
-    /// Exists so a test can produce a document that is byte-identical across
-    /// runs. Everything else in a report is determined by the scan; the
-    /// generation stamp is the only field that moves on its own.
+    /// For a test producing a document that is byte-identical across runs.
+    /// Everything else in a report is determined by the scan, and the generation
+    /// stamp is the only field that moves on its own.
     pub fn generated_at(
         report: &'a ScanReport,
         options: &'a ExportOptions,
@@ -237,8 +229,6 @@ impl Serialize for ReportDto<'_> {
 
         let mut doc = serializer.serialize_struct("Report", HEADER_FIELDS + 1)?;
         write_header(&mut doc, self.report, self.generated_at, self.options)?;
-        // Serialized straight from the iterator so the whole host set is never
-        // resident at once.
         doc.serialize_field(
             "hosts",
             &HostsDto {
@@ -267,10 +257,9 @@ pub struct ReportHeaderDto<'a> {
 impl<'a> ReportHeaderDto<'a> {
     /// Describes a report's header, stamped with the current time.
     ///
-    /// Takes the same options the hosts are written under, because the header
-    /// is no longer free of anything they mask: a phase carries the switch this
-    /// machine was plugged into, and that names a device and a hardware
-    /// address. A header rendered without the policy would leak, from a
+    /// Takes the same options the hosts are written under. A phase carries the
+    /// switch this machine was plugged into, which names a device and a hardware
+    /// address, so a header rendered without the policy would leak from a
     /// document whose every host record honoured it.
     pub fn new(report: &'a ScanReport, options: &'a ExportOptions) -> Self {
         Self::generated_at(report, options, SystemTime::now())
@@ -302,12 +291,10 @@ impl Serialize for ReportHeaderDto<'_> {
 
 /// How long a scan took, as the document reports it.
 ///
-/// The sum of the phases *as rendered*, not the truncation of the underlying
-/// sum. Each phase's figure is truncated to whole microseconds independently, so
-/// a total taken from the durations behind them can exceed the sum of the
-/// numbers printed beside it - the document would then contradict itself by a
-/// microsecond, which is a real question for a consumer to ask and a fraction of
-/// nothing to answer it with.
+/// The sum of the phases as rendered, not the truncation of the underlying sum.
+/// Each phase's figure is truncated to whole microseconds independently, so a
+/// total taken from the durations behind them can exceed the sum of the numbers
+/// printed beside it, and the document would contradict itself by a microsecond.
 ///
 /// Public because every rendering of a report has to agree about this number,
 /// including one written outside this crate.
@@ -371,11 +358,10 @@ impl Serialize for HostsDto<'_> {
 
 /// Which build wrote a document.
 ///
-/// **This build, both halves.** A `version` beside a name is that name's
-/// version, and the name here is fixed: writing somebody else's version next to
-/// it produced `zond-engine` paired with `nmap 7.94`, which named no build that
-/// ever existed. What produced the *findings* is `produced_by`, which is a
-/// different question and now has a different field.
+/// This build, both halves. A `version` beside a name is that name's version, and
+/// the name here is fixed, so writing somebody else's version next to it produced
+/// `zond-engine` paired with `nmap 7.94`, a build that never existed. What
+/// produced the findings is `produced_by`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct EngineDto {
@@ -394,10 +380,10 @@ pub struct EngineDto {
 
 /// Headline counts, with the full distribution behind each one.
 ///
-/// The per-status and per-state breakdowns are structs rather than maps so that
-/// every category is always present, in severity order, whether or not anything
-/// landed in it. A consumer reading `filtered: 0` learns something; one that has
-/// to decide what a missing key means does not.
+/// The per-status and per-state breakdowns are structs rather than maps, so every
+/// category is present in severity order whether or not anything landed in it. A
+/// consumer reading `filtered: 0` learns something; one deciding what a missing
+/// key means does not.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct SummaryDto {
@@ -422,8 +408,8 @@ pub struct SummaryDto {
 /// Hosts counted by the address families they answered at.
 ///
 /// A dual-stack host is counted in all three, so these do not partition
-/// `hosts_total`. The question a consumer asks of them is "how much of this
-/// network did I see over IPv6", and a partition would answer something else.
+/// `hosts_total`. They answer how much of a network was seen over each family,
+/// which a partition would not.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct FamilyCounts {
@@ -546,11 +532,10 @@ pub struct PhaseDto<'a> {
     /// Addresses this host had no route to, so nothing was sent to them,
     /// ascending.
     ///
-    /// Not failures, and deliberately not listed among them: no strategy broke
-    /// and the scan's result is not partial because of these. They are here
-    /// because the caller named these addresses and did not get an answer about
-    /// them, and a host count alone cannot say which of their targets went
-    /// uncovered or why.
+    /// Not failures and not listed among them: no strategy broke and the result
+    /// is not partial because of these. They are here because the caller named
+    /// the addresses and got no answer about them, which a host count cannot
+    /// say.
     ///
     /// An address here was never probed at all, which is a different finding
     /// from one that was probed and stayed silent.
@@ -621,9 +606,8 @@ impl<'a> PhaseDto<'a> {
     /// Renders a recorded phase, applying the redaction policy in `options`.
     ///
     /// A phase carried nothing to redact until it began carrying an
-    /// [`attachment`](crate::report::Attachment), which names a device
-    /// and its hardware address — both of them exactly what the policy exists to
-    /// mask, and neither of them less identifying for describing a switch
+    /// [`attachment`](crate::report::Attachment), which names a device and its
+    /// hardware address. Neither is less identifying for describing a switch
     /// rather than a workstation.
     pub fn new(phase: &'a ScanPhase, options: &ExportOptions) -> Self {
         Self {
@@ -681,10 +665,9 @@ pub struct ScopeDto {
     /// How many address/port/protocol combinations were in scope, as a decimal
     /// string.
     ///
-    /// `null` on a discovery phase, which has no port dimension, and on a
-    /// target set too large to count - a failure to measure, reported as one
-    /// rather than as a plausible-looking number. The phase `kind` tells the
-    /// two apart.
+    /// `null` on a discovery phase, which has no port dimension, and on a target
+    /// set too large to count, which is a failure to measure rather than a
+    /// plausible-looking number. The phase `kind` tells the two apart.
     pub probes: Option<String>,
     /// The links this phase swept whole, by interface name, ascending.
     ///
@@ -698,11 +681,11 @@ pub struct ScopeDto {
     pub links: Vec<String>,
     /// The links this phase read traffic from without probing them.
     ///
-    /// **Never coverage**, which is the whole reason it is not `links`. A sweep
-    /// puts a probe on the segment that every host there is obliged to answer,
-    /// so a host missing from the report was not on it. Listening establishes
-    /// nothing of the kind: a machine that stayed quiet during the window is
-    /// indistinguishable from one that is absent.
+    /// Never coverage, which is why it is not `links`. A sweep puts a probe on
+    /// the segment that every host there is obliged to answer, so a host missing
+    /// from the report was not on it. Listening establishes nothing of the kind,
+    /// since a machine quiet during the window is indistinguishable from one that
+    /// is absent.
     ///
     /// Read it to know where a phase was standing, never to conclude that
     /// anything was or was not there.
@@ -721,9 +704,8 @@ pub struct ScopeDto {
     /// The merged ranges the phase was forbidden to probe, ascending.
     ///
     /// Empty when no exclusion policy was in force. A policy that was in force
-    /// and overlapped nothing appears here in full, with `withheld` at zero -
-    /// the two are different facts and a consumer acting on scope compliance
-    /// needs both.
+    /// and overlapped nothing appears here in full with `withheld` at zero, since
+    /// a consumer acting on scope compliance needs both facts.
     ///
     /// This is the part of the document a reader can check the engine against:
     /// no host in this report may fall inside any of these ranges.
@@ -732,8 +714,8 @@ pub struct ScopeDto {
     /// decimal string.
     ///
     /// The overlap between the policy and what this phase was handed, measured
-    /// when its scope was recorded - so `"0"` from a policy naming ground the
-    /// phase would never have walked, and `"0"` again from a phase whose input
+    /// when its scope was recorded. That gives `"0"` for a policy naming ground
+    /// the phase would never have walked, and `"0"` again for a phase whose input
     /// an earlier one had already narrowed.
     pub withheld: String,
 }
@@ -751,8 +733,8 @@ pub struct PortScopeDto {
     ///
     /// Only `every` supports concluding that a particular endpoint of a covered
     /// address was probed. Under `mixed`, a port in the set was walked for at
-    /// least one address and not necessarily for any given one — though a port
-    /// *absent* from it was walked for none.
+    /// least one address and not necessarily for any given one, though a port
+    /// absent from the set was walked for none.
     pub kind: &'static str,
     /// The ports, written as the specification a scanner takes: comma
     /// separated, `start-end` for a run, `u:` prefixing the UDP half. Empty
@@ -871,7 +853,8 @@ pub struct SettingsDto {
     ///
     /// A host with no operating system reported reads differently at each: `off`
     /// means nothing looked. It also says how much of this phase's traffic the
-    /// engine originated for this purpose — `off` and `passive` originate none.
+    /// engine originated for the purpose, which under `off` and `passive` is
+    /// none.
     pub os_detection: &'static str,
 
     /// How far the phase went to identify services: `off`, `banner` or `probe`.
@@ -952,7 +935,7 @@ pub struct IdleScanDto {
 }
 
 /// Omits a `false` boolean from the document, so a field appears only for a
-/// technique the scan used — the counterpart of `skip_serializing_if` on the
+/// technique the scan used. The counterpart of `skip_serializing_if` on the
 /// optional fields beside it.
 fn is_false(value: &bool) -> bool {
     !*value
@@ -1116,8 +1099,8 @@ pub struct ProbeStatsDto {
     ///
     /// The field that says whether the silence in this phase is a finding. A run
     /// whose window was cut back to its floor and still left most of its probes
-    /// unanswered did not establish that anything was filtered — it established
-    /// that it could not ask. `null` for a scanner paced some other way.
+    /// unanswered established that it could not ask, not that anything was
+    /// filtered. `null` for a scanner paced some other way.
     pub window: Option<WindowDto>,
 }
 
@@ -1137,8 +1120,8 @@ pub struct WindowDto {
     /// `capacity`, `peak` and `reductions`, and mean quite different things: the
     /// first was told not to adapt, the second was never pushed.
     pub adaptive: bool,
-    /// Whether it ended cut back as far as it is permitted to go — the state
-    /// that says the scan was still being outrun when it stopped.
+    /// Whether it ended cut back as far as it is permitted to go, which says the
+    /// scan was still being outrun when it stopped.
     pub at_floor: bool,
 }
 
@@ -1266,16 +1249,15 @@ pub struct HostDto<'a> {
     /// link layer.
     ///
     /// Carried separately rather than folded into the addresses, so a consumer
-    /// parsing `ips` still gets addresses. It is not decoration: an IPv6
-    /// link-local names a different machine on every segment, and a socket
-    /// cannot be opened to one without it — a record with `fe80::…` and no zone
-    /// describes a host nothing can reach.
+    /// parsing `ips` still gets addresses. An IPv6 link-local names a different
+    /// machine on every segment and no socket can be opened to one without the
+    /// zone, so `fe80::…` on its own describes a host nothing can reach.
     pub zone: Option<&'a str>,
     /// The address families this host answered at: `ipv4`, `ipv6`, or both.
     ///
-    /// Derivable from `ips`, and stated anyway, because "which half of the
-    /// network did I see over IPv6" is a question consumers ask constantly and
-    /// should not have to re-derive by parsing addresses.
+    /// Derivable from `ips` and stated anyway, since consumers ask which half of
+    /// a network was seen over IPv6 constantly and should not have to re-derive
+    /// it by parsing addresses.
     pub families: Vec<&'static str>,
     /// The resolved hostname, masked under redaction.
     pub hostname: Option<Cow<'a, str>>,
@@ -1391,24 +1373,24 @@ pub struct HopDto {
     /// The address the router answered from, or `null` where nothing answered
     /// at this distance.
     ///
-    /// Null is a finding rather than a hole in the data: a router is there — the
-    /// hops beyond it were reached — and it did not identify itself. Many will
+    /// Null is a finding rather than a hole in the data. A router is there, since
+    /// the hops beyond it were reached, and it did not identify itself. Many will
     /// not, and many rate-limit the answer to nothing.
     pub address: Option<String>,
     /// The round trip to this router in microseconds, or `null`.
     ///
-    /// Measured from the scanning host, so it includes every hop in front of
-    /// this one, and it times a router's *error generation*, which is the
-    /// lowest-priority work most routers do. A hop slower than the one past it
-    /// is ordinary and says nothing about the path.
+    /// Measured from the scanning host, so it includes every hop in front of this
+    /// one, and it times a router's error generation, which is the
+    /// lowest-priority work most routers do. A hop slower than the one past it is
+    /// ordinary and says nothing about the path.
     pub rtt_us: Option<u64>,
     /// Whether this hop was measured on the way to this host, or taken from
     /// another host's trace that passed through the same router.
     ///
     /// A scan of many hosts behind one gateway measures the shared part of the
-    /// path once. That is an inference — it assumes two paths meeting at one
-    /// router at one distance agreed before it — and it is marked so a consumer
-    /// acting on a single hop can tell which kind it has.
+    /// path once. That assumes two paths meeting at one router at one distance
+    /// agreed before it, so the inference is marked and a consumer acting on a
+    /// single hop can tell which kind it has.
     pub inferred: bool,
 }
 
@@ -1434,10 +1416,10 @@ pub struct ReasonDto<'a> {
     pub protocol: Cow<'a, str>,
     /// The address that sent the evidence, when it was not the host itself.
     ///
-    /// Present only for second-hand evidence — an ICMP error from a router or
-    /// firewall about the probed address. `null` means the host answered for
-    /// itself, which is the stronger claim, so a consumer weighing how much to
-    /// trust a status can do it from this field alone.
+    /// Present only for second-hand evidence, such as an ICMP error from a router
+    /// or firewall about the probed address. `null` means the host answered for
+    /// itself, the stronger claim, so a consumer weighing how much to trust a
+    /// status can do it from this field alone.
     pub source_ip: Option<String>,
     /// What was observed, where the strategy recorded it.
     pub details: Option<&'a str>,
@@ -1473,10 +1455,10 @@ pub struct OsDto<'a> {
     /// What this identification was read off, in one line, or `null` where the
     /// technique that produced it recorded nothing.
     ///
-    /// **For a person, not for a parser.** Different techniques render different
+    /// For a person rather than a parser. Different techniques render different
     /// things here, and the fields a consumer should act on are the named ones
-    /// above. It exists so a disputed finding can be diagnosed — and turned into
-    /// a corpus entry — without re-running the scan.
+    /// above. It lets a disputed finding be diagnosed, and turned into a corpus
+    /// entry, without re-running the scan.
     pub evidence: Option<&'a str>,
     /// The kernel release, or `null` where nothing read one.
     ///
@@ -1492,8 +1474,8 @@ pub struct OsDto<'a> {
     /// figure for both would report the weaker claim at the stronger claim's
     /// strength.
     pub detail_accuracy: Option<u8>,
-    /// What kind of box this is — `"Printer"`, `"Switch"` — or `null` where
-    /// nothing named a class.
+    /// What kind of box this is, such as `"Printer"` or `"Switch"`, or `null`
+    /// where nothing named a class.
     ///
     /// A separate axis from `family`, not a coarser one: what a machine is and
     /// what it runs are independent, and a host may have either answered without
@@ -1644,10 +1626,9 @@ impl<'a> PortDto<'a> {
     }
 }
 
-/// The findings of a subject, rendered worst-first for a person reading the
-/// report — severity descending, then producer id — rather than in the claim
-/// order the file is written in. The model sorts by identity for a stable file;
-/// a report sorts by severity for a legible page.
+/// The findings of a subject, worst-first for a person reading the report:
+/// severity descending, then producer id. The model sorts by identity for a
+/// stable file, and a report sorts by severity for a legible page.
 fn findings_dto<'a>(findings: impl Iterator<Item = &'a Finding>) -> Vec<FindingDto<'a>> {
     let mut findings: Vec<&'a Finding> = findings.collect();
     findings.sort_by(|a, b| {
@@ -1674,8 +1655,8 @@ pub struct FindingDto<'a> {
     /// How bad it is if true: `info`, `low`, `medium`, `high` or `critical`.
     pub severity: &'static str,
     /// How sure it is true: `heuristic`, `weak`, `probable`, `strong` or
-    /// `certain`. Independent of severity — a finding can be `critical` and only
-    /// `probable`.
+    /// `certain`. Independent of severity, so a finding can be `critical` and
+    /// only `probable`.
     pub confidence: &'static str,
     /// The intrusiveness the detection ran under.
     pub class: &'static str,
@@ -1683,7 +1664,7 @@ pub struct FindingDto<'a> {
     /// absent where the detection carried none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub excerpt: Option<&'a str>,
-    /// External references — CVE, CWE, and advisory links.
+    /// External references: CVE, CWE and advisory links.
     pub references: Vec<ReferenceDto<'a>>,
     /// Remediation advice, if the detection carried any. Untrusted.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1732,13 +1713,11 @@ impl<'a> ReferenceDto<'a> {
 }
 
 /// A reference as one line of human-readable text: the CVE or CWE identifier, or
-/// the URL. Distinct from [`ReferenceDto`], which keeps the kind and value apart
-/// for a parser; this is the flattened form the text-oriented exporters — the
-/// nmap-XML `<script output>` and the CSV findings column — put in front of a
-/// reader.
+/// the URL. [`ReferenceDto`] keeps the kind and value apart for a parser, while
+/// this is the flattened form the nmap-XML `<script output>` and the CSV findings
+/// column put in front of a reader.
 ///
-/// Compiled only for the exporters that use it, so a build with neither reads no
-/// dead code.
+/// Compiled only for the exporters that use it.
 #[cfg(any(feature = "export-nmap", feature = "export-csv"))]
 pub(crate) fn reference_text(reference: &Reference) -> String {
     match reference {
@@ -1908,10 +1887,10 @@ mod tests {
     use crate::report::ScannerKind;
     use crate::report::{ScanKind, StopReason};
 
-    /// Every enumerated value the document can carry has to be spelled the same
-    /// way twice - once here, once in the schema file. Pinning the strings is
-    /// what turns a rename into a failing test rather than a silent break in
-    /// somebody's parser.
+    /// Every enumerated value the document can carry is spelled the same way
+    /// twice, once here and once in the schema file. Pinning the strings turns a
+    /// rename into a failing test rather than a silent break in somebody's
+    /// parser.
     #[test]
     fn wire_names_are_pinned() {
         assert_eq!(scan_kind_name(ScanKind::PortScan), "port_scan");
@@ -1983,7 +1962,7 @@ mod tests {
     }
 
     /// A discovery phase has no port dimension, so its probe count is absent
-    /// rather than zero - zero would claim the sweep sent nothing.
+    /// rather than zero, which would claim the sweep sent nothing.
     #[test]
     fn a_discovery_scope_has_no_probe_count() {
         let mut ips = IpSet::new();

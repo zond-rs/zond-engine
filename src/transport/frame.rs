@@ -230,6 +230,18 @@ pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
             if header_len < IP_V4_HDR_LEN {
                 return None;
             }
+            // Only the first fragment of a fragmented datagram carries the
+            // Layer-4 header a caller is looking for. In any other, what follows
+            // the IP header is the middle of somebody's payload, and handing it
+            // out is handing out a header full of plausible nonsense.
+            // `walk_ipv6_headers` refuses the same thing on the other family and
+            // has since it was written; this arm read the flags and never the
+            // offset, so a non-initial fragment came through as a segment and
+            // its `IpObservation` answered `is_fragment()` with the More
+            // Fragments bit, which the *last* fragment does not set.
+            if packet.get_fragment_offset() != 0 {
+                return None;
+            }
             Some(IpSegment {
                 source: IpAddr::V4(packet.get_source()),
                 destination: IpAddr::V4(packet.get_destination()),
@@ -565,6 +577,52 @@ mod tests {
         assert!(!observed.more_fragments);
         assert_eq!(observed.dscp, 34);
         assert_eq!(observed.ecn, 3);
+    }
+
+    /// A fragment that is not the first carries no Layer-4 header, so there is
+    /// no segment to hand out and this refuses to.
+    ///
+    /// The IPv6 path has refused the same thing since it was written, in
+    /// `walk_ipv6_headers`, and this arm read the flags and never the offset.
+    /// Two things came of that. The bytes after the header were handed out as a
+    /// transport segment, when they are the middle of somebody's payload. And
+    /// [`IpObservation::is_fragment`] answers with the More Fragments bit, which
+    /// the *last* fragment does not set, so the one piece of a datagram whose
+    /// segment fields belong to a different piece was the one piece reported as
+    /// whole. `os_series` reads that flag before folding a reply's IP identifier
+    /// into a sequence, which is the analysis a terminal fragment would have
+    /// been admitted to.
+    #[test]
+    fn a_later_ipv4_fragment_is_not_a_segment() {
+        let fragment = |flag_and_offset: u16| {
+            let mut packet = vec![0u8; IP_V4_HDR_LEN + 8];
+            packet[0] = 0x45;
+            packet[2..4].copy_from_slice(&((IP_V4_HDR_LEN + 8) as u16).to_be_bytes());
+            packet[6..8].copy_from_slice(&flag_and_offset.to_be_bytes());
+            packet[9] = TCP.0;
+            packet
+        };
+
+        // A middle fragment: more-fragments set, offset past the start.
+        assert!(parse_ip_segment(&fragment(0b0010_0000_0000_0000 | 185)).is_none());
+        // And the last one, which sets no flag at all and is the case the More
+        // Fragments bit cannot see.
+        assert!(parse_ip_segment(&fragment(185)).is_none());
+
+        // The first fragment does carry a header, and still parses.
+        let first_bytes = fragment(0b0010_0000_0000_0000);
+        let first =
+            parse_ip_segment(&first_bytes).expect("the first fragment holds the Layer-4 header");
+        assert!(
+            first.observation.is_fragment(),
+            "the first fragment says it is one"
+        );
+
+        // And a whole datagram is not a fragment, which is the other half of
+        // what `is_fragment` has to get right.
+        let whole_bytes = fragment(0);
+        let whole = parse_ip_segment(&whole_bytes).expect("a whole datagram");
+        assert!(!whole.observation.is_fragment());
     }
 
     /// Don't-fragment and more-fragments are adjacent bits of one three-bit
