@@ -353,7 +353,7 @@ pub(super) fn ensure_coverage(
     let missing = |protocol: Protocol| intended.contains(&protocol) && !covered.contains(&protocol);
 
     if missing(Protocol::Tcp) {
-        if technique.finds_open_ports() {
+        if technique.has_connect_fallback() {
             scanners.push(Box::new(strategy::connect::ConnectPortScanner::new(
                 ctx.clone(),
                 crate::config::limits::CONNECT_CONCURRENCY,

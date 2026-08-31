@@ -633,7 +633,8 @@ impl Run {
             Some("null") => self.raw(Some(TcpScanTechnique::Null)),
             Some("xmas") => self.raw(Some(TcpScanTechnique::Xmas)),
             Some("maimon") => self.raw(Some(TcpScanTechnique::Maimon)),
-            Some("udp" | "window" | "ipproto" | "sctpinit" | "sctpcookieecho") => self.raw(None),
+            Some("window") => self.raw(Some(TcpScanTechnique::Window)),
+            Some("udp" | "ipproto" | "sctpinit" | "sctpcookieecho") => self.raw(None),
             // A connect scan is the one nmap performs without privileges, and
             // this engine records the same fallback the same way.
             _ => {}

@@ -9321,6 +9321,7 @@ pub mod zond_engine::model::technique
 #[non_exhaustive] pub enum zond_engine::model::technique::TcpReply
 pub zond_engine::model::technique::TcpReply::ChallengeAck
 pub zond_engine::model::technique::TcpReply::Rst
+pub zond_engine::model::technique::TcpReply::Rst::window: u16
 pub zond_engine::model::technique::TcpReply::SynAck
 impl core::clone::Clone for zond_engine::model::technique::TcpReply
 pub fn zond_engine::model::technique::TcpReply::clone(&self) -> zond_engine::model::technique::TcpReply
@@ -9344,10 +9345,12 @@ pub zond_engine::model::technique::TcpScanTechnique::Fin
 pub zond_engine::model::technique::TcpScanTechnique::Maimon
 pub zond_engine::model::technique::TcpScanTechnique::Null
 pub zond_engine::model::technique::TcpScanTechnique::Syn
+pub zond_engine::model::technique::TcpScanTechnique::Window
 pub zond_engine::model::technique::TcpScanTechnique::Xmas
 impl zond_engine::model::technique::TcpScanTechnique
-pub const zond_engine::model::technique::TcpScanTechnique::ALL: [Self; 6]
+pub const zond_engine::model::technique::TcpScanTechnique::ALL: [Self; 7]
 pub const fn zond_engine::model::technique::TcpScanTechnique::finds_open_ports(self) -> bool
+pub const fn zond_engine::model::technique::TcpScanTechnique::has_connect_fallback(self) -> bool
 pub const fn zond_engine::model::technique::TcpScanTechnique::name(self) -> &'static str
 pub const fn zond_engine::model::technique::TcpScanTechnique::reads_icmp_errors(self) -> bool
 pub const fn zond_engine::model::technique::TcpScanTechnique::silence_means(self) -> zond_engine::model::port::PortState
@@ -10378,6 +10381,7 @@ pub fn zond_engine::protocols::tcp::Segment<'a>::flags(&self) -> u8
 pub fn zond_engine::protocols::tcp::Segment<'a>::payload(&self) -> &'a [u8]
 pub fn zond_engine::protocols::tcp::Segment<'a>::sequence(&self) -> u32
 pub fn zond_engine::protocols::tcp::Segment<'a>::source_port(&self) -> u16
+pub fn zond_engine::protocols::tcp::Segment<'a>::window(&self) -> u16
 impl<'a> core::clone::Clone for zond_engine::protocols::tcp::Segment<'a>
 pub fn zond_engine::protocols::tcp::Segment<'a>::clone(&self) -> zond_engine::protocols::tcp::Segment<'a>
 impl<'a> core::fmt::Debug for zond_engine::protocols::tcp::Segment<'a>
@@ -14463,10 +14467,12 @@ pub zond_engine::TcpScanTechnique::Fin
 pub zond_engine::TcpScanTechnique::Maimon
 pub zond_engine::TcpScanTechnique::Null
 pub zond_engine::TcpScanTechnique::Syn
+pub zond_engine::TcpScanTechnique::Window
 pub zond_engine::TcpScanTechnique::Xmas
 impl zond_engine::model::technique::TcpScanTechnique
-pub const zond_engine::model::technique::TcpScanTechnique::ALL: [Self; 6]
+pub const zond_engine::model::technique::TcpScanTechnique::ALL: [Self; 7]
 pub const fn zond_engine::model::technique::TcpScanTechnique::finds_open_ports(self) -> bool
+pub const fn zond_engine::model::technique::TcpScanTechnique::has_connect_fallback(self) -> bool
 pub const fn zond_engine::model::technique::TcpScanTechnique::name(self) -> &'static str
 pub const fn zond_engine::model::technique::TcpScanTechnique::reads_icmp_errors(self) -> bool
 pub const fn zond_engine::model::technique::TcpScanTechnique::silence_means(self) -> zond_engine::model::port::PortState

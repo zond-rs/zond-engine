@@ -12,16 +12,18 @@
 //!
 //! A port scan asks a target one question, and the flags on the probe decide
 //! which question that is. A SYN asks "will you accept a connection here?" and
-//! is answered positively; the five flag-probe techniques ask "is there anyone
-//! behind this port at all?" and are answered *negatively*, by the RST that
-//! only a closed port is obliged to send. That inversion is the point of them:
-//! a filter that blocks connection attempts often passes a segment that is not
-//! one, so the probe reaches a stack that a SYN never would.
+//! is answered positively; the five techniques that do not send one ask "is
+//! there anyone behind this port at all?" and are answered *negatively*, by the
+//! RST that only a closed port is obliged to send. That inversion is the point
+//! of them: a filter that blocks connection attempts often passes a segment
+//! that is not one, so the probe reaches a stack that a SYN never would. The
+//! seventh, [`Window`](TcpScanTechnique::Window), reads that same refusal for
+//! the one field in it that answers positively.
 //!
 //! The mapping from reply to verdict lives here rather than in the scanner
 //! because it is the whole of what distinguishes the techniques. Everything
 //! else - retransmission, pacing, source selection, the deadline - is identical
-//! across all six, and the scanner is written once against this table. The
+//! across all seven, and the scanner is written once against this table. The
 //! flags themselves live in [`crate::protocols::tcp`], which is the layer that
 //! knows what a TCP header is.
 //!
@@ -44,11 +46,15 @@
 //!
 //! ## No technique here answers the whole question
 //!
-//! These are not six ways of doing the same thing, and running one of them is
+//! These are not seven ways of doing the same thing, and running one of them is
 //! rarely enough. A flag probe cannot tell an open port from a filtered one -
 //! both are silent, and both come back [`PortState::OpenFiltered`]. An
 //! [`Ack`](TcpScanTechnique::Ack) scan tells those two apart and never says
-//! which is open. Only [`Syn`](TcpScanTechnique::Syn) identifies a listener.
+//! which is open. Only [`Syn`](TcpScanTechnique::Syn) identifies a listener
+//! from the reply alone. [`Window`](TcpScanTechnique::Window) sends the ACK
+//! scan's segment and reads one field further, which separates open from closed
+//! on the stacks that still leak the difference and says nothing on the ones
+//! that do not.
 //!
 //! Measured against a router with one open, one filtered and three closed
 //! ports, that plays out exactly: the FIN scan reports the open port and the
@@ -75,7 +81,18 @@ pub enum TcpReply {
     /// draw one.
     SynAck,
     /// RST: a refusal. Which refusal depends on what was asked.
-    Rst,
+    Rst {
+        /// The receive window the reset announced.
+        ///
+        /// A stack resetting a connection it never held has no window to
+        /// announce, so whatever it writes here is a property of the code path
+        /// it took rather than of the segment it answered. BSD derivatives
+        /// leave the listening socket's own window on a reset from an open
+        /// port and zero on one from a closed port, which is the single field
+        /// [`TcpScanTechnique::Window`] reads. Every other technique ignores
+        /// it.
+        window: u16,
+    },
 
     /// ACK alone: a *challenge ACK*, and the only reply here that is not an
     /// answer to the probe that drew it.
@@ -162,6 +179,24 @@ pub enum TcpScanTechnique {
     /// this beside a SYN scan is what separates "no listener" from "never
     /// arrived".
     Ack,
+    /// A lone ACK, read for the window on the reset it draws.
+    ///
+    /// The probe is [`Ack`](Self::Ack)'s exactly, and so is the RST that comes
+    /// back from every port a filter did not swallow. One field separates them:
+    /// a stack that announces its listening socket's window on the reset from
+    /// an open port, and zero on the reset from a closed one, has said which is
+    /// which without a SYN having been sent. It is the only technique here that
+    /// finds a listener from a refusal.
+    ///
+    /// BSD derivatives, a great deal of network hardware and many embedded
+    /// stacks still carry the distinction. Linux and current Windows do not:
+    /// both reset with a zero window whichever the port was, and against them
+    /// this reports the entire range closed. Two shapes of result say the
+    /// answer is about the stack rather than the ports, and neither is a
+    /// failure the scan can detect for itself: a range that comes back almost
+    /// entirely open, and one that comes back closed to the last port. Read
+    /// either against a [`Syn`](Self::Syn) scan before believing it.
+    Window,
 }
 
 impl TcpScanTechnique {
@@ -170,13 +205,14 @@ impl TcpScanTechnique {
     /// Exists so a front end offering the choice enumerates it from the engine
     /// rather than from a list of its own that drifts the first time one is
     /// added.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Syn,
         Self::Fin,
         Self::Null,
         Self::Xmas,
         Self::Maimon,
         Self::Ack,
+        Self::Window,
     ];
 
     /// The canonical name, which is also what [`FromStr`] accepts and
@@ -189,6 +225,7 @@ impl TcpScanTechnique {
             Self::Xmas => "xmas",
             Self::Maimon => "maimon",
             Self::Ack => "ack",
+            Self::Window => "window",
         }
     }
 
@@ -204,6 +241,9 @@ impl TcpScanTechnique {
                 "FIN with ACK; only meaningful against BSD-derived stacks, misleading elsewhere"
             }
             Self::Ack => "bare ACK; maps the firewall rather than the ports behind it",
+            Self::Window => {
+                "bare ACK read for the reset's window; tells open from closed where a stack leaks it"
+            }
         }
     }
 
@@ -219,7 +259,7 @@ impl TcpScanTechnique {
             // A SYN is the only probe a listener answers, and a RST to it is the
             // stack saying nothing holds that port.
             (Self::Syn, TcpReply::SynAck) => Some(PortState::Open),
-            (Self::Syn, TcpReply::Rst) => Some(PortState::Closed),
+            (Self::Syn, TcpReply::Rst { .. }) => Some(PortState::Closed),
 
             // A challenge ACK means a stack is already half-open on this
             // connection, which only a listener is. It reaches this scan on the
@@ -237,13 +277,23 @@ impl TcpScanTechnique {
 
             // A RST is what only a closed port is obliged to send; the silence
             // of an open one is handled by `silence_means`.
-            (Self::Fin | Self::Null | Self::Xmas | Self::Maimon, TcpReply::Rst) => {
+            (Self::Fin | Self::Null | Self::Xmas | Self::Maimon, TcpReply::Rst { .. }) => {
                 Some(PortState::Closed)
             }
 
             // The probe reached a real stack, which is all an ACK scan claims to
             // establish. Whether anything is listening it cannot say.
-            (Self::Ack, TcpReply::Rst) => Some(PortState::Unfiltered),
+            (Self::Ack, TcpReply::Rst { .. }) => Some(PortState::Unfiltered),
+
+            // The same reset the ACK scan reads as an unfiltered path, one
+            // field further. A window the resetting stack had no connection to
+            // announce it for is the listening socket's, and zero is what a
+            // port with no socket behind it has to announce.
+            (Self::Window, TcpReply::Rst { window }) => Some(if window == 0 {
+                PortState::Closed
+            } else {
+                PortState::Open
+            }),
 
             _ => None,
         }
@@ -258,17 +308,34 @@ impl TcpScanTechnique {
     /// required to ignore it, and no amount of waiting separates those.
     pub const fn silence_means(self) -> PortState {
         match self {
-            Self::Syn | Self::Ack => PortState::Filtered,
+            Self::Syn | Self::Ack | Self::Window => PortState::Filtered,
             Self::Fin | Self::Null | Self::Xmas | Self::Maimon => PortState::OpenFiltered,
         }
     }
 
     /// Whether this technique can report a port [`PortState::Open`].
     ///
-    /// Only [`Syn`](Self::Syn) can. It is worth asking before promising a user
-    /// open ports, and it is why the service-detection pass, which fingerprints
-    /// open TCP ports, finds nothing to do after any other technique.
+    /// [`Syn`](Self::Syn) from a handshake it drew, [`Window`](Self::Window)
+    /// from a refusal it read a field of. It is worth asking before promising a
+    /// user open ports, and it is why the service-detection pass, which
+    /// fingerprints open TCP ports, finds nothing to do after the other five.
+    ///
+    /// Not the same question as [`has_connect_fallback`](Self::has_connect_fallback),
+    /// which asks whether an unprivileged scan may stand in for this one. Both
+    /// were this method for a while, and a window scan would have been quietly
+    /// answered with a handshake it never asked for.
     pub const fn finds_open_ports(self) -> bool {
+        matches!(self, Self::Syn | Self::Window)
+    }
+
+    /// Whether a TCP connect scan asks the same question, and so may stand in
+    /// for this technique where the process has no raw sockets.
+    ///
+    /// [`Syn`](Self::Syn) alone. A completed handshake finds the listeners a
+    /// half-open one finds, paying for them by being logged. Every other
+    /// technique turns on a segment no kernel sends on a caller's behalf, so
+    /// there is nothing to fall back to and the scan is refused instead.
+    pub const fn has_connect_fallback(self) -> bool {
         matches!(self, Self::Syn)
     }
 
@@ -403,9 +470,49 @@ mod tests {
     #[test]
     fn a_rst_means_something_different_per_technique() {
         use TcpScanTechnique::*;
-        assert_eq!(Syn.verdict(TcpReply::Rst), Some(PortState::Closed));
-        assert_eq!(Fin.verdict(TcpReply::Rst), Some(PortState::Closed));
-        assert_eq!(Ack.verdict(TcpReply::Rst), Some(PortState::Unfiltered));
+        let rst = TcpReply::Rst { window: 8192 };
+        assert_eq!(Syn.verdict(rst), Some(PortState::Closed));
+        assert_eq!(Fin.verdict(rst), Some(PortState::Closed));
+        assert_eq!(Ack.verdict(rst), Some(PortState::Unfiltered));
+        assert_eq!(Window.verdict(rst), Some(PortState::Open));
+    }
+
+    /// The whole of the window scan: the same reset, read for one field. Zero
+    /// is a port with no socket behind it to announce a window for, and
+    /// anything else is the socket that had one.
+    #[test]
+    fn a_window_scan_reads_the_reset_the_ack_scan_only_counts() {
+        use TcpScanTechnique::*;
+        assert_eq!(
+            Window.verdict(TcpReply::Rst { window: 0 }),
+            Some(PortState::Closed)
+        );
+        assert_eq!(
+            Window.verdict(TcpReply::Rst { window: 1 }),
+            Some(PortState::Open)
+        );
+        assert_eq!(
+            Ack.verdict(TcpReply::Rst { window: 0 }),
+            Ack.verdict(TcpReply::Rst { window: 1 }),
+            "an ack scan reads the window it has no use for"
+        );
+    }
+
+    /// An unprivileged process may be given a handshake in place of a SYN scan
+    /// and nothing else. A window scan reports open ports too, so reading that
+    /// as licence to substitute a connect scan would answer a question about
+    /// reset windows with one about connections.
+    #[test]
+    fn only_a_syn_scan_falls_back_to_connect() {
+        for technique in TcpScanTechnique::ALL {
+            assert_eq!(
+                technique.has_connect_fallback(),
+                technique == TcpScanTechnique::Syn,
+                "{technique} would have been answered by a connect scan"
+            );
+        }
+        assert!(TcpScanTechnique::Window.finds_open_ports());
+        assert!(!TcpScanTechnique::Window.has_connect_fallback());
     }
 
     /// Only a SYN can provoke a SYN+ACK, so one arriving at any other scan
@@ -416,7 +523,7 @@ mod tests {
             let verdict = technique.verdict(TcpReply::SynAck);
             assert_eq!(
                 verdict.is_some(),
-                technique.finds_open_ports(),
+                technique == TcpScanTechnique::Syn,
                 "{technique} read a SYN+ACK it could not have provoked"
             );
         }
@@ -430,6 +537,7 @@ mod tests {
         use TcpScanTechnique::*;
         assert_eq!(Syn.silence_means(), PortState::Filtered);
         assert_eq!(Ack.silence_means(), PortState::Filtered);
+        assert_eq!(Window.silence_means(), PortState::Filtered);
         for technique in [Fin, Null, Xmas, Maimon] {
             assert_eq!(technique.silence_means(), PortState::OpenFiltered);
         }

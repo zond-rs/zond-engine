@@ -670,22 +670,25 @@ impl TcpPortScanner {
             None => port,
         };
         let evidence = match (state, sender) {
-            // Both routes to an open port, told apart. A handshake is the peer
+            // Three routes to an open port, told apart. A handshake is the peer
             // accepting the connection; a challenge ACK is the peer saying it is
-            // *already* half-open on one, which only a listener can be. Same
-            // verdict, materially different evidence, and a report that called
-            // the second a handshake would be describing a packet nobody sent.
+            // *already* half-open on one, which only a listener can be; a reset
+            // is a window scan reading the listening socket's own window off a
+            // refusal. Same verdict, materially different evidence, and a report
+            // that called any of the three a handshake would be describing a
+            // packet nobody sent.
             (PortState::Open, _) => Some((
                 HostStatus::Up,
-                StatusReason::new(
-                    StatusProtocol::TcpSyn,
-                    match drawn_by {
-                        Some(TcpReply::ChallengeAck) => {
-                            "challenge ack from a probed port, so a listener holds it half-open"
-                        }
-                        _ => "syn-ack from a probed port",
-                    },
-                ),
+                match drawn_by {
+                    Some(TcpReply::Rst { .. }) => {
+                        StatusReason::new(self.status_protocol(), rst_evidence(self.technique))
+                    }
+                    Some(TcpReply::ChallengeAck) => StatusReason::new(
+                        StatusProtocol::TcpSyn,
+                        "challenge ack from a probed port, so a listener holds it half-open",
+                    ),
+                    _ => StatusReason::new(StatusProtocol::TcpSyn, "syn-ack from a probed port"),
+                },
             )),
             // Both verdicts a RST can produce: closed for the techniques that
             // read it as an absent listener, unfiltered for the ACK scan, which
@@ -760,6 +763,9 @@ fn port_evidence(
     target: IpAddr,
 ) -> Option<ScanResponse> {
     match (state, drawn_by, sender) {
+        // A window scan reaches an open port by the reset every other technique
+        // reads as a refusal, so the packet named here is the one that arrived.
+        (PortState::Open, Some(TcpReply::Rst { .. }), _) => Some(ScanResponse::TcpRst),
         // A challenge ACK is a listener saying it is already half-open, which
         // only a listener can be. Same segment family as a handshake, and the
         // report records both as the SYN/ACK path they are.
@@ -789,6 +795,7 @@ const fn rst_evidence(technique: TcpScanTechnique) -> &'static str {
         TcpScanTechnique::Xmas => "rst to a fin-psh-urg probe",
         TcpScanTechnique::Maimon => "rst to a fin-ack probe",
         TcpScanTechnique::Ack => "rst to an ack probe",
+        TcpScanTechnique::Window => "rst to an ack probe, read for its window",
     }
 }
 
@@ -943,10 +950,12 @@ impl PortScanner for TcpPortScanner {
     /// classified each port never opened a connection, so this second pass makes
     /// one per open port and runs the shared fingerprint engine over it.
     ///
-    /// Needs no branch on the technique. Only a SYN scan reports a port
-    /// [`PortState::Open`] (see [`TcpScanTechnique::finds_open_ports`]), so after
-    /// any other one this finds nothing to identify and returns immediately -
-    /// the data already guarantees what a condition here would have enforced.
+    /// Needs no branch on the technique. Only a SYN or a window scan reports a
+    /// port [`PortState::Open`] (see [`TcpScanTechnique::finds_open_ports`]), so
+    /// after any other one this finds nothing to identify and returns
+    /// immediately - the data already guarantees what a condition here would
+    /// have enforced. After a window scan it runs, and a port whose openness
+    /// rests on a reset's window is the one most worth putting a connection to.
     async fn detect_services(&mut self, ctx: &ScanContext) {
         service::detect(ctx, self.service_detection).await;
     }
@@ -1032,7 +1041,9 @@ mod tests {
         tcp.set_flags(flags);
 
         match technique {
-            TcpScanTechnique::Maimon | TcpScanTechnique::Ack => tcp.set_sequence(token.nonce),
+            TcpScanTechnique::Maimon | TcpScanTechnique::Ack | TcpScanTechnique::Window => {
+                tcp.set_sequence(token.nonce)
+            }
             TcpScanTechnique::Null => tcp.set_acknowledgement(token.nonce),
             _ => tcp.set_acknowledgement(token.nonce.wrapping_add(1)),
         }
@@ -1105,7 +1116,9 @@ mod tests {
         let tcp = tcp::parse(segment).expect("probe is a TCP segment");
         TcpToken {
             nonce: match technique {
-                TcpScanTechnique::Maimon | TcpScanTechnique::Ack => tcp.acknowledgement(),
+                TcpScanTechnique::Maimon | TcpScanTechnique::Ack | TcpScanTechnique::Window => {
+                    tcp.acknowledgement()
+                }
                 _ => tcp.sequence(),
             },
         }
@@ -1370,6 +1383,9 @@ mod tests {
             (TcpScanTechnique::Xmas, PortState::Closed),
             (TcpScanTechnique::Maimon, PortState::Closed),
             (TcpScanTechnique::Ack, PortState::Unfiltered),
+            // The helper builds a reset with no window set, which is what a
+            // stack with nothing behind the port announces.
+            (TcpScanTechnique::Window, PortState::Closed),
         ] {
             let (mut scanner, session, sent) = scanner_for(technique);
             let token = probe(&mut scanner, &sent, 80);
@@ -1402,6 +1418,41 @@ mod tests {
         assert!(host.status().is_up());
     }
 
+    /// The window scan's whole claim, end to end: the reset every other
+    /// technique reads as a refusal announces the listening socket's own window,
+    /// and the port that announced one is open. The zero-window half is in the
+    /// table above.
+    ///
+    /// The evidence matters as much as the verdict here. This open port was
+    /// found by a reset, and a report crediting it to a handshake would be
+    /// naming a segment the scan never drew.
+    #[test]
+    fn a_window_scan_reads_an_open_port_out_of_a_reset() {
+        let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Window);
+        let token = probe(&mut scanner, &sent, 80);
+
+        let mut reply = tcp_segment(&scanner, 80, token, RST | ACK);
+        MutableTcpPacket::new(&mut reply)
+            .expect("the reply is a TCP segment")
+            .set_window(8192);
+        scanner.handle_tcp_reply(
+            &CapturedSegment::synthetic(TARGET, IpNextHeaderProtocols::Tcp, reply),
+            Instant::now(),
+        );
+
+        assert_eq!(port_state(&session, 80), Some(PortState::Open));
+
+        let host = session.hosts().get(TARGET).expect("host recorded");
+        assert!(host.status().is_up());
+        assert!(
+            host.reasons().iter().all(|reason| reason
+                .details
+                .as_deref()
+                .is_some_and(|details| details.contains("rst"))),
+            "an open port drawn by a reset was credited to a handshake"
+        );
+    }
+
     /// Nothing but a SYN can provoke a SYN+ACK, so one arriving mid-FIN-scan
     /// answered something else and must not be read as an open port.
     #[test]
@@ -1427,6 +1478,7 @@ mod tests {
         for (technique, expected) in [
             (TcpScanTechnique::Syn, PortState::Filtered),
             (TcpScanTechnique::Ack, PortState::Filtered),
+            (TcpScanTechnique::Window, PortState::Filtered),
             (TcpScanTechnique::Fin, PortState::OpenFiltered),
             (TcpScanTechnique::Null, PortState::OpenFiltered),
             (TcpScanTechnique::Xmas, PortState::OpenFiltered),

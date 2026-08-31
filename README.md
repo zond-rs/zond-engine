@@ -139,23 +139,29 @@ reported as a failed strategy rather than silently answered with a connect scan.
 | `xmas`    | `FIN PSH URG` | closed | open or filtered |
 | `maimon`  | `FIN ACK` | closed | open or filtered |
 | `ack`     | `ACK` | **unfiltered** — the probe arrived | filtered |
+| `window`  | `ACK` | **open** where it announces a window, closed where it announces zero | filtered |
 
 `TcpScanTechnique` parses from a string, renders back to it, and carries a
 one-line summary per variant, so a front end can offer the choice without a
 mapping table of its own.
 
 **None of them answers the whole question alone.** Only `syn` identifies a
-listener. The flag probes report an open port and a filtered one identically,
-since both are silent. An `ack` scan separates those two and never says which is
-open. They are complementary instruments, not alternatives.
+listener from the reply itself. The flag probes report an open port and a
+filtered one identically, since both are silent. An `ack` scan separates those
+two and never says which is open, and `window` is that same probe read one field
+further. They are complementary instruments, not alternatives.
 
-**Two limits worth knowing before trusting a result.** Windows, many Cisco
+**Three limits worth knowing before trusting a result.** Windows, many Cisco
 devices, BSDI and IBM OS/400 answer every flag probe with a RST whatever the
 port state, so `fin`, `null`, `xmas` and `maimon` report every port closed
 against them — a run that finds no open-or-filtered port at all has probably met
-one. And `maimon` only distinguishes anything on BSD-derived stacks: elsewhere an
+one. `maimon` only distinguishes anything on BSD-derived stacks: elsewhere an
 open port answers exactly as a closed one does and is reported closed, which is a
-wrong answer rather than a missing one.
+wrong answer rather than a missing one. And `window` depends on a stack leaving
+the listening socket's window on a reset, which BSD derivatives and a lot of
+network hardware do and current Linux and Windows do not: against those it
+reports the whole range closed. A range that comes back almost entirely open is
+the same failure from the other side. Read either against a `syn` scan.
 
 ## Measuring the route to a host
 

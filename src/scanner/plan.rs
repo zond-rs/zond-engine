@@ -577,7 +577,7 @@ impl PortScanPlan {
                 technique: cfg.tcp_technique,
             });
             steps.push(PortScanStep::RawUdp);
-        } else if cfg.tcp_technique.finds_open_ports() {
+        } else if cfg.tcp_technique.has_connect_fallback() {
             steps.push(PortScanStep::ConnectTcp);
             steps.push(PortScanStep::ConnectUdp);
         } else {

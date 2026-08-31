@@ -1445,14 +1445,15 @@
           ]
         },
         "tcp_technique": {
-          "description": "Which segment each TCP port probe carried, and so what its answers mean. A port reported `closed` by a `syn` scan refused a connection attempt; the same verdict from a `fin`, `null`, `xmas` or `maimon` scan is a reset drawn by a segment that was not one, and those techniques report every port closed against stacks that reset everything. An `ack` scan never reports a port open at all - it maps the filtering in front of the host.",
+          "description": "Which segment each TCP port probe carried, and so what its answers mean. A port reported `closed` by a `syn` scan refused a connection attempt; the same verdict from a `fin`, `null`, `xmas` or `maimon` scan is a reset drawn by a segment that was not one, and those techniques report every port closed against stacks that reset everything. An `ack` scan never reports a port open at all - it maps the filtering in front of the host. A `window` scan sends that same ack probe and reads the window on the reset it draws, which separates open from closed only on the stacks that leave a listening socket's window there.",
           "enum": [
             "syn",
             "fin",
             "null",
             "xmas",
             "maimon",
-            "ack"
+            "ack",
+            "window"
           ]
         },
         "retry": {

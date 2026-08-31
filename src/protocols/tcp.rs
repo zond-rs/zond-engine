@@ -103,9 +103,11 @@ const SYN_OPTIONS_LEN: usize = 20;
 
 /// The flags each technique's probe carries.
 ///
-/// The whole of the difference between the six, on the wire. The header length,
-/// the window, the checksum and the retransmission schedule the scanner runs
-/// them on are identical.
+/// The whole of the difference between them on the wire, and
+/// [`TcpScanTechnique::Window`] does not have even that: it sends the ACK
+/// scan's segment and differs only in which field of the answer is read. The
+/// header length, the window, the checksum and the retransmission schedule the
+/// scanner runs them on are identical.
 pub const fn probe_flags(technique: TcpScanTechnique) -> u8 {
     match technique {
         TcpScanTechnique::Syn => flags::SYN,
@@ -116,7 +118,7 @@ pub const fn probe_flags(technique: TcpScanTechnique) -> u8 {
         TcpScanTechnique::Null => 0,
         TcpScanTechnique::Xmas => flags::FIN | flags::PSH | flags::URG,
         TcpScanTechnique::Maimon => flags::FIN | flags::ACK,
-        TcpScanTechnique::Ack => flags::ACK,
+        TcpScanTechnique::Ack | TcpScanTechnique::Window => flags::ACK,
     }
 }
 
@@ -436,9 +438,11 @@ pub(crate) fn quoted_nonce_with_flags(flags: u8, quoted: &QuotedProbe) -> Option
 /// version, to say what it had, and this crate could not take a `pnet` upgrade
 /// without it being a breaking change for them.
 ///
-/// Only the fields this engine reads are here. A scan correlates a reply and
-/// classifies it; the window, the options and the urgent pointer are the OS
-/// fingerprinter's business and it reads them off the bytes itself.
+/// Only the fields this engine reads are here: the ports and the two sequence
+/// fields correlate a reply to the probe that drew it, the flags classify it,
+/// and the window is what a window scan concludes from. The options and the
+/// urgent pointer are the OS fingerprinter's business and it reads them off the
+/// bytes itself.
 #[derive(Debug, Clone, Copy)]
 pub struct Segment<'a> {
     bytes: &'a [u8],
@@ -470,6 +474,14 @@ impl<'a> Segment<'a> {
     /// The flag bits, as [`flags`] names them.
     pub fn flags(&self) -> u8 {
         self.bytes[13]
+    }
+
+    /// The receive window advertised.
+    ///
+    /// On a reset it is the field [`TcpScanTechnique::Window`] reads, and the
+    /// only place in this engine where a scan concludes anything from it.
+    pub fn window(&self) -> u16 {
+        u16::from_be_bytes([self.bytes[14], self.bytes[15]])
     }
 
     /// Whatever follows the header.
@@ -517,7 +529,9 @@ pub fn classify_probe_response(segment: &Segment<'_>) -> Option<TcpReply> {
     // carries ACK too (RFC 793 §3.4), and reading that as a handshake would turn
     // every closed port into an open one.
     if flags & flags::RST != 0 {
-        Some(TcpReply::Rst)
+        Some(TcpReply::Rst {
+            window: segment.window(),
+        })
     } else if flags & flags::SYN != 0 && flags & flags::ACK != 0 {
         Some(TcpReply::SynAck)
     } else if flags & flags::ACK != 0 && flags & (flags::SYN | flags::FIN) == 0 {
@@ -611,6 +625,11 @@ mod tests {
         assert_eq!(sent(Xmas), flags::FIN | flags::PSH | flags::URG);
         assert_eq!(sent(Maimon), flags::FIN | flags::ACK);
         assert_eq!(sent(Ack), flags::ACK);
+        assert_eq!(
+            sent(Window),
+            flags::ACK,
+            "a window scan sends the ack probe"
+        );
     }
 
     /// Where the nonce goes is the difference between a scan that correlates its
@@ -630,7 +649,7 @@ mod tests {
             );
         }
 
-        for technique in [Maimon, Ack] {
+        for technique in [Maimon, Ack, Window] {
             let bytes = probe(technique);
             let sent = parse(&bytes).unwrap();
             assert_eq!(sent.acknowledgement(), NONCE, "{technique} nonce");
@@ -648,6 +667,7 @@ mod tests {
             TcpScanTechnique::Xmas,
             TcpScanTechnique::Maimon,
             TcpScanTechnique::Ack,
+            TcpScanTechnique::Window,
         ] {
             assert_eq!(probe(technique).len(), TCP_HDR_LEN, "{technique}");
         }
@@ -693,7 +713,7 @@ mod tests {
 
     /// The property the whole correlation rests on: for every technique, the RST
     /// an RFC-conformant stack sends back yields exactly the nonce that went
-    /// out. The two ACK-carrying techniques are the ones that would break under
+    /// out. The ACK-carrying techniques are the ones that would break under
     /// the SYN scan's rule, and the NULL/FIN pair are the ones that would break
     /// under each other's.
     #[test]
@@ -959,7 +979,7 @@ mod tests {
         );
         assert_eq!(
             classify_probe_response(&parse(&rst).unwrap()),
-            Some(TcpReply::Rst)
+            Some(TcpReply::Rst { window: 0 })
         );
     }
 
@@ -970,7 +990,24 @@ mod tests {
         let bytes = packet_with_flags(flags::RST | flags::ACK);
         assert_eq!(
             classify_probe_response(&parse(&bytes).unwrap()),
-            Some(TcpReply::Rst)
+            Some(TcpReply::Rst { window: 0 })
+        );
+    }
+
+    /// A window scan concludes from a field every other technique discards, so
+    /// the classifier has to carry it off the wire intact rather than
+    /// reconstruct it later from a segment nobody kept.
+    #[test]
+    fn a_reset_carries_the_window_it_announced() {
+        let mut buffer = vec![0u8; TCP_HDR_LEN];
+        let mut tcp = MutableTcpPacket::new(&mut buffer).unwrap();
+        tcp.set_data_offset((TCP_HDR_LEN / WORD_IN_BYTES) as u8);
+        tcp.set_flags(flags::RST | flags::ACK);
+        tcp.set_window(4096);
+
+        assert_eq!(
+            classify_probe_response(&parse(&buffer).unwrap()),
+            Some(TcpReply::Rst { window: 4096 })
         );
     }
 

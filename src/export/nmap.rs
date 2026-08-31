@@ -302,6 +302,7 @@ fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
         TcpScanTechnique::Xmas => "xmas",
         TcpScanTechnique::Maimon => "maimon",
         TcpScanTechnique::Ack => "ack",
+        TcpScanTechnique::Window => "window",
     }
 }
 
