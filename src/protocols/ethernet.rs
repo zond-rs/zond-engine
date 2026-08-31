@@ -79,6 +79,12 @@ const VLAN_TPIDS: [u16; 3] = [0x8100, 0x88A8, 0x9100];
 /// A finding rather than framing overhead. Which VLANs a link carries is
 /// something no probe can ask for, and on a trunk port it is most of what there
 /// is to learn about the shape of the network on the other side of the switch.
+///
+/// **Not `#[non_exhaustive]`**, unlike the readers' result types elsewhere in
+/// this module. A tag is a 16-bit protocol identifier and 16 bits of tag control
+/// information, and 802.1Q spends every one of those bits: three of priority,
+/// one drop-eligible, twelve of identifier. There is no room for a fifth field,
+/// so a caller may build one and match it exhaustively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VlanTag {
     /// The tag protocol identifier this tag was introduced by, which says
@@ -234,14 +240,16 @@ pub fn build_header(src_mac: MacAddr, dst_mac: MacAddr, et: EtherType) -> Vec<u8
 /// # Errors
 ///
 /// [`PacketError::Truncated`] when there are too few bytes for a header, or for
-/// the tags the header claims — which is what a cut-short capture looks like
-/// from here, and also what a frame ending mid-tag looks like.
+/// the tags the header claims, which is what a cut-short capture looks like from
+/// here and also what a frame ending mid-tag looks like. The reported size is
+/// what the walk had reached, so a frame short of its second tag says so rather
+/// than reporting the fixed header size it is already past.
 pub fn parse(frame_bytes: &'_ [u8]) -> Result<Frame<'_>> {
-    let truncated = || PacketError::truncated("an Ethernet frame", ETH_HDR_LEN, frame_bytes.len());
+    let short_of = |needed| PacketError::truncated("an Ethernet frame", needed, frame_bytes.len());
 
     let mut ethertype = u16::from_be_bytes([
-        *frame_bytes.get(12).ok_or_else(truncated)?,
-        *frame_bytes.get(13).ok_or_else(truncated)?,
+        *frame_bytes.get(12).ok_or_else(|| short_of(ETH_HDR_LEN))?,
+        *frame_bytes.get(13).ok_or_else(|| short_of(ETH_HDR_LEN))?,
     ]);
 
     let mut payload_offset = ETH_HDR_LEN;
@@ -255,13 +263,25 @@ pub fn parse(frame_bytes: &'_ [u8]) -> Result<Frame<'_>> {
 
     // Bounded rather than "until it is not a tag": see `MAX_VLAN_TAGS`.
     while depth < MAX_VLAN_TAGS && VLAN_TPIDS.contains(&ethertype) {
+        // A frame ending inside a tag is short of the header *and the tag*, not
+        // of the header alone. Reporting the fixed size here said "needs at
+        // least 14 bytes and got 16" about a 16-byte frame.
+        let through_tag = payload_offset + VLAN_TAG_LEN;
         let tci = [
-            *frame_bytes.get(payload_offset).ok_or_else(truncated)?,
-            *frame_bytes.get(payload_offset + 1).ok_or_else(truncated)?,
+            *frame_bytes
+                .get(payload_offset)
+                .ok_or_else(|| short_of(through_tag))?,
+            *frame_bytes
+                .get(payload_offset + 1)
+                .ok_or_else(|| short_of(through_tag))?,
         ];
         let inner = u16::from_be_bytes([
-            *frame_bytes.get(payload_offset + 2).ok_or_else(truncated)?,
-            *frame_bytes.get(payload_offset + 3).ok_or_else(truncated)?,
+            *frame_bytes
+                .get(payload_offset + 2)
+                .ok_or_else(|| short_of(through_tag))?,
+            *frame_bytes
+                .get(payload_offset + 3)
+                .ok_or_else(|| short_of(through_tag))?,
         ]);
 
         tags[depth] = VlanTag::read(ethertype, tci);
@@ -272,7 +292,9 @@ pub fn parse(frame_bytes: &'_ [u8]) -> Result<Frame<'_>> {
 
     Ok(Frame {
         bytes: frame_bytes,
-        payload: frame_bytes.get(payload_offset..).ok_or_else(truncated)?,
+        payload: frame_bytes
+            .get(payload_offset..)
+            .ok_or_else(|| short_of(payload_offset))?,
         ethertype: EtherType(ethertype),
         tags,
         depth,
@@ -398,14 +420,23 @@ mod tests {
     /// A capture truncated to its snapshot length can end anywhere, including
     /// inside a tag. Reading the ethertype from past the end would invent one;
     /// the payload offset would then point past the buffer.
+    ///
+    /// The reported size is what the walk had reached, not the fixed header. One
+    /// closure reported `ETH_HDR_LEN` from every arm, so a 16-byte frame short
+    /// of its tag said it needed at least fourteen bytes and got sixteen.
     #[test]
     fn a_frame_ending_inside_a_tag_is_refused_rather_than_read_past() {
         let bytes = frame_with(&[(0x8100, 0x0064)], EtherTypes::Ipv4.0, &[]);
 
         for cut in ETH_HDR_LEN..bytes.len() {
+            let refused = parse(&bytes[..cut]);
+            let Err(PacketError::Truncated { needed, got, .. }) = refused else {
+                panic!("a frame cut to {cut} bytes claims a tag it does not carry: {refused:?}");
+            };
+            assert_eq!(got, cut);
             assert!(
-                parse(&bytes[..cut]).is_err(),
-                "a frame cut to {cut} bytes claims a tag it does not carry"
+                needed > got,
+                "a {got}-byte frame was refused for needing only {needed}"
             );
         }
 

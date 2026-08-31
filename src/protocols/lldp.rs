@@ -41,6 +41,7 @@ use pnet_base::MacAddr;
 use pnet_packet::ethernet::EtherType;
 
 use crate::protocols::ethernet::Frame;
+use crate::protocols::text::field as text;
 
 /// The EtherType carrying an LLDP data unit.
 pub const ETHERTYPE: EtherType = EtherType(0x88CC);
@@ -110,6 +111,12 @@ const AFN_IPV6: u8 = 2;
 /// an enum rather than a string: a chassis identified by its MAC address and one
 /// identified by a name a technician typed are not the same kind of claim, and
 /// rendering both as text would lose which of the two is a stable identity.
+///
+/// `#[non_exhaustive]`: the two subtype tables between them number nine kinds of
+/// identifier and this reads three, folding the rest into
+/// [`Other`](Self::Other). A subtype that turns out to be worth its own shape
+/// becomes a variant, and that must not be a breaking change.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Identifier<'a> {
     /// A hardware address. The most useful chassis identifier there is: it can
@@ -207,6 +214,12 @@ impl Capabilities {
 /// requires only the chassis identifier, the port identifier and the time to
 /// live, and plenty of equipment sends little more. A field that is `None` was
 /// not sent, and never means the device denied it.
+///
+/// `#[non_exhaustive]`: these are eight of the TLVs IEEE 802.1AB defines and the
+/// standard keeps adding more, so a field arriving here is a matter of time. A
+/// caller reads this and never builds one; [`Default`] is what to start from if
+/// one is needed for a test.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Advertisement<'a> {
     /// How the device names itself. Required by the standard.
@@ -257,9 +270,15 @@ pub struct Advertisement<'a> {
 ///
 /// Declines rather than guesses at every step, which for this protocol means a
 /// device that sent one field badly still contributes the rest: a TLV whose
-/// value cannot be read is skipped, and the walk carries on. The alternative —
-/// refusing the whole advertisement — would let one vendor's malformed
-/// description cost the switch name and the port beside it.
+/// value cannot be read is skipped, one whose length runs past the frame ends
+/// the walk, and either way what was already read is kept. Refusing the whole
+/// advertisement would let one vendor's malformed description cost the switch
+/// name and the port beside it, and a capture cut at its snapshot length cost
+/// them for no reason at all.
+///
+/// The end-of-unit record is optional in IEEE 802.1AB-2016, so a unit that
+/// simply stops is an ordinary one rather than a truncated one, and reads the
+/// same way.
 ///
 /// # What is checked before anything is read
 ///
@@ -279,42 +298,54 @@ pub fn parse<'a>(frame: &Frame<'a>) -> Option<Advertisement<'a>> {
     let mut seen = 0usize;
 
     while seen < MAX_TLVS {
-        let (kind, value, remainder) = next_tlv(rest)?;
+        // A short tail ends the walk and keeps what is in front of it, which is
+        // what a capture cut at its snapshot length looks like from here, and
+        // what a unit that omits the optional end record looks like too. See the
+        // policy in the [module documentation](crate::protocols).
+        let Some((kind, value, remainder)) = next_tlv(rest) else {
+            break;
+        };
         if kind == TLV_END {
             break;
         }
         rest = remainder;
         seen += 1;
 
+        // Every field takes the first readable value and keeps it. A unit is
+        // meant to carry each of these once, so a second is malformed, and the
+        // reading that costs least is to believe what already parsed. Assigning
+        // unconditionally let a second unreadable record erase a good value: a
+        // frame naming the switch and then repeating the chassis TLV badly
+        // reported no switch at all.
         match kind {
-            TLV_CHASSIS_ID => {
-                advertisement.chassis_id =
-                    identifier(value, CHASSIS_SUBTYPE_MAC, CHASSIS_SUBTYPE_NETWORK);
-            }
-            TLV_PORT_ID => {
-                advertisement.port_id = identifier(value, PORT_SUBTYPE_MAC, PORT_SUBTYPE_NETWORK);
-            }
-            TLV_TTL => {
-                advertisement.ttl = value
+            TLV_CHASSIS_ID => keep_first(
+                &mut advertisement.chassis_id,
+                identifier(value, CHASSIS_SUBTYPE_MAC, CHASSIS_SUBTYPE_NETWORK),
+            ),
+            TLV_PORT_ID => keep_first(
+                &mut advertisement.port_id,
+                identifier(value, PORT_SUBTYPE_MAC, PORT_SUBTYPE_NETWORK),
+            ),
+            TLV_TTL => keep_first(
+                &mut advertisement.ttl,
+                value
                     .first_chunk::<2>()
-                    .map(|bytes| u16::from_be_bytes(*bytes));
+                    .map(|bytes| u16::from_be_bytes(*bytes)),
+            ),
+            TLV_PORT_DESCRIPTION => keep_first(&mut advertisement.port_description, text(value)),
+            TLV_SYSTEM_NAME => keep_first(&mut advertisement.system_name, text(value)),
+            TLV_SYSTEM_DESCRIPTION => {
+                keep_first(&mut advertisement.system_description, text(value));
             }
-            TLV_PORT_DESCRIPTION => advertisement.port_description = text(value),
-            TLV_SYSTEM_NAME => advertisement.system_name = text(value),
-            TLV_SYSTEM_DESCRIPTION => advertisement.system_description = text(value),
-            TLV_CAPABILITIES => advertisement.capabilities = capabilities(value),
+            TLV_CAPABILITIES => keep_first(&mut advertisement.capabilities, capabilities(value)),
             TLV_MANAGEMENT_ADDRESS => {
-                // First wins: a device may send one per family, and the
-                // question this answers is "how do I reach it", which the
-                // first already settles.
-                advertisement.management_address = advertisement
-                    .management_address
-                    .or_else(|| management(value));
+                // A device may send one per family and per interface, and the
+                // question this answers is "how do I reach it", which the first
+                // already settles.
+                keep_first(&mut advertisement.management_address, management(value));
             }
             TLV_ORGANIZATIONALLY_SPECIFIC => {
-                if let Some(vlan) = port_vlan(value) {
-                    advertisement.port_vlan = Some(vlan);
-                }
+                keep_first(&mut advertisement.port_vlan, port_vlan(value));
             }
             _ => {}
         }
@@ -329,6 +360,18 @@ pub fn parse<'a>(frame: &Frame<'a>) -> Option<Advertisement<'a>> {
         || advertisement.ttl.is_some();
 
     read_something.then_some(advertisement)
+}
+
+/// Records `value` in `field` if the field is still empty and the value is
+/// readable.
+///
+/// What makes reading monotone: a longer prefix of a unit reports everything a
+/// shorter one did, so a record arriving later can add a field and never take
+/// one away. The fuzz target holds exactly that.
+fn keep_first<T>(field: &mut Option<T>, value: Option<T>) {
+    if field.is_none() {
+        *field = value;
+    }
 }
 
 /// Whether `destination` is one of the group addresses a conforming bridge
@@ -438,7 +481,12 @@ fn port_vlan(value: &[u8]) -> Option<u16> {
 }
 
 /// An address of the family IANA numbers as `family`, or `None` for a family
-/// this does not read or a length that does not match it.
+/// this does not read or too few bytes to hold one.
+///
+/// Takes the address's own width from the front and ignores anything past it,
+/// rather than requiring the record to be exactly that long. A device that pads
+/// the field still names an address, and this reads the bytes the family says
+/// are the address.
 fn address_of(family: u8, address: &[u8]) -> Option<IpAddr> {
     match family {
         AFN_IPV4 => address
@@ -449,20 +497,6 @@ fn address_of(family: u8, address: &[u8]) -> Option<IpAddr> {
             .map(|bytes| IpAddr::V6(Ipv6Addr::from(*bytes))),
         _ => None,
     }
-}
-
-/// Reads a TLV value as text, trimming the trailing NUL some equipment sends.
-///
-/// `None` for bytes that are not UTF-8. The standard says these fields are, and
-/// a device that disagrees has produced something this declines to guess at
-/// rather than something to render with replacement characters — the same rule
-/// every reader in this module follows.
-fn text(value: &[u8]) -> Option<&str> {
-    let trimmed = value.strip_suffix(&[0]).unwrap_or(value);
-    if trimmed.is_empty() {
-        return None;
-    }
-    std::str::from_utf8(trimmed).ok()
 }
 
 // ╔════════════════════════════════════════════╗
@@ -478,6 +512,7 @@ fn text(value: &[u8]) -> Option<&str> {
 pub(crate) mod tests {
     use super::*;
     use crate::protocols::ethernet;
+    use crate::protocols::sizes::ETH_HDR_LEN;
 
     pub(crate) const SWITCH_MAC: MacAddr = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
     const NEAREST_BRIDGE: MacAddr = MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E);
@@ -499,13 +534,24 @@ pub(crate) mod tests {
         bytes
     }
 
-    /// An LLDP frame carrying `tlvs`, terminated as the standard requires.
+    /// An LLDP frame carrying `tlvs`, closed with the end-of-unit record most
+    /// equipment sends.
     fn frame_of(tlvs: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = unterminated_frame_of(tlvs);
+        bytes.extend_from_slice(&tlv(TLV_END, &[]));
+        bytes
+    }
+
+    /// The same, stopping at the last record.
+    ///
+    /// IEEE 802.1AB-2016 makes the end-of-unit record optional, so this is a
+    /// well-formed unit rather than a broken one, and it is also what every
+    /// truncated capture looks like.
+    fn unterminated_frame_of(tlvs: &[Vec<u8>]) -> Vec<u8> {
         let mut bytes = ethernet::build_header(SWITCH_MAC, NEAREST_BRIDGE, ETHERTYPE);
         for tlv in tlvs {
             bytes.extend_from_slice(tlv);
         }
-        bytes.extend_from_slice(&tlv(TLV_END, &[]));
         bytes
     }
 
@@ -739,28 +785,156 @@ pub(crate) mod tests {
         assert_eq!(advertisement.system_name, None);
     }
 
-    /// The same, with nothing to stop the walk early: a truncated capture ends
-    /// mid-TLV, and every prefix of a real advertisement has to be declined
-    /// rather than read past.
+    /// A truncated capture ends mid-TLV, and what was read before the cut is
+    /// kept rather than thrown away with it.
+    ///
+    /// **This test used to pass without running.** Its only assertion sat inside
+    /// `if let Some(advertisement) = parse(&frame)`, and `parse` returned `None`
+    /// for every cut it generated, so the block never executed and the test
+    /// passed for a parser that declined unconditionally. Which is very nearly
+    /// what the parser did: `next_tlv(rest)?` discarded the whole advertisement
+    /// on a short tail, including the chassis and port identifiers the doc
+    /// promises to keep. The floor below is what stops that recurring, because
+    /// a version that declines cannot reach it.
     #[test]
-    fn every_truncation_of_an_advertisement_is_refused_rather_than_read_past() {
-        let bytes = frame_of(&[
+    fn a_truncated_advertisement_keeps_the_fields_that_arrived_whole() {
+        let bytes = unterminated_frame_of(&[
             chassis_mac(SWITCH_MAC),
             port_named("Gi1/0/14"),
             tlv(TLV_TTL, &120u16.to_be_bytes()),
+            tlv(
+                TLV_SYSTEM_DESCRIPTION,
+                b"a description long enough to cut inside",
+            ),
         ]);
 
-        for cut in 14..bytes.len() {
+        // Where the chassis and port identifiers both end: 14 bytes of Ethernet
+        // header, then each TLV's two header bytes and its value.
+        let chassis = chassis_mac(SWITCH_MAC).len();
+        let port = port_named("Gi1/0/14").len();
+        let both_read = ETH_HDR_LEN + chassis + port;
+
+        let mut kept = 0usize;
+        for cut in both_read..bytes.len() {
             let frame = ethernet::parse(&bytes[..cut]).expect("a frame");
-            // Either it reads what fit, or it declines. It must not panic, and
-            // must never report a field the bytes do not contain.
-            if let Some(advertisement) = parse(&frame) {
-                assert!(
-                    advertisement.ttl.is_none() || cut >= bytes.len() - 2,
-                    "a TTL was reported from a frame cut to {cut} bytes"
-                );
-            }
+            let Some(advertisement) = parse(&frame) else {
+                panic!("a frame cut to {cut} bytes lost an advertisement it had already read");
+            };
+
+            assert_eq!(
+                advertisement.chassis_id,
+                Some(Identifier::Mac(SWITCH_MAC)),
+                "the chassis identifier was read whole and then discarded, at {cut} bytes"
+            );
+            assert_eq!(
+                advertisement.port_id,
+                Some(Identifier::Text("Gi1/0/14")),
+                "the port identifier was read whole and then discarded, at {cut} bytes"
+            );
+            assert!(
+                advertisement.ttl.is_none() || cut >= both_read + 4,
+                "a TTL was reported from a frame cut to {cut} bytes"
+            );
+            kept += 1;
         }
+
+        assert!(
+            kept >= 30,
+            "only {kept} truncations reached the assertions; the test is not measuring what it names"
+        );
+    }
+
+    /// The end-of-unit record is optional in IEEE 802.1AB-2016, so a unit that
+    /// simply stops is an ordinary one. Reading it as truncated cost the whole
+    /// advertisement.
+    #[test]
+    fn a_unit_with_no_end_record_reads_as_one_that_has_it() {
+        let tlvs = [chassis_mac(SWITCH_MAC), tlv(TLV_SYSTEM_NAME, b"core-01")];
+
+        let without_end = unterminated_frame_of(&tlvs);
+        let with_end = frame_of(&tlvs);
+
+        fn read(bytes: &[u8]) -> Advertisement<'_> {
+            let frame = ethernet::parse(bytes).expect("a frame");
+            parse(&frame).expect("an advertisement")
+        }
+
+        assert_eq!(read(&without_end), read(&with_end));
+        assert_eq!(read(&without_end).system_name, Some("core-01"));
+    }
+
+    /// The property the fuzz target holds, over generated units rather than one
+    /// worked example: **reading further only ever adds to what was read.**
+    ///
+    /// Two things make it true, and it is false without either. A short tail
+    /// ends the walk and keeps what is in front of it, rather than discarding
+    /// the unit; and each field takes the first readable value, so a later
+    /// record cannot erase one that already parsed.
+    ///
+    /// Written here as well as in `fuzz/fuzz_targets/wire/ethernet_frame.rs`
+    /// because a property only a fuzz campaign holds is a property nobody runs.
+    #[test]
+    fn reading_further_never_takes_away_a_field_already_read() {
+        proptest::proptest!(|(
+            tlvs in proptest::collection::vec(
+                (0u8..=8u8, proptest::collection::vec(proptest::prelude::any::<u8>(), 0..24)),
+                1..12,
+            ),
+        )| {
+            let bytes = unterminated_frame_of(
+                &tlvs
+                    .iter()
+                    .map(|(kind, value)| tlv(*kind, value))
+                    .collect::<Vec<_>>(),
+            );
+            let frame = ethernet::parse(&bytes).expect("a frame");
+
+            if let Some(whole) = parse(&frame) {
+                for cut in ETH_HDR_LEN..bytes.len() {
+                    let shorter = ethernet::parse(&bytes[..cut]).expect("a frame");
+                    let Some(before) = parse(&shorter) else {
+                        continue;
+                    };
+
+                    // A field a shorter run reported is the field the whole run
+                    // reports. One it never reached is absent, and says nothing.
+                    if before.chassis_id.is_some() {
+                        proptest::prop_assert_eq!(before.chassis_id, whole.chassis_id);
+                    }
+                    if before.port_id.is_some() {
+                        proptest::prop_assert_eq!(before.port_id, whole.port_id);
+                    }
+                    if before.ttl.is_some() {
+                        proptest::prop_assert_eq!(before.ttl, whole.ttl);
+                    }
+                    if before.system_name.is_some() {
+                        proptest::prop_assert_eq!(before.system_name, whole.system_name);
+                    }
+                    if before.capabilities.is_some() {
+                        proptest::prop_assert_eq!(before.capabilities, whole.capabilities);
+                    }
+                }
+            }
+        });
+    }
+
+    /// The half of that property a worked example states outright: a second
+    /// record of a kind a unit carries once must not erase the first.
+    ///
+    /// Assigning unconditionally, a switch that named itself and then repeated
+    /// the chassis TLV badly was reported as no switch at all.
+    #[test]
+    fn a_second_unreadable_record_does_not_erase_the_first() {
+        let good = chassis_mac(SWITCH_MAC);
+        // Subtype 4 says a MAC address, and four bytes are not one.
+        let bad = tlv(TLV_CHASSIS_ID, &[CHASSIS_SUBTYPE_MAC, 1, 2, 3, 4]);
+
+        let bytes = frame_of(&[good, bad, tlv(TLV_SYSTEM_NAME, b"core-01")]);
+        let frame = ethernet::parse(&bytes).expect("a frame");
+        let advertisement = parse(&frame).expect("an advertisement");
+
+        assert_eq!(advertisement.chassis_id, Some(Identifier::Mac(SWITCH_MAC)));
+        assert_eq!(advertisement.system_name, Some("core-01"));
     }
 
     /// A sender sets the length of this walk unless something else does. A unit

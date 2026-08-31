@@ -73,15 +73,15 @@ const ALL_NODES_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 /// See the [module documentation](self) for what `identifier` and `sequence`
 /// are for.
 pub fn build_all_nodes_echo_request_v6(
-    src_mac: &MacAddr,
-    src_addr: &Ipv6Addr,
+    src_mac: MacAddr,
+    src_addr: Ipv6Addr,
     identifier: u16,
     sequence: u16,
 ) -> Vec<u8> {
     echo_frame_v6(
-        *src_mac,
+        src_mac,
         ALL_NODES_MAC,
-        *src_addr,
+        src_addr,
         ALL_NODES_V6,
         ip::HOP_LIMIT_ON_LINK,
         identifier,
@@ -100,16 +100,16 @@ pub fn build_all_nodes_echo_request_v6(
 /// [`HOP_LIMIT_ROUTED`](super::ip::HOP_LIMIT_ROUTED) for anything past the
 /// first router.
 pub fn build_echo_request_v6(
-    src_mac: &MacAddr,
+    src_mac: MacAddr,
     dst_mac: MacAddr,
-    src_addr: &Ipv6Addr,
+    src_addr: Ipv6Addr,
     dst_addr: Ipv6Addr,
     hop_limit: u8,
     identifier: u16,
     sequence: u16,
 ) -> Vec<u8> {
     echo_frame_v6(
-        *src_mac, dst_mac, *src_addr, dst_addr, hop_limit, identifier, sequence,
+        src_mac, dst_mac, src_addr, dst_addr, hop_limit, identifier, sequence,
     )
 }
 
@@ -118,16 +118,16 @@ pub fn build_echo_request_v6(
 /// IPv4 has no all-nodes group to ask, so every echo it sends is a unicast one.
 /// A sweep that wants to ping a range sends one of these per address.
 pub fn build_echo_request_v4(
-    src_mac: &MacAddr,
+    src_mac: MacAddr,
     dst_mac: MacAddr,
-    src_addr: &Ipv4Addr,
+    src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
     identifier: u16,
     sequence: u16,
 ) -> Vec<u8> {
     Packet::new()
-        .push(Ethernet::new(*src_mac, dst_mac).with_ethertype(EtherTypes::Ipv4))
-        .push(Ipv4::new(*src_addr, dst_addr))
+        .push(Ethernet::new(src_mac, dst_mac).with_ethertype(EtherTypes::Ipv4))
+        .push(Ipv4::new(src_addr, dst_addr))
         .push(Icmpv4::echo_request(identifier, sequence))
         .build()
         // Infallible: an eight-byte message cannot overflow a length field, and
@@ -187,16 +187,14 @@ pub fn build_echo_request_message(
     payload: &[u8],
 ) -> Result<Vec<u8>> {
     match (src_addr, dst_addr) {
-        (IpAddr::V4(_), IpAddr::V4(_)) => {
-            let mut message = Icmpv4::echo_request(identifier, sequence).with_payload(payload);
-            message.code = code;
-            Ok(message.to_bytes())
-        }
-        (IpAddr::V6(_), IpAddr::V6(_)) => {
-            let mut message = Icmpv6::echo_request(identifier, sequence).with_payload(payload);
-            message.code = code;
-            message.to_bytes(Some((src_addr, dst_addr)))
-        }
+        (IpAddr::V4(_), IpAddr::V4(_)) => Ok(Icmpv4::echo_request(identifier, sequence)
+            .with_payload(payload)
+            .with_code(code)
+            .to_bytes()),
+        (IpAddr::V6(_), IpAddr::V6(_)) => Icmpv6::echo_request(identifier, sequence)
+            .with_payload(payload)
+            .with_code(code)
+            .to_bytes(Some((src_addr, dst_addr))),
         (src, dst) => Err(super::error::PacketError::FamilyMismatch { src, dst }),
     }
 }
@@ -209,6 +207,12 @@ pub fn build_echo_request_message(
 /// each probe that could have drawn it, which is the reasoning
 /// [`tcp::classify_probe_response`](super::tcp::classify_probe_response) already
 /// records.
+///
+/// `#[non_exhaustive]`: an ICMP error that is worth telling apart from the rest
+/// becomes a variant here, and the four below are the ones a scan acts on today
+/// rather than all it could ever meet. A caller matching on this needs a
+/// wildcard arm, and would need one anyway.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EchoReply {
     /// An echo reply carrying back the identifier this scan sent, and the
@@ -295,7 +299,7 @@ pub fn echo_token(message: &[u8]) -> Result<(u16, u16)> {
 /// A convenience for a caller holding an [`IpAddr`] rather than a decided
 /// family, which is the ordinary case once targets have been parsed.
 pub fn build_echo_request(
-    src_mac: &MacAddr,
+    src_mac: MacAddr,
     dst_mac: MacAddr,
     src_addr: IpAddr,
     dst_addr: IpAddr,
@@ -305,10 +309,10 @@ pub fn build_echo_request(
 ) -> Result<Vec<u8>> {
     match (src_addr, dst_addr) {
         (IpAddr::V4(src), IpAddr::V4(dst)) => Ok(build_echo_request_v4(
-            src_mac, dst_mac, &src, dst, identifier, sequence,
+            src_mac, dst_mac, src, dst, identifier, sequence,
         )),
         (IpAddr::V6(src), IpAddr::V6(dst)) => Ok(build_echo_request_v6(
-            src_mac, dst_mac, &src, dst, hop_limit, identifier, sequence,
+            src_mac, dst_mac, src, dst, hop_limit, identifier, sequence,
         )),
         (src, dst) => Err(super::error::PacketError::FamilyMismatch { src, dst }),
     }
@@ -346,7 +350,7 @@ mod tests {
     /// segment.
     #[test]
     fn the_all_nodes_request_is_addressed_to_the_whole_segment_and_stays_on_it() {
-        let frame = build_all_nodes_echo_request_v6(&SRC_MAC, &v6("fe80::1"), ID, SEQ);
+        let frame = build_all_nodes_echo_request_v6(SRC_MAC, v6("fe80::1"), ID, SEQ);
 
         let eth = super::super::ethernet::parse(&frame).expect("a frame");
         assert_eq!(eth.destination(), ALL_NODES_MAC);
@@ -371,9 +375,9 @@ mod tests {
     #[test]
     fn an_ipv4_echo_request_is_a_complete_pingable_frame() {
         let frame = build_echo_request_v4(
-            &SRC_MAC,
+            SRC_MAC,
             DST_MAC,
-            &Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(192, 0, 2, 1),
             Ipv4Addr::new(192, 0, 2, 9),
             ID,
             SEQ,
@@ -401,9 +405,9 @@ mod tests {
     #[test]
     fn an_echo_carries_back_the_token_that_names_the_request() {
         let v4 = build_echo_request_v4(
-            &SRC_MAC,
+            SRC_MAC,
             DST_MAC,
-            &Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(192, 0, 2, 1),
             Ipv4Addr::new(192, 0, 2, 9),
             ID,
             SEQ,
@@ -412,9 +416,9 @@ mod tests {
         assert_eq!(echo_token(v4_message).expect("a token"), (ID, SEQ));
 
         let v6_frame = build_echo_request_v6(
-            &SRC_MAC,
+            SRC_MAC,
             DST_MAC,
-            &v6("fe80::1"),
+            v6("fe80::1"),
             v6("fe80::2"),
             ip::HOP_LIMIT_ON_LINK,
             ID,
@@ -430,9 +434,9 @@ mod tests {
     #[test]
     fn a_unicast_request_wakes_only_the_host_it_names() {
         let frame = build_echo_request_v6(
-            &SRC_MAC,
+            SRC_MAC,
             DST_MAC,
-            &v6("fe80::1"),
+            v6("fe80::1"),
             v6("fe80::2"),
             ip::HOP_LIMIT_ON_LINK,
             ID,
@@ -456,7 +460,7 @@ mod tests {
     #[test]
     fn the_dispatching_form_builds_what_the_family_specific_ones_do() {
         let v4 = build_echo_request(
-            &SRC_MAC,
+            SRC_MAC,
             DST_MAC,
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)),
@@ -467,9 +471,9 @@ mod tests {
         .expect("one family");
 
         let direct = build_echo_request_v4(
-            &SRC_MAC,
+            SRC_MAC,
             DST_MAC,
-            &Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(192, 0, 2, 1),
             Ipv4Addr::new(192, 0, 2, 9),
             ID,
             SEQ,
@@ -494,7 +498,7 @@ mod tests {
         assert_eq!(read(&v4), read(&direct));
 
         let mismatched = build_echo_request(
-            &SRC_MAC,
+            SRC_MAC,
             DST_MAC,
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
             IpAddr::V6(v6("2001:db8::1")),

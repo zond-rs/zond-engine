@@ -422,8 +422,8 @@ impl OsSeriesScanner {
         // authored against that same segment, stay applicable.
         let segment = match tcp::build_probe(
             TcpScanTechnique::Syn,
-            &source,
-            &address,
+            source,
+            address,
             source_port,
             port,
             nonce,

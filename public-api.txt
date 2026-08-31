@@ -9150,11 +9150,11 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::technique::
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::UnknownTechnique
 pub mod zond_engine::protocols
 pub mod zond_engine::protocols::arp
-pub fn zond_engine::protocols::arp::build_request(&pnet_base::macaddr::MacAddr, &core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::arp::build_unicast_request(&pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, &core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::arp::build_request(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::arp::build_unicast_request(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::arp::sender_address(&zond_engine::protocols::ethernet::Frame<'_>) -> zond_engine::protocols::error::Result<core::net::ip_addr::Ipv4Addr>
 pub mod zond_engine::protocols::cdp
-pub struct zond_engine::protocols::cdp::Announcement<'a>
+#[non_exhaustive] pub struct zond_engine::protocols::cdp::Announcement<'a>
 pub zond_engine::protocols::cdp::Announcement::address: core::option::Option<core::net::ip_addr::IpAddr>
 pub zond_engine::protocols::cdp::Announcement::capabilities: core::option::Option<zond_engine::protocols::cdp::Capabilities>
 pub zond_engine::protocols::cdp::Announcement::device_id: core::option::Option<&'a str>
@@ -9306,6 +9306,7 @@ impl zond_engine::protocols::craft::Arp
 pub fn zond_engine::protocols::craft::Arp::reply(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr) -> Self
 pub fn zond_engine::protocols::craft::Arp::request(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr) -> Self
 pub fn zond_engine::protocols::craft::Arp::to_bytes(&self) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::craft::Arp::with_target_hw_addr(self, pnet_base::macaddr::MacAddr) -> Self
 impl core::clone::Clone for zond_engine::protocols::craft::Arp
 pub fn zond_engine::protocols::craft::Arp::clone(&self) -> zond_engine::protocols::craft::Arp
 impl core::cmp::Eq for zond_engine::protocols::craft::Arp
@@ -9359,6 +9360,7 @@ pub fn zond_engine::protocols::craft::Icmpv4::echo_reply(u16, u16) -> Self
 pub fn zond_engine::protocols::craft::Icmpv4::echo_request(u16, u16) -> Self
 pub fn zond_engine::protocols::craft::Icmpv4::to_bytes(&self) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::craft::Icmpv4::with_checksum(self, u16) -> Self
+pub fn zond_engine::protocols::craft::Icmpv4::with_code(self, u8) -> Self
 pub fn zond_engine::protocols::craft::Icmpv4::with_payload(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 impl core::clone::Clone for zond_engine::protocols::craft::Icmpv4
 pub fn zond_engine::protocols::craft::Icmpv4::clone(&self) -> zond_engine::protocols::craft::Icmpv4
@@ -9388,6 +9390,7 @@ pub fn zond_engine::protocols::craft::Icmpv6::echo_reply(u16, u16) -> Self
 pub fn zond_engine::protocols::craft::Icmpv6::echo_request(u16, u16) -> Self
 pub fn zond_engine::protocols::craft::Icmpv6::to_bytes(&self, core::option::Option<(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr)>) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::craft::Icmpv6::with_checksum(self, u16) -> Self
+pub fn zond_engine::protocols::craft::Icmpv6::with_code(self, u8) -> Self
 pub fn zond_engine::protocols::craft::Icmpv6::with_payload(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 impl core::clone::Clone for zond_engine::protocols::craft::Icmpv6
 pub fn zond_engine::protocols::craft::Icmpv6::clone(&self) -> zond_engine::protocols::craft::Icmpv6
@@ -9546,6 +9549,7 @@ pub fn zond_engine::protocols::craft::Tcp::with_checksum(self, u16) -> Self
 pub fn zond_engine::protocols::craft::Tcp::with_flags(self, u8) -> Self
 pub fn zond_engine::protocols::craft::Tcp::with_payload(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 pub fn zond_engine::protocols::craft::Tcp::with_sequence(self, u32) -> Self
+pub fn zond_engine::protocols::craft::Tcp::with_window(self, u16) -> Self
 impl core::clone::Clone for zond_engine::protocols::craft::Tcp
 pub fn zond_engine::protocols::craft::Tcp::clone(&self) -> zond_engine::protocols::craft::Tcp
 impl core::cmp::Eq for zond_engine::protocols::craft::Tcp
@@ -9594,7 +9598,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::craft::Udp
 pub fn zond_engine::protocols::craft::corrupt_internet_checksum(u16) -> u16
 pub fn zond_engine::protocols::craft::random_padding(u16) -> alloc::vec::Vec<u8>
 pub mod zond_engine::protocols::dhcp
-pub struct zond_engine::protocols::dhcp::ClientRequest<'a>
+#[non_exhaustive] pub struct zond_engine::protocols::dhcp::ClientRequest<'a>
 pub zond_engine::protocols::dhcp::ClientRequest::client_mac: core::option::Option<pnet_base::macaddr::MacAddr>
 pub zond_engine::protocols::dhcp::ClientRequest::hostname: core::option::Option<&'a str>
 pub zond_engine::protocols::dhcp::ClientRequest::parameter_request_list: core::option::Option<&'a [u8]>
@@ -9616,7 +9620,7 @@ impl<'a> core::marker::Unpin for zond_engine::protocols::dhcp::ClientRequest<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::protocols::dhcp::ClientRequest<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::dhcp::ClientRequest<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::dhcp::ClientRequest<'a>
-pub struct zond_engine::protocols::dhcp::ServerReply<'a>
+#[non_exhaustive] pub struct zond_engine::protocols::dhcp::ServerReply<'a>
 pub zond_engine::protocols::dhcp::ServerReply::domain: core::option::Option<&'a str>
 pub zond_engine::protocols::dhcp::ServerReply::server: core::option::Option<core::net::ip_addr::Ipv4Addr>
 impl<'a> zond_engine::protocols::dhcp::ServerReply<'a>
@@ -9640,11 +9644,15 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::dhc
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::dhcp::ServerReply<'a>
 pub const zond_engine::protocols::dhcp::CLIENT_PORT: u16
 pub const zond_engine::protocols::dhcp::SERVER_PORT: u16
-pub fn zond_engine::protocols::dhcp::build_inform(&pnet_base::macaddr::MacAddr, &core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::dhcp::build_inform(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::dhcp::client_request<'a>(&zond_engine::protocols::ethernet::Frame<'a>) -> core::option::Option<zond_engine::protocols::dhcp::ClientRequest<'a>>
 pub fn zond_engine::protocols::dhcp::server_reply<'a>(&zond_engine::protocols::ethernet::Frame<'a>) -> core::option::Option<zond_engine::protocols::dhcp::ServerReply<'a>>
 pub mod zond_engine::protocols::dns
-pub struct zond_engine::protocols::dns::PtrResponse
+pub mod zond_engine::protocols::dns::record_type
+pub const zond_engine::protocols::dns::record_type::A: u16
+pub const zond_engine::protocols::dns::record_type::AAAA: u16
+pub const zond_engine::protocols::dns::record_type::PTR: u16
+#[non_exhaustive] pub struct zond_engine::protocols::dns::PtrResponse
 pub zond_engine::protocols::dns::PtrResponse::hostname: core::option::Option<alloc::string::String>
 pub zond_engine::protocols::dns::PtrResponse::id: u16
 pub zond_engine::protocols::dns::PtrResponse::subject: core::option::Option<core::net::ip_addr::IpAddr>
@@ -9664,10 +9672,11 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::dns::PtrResponse
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::dns::PtrResponse
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::dns::PtrResponse
 pub fn zond_engine::protocols::dns::address_from_pointer_name(&str) -> core::option::Option<core::net::ip_addr::IpAddr>
-pub fn zond_engine::protocols::dns::build_ptr_packet(&core::net::ip_addr::IpAddr, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::dns::build_ptr_packet(core::net::ip_addr::IpAddr, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::dns::build_query(u16, bool, &[(&str, u16)]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::dns::is_response(&[u8]) -> bool
 pub fn zond_engine::protocols::dns::parse_ptr_response(&[u8]) -> zond_engine::protocols::error::Result<zond_engine::protocols::dns::PtrResponse>
-pub fn zond_engine::protocols::dns::reverse_pointer_name(&core::net::ip_addr::IpAddr) -> alloc::string::String
+pub fn zond_engine::protocols::dns::reverse_pointer_name(core::net::ip_addr::IpAddr) -> alloc::string::String
 pub mod zond_engine::protocols::error
 #[non_exhaustive] pub enum zond_engine::protocols::error::PacketError
 pub zond_engine::protocols::error::PacketError::FamilyMismatch
@@ -9702,6 +9711,13 @@ pub zond_engine::protocols::error::PacketError::Unreadable::what: &'static str
 pub zond_engine::protocols::error::PacketError::UnsupportedEtherType(u16)
 pub zond_engine::protocols::error::PacketError::UnsupportedFragmentation
 pub zond_engine::protocols::error::PacketError::UnsupportedFragmentation::dst: core::net::ip_addr::IpAddr
+pub zond_engine::protocols::error::PacketError::UnwritableName
+pub zond_engine::protocols::error::PacketError::UnwritableName::detail: alloc::string::String
+pub zond_engine::protocols::error::PacketError::UnwritableName::name: alloc::string::String
+pub zond_engine::protocols::error::PacketError::WrongFamily
+pub zond_engine::protocols::error::PacketError::WrongFamily::expected: &'static str
+pub zond_engine::protocols::error::PacketError::WrongFamily::got: core::net::ip_addr::IpAddr
+pub zond_engine::protocols::error::PacketError::WrongFamily::protocol: &'static str
 impl core::clone::Clone for zond_engine::protocols::error::PacketError
 pub fn zond_engine::protocols::error::PacketError::clone(&self) -> zond_engine::protocols::error::PacketError
 impl core::cmp::Eq for zond_engine::protocols::error::PacketError
@@ -9776,7 +9792,7 @@ pub const zond_engine::protocols::ethernet::VLAN_TAG_LEN: usize
 pub fn zond_engine::protocols::ethernet::build_header(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, pnet_packet::ethernet::EtherType) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::ethernet::parse(&[u8]) -> zond_engine::protocols::error::Result<zond_engine::protocols::ethernet::Frame<'_>>
 pub mod zond_engine::protocols::icmp
-pub enum zond_engine::protocols::icmp::EchoReply
+#[non_exhaustive] pub enum zond_engine::protocols::icmp::EchoReply
 pub zond_engine::protocols::icmp::EchoReply::Other
 pub zond_engine::protocols::icmp::EchoReply::Other::icmp_type: u8
 pub zond_engine::protocols::icmp::EchoReply::Ours
@@ -9800,11 +9816,11 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::icmp::EchoReply
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::icmp::EchoReply
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::icmp::EchoReply
 pub const zond_engine::protocols::icmp::ECHO_PROBE_CODE: u8
-pub fn zond_engine::protocols::icmp::build_all_nodes_echo_request_v6(&pnet_base::macaddr::MacAddr, &core::net::ip_addr::Ipv6Addr, u16, u16) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::icmp::build_echo_request(&pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u8, u16, u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::icmp::build_all_nodes_echo_request_v6(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr, u16, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::icmp::build_echo_request(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u8, u16, u16) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::icmp::build_echo_request_message(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u8, u16, u16, &[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::icmp::build_echo_request_v4(&pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, &core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, u16) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::icmp::build_echo_request_v6(&pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, &core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u8, u16, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::icmp::build_echo_request_v4(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv4Addr, core::net::ip_addr::Ipv4Addr, u16, u16) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::icmp::build_echo_request_v6(pnet_base::macaddr::MacAddr, pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr, u8, u16, u16) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::icmp::classify_echo_reply(&[u8], u16, bool) -> zond_engine::protocols::icmp::EchoReply
 pub fn zond_engine::protocols::icmp::echo_token(&[u8]) -> zond_engine::protocols::error::Result<(u16, u16)>
 pub mod zond_engine::protocols::ip
@@ -9822,7 +9838,7 @@ pub fn zond_engine::protocols::ip::ipv6_destination(&zond_engine::protocols::eth
 pub fn zond_engine::protocols::ip::ipv6_source(&zond_engine::protocols::ethernet::Frame<'_>) -> zond_engine::protocols::error::Result<core::net::ip_addr::Ipv6Addr>
 pub fn zond_engine::protocols::ip::udp_payload<'a>(&zond_engine::protocols::ethernet::Frame<'a>, u16) -> core::option::Option<&'a [u8]>
 pub mod zond_engine::protocols::lldp
-pub enum zond_engine::protocols::lldp::Identifier<'a>
+#[non_exhaustive] pub enum zond_engine::protocols::lldp::Identifier<'a>
 pub zond_engine::protocols::lldp::Identifier::Mac(pnet_base::macaddr::MacAddr)
 pub zond_engine::protocols::lldp::Identifier::Network(core::net::ip_addr::IpAddr)
 pub zond_engine::protocols::lldp::Identifier::Other
@@ -9845,7 +9861,7 @@ impl<'a> core::marker::Unpin for zond_engine::protocols::lldp::Identifier<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::protocols::lldp::Identifier<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::lldp::Identifier<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::lldp::Identifier<'a>
-pub struct zond_engine::protocols::lldp::Advertisement<'a>
+#[non_exhaustive] pub struct zond_engine::protocols::lldp::Advertisement<'a>
 pub zond_engine::protocols::lldp::Advertisement::capabilities: core::option::Option<zond_engine::protocols::lldp::Capabilities>
 pub zond_engine::protocols::lldp::Advertisement::chassis_id: core::option::Option<zond_engine::protocols::lldp::Identifier<'a>>
 pub zond_engine::protocols::lldp::Advertisement::management_address: core::option::Option<core::net::ip_addr::IpAddr>
@@ -9901,9 +9917,11 @@ pub const zond_engine::protocols::lldp::ETHERTYPE: pnet_packet::ethernet::EtherT
 pub fn zond_engine::protocols::lldp::addressed_to_a_bridge_group(pnet_base::macaddr::MacAddr) -> bool
 pub fn zond_engine::protocols::lldp::parse<'a>(&zond_engine::protocols::ethernet::Frame<'a>) -> core::option::Option<zond_engine::protocols::lldp::Advertisement<'a>>
 pub mod zond_engine::protocols::mdns
-pub struct zond_engine::protocols::mdns::MdnsHost
+#[non_exhaustive] pub struct zond_engine::protocols::mdns::MdnsHost
 pub zond_engine::protocols::mdns::MdnsHost::hostname: alloc::string::String
-pub zond_engine::protocols::mdns::MdnsHost::ips: std::collections::hash::set::HashSet<core::net::ip_addr::IpAddr>
+pub zond_engine::protocols::mdns::MdnsHost::ips: alloc::collections::btree::set::BTreeSet<core::net::ip_addr::IpAddr>
+impl core::clone::Clone for zond_engine::protocols::mdns::MdnsHost
+pub fn zond_engine::protocols::mdns::MdnsHost::clone(&self) -> zond_engine::protocols::mdns::MdnsHost
 impl core::cmp::Eq for zond_engine::protocols::mdns::MdnsHost
 impl core::cmp::PartialEq for zond_engine::protocols::mdns::MdnsHost
 pub fn zond_engine::protocols::mdns::MdnsHost::eq(&self, &zond_engine::protocols::mdns::MdnsHost) -> bool
@@ -9923,7 +9941,7 @@ pub const zond_engine::protocols::mdns::PORT: u16
 pub fn zond_engine::protocols::mdns::build_query(&str) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::mdns::extract_hosts(&[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<zond_engine::protocols::mdns::MdnsHost>>
 pub mod zond_engine::protocols::ndp
-pub struct zond_engine::protocols::ndp::Advertisement
+#[non_exhaustive] pub struct zond_engine::protocols::ndp::Advertisement
 pub zond_engine::protocols::ndp::Advertisement::router: bool
 pub zond_engine::protocols::ndp::Advertisement::target: core::net::ip_addr::Ipv6Addr
 impl core::clone::Clone for zond_engine::protocols::ndp::Advertisement
@@ -9943,8 +9961,8 @@ impl core::marker::UnsafeUnpin for zond_engine::protocols::ndp::Advertisement
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::ndp::Advertisement
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::ndp::Advertisement
 pub fn zond_engine::protocols::ndp::advertisement(&zond_engine::protocols::ethernet::Frame<'_>) -> core::option::Option<zond_engine::protocols::ndp::Advertisement>
-pub fn zond_engine::protocols::ndp::build_neighbor_solicitation(&pnet_base::macaddr::MacAddr, &core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::ndp::build_router_solicitation(&pnet_base::macaddr::MacAddr, &core::net::ip_addr::Ipv6Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::ndp::build_neighbor_solicitation(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr, core::net::ip_addr::Ipv6Addr) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::ndp::build_router_solicitation(pnet_base::macaddr::MacAddr, core::net::ip_addr::Ipv6Addr) -> alloc::vec::Vec<u8>
 pub fn zond_engine::protocols::ndp::is_router_advertisement(&zond_engine::protocols::ethernet::Frame<'_>) -> bool
 pub fn zond_engine::protocols::ndp::multicast_mac(core::net::ip_addr::Ipv6Addr) -> pnet_base::macaddr::MacAddr
 pub fn zond_engine::protocols::ndp::solicited_node_multicast(core::net::ip_addr::Ipv6Addr) -> core::net::ip_addr::Ipv6Addr
@@ -10009,7 +10027,7 @@ impl<'a> core::marker::Unpin for zond_engine::protocols::sctp::Chunks<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::protocols::sctp::Chunks<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::sctp::Chunks<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::sctp::Chunks<'a>
-pub struct zond_engine::protocols::sctp::QuotedProbe
+#[non_exhaustive] pub struct zond_engine::protocols::sctp::QuotedProbe
 pub zond_engine::protocols::sctp::QuotedProbe::destination: u16
 pub zond_engine::protocols::sctp::QuotedProbe::source: u16
 pub zond_engine::protocols::sctp::QuotedProbe::verification_tag: u32
@@ -10048,8 +10066,9 @@ impl<'a> core::marker::UnsafeUnpin for zond_engine::protocols::sctp::Segment<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::sctp::Segment<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::sctp::Segment<'a>
 pub const zond_engine::protocols::sctp::IP_PROTOCOL_NUMBER: u8
+pub const zond_engine::protocols::sctp::MAX_CHUNK_VALUE: usize
 pub fn zond_engine::protocols::sctp::build_init_probe(u16, u16, u32) -> alloc::vec::Vec<u8>
-pub fn zond_engine::protocols::sctp::chunk(u8, u8, &[u8]) -> alloc::vec::Vec<u8>
+pub fn zond_engine::protocols::sctp::chunk(u8, u8, &[u8]) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::sctp::classify_probe_response(&zond_engine::protocols::sctp::Segment<'_>) -> core::option::Option<zond_engine::protocols::sctp::SctpReply>
 pub fn zond_engine::protocols::sctp::echoed_nonce(&zond_engine::protocols::sctp::Segment<'_>) -> u32
 pub fn zond_engine::protocols::sctp::parse(&[u8]) -> zond_engine::protocols::error::Result<zond_engine::protocols::sctp::Segment<'_>>
@@ -10076,7 +10095,7 @@ pub const zond_engine::protocols::tcp::flags::PSH: u8
 pub const zond_engine::protocols::tcp::flags::RST: u8
 pub const zond_engine::protocols::tcp::flags::SYN: u8
 pub const zond_engine::protocols::tcp::flags::URG: u8
-pub struct zond_engine::protocols::tcp::QuotedProbe
+#[non_exhaustive] pub struct zond_engine::protocols::tcp::QuotedProbe
 pub zond_engine::protocols::tcp::QuotedProbe::acknowledgement: core::option::Option<u32>
 pub zond_engine::protocols::tcp::QuotedProbe::destination: u16
 pub zond_engine::protocols::tcp::QuotedProbe::sequence: u32
@@ -10117,8 +10136,8 @@ impl<'a> core::marker::Unpin for zond_engine::protocols::tcp::Segment<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::protocols::tcp::Segment<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::tcp::Segment<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::tcp::Segment<'a>
-pub fn zond_engine::protocols::tcp::build_probe(zond_engine::model::technique::TcpScanTechnique, &core::net::ip_addr::IpAddr, &core::net::ip_addr::IpAddr, u16, u16, u32) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::tcp::build_probe_shaped(zond_engine::model::technique::TcpScanTechnique, &core::net::ip_addr::IpAddr, &core::net::ip_addr::IpAddr, u16, u16, u32, core::option::Option<u16>, bool) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::tcp::build_probe(zond_engine::model::technique::TcpScanTechnique, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u16, u16, u32) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::tcp::build_probe_shaped(zond_engine::model::technique::TcpScanTechnique, core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u16, u16, u32, core::option::Option<u16>, bool) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::tcp::classify_probe_response(&zond_engine::protocols::tcp::Segment<'_>) -> core::option::Option<zond_engine::model::technique::TcpReply>
 pub fn zond_engine::protocols::tcp::echoed_nonce(zond_engine::model::technique::TcpScanTechnique, &zond_engine::protocols::tcp::Segment<'_>, u16) -> u32
 pub fn zond_engine::protocols::tcp::parse(&[u8]) -> zond_engine::protocols::error::Result<zond_engine::protocols::tcp::Segment<'_>>
@@ -10126,8 +10145,8 @@ pub const fn zond_engine::protocols::tcp::probe_flags(zond_engine::model::techni
 pub fn zond_engine::protocols::tcp::quoted_nonce(zond_engine::model::technique::TcpScanTechnique, &zond_engine::protocols::tcp::QuotedProbe) -> core::option::Option<u32>
 pub fn zond_engine::protocols::tcp::quoted_probe(&[u8]) -> core::option::Option<zond_engine::protocols::tcp::QuotedProbe>
 pub mod zond_engine::protocols::udp
-pub fn zond_engine::protocols::udp::build_packet(&core::net::ip_addr::IpAddr, &core::net::ip_addr::IpAddr, u16, u16, alloc::vec::Vec<u8>) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
-pub fn zond_engine::protocols::udp::build_packet_shaped(&core::net::ip_addr::IpAddr, &core::net::ip_addr::IpAddr, u16, u16, alloc::vec::Vec<u8>, core::option::Option<u16>) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::udp::build_packet(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u16, u16, alloc::vec::Vec<u8>) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
+pub fn zond_engine::protocols::udp::build_packet_shaped(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, u16, u16, alloc::vec::Vec<u8>, core::option::Option<u16>) -> zond_engine::protocols::error::Result<alloc::vec::Vec<u8>>
 pub fn zond_engine::protocols::source_address(&zond_engine::protocols::ethernet::Frame<'_>) -> zond_engine::protocols::error::Result<core::net::ip_addr::IpAddr>
 pub mod zond_engine::record
 pub mod zond_engine::record::wire

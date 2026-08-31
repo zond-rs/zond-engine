@@ -38,6 +38,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use pnet_base::MacAddr;
 
 use crate::protocols::ethernet::Frame;
+use crate::protocols::text::field as text;
 
 /// The group address Cisco equipment sends these to.
 pub const GROUP_ADDRESS: MacAddr = MacAddr(0x01, 0x00, 0x0C, 0xCC, 0xCC, 0xCC);
@@ -138,6 +139,12 @@ impl Capabilities {
 /// Every field is optional: CDP mandates nothing, and what a given platform
 /// sends varies by model and by software version. A field that is `None` was not
 /// sent.
+///
+/// `#[non_exhaustive]`, for the reason
+/// [`lldp::Advertisement`](crate::protocols::lldp::Advertisement) is: these are
+/// nine of the record types Cisco equipment sends and a tenth worth reading is a
+/// matter of time.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Announcement<'a> {
     /// What the device calls itself, which on Cisco equipment is the configured
@@ -217,26 +224,33 @@ pub fn parse<'a>(frame: &Frame<'a>) -> Option<Announcement<'a>> {
         rest = remainder;
         seen += 1;
 
+        // Every field takes the first readable value and keeps it, for the
+        // reason [`lldp::parse`](crate::protocols::lldp::parse) does: a second
+        // record of a kind an announcement carries once is malformed, and
+        // letting it erase a value that already parsed costs the switch's name.
         match kind {
-            RECORD_DEVICE_ID => announcement.device_id = text(value),
-            RECORD_PORT_ID => announcement.port_id = text(value),
-            RECORD_SOFTWARE_VERSION => announcement.software_version = text(value),
-            RECORD_PLATFORM => announcement.platform = text(value),
-            RECORD_CAPABILITIES => {
-                announcement.capabilities = value
+            RECORD_DEVICE_ID => keep_first(&mut announcement.device_id, text(value)),
+            RECORD_PORT_ID => keep_first(&mut announcement.port_id, text(value)),
+            RECORD_SOFTWARE_VERSION => keep_first(&mut announcement.software_version, text(value)),
+            RECORD_PLATFORM => keep_first(&mut announcement.platform, text(value)),
+            RECORD_CAPABILITIES => keep_first(
+                &mut announcement.capabilities,
+                value
                     .first_chunk::<4>()
-                    .map(|bytes| Capabilities(u32::from_be_bytes(*bytes)));
-            }
-            RECORD_NATIVE_VLAN => {
-                announcement.native_vlan = value
+                    .map(|bytes| Capabilities(u32::from_be_bytes(*bytes))),
+            ),
+            RECORD_NATIVE_VLAN => keep_first(
+                &mut announcement.native_vlan,
+                value
                     .first_chunk::<2>()
-                    .map(|bytes| u16::from_be_bytes(*bytes));
-            }
-            RECORD_DUPLEX => {
-                announcement.full_duplex = value.first().map(|byte| *byte != 0);
-            }
+                    .map(|bytes| u16::from_be_bytes(*bytes)),
+            ),
+            RECORD_DUPLEX => keep_first(
+                &mut announcement.full_duplex,
+                value.first().map(|byte| *byte != 0),
+            ),
             RECORD_ADDRESSES | RECORD_MANAGEMENT_ADDRESSES => {
-                announcement.address = announcement.address.or_else(|| first_address(value));
+                keep_first(&mut announcement.address, first_address(value));
             }
             _ => {}
         }
@@ -250,6 +264,18 @@ pub fn parse<'a>(frame: &Frame<'a>) -> Option<Announcement<'a>> {
         || announcement.capabilities.is_some();
 
     read_something.then_some(announcement)
+}
+
+/// Records `value` in `field` if the field is still empty and the value is
+/// readable.
+///
+/// The twin of [`lldp`](crate::protocols::lldp)'s, and it holds the same
+/// property: a longer prefix of an announcement reports everything a shorter one
+/// did.
+fn keep_first<T>(field: &mut Option<T>, value: Option<T>) {
+    if field.is_none() {
+        *field = value;
+    }
 }
 
 /// Splits one record off the front of `bytes`.
@@ -303,19 +329,6 @@ fn first_address(value: &[u8]) -> Option<IpAddr> {
             .map(|bytes| IpAddr::V6(Ipv6Addr::from(*bytes))),
         _ => None,
     }
-}
-
-/// Reads a record value as text, trimming a trailing NUL.
-///
-/// `None` for bytes that are not UTF-8, on the same reasoning as every other
-/// reader in this module: a device that sends something else has produced
-/// something to decline rather than to render with replacement characters.
-fn text(value: &[u8]) -> Option<&str> {
-    let trimmed = value.strip_suffix(&[0]).unwrap_or(value);
-    if trimmed.is_empty() {
-        return None;
-    }
-    std::str::from_utf8(trimmed).ok()
 }
 
 // ╔════════════════════════════════════════════╗
@@ -409,6 +422,27 @@ pub(crate) mod tests {
     /// The device name is the bare one rather than the fully-qualified name a
     /// Cisco box usually sends, because what is under test there is that the
     /// field is carried across — not what the vendor puts in it.
+    /// A second record of a kind an announcement carries once must not erase
+    /// the first.
+    ///
+    /// Assigning unconditionally, a switch that named itself and then repeated
+    /// the device-id record with bytes that are not text was reported as no
+    /// switch at all. `lldp::parse` had the same shape and the same defect; the
+    /// fuzz target holds the general property over both.
+    #[test]
+    fn a_second_unreadable_record_does_not_erase_the_first() {
+        let bytes = frame_of(&[
+            record(RECORD_DEVICE_ID, b"core-switch-01"),
+            record(RECORD_DEVICE_ID, &[0xFF, 0xFE, 0xFD]),
+            record(RECORD_PORT_ID, b"GigabitEthernet1/0/14"),
+        ]);
+        let frame = ethernet::parse(&bytes).expect("a frame");
+        let announcement = parse(&frame).expect("an announcement");
+
+        assert_eq!(announcement.device_id, Some("core-switch-01"));
+        assert_eq!(announcement.port_id, Some("GigabitEthernet1/0/14"));
+    }
+
     pub(crate) fn switch_announcement() -> Vec<u8> {
         frame_of(&[
             record(RECORD_DEVICE_ID, b"core-sw-02"),

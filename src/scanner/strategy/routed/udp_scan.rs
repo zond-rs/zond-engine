@@ -849,7 +849,7 @@ mod tests {
         captured(
             TARGET,
             IpNextHeaderProtocols::Udp,
-            udp::build_packet(&TARGET, &LOCAL_V4, src_port, dst_port, said).unwrap(),
+            udp::build_packet(TARGET, LOCAL_V4, src_port, dst_port, said).unwrap(),
         )
     }
 
@@ -858,7 +858,7 @@ mod tests {
     /// probe, so the test agrees with the wire by construction rather than by
     /// a hand-written byte array.
     fn quoted_probe_packet(from: IpAddr, to: IpAddr, src_port: u16, dst_port: u16) -> Vec<u8> {
-        let datagram = udp::build_packet(&from, &to, src_port, dst_port, vec![]).unwrap();
+        let datagram = udp::build_packet(from, to, src_port, dst_port, vec![]).unwrap();
         let len = datagram.len() as u16;
         let header = match (from, to) {
             (IpAddr::V4(s), IpAddr::V4(d)) => {

@@ -146,7 +146,7 @@ impl EthernetSender {
             .map_err(|_| poisoned("datalink channel"))?;
         let channel = self.channel_for(&mut channels, interface)?;
 
-        let request = arp::build_request(&src_mac, &src_ip, target);
+        let request = arp::build_request(src_mac, src_ip, target);
         channel
             .channel
             .send_frame(&request)

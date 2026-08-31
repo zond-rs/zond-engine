@@ -222,7 +222,8 @@ pub struct Ipv4 {
     pub fragment_offset: u16,
     /// How many hops the packet may cross.
     pub ttl: u8,
-    /// What the packet carries. Computed from the layer inside it.
+    /// What the packet carries. Computed from the layer pushed inside this one,
+    /// and TCP where there is none: see [`header_bytes`](Self::header_bytes).
     pub protocol: Field<IpNextHeaderProtocol>,
     /// Header and payload together. Computed from the packet being built.
     pub total_length: Field<u16>,
@@ -301,6 +302,12 @@ impl Ipv4 {
     /// does when it already holds a finished segment. [`Packet::build`] is the
     /// easier road when the payload is to hand.
     ///
+    /// **Set [`protocol`](Self::protocol) before calling this.** There is no
+    /// layer inside a header built on its own, so a `Computed` protocol has
+    /// nothing to read and falls back to TCP. A caller holding a finished UDP
+    /// segment and taking the default gets a header naming the wrong protocol,
+    /// and the packet is dropped by the receiver rather than refused here.
+    ///
     /// # Errors
     ///
     /// [`PacketError::TooLong`] when header and payload together exceed what
@@ -345,7 +352,8 @@ pub struct Ipv6 {
     pub traffic_class: u8,
     /// The flow label, twenty bits. Computed at random.
     pub flow_label: Field<u32>,
-    /// What follows this header. Computed from the layer inside it.
+    /// What follows this header. Computed from the layer pushed inside this one,
+    /// and TCP where there is none: see [`header_bytes`](Self::header_bytes).
     pub next_header: Field<IpNextHeaderProtocol>,
     /// Everything after this header. Computed from the packet being built.
     pub payload_length: Field<u16>,
@@ -386,6 +394,10 @@ impl Ipv6 {
     /// This header alone, declaring `payload_length` bytes after it. The IPv6
     /// counterpart of [`Ipv4::header_bytes`], and infallible for the reason
     /// that one is not: the field counts the payload rather than the total.
+    ///
+    /// **Set [`next_header`](Self::next_header) before calling this**, for the
+    /// reason [`Ipv4::header_bytes`] gives about its own protocol field. A
+    /// header built alone has no layer inside it to name.
     pub fn header_bytes(&self, payload_length: u16) -> Vec<u8> {
         let declared = Ipv6 {
             payload_length: Field::Exact(self.payload_length.resolve(|| payload_length)),
@@ -410,6 +422,10 @@ pub struct Tcp {
     /// The flag bits. See [`tcp_flags`].
     pub flags: u8,
     /// The receive window advertised.
+    ///
+    /// Defaults to 1024, which is what every probe this engine sends carries, so
+    /// a hand-built segment is unremarkable beside them without having to say
+    /// so. Read from `tcp`'s own constant rather than written twice.
     pub window: u16,
     /// The urgent pointer, meaningful only with [`URG`](tcp_flags::URG) set.
     pub urgent_pointer: u16,
@@ -442,7 +458,7 @@ impl Tcp {
             sequence: 0,
             acknowledgement: 0,
             flags: 0,
-            window: 1024,
+            window: super::tcp::PROBE_WINDOW,
             urgent_pointer: 0,
             data_offset: Field::Computed,
             checksum: Field::Computed,
@@ -469,6 +485,13 @@ impl Tcp {
     #[must_use]
     pub fn with_acknowledgement(mut self, acknowledgement: u32) -> Self {
         self.acknowledgement = acknowledgement;
+        self
+    }
+
+    /// Sets the receive window advertised.
+    #[must_use]
+    pub fn with_window(mut self, window: u16) -> Self {
+        self.window = window;
         self
     }
 
@@ -731,6 +754,17 @@ impl Icmpv4 {
         self
     }
 
+    /// Sets the code, whose meaning depends on the message type.
+    ///
+    /// Zero for a conformant echo, and a probe sending zero asks nothing a
+    /// responder can differ about: see
+    /// [`ECHO_PROBE_CODE`](super::icmp::ECHO_PROBE_CODE).
+    #[must_use]
+    pub fn with_code(mut self, code: u8) -> Self {
+        self.code = code;
+        self
+    }
+
     /// This message's bytes.
     ///
     /// Takes no addresses, unlike [`Icmpv6::to_bytes`]: an ICMPv4 checksum
@@ -808,6 +842,17 @@ impl Icmpv6 {
         self
     }
 
+    /// Sets the code, whose meaning depends on the message type.
+    ///
+    /// Zero for a conformant echo, and a probe sending zero asks nothing a
+    /// responder can differ about: see
+    /// [`ECHO_PROBE_CODE`](super::icmp::ECHO_PROBE_CODE).
+    #[must_use]
+    pub fn with_code(mut self, code: u8) -> Self {
+        self.code = code;
+        self
+    }
+
     /// This message's bytes, checksummed against `addresses`.
     ///
     /// The addresses are required for a computed checksum and ignored for an
@@ -817,7 +862,10 @@ impl Icmpv6 {
     ///
     /// # Errors
     ///
-    /// [`PacketError::FamilyMismatch`] when the addresses are not both IPv6.
+    /// [`PacketError::WrongFamily`] when both addresses are IPv4, which is an
+    /// ICMPv6 message inside an IPv4 header and a packet nothing can build, and
+    /// [`PacketError::FamilyMismatch`] when the two do not agree with each other
+    /// at all.
     pub fn to_bytes(&self, addresses: Option<(IpAddr, IpAddr)>) -> Result<Vec<u8>> {
         let mut bytes = icmp_body(
             self.icmp_type,
@@ -834,6 +882,16 @@ impl Icmpv6 {
                     None => 0,
                     Some((IpAddr::V6(src), IpAddr::V6(dst))) => {
                         pnet_packet::icmpv6::checksum(&message, &src, &dst)
+                    }
+                    // Not a family mismatch: the two may agree with each other
+                    // and still not be IPv6, which is what an ICMPv6 layer
+                    // inside an IPv4 header looks like from here.
+                    Some((IpAddr::V4(src), IpAddr::V4(_))) => {
+                        return Err(PacketError::WrongFamily {
+                            protocol: "ICMPv6",
+                            expected: "IPv6",
+                            got: IpAddr::V4(src),
+                        });
                     }
                     Some((src, dst)) => return Err(PacketError::FamilyMismatch { src, dst }),
                 }
@@ -940,6 +998,18 @@ impl Arp {
             target_hw_addr,
             target_proto_addr,
         }
+    }
+
+    /// Names the hardware address being asked about.
+    ///
+    /// Undefined in a request, which is why [`request`](Self::request) leaves it
+    /// zero. A unicast request validating a cache entry sets it, so a host that
+    /// has moved answers from a different address and the mismatch is what says
+    /// the entry was stale.
+    #[must_use]
+    pub fn with_target_hw_addr(mut self, target_hw_addr: MacAddr) -> Self {
+        self.target_hw_addr = target_hw_addr;
+        self
     }
 
     /// This packet's bytes. Nothing here is derived, so nothing can fail.
@@ -1299,9 +1369,15 @@ fn write_udp(
         udp.set_checksum(0);
     }
 
-    let sum = match header.checksum {
-        Field::Exact(value) => value,
-        Field::Computed => {
+    let sum = match (header.checksum, addresses) {
+        (Field::Exact(value), _) => value,
+        // No IP header means no pseudo-header to sum over, and the field is left
+        // for whoever supplies one. The substitution below must not fire here:
+        // it would answer "there was nothing to compute" with a value that says
+        // "computed, and it came to zero", which nothing downstream can tell
+        // from a real checksum. See `transport_checksum`.
+        (Field::Computed, None) => 0,
+        (Field::Computed, Some(_)) => {
             let datagram = UdpPacket::new(&bytes).expect("just written");
             let computed = transport_checksum(
                 addresses,
@@ -1450,6 +1526,95 @@ mod tests {
 
     fn v6(s: &str) -> Ipv6Addr {
         s.parse().expect("a valid address")
+    }
+
+    // ── What a layer with nothing around it gets ─────────────────────────────
+
+    /// A transport layer with no IP header around it has no pseudo-header to
+    /// checksum over, so the field is left for whoever supplies one.
+    ///
+    /// UDP used to answer that with `0xFFFF`, because the RFC 768 substitution
+    /// for a genuine zero fired on the "there was nothing to sum" zero as well.
+    /// `0xFFFF` is a valid checksum meaning "computed, and it came to zero", so
+    /// nothing downstream could tell the two apart, and `Udp::to_bytes`'s own
+    /// documentation says the rules are `Tcp::to_bytes`'s.
+    #[test]
+    fn a_transport_layer_with_no_addresses_leaves_its_checksum_unset() {
+        let tcp = Tcp::new(50_000, 80).to_bytes(None).expect("a segment");
+        let udp = Udp::new(50_000, 53).to_bytes(None).expect("a datagram");
+
+        assert_eq!(u16::from_be_bytes([tcp[16], tcp[17]]), 0);
+        assert_eq!(u16::from_be_bytes([udp[6], udp[7]]), 0);
+
+        // The substitution still fires where there was something to compute:
+        // a datagram whose checksum genuinely sums to zero goes out as 0xFFFF,
+        // because zero in that field means "not computed".
+        let addresses = Some((IpAddr::V4(V4_SRC), IpAddr::V4(V4_DST)));
+        let summed = Udp::new(50_000, 53)
+            .to_bytes(addresses)
+            .expect("a datagram");
+        assert_ne!(u16::from_be_bytes([summed[6], summed[7]]), 0);
+    }
+
+    /// An ICMPv6 message inside an IPv4 header is a packet nothing can build,
+    /// and it is not two addresses of different families.
+    ///
+    /// It used to report `FamilyMismatch`, whose message reads "an IPv4 and an
+    /// IPv6 address" about two IPv4 ones, which sends a reader after a fault
+    /// that is not there.
+    #[test]
+    fn an_icmpv6_message_under_an_ipv4_header_names_the_family_it_needed() {
+        let refused = Packet::new()
+            .push(Ipv4::new(V4_SRC, V4_DST))
+            .push(Icmpv6::echo_request(1, 1))
+            .build()
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                refused,
+                PacketError::WrongFamily {
+                    protocol: "ICMPv6",
+                    expected: "IPv6",
+                    ..
+                }
+            ),
+            "got {refused:?}"
+        );
+        assert!(
+            !refused.to_string().contains("an IPv4 and an IPv6 address"),
+            "the message still claims a mismatch that is not there: {refused}"
+        );
+
+        // Two addresses that genuinely disagree are still a mismatch.
+        let mixed = Icmpv6::echo_request(1, 1)
+            .to_bytes(Some((IpAddr::V4(V4_SRC), IpAddr::V6(v6("2001:db8::1")))))
+            .unwrap_err();
+        assert!(matches!(mixed, PacketError::FamilyMismatch { .. }));
+    }
+
+    /// A header built on its own has no layer inside it to name, so its protocol
+    /// field falls back rather than being derived. That is a trap worth pinning
+    /// rather than fixing: making it a refusal would turn two infallible
+    /// builders fallible, and the fallback is now documented at both.
+    #[test]
+    fn a_header_built_alone_falls_back_to_tcp_and_says_so() {
+        let derived = Ipv4 {
+            protocol: Field::Exact(IpNextHeaderProtocols::Udp),
+            ..Ipv4::new(V4_SRC, V4_DST)
+        }
+        .header_bytes(100)
+        .expect("a header");
+        assert_eq!(derived[9], IpNextHeaderProtocols::Udp.0);
+
+        let fallback = Ipv4::new(V4_SRC, V4_DST)
+            .header_bytes(100)
+            .expect("a header");
+        assert_eq!(
+            fallback[9],
+            IpNextHeaderProtocols::Tcp.0,
+            "the documented fallback moved; the doc on `header_bytes` moves with it"
+        );
     }
 
     // ── The default is a correct packet ──────────────────────────────────────

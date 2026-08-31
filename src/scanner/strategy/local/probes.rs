@@ -157,7 +157,7 @@ fn build_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> P
             (start..=end).map(Ipv6Addr::from)
         })
         .map(move |target| {
-            let packet = ndp::build_neighbor_solicitation(&local_mac, &src_addr, target);
+            let packet = ndp::build_neighbor_solicitation(local_mac, src_addr, target);
             (packet, IpAddr::V6(target))
         });
 
@@ -179,7 +179,7 @@ pub fn build_arp_iter(local_mac: &MacAddr, src_ip: &Ipv4Addr, ip_set: &IpSet) ->
             (start..=end).map(Ipv4Addr::from)
         })
         .map(move |dst_addr| {
-            let packet = arp::build_request(&local_mac, &src_ip, dst_addr);
+            let packet = arp::build_request(local_mac, src_ip, dst_addr);
             (packet, IpAddr::V4(dst_addr))
         });
 

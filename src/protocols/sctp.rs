@@ -129,8 +129,12 @@ fn init_chunk(initiate_tag: u32) -> Vec<u8> {
     // Initial TSN. The peer's own reply carries its choice, not ours, so nothing
     // reads this back; a random value is what an ordinary stack would send.
     value.extend_from_slice(&rand::random::<u32>().to_be_bytes());
-    chunk(chunk_type::INIT, 0, &value)
+    chunk(chunk_type::INIT, 0, &value).expect("a sixteen-byte value fits the length field")
 }
+
+/// The largest value a chunk may carry: what is left of the 16-bit length field
+/// once the four bytes of chunk header it also counts are taken out.
+pub const MAX_CHUNK_VALUE: usize = u16::MAX as usize - SCTP_CHUNK_HDR_LEN;
 
 /// Encodes one chunk: the four-byte header, the value, and the padding that
 /// aligns whatever follows to a four-byte boundary.
@@ -139,15 +143,23 @@ fn init_chunk(initiate_tag: u32) -> Vec<u8> {
 /// 4960 §3.2), which is why a reader steps to the next chunk by the padded
 /// length while trusting the field for where the value ends. The primitive the
 /// probe builders are written on; exposed so a chunk this module does not send
-/// yet — a COOKIE-ECHO, say — is a few lines rather than a fork.
+/// yet, a COOKIE-ECHO say, is a few lines rather than a fork.
 ///
-/// `value` must fit the chunk's 16-bit length field, which caps it a little
-/// under 64 KiB; every chunk a scan sends is a few dozen bytes.
-pub fn chunk(chunk_type: u8, flags: u8, value: &[u8]) -> Vec<u8> {
-    debug_assert!(
-        value.len() <= usize::from(u16::MAX) - SCTP_CHUNK_HDR_LEN,
-        "a chunk value must fit the 16-bit length field"
-    );
+/// # Errors
+///
+/// [`PacketError::TooLong`] for a value past [`MAX_CHUNK_VALUE`]. The field
+/// wraps rather than saturating, so a value four bytes short of 64 KiB would
+/// otherwise produce a chunk declaring itself zero bytes long, which every
+/// receiver reads as the end of the packet. Every chunk a scan sends is a few
+/// dozen bytes and cannot reach this.
+pub fn chunk(chunk_type: u8, flags: u8, value: &[u8]) -> Result<Vec<u8>> {
+    if value.len() > MAX_CHUNK_VALUE {
+        return Err(PacketError::too_long(
+            "an SCTP chunk length",
+            SCTP_CHUNK_HDR_LEN,
+            value.len(),
+        ));
+    }
     let length = SCTP_CHUNK_HDR_LEN + value.len();
 
     let mut bytes = Vec::with_capacity(round_up_to_4(length));
@@ -156,7 +168,7 @@ pub fn chunk(chunk_type: u8, flags: u8, value: &[u8]) -> Vec<u8> {
     bytes.extend_from_slice(&(length as u16).to_be_bytes());
     bytes.extend_from_slice(value);
     bytes.resize(round_up_to_4(length), 0);
-    bytes
+    Ok(bytes)
 }
 
 /// The two answers an INIT scan can draw, as read off the wire.
@@ -213,6 +225,11 @@ impl<'a> Segment<'a> {
 }
 
 /// One chunk of a [`Segment`], as read from the wire.
+///
+/// **Not `#[non_exhaustive]`**, on the reasoning
+/// [`VlanTag`](crate::protocols::ethernet::VlanTag) sets out: RFC 4960 §3.2
+/// defines a chunk as a type byte, a flags byte, a length and the value it
+/// measures, and there is nothing else in one to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chunk<'a> {
     /// What kind of chunk it is. See [`chunk_type`].
@@ -297,7 +314,7 @@ pub fn parse(bytes: &'_ [u8]) -> Result<Segment<'_>> {
 /// same reasoning [`tcp::classify_probe_response`](super::tcp::classify_probe_response)
 /// reads a RST first: it is the decisive answer, and the two never legitimately
 /// arrive together.
-pub fn classify_probe_response(segment: &Segment) -> Option<SctpReply> {
+pub fn classify_probe_response(segment: &Segment<'_>) -> Option<SctpReply> {
     for chunk in segment.chunks() {
         match chunk.chunk_type {
             chunk_type::INIT_ACK => return Some(SctpReply::InitAck),
@@ -314,7 +331,7 @@ pub fn classify_probe_response(segment: &Segment) -> Option<SctpReply> {
 /// A caller compares this against the tags it actually sent. A match names the
 /// probe that was answered; anything else is a stray, a duplicate, or a packet
 /// from another association, none of which may resolve a port.
-pub fn echoed_nonce(reply: &Segment) -> u32 {
+pub fn echoed_nonce(reply: &Segment<'_>) -> u32 {
     reply.verification_tag()
 }
 
@@ -325,6 +342,12 @@ pub fn echoed_nonce(reply: &Segment) -> u32 {
 /// SCTP are the two ports and the verification tag — enough to say a probe was
 /// this scan's, but not which attempt, since an INIT's tag is zero and its
 /// Initiate Tag sits past the eight. See [`quoted_init_tag`].
+///
+/// `#[non_exhaustive]`, for the reason
+/// [`tcp::QuotedProbe`](crate::protocols::tcp::QuotedProbe) is: what a sender
+/// quotes past the guaranteed eight bytes is worth reading when it is there, and
+/// reading more of it adds a field.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotedProbe {
     /// The port the probe was sent from, which is what proves the quoted packet
@@ -401,7 +424,7 @@ mod tests {
         bytes.extend_from_slice(&SRC_PORT.to_be_bytes()); // back to where we sent
         bytes.extend_from_slice(&vtag.to_be_bytes());
         bytes.extend_from_slice(&[0; 4]); // checksum, unread by the parser
-        bytes.extend_from_slice(&chunk(chunk_type, 0, &[]));
+        bytes.extend_from_slice(&chunk(chunk_type, 0, &[]).expect("an empty value fits"));
         bytes
     }
 
@@ -539,6 +562,34 @@ mod tests {
     fn a_quotation_too_short_for_the_common_header_names_nothing() {
         let bytes = build_init_probe(SRC_PORT, DST_PORT, NONCE);
         assert_eq!(quoted_probe(&bytes[..7]), None);
+    }
+
+    /// A chunk value past what the length field can count is refused, not
+    /// wrapped.
+    ///
+    /// **The two build profiles used to disagree about this.** A `debug_assert`
+    /// stated the bound, so a debug build panicked and a release build wrapped:
+    /// four bytes short of 64 KiB produced a chunk declaring itself zero bytes
+    /// long, which every receiver reads as the end of the packet. `ip.rs` has a
+    /// test making the same argument about `build_ipv4_header`, and this is the
+    /// same fix.
+    #[test]
+    fn a_chunk_value_too_large_for_the_length_field_is_refused_rather_than_wrapped() {
+        let largest = vec![0u8; MAX_CHUNK_VALUE];
+        let encoded = chunk(chunk_type::INIT, 0, &largest).expect("the largest describable value");
+        assert_eq!(
+            u16::from_be_bytes([encoded[2], encoded[3]]),
+            u16::MAX,
+            "the largest value fills the field exactly"
+        );
+
+        for oversize in [MAX_CHUNK_VALUE + 1, u16::MAX as usize] {
+            let refused = chunk(chunk_type::INIT, 0, &vec![0u8; oversize]);
+            assert!(
+                matches!(refused, Err(PacketError::TooLong { .. })),
+                "a value of {oversize} produced {refused:?}"
+            );
+        }
     }
 
     // ── Parsing ──────────────────────────────────────────────────────────────

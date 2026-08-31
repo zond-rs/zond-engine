@@ -280,7 +280,7 @@ mod tests {
     /// The quoted datagram an error carries: the probe's IP header and its
     /// transport header, built with the same functions that build a real probe.
     fn quoted_packet(from: IpAddr, to: IpAddr) -> Vec<u8> {
-        let datagram = udp::build_packet(&from, &to, 50_000, 53, vec![]).unwrap();
+        let datagram = udp::build_packet(from, to, 50_000, 53, vec![]).unwrap();
         let len = datagram.len() as u16;
         let header = match (from, to) {
             (IpAddr::V4(s), IpAddr::V4(d)) => {

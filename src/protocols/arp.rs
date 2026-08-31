@@ -22,7 +22,11 @@ use crate::protocols::ethernet::Frame;
 use crate::protocols::sizes::{ARP_LEN, MIN_ETH_FRAME_NO_FCS};
 use pnet_base::MacAddr;
 use pnet_packet::arp::ArpPacket;
+use pnet_packet::ethernet::EtherTypes;
 use std::net::Ipv4Addr;
+
+/// How long an IPv4 address is, as ARP's own `proto_addr_len` field counts it.
+const PROTO_ADDR_LEN_V4: u8 = 4;
 
 /// Builds the broadcast ARP request a sweep sends, asking who holds
 /// `dst_addr`.
@@ -37,11 +41,11 @@ use std::net::Ipv4Addr;
 /// probe but an invisible one.
 ///
 /// Infallible: nothing here is derived from a length.
-pub fn build_request(src_mac: &MacAddr, src_addr: &Ipv4Addr, dst_addr: Ipv4Addr) -> Vec<u8> {
+pub fn build_request(src_mac: MacAddr, src_addr: Ipv4Addr, dst_addr: Ipv4Addr) -> Vec<u8> {
     frame(
-        *src_mac,
+        src_mac,
         MacAddr::broadcast(),
-        Arp::request(*src_mac, *src_addr, dst_addr),
+        Arp::request(src_mac, src_addr, dst_addr),
     )
 }
 
@@ -55,17 +59,16 @@ pub fn build_request(src_mac: &MacAddr, src_addr: &Ipv4Addr, dst_addr: Ipv4Addr)
 /// sees the frame, which is a decision worth making by choosing a function
 /// rather than by passing a different argument to one.
 pub fn build_unicast_request(
-    src_mac: &MacAddr,
+    src_mac: MacAddr,
     dst_mac: MacAddr,
-    src_addr: &Ipv4Addr,
+    src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
 ) -> Vec<u8> {
-    let mut request = Arp::request(*src_mac, *src_addr, dst_addr);
-    // Known here, unlike in a broadcast request, so it is worth stating: a
-    // host that has moved answers from a different address and the mismatch
-    // is what says the entry was stale.
-    request.target_hw_addr = dst_mac;
-    frame(*src_mac, dst_mac, request)
+    // Named here, unlike in a broadcast request, which is what makes a host that
+    // has moved visible: it answers from a different address and the mismatch
+    // says the entry was stale.
+    let request = Arp::request(src_mac, src_addr, dst_addr).with_target_hw_addr(dst_mac);
+    frame(src_mac, dst_mac, request)
 }
 
 /// Frames `packet` and pads it to the shortest frame a segment will carry.
@@ -81,15 +84,36 @@ fn frame(src_mac: MacAddr, dst_mac: MacAddr, packet: Arp) -> Vec<u8> {
 
 /// The address the sender of an ARP frame claims to hold.
 ///
+/// The packet has to say it is carrying an IPv4 address before those four bytes
+/// are read as one. ARP is a container: its protocol type and address lengths
+/// are fields, they come off the wire like everything else, and a packet
+/// declaring sixteen-byte protocol addresses has its sender's address somewhere
+/// this cannot reach. Reading the fixed offset anyway credits a host with four
+/// bytes out of the middle of somebody else's address, which is the mistake
+/// [the module documentation](crate::protocols) is about.
+///
 /// # Errors
 ///
 /// [`PacketError::Truncated`] when the frame carries too few bytes to be an
-/// ARP packet.
-pub fn sender_address(eth_packet: &Frame<'_>) -> Result<Ipv4Addr> {
-    let arp_packet = ArpPacket::new(eth_packet.payload()).ok_or_else(|| {
-        PacketError::truncated("an ARP packet", ARP_LEN, eth_packet.payload().len())
-    })?;
-    Ok(arp_packet.get_sender_proto_addr())
+/// ARP packet, and [`PacketError::Unreadable`] when it is an ARP packet about
+/// something other than IPv4 over Ethernet.
+pub fn sender_address(frame: &Frame<'_>) -> Result<Ipv4Addr> {
+    let arp = ArpPacket::new(frame.payload())
+        .ok_or_else(|| PacketError::truncated("an ARP packet", ARP_LEN, frame.payload().len()))?;
+
+    if arp.get_protocol_type() != EtherTypes::Ipv4 || arp.get_proto_addr_len() != PROTO_ADDR_LEN_V4
+    {
+        return Err(PacketError::unreadable(
+            "an ARP packet",
+            format_args!(
+                "it carries protocol {:#06x} in {}-byte addresses, not IPv4 in {PROTO_ADDR_LEN_V4}",
+                arp.get_protocol_type().0,
+                arp.get_proto_addr_len()
+            ),
+        ));
+    }
+
+    Ok(arp.get_sender_proto_addr())
 }
 
 // ╔════════════════════════════════════════════╗
@@ -104,15 +128,12 @@ pub fn sender_address(eth_packet: &Frame<'_>) -> Result<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocols::sizes::ETH_HDR_LEN;
     use pnet_base::MacAddr;
     use pnet_packet::arp::ArpHardwareTypes;
-    use pnet_packet::arp::{ArpOperations, ArpPacket, MutableArpPacket};
-    use pnet_packet::ethernet::{EtherTypes, MutableEthernetPacket};
+    use pnet_packet::arp::{ArpOperations, MutableArpPacket};
+    use pnet_packet::ethernet::MutableEthernetPacket;
     use std::net::IpAddr;
-    use std::net::Ipv4Addr;
-
-    const ETH_HDR_LEN: usize = 14;
-    const ARP_LEN: usize = 28;
 
     fn build_mock_arp_packet(sender_ip: Ipv4Addr, payload_size: usize) -> Vec<u8> {
         let mut eth_buffer = vec![0u8; ETH_HDR_LEN];
@@ -151,7 +172,7 @@ mod tests {
         let src_addr = Ipv4Addr::new(192, 168, 1, 10);
         let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
 
-        let buffer = build_request(&src_mac, &src_addr, dst_addr);
+        let buffer = build_request(src_mac, src_addr, dst_addr);
         assert_eq!(buffer.len(), MIN_ETH_FRAME_NO_FCS);
 
         let eth_packet =
@@ -191,7 +212,7 @@ mod tests {
         let src_addr = Ipv4Addr::new(192, 168, 1, 10);
         let dst_addr = Ipv4Addr::new(192, 168, 1, 1);
 
-        let unicast = build_unicast_request(&src_mac, dst_mac, &src_addr, dst_addr);
+        let unicast = build_unicast_request(src_mac, dst_mac, src_addr, dst_addr);
         let eth = super::super::ethernet::parse(&unicast).expect("a frame");
         assert_eq!(eth.destination(), dst_mac, "only that host's card wakes");
 
@@ -234,6 +255,37 @@ mod tests {
             crate::protocols::source_address(&parsed),
             Err(PacketError::Truncated { got: 10, .. })
         ));
+    }
+
+    /// ARP is a container, and the fields saying what it contains come off the
+    /// wire like everything else.
+    ///
+    /// A packet declaring sixteen-byte protocol addresses keeps its sender's
+    /// address somewhere the IPv4 offsets do not reach. Reading them anyway
+    /// credited a host with four bytes out of the middle of an IPv6 address, and
+    /// `craft::Arp` exists so that exactly this packet can be built.
+    #[test]
+    fn an_arp_packet_about_another_protocol_credits_nobody() {
+        let mut buffer = build_mock_arp_packet(Ipv4Addr::new(10, 0, 0, 1), ARP_LEN);
+        {
+            let mut arp = MutableArpPacket::new(&mut buffer[ETH_HDR_LEN..]).expect("an ARP packet");
+            arp.set_protocol_type(EtherTypes::Ipv6);
+            arp.set_proto_addr_len(16);
+        }
+        let parsed = super::super::ethernet::parse(&buffer).expect("a frame");
+
+        assert!(matches!(
+            crate::protocols::source_address(&parsed),
+            Err(PacketError::Unreadable { .. })
+        ));
+
+        // The same frame with its own fields telling the truth is still read.
+        let honest = build_mock_arp_packet(Ipv4Addr::new(10, 0, 0, 1), ARP_LEN);
+        let parsed = super::super::ethernet::parse(&honest).expect("a frame");
+        assert_eq!(
+            crate::protocols::source_address(&parsed).expect("an ARP sender"),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+        );
     }
 
     /// An ethertype this module does not read is the ordinary case under

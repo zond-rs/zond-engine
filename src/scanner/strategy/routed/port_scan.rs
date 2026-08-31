@@ -827,8 +827,8 @@ fn send_tcp_probe(
 
     let packet = match tcp::build_probe_with_flags(
         flags,
-        &src_addr,
-        &dst_addr,
+        src_addr,
+        dst_addr,
         src_port,
         dst_port,
         nonce,
@@ -854,8 +854,8 @@ fn send_tcp_probe(
         .filter_map(|&decoy| {
             tcp::build_probe_with_flags(
                 flags,
-                &decoy,
-                &dst_addr,
+                decoy,
+                dst_addr,
                 rand::random_range(50_000..u16::MAX),
                 dst_port,
                 rand::random(),
@@ -1621,8 +1621,8 @@ mod tests {
         // Same shape, but sent from a port this scan never used.
         let theirs = tcp::build_probe(
             TcpScanTechnique::Fin,
-            &LOCAL_IP,
-            &TARGET,
+            LOCAL_IP,
+            TARGET,
             scanner.core.src_port.wrapping_add(1),
             80,
             0xABCD,

@@ -250,8 +250,8 @@ impl IdlePortScanner {
             let nonce: u32 = rand::random();
             let Ok(probe) = tcp::build_probe_with_flags(
                 flags::SYN | flags::ACK,
-                &source,
-                &self.zombie,
+                source,
+                self.zombie,
                 self.reply_port,
                 self.zombie_port,
                 nonce,
@@ -374,8 +374,8 @@ impl IdlePortScanner {
             let spoofed_port: u16 = rand::random_range(50_000..u16::MAX);
             let Ok(probe) = tcp::build_probe(
                 TcpScanTechnique::Syn,
-                &self.zombie,
-                &target,
+                self.zombie,
+                target,
                 spoofed_port,
                 port,
                 nonce,

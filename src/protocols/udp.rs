@@ -29,8 +29,8 @@ use crate::protocols::error::Result;
 /// not over the datagram alone. Passing them mirrors
 /// [`tcp::build_probe`](super::tcp::build_probe).
 ///
-/// The checksum is optional on IPv4 but **mandatory on IPv6** - RFC 8200 §8.1
-/// requires a receiver to discard a zero-checksum UDP datagram - so a v6 probe
+/// The checksum is optional on IPv4 but **mandatory on IPv6**: RFC 8200 §8.1
+/// requires a receiver to discard a zero-checksum UDP datagram, so a v6 probe
 /// built without one never reaches the port it is aimed at, and the scan reads
 /// the resulting silence as `OpenFiltered`.
 ///
@@ -41,8 +41,8 @@ use crate::protocols::error::Result;
 /// [`TooLong`](crate::protocols::error::PacketError::TooLong) for a payload the
 /// 16-bit length field cannot describe.
 pub fn build_packet(
-    src_addr: &IpAddr,
-    dst_addr: &IpAddr,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
     src_port: u16,
     dst_port: u16,
     payload: Vec<u8>,
@@ -51,8 +51,8 @@ pub fn build_packet(
 }
 
 /// [`build_packet`], with `padding` random bytes appended to the datagram's
-/// payload — the segment-level shaping an evasion profile applies to move a
-/// probe off the fixed size of a bare header.
+/// payload: the segment-level shaping an evasion profile applies to move a probe
+/// off the fixed size of a bare header.
 ///
 /// The padding follows the meaningful payload, so it is covered by the length
 /// field and the checksum like any other bytes and an open port still reads the
@@ -66,11 +66,11 @@ pub fn build_packet(
 /// The same as [`build_packet`]: a
 /// [`FamilyMismatch`](crate::protocols::error::PacketError::FamilyMismatch)
 /// across address families, and a
-/// [`TooLong`](crate::protocols::error::PacketError::TooLong) for a payload —
-/// padding now counted — the 16-bit length field cannot describe.
+/// [`TooLong`](crate::protocols::error::PacketError::TooLong) for a payload the
+/// 16-bit length field cannot describe, padding now counted.
 pub fn build_packet_shaped(
-    src_addr: &IpAddr,
-    dst_addr: &IpAddr,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
     src_port: u16,
     dst_port: u16,
     mut payload: Vec<u8>,
@@ -81,7 +81,7 @@ pub fn build_packet_shaped(
     }
     craft::Udp::new(src_port, dst_port)
         .with_payload(payload)
-        .to_bytes(Some((*src_addr, *dst_addr)))
+        .to_bytes(Some((src_addr, dst_addr)))
 }
 
 // ╔════════════════════════════════════════════╗
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn header_fields_describe_the_datagram() {
-        let packet = build_packet(&V4_SRC, &V4_DST, 40_000, 53, vec![1, 2, 3, 4]).unwrap();
+        let packet = build_packet(V4_SRC, V4_DST, 40_000, 53, vec![1, 2, 3, 4]).unwrap();
         let udp = UdpPacket::new(&packet).unwrap();
 
         assert_eq!(udp.get_source(), 40_000);
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn checksum_verifies_against_the_ipv4_pseudo_header() {
-        let packet = build_packet(&V4_SRC, &V4_DST, 40_000, 53, vec![]).unwrap();
+        let packet = build_packet(V4_SRC, V4_DST, 40_000, 53, vec![]).unwrap();
         let checksum = UdpPacket::new(&packet).unwrap().get_checksum();
 
         assert_eq!(checksum, expected_checksum(&packet, &V4_SRC, &V4_DST));
@@ -147,7 +147,7 @@ mod tests {
     /// so a v6 probe without one never reaches the port it is aimed at.
     #[test]
     fn ipv6_datagram_carries_a_checksum() {
-        let packet = build_packet(&V6_SRC, &V6_DST, 40_000, 53, vec![]).unwrap();
+        let packet = build_packet(V6_SRC, V6_DST, 40_000, 53, vec![]).unwrap();
         let checksum = UdpPacket::new(&packet).unwrap().get_checksum();
 
         assert_eq!(checksum, expected_checksum(&packet, &V6_SRC, &V6_DST));
@@ -159,8 +159,8 @@ mod tests {
     /// one of the two was computed against the wrong one.
     #[test]
     fn each_address_family_checksums_over_its_own_pseudo_header() {
-        let v4 = build_packet(&V4_SRC, &V4_DST, 40_000, 53, vec![]).unwrap();
-        let v6 = build_packet(&V6_SRC, &V6_DST, 40_000, 53, vec![]).unwrap();
+        let v4 = build_packet(V4_SRC, V4_DST, 40_000, 53, vec![]).unwrap();
+        let v6 = build_packet(V6_SRC, V6_DST, 40_000, 53, vec![]).unwrap();
 
         assert_ne!(
             UdpPacket::new(&v4).unwrap().get_checksum(),
@@ -175,7 +175,7 @@ mod tests {
     fn a_computed_zero_checksum_is_sent_as_all_ones() {
         let mut exercised = false;
         for src_port in 1..=u16::MAX {
-            let packet = build_packet(&V4_SRC, &V4_DST, src_port, 53, vec![]).unwrap();
+            let packet = build_packet(V4_SRC, V4_DST, src_port, 53, vec![]).unwrap();
             if expected_checksum(&packet, &V4_SRC, &V4_DST) == 0 {
                 assert_eq!(
                     UdpPacket::new(&packet).unwrap().get_checksum(),
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn mismatched_address_families_are_rejected() {
-        assert!(build_packet(&V4_SRC, &V6_DST, 40_000, 53, vec![]).is_err());
+        assert!(build_packet(V4_SRC, V6_DST, 40_000, 53, vec![]).is_err());
     }
 
     /// Padding follows the meaningful payload, and both the length field and the
@@ -206,9 +206,9 @@ mod tests {
     #[test]
     fn padding_extends_the_datagram_and_is_covered() {
         let plain =
-            build_packet_shaped(&V4_SRC, &V4_DST, 40_000, 53, vec![1, 2, 3, 4], None).unwrap();
+            build_packet_shaped(V4_SRC, V4_DST, 40_000, 53, vec![1, 2, 3, 4], None).unwrap();
         let padded =
-            build_packet_shaped(&V4_SRC, &V4_DST, 40_000, 53, vec![1, 2, 3, 4], Some(16)).unwrap();
+            build_packet_shaped(V4_SRC, V4_DST, 40_000, 53, vec![1, 2, 3, 4], Some(16)).unwrap();
         let udp = UdpPacket::new(&padded).unwrap();
 
         assert_eq!(

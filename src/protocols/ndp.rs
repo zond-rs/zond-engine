@@ -131,8 +131,8 @@ pub fn multicast_mac(group: Ipv6Addr) -> MacAddr {
 /// can reply directly instead of soliciting us back first. Leaving it out is
 /// legal and doubles the exchange.
 pub fn build_neighbor_solicitation(
-    src_mac: &MacAddr,
-    src_addr: &Ipv6Addr,
+    src_mac: MacAddr,
+    src_addr: Ipv6Addr,
     target: Ipv6Addr,
 ) -> Vec<u8> {
     let group = solicited_node_multicast(target);
@@ -159,8 +159,8 @@ pub fn build_neighbor_solicitation(
     };
 
     Packet::new()
-        .push(Ethernet::new(*src_mac, multicast_mac(group)).with_ethertype(EtherTypes::Ipv6))
-        .push(Ipv6::new(*src_addr, group).with_hop_limit(ip::HOP_LIMIT_NDP))
+        .push(Ethernet::new(src_mac, multicast_mac(group)).with_ethertype(EtherTypes::Ipv6))
+        .push(Ipv6::new(src_addr, group).with_hop_limit(ip::HOP_LIMIT_NDP))
         .push(message)
         .build()
         .expect("a solicitation fits every length field it is counted by")
@@ -177,7 +177,7 @@ pub fn build_neighbor_solicitation(
 /// Carries the source link-layer address option for the reason a neighbor
 /// solicitation does: the answer can then come back directly instead of being
 /// preceded by a solicitation of its own.
-pub fn build_router_solicitation(src_mac: &MacAddr, src_addr: &Ipv6Addr) -> Vec<u8> {
+pub fn build_router_solicitation(src_mac: MacAddr, src_addr: Ipv6Addr) -> Vec<u8> {
     let mut body = Vec::with_capacity(OPTION_LEN);
     body.push(NDP_OPTION_SOURCE_LL_ADDR);
     body.push(1);
@@ -193,14 +193,19 @@ pub fn build_router_solicitation(src_mac: &MacAddr, src_addr: &Ipv6Addr) -> Vec<
     };
 
     Packet::new()
-        .push(Ethernet::new(*src_mac, multicast_mac(ALL_ROUTERS)).with_ethertype(EtherTypes::Ipv6))
-        .push(Ipv6::new(*src_addr, ALL_ROUTERS).with_hop_limit(ip::HOP_LIMIT_NDP))
+        .push(Ethernet::new(src_mac, multicast_mac(ALL_ROUTERS)).with_ethertype(EtherTypes::Ipv6))
+        .push(Ipv6::new(src_addr, ALL_ROUTERS).with_hop_limit(ip::HOP_LIMIT_NDP))
         .push(message)
         .build()
         .expect("a router solicitation fits every length field it is counted by")
 }
 
 /// A neighbor advertisement, reduced to what discovery reads from one.
+///
+/// `#[non_exhaustive]`: RFC 4861 §4.4 puts three flags in the byte this reads
+/// one of, and the solicited flag in particular tells an answer to a probe of
+/// ours from a neighbour announcing itself. Reading it adds a field here.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Advertisement {
     /// The address being announced.
@@ -262,12 +267,7 @@ pub fn is_router_advertisement(frame: &Frame<'_>) -> bool {
 
 /// The IPv6 packet inside `frame`, if it carries ICMPv6.
 fn icmpv6<'a>(frame: &Frame<'a>) -> Option<pnet_packet::ipv6::Ipv6Packet<'a>> {
-    if frame.ethertype() != EtherTypes::Ipv6 {
-        return None;
-    }
-
-    let packet = pnet_packet::ipv6::Ipv6Packet::new(frame.payload())?;
-    (packet.get_next_header() == IpNextHeaderProtocols::Icmpv6).then_some(packet)
+    ip::ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)
 }
 
 // ╔════════════════════════════════════════════╗
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn a_solicitation_carries_the_hop_limit_the_rfc_requires() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
-        let frame = build_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
+        let frame = build_neighbor_solicitation(SRC_MAC, src_addr(), target);
 
         let eth = super::super::ethernet::parse(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn a_solicitation_is_addressed_to_the_targets_group() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0x11aa, 0xbbcc);
-        let frame = build_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
+        let frame = build_neighbor_solicitation(SRC_MAC, src_addr(), target);
 
         let eth = super::super::ethernet::parse(&frame).unwrap();
         assert_eq!(
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn a_solicitation_names_its_target_and_offers_a_return_address() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
-        let frame = build_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
+        let frame = build_neighbor_solicitation(SRC_MAC, src_addr(), target);
 
         let eth = super::super::ethernet::parse(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn a_solicitation_is_checksummed() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
-        let frame = build_neighbor_solicitation(&SRC_MAC, &src_addr(), target);
+        let frame = build_neighbor_solicitation(SRC_MAC, src_addr(), target);
 
         let eth = super::super::ethernet::parse(&frame).unwrap();
         let packet = Ipv6Packet::new(eth.payload()).unwrap();
@@ -539,7 +539,7 @@ mod tests {
     /// conformant receiver (RFC 4861 §6.1.1).
     #[test]
     fn a_router_solicitation_asks_every_router_and_nobody_else() {
-        let frame = build_router_solicitation(&SRC_MAC, &src_addr());
+        let frame = build_router_solicitation(SRC_MAC, src_addr());
 
         let eth = super::super::ethernet::parse(&frame).unwrap();
         assert_eq!(

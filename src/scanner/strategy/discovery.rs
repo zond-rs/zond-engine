@@ -487,7 +487,7 @@ pub(crate) mod tests {
     pub(crate) const ICMPV6_ECHO_LEN: usize = 8;
 
     pub(crate) fn arp_reply_frame(sender_ip: Ipv4Addr) -> Vec<u8> {
-        arp::build_request(&PEER_MAC, &sender_ip, Ipv4Addr::new(10, 0, 0, 1))
+        arp::build_request(PEER_MAC, sender_ip, Ipv4Addr::new(10, 0, 0, 1))
     }
 
     /// An Ethernet-framed IPv6 packet to `destination`, carrying `body` as

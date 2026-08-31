@@ -183,8 +183,8 @@ fn probe_inline_middlebox(
         nonce,
         tcp::build_probe_shaped(
             TcpScanTechnique::Syn,
-            &source,
-            &host,
+            source,
+            host,
             src_port,
             port,
             nonce,
@@ -214,7 +214,7 @@ fn probe_stateful_filter(
         source,
         host,
         nonce,
-        tcp::build_probe(TcpScanTechnique::Ack, &source, &host, src_port, port, nonce),
+        tcp::build_probe(TcpScanTechnique::Ack, source, host, src_port, port, nonce),
         Emission::routed(),
         Filtering::StatefulFilter,
     );
@@ -239,8 +239,8 @@ fn probe_port_trusting_acl(
         nonce,
         tcp::build_probe(
             TcpScanTechnique::Syn,
-            &source,
-            &host,
+            source,
+            host,
             TRUSTED_SOURCE_PORT,
             port,
             nonce,
@@ -272,7 +272,7 @@ fn probe_stateless_filter(
         source,
         host,
         nonce,
-        tcp::build_probe(TcpScanTechnique::Syn, &source, &host, src_port, port, nonce),
+        tcp::build_probe(TcpScanTechnique::Syn, source, host, src_port, port, nonce),
         Emission {
             fragment: Some(STATELESS_FRAGMENT_MTU),
             ..Emission::routed()

@@ -49,7 +49,11 @@ use std::net::Ipv4Addr;
 use crate::protocols::craft::{Ethernet, Ipv4, Packet, Udp};
 use crate::protocols::ethernet::Frame;
 use crate::protocols::ip;
-use crate::protocols::sizes::UDP_HDR_LEN;
+use crate::protocols::sizes::{IP_V4_HDR_LEN, UDP_HDR_LEN};
+use crate::protocols::text::field as text;
+
+/// How many bytes an IPv4 header length counts per word.
+const WORD_LEN: usize = 4;
 
 /// Where a DHCP client listens, and the port a server's reply is addressed to.
 pub const CLIENT_PORT: u16 = 68;
@@ -131,6 +135,10 @@ const REQUESTED_PARAMETERS: [u8; 4] = [
 /// probe obtains that. A port scan of the gateway establishes that something
 /// answers on 53; this says which resolvers the network *tells its clients to
 /// use*, which is a different and better-sourced fact.
+///
+/// `#[non_exhaustive]`, which two private fields already make it in practice.
+/// Saying so is what stops the next field being public and quietly reopening it.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerReply<'a> {
     /// The address the server identified *itself* as (option 54), where it gave
@@ -180,6 +188,12 @@ impl<'a> ServerReply<'a> {
 /// the one moment a device volunteers its own name and model without being
 /// asked, and it happens on a broadcast every other machine on the segment can
 /// hear.
+///
+/// `#[non_exhaustive]`: five of the dozens of options a client may send, chosen
+/// for what they say about the device. [`ServerReply`] beside it is already
+/// closed, by carrying two fields as raw bytes rather than by anybody deciding,
+/// and two readers of one protocol should not have opposite answers to this.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientRequest<'a> {
     /// The hardware address the client is asking on behalf of, from the message's
@@ -227,7 +241,7 @@ pub struct ClientRequest<'a> {
 /// drawn at random, because nothing correlates on it. A server's reply is
 /// evidence about the server whether it answers this probe or a real client's,
 /// so the field only has to be ours and stable.
-pub fn build_inform(src_mac: &MacAddr, src_addr: &Ipv4Addr) -> Vec<u8> {
+pub fn build_inform(src_mac: MacAddr, src_addr: Ipv4Addr) -> Vec<u8> {
     let mut message = Vec::with_capacity(MIN_MESSAGE_LEN);
     let mac = src_mac.octets();
 
@@ -257,8 +271,8 @@ pub fn build_inform(src_mac: &MacAddr, src_addr: &Ipv4Addr) -> Vec<u8> {
     message.resize(message.len().max(MIN_MESSAGE_LEN), OPT_PAD);
 
     Packet::new()
-        .push(Ethernet::new(*src_mac, MacAddr::broadcast()).with_ethertype(EtherTypes::Ipv4))
-        .push(Ipv4::new(*src_addr, Ipv4Addr::BROADCAST).with_ttl(ip::HOP_LIMIT_ON_LINK))
+        .push(Ethernet::new(src_mac, MacAddr::broadcast()).with_ethertype(EtherTypes::Ipv4))
+        .push(Ipv4::new(src_addr, Ipv4Addr::BROADCAST).with_ttl(ip::HOP_LIMIT_ON_LINK))
         .push(Udp::new(CLIENT_PORT, SERVER_PORT).with_payload(message))
         .build()
         .expect("an inform fits every length field it is counted by")
@@ -270,7 +284,7 @@ pub fn build_inform(src_mac: &MacAddr, src_addr: &Ipv4Addr) -> Vec<u8> {
 /// the discovers and requests every machine broadcasts when it wakes up prove
 /// only that the network has clients on it.
 pub fn server_reply<'a>(frame: &Frame<'a>) -> Option<ServerReply<'a>> {
-    let message = bootp_message(frame, SERVER_PORT, BOOTREPLY)?;
+    let (_, options) = bootp_message(frame, SERVER_PORT, BOOTREPLY)?;
 
     let mut kind = None;
     let mut reply = ServerReply {
@@ -280,7 +294,7 @@ pub fn server_reply<'a>(frame: &Frame<'a>) -> Option<ServerReply<'a>> {
         resolvers: &[],
     };
 
-    for (code, value) in options(message) {
+    for (code, value) in walk_options(options) {
         match code {
             OPT_MESSAGE_TYPE => kind = value.first().copied(),
             OPT_SERVER_ID => reply.server = ipv4(value),
@@ -308,18 +322,18 @@ pub fn server_reply<'a>(frame: &Frame<'a>) -> Option<ServerReply<'a>> {
 /// the sender holds the address it is asking for, and a `DHCPDISCOVER` is sent
 /// by a machine that has no address at all.
 pub fn client_request<'a>(frame: &Frame<'a>) -> Option<ClientRequest<'a>> {
-    let message = bootp_message(frame, CLIENT_PORT, BOOTREQUEST)?;
+    let (message, options) = bootp_message(frame, CLIENT_PORT, BOOTREQUEST)?;
 
     let mut kind = None;
     let mut request = ClientRequest {
-        client_mac: client_hardware_address(frame)?,
+        client_mac: client_hardware_address(message),
         hostname: None,
         vendor_class: None,
         parameter_request_list: None,
         requested_address: None,
     };
 
-    for (code, value) in options(message) {
+    for (code, value) in walk_options(options) {
         match code {
             OPT_MESSAGE_TYPE => kind = value.first().copied(),
             OPT_HOSTNAME => request.hostname = text(value),
@@ -337,12 +351,15 @@ pub fn client_request<'a>(frame: &Frame<'a>) -> Option<ClientRequest<'a>> {
     .then_some(request)
 }
 
-/// The option bytes of a BOOTP message inside `frame`, when it is one sent from
-/// `source_port` with operation `op`.
+/// A BOOTP message inside `frame`, when it is one sent from `source_port` with
+/// operation `op`, as the whole message and the option bytes after its cookie.
 ///
 /// The walk both readers above share, down through IPv4 and UDP to the magic
-/// cookie that separates a DHCP message from the BOOTP it extends.
-fn bootp_message<'a>(frame: &Frame<'a>, source_port: u16, op: u8) -> Option<&'a [u8]> {
+/// cookie that separates a DHCP message from the BOOTP it extends. Both halves
+/// are returned because both are wanted and walking twice is how two readings of
+/// one frame come to disagree: the message for `chaddr`, the options for
+/// everything else.
+fn bootp_message<'a>(frame: &Frame<'a>, source_port: u16, op: u8) -> Option<(&'a [u8], &'a [u8])> {
     if frame.ethertype() != EtherTypes::Ipv4 {
         return None;
     }
@@ -352,9 +369,16 @@ fn bootp_message<'a>(frame: &Frame<'a>, source_port: u16, op: u8) -> Option<&'a 
         return None;
     }
 
+    // The header length comes off the wire and the fixed header is five words,
+    // so anything under five puts the datagram's start inside the header that
+    // named it. `ip::udp_payload` refuses the same claim for the same reason.
+    if usize::from(packet.get_header_length()) * WORD_LEN < IP_V4_HDR_LEN {
+        return None;
+    }
+
     // Offsets rather than the parsed views' own `payload`, because those borrow
-    // from the view and the value returned here has to outlive it.
-    let header_len = usize::from(packet.get_header_length()) * 4;
+    // from the view and the values returned here have to outlive it.
+    let header_len = usize::from(packet.get_header_length()) * WORD_LEN;
     let datagram_bytes = frame.payload().get(header_len..)?;
 
     let datagram = UdpPacket::new(datagram_bytes)?;
@@ -372,30 +396,25 @@ fn bootp_message<'a>(frame: &Frame<'a>, source_port: u16, op: u8) -> Option<&'a 
         return None;
     }
 
-    message.get(cookie_at + MAGIC_COOKIE.len()..)
+    Some((message, message.get(cookie_at + MAGIC_COOKIE.len()..)?))
 }
 
 /// The hardware address out of a BOOTP message's `chaddr` field.
 ///
-/// Read only where the message says it is an Ethernet address of the length
-/// Ethernet addresses have. The field is sixteen bytes whatever the link, and
-/// taking the first six from a message describing some other kind of hardware
-/// would produce a plausible-looking address for a device that has none.
-fn client_hardware_address(frame: &Frame<'_>) -> Option<Option<MacAddr>> {
-    let packet = Ipv4Packet::new(frame.payload())?;
-    let header_len = usize::from(packet.get_header_length()) * 4;
-    let message = frame.payload().get(header_len + UDP_HDR_LEN..)?;
-
-    let htype = *message.get(1)?;
-    let hlen = *message.get(2)?;
-    if htype != HTYPE_ETHERNET || hlen != HLEN_ETHERNET {
-        return Some(None);
+/// `None` where the message says it is describing something other than an
+/// Ethernet address of the length Ethernet addresses have, or is too short to
+/// carry one. The field is sixteen bytes whatever the link, and taking the first
+/// six from a message about some other kind of hardware produces a
+/// plausible-looking address for a device that has none.
+fn client_hardware_address(message: &[u8]) -> Option<MacAddr> {
+    if *message.get(1)? != HTYPE_ETHERNET || *message.get(2)? != HLEN_ETHERNET {
+        return None;
     }
 
     let address = message.get(CHADDR_OFFSET..CHADDR_OFFSET + usize::from(HLEN_ETHERNET))?;
-    Some(Some(MacAddr::new(
+    Some(MacAddr::new(
         address[0], address[1], address[2], address[3], address[4], address[5],
-    )))
+    ))
 }
 
 /// The addresses packed into an option carrying a list of them, four bytes each.
@@ -416,24 +435,12 @@ fn addresses(bytes: &[u8]) -> impl Iterator<Item = Ipv4Addr> + '_ {
         .map(|&group| Ipv4Addr::from(group))
 }
 
-/// An option's value as text, trimming a trailing NUL.
-///
-/// `None` for bytes that are not UTF-8, on the same reasoning every reader in
-/// this module follows: something to decline rather than to guess at.
-fn text(value: &[u8]) -> Option<&str> {
-    let trimmed = value.strip_suffix(&[0]).unwrap_or(value);
-    if trimmed.is_empty() {
-        return None;
-    }
-    std::str::from_utf8(trimmed).ok()
-}
-
 /// The options in `bytes`, as code and value.
 ///
 /// Stops at the end option and at any truncation. A malformed option list is
 /// ordinary — it is whatever arrived — so it ends the walk rather than
 /// discarding what was already read.
-fn options(bytes: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
+fn walk_options(bytes: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
     let mut rest = bytes;
     std::iter::from_fn(move || {
         loop {
@@ -462,7 +469,7 @@ fn ipv4(value: &[u8]) -> Option<Ipv4Addr> {
 
 /// A transaction id belonging to this machine, from the half of its hardware
 /// address that is not the vendor prefix.
-fn transaction_id(mac: &MacAddr) -> u32 {
+fn transaction_id(mac: MacAddr) -> u32 {
     let [_, _, a, b, c, d] = mac.octets();
     u32::from_be_bytes([a, b, c, d])
 }
@@ -544,7 +551,7 @@ pub(crate) mod tests {
     /// claim that we have one and where the answer is sent.
     #[test]
     fn an_inform_is_broadcast_and_asks_for_nothing_it_would_have_to_be_given() {
-        let bytes = build_inform(&SRC_MAC, &src_addr());
+        let bytes = build_inform(SRC_MAC, src_addr());
         let frame = super::super::ethernet::parse(&bytes).expect("an ethernet frame");
 
         assert_eq!(frame.destination(), MacAddr::broadcast());
@@ -572,7 +579,7 @@ pub(crate) mod tests {
         );
         assert!(message.len() >= MIN_MESSAGE_LEN);
 
-        let options: Vec<_> = options(&message[BOOTP_FIXED_LEN + 4..]).collect();
+        let options: Vec<_> = walk_options(&message[BOOTP_FIXED_LEN + 4..]).collect();
         assert_eq!(options[0], (OPT_MESSAGE_TYPE, [DHCPINFORM].as_slice()));
         assert_eq!(
             options[1],
@@ -841,20 +848,36 @@ pub(crate) mod tests {
         );
     }
 
+    /// A device that NUL-terminates its hostname and pads past the terminator
+    /// still names itself, and the padding does not reach the host record.
+    ///
+    /// The reader here trimmed one NUL, so an eleven-byte field carrying a
+    /// seven-character name reported `"printer\0\0\0"`, which nobody can
+    /// search for. `lldp` and `cdp` had the same six lines and the same defect;
+    /// all three now read through `protocols::text`.
+    #[test]
+    fn a_nul_padded_hostname_arrives_without_its_padding() {
+        let frame_bytes = renewal_frame(src_addr(), "printer\0\0\0\0");
+        let frame = ethernet::parse(&frame_bytes).expect("a frame");
+        let request = client_request(&frame).expect("a client request");
+
+        assert_eq!(request.hostname, Some("printer"));
+    }
+
     /// Options are a walk rather than a stride: a pad carries no length byte,
     /// and a truncated option ends the list rather than being read past it.
     #[test]
     fn the_option_walk_survives_padding_and_truncation() {
         let padded = [OPT_PAD, OPT_PAD, OPT_MESSAGE_TYPE, 1, DHCPACK, OPT_END];
-        let read: Vec<_> = options(&padded).collect();
+        let read: Vec<_> = walk_options(&padded).collect();
         assert_eq!(read, vec![(OPT_MESSAGE_TYPE, [DHCPACK].as_slice())]);
 
         // An option claiming four bytes with two behind it.
         let truncated = [OPT_SERVER_ID, 4, 192, 168];
-        assert_eq!(options(&truncated).count(), 0);
+        assert_eq!(walk_options(&truncated).count(), 0);
 
         // No end option: the walk stops when the bytes do.
         let unterminated = [OPT_MESSAGE_TYPE, 1, DHCPACK];
-        assert_eq!(options(&unterminated).count(), 1);
+        assert_eq!(walk_options(&unterminated).count(), 1);
     }
 }

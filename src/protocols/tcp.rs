@@ -15,17 +15,17 @@
 //!
 //! ## The nonce, and why it moves between fields
 //!
-//! Every probe carries a 32-bit value a conformant stack is obliged to echo,
-//! which is what lets a reply be tied to the exact attempt that provoked it -
-//! and what stops an unrelated or forged segment from resolving a port. Where
-//! that value is written, and where it comes back, is decided by RFC 793 §3.4:
+//! Every probe carries a 32-bit value a conformant stack is obliged to echo.
+//! That is what lets a reply be tied to the exact attempt that provoked it, and
+//! what stops an unrelated or forged segment from resolving a port. Where the
+//! value is written, and where it comes back, is decided by RFC 793 §3.4:
 //!
 //! > If the incoming segment has an ACK field, the reset takes its sequence
 //! > number from the ACK field of the segment; otherwise the reset has sequence
 //! > number zero and the ACK field is set to the sum of the sequence number and
 //! > segment length of the incoming segment.
 //!
-//! So a probe carrying ACK - a Maimon or ACK scan - draws a RST that
+//! So a probe carrying ACK, which a Maimon or ACK scan does, draws a RST that
 //! acknowledges *nothing*, and reading `acknowledgement - 1` from it, the way a
 //! SYN scan does, finds zero and rejects every genuine answer. The value comes
 //! back in the sequence field instead. A probe without ACK is echoed in the
@@ -80,10 +80,14 @@ const WORD_IN_BYTES: usize = 4;
 
 /// The receive window every probe advertises.
 ///
-/// Immaterial to classification - no probe here intends to receive anything -
-/// but it is a field stack fingerprinters read, so it is one value across all
-/// six techniques rather than a per-technique signature.
-const PROBE_WINDOW: u16 = 1024;
+/// Immaterial to classification, since no probe here intends to receive
+/// anything, but it is a field stack fingerprinters read, so it is one value
+/// across all six techniques rather than a per-technique signature.
+///
+/// [`craft::Tcp::new`] reads it too, so a hand-built segment is unremarkable
+/// beside the probes without anybody having to look the number up. That is the
+/// only reason it is `pub(crate)`.
+pub(crate) const PROBE_WINDOW: u16 = 1024;
 
 /// The maximum segment size advertised on a SYN, sized to clear the common
 /// tunnel overheads without inviting fragmentation.
@@ -91,13 +95,17 @@ const PROBE_MSS: u16 = 1412;
 
 /// How long the option list on a SYN is: twenty bytes, which is already a
 /// multiple of four and so needs no padding.
+///
+/// [`syn_options`] asserts it builds exactly this, so an option added there
+/// without updating this is caught where the author is standing rather than as a
+/// length mismatch in a test three hundred lines away.
 const SYN_OPTIONS_LEN: usize = 20;
 
 /// The flags each technique's probe carries.
 ///
-/// The whole of the difference between the six, on the wire. Everything else -
-/// the header length, the window, the checksum, the retransmission schedule the
-/// scanner runs them on - is identical.
+/// The whole of the difference between the six, on the wire. The header length,
+/// the window, the checksum and the retransmission schedule the scanner runs
+/// them on are identical.
 pub const fn probe_flags(technique: TcpScanTechnique) -> u8 {
     match technique {
         TcpScanTechnique::Syn => flags::SYN,
@@ -119,7 +127,7 @@ pub const fn probe_flags(technique: TcpScanTechnique) -> u8 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NonceField {
     /// The nonce is the probe's sequence number, and comes back in the reply's
-    /// acknowledgement field advanced by `span` - the sequence space the
+    /// acknowledgement field advanced by `span`, which is the sequence space the
     /// probe's control flags occupy.
     Sequence { span: u32 },
     /// The nonce is the probe's acknowledgement number, and comes back
@@ -152,9 +160,9 @@ const fn nonce_field(flags: u8) -> NonceField {
 /// carrying `nonce` in whichever field the technique's flags call for.
 ///
 /// The header's *other* 32-bit field carries no meaning and is filled
-/// accordingly: zero where it is not significant - the acknowledgement field of
-/// a segment without the ACK flag - and a random sequence number where the
-/// segment claims to be acknowledging something, since a Maimon or ACK probe
+/// accordingly: zero where it is not significant, which is the acknowledgement
+/// field of a segment without the ACK flag, and a random sequence number where
+/// the segment claims to be acknowledging something, since a Maimon or ACK probe
 /// announcing sequence zero is an oddity a filter can match on.
 ///
 /// # What a SYN offers, and why it is not just an MSS
@@ -166,9 +174,9 @@ const fn nonce_field(flags: u8) -> NonceField {
 /// SYN+ACK only if the SYN carried one, §3.2 says the same of timestamps, and
 /// RFC 2018 §2 of SACK-permitted. A peer reports the options it was *asked*
 /// about and nothing more, so a SYN offering only an MSS draws back only an MSS
-/// from every stack alike, and the shape of a reply — the strongest thing a
-/// single answer says about the machine that sent it — is erased before it is
-/// ever read.
+/// from every stack alike, and the shape of a reply is erased before it is ever
+/// read. That shape is the strongest thing a single answer says about the
+/// machine that sent it.
 ///
 /// Measured rather than assumed: against a labelled segment, every host with an
 /// open port named four more options when asked about four more, and not one
@@ -179,8 +187,8 @@ const fn nonce_field(flags: u8) -> NonceField {
 /// attempt looks like this and an MSS-only SYN does not.
 pub fn build_probe(
     technique: TcpScanTechnique,
-    src_addr: &IpAddr,
-    dst_addr: &IpAddr,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
     src_port: u16,
     dst_port: u16,
     nonce: u32,
@@ -203,8 +211,8 @@ pub fn build_probe(
 #[allow(clippy::too_many_arguments)]
 pub fn build_probe_shaped(
     technique: TcpScanTechnique,
-    src_addr: &IpAddr,
-    dst_addr: &IpAddr,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
     src_port: u16,
     dst_port: u16,
     nonce: u32,
@@ -233,8 +241,8 @@ pub fn build_probe_shaped(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_probe_with_flags(
     flags: u8,
-    src_addr: &IpAddr,
-    dst_addr: &IpAddr,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
     src_port: u16,
     dst_port: u16,
     nonce: u32,
@@ -242,7 +250,6 @@ pub(crate) fn build_probe_with_flags(
     bad_checksum: bool,
 ) -> Result<Vec<u8>> {
     let mut segment = craft::Tcp::new(src_port, dst_port).with_flags(flags);
-    segment.window = PROBE_WINDOW;
 
     match nonce_field(flags) {
         NonceField::Sequence { .. } => {
@@ -272,15 +279,23 @@ pub(crate) fn build_probe_with_flags(
     // why they are parameters. Written through `craft` rather than by hand, so
     // this probe and a hand-crafted segment cannot come to disagree about what
     // a TCP header is.
-    let addresses = (*src_addr, *dst_addr);
+    let addresses = (src_addr, dst_addr);
     if bad_checksum {
         segment.checksum = craft::Field::Exact(segment.corrupt_checksum(Some(addresses))?);
     }
     segment.to_bytes(Some(addresses))
 }
 
-/// The maximum-segment-size option, as the four bytes a TCP header carries it
-/// in: kind 2, length 4, then the value.
+/// The option list a SYN offers, as the bytes a TCP header carries them in.
+///
+/// Five options in twenty bytes: maximum segment size, SACK-permitted, a
+/// timestamp, a no-op aligning what follows, and a window scale. Which ones and
+/// why is [`build_probe`]'s argument, and the short of it is that option
+/// negotiation is reciprocal: a peer answers about the options it was asked
+/// about, so an option left out here is an answer no stack will give.
+///
+/// Already a multiple of four, so nothing needs padding to the word boundary the
+/// data offset counts in.
 fn syn_options(mss: u16) -> Vec<u8> {
     let [high, low] = mss.to_be_bytes();
     let timestamp: u32 = rand::random();
@@ -293,6 +308,10 @@ fn syn_options(mss: u16) -> Vec<u8> {
     options.extend_from_slice(&0u32.to_be_bytes()); // TSecr, nothing to echo yet
     options.push(1); // NOP, aligning what follows
     options.extend_from_slice(&[3, 3, 7]); // window scale
+
+    // The constant is what the tests measure the probe against, and it is one
+    // `extend_from_slice` away from disagreeing with the list above.
+    debug_assert_eq!(options.len(), SYN_OPTIONS_LEN);
     options
 }
 
@@ -343,6 +362,11 @@ pub(crate) fn echoed_nonce_with_flags(flags: u8, reply: &Segment<'_>, padding: u
 /// the sequence number, which is enough to say which probe the error is about;
 /// implementations commonly quote more, and the acknowledgement field is
 /// reported when they do.
+///
+/// `#[non_exhaustive]`: [`acknowledgement`](Self::acknowledgement) was added when
+/// it turned out senders quote more than the guaranteed eight bytes, and the
+/// next field past twelve arrives the same way. Built by [`quoted_probe`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotedProbe {
     /// The port the probe was sent from, which is what proves the quoted
@@ -540,7 +564,7 @@ mod tests {
     }
 
     fn probe(technique: TcpScanTechnique) -> Vec<u8> {
-        build_probe(technique, &SRC, &DST, 50_000, 80, NONCE).expect("probe builds")
+        build_probe(technique, SRC, DST, 50_000, 80, NONCE).expect("probe builds")
     }
 
     /// The RST a conformant stack sends back, built here from RFC 793 §3.4
@@ -662,7 +686,7 @@ mod tests {
     #[test]
     fn a_probe_across_address_families_is_refused_rather_than_mis_checksummed() {
         let v6: IpAddr = "2001:db8::1".parse().unwrap();
-        assert!(build_probe(TcpScanTechnique::Syn, &SRC, &v6, 50_000, 80, NONCE).is_err());
+        assert!(build_probe(TcpScanTechnique::Syn, SRC, v6, 50_000, 80, NONCE).is_err());
     }
 
     // ── Correlation ──────────────────────────────────────────────────────────
@@ -699,7 +723,7 @@ mod tests {
     fn an_arbitrary_flag_combination_is_sent_and_read_back() {
         const MASK: u8 = flags::SYN | flags::FIN;
 
-        let sent = build_probe_with_flags(MASK, &SRC, &DST, 50_000, 80, NONCE, None, false)
+        let sent = build_probe_with_flags(MASK, SRC, DST, 50_000, 80, NONCE, None, false)
             .expect("probe builds");
         let parsed = parse(&sent).unwrap();
         assert_eq!(parsed.flags(), MASK, "the segment carries the chosen flags");
@@ -713,15 +737,8 @@ mod tests {
     #[test]
     fn a_reset_answering_a_different_probe_yields_a_different_nonce() {
         let ours = probe(TcpScanTechnique::Fin);
-        let theirs = build_probe(
-            TcpScanTechnique::Fin,
-            &SRC,
-            &DST,
-            50_000,
-            80,
-            NONCE ^ 0x1234,
-        )
-        .expect("probe builds");
+        let theirs = build_probe(TcpScanTechnique::Fin, SRC, DST, 50_000, 80, NONCE ^ 0x1234)
+            .expect("probe builds");
         assert_ne!(ours, theirs);
 
         let reply_bytes = conformant_rst(&theirs);
@@ -743,8 +760,8 @@ mod tests {
 
         let padded = build_probe_shaped(
             TcpScanTechnique::Syn,
-            &SRC,
-            &DST,
+            SRC,
+            DST,
             50_000,
             80,
             NONCE,
@@ -794,9 +811,9 @@ mod tests {
             TcpScanTechnique::Null,
             TcpScanTechnique::Xmas,
         ] {
-            let plain = build_probe(technique, &SRC, &DST, 50_000, 80, NONCE).unwrap();
+            let plain = build_probe(technique, SRC, DST, 50_000, 80, NONCE).unwrap();
             let shaped =
-                build_probe_shaped(technique, &SRC, &DST, 50_000, 80, NONCE, None, false).unwrap();
+                build_probe_shaped(technique, SRC, DST, 50_000, 80, NONCE, None, false).unwrap();
             assert_eq!(
                 plain, shaped,
                 "{technique} shaped with nothing must not differ"
@@ -810,11 +827,11 @@ mod tests {
     #[test]
     fn padding_lengthens_the_probe_and_the_checksum_covers_it() {
         const LEN: u16 = 20;
-        let bare = build_probe(TcpScanTechnique::Fin, &SRC, &DST, 50_000, 80, NONCE).unwrap();
+        let bare = build_probe(TcpScanTechnique::Fin, SRC, DST, 50_000, 80, NONCE).unwrap();
         let padded = build_probe_shaped(
             TcpScanTechnique::Fin,
-            &SRC,
-            &DST,
+            SRC,
+            DST,
             50_000,
             80,
             NONCE,
@@ -849,8 +866,8 @@ mod tests {
     fn a_bad_checksum_probe_carries_a_checksum_the_host_rejects() {
         let bad = build_probe_shaped(
             TcpScanTechnique::Syn,
-            &SRC,
-            &DST,
+            SRC,
+            DST,
             50_000,
             80,
             NONCE,

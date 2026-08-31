@@ -292,20 +292,42 @@ fn ipv6_packet<'a>(frame: &Frame<'a>) -> Result<Ipv6Packet<'a>> {
     })
 }
 
-/// The ICMPv6 message type an Ethernet-framed IPv6 packet carries, or `None` if
-/// it is not ICMPv6 or is too short to say.
+/// The IPv6 packet inside `frame`, when the frame carries one and the packet
+/// carries `protocol`.
+///
+/// The walk every ICMPv6 reader here starts with, shared so the ethertype is
+/// checked once rather than per reader. A frame that arrived under another
+/// ethertype is not an IPv6 packet however its bytes read, and a reader that
+/// starts at the payload without asking will happily find an IPv6 header in the
+/// middle of an ARP one.
 ///
 /// Reads the fixed header's next-header field rather than walking the extension
-/// chain, so a packet carrying one is reported as not-ICMPv6. That is the safe
-/// direction to be wrong in for a discovery check - it declines to credit a
-/// frame it cannot read rather than guessing at its type - and the probes this
-/// interprets replies to elicit no extension headers.
-pub fn icmpv6_type(frame: &Frame<'_>) -> Option<Icmpv6Type> {
-    let packet = Ipv6Packet::new(frame.payload())?;
-    if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
+/// chain, so a packet carrying one is reported as not carrying `protocol`. That
+/// is the safe direction for a discovery check: it declines to credit a frame it
+/// cannot read rather than guessing at its type, and the probes whose replies
+/// this interprets elicit no extension headers.
+pub(crate) fn ipv6_carrying<'a>(
+    frame: &Frame<'a>,
+    protocol: IpNextHeaderProtocol,
+) -> Option<Ipv6Packet<'a>> {
+    if frame.ethertype() != EtherTypes::Ipv6 {
         return None;
     }
 
+    let packet = Ipv6Packet::new(frame.payload())?;
+    (packet.get_next_header() == protocol).then_some(packet)
+}
+
+/// The ICMPv6 message type an Ethernet-framed IPv6 packet carries, or `None` if
+/// the frame is not that or is too short to say.
+///
+/// The ethertype is checked before anything is read, so a frame that arrived
+/// under another one is declined however its bytes happen to look. The fixed
+/// header's next-header field is read rather than the extension chain walked, so
+/// a packet carrying one is reported as not ICMPv6: the safe direction for a
+/// discovery check, and no probe whose replies this interprets elicits one.
+pub fn icmpv6_type(frame: &Frame<'_>) -> Option<Icmpv6Type> {
+    let packet = ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)?;
     Some(Icmpv6Packet::new(packet.payload())?.get_icmpv6_type())
 }
 
@@ -317,10 +339,7 @@ pub fn icmpv6_type(frame: &Frame<'_>) -> Option<Icmpv6Type> {
 /// its own. Without them an echo reply proves only that its sender exists;
 /// with them it also says when the question was asked.
 pub fn icmpv6_echo_token(frame: &Frame<'_>) -> Option<(u16, u16)> {
-    let packet = Ipv6Packet::new(frame.payload())?;
-    if packet.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
-        return None;
-    }
+    let packet = ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)?;
 
     let reply = EchoReplyPacket::new(packet.payload())?;
     if reply.get_icmpv6_type() != Icmpv6Types::EchoReply {
@@ -334,10 +353,20 @@ pub fn icmpv6_echo_token(frame: &Frame<'_>) -> Option<(u16, u16)> {
 /// either address family, or `None` if the frame is not that.
 ///
 /// Reads the fixed IPv6 header's next-header field rather than walking the
-/// extension chain, and the IPv4 header's protocol field without reassembling
-/// fragments — both the same conservative direction as
-/// [`icmpv6_type`]: a frame that cannot be read plainly is declined
-/// rather than guessed at.
+/// extension chain, and reads an IPv4 packet only where it is the whole
+/// datagram. Both are the conservative direction this module's documentation
+/// promises: a frame that cannot be read plainly is declined rather than
+/// guessed at.
+///
+/// **A fragment is declined rather than read.** Only the first piece of a
+/// fragmented datagram carries a UDP header, so a later one whose protocol field
+/// still says UDP has the middle of somebody's payload where the ports should
+/// be. Nothing here reassembles, so a datagram that arrived in pieces is one
+/// this cannot read.
+///
+/// **A header length below the five words a header occupies is declined too.**
+/// It comes off the wire like everything else, and a smaller one puts the
+/// datagram's start inside the header that named it.
 pub fn udp_payload<'a>(frame: &Frame<'a>, port: u16) -> Option<&'a [u8]> {
     let packet = frame.payload();
 
@@ -347,6 +376,9 @@ pub fn udp_payload<'a>(frame: &Frame<'a>, port: u16) -> Option<&'a [u8]> {
         EtherTypes::Ipv6 => (IP_V6_HDR_LEN, Ipv6Packet::new(packet)?.get_next_header()),
         EtherTypes::Ipv4 => {
             let ipv4 = Ipv4Packet::new(packet)?;
+            if !carries_a_whole_datagram(&ipv4) {
+                return None;
+            }
             (
                 ipv4.get_header_length() as usize * WORD_LEN,
                 ipv4.get_next_level_protocol(),
@@ -365,6 +397,25 @@ pub fn udp_payload<'a>(frame: &Frame<'a>, port: u16) -> Option<&'a [u8]> {
     }
 
     datagram.get(UDP_HDR_LEN..)
+}
+
+/// Whether an IPv4 packet holds a whole Layer-4 datagram at a readable offset.
+///
+/// Two questions with one answer, because a reader that gets either wrong reads
+/// bytes that are not the header it thinks it has.
+///
+/// A packet with a non-zero fragment offset is the middle of a datagram and
+/// carries no Layer-4 header at all; one with more-fragments set is the start of
+/// a datagram whose rest has not arrived, which is readable at its own header
+/// and not beyond it. Only the first is refused here, since the header is what
+/// this reads.
+///
+/// A header length below five words cannot be true: the fixed header is five
+/// words and the field counts them. `pnet` reads the field and does not judge
+/// it, so this does.
+fn carries_a_whole_datagram(packet: &Ipv4Packet<'_>) -> bool {
+    packet.get_header_length() >= (IP_V4_HDR_LEN / WORD_LEN) as u8
+        && packet.get_fragment_offset() == 0
 }
 
 /// The address an Ethernet-framed IPv4 packet was sent from.
@@ -436,6 +487,188 @@ mod tests {
             assert!(
                 matches!(refused, Err(PacketError::TooLong { .. })),
                 "a payload of {oversize} produced {refused:?}"
+            );
+        }
+    }
+
+    // ── The readers ──────────────────────────────────────────────────────────
+    //
+    // This module had no test for any of its six readers, which is why the two
+    // findings below were found by reading. Everything here is the reading half.
+
+    /// Reads bytes that are known to be a frame, since every one below is built
+    /// by `frame_of` two lines down.
+    fn read(bytes: &[u8]) -> Frame<'_> {
+        crate::protocols::ethernet::parse(bytes).expect("a frame")
+    }
+
+    /// An Ethernet frame carrying `payload` under `ethertype`.
+    fn frame_of(ethertype: u16, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 12];
+        bytes.extend_from_slice(&ethertype.to_be_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    /// An IPv4 packet with the header fields a reader looks at, and `body`
+    /// behind it. `ihl` and `fragment_offset` are the two that come off the wire
+    /// and decide where the body starts.
+    fn ipv4_packet(ihl: u8, fragment_offset: u16, protocol: u8, body: &[u8]) -> Vec<u8> {
+        let mut ip = vec![0u8; IP_V4_HDR_LEN];
+        ip[0] = (4 << 4) | ihl;
+        ip[2..4].copy_from_slice(&((IP_V4_HDR_LEN + body.len()) as u16).to_be_bytes());
+        ip[6..8].copy_from_slice(&fragment_offset.to_be_bytes());
+        ip[9] = protocol;
+        ip.extend_from_slice(body);
+        ip
+    }
+
+    /// A UDP datagram from `source_port` carrying `payload`.
+    fn udp_datagram(source_port: u16, payload: &[u8]) -> Vec<u8> {
+        let mut udp = vec![0u8; UDP_HDR_LEN];
+        udp[0..2].copy_from_slice(&source_port.to_be_bytes());
+        udp[4..6].copy_from_slice(&((UDP_HDR_LEN + payload.len()) as u16).to_be_bytes());
+        udp.extend_from_slice(payload);
+        udp
+    }
+
+    /// The ordinary case, which everything below is a departure from.
+    #[test]
+    fn a_whole_datagram_from_the_right_port_yields_its_payload() {
+        let bytes = frame_of(
+            EtherTypes::Ipv4.0,
+            &ipv4_packet(5, 0, 17, &udp_datagram(5353, b"the payload")),
+        );
+        let frame = read(&bytes);
+
+        assert_eq!(udp_payload(&frame, 5353), Some(&b"the payload"[..]));
+        assert_eq!(udp_payload(&frame, 53), None, "another port's datagram");
+    }
+
+    /// Only the first piece of a fragmented datagram carries a UDP header. A
+    /// later one still says protocol 17, and reading it hands the middle of
+    /// somebody's payload to a caller expecting a datagram.
+    ///
+    /// The module documentation has always said a frame that cannot be read
+    /// plainly is declined rather than guessed at; this is the input that was
+    /// guessed at. `local.rs` passes what comes back straight to
+    /// `mdns::extract_hosts`.
+    #[test]
+    fn a_fragment_carries_no_datagram_and_is_declined() {
+        let body = udp_datagram(5353, b"the payload");
+
+        let first = frame_of(EtherTypes::Ipv4.0, &ipv4_packet(5, 0, 17, &body));
+        assert!(
+            udp_payload(&read(&first), 5353).is_some(),
+            "the first fragment does carry a header"
+        );
+
+        for offset in [1, 2, 0x1FFF] {
+            let later = frame_of(EtherTypes::Ipv4.0, &ipv4_packet(5, offset, 17, &body));
+            assert_eq!(
+                udp_payload(&read(&later), 5353),
+                None,
+                "a fragment at offset {} was read as a datagram",
+                offset * 8
+            );
+        }
+    }
+
+    /// The header length is four bits off the wire and the fixed header is five
+    /// words, so anything under five is a claim no header can honour. Trusting
+    /// it put the datagram's start inside the header that named it: with an IHL
+    /// of zero the "source port" is the version nibble and the type of service.
+    #[test]
+    fn a_header_length_below_the_minimum_is_declined() {
+        // The first two bytes have to read as the source port being looked for,
+        // or the walk stops on the port check and this proves nothing. Byte 0 is
+        // the version and header length and byte 1 the type of service, so
+        // version 0 with an IHL of 0 and a TOS of 0x35 spells port 53.
+        let mut packet = ipv4_packet(0, 0, 17, b"not a datagram at all");
+        packet[0] = 0x00;
+        packet[1] = 0x35;
+        assert_eq!(
+            u16::from_be_bytes([packet[0], packet[1]]),
+            53,
+            "the probe does not reach the header-length check it is about"
+        );
+
+        let bytes = frame_of(EtherTypes::Ipv4.0, &packet);
+        assert_eq!(udp_payload(&read(&bytes), 53), None);
+
+        // Five words is the floor and is legal: the refusal must not start one
+        // word too high.
+        let honest = frame_of(
+            EtherTypes::Ipv4.0,
+            &ipv4_packet(5, 0, 17, &udp_datagram(53, b"a datagram")),
+        );
+        assert_eq!(udp_payload(&read(&honest), 53), Some(&b"a datagram"[..]));
+    }
+
+    /// A frame that arrived under another ethertype is not an IPv6 packet
+    /// however its bytes read.
+    ///
+    /// `icmpv6_type` and `icmpv6_echo_token` used to start at the payload
+    /// without asking, so an ARP frame padded to look like an IPv6 header
+    /// reported an ICMPv6 type. `ndp`'s own walk has always checked; the three
+    /// now share it.
+    #[test]
+    fn a_frame_of_another_ethertype_carries_no_icmpv6() {
+        let mut packet = vec![0u8; IP_V6_HDR_LEN];
+        packet[4..6].copy_from_slice(&8u16.to_be_bytes()); // payload length
+        packet[6] = IpNextHeaderProtocols::Icmpv6.0;
+        packet.extend_from_slice(&[128, 0, 0, 0, 0, 0, 0, 0]); // an echo request
+
+        let honest = frame_of(EtherTypes::Ipv6.0, &packet);
+        assert_eq!(
+            icmpv6_type(&read(&honest)).map(|kind| kind.0),
+            Some(128),
+            "an IPv6 frame is still read"
+        );
+
+        for ethertype in [EtherTypes::Arp.0, EtherTypes::Ipv4.0, 0x88CC] {
+            let bytes = frame_of(ethertype, &packet);
+            assert_eq!(
+                icmpv6_type(&read(&bytes)),
+                None,
+                "ethertype {ethertype:#06x} was read as IPv6"
+            );
+            assert_eq!(icmpv6_echo_token(&read(&bytes)), None);
+        }
+    }
+
+    /// The two address readers, and the truncation that credits nobody.
+    #[test]
+    fn an_address_is_read_from_the_header_that_carries_it() {
+        let v4 = frame_of(EtherTypes::Ipv4.0, &{
+            let mut packet = ipv4_packet(5, 0, 17, &[]);
+            packet[12..16].copy_from_slice(&V4.octets());
+            packet
+        });
+        assert_eq!(ipv4_source(&read(&v4)).expect("a source"), V4);
+
+        let source = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let destination = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 9);
+        let v6 = frame_of(EtherTypes::Ipv6.0, &{
+            let mut packet = vec![0u8; IP_V6_HDR_LEN];
+            packet[8..24].copy_from_slice(&source.octets());
+            packet[24..40].copy_from_slice(&destination.octets());
+            packet
+        });
+        assert_eq!(ipv6_source(&read(&v6)).expect("a source"), source);
+        assert_eq!(
+            ipv6_destination(&read(&v6)).expect("a destination"),
+            destination
+        );
+
+        for cut in 0..IP_V4_HDR_LEN {
+            let short = frame_of(EtherTypes::Ipv4.0, &vec![0u8; cut]);
+            assert!(
+                matches!(
+                    ipv4_source(&read(&short)),
+                    Err(PacketError::Truncated { .. })
+                ),
+                "a {cut}-byte header credited somebody"
             );
         }
     }

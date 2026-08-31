@@ -295,7 +295,7 @@ impl HostnameResolver {
 
         for target in &self.query_targets {
             let id = self.get_next_trans_id();
-            let packet = dns::build_ptr_packet(ip, id);
+            let packet = dns::build_ptr_packet(*ip, id);
             match target.socket.send_to(&packet, target.server).await {
                 Ok(_) => sent.push(id),
                 // The server is named here because the error will not say which
@@ -1007,7 +1007,7 @@ mod tests {
     /// It carries no answer, which is deliberate: a server that has no name for
     /// an address, or declines to look, has still answered in DNS.
     fn dns_response(subject: IpAddr) -> Vec<u8> {
-        let mut message = dns::build_ptr_packet(&subject, 0x1234);
+        let mut message = dns::build_ptr_packet(subject, 0x1234);
         message[2] |= 0b1000_0000; // QR: this is a response
         message
     }

@@ -905,7 +905,7 @@ impl LocalScanner {
         };
 
         let packet =
-            protocol::ndp::build_neighbor_solicitation(&self.identity.mac, &source_v6, target_v6);
+            protocol::ndp::build_neighbor_solicitation(self.identity.mac, source_v6, target_v6);
         self.emit(&packet, "confirming solicitation");
         self.ipv6.record_confirmation_sent(target, now);
         info!(
@@ -940,7 +940,7 @@ impl LocalScanner {
             return;
         };
 
-        let packet = protocol::ndp::build_router_solicitation(&self.identity.mac, &link_local);
+        let packet = protocol::ndp::build_router_solicitation(self.identity.mac, link_local);
         self.emit(&packet, "router solicitation");
     }
 
@@ -972,7 +972,7 @@ impl LocalScanner {
             return;
         };
 
-        let packet = protocol::dhcp::build_inform(&self.identity.mac, &source);
+        let packet = protocol::dhcp::build_inform(self.identity.mac, source);
         self.emit(&packet, "dhcp inform");
     }
 
@@ -987,8 +987,8 @@ impl LocalScanner {
         };
 
         let packet = protocol::icmp::build_all_nodes_echo_request_v6(
-            &self.identity.mac,
-            &link_local,
+            self.identity.mac,
+            link_local,
             self.ipv6.solicitation().identifier,
             self.ipv6.solicitation().next_sequence(),
         );
@@ -1009,17 +1009,13 @@ impl LocalScanner {
                 let Some(source_v4) = self.identity.ipv4 else {
                     return;
                 };
-                protocol::arp::build_request(&self.identity.mac, &source_v4, target_v4)
+                protocol::arp::build_request(self.identity.mac, source_v4, target_v4)
             }
             IpAddr::V6(target_v6) => {
                 let Some(source_v6) = self.identity.link_local_ipv6 else {
                     return;
                 };
-                protocol::ndp::build_neighbor_solicitation(
-                    &self.identity.mac,
-                    &source_v6,
-                    target_v6,
-                )
+                protocol::ndp::build_neighbor_solicitation(self.identity.mac, source_v6, target_v6)
             }
         };
 

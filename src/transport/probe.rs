@@ -1021,7 +1021,7 @@ mod filter_conformance {
 
     /// An Ethernet-framed UDP datagram between the given ports.
     fn udp_frame(src: IpAddr, dst: IpAddr, src_port: u16, dst_port: u16) -> Vec<u8> {
-        let segment = udp::build_packet(&src, &dst, src_port, dst_port, vec![0u8; 4])
+        let segment = udp::build_packet(src, dst, src_port, dst_port, vec![0u8; 4])
             .expect("building a UDP datagram");
         frame(src, dst, IpNextHeaderProtocols::Udp, &segment)
     }

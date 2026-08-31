@@ -32,17 +32,17 @@
 
 use crate::protocols::error::{PacketError, Result};
 
-/// The largest message `dns-parser`'s builder will emit, past which it hands
-/// back what it had and refuses. Not a limit this crate chose, and named so the
-/// error can say what the number is.
-const MAX_MESSAGE_BYTES: usize = 512;
-use dns_parser::{Builder, Packet, QueryClass, QueryType, RData};
+use dns_parser::{Packet, RData};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     net::IpAddr,
 };
 
 use crate::protocols::dns;
+
+/// The transaction ID every multicast query carries, which RFC 6762 §18.1
+/// requires to be zero. Nothing correlates on it; see [`build_query`].
+const MULTICAST_QUERY_ID: u16 = 0;
 
 /// The port multicast DNS is spoken on, in both directions.
 pub const PORT: u16 = 5353;
@@ -58,34 +58,44 @@ pub const PORT: u16 = 5353;
 /// That is not how the answer is correlated: an mDNS response echoes no ID worth
 /// trusting, so the caller matches the address records back to the name they own
 /// (see [`extract_hosts`]), which is the same reason the reverse path in
-/// [`crate::protocols::dns`] correlates on the question name. The query is left a
-/// plain one — the unicast-response bit is not set — because the resolver sends
-/// it from an ephemeral port, and a responder seeing a query from any port other
-/// than 5353 must answer it directly under the legacy rule of RFC 6762 §6.7.
+/// [`crate::protocols::dns`] correlates on the question name.
+///
+/// Recursion is not asked for, since a multicast query has nobody to ask it of
+/// (RFC 6762 §18.6), and the unicast-response bit is not set: the resolver sends
+/// from an ephemeral port, and a responder seeing a query from any port other
+/// than 5353 must answer it directly under the legacy rule of §6.7.
+///
+/// # Errors
+///
+/// [`PacketError::UnwritableName`] for a name that has no wire form, which for
+/// an mDNS lookup means a label past 63 octets or a name past 255. `name` is
+/// whatever a caller was asked to resolve, so this is the ordinary way a bad
+/// hostname arrives rather than a rare one.
 pub fn build_query(name: &str) -> Result<Vec<u8>> {
-    let name = name.trim_end_matches('.');
-
-    let mut builder = Builder::new_query(0, false);
-    builder.add_question(name, false, QueryType::A, QueryClass::IN);
-    builder.add_question(name, false, QueryType::AAAA, QueryClass::IN);
-
-    // The builder refuses a message over 512 bytes, and `name` is the only part
-    // a caller decides the length of. Two questions carrying a long enough one
-    // reach it, which is the whole of what can fail here.
-    builder.build().map_err(|partial| PacketError::TooLong {
-        field: "an mDNS query",
-        actual: partial.len(),
-        limit: MAX_MESSAGE_BYTES,
-    })
+    dns::build_query(
+        MULTICAST_QUERY_ID,
+        false,
+        &[(name, dns::record_type::A), (name, dns::record_type::AAAA)],
+    )
 }
 
 /// One host as an mDNS message described it.
-#[derive(Debug, Default, PartialEq, Eq)]
+///
+/// `#[non_exhaustive]`: a responder says more about a host than its name and its
+/// addresses, and reading another of those adds a field here. [`Default`] is
+/// what to build one from.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MdnsHost {
     /// The name the host answers to, without its trailing dot.
     pub hostname: String,
-    /// Every address the message gave for that name.
-    pub ips: HashSet<IpAddr>,
+    /// Every address the message gave for that name, in address order.
+    ///
+    /// Ordered rather than hashed so two runs over one message hand back the
+    /// same list. A responder may name an address twice across the answer and
+    /// additional sections, so this is a set; what it must not be is a set whose
+    /// order moves between processes, since these addresses reach a report.
+    pub ips: BTreeSet<IpAddr>,
 }
 
 /// Reads every host an mDNS message names, in name order.
@@ -96,7 +106,7 @@ pub struct MdnsHost {
 pub fn extract_hosts(data: &[u8]) -> Result<Vec<MdnsHost>> {
     let packet =
         Packet::parse(data).map_err(|error| PacketError::unreadable("an mDNS message", error))?;
-    let mut by_hostname: BTreeMap<String, HashSet<IpAddr>> = BTreeMap::new();
+    let mut by_hostname: BTreeMap<String, BTreeSet<IpAddr>> = BTreeMap::new();
 
     for record in packet.answers.iter().chain(packet.additional.iter()) {
         let (hostname, ip) = match &record.data {
@@ -140,6 +150,7 @@ fn trim_root(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dns_parser::QueryType;
 
     /// The plain case: a responder announcing its own addresses.
     #[test]
@@ -153,7 +164,7 @@ mod tests {
             extract_hosts(&message).unwrap(),
             vec![MdnsHost {
                 hostname: "raspberrypi.local".to_string(),
-                ips: HashSet::from(["192.168.0.150".parse().unwrap(), "fe80::1".parse().unwrap()]),
+                ips: BTreeSet::from(["192.168.0.150".parse().unwrap(), "fe80::1".parse().unwrap()]),
             }]
         );
     }
@@ -190,7 +201,7 @@ mod tests {
             extract_hosts(&message).unwrap(),
             vec![MdnsHost {
                 hostname: "raspberrypi.local".to_string(),
-                ips: HashSet::from(["192.168.0.150".parse().unwrap()]),
+                ips: BTreeSet::from(["192.168.0.150".parse().unwrap()]),
             }]
         );
     }
@@ -214,11 +225,11 @@ mod tests {
             vec![
                 MdnsHost {
                     hostname: "appletv.local".to_string(),
-                    ips: HashSet::from(["192.168.0.40".parse().unwrap()]),
+                    ips: BTreeSet::from(["192.168.0.40".parse().unwrap()]),
                 },
                 MdnsHost {
                     hostname: "printer.local".to_string(),
-                    ips: HashSet::from(["192.168.0.30".parse().unwrap()]),
+                    ips: BTreeSet::from(["192.168.0.30".parse().unwrap()]),
                 },
             ]
         );
@@ -253,6 +264,41 @@ mod tests {
                 ("raspberrypi.local".to_string(), QueryType::AAAA),
             ]
         );
+    }
+
+    /// A name with no wire form comes back as an error.
+    ///
+    /// **This used to abort the process.** `name` is whatever a caller was asked
+    /// to resolve, and the builder underneath asserted the label bound rather
+    /// than reporting it, so a 63-character hostname panicked inside a
+    /// dependency. It reached `Resolver::resolve` through two layers written to
+    /// turn every failure into an empty vector, so nothing between here and the
+    /// caller could have caught it.
+    #[test]
+    fn a_name_with_no_wire_form_is_refused_rather_than_fatal() {
+        let long_label = format!("{}.local", "a".repeat(64));
+        assert!(matches!(
+            build_query(&long_label),
+            Err(PacketError::UnwritableName { .. })
+        ));
+
+        // 63 is the bound and is legal: the refusal must not start one short.
+        assert!(build_query(&format!("{}.local", "a".repeat(63))).is_ok());
+
+        // A name inside every label bound can still be too long as a whole.
+        let long_name = std::iter::repeat_n("label", 60)
+            .collect::<Vec<_>>()
+            .join(".");
+        assert!(matches!(
+            build_query(&long_name),
+            Err(PacketError::UnwritableName { .. })
+        ));
+
+        // A doubled dot is an empty label, which no name may carry.
+        assert!(matches!(
+            build_query("printer..local"),
+            Err(PacketError::UnwritableName { .. })
+        ));
     }
 
     /// The wire form of a name never carries the trailing dot, so a

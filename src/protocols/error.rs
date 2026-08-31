@@ -9,13 +9,36 @@
 //! # Why a packet could not be built or read
 //!
 //! One error type for the whole module, with a variant per thing that can
-//! actually go wrong. There are fewer of those than the old signatures
-//! suggested: most builders here write fixed-size headers into buffers they
-//! allocate themselves, which cannot fail, and they say so now by returning a
-//! packet rather than a `Result`.
+//! actually go wrong. There are fewer of those than the signatures suggest: most
+//! builders here write fixed-size headers into buffers they allocate themselves,
+//! which cannot fail, and they say so by returning a packet rather than a
+//! `Result`.
 //!
-//! What remains is the two failures a caller can genuinely cause, and one a
-//! parser can meet.
+//! What remains falls in three groups. A caller can describe a packet no header
+//! can measure ([`TooLong`], [`OptionsTooLong`], [`OptionsMisaligned`],
+//! [`UnwritableName`]), ask for something the protocols do not offer
+//! ([`FamilyMismatch`], [`WrongFamily`], [`MtuTooSmall`], [`HeaderHasOptions`],
+//! [`UnsupportedFragmentation`]), or hand a reader bytes that are not what they
+//! were read as ([`Truncated`], [`Unreadable`], [`UnexpectedMessage`],
+//! [`UnsupportedEtherType`]).
+//!
+//! The last group is the one that arrives rather than being caused, and under
+//! promiscuous capture most of it is ordinary. See [`PacketError`] for which is
+//! which.
+//!
+//! [`TooLong`]: PacketError::TooLong
+//! [`OptionsTooLong`]: PacketError::OptionsTooLong
+//! [`OptionsMisaligned`]: PacketError::OptionsMisaligned
+//! [`UnwritableName`]: PacketError::UnwritableName
+//! [`FamilyMismatch`]: PacketError::FamilyMismatch
+//! [`WrongFamily`]: PacketError::WrongFamily
+//! [`MtuTooSmall`]: PacketError::MtuTooSmall
+//! [`HeaderHasOptions`]: PacketError::HeaderHasOptions
+//! [`UnsupportedFragmentation`]: PacketError::UnsupportedFragmentation
+//! [`Truncated`]: PacketError::Truncated
+//! [`Unreadable`]: PacketError::Unreadable
+//! [`UnexpectedMessage`]: PacketError::UnexpectedMessage
+//! [`UnsupportedEtherType`]: PacketError::UnsupportedEtherType
 
 use std::net::IpAddr;
 
@@ -49,12 +72,33 @@ pub enum PacketError {
     /// destination, so the two have to agree on what an address is. This is a
     /// caller mistake rather than a network condition: nothing on the wire
     /// produces it.
+    ///
+    /// Distinct from [`WrongFamily`](Self::WrongFamily), which is two addresses
+    /// that agree with each other and not with the protocol between them.
     #[error("cannot checksum from {src} to {dst}: an IPv4 and an IPv6 address")]
     FamilyMismatch {
         /// The source that was given.
         src: IpAddr,
         /// The destination that was given.
         dst: IpAddr,
+    },
+
+    /// A checksum was asked for over an address family the protocol it belongs
+    /// to does not have.
+    ///
+    /// ICMPv6 is the case this exists for: its checksum covers an IPv6
+    /// pseudo-header and there is no IPv4 form of the message, so an ICMPv6
+    /// layer inside an IPv4 header is a packet nothing can build. Reported apart
+    /// from [`FamilyMismatch`](Self::FamilyMismatch) because the two addresses
+    /// agree here, and saying they do not sends a reader after the wrong fault.
+    #[error("an {protocol} checksum covers {expected} addresses, and {got} is not one")]
+    WrongFamily {
+        /// The protocol whose checksum was being computed, such as `"ICMPv6"`.
+        protocol: &'static str,
+        /// The family it needs, such as `"IPv6"`.
+        expected: &'static str,
+        /// One of the addresses that was given instead.
+        got: IpAddr,
     },
 
     /// A datagram was handed to the fragmenter with an MTU too small to split
@@ -177,6 +221,21 @@ pub enum PacketError {
         got: &'static str,
     },
 
+    /// A name has no wire form, so no message could be built around it.
+    ///
+    /// DNS spells a name as length-prefixed labels, and the prefix is one byte
+    /// with its top two bits reserved for compression pointers. That caps a
+    /// label at 63 octets and a whole name at 255 (RFC 1035 §2.3.4). A name past
+    /// either bound is refused here rather than encoded into a message no
+    /// resolver will read back.
+    #[error("{name} is not a name this can write: {detail}")]
+    UnwritableName {
+        /// The name that was given.
+        name: String,
+        /// Which bound it broke, and by how much.
+        detail: String,
+    },
+
     /// A buffer held too few bytes to read the header it was supposed to
     /// contain.
     ///
@@ -239,6 +298,14 @@ impl PacketError {
     pub(crate) fn unreadable(what: &'static str, detail: impl std::fmt::Display) -> Self {
         Self::Unreadable {
             what,
+            detail: detail.to_string(),
+        }
+    }
+
+    /// The error for a name that cannot be spelled in DNS's label encoding.
+    pub(crate) fn unwritable_name(name: &str, detail: impl std::fmt::Display) -> Self {
+        Self::UnwritableName {
+            name: name.to_string(),
             detail: detail.to_string(),
         }
     }

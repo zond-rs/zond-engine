@@ -425,8 +425,8 @@ fn send_syn(
 
     let packet = match protocol::tcp::build_probe_shaped(
         TcpScanTechnique::Syn,
-        &src_addr,
-        &dst_addr,
+        src_addr,
+        dst_addr,
         src_port,
         dst_port,
         seq_num,
@@ -452,8 +452,8 @@ fn send_syn(
         .filter_map(|&decoy| {
             protocol::tcp::build_probe_shaped(
                 TcpScanTechnique::Syn,
-                &decoy,
-                &dst_addr,
+                decoy,
+                dst_addr,
                 rand::random_range(50_000..u16::MAX),
                 dst_port,
                 rand::random_range(0..=u32::MAX),
@@ -548,8 +548,8 @@ fn send_udp(
     let payload = payload::for_port(dst_port).to_vec();
 
     let packet = match crate::protocols::udp::build_packet_shaped(
-        &src_addr,
-        &dst_addr,
+        src_addr,
+        dst_addr,
         src_port,
         dst_port,
         payload,
@@ -573,8 +573,8 @@ fn send_udp(
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
         .filter_map(|&decoy| {
             crate::protocols::udp::build_packet_shaped(
-                &decoy,
-                &dst_addr,
+                decoy,
+                dst_addr,
                 rand::random_range(50_000..u16::MAX),
                 dst_port,
                 payload::for_port(dst_port).to_vec(),

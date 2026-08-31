@@ -1025,7 +1025,7 @@ impl FakeLink {
         target: IpAddr,
     ) -> Option<CapturedSegment> {
         let bytes =
-            udp::build_packet(&target, &scanner, probe.port, probe.reply_port, Vec::new()).ok()?;
+            udp::build_packet(target, scanner, probe.port, probe.reply_port, Vec::new()).ok()?;
 
         Some(CapturedSegment::synthetic(
             target,

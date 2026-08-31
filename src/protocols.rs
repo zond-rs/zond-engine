@@ -71,6 +71,29 @@
 //! header, and reports a frame it cannot read plainly rather than working harder
 //! to interpret it. Missing a frame costs one observation; misreading one
 //! credits a host that was never there.
+//!
+//! ## What a short tail costs, and what it does not
+//!
+//! Four readers here walk a run of records whose lengths came off the wire:
+//! [`lldp`]'s type-length-value units, [`cdp`]'s records, [`dhcp`]'s options and
+//! [`sctp`]'s chunks. All four meet the same two situations, and all four answer
+//! them the same way.
+//!
+//! **A record whose length runs past the buffer ends the walk, and what was
+//! already read is kept.** A capture cut at its snapshot length ends mid-record,
+//! and so does a frame from equipment that miscounted; neither is a reason to
+//! throw away the fields in front of it. An LLDP unit that names the switch and
+//! the port and then stops mid-description is worth exactly the switch and the
+//! port.
+//!
+//! **A record whose value cannot be read is skipped, and the walk carries on.**
+//! One vendor's malformed system description must not cost the chassis
+//! identifier beside it.
+//!
+//! Each walk is bounded by a count as well, because the lengths that drive it
+//! are a stranger's and a run of them must not decide how long a loop in this
+//! process runs. Past the bound the walk stops and keeps what it has, which is
+//! the same answer as a short tail.
 
 pub mod arp;
 pub mod cdp;
@@ -88,6 +111,10 @@ pub mod sctp;
 pub mod sizes;
 pub mod tcp;
 pub mod udp;
+
+// Reading a string a stranger wrote, shared by the three announcement protocols
+// that carry one. Private, being a helper rather than a protocol.
+mod text;
 
 use crate::protocols::ethernet::Frame;
 use pnet_packet::ethernet::EtherTypes;

@@ -279,8 +279,8 @@ impl Tracer {
                 let sequence = (u32::from(self.marker) << 8) | u32::from(distance);
                 match tcp::build_probe(
                     crate::model::technique::TcpScanTechnique::Syn,
-                    &source,
-                    &target,
+                    source,
+                    target,
                     self.marker,
                     port,
                     sequence,
@@ -1289,8 +1289,8 @@ mod tests {
             TraceProbe::Syn { port } => (
                 tcp::build_probe(
                     crate::model::technique::TcpScanTechnique::Syn,
-                    &source,
-                    &target,
+                    source,
+                    target,
                     marker,
                     port,
                     (u32::from(marker) << 8) | u32::from(distance),
