@@ -182,12 +182,12 @@ pub struct EvasionProfile {
     /// combination the scan technique would otherwise send, or `None` to send
     /// the technique's own.
     ///
-    /// The six named techniques are a curated menu — each a flag combination
+    /// The seven named techniques are a curated menu, each a flag combination
     /// with a defined open/closed meaning. This opens the whole space instead,
     /// for the diagnostic worth of a combination a filter or a stack has no
-    /// settled answer to. The cost is exactly that: an arbitrary combination
-    /// carries no such meaning, so a port probed with one is read only as
-    /// *reachable* (something answered) or *silent*, never open or closed. The
+    /// settled answer to. The cost is that: an arbitrary combination carries no
+    /// such meaning, so a port probed with one is read only as reachable, meaning
+    /// something answered, or silent, never open or closed. The
     /// bits are those of [`crate::protocols::tcp::flags`].
     ///
     /// This shapes the TCP port scan alone. Host discovery, the OS-detection

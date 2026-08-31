@@ -82,7 +82,7 @@ const WORD_IN_BYTES: usize = 4;
 ///
 /// Immaterial to classification, since no probe here intends to receive
 /// anything, but it is a field stack fingerprinters read, so it is one value
-/// across all six techniques rather than a per-technique signature.
+/// across all seven techniques rather than a per-technique signature.
 ///
 /// [`craft::Tcp::new`] reads it too, so a hand-built segment is unremarkable
 /// beside the probes without anybody having to look the number up. That is the
