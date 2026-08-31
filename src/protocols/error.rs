@@ -107,7 +107,7 @@ pub enum PacketError {
     /// A fragment offset counts eight-byte units, so the smallest step a
     /// fragment can make through the datagram is one unit past the header. An
     /// MTU that will not hold even that carries no payload at all, and splitting
-    /// to fit it would emit headers forever without ever reaching the end —
+    /// to fit it would emit headers forever without reaching the end, so it is
     /// refused rather than looped.
     #[error("an MTU of {mtu} cannot fragment past a {minimum}-byte floor")]
     MtuTooSmall {
@@ -152,7 +152,7 @@ pub enum PacketError {
     /// Both IPv4's header length and TCP's data offset are four bits counting
     /// four-byte words, so each describes at most fifteen of them: sixty bytes
     /// of header, forty of which are options. A longer run cannot be measured,
-    /// and the field wraps rather than saturating — forty-four bytes of options
+    /// and the field wraps rather than saturating, so forty-four bytes of options
     /// produce a header declaring itself zero words long.
     #[error(
         "{what} carrying {options} bytes of options cannot be measured: its length field holds at most {limit}"

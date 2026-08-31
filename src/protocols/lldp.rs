@@ -11,15 +11,15 @@
 //! What the equipment on a link says about itself, unprompted.
 //!
 //! A managed switch emits one of these to each of its ports every thirty seconds
-//! or so, naming itself, naming the port you are plugged into, and listing what
-//! it is capable of. There is no request. Nothing here builds a frame, because
-//! there is no question to ask: the answer arrives on its own or not at all.
+//! or so, naming itself, naming the port on the far end, and listing what it is
+//! capable of. There is no request, and nothing here builds a frame, since there
+//! is no question to ask: the answer arrives on its own or not at all.
 //!
 //! That makes it unlike everything else this module reads. A port scan learns
-//! what a host will admit to; this learns what the *network* says, from the one
-//! device in a position to know — and it is the only source in this crate for
-//! two facts no probe can obtain: **which switch this machine is attached to,
-//! and on which port.**
+//! what a host will admit to, where this learns what the network says from the
+//! one device in a position to know. It is the only source in this crate for two
+//! facts no probe can obtain: which switch this machine is attached to, and on
+//! which port.
 //!
 //! ## What it is worth trusting about
 //!
@@ -50,9 +50,9 @@ pub const ETHERTYPE: EtherType = EtherType(0x88CC);
 /// constrain rather than forward.
 ///
 /// `...:0E` is the nearest-bridge address and by far the usual one. The other
-/// two exist so an advertisement can be constrained to a different scope, and
-/// are read the same way because what they change is how far the frame
-/// travels — not what it says.
+/// two exist so an advertisement can be constrained to a different scope, and are
+/// read the same way, since what they change is how far the frame travels rather
+/// than what it says.
 const GROUP_ADDRESSES: [MacAddr; 3] = [
     MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
     MacAddr(0x01, 0x80, 0xC2, 0x00, 0x00, 0x03),
@@ -92,9 +92,9 @@ const TLV_ORGANIZATIONALLY_SPECIFIC: u8 = 127;
 // numbers chassis subtypes in Table 8-2 and port subtypes in Table 8-3, and the
 // same meaning sits at a different number in each: a MAC address is 4 for a
 // chassis and 3 for a port, a network address 5 and 4. Read with one table, a
-// port named `GigabitEthernet1/0/14` is decoded as a network address — which
-// fails quietly, because subtype 5 means *interface name* for a port and the
-// bytes parse as neither.
+// port named `GigabitEthernet1/0/14` is decoded as a network address, which
+// fails quietly: subtype 5 means an interface name for a port, and the bytes
+// parse as neither.
 const CHASSIS_SUBTYPE_MAC: u8 = 4;
 const CHASSIS_SUBTYPE_NETWORK: u8 = 5;
 const PORT_SUBTYPE_MAC: u8 = 3;
@@ -124,8 +124,8 @@ pub enum Identifier<'a> {
     Mac(MacAddr),
     /// A network address the sender is reachable at.
     Network(IpAddr),
-    /// An interface name, an alias, or a locally-assigned string — whichever of
-    /// those the subtype named. All are text a person configured.
+    /// An interface name, an alias, or a locally-assigned string, whichever the
+    /// subtype named. All are text a person configured.
     Text(&'a str),
     /// A subtype this module does not interpret, kept as it arrived.
     ///
@@ -142,8 +142,8 @@ pub enum Identifier<'a> {
 
 /// What a device says it can do, and what it says it is doing.
 ///
-/// **The two are not the same claim and this type will not let them be
-/// confused.** A switch with a routing licence it has never been given an
+/// The two are not the same claim and this type will not let them be confused.
+/// A switch with a routing licence it has never been given an
 /// interface for reports routing as supported and not enabled; reading the first
 /// as behaviour would put a router on every access switch in the building.
 /// Every predicate here reads *enabled*.
@@ -188,12 +188,12 @@ impl Capabilities {
         self.enabled & Self::REPEATER != 0
     }
 
-    /// Whether the device says it is an endpoint and nothing else — it does not
-    /// forward for anybody.
+    /// Whether the device says it is an endpoint and nothing else, forwarding for
+    /// nobody.
     ///
     /// A positive claim rather than the absence of the others, which is why it
-    /// is worth reading: a workstation that says this has told you it is not
-    /// part of the infrastructure.
+    /// is worth reading: a workstation that says this has said it is not part of
+    /// the infrastructure.
     pub fn is_station_only(self) -> bool {
         self.enabled & Self::STATION_ONLY != 0
     }
@@ -225,8 +225,8 @@ pub struct Advertisement<'a> {
     /// How the device names itself. Required by the standard.
     pub chassis_id: Option<Identifier<'a>>,
 
-    /// How the device names the port this frame left by — which is the port
-    /// this machine is plugged into.
+    /// How the device names the port this frame left by, which is the port this
+    /// machine is plugged into.
     ///
     /// The single most useful thing here, and the one no probe can obtain: it
     /// locates this machine in somebody's wiring.
@@ -254,8 +254,9 @@ pub struct Advertisement<'a> {
     ///
     /// The first, where several were sent. A device may advertise one per
     /// address family and per management interface, and any of them answers the
-    /// question this is read for — how to reach the box — so the alternatives
-    /// are not carried. A caller needing all of them wants the TLVs.
+    /// question this is read for, which is how to reach the box, so the
+    /// alternatives are not carried. A caller needing all of them wants the
+    /// TLVs.
     pub management_address: Option<IpAddr>,
 
     /// The VLAN this port places untagged traffic in, where the device
@@ -286,7 +287,7 @@ pub struct Advertisement<'a> {
 /// required to be one of the group addresses: a frame that reached this capture
 /// with LLDP's EtherType is an advertisement whoever it was addressed to, and on
 /// a mirrored port the destination is somebody else's. Where the distinction
-/// matters — whether the sender is on *this* segment — the caller has the
+/// matters, meaning whether the sender is on this segment, the caller has the
 /// destination and [`addressed_to_a_bridge_group`] to ask with.
 pub fn parse<'a>(frame: &Frame<'a>) -> Option<Advertisement<'a>> {
     if frame.ethertype() != ETHERTYPE {
@@ -351,10 +352,10 @@ pub fn parse<'a>(frame: &Frame<'a>) -> Option<Advertisement<'a>> {
         }
     }
 
-    // A data unit carrying none of the three mandatory fields is not one this
-    // has read successfully — it is bytes that happened to arrive under LLDP's
-    // EtherType, and crediting a device with an empty advertisement would put a
-    // finding on the record that nothing said.
+    // A data unit carrying none of the three mandatory fields has not been read
+    // successfully. It is bytes that happened to arrive under LLDP's EtherType,
+    // and crediting a device with an empty advertisement would put a finding on
+    // the record that nothing said.
     let read_something = advertisement.chassis_id.is_some()
         || advertisement.port_id.is_some()
         || advertisement.ttl.is_some();
@@ -387,8 +388,8 @@ pub fn addressed_to_a_bridge_group(destination: MacAddr) -> bool {
 /// Splits one type-length-value record off the front of `bytes`.
 ///
 /// Returns the type, the value, and whatever follows. `None` when there are too
-/// few bytes for a header or for the length the header claims — the second being
-/// the case that matters, since the length comes off the wire.
+/// few bytes for a header or for the length the header claims, the second being
+/// the case that matters since the length comes off the wire.
 fn next_tlv(bytes: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     let header = bytes.first_chunk::<2>()?;
 
@@ -447,10 +448,10 @@ fn capabilities(value: &[u8]) -> Option<Capabilities> {
 
 /// Reads the address out of a management-address TLV.
 ///
-/// The TLV's shape is a length byte covering the family and the address
-/// together, then the family, then the address — followed by interface
-/// numbering and an object identifier this does not read, since neither says
-/// how to reach the device.
+/// The TLV's shape is a length byte covering the family and the address together,
+/// then the family, then the address, followed by interface numbering and an
+/// object identifier this does not read, since neither says how to reach the
+/// device.
 fn management(value: &[u8]) -> Option<IpAddr> {
     let (length, rest) = value.split_first()?;
 
@@ -570,8 +571,8 @@ pub(crate) mod tests {
         )
     }
 
-    /// A port identified by name: subtype 5 in the *port* table, which is
-    /// subtype 5 in the chassis table too — but means a network address there.
+    /// A port identified by name: subtype 5 in the port table, which is subtype 5
+    /// in the chassis table too and means a network address there.
     fn port_named(name: &str) -> Vec<u8> {
         let mut value = vec![5u8];
         value.extend_from_slice(name.as_bytes());
@@ -680,8 +681,8 @@ pub(crate) mod tests {
     /// the same number means different things in each.
     ///
     /// This was wrong when it was first written: one table was used for both, so
-    /// a port named `GigabitEthernet1/0/14` — subtype 5, an interface name —
-    /// was read against the chassis table, where 5 is a network address. It
+    /// a port named `GigabitEthernet1/0/14`, subtype 5 and an interface name,
+    /// was read against the chassis table where 5 is a network address. It
     /// produced no error and no value, which is how a reader loses the single
     /// most useful field in the protocol without anybody noticing.
     #[test]
@@ -719,7 +720,7 @@ pub(crate) mod tests {
     ///
     /// A switch licensed to route but not routing advertises the bit as
     /// supported and not as enabled. Read from the wrong half of the TLV, every
-    /// such switch becomes a router — and on a campus network that is most of
+    /// such switch becomes a router, and on a campus network that is most of
     /// them.
     #[test]
     fn a_capability_that_is_supported_but_not_enabled_is_not_a_claim() {
@@ -746,7 +747,7 @@ pub(crate) mod tests {
 
     /// The type and length share a byte: seven bits of type, then the top bit of
     /// a nine-bit length. A reader that takes the length from the second byte
-    /// alone truncates every value longer than 255 — and a system description is
+    /// alone truncates every value longer than 255, and a system description is
     /// routinely longer than that.
     #[test]
     fn a_value_longer_than_a_byte_can_count_is_read_whole() {
@@ -788,7 +789,7 @@ pub(crate) mod tests {
     /// A truncated capture ends mid-TLV, and what was read before the cut is
     /// kept rather than thrown away with it.
     ///
-    /// **This test used to pass without running.** Its only assertion sat inside
+    /// This test used to pass without running. Its only assertion sat inside
     /// `if let Some(advertisement) = parse(&frame)`, and `parse` returned `None`
     /// for every cut it generated, so the block never executed and the test
     /// passed for a parser that declined unconditionally. Which is very nearly

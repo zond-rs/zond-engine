@@ -17,15 +17,15 @@
 //!
 //! It knows headers. It does not know what a scan is. Nothing here decides which
 //! address to probe, how often, in what order, or what an answer proves about a
-//! host — all of that belongs to [`scanner`](crate::scanner), and keeping it out
-//! is what lets these functions serve anything, including a caller who is not
-//! running a scan at all.
+//! host; all of that belongs to [`scanner`](crate::scanner), and keeping it out
+//! is what lets these functions serve a caller who is not running a scan at
+//! all.
 //!
 //! The one place the line is easy to blur is a reply.
-//! [`tcp::classify_probe_response`] says a RST arrived and deliberately does not
-//! say what that means, because a RST is a closed port to a FIN probe and an
-//! unfiltered path to an ACK probe. Only the technique that sent the probe
-//! knows which, so that verdict lives on
+//! [`tcp::classify_probe_response`] says a RST arrived and does not say what
+//! that means, since a RST is a closed port to a FIN probe and an unfiltered path
+//! to an ACK probe. Only the technique that sent the probe knows which, so that
+//! verdict lives on
 //! [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique) instead.
 //!
 //! ## How things are named
@@ -45,16 +45,14 @@
 //!
 //! ## Two of these only read
 //!
-//! [`lldp`] and [`cdp`] carry no builders, and the omission is the point. Every
-//! other protocol here exists so that a scan can *ask* something; those two are
-//! what the equipment on a link says about itself on its own timer, with no
-//! question to put. A switch names itself, names the port this machine is
-//! plugged into, and lists what it is doing, roughly every thirty seconds,
-//! whether or not anybody is listening.
+//! [`lldp`] and [`cdp`] carry no builders. Every other protocol here exists so a
+//! scan can ask something, where those two are what the equipment on a link says
+//! about itself on its own timer with no question put to it. A switch names
+//! itself, names the port this machine is plugged into, and lists what it is
+//! doing, roughly every thirty seconds, whether or not anybody is listening.
 //!
-//! Emitting one would be a different thing entirely — it would be this engine
-//! claiming to be network equipment, on a segment it was asked to measure — so
-//! the modules read and do not write.
+//! Emitting one would be this engine claiming to be network equipment on a
+//! segment it was asked to measure, so the modules read and do not write.
 //!
 //! ## Building a packet usually cannot fail
 //!
@@ -79,21 +77,20 @@
 //! [`sctp`]'s chunks. All four meet the same two situations, and all four answer
 //! them the same way.
 //!
-//! **A record whose length runs past the buffer ends the walk, and what was
-//! already read is kept.** A capture cut at its snapshot length ends mid-record,
-//! and so does a frame from equipment that miscounted; neither is a reason to
-//! throw away the fields in front of it. An LLDP unit that names the switch and
-//! the port and then stops mid-description is worth exactly the switch and the
-//! port.
+//! A record whose length runs past the buffer ends the walk, and what was already
+//! read is kept. A capture cut at its snapshot length ends mid-record, and so
+//! does a frame from equipment that miscounted, and neither is a reason to throw
+//! away the fields in front of it. An LLDP unit that names the switch and the
+//! port and then stops mid-description is worth the switch and the port.
 //!
-//! **A record whose value cannot be read is skipped, and the walk carries on.**
-//! One vendor's malformed system description must not cost the chassis
-//! identifier beside it.
+//! A record whose value cannot be read is skipped and the walk carries on. One
+//! vendor's malformed system description must not cost the chassis identifier
+//! beside it.
 //!
-//! Each walk is bounded by a count as well, because the lengths that drive it
-//! are a stranger's and a run of them must not decide how long a loop in this
-//! process runs. Past the bound the walk stops and keeps what it has, which is
-//! the same answer as a short tail.
+//! Each walk is bounded by a count as well. The lengths that drive it are a
+//! stranger's, and a run of them must not decide how long a loop in this process
+//! runs. Past the bound the walk stops and keeps what it has, which is the same
+//! answer as a short tail.
 
 pub mod arp;
 pub mod cdp;

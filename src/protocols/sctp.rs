@@ -26,7 +26,7 @@
 //! Silence is neither, and means open-or-filtered exactly as it does for a UDP
 //! port: an INIT chunk is the only thing that draws an answer, so a dropped
 //! probe and a dropped reply look the same. Which verdict silence earns, and how
-//! an ICMP unreachable is read, is the scanner's decision — see
+//! an ICMP unreachable is read, is the scanner's decision; see
 //! [`classify_probe_response`] for where this module stops.
 //!
 //! ## The nonce is the Initiate Tag
@@ -34,21 +34,21 @@
 //! Every INIT carries a 32-bit Initiate Tag the peer is obliged to echo: a
 //! listener's INIT-ACK and a closed port's ABORT both set their common-header
 //! verification tag to it (RFC 4960 §3.3.2, §8.4). That is what ties a reply to
-//! the exact probe that drew it, the way a TCP probe's nonce does — and unlike
-//! TCP it never moves between fields, because an INIT has only the one place to
-//! put it. [`echoed_nonce`] reads it back.
+//! the exact probe that drew it, the way a TCP probe's nonce does, and unlike TCP
+//! it never moves between fields, since an INIT has only the one place to put it.
+//! [`echoed_nonce`] reads it back.
 //!
 //! The INIT's *own* common-header verification tag is zero, which RFC 4960
 //! §8.5.1 requires. That is why a probe quoted back inside an ICMP error names
-//! its port but not its attempt until the quotation runs past the common header
-//! — see [`quoted_init_tag`], the SCTP twin of the story in
+//! its port but not its attempt until the quotation runs past the common header.
+//! See [`quoted_init_tag`], the SCTP twin of the story in
 //! [`tcp::quoted_nonce`](super::tcp::quoted_nonce).
 //!
 //! ## The checksum is a CRC32c, over the packet alone
 //!
 //! SCTP does not use the internet checksum. It carries a CRC32c (RFC 3309, RFC
-//! 4960 §6.8) computed over the whole packet with the field zeroed and — the
-//! part that catches everyone — written into the field little-endian. It covers
+//! 4960 §6.8) computed over the whole packet with the field zeroed and, the part
+//! that catches everyone, written into the field little-endian. It covers
 //! no pseudo-header, so unlike a TCP or UDP probe an SCTP one needs no addresses
 //! to be built. The computation lives in [`craft`]; this module
 //! assembles the chunks around it.
@@ -82,7 +82,7 @@ pub mod chunk_type {
 
 /// The receive window an INIT advertises, in bytes.
 ///
-/// Immaterial to classification — the probe intends to receive nothing — but a
+/// Immaterial to classification, the probe intending to receive nothing, but a
 /// field a peer reads back, so it is one plausible value across every probe
 /// rather than a signature. Mirrors [`tcp`](super::tcp)'s advertised window.
 const ADVERTISED_RWND: u32 = 65_535;
@@ -98,12 +98,13 @@ const INBOUND_STREAMS: u16 = 65_535;
 ///
 /// The packet's common-header verification tag is zero, which RFC 4960 §8.5.1
 /// requires of anything carrying an INIT, and the Initiate Tag inside the chunk
-/// is `initiate_tag`. A conformant peer — whether it accepts with an INIT-ACK or
-/// refuses with an ABORT — copies that tag into its reply's verification tag, so
+/// is `initiate_tag`. A conformant peer copies that tag into its reply's
+/// verification tag, whether it accepts with an INIT-ACK or refuses with an
+/// ABORT, so
 /// the caller recovers it with [`echoed_nonce`] and matches it against what it
 /// sent.
 ///
-/// **`initiate_tag` must be non-zero** (RFC 4960 §3.3.2); a random tag per probe
+/// `initiate_tag` must be non-zero (RFC 4960 §3.3.2); a random tag per probe
 /// is both the requirement and what makes correlation trustworthy. A zero tag is
 /// left to the caller to avoid rather than silently rewritten, on the same
 /// reasoning [`tcp::build_probe`](super::tcp::build_probe) does not police its
@@ -173,7 +174,7 @@ pub fn chunk(chunk_type: u8, flags: u8, value: &[u8]) -> Result<Vec<u8>> {
 
 /// The two answers an INIT scan can draw, as read off the wire.
 ///
-/// What either one *proves* about a port — open, closed — is the scanner's to
+/// What either one proves about a port, open or closed, is the scanner's to
 /// conclude, the way [`TcpReply`](crate::model::technique::TcpReply) leaves its
 /// verdict to the technique that sent the probe. Naming the chunk rather than
 /// the conclusion keeps this module from deciding something only the scan knows.
@@ -226,7 +227,7 @@ impl<'a> Segment<'a> {
 
 /// One chunk of a [`Segment`], as read from the wire.
 ///
-/// **Not `#[non_exhaustive]`**, on the reasoning
+/// Not `#[non_exhaustive]`, on the reasoning
 /// [`VlanTag`](crate::protocols::ethernet::VlanTag) sets out: RFC 4960 §3.2
 /// defines a chunk as a type byte, a flags byte, a length and the value it
 /// measures, and there is nothing else in one to read.
@@ -245,8 +246,8 @@ pub struct Chunk<'a> {
 /// Stops rather than guesses at a malformed length: a chunk claiming fewer than
 /// its four header bytes cannot say where the next one starts, so iteration ends
 /// there instead of spinning. That is the safe reading of a hostile or truncated
-/// packet — a missed chunk credits nothing, where a loop that never advances
-/// hangs the receive path.
+/// packet: a missed chunk credits nothing, where a loop that never advances hangs
+/// the receive path.
 #[derive(Debug, Clone, Copy)]
 pub struct Chunks<'a> {
     rest: &'a [u8],
@@ -308,8 +309,8 @@ pub fn parse(bytes: &'_ [u8]) -> Result<Segment<'_>> {
 /// Classifies a received packet as one of the two answers an INIT scan can draw,
 /// if it is one.
 ///
-/// Returns `None` for anything else — a heartbeat, a shutdown, a chunk from an
-/// association this scan is not part of — which a caller should treat as noise.
+/// Returns `None` for anything else, such as a heartbeat, a shutdown, or a chunk
+/// from an association this scan is not part of, which a caller treats as noise.
 /// An INIT-ACK settles the question ahead of anything bundled behind it, on the
 /// same reasoning [`tcp::classify_probe_response`](super::tcp::classify_probe_response)
 /// reads a RST first: it is the decisive answer, and the two never legitimately
@@ -339,8 +340,8 @@ pub fn echoed_nonce(reply: &Segment<'_>) -> u32 {
 ///
 /// Not a [`Segment`], because there may not be a whole one: RFC 792 guarantees
 /// only the IP header plus the offending packet's first eight bytes, which for
-/// SCTP are the two ports and the verification tag — enough to say a probe was
-/// this scan's, but not which attempt, since an INIT's tag is zero and its
+/// SCTP are the two ports and the verification tag, enough to say a probe was
+/// this scan's but not which attempt, since an INIT's tag is zero and its
 /// Initiate Tag sits past the eight. See [`quoted_init_tag`].
 ///
 /// `#[non_exhaustive]`, for the reason
@@ -376,9 +377,9 @@ pub fn quoted_probe(quoted: &[u8]) -> Option<QuotedProbe> {
 /// The Initiate Tag a quoted INIT carried, or `None` when the quotation stopped
 /// short of it or did not begin with an INIT.
 ///
-/// The tag names the exact attempt, but it sits sixteen bytes in — past the
-/// common header and the INIT chunk's own header — so only a sender generous
-/// enough to quote past the guaranteed eight reveals it. A caller that gets
+/// The tag names the exact attempt, but it sits sixteen bytes in, past the common
+/// header and the INIT chunk's own header, so only a sender generous enough to
+/// quote past the guaranteed eight reveals it. A caller that gets
 /// `None` still has the ports from [`quoted_probe`] and should resolve the error
 /// against the probe without claiming to know which attempt, exactly as an
 /// ACK-carrying TCP probe does in
@@ -459,7 +460,7 @@ mod tests {
         assert_eq!(bytes.len(), SCTP_COMMON_HDR_LEN + 20);
     }
 
-    /// The whole point of the CRC32c living behind the builder: the probe leaves
+    /// What the CRC32c living behind the builder buys: the probe leaves
     /// with a valid one, computed over the packet with the field zeroed and
     /// written little-endian. Recomputed here the way a receiver would.
     #[test]
@@ -480,8 +481,8 @@ mod tests {
     // ── Correlation and classification ───────────────────────────────────────
 
     /// An open port answers with an INIT-ACK, a closed one with an ABORT, and
-    /// both echo the Initiate Tag we sent as their verification tag — which is
-    /// what lets a reply be tied to its probe.
+    /// both echo the probe's Initiate Tag as their verification tag, which is
+    /// what ties a reply to the probe that drew it.
     #[test]
     fn an_init_ack_reads_as_open_and_an_abort_as_closed() {
         let init_ack_bytes = reply(NONCE, chunk_type::INIT_ACK);
@@ -535,7 +536,7 @@ mod tests {
 
     /// The eight bytes an ICMP error is guaranteed to quote name the probe's
     /// ports and its zero verification tag, but the Initiate Tag that names the
-    /// attempt needs a more generous quotation — the SCTP twin of an ACK-carrying
+    /// attempt needs a more generous quotation, the SCTP twin of an ACK-carrying
     /// TCP probe.
     #[test]
     fn a_quoted_probe_needs_a_generous_quotation_to_name_its_attempt() {
@@ -567,7 +568,7 @@ mod tests {
     /// A chunk value past what the length field can count is refused, not
     /// wrapped.
     ///
-    /// **The two build profiles used to disagree about this.** A `debug_assert`
+    /// The two build profiles used to disagree about this. A `debug_assert`
     /// stated the bound, so a debug build panicked and a release build wrapped:
     /// four bytes short of 64 KiB produced a chunk declaring itself zero bytes
     /// long, which every receiver reads as the end of the packet. `ip.rs` has a

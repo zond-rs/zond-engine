@@ -94,15 +94,15 @@ pub fn build_ipv4_header(
 
 /// Splits an IPv4 datagram into fragments that each fit within `mtu` bytes.
 ///
-/// `header` is the IPv4 header the caller would otherwise send whole; `payload`
-/// is the finished Layer-4 segment behind it — a TCP or UDP segment whose
-/// checksum was computed over the entire thing. The segment is split as opaque
+/// `header` is the IPv4 header the caller would otherwise send whole, and
+/// `payload` is the finished Layer-4 segment behind it, a TCP or UDP segment
+/// whose checksum was computed over the whole. The segment is split as opaque
 /// bytes and never re-checksummed: only the first fragment carries the Layer-4
 /// header, and the rest are the middle of a datagram the receiver puts back
 /// together.
 ///
-/// Each returned packet is a complete IPv4 packet — header bytes, sized and
-/// checksummed for its own piece, followed by that piece — ready to hand to a
+/// Each returned packet is a complete IPv4 packet, meaning header bytes sized and
+/// checksummed for its own piece followed by that piece, ready to hand to a
 /// link-layer send. This is where the engine picks the fragmentation flags the
 /// module documentation promises it does:
 /// [`MORE_FRAGMENTS`](craft::ipv4_flags::MORE_FRAGMENTS) on every fragment but
@@ -127,7 +127,7 @@ pub fn build_ipv4_header(
 /// than split into fragments a receiver would reassemble wrongly.
 ///
 /// [`PacketError::MtuTooSmall`] when `mtu` cannot hold the header and at least
-/// one eight-byte unit of payload — a fragment carrying less makes no forward
+/// one eight-byte unit of payload. A fragment carrying less makes no forward
 /// progress, and refusing is the only alternative to an unbounded run of them.
 ///
 /// [`PacketError::TooLong`] when the datagram is larger than the 16-bit
@@ -145,8 +145,8 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
     let mtu = mtu as usize;
 
     // The one limit that governs the whole datagram: past it the reassembled
-    // length cannot be described, and — header plus payload being at most 65 535
-    // — no fragment can start beyond what the offset field holds either.
+    // length cannot be described, and with header plus payload at most 65 535 no
+    // fragment can start beyond what the offset field holds either.
     if header_len + payload.len() > u16::MAX as usize {
         return Err(PacketError::too_long(
             "the IPv4 total length",
@@ -174,7 +174,7 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
     }
 
     // One identification for the whole datagram, resolved from the caller's
-    // field once — not rolled afresh for each fragment, which would leave a
+    // field once rather than rolled afresh per fragment, which would leave a
     // receiver with pieces it cannot group.
     let identification = header.identification.exact().unwrap_or_else(rand::random);
 
@@ -223,7 +223,7 @@ pub const HOP_LIMIT_ON_LINK: u8 = 1;
 /// RFC 4861 §7.1.1 requires a receiver to **discard** any neighbor discovery
 /// message that did not arrive with a hop limit of 255. Since a router
 /// decrements the field, arriving at the maximum is proof the message was never
-/// forwarded — which is what stops an off-link attacker from injecting neighbour
+/// forwarded, which is what stops an off-link attacker from injecting neighbour
 /// entries. It is the one on-link case where [`HOP_LIMIT_ON_LINK`] is wrong, and
 /// wrong invisibly: every conformant neighbour ignores the probe, and a segment
 /// full of them is indistinguishable from an empty one.
@@ -233,9 +233,9 @@ pub const HOP_LIMIT_NDP: u8 = 255;
 ///
 /// The conventional default, and enough for any path on the public internet:
 /// the longest routes in practice are well under half of it. What matters is
-/// only that it is not [`HOP_LIMIT_ON_LINK`] — a routed probe sent with a hop
-/// limit of one is discarded by the first router, which looks from here exactly
-/// like a host that did not answer.
+/// only that it is not [`HOP_LIMIT_ON_LINK`]. A routed probe sent with a hop
+/// limit of one is discarded by the first router, which looks from here like a
+/// host that did not answer.
 pub const HOP_LIMIT_ROUTED: u8 = 64;
 
 /// Builds a 40-byte IPv6 header for a packet carrying `payload_length` bytes of
@@ -245,8 +245,8 @@ pub const HOP_LIMIT_ROUTED: u8 = 64;
 /// need opposite values and neither can be inferred from the addresses: local
 /// discovery's multicast probes must not leave the segment, while a routed probe
 /// must survive every router between here and its target. Getting it wrong is
-/// silent in one direction — an on-link probe with a large hop limit still
-/// works — and total in the other.
+/// silent in one direction, since an on-link probe with a large hop limit still
+/// works, and total in the other.
 ///
 /// Infallible, unlike its IPv4 counterpart: the payload length is its own
 /// field here rather than a total that has to include the header, so every
@@ -358,13 +358,13 @@ pub fn icmpv6_echo_token(frame: &Frame<'_>) -> Option<(u16, u16)> {
 /// promises: a frame that cannot be read plainly is declined rather than
 /// guessed at.
 ///
-/// **A fragment is declined rather than read.** Only the first piece of a
+/// A fragment is declined rather than read. Only the first piece of a
 /// fragmented datagram carries a UDP header, so a later one whose protocol field
 /// still says UDP has the middle of somebody's payload where the ports should
 /// be. Nothing here reassembles, so a datagram that arrived in pieces is one
 /// this cannot read.
 ///
-/// **A header length below the five words a header occupies is declined too.**
+/// A header length below the five words a header occupies is declined too.
 /// It comes off the wire like everything else, and a smaller one puts the
 /// datagram's start inside the header that named it.
 pub fn udp_payload<'a>(frame: &Frame<'a>, port: u16) -> Option<&'a [u8]> {
@@ -691,7 +691,7 @@ mod tests {
 
     /// The heart of it, over three fragments: each starts one run of eight-byte
     /// units past the one before, more-fragments is set on every piece but the
-    /// last, and don't-fragment is cleared on all of them — even though the
+    /// last, and don't-fragment is cleared on all of them even though the
     /// caller's header set it.
     #[test]
     fn offsets_and_flags_march_across_three_fragments() {
@@ -746,8 +746,8 @@ mod tests {
         }
     }
 
-    /// A datagram that already fits comes back whole — one packet, with the
-    /// caller's flags, don't-fragment among them, left exactly as they were.
+    /// A datagram that already fits comes back whole: one packet, with the
+    /// caller's flags, don't-fragment among them, left as they were.
     #[test]
     fn a_datagram_that_fits_is_returned_whole() {
         let payload = vec![0xABu8; 100];
@@ -763,8 +763,8 @@ mod tests {
     }
 
     /// A receiver groups fragments of one datagram by identification, so every
-    /// fragment has to carry the same one — resolved from the caller's computed
-    /// field once, not rolled afresh per fragment.
+    /// fragment has to carry the same one, resolved from the caller's computed
+    /// field once rather than rolled afresh per fragment.
     #[test]
     fn every_fragment_shares_one_identification() {
         let payload = vec![0u8; 200];
@@ -798,7 +798,7 @@ mod tests {
     }
 
     /// A datagram larger than the total-length field can describe is refused,
-    /// the same limit a whole header is — and the limit that keeps the last
+    /// the same limit a whole header is, and the limit that keeps the last
     /// fragment's start inside its thirteen-bit offset field.
     #[test]
     fn a_datagram_too_large_for_the_length_field_is_refused() {

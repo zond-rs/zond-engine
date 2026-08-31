@@ -17,16 +17,16 @@
 //! DHCP server is not: a client that has no address yet cannot address anyone,
 //! so the protocol is built on broadcast, and the server is discovered rather
 //! than connected to. Probing UDP/67 on each address in turn asks the wrong
-//! question — a server that answers a broadcast may ignore a unicast to the
-//! same port, and a port with nothing listening is `open|filtered` like every
+//! question: a server that answers a broadcast may ignore a unicast to the same
+//! port, and a port with nothing listening is `open|filtered` like every
 //! other silent UDP port. One broadcast to the segment finds every server on
 //! it; sixty thousand unicasts find none.
 //!
 //! ## Which message, and why it is the safe one
 //!
 //! [`build_inform`] builds a `DHCPINFORM` (§3.4): the message a client with an
-//! address already sends to ask for the *rest* of its configuration — routers,
-//! name servers, a domain. It allocates nothing. A `DHCPDISCOVER` would find
+//! address already sends to ask for the rest of its configuration: routers, name
+//! servers, a domain. It allocates nothing. A `DHCPDISCOVER` would find
 //! the same servers and would also make each of them reserve an address for a
 //! client that never appears, which is a scan changing the network it is
 //! measuring.
@@ -36,7 +36,7 @@
 //! A server names itself in the server-identifier option (§9.7), and that is
 //! read rather than the packet's source address, because the two differ exactly
 //! when it matters: where a relay agent forwards for a server on another
-//! segment, the frame comes from the relay. The caller compares the two — see
+//! segment, the frame comes from the relay. The caller compares the two; see
 //! [`ServerReply::server`].
 
 use pnet_base::MacAddr;
@@ -76,7 +76,7 @@ const HLEN_ETHERNET: u8 = 6;
 /// file fields BOOTP defined and DHCP inherited.
 const BOOTP_FIXED_LEN: usize = 236;
 
-/// Where `chaddr` — the hardware address being configured — begins.
+/// Where `chaddr`, the hardware address being configured, begins.
 ///
 /// Past the opcode, hardware type, address length and hop count (4), the
 /// transaction id (4), the seconds and flags (4), and the four addresses
@@ -119,7 +119,7 @@ const DHCPNAK: u8 = 6;
 const DHCPINFORM: u8 = 8;
 
 /// The parameters asked for, chosen to be the ones every server is configured
-/// to hand out — a request no server would decline for want of anything to say.
+/// to hand out, so no server declines it for want of anything to say.
 const REQUESTED_PARAMETERS: [u8; 4] = [
     1,  // subnet mask
     3,  // router
@@ -130,8 +130,8 @@ const REQUESTED_PARAMETERS: [u8; 4] = [
 /// A DHCP message sent by a server.
 ///
 /// Beyond identifying the server, this is a description of the network the
-/// server is configuring — the way out, the resolvers, and the domain — stated
-/// by the one machine on the segment that is authoritative about all three. No
+/// server is configuring, meaning the way out and the resolvers and the domain,
+/// stated by the one machine on the segment authoritative about all three. No
 /// probe obtains that. A port scan of the gateway establishes that something
 /// answers on 53; this says which resolvers the network *tells its clients to
 /// use*, which is a different and better-sourced fact.
@@ -165,7 +165,7 @@ pub struct ServerReply<'a> {
 
 impl<'a> ServerReply<'a> {
     /// The routers this server offers its clients (option 3), in the order it
-    /// listed them — which is the order a client tries them in.
+    /// listed them, which is the order a client tries them in.
     pub fn routers(&self) -> impl Iterator<Item = Ipv4Addr> + 'a {
         addresses(self.routers)
     }
@@ -218,10 +218,10 @@ pub struct ClientRequest<'a> {
 
     /// The options the client asked for (option 55), **in the order it asked**.
     ///
-    /// Kept as raw bytes precisely because the order is the signal. Which
+    /// Kept as raw bytes because the order is the signal. Which
     /// options a stack requests, and in what sequence, is chosen by whoever
-    /// wrote it and is near-identical across every device running that software
-    /// — so the list distinguishes a Windows laptop from an Android phone from a
+    /// wrote it and is near-identical across every device running that software,
+    /// so the list distinguishes a Windows laptop from an Android phone from a
     /// network printer without any of them being probed. Sorting or
     /// deduplicating it would destroy exactly the part that identifies.
     pub parameter_request_list: Option<&'a [u8]>,
@@ -317,7 +317,7 @@ pub fn server_reply<'a>(frame: &Frame<'a>) -> Option<ServerReply<'a>> {
 /// anything building an inventory: a server's answer describes the *network*,
 /// where a client's request describes the *device*.
 ///
-/// **This proves the client is present and nothing more.** A request is a
+/// This proves the client is present and nothing more. A request is a
 /// broadcast, so hearing one says its sender is on this segment; it does not say
 /// the sender holds the address it is asking for, and a `DHCPDISCOVER` is sent
 /// by a machine that has no address at all.
@@ -424,7 +424,7 @@ fn client_hardware_address(message: &[u8]) -> Option<MacAddr> {
 /// remainder are still what the server said.
 fn addresses(bytes: &[u8]) -> impl Iterator<Item = Ipv4Addr> + '_ {
     // `.0` is the whole four-byte groups and `.1` is the remainder, which is
-    // dropped — the behaviour the doc comment above describes, and the same one
+    // dropped, the behaviour the doc comment above describes and the same one
     // `chunks_exact` gave. Taking the chunks as arrays rather than as slices is
     // what lets the address be built from one value instead of four indexes,
     // each of which the compiler would otherwise have to prove is in bounds.
@@ -438,8 +438,8 @@ fn addresses(bytes: &[u8]) -> impl Iterator<Item = Ipv4Addr> + '_ {
 /// The options in `bytes`, as code and value.
 ///
 /// Stops at the end option and at any truncation. A malformed option list is
-/// ordinary — it is whatever arrived — so it ends the walk rather than
-/// discarding what was already read.
+/// ordinary, being whatever arrived, so it ends the walk rather than discarding
+/// what was already read.
 fn walk_options(bytes: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
     let mut rest = bytes;
     std::iter::from_fn(move || {
@@ -680,8 +680,8 @@ pub(crate) mod tests {
         )
     }
 
-    /// The shared builder, taking the address the client sends from — which is
-    /// the whole of the difference between a discover and a renewal.
+    /// The shared builder, taking the address the client sends from, which is the
+    /// whole of the difference between a discover and a renewal.
     fn request_frame_from(from: Ipv4Addr, kind: u8, options: &[(u8, Vec<u8>)]) -> Vec<u8> {
         const CLIENT_MAC: MacAddr = MacAddr(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33);
 
@@ -760,7 +760,7 @@ pub(crate) mod tests {
     /// near-identical across every device running it.
     ///
     /// Sorting or deduplicating it would leave two stacks asking for the same
-    /// four options indistinguishable — which is most of them.
+    /// four options indistinguishable, which is most of them.
     #[test]
     fn the_parameter_request_list_keeps_the_order_it_was_asked_in() {
         let asked = vec![1u8, 121, 3, 6, 15, 119, 252];

@@ -268,7 +268,7 @@ mod tests {
 
     /// A name with no wire form comes back as an error.
     ///
-    /// **This used to abort the process.** `name` is whatever a caller was asked
+    /// This used to abort the process. `name` is whatever a caller was asked
     /// to resolve, and the builder underneath asserted the label bound rather
     /// than reporting it, so a 63-character hostname panicked inside a
     /// dependency. It reached `Resolver::resolve` through two layers written to

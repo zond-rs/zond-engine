@@ -30,8 +30,8 @@
 //!
 //! The consequence for length is real too: an 802.3 frame is padded out to the
 //! minimum frame size, so the payload has to be cut to the length the header
-//! claims rather than read to the end of the buffer — otherwise the walk below
-//! runs into the padding.
+//! claims rather than read to the end of the buffer, or the walk below runs into
+//! the padding.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -151,7 +151,7 @@ pub struct Announcement<'a> {
     /// hostname and often the fully-qualified name.
     pub device_id: Option<&'a str>,
 
-    /// What the device calls the port this frame left by — the port this
+    /// What the device calls the port this frame left by, which is the port this
     /// machine is plugged into.
     pub port_id: Option<&'a str>,
 
@@ -199,7 +199,7 @@ pub struct Announcement<'a> {
 pub fn parse<'a>(frame: &Frame<'a>) -> Option<Announcement<'a>> {
     // Cut to the claimed length before anything else. An 802.3 frame is padded
     // to the minimum frame size, and the padding parses as records of type zero
-    // and length zero — which is not a record, and would otherwise be walked
+    // and length zero, which is not a record and would otherwise be walked
     // until the record bound stopped it.
     let payload = frame.payload_as_claimed()?;
 
@@ -280,7 +280,7 @@ fn keep_first<T>(field: &mut Option<T>, value: Option<T>) {
 
 /// Splits one record off the front of `bytes`.
 ///
-/// **The length counts the record's own header**, unlike LLDP's, which counts
+/// The length counts the record's own header, unlike LLDP's, which counts
 /// only the value. A reader that treats it as a value length walks four bytes
 /// short per record and desynchronises after the first one.
 fn next_record(bytes: &[u8]) -> Option<(u16, &[u8], &[u8])> {
@@ -347,8 +347,8 @@ pub(crate) mod tests {
 
     pub(crate) const SWITCH_MAC: MacAddr = MacAddr(0x00, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F);
 
-    /// One record: two bytes of type, two of length, then the value — where the
-    /// length **includes** those four bytes.
+    /// One record: two bytes of type, two of length, then the value, where the
+    /// length includes those four bytes.
     fn record(kind: u16, value: &[u8]) -> Vec<u8> {
         let length = u16::try_from(RECORD_HDR_LEN + value.len()).expect("a record length");
         let mut bytes = kind.to_be_bytes().to_vec();
@@ -416,12 +416,12 @@ pub(crate) mod tests {
     ///
     /// The same four facts as
     /// [`lldp::tests::switch_announcement`](crate::protocols::lldp::tests::switch_announcement),
-    /// deliberately, so the listener's tests can assert that both protocols
-    /// arrive at one shape rather than assert twice against two.
+    /// so the listener's tests can assert that both protocols arrive at one
+    /// shape rather than assert twice against two.
     ///
     /// The device name is the bare one rather than the fully-qualified name a
     /// Cisco box usually sends, because what is under test there is that the
-    /// field is carried across — not what the vendor puts in it.
+    /// field is carried across rather than what the vendor puts in it.
     /// A second record of a kind an announcement carries once must not erase
     /// the first.
     ///
@@ -522,9 +522,9 @@ pub(crate) mod tests {
     }
 
     /// An 802.3 frame is padded out to the minimum frame size. Read to the end
-    /// of the buffer, the walk runs into that padding — which decodes as records
+    /// of the buffer, the walk runs into that padding, which decodes as records
     /// of type zero and length zero, and a length of zero advances the walk by
-    /// nothing at all.
+    /// nothing.
     #[test]
     fn trailing_padding_is_cut_off_rather_than_walked() {
         // One short record, so the frame is padded well past the real content.

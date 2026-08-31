@@ -19,13 +19,13 @@
 /// Two things happen here, and both are about a field whose width is fixed and
 /// whose contents are not.
 ///
-/// **Padding is trimmed.** Equipment that NUL-terminates its strings routinely
+/// Padding is trimmed. Equipment that NUL-terminates its strings routinely
 /// pads past the terminator to the width of the field, so `printer\0\0\0\0` is
 /// how a device with a seven-character name fills an eleven-byte record. Every
 /// trailing NUL goes, not just the last one: a hostname carrying three of them
 /// into a report is a hostname nobody can search for.
 ///
-/// **Bytes that are not UTF-8 are declined.** These fields are specified as
+/// Bytes that are not UTF-8 are declined. These fields are specified as
 /// text, and a device that disagrees has produced something to report as
 /// unreadable rather than to render with replacement characters. That is the
 /// rule every reader in this module follows.

@@ -75,8 +75,8 @@ pub fn parse_ptr_response(payload: &[u8]) -> Result<PtrResponse> {
         .filter(|question| question.qtype == QueryType::PTR)
         .and_then(|question| address_from_pointer_name(&question.qname.to_string()));
 
-    // The first PTR answer wins. Its owner name is deliberately not required to
-    // equal the question: RFC 2317 delegation answers a reverse question with a
+    // The first PTR answer wins, and its owner name is not required to equal
+    // the question: RFC 2317 delegation answers a reverse question with a
     // CNAME into another zone, and the PTR that follows is owned by that name.
     let hostname = packet.answers.iter().find_map(|record| match &record.data {
         RData::PTR(ptr) => Some(ptr.0.to_string().trim_end_matches('.').to_string()),
@@ -96,10 +96,10 @@ pub fn parse_ptr_response(payload: &[u8]) -> Result<PtrResponse> {
 /// about the host rather than about a port: something bound to 53 is a socket,
 /// and something that answers in DNS is a name server.
 ///
-/// The question the answer carries is deliberately not compared against the one
-/// the engine asked. Three facts already correlate this reply with that probe —
-/// it came from port 53, it is addressed to the source port this scan probes
-/// from, and a datagram went to that port carrying a DNS query — and comparing
+/// The question the answer carries is not compared against the one the engine
+/// asked. Three facts already correlate this reply with that probe: it came from
+/// port 53, it is addressed to the source port this scan probes from, and a
+/// datagram went to that port carrying a DNS query. Comparing
 /// the question here would put the corpus's choice of probe inside the scanner
 /// that merely sends it. What is checked instead is that the message parses
 /// whole: a header, and every question and record it claims to carry, which is

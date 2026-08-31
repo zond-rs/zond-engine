@@ -19,10 +19,10 @@
 //!
 //! An 802.1Q tag sits between the addresses and the EtherType and pushes the
 //! EtherType four bytes further along. A reader taking the EtherType from its
-//! usual offset therefore reads `0x8100` on a tagged frame — not IPv4, not IPv6,
-//! not ARP — and declines it. Every such frame is then invisible, and invisible
-//! in the way that is hardest to notice: a scan on a trunk port finds nothing
-//! and reports an empty segment.
+//! usual offset therefore reads `0x8100` on a tagged frame, which is neither
+//! IPv4 nor IPv6 nor ARP, and declines it. Every such frame is then invisible in
+//! the way hardest to notice: a scan on a trunk port finds nothing and reports an
+//! empty segment.
 //!
 //! [`Frame`] is the answer, and it is why reading a frame goes through a view
 //! rather than through `pnet`'s [`EthernetPacket`](pnet_packet::ethernet::EthernetPacket)
@@ -30,7 +30,7 @@
 //! once, keeps them, and answers [`ethertype`](Frame::ethertype) and
 //! [`payload`](Frame::payload) with what is *behind* them. A reader written
 //! against it is VLAN-transparent without knowing that VLANs exist, and the tags
-//! stay readable for anything that wants them — which on a trunk is a finding in
+//! stay readable for anything that wants them, which on a trunk is a finding in
 //! its own right.
 
 use pnet_base::MacAddr;
@@ -46,11 +46,11 @@ pub const VLAN_TAG_LEN: usize = 4;
 
 /// How many stacked VLAN tags a frame is read through.
 ///
-/// Two, which covers a plain 802.1Q tag and one layer of QinQ — a customer tag
-/// inside a provider tag, which is what a carrier hands off. Three is not a
-/// thing this engine has ever been shown.
+/// Two, which covers a plain 802.1Q tag and one layer of QinQ, meaning a customer
+/// tag inside a provider tag as a carrier hands off. Three is not a thing this
+/// engine has ever been shown.
 ///
-/// **The bound is the point, not the number.** The tag stack is walked by
+/// The bound is the point, not the number. The tag stack is walked by
 /// following each tag's protocol identifier to the next, and every one of those
 /// bytes comes off the wire. Walking until something is not a tag lets a frame
 /// made of nothing but tags decide how long this loop runs, which is a stranger
@@ -80,7 +80,7 @@ const VLAN_TPIDS: [u16; 3] = [0x8100, 0x88A8, 0x9100];
 /// something no probe can ask for, and on a trunk port it is most of what there
 /// is to learn about the shape of the network on the other side of the switch.
 ///
-/// **Not `#[non_exhaustive]`**, unlike the readers' result types elsewhere in
+/// Not `#[non_exhaustive]`, unlike the readers' result types elsewhere in
 /// this module. A tag is a 16-bit protocol identifier and 16 bits of tag control
 /// information, and 802.1Q spends every one of those bits: three of priority,
 /// one drop-eligible, twelve of identifier. There is no room for a fifth field,
@@ -119,8 +119,8 @@ impl VlanTag {
 ///
 /// The type every reader of a captured frame takes. It borrows the bytes and
 /// holds an offset, so [`payload`](Self::payload) hands back a slice borrowed
-/// from the frame itself rather than from the view — which is the difference
-/// that lets a parsed header outlive the walk that found it, and the reason
+/// from the frame itself rather than from the view, which is what lets a parsed
+/// header outlive the walk that found it, and the reason
 /// readers here no longer have to take a `&'a EthernetPacket<'a>` to work around
 /// `pnet` lending from `&self`.
 #[derive(Debug, Clone, Copy)]
@@ -328,9 +328,9 @@ mod tests {
         bytes.extend_from_slice(&[SRC.0, SRC.1, SRC.2, SRC.3, SRC.4, SRC.5]);
 
         // Each tag is its protocol identifier followed by two bytes of tag
-        // control information. The thing that says what comes *next* is the
-        // following tag's protocol, or the real ethertype after the last one —
-        // which is exactly the walk `parse` has to perform.
+        // control information. What says what comes next is the following tag's
+        // protocol, or the real ethertype after the last one, which is the walk
+        // `parse` has to perform.
         for (protocol, tci) in tags {
             bytes.extend_from_slice(&protocol.to_be_bytes());
             bytes.extend_from_slice(&tci.to_be_bytes());
@@ -344,9 +344,9 @@ mod tests {
     /// The defect this whole view exists for.
     ///
     /// A reader taking the ethertype from its usual offset sees `0x8100` on a
-    /// tagged frame and declines it — so on a trunk port every host is invisible
-    /// and the scan reports an empty segment. It has to report what is *behind*
-    /// the tag.
+    /// tagged frame and declines it, so on a trunk port every host is invisible
+    /// and the scan reports an empty segment. It has to report what is behind the
+    /// tag.
     #[test]
     fn a_tagged_frame_reports_what_is_behind_the_tag() {
         let bytes = frame_with(&[(0x8100, 0x0064)], EtherTypes::Ipv4.0, &[0xAB; 20]);

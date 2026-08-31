@@ -15,8 +15,8 @@
 //! which is *optional* to answer: Windows does not, and neither do many embedded
 //! stacks. A neighbor solicitation is not optional. Answering one is how IPv6
 //! resolves link-layer addresses at all, so a host that ignores it cannot be
-//! spoken to by its own router — which means every conformant neighbour on a
-//! segment replies, whatever it thinks of being scanned.
+//! spoken to by its own router. Every conformant neighbour on a segment replies,
+//! whatever it thinks of being scanned.
 //!
 //! It is also the only IPv6 probe that can be aimed at *one* address. The
 //! all-nodes echo asks the whole segment a single question and is answered by
@@ -26,18 +26,18 @@
 //!
 //! ## Two details that are fatal to get wrong
 //!
-//! **The hop limit must be 255.** RFC 4861 §7.1.1 requires a receiver to discard
+//! The hop limit must be 255. RFC 4861 §7.1.1 requires a receiver to discard
 //! any neighbor discovery message that did not arrive with a hop limit of 255,
 //! which is what proves it was not forwarded by a router. This is the one place
 //! the engine's "on-link traffic uses a hop limit of 1" rule does not apply, and
 //! getting it wrong produces a probe that is silently ignored by every correct
 //! implementation.
 //!
-//! **The destination is the solicited-node multicast group**, not the target
-//! itself and not all-nodes. Every host joins the group derived from the low 24
-//! bits of each of its addresses, so a solicitation reaches the target while
-//! being ignored by the network card of almost every other neighbour — the
-//! filtering happens in hardware rather than in a stack.
+//! The destination is the solicited-node multicast group rather than the target
+//! itself or all-nodes. Every host joins the group derived from the low 24 bits
+//! of each of its addresses, so a solicitation reaches the target while being
+//! ignored by the network card of almost every other neighbour, with the
+//! filtering happening in hardware rather than in a stack.
 
 use pnet_base::MacAddr;
 use pnet_packet::Packet as _;
@@ -109,7 +109,7 @@ pub fn solicited_node_multicast(target: Ipv6Addr) -> Ipv6Addr {
 
 /// The Ethernet address an IPv6 multicast group maps onto (RFC 2464 §7).
 ///
-/// Built rather than broadcast, which is the whole point: a broadcast frame
+/// Built rather than broadcast, which is the point: a broadcast frame
 /// interrupts every device on the segment, while this one is discarded by the
 /// hardware of everything except the few neighbours in the group.
 pub fn multicast_mac(group: Ipv6Addr) -> MacAddr {
@@ -170,7 +170,7 @@ pub fn build_neighbor_solicitation(
 /// segment to identify itself, RFC 4861 §4.1.
 ///
 /// A router answers this within half a second (§6.2.6), where an unsolicited
-/// advertisement is sent on a timer measured in minutes — longer than any sweep
+/// advertisement is sent on a timer measured in minutes, longer than any sweep
 /// runs. Asking is the difference between finding the segment's routers and
 /// happening to be listening when one spoke.
 ///
@@ -249,8 +249,8 @@ pub fn advertisement(frame: &Frame<'_>) -> Option<Advertisement> {
 /// to send if it routes (RFC 4861 §4.2).
 ///
 /// Held to the hop limit the RFC requires (§6.1.2), so an advertisement that
-/// crossed a router — and therefore did not come from the segment it claims to
-/// serve — establishes nothing. Unlike a neighbour advertisement there is no
+/// crossed a router, and so did not come from the segment it claims to serve,
+/// establishes nothing. Unlike a neighbour advertisement there is no
 /// second claim here to preserve: the whole message is the router's account of
 /// itself.
 pub fn is_router_advertisement(frame: &Frame<'_>) -> bool {
@@ -448,9 +448,8 @@ mod tests {
     }
 
     /// Everything else on the segment has to be refused, including the
-    /// solicitations neighbours send each other constantly — reading one as an
-    /// answer would credit our probe with finding a host that never replied to
-    /// it.
+    /// solicitations neighbours send each other constantly. Reading one as an
+    /// answer would credit the probe with a host that never replied to it.
     #[test]
     fn other_icmpv6_traffic_is_not_an_advertisement() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
@@ -467,9 +466,9 @@ mod tests {
     }
 
     /// The R flag is the neighbour's own word that it forwards, and it rides on
-    /// an advertisement the scan solicited anyway. The bit next to it — S, for
-    /// solicited — must not be read as it: they differ by one position, and a
-    /// reply to our own probe carries S set on every host that answers.
+    /// an advertisement the scan solicited anyway. The bit next to it, S for
+    /// solicited, must not be read as it: the two differ by one position, and a
+    /// reply to the scan's own probe carries S set on every host that answers.
     #[test]
     fn an_advertisement_carries_whether_its_sender_routes() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
@@ -493,7 +492,7 @@ mod tests {
 
     /// RFC 4861 §7.1.2: a message that did not arrive with a hop limit of 255
     /// may have been forwarded, so nothing off the segment can claim to route
-    /// it. The host itself is still there — the frame reached us — so the
+    /// it. The host itself is still there, the frame having arrived, so the
     /// address survives the claim being dropped.
     #[test]
     fn a_forwarded_advertisement_proves_presence_but_never_routing() {
@@ -510,8 +509,8 @@ mod tests {
         );
     }
 
-    /// Only a router sends one, so the message type is the whole claim — held
-    /// to the same hop limit, for the same reason.
+    /// Only a router sends one, so the message type is the whole claim, held to
+    /// the same hop limit for the same reason.
     #[test]
     fn a_router_advertisement_is_recognised_only_from_the_segment() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x01);

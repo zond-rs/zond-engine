@@ -40,11 +40,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// The code an OS-fingerprinting echo request carries.
 ///
-/// **Non-zero on purpose, and that is the whole point of it.** RFC 792 and
-/// RFC 4443 §4.2 define an echo's code as zero and neither says what a responder
-/// should do with anything else, so stacks differ — some echo the request's code
-/// back, some write zero regardless. A probe sending zero cannot tell those
-/// apart, because both answer zero.
+/// Non-zero on purpose. RFC 792 and RFC 4443 §4.2 define an echo's code as zero
+/// and neither says what a responder should do with anything else, so stacks
+/// differ: some echo the request's code back and some write zero regardless. A
+/// probe sending zero cannot tell those apart, since both answer zero.
 ///
 /// This is the same trap the TCP option layout fell into and it is worth naming
 /// as one: a documented difference between stacks is only *observable* if the
@@ -163,7 +162,7 @@ fn echo_frame_v6(
 /// and UDP probes.
 ///
 /// `payload` is echoed back by a conformant responder (RFC 792, RFC 4443 §4.2),
-/// so its length and contents are part of what a probe asks — a stack that
+/// so its length and contents are part of what a probe asks. A stack that
 /// truncates it, or returns something else, has said something about itself.
 ///
 /// `code` is part of the question too, and a probe sending zero is asking
@@ -201,10 +200,10 @@ pub fn build_echo_request_message(
 
 /// What an ICMP message arriving at an echo scan turned out to be.
 ///
-/// Deliberately shallow. It separates the answers a caller can act on from the
+/// Shallow on purpose. It separates the answers a caller can act on from the
 /// traffic a promiscuous, unnarrowed capture brings up alongside them, and does
-/// not interpret any of them further — an error means something different to
-/// each probe that could have drawn it, which is the reasoning
+/// not interpret any of them further: an error means something different to each
+/// probe that could have drawn it, which is the reasoning
 /// [`tcp::classify_probe_response`](super::tcp::classify_probe_response) already
 /// records.
 ///
@@ -228,8 +227,8 @@ pub enum EchoReply {
     /// on the host, and a scan counting these separately can tell "the filter is
     /// noisy" from "the target answered something unexpected".
     SomebodyElses,
-    /// An ICMP message that is not an echo reply at all — most usefully an
-    /// error, which says the probe was stopped rather than answered.
+    /// An ICMP message that is not an echo reply at all, most usefully an error,
+    /// which says the probe was stopped rather than answered.
     ///
     /// The type is carried rather than named because the two families number
     /// their messages differently and a name would have to say which.
@@ -537,9 +536,9 @@ mod tests {
 
     /// The code has to reach the wire, because a probe sending zero asks nothing.
     ///
-    /// The behaviour this whole field exists to observe — whether a responder
-    /// echoes a non-zero code or writes zero — is invisible to a conformant
-    /// request, since both stacks answer zero to a zero. A builder that dropped
+    /// The behaviour this field exists to observe, whether a responder echoes a
+    /// non-zero code or writes zero, is invisible to a conformant request, since
+    /// both stacks answer zero to a zero. A builder that dropped
     /// the code would produce a probe that always looked like it worked and
     /// never discriminated anything.
     #[test]
@@ -598,8 +597,8 @@ mod tests {
 
     /// The two families are two protocols, and the type number is the visible
     /// half of that: 8 is an IPv4 echo request and 128 an IPv6 one. A message
-    /// built with the wrong one is not rejected anywhere — it simply goes
-    /// unanswered, and a scan reads that as a silent host.
+    /// built with the wrong one is not rejected anywhere. It goes unanswered, and
+    /// a scan reads that as a silent host.
     #[test]
     fn each_family_gets_its_own_message_type() {
         let v4 = build_echo_request_message(
@@ -631,8 +630,9 @@ mod tests {
     }
 
     /// An ICMPv6 checksum covers a pseudo-header built from both addresses, and
-    /// RFC 4443 has no encoding for "no checksum" — a zero one is not merely
-    /// wrong, it is discarded. So the addresses have to reach the checksum, and
+    /// RFC 4443 has no encoding for an absent checksum, and a zero one is not
+    /// merely wrong but discarded. So the addresses have to reach the checksum,
+    /// and
     /// a builder that dropped them would produce a message nothing ever answers.
     #[test]
     fn an_ipv6_message_is_checksummed_against_its_addresses() {
@@ -704,7 +704,7 @@ mod tests {
     ///
     /// An IPv4 echo reply is type 0 and an IPv6 one is 129. Read an IPv6 reply
     /// as IPv4 and it is not an echo reply at all; read an IPv4 reply as IPv6
-    /// and the same. Both directions are silent — the scan sees a message it
+    /// and the same. Both directions are silent: the scan sees a message it
     /// cannot use and files the host as unanswered.
     #[test]
     fn a_reply_is_read_under_its_own_family_numbering() {
@@ -741,7 +741,7 @@ mod tests {
     /// it means depends on what was being probed, which this does not know.
     #[test]
     fn an_error_is_reported_as_itself() {
-        // Destination unreachable, code 13 — administratively prohibited.
+        // Destination unreachable, code 13, administratively prohibited.
         let error = Icmpv4 {
             icmp_type: 3,
             code: 13,

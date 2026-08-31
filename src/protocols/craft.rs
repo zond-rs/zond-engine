@@ -10,8 +10,8 @@
 //!
 //! The other half of this module. [`tcp::build_probe`](super::tcp::build_probe)
 //! and its neighbours build the handful of packets a scan needs, correctly and
-//! with nothing to decide. This is for everything else: a packet you describe
-//! yourself, layer by layer, including one that is deliberately wrong.
+//! with nothing to decide. This is for everything else: a packet described a
+//! layer at a time, including one that is wrong on purpose.
 //!
 //! ```
 //! use zond_engine::protocols::craft::{Ipv4, Packet, Tcp, tcp_flags};
@@ -28,14 +28,15 @@
 //!
 //! ## One rule: [`Field`]
 //!
-//! A header has two kinds of field. Most are simply yours — a port, a TTL, a
-//! flag. A few are *derived*: a length that counts what is inside, a checksum
-//! computed over it, a protocol number naming the layer below. Those are the
-//! interesting ones, because a scanner wants them right and somebody probing a
+//! A header has two kinds of field. Most are the caller's outright: a port, a
+//! TTL, a flag. A few are derived, such as a length that counts what is inside, a
+//! checksum computed over it, or a protocol number naming the layer below. Those
+//! are the interesting ones, since a scanner wants them right and somebody
+//! probing a
 //! stack's error handling wants them wrong.
 //!
-//! Every derived field is a [`Field<T>`](Field), which is [`Computed`] by
-//! default and [`Exact`] when you say otherwise:
+//! Every derived field is a [`Field<T>`](Field), [`Computed`] by default and
+//! [`Exact`] when the caller says otherwise:
 //!
 //! ```
 //! use zond_engine::protocols::craft::{Field, Ipv4};
@@ -110,12 +111,12 @@ use crate::protocols::sizes::{
 /// not have to reach into the probe builders for them.
 pub use crate::protocols::tcp::flags as tcp_flags;
 
-/// A header field the builder can work out for itself, unless you would rather
-/// it did not.
+/// A header field the builder can work out for itself, unless the caller says
+/// otherwise.
 ///
 /// See the [module documentation](self) for what this is for. In short:
-/// [`Computed`](Self::Computed) writes the value a conformant stack expects,
-/// and [`Exact`](Self::Exact) writes precisely what you give it, wrong or not.
+/// [`Computed`](Self::Computed) writes the value a conformant stack expects, and
+/// [`Exact`](Self::Exact) writes what it is given, wrong or not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Field<T> {
     /// Work it out from the packet being built. The correct value.
@@ -302,7 +303,7 @@ impl Ipv4 {
     /// does when it already holds a finished segment. [`Packet::build`] is the
     /// easier road when the payload is to hand.
     ///
-    /// **Set [`protocol`](Self::protocol) before calling this.** There is no
+    /// Set [`protocol`](Self::protocol) before calling this. There is no
     /// layer inside a header built on its own, so a `Computed` protocol has
     /// nothing to read and falls back to TCP. A caller holding a finished UDP
     /// segment and taking the default gets a header naming the wrong protocol,
@@ -395,7 +396,7 @@ impl Ipv6 {
     /// counterpart of [`Ipv4::header_bytes`], and infallible for the reason
     /// that one is not: the field counts the payload rather than the total.
     ///
-    /// **Set [`next_header`](Self::next_header) before calling this**, for the
+    /// Set [`next_header`](Self::next_header) before calling this, for the
     /// reason [`Ipv4::header_bytes`] gives about its own protocol field. A
     /// header built alone has no layer inside it to name.
     pub fn header_bytes(&self, payload_length: u16) -> Vec<u8> {
@@ -539,10 +540,10 @@ impl Tcp {
     /// Computes the correct checksum through the ordinary build, then corrupts
     /// it with [`corrupt_internet_checksum`]. Set the result on
     /// [`checksum`](Self::checksum) with [`Field::Exact`] to emit a segment a
-    /// conformant host drops — so a reply to it came from something in the path
+    /// conformant host drops, so a reply to it came from something in the path
     /// rather than from the host. Computing the correct value first and
-    /// perturbing it is what makes the result *guaranteed* wrong: an arbitrary
-    /// number might, once in 2^16, be the checksum the segment actually needs.
+    /// perturbing it is what makes the result certainly wrong, where an arbitrary
+    /// number might once in 2^16 be the checksum the segment needs.
     ///
     /// # Errors
     ///
@@ -692,8 +693,8 @@ impl Sctp {
 ///
 /// The four bytes after the checksum mean different things to different message
 /// types, so they are carried as [`rest_of_header`](Self::rest_of_header) rather
-/// than named. [`echo_request`](Self::echo_request) fills them in for the one
-/// type a scan sends; anything else is yours to lay out.
+/// than named. [`echo_request`](Self::echo_request) fills them in for the one type
+/// a scan sends, and anything else is the caller's to lay out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Icmpv4 {
     /// The message type. 8 is an echo request, 0 an echo reply, 3 destination
@@ -904,8 +905,8 @@ impl Icmpv6 {
 
 /// An ICMP message with its checksum left zero, for either family.
 ///
-/// The two share a layout — type, code, checksum, four type-specific bytes,
-/// payload — and differ only in what the checksum covers.
+/// The two share a layout of type, code, checksum, four type-specific bytes and
+/// payload, differing only in what the checksum covers.
 fn icmp_body(icmp_type: u8, code: u8, rest_of_header: [u8; 4], payload: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(ICMP_HDR_LEN + payload.len());
     bytes.push(icmp_type);
@@ -927,11 +928,11 @@ const ECHO_REPLY_V6: u8 = 129;
 
 /// An ARP packet over Ethernet and IPv4.
 ///
-/// Twenty-eight bytes with no payload, so nothing here is derived and every
-/// field is simply yours. It is in this module anyway, because the interesting
-/// ARP packets are the ones a preset would not build: a reply nobody asked for,
-/// a request claiming an address that is not yours, a hardware length that does
-/// not match the addresses beside it.
+/// Twenty-eight bytes with no payload, so nothing here is derived and every field
+/// is the caller's. It is in this module anyway, since the interesting ARP
+/// packets are the ones a preset would not build: a reply nobody asked for, a
+/// request claiming an address the sender does not hold, a hardware length that
+/// does not match the addresses beside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Arp {
     /// Request or reply. See [`arp_operations`].
@@ -1112,8 +1113,9 @@ impl Layer {
 
 /// A packet described as a stack of headers, outermost first.
 ///
-/// See the [module documentation](self) for the idea and an example. Push what
-/// you want, in the order it appears on the wire, and call [`build`](Self::build).
+/// See the [module documentation](self) for the idea and an example. Layers are
+/// pushed in the order they appear on the wire, then [`build`](Self::build)
+/// assembles them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Packet {
     layers: Vec<Layer>,
@@ -1417,9 +1419,9 @@ fn transport_checksum(
 
 /// `len` random bytes, for padding a probe's payload out to an unusual size.
 ///
-/// Random rather than zero because a run of zeroes is itself a fixed pattern —
-/// the very thing padding exists to move a probe off. Drawn fresh on each call,
-/// so two probes padded to the same length still differ in their tails.
+/// Random rather than zero, since a run of zeroes is itself a fixed pattern and
+/// that is what padding exists to move a probe off. Drawn fresh on each call, so
+/// two probes padded to the same length still differ in their tails.
 pub fn random_padding(len: u16) -> Vec<u8> {
     std::iter::repeat_with(rand::random)
         .take(len as usize)
@@ -1429,15 +1431,15 @@ pub fn random_padding(len: u16) -> Vec<u8> {
 /// A one's-complement internet checksum (RFC 1071) made deliberately, verifiably
 /// wrong.
 ///
-/// Flipping every bit is the surest single change: a value and its complement
-/// verify differently, so the result is a checksum a conformant receiver
-/// rejects — which is the whole point, since a reply to a segment that should
-/// have been dropped came from something that did not check.
+/// Flipping every bit is the surest single change. A value and its complement
+/// verify differently, so the result is a checksum a conformant receiver rejects,
+/// and a reply to a segment that should have been dropped came from something
+/// that did not check.
 ///
-/// The one exception is a one's-complement zero, which has two encodings —
-/// `0x0000` and `0xFFFF` — that verify identically. Complementing one lands on
-/// the other, which is not actually a different value and so not actually wrong;
-/// zero is besides a checksum a segment may legitimately carry. So a corruption
+/// The one exception is a one's-complement zero, whose two encodings `0x0000`
+/// and `0xFFFF` verify identically. Complementing one lands on the other, which
+/// is not a different value and so not wrong, and zero is besides a checksum a
+/// segment may legitimately carry. So a corruption
 /// that produces either is moved to `0x0001`, which is unambiguously neither
 /// encoding of zero and therefore unambiguously wrong.
 pub fn corrupt_internet_checksum(correct: u16) -> u16 {
@@ -1456,9 +1458,9 @@ fn write_sctp(header: &Sctp, payload: Vec<u8>) -> Vec<u8> {
     bytes.extend_from_slice(&header.chunks);
     bytes.extend_from_slice(&payload);
 
-    // Computed over the packet with the field zeroed — which it is — and written
+    // Computed over the packet with the field zeroed, which it is, and written
     // little-endian: the byte order RFC 4960 §6.8 puts the CRC on the wire in,
-    // and the single most common way an SCTP checksum comes out wrong.
+    // and the most common way an SCTP checksum comes out wrong.
     let sum = header.checksum.resolve(|| crc32c(&bytes));
     bytes[8..12].copy_from_slice(&sum.to_le_bytes());
     bytes
@@ -1467,8 +1469,8 @@ fn write_sctp(header: &Sctp, payload: Vec<u8>) -> Vec<u8> {
 /// The CRC32c reduction table, one entry per input byte.
 ///
 /// Built at compile time from the reflected polynomial `0x82F6_3B78`, the
-/// bit-reversal of the `0x1EDC_6F41` in RFC 3309 — the reflected form is what
-/// goes with the reflected input and output the reduction below uses.
+/// bit-reversal of the `0x1EDC_6F41` in RFC 3309. The reflected form is what goes
+/// with the reflected input and output the reduction below uses.
 static CRC32C_TABLE: [u32; 256] = {
     let mut table = [0u32; 256];
     let mut byte = 0;
@@ -1491,9 +1493,9 @@ static CRC32C_TABLE: [u32; 256] = {
 
 /// The CRC32c (Castagnoli) of `data`, the checksum SCTP carries (RFC 3309).
 ///
-/// The standard CRC-32C/iSCSI parameters — reflected in and out, initialised to
-/// all-ones and finished by complementing — so this is the value that goes in
-/// the SCTP checksum field, little-endian; see [`write_sctp`]. Shared with
+/// The standard CRC-32C/iSCSI parameters, reflected in and out, initialised to
+/// all-ones and finished by complementing, so this is the value that goes in the
+/// SCTP checksum field, little-endian; see [`write_sctp`]. Shared with
 /// [`sctp`](super::sctp) rather than reimplemented there, so a probe and a
 /// hand-built packet cannot come to disagree about what the checksum is.
 pub(crate) fn crc32c(data: &[u8]) -> u32 {
@@ -1710,9 +1712,9 @@ mod tests {
 
     // ── Overrides ────────────────────────────────────────────────────────────
 
-    /// The point of the whole design: one wrong field, every other one still
-    /// right. A packet that is wrong in nineteen ways is rejected by the first
-    /// check a stack runs and tells you nothing about the rest.
+    /// One wrong field, every other one still right. A packet that is wrong in
+    /// nineteen ways is rejected by the first check a stack runs and says nothing
+    /// about the rest.
     #[test]
     fn an_exact_field_is_written_verbatim_and_nothing_else_moves() {
         let bytes = Packet::new()
@@ -1861,8 +1863,8 @@ mod tests {
     ///
     /// Both fields are four bits of four-byte words, so forty bytes of options
     /// is the most either header can describe. Silently, forty-four produced a
-    /// header declaring itself **zero** words long and a hundred produced one
-    /// claiming fifty-six bytes over a buffer of a hundred and twenty — a packet
+    /// header declaring itself zero words long and a hundred produced one
+    /// claiming fifty-six bytes over a buffer of a hundred and twenty, a packet
     /// every receiver reads as something other than what was built.
     #[test]
     fn options_past_what_the_length_field_measures_are_refused() {
@@ -1981,8 +1983,8 @@ mod tests {
 
     /// SCTP writes its checksum little-endian (RFC 4960 §6.8), which is the
     /// classic way to get it wrong. The stored field is the CRC's little-endian
-    /// bytes, computed over the packet with the field zeroed — and, since the
-    /// value is byte-order-sensitive, demonstrably not its big-endian bytes.
+    /// bytes, computed over the packet with the field zeroed and, the value being
+    /// byte-order-sensitive, demonstrably not its big-endian bytes.
     #[test]
     fn an_sctp_checksum_is_written_little_endian_over_a_zeroed_field() {
         let bytes = Sctp::new(50_000, 9)
@@ -1997,7 +1999,7 @@ mod tests {
         assert_ne!(
             &bytes[8..12],
             &crc.to_be_bytes(),
-            "little-endian, not big — the check value makes the two differ"
+            "little-endian rather than big; the check value makes the two differ"
         );
     }
 
@@ -2030,9 +2032,9 @@ mod tests {
     // ── Corrupting a checksum on purpose ─────────────────────────────────────
 
     /// The common case: flipping every bit lands on a value that verifies
-    /// differently, so it is guaranteed wrong. A mutant that returned the input
-    /// unchanged — a "corruption" equal to the correct checksum — would leave a
-    /// probe every host accepts, which is the opposite of the point.
+    /// differently, so it is certainly wrong. A mutant returning the input
+    /// unchanged, a corruption equal to the correct checksum, would leave a probe
+    /// every host accepts.
     #[test]
     fn a_corrupt_checksum_differs_from_the_one_it_was_made_from() {
         for correct in [0x1234, 0x00FF, 0xABCD, 0x8000, 0x0001] {
@@ -2042,11 +2044,11 @@ mod tests {
         }
     }
 
-    /// The two encodings of a one's-complement zero verify identically, so a
-    /// flip between them is not actually wrong — and zero is a checksum a segment
-    /// may legitimately carry, so it can never be the corrupt one. A mutant that
-    /// only flipped the bits would return the *other* encoding of zero here and
-    /// ship a checksum still accepted as correct.
+    /// The two encodings of a one's-complement zero verify identically, so a flip
+    /// between them is not wrong, and zero is a checksum a segment may
+    /// legitimately carry, so it can never be the corrupt one. A mutant that only
+    /// flipped the bits would return the other encoding of zero here and ship a
+    /// checksum still accepted as correct.
     #[test]
     fn corrupting_a_zero_encoding_avoids_the_other_encoding_of_zero() {
         assert_eq!(corrupt_internet_checksum(0x0000), 0x0001);
@@ -2054,8 +2056,8 @@ mod tests {
     }
 
     /// A segment asked for a bad TCP checksum carries one that a real parse
-    /// confirms is neither the value the segment should have nor zero — with
-    /// every other byte of the header untouched.
+    /// confirms is neither the value the segment should have nor zero, with every
+    /// other byte of the header untouched.
     #[test]
     fn a_tcp_segment_can_be_built_with_a_verifiably_wrong_checksum() {
         let addresses = Some((IpAddr::V4(V4_SRC), IpAddr::V4(V4_DST)));

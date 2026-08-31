@@ -35,8 +35,8 @@ pub const ICMP_V6_ECHO_REQ_LEN: usize = ICMP_HDR_LEN;
 /// An IPv4 header with no options, which is what this engine emits.
 pub const IP_V4_HDR_LEN: usize = 20;
 
-/// An IPv6 header, which is fixed — anything variable is an extension header
-/// after it.
+/// An IPv6 header, which is fixed; anything variable is an extension header after
+/// it.
 pub const IP_V6_HDR_LEN: usize = 40;
 
 /// An ARP packet over Ethernet and IPv4: the whole thing, not a header, since

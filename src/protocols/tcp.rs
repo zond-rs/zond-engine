@@ -235,9 +235,9 @@ pub fn build_probe_shaped(
 /// technique's own, for the evasion path that sends an arbitrary combination
 /// (see [`EvasionProfile::flags`](crate::evasion::EvasionProfile::flags)).
 ///
-/// Everything the shape of the probe turns on — which field carries the nonce,
-/// whether the SYN options belong — follows from the flags, so any combination
-/// is crafted and its reply read back consistently.
+/// Everything the shape of the probe turns on, meaning which field carries the
+/// nonce and whether the SYN options belong, follows from the flags, so any
+/// combination is crafted and its reply read back consistently.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_probe_with_flags(
     flags: u8,
@@ -425,15 +425,15 @@ pub(crate) fn quoted_nonce_with_flags(flags: u8, quoted: &QuotedProbe) -> Option
 /// A TCP segment: the fixed header, and whatever follows it.
 ///
 /// Borrows the bytes rather than copying them. Built by [`parse`], which is the
-/// only thing that guarantees the header is really there — every accessor below
-/// indexes into it without checking, and that is sound only because nothing else
+/// only thing that guarantees the header is there: every accessor below indexes
+/// into it without checking, and that is sound only because nothing else
 /// constructs one.
 ///
 /// The counterpart of [`sctp::Segment`](super::sctp::Segment), and this crate's
 /// own type for the same reason: `parse` used to hand back a
 /// `pnet_packet::TcpPacket`, which put a pre-1.0 dependency's type in a public
 /// signature. A consumer reading a reply then had to name that crate, at that
-/// version, to say what it had — and this crate could not take a `pnet` upgrade
+/// version, to say what it had, and this crate could not take a `pnet` upgrade
 /// without it being a breaking change for them.
 ///
 /// Only the fields this engine reads are here. A scan correlates a reply and
@@ -524,8 +524,8 @@ pub fn classify_probe_response(segment: &Segment<'_>) -> Option<TcpReply> {
         // ACK and nothing structural beside it: a challenge ACK, which a stack
         // sends for a segment that does not fit a connection it already holds.
         // Checked last, so a SYN+ACK and a RST+ACK are classified as what they
-        // are first — this is the *remainder* of the acknowledging segments, not
-        // a competing reading of them.
+        // are first. This is the remainder of the acknowledging segments rather
+        // than a competing reading of them.
         //
         // FIN is excluded because a FIN+ACK is a peer closing a connection, which
         // is a statement about a conversation rather than an answer to a probe.
@@ -653,7 +653,7 @@ mod tests {
         }
     }
 
-    /// A peer answers about the options it was *asked* about — a SYN+ACK may
+    /// A peer answers about the options it was asked about, so a SYN+ACK may
     /// carry a window scale, a timestamp or SACK-permitted only if the SYN did
     /// (RFC 7323 §2.2 and §3.2, RFC 2018 §2). So an option this probe stops
     /// offering is an answer the engine stops being able to read, from every
@@ -714,8 +714,8 @@ mod tests {
     /// The evasion path sends a flag combination the technique menu has no name
     /// for, and reads its own answer back off it.
     ///
-    /// SYN+FIN is a combination filters and stacks disagree about — the point of
-    /// the knob. The crafted segment carries exactly it, and a conformant reset
+    /// SYN+FIN is a combination filters and stacks disagree about, which is the
+    /// point of the knob. The crafted segment carries it, and a conformant reset
     /// acking that combination's own sequence span yields the nonce: a version
     /// that ignored the flags would send the wrong segment, and one that read the
     /// span off a technique instead of the sent flags would reject the answer.
@@ -746,8 +746,8 @@ mod tests {
         assert_ne!(echoed_nonce(TcpScanTechnique::Fin, &reply, 0), NONCE);
     }
 
-    /// A padded probe still recognises its own answer — and this is the one
-    /// place the two kinds of answer must be treated differently. A closed
+    /// A padded probe still recognises its own answer, and this is the one place
+    /// the two kinds of answer are treated differently. A closed
     /// port's reset acknowledges the padding bytes along with the control span,
     /// so the nonce comes back only if that padding is subtracted; an open
     /// port's SYN+ACK acknowledges the SYN alone and never the data on it, so
@@ -797,8 +797,8 @@ mod tests {
         );
     }
 
-    /// A shaped probe with no shaping is the ordinary probe, byte for byte — the
-    /// inert-default guarantee at the point a scan builds its packet.
+    /// A shaped probe with no shaping is the ordinary probe, byte for byte, which
+    /// is the inert-default guarantee at the point a scan builds its packet.
     ///
     /// Only the deterministic techniques can be compared byte for byte: a SYN
     /// carries a random timestamp in its options, and an ACK or Maimon probe a
@@ -848,8 +848,8 @@ mod tests {
         // Checked through `pnet`'s own reader rather than this module's. The
         // question is whether the builder computed the checksum right, and
         // asking the crate whose checksum function the builder used is a check
-        // against something other than itself. `Segment` deliberately does not
-        // carry the field: nothing in a scan reads it, because a capture only
+        // against something other than itself. `Segment` does not carry the
+        // field: nothing in a scan reads it, since a capture only
         // ever hands up segments the kernel already verified.
         let segment = pnet_packet::tcp::TcpPacket::new(&padded).expect("the probe parses");
         assert_eq!(
@@ -977,7 +977,7 @@ mod tests {
     /// An acknowledgement with nothing structural beside it is a *challenge
     /// ACK*: a stack saying the segment does not fit a connection it already
     /// holds (RFC 793 §3.9, and RFC 5961 §4 for a SYN specifically). Only a host
-    /// with a half-open connection sends one, and only a listener has one — so
+    /// with a half-open connection sends one, and only a listener has one, so
     /// this is positive evidence about a port rather than the noise it was read
     /// as before.
     ///
