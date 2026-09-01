@@ -129,7 +129,7 @@ pub fn strip_to_ip(link: LinkType, frame: &[u8]) -> Option<&[u8]> {
 /// Reads the address-family word a `DLT_NULL`/`DLT_LOOP` link prepends and
 /// returns the IP packet behind it, or `None` for a family this does not parse.
 ///
-/// **The word's byte order is not fixed**, which is why this reads it both ways
+/// The word's byte order is not fixed, which is why this reads it both ways
 /// rather than picking one. `DLT_NULL` writes the host's own order, so the same
 /// capture file means different things on two machines; `DLT_LOOP` was defined
 /// later precisely to settle that, and writes network order. `libpcap` reports
@@ -163,7 +163,7 @@ const IP_ADDRESS_FAMILIES: [u32; 5] = [2, 30, 28, 10, 24];
 ///
 /// The tag walk is [`ethernet::parse`]'s rather than a second copy of it. It used
 /// to be a copy here, and the copy understood one tag where the original
-/// understands a stack — which is the ordinary way two implementations of one
+/// understands a stack, which is the ordinary way two implementations of one
 /// rule come to disagree.
 fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
     let parsed = ethernet::parse(frame).ok()?;
@@ -177,16 +177,16 @@ fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
 ///
 /// # What this is for, and what it is not for
 ///
-/// It answers **"did this reply come from the host whose address it claims?"**,
-/// and that is a question the source *IP* structurally cannot answer: anything
-/// answering in a host's place — a transparent proxy, a DNS interceptor, a
-/// firewall resetting on a host's behalf — uses that host's address, so the IP
+/// It answers whether a reply came from the host whose address it claims, which
+/// is a question the source IP structurally cannot answer. Anything answering in
+/// a host's place, whether a transparent proxy, a DNS interceptor or a
+/// firewall resetting on a host's behalf, uses that host's address, so the IP
 /// header of a forged answer and a real one are identical. The hardware address
 /// is not, and on an on-link segment it settles the matter outright.
 ///
-/// It is a poor basis for **vendor attribution**, which is the use it looks like
-/// it has. A reply from off-link carries the last-hop router's address, not the
-/// sender's, and the two are indistinguishable from here — so an OUI lookup
+/// It is a poor basis for vendor attribution, which is the use it looks like it
+/// has. A reply from off-link carries the last-hop router's address rather than
+/// the sender's, and the two are indistinguishable from here, so an OUI lookup
 /// against this would confidently report the router's manufacturer as the host's.
 /// Where a vendor is actually wanted, it belongs to the on-link discovery path
 /// ([`crate::system::neighbors`] and the local scanner), which knows a neighbour
@@ -200,10 +200,10 @@ fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
 pub fn source_mac(link: LinkType, frame: &[u8]) -> Option<MacAddr> {
     match link {
         // Offsets 0..6 destination, 6..12 source, then the EtherType. A VLAN tag
-        // sits *after* both addresses, so unlike the payload offset this one does
-        // not move for a tagged frame — which is exactly the mistake to avoid,
-        // since a tag-shifted read lands in the middle of the EtherType and the
-        // start of the IP header and yields a plausible-looking address.
+        // sits after both addresses, so unlike the payload offset this one does
+        // not move for a tagged frame. That is the mistake to avoid: a
+        // tag-shifted read lands in the middle of the EtherType and the start of
+        // the IP header and yields a plausible-looking address.
         LinkType::Ethernet => Some(MacAddr::new(
             *frame.get(6)?,
             *frame.get(7)?,
@@ -244,9 +244,9 @@ pub struct IpSegment<'a> {
     ///
     /// Kept because the header is parsed here and nowhere else. Everything
     /// downstream sees a Layer-4 segment with the IP header already gone, so a
-    /// field dropped at this line is not recoverable at any later one — and
-    /// three of these are among the cheapest identifying signals a reply
-    /// carries. They cost six bytes to keep and a second packet to re-obtain.
+    /// field dropped at this line is not recoverable at any later one, and three
+    /// of these are among the cheapest identifying signals a reply carries. They
+    /// cost six bytes to keep and a second packet to re-obtain.
     pub observation: IpObservation,
 }
 
@@ -672,7 +672,7 @@ mod tests {
     ///
     /// Written as literal bytes on purpose. Building the fixture with
     /// [`crate::protocols::craft`] would check that this parser agrees with that
-    /// builder, which is two views of one understanding — the same shape of
+    /// builder, which is two views of one understanding, the same shape of
     /// mistake as a simulator that emits what the parser already accepts. The
     /// offsets below come from the specification, so a field read from the wrong
     /// place fails here instead of shipping as a signature nobody can match.
@@ -943,8 +943,8 @@ mod tests {
         assert_eq!(parsed.payload, &payload);
     }
 
-    /// The addresses sit before the EtherType, so a VLAN tag does not move them —
-    /// unlike the payload offset, which it does move. Reading them at a
+    /// The addresses sit before the EtherType, so a VLAN tag does not move them,
+    /// unlike the payload offset which it does move. Reading them at a
     /// tag-shifted offset lands across the EtherType and the start of the IP
     /// header and yields a perfectly plausible-looking address, which is why both
     /// framings are pinned here rather than only the plain one.

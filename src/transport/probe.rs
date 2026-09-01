@@ -143,7 +143,7 @@ pub enum ProbeKind {
     TcpProbe {
         /// The port every probe in the scan leaves from, and so the port its
         /// replies come back to. One fixed port is what makes the TCP half of
-        /// this filter expressible for **both** address families: `dst port`
+        /// this filter expressible for both address families: `dst port`
         /// compiles over IPv6 where the flag test in [`ProbeKind::TcpSyn`]
         /// cannot, so a scan using this kind sees only its own answers instead
         /// of every IPv6 TCP segment on the host.
@@ -164,7 +164,7 @@ pub enum ProbeKind {
     /// address families.
     ///
     /// The kind a scan uses to ask a host something its TCP stack cannot be made
-    /// to answer — a host with no open and no closed port still answers a ping,
+    /// to answer. A host with no open and no closed port still answers a ping,
     /// and what it puts in the reply is a property of the same stack.
     IcmpEcho {
         /// The identifier every echo in the scan carries, and so the one its
@@ -172,9 +172,9 @@ pub enum ProbeKind {
         ///
         /// RFC 792 and RFC 4443 §4.2 both require a reply to echo the
         /// identifier and sequence back unchanged, which is the only thing that
-        /// separates this scan's answers from every other ping on the host —
-        /// and unlike a port, it cannot be expressed in a kernel filter, since
-        /// it sits past a header whose length is not fixed over IPv6. So it is
+        /// separates this scan's answers from every other ping on the host.
+        /// Unlike a port it cannot be expressed in a kernel filter, since it
+        /// sits past a header whose length is not fixed over IPv6. So it is
         /// matched in userspace and this field is what a caller matches against.
         identifier: u16,
     },
@@ -308,7 +308,7 @@ impl ProbeKind {
             }
             // Unnarrowed, and it has to be. The identifier that separates this
             // scan's replies from every other ping on the host sits four bytes
-            // into the ICMP message, which is `proto[x]` indexing — expressible
+            // into the ICMP message, which is `proto[x]` indexing: expressible
             // over IPv4 and not over IPv6, whose next-header chain puts the
             // message at no fixed offset. Narrowing one family and not the other
             // would make the IPv6 half of every scan silently different from the
@@ -316,9 +316,9 @@ impl ProbeKind {
             // whole IPv6 receive path once already. So both halves come up whole
             // and the identifier is matched in userspace.
             //
-            // The errors are wanted as well as the replies: a host that answers
-            // an echo with "administratively prohibited" has told you something,
-            // and it did not come from the host's own stack.
+            // The errors are wanted as well as the replies: a host answering an
+            // echo with "administratively prohibited" has said something, and it
+            // did not come from the host's own stack.
             ProbeKind::IcmpEcho { .. } => "icmp or icmp6".to_string(),
         }
     }
@@ -328,7 +328,7 @@ impl ProbeKind {
 ///
 /// Two variants, because two things are worth telling apart and nothing else is.
 /// [`Unsupported`](Self::Unsupported) is a fact about this transport that will
-/// be just as true for the next probe — retrying is pointless and a scan should
+/// be just as true for the next probe, so retrying is pointless and a scan should
 /// give up on the path. [`Refused`](Self::Refused) came from outside and may not
 /// hold next time: a full send buffer clears, a route appears.
 ///
@@ -349,8 +349,8 @@ pub enum SendError {
     /// on an IPv4-only network resolves to an AAAA nobody here can reach, and
     /// reporting that as a broken scan makes every such scan look partial.
     ///
-    /// Still an error, and still reported — the address was asked about and not
-    /// covered — but as something known about that address.
+    /// Still an error and still reported, the address having been asked about and
+    /// not covered, but as something known about that address.
     #[error("{0}")]
     Unroutable(String),
 
@@ -375,7 +375,7 @@ impl SendError {
     /// Reads the operating system's own error kind rather than matching on the
     /// text of its message, which differs per platform and per locale. Only the
     /// two unreachable kinds are singled out; everything else stays a refusal,
-    /// including the ones that look similar — a full send buffer or a permission
+    /// including the ones that look similar: a full send buffer or a permission
     /// failure says nothing about whether the destination exists.
     pub(crate) fn from_io<E: std::error::Error + 'static>(error: E) -> Self {
         let unroutable = std::iter::successors(Some(&error as &dyn std::error::Error), |cause| {
@@ -416,8 +416,8 @@ impl SendError {
 /// how far the probe may travel.
 ///
 /// It is a value rather than a bare `u8` because it is the seam every remaining
-/// per-probe header choice arrives through — fragmentation, IP options, a
-/// deliberately wrong checksum — and each of those should widen this struct
+/// per-probe header choice arrives through, whether fragmentation or IP options
+/// or a deliberately wrong checksum, and each of those should widen this struct
 /// rather than the signature of every sender in the crate a second time.
 ///
 /// Both backends can honour it, by different means: the link-layer sender is
@@ -431,12 +431,12 @@ pub struct Emission {
     pub hop_limit: u8,
     /// The hardware address the frame claims to come from, or `None` for the
     /// sending interface's own. Only a self-built Ethernet frame can carry it,
-    /// so an emission with this set cannot be sent over a raw socket — see
+    /// so an emission with this set cannot be sent over a raw socket. See
     /// [`requires_link_layer`](Self::requires_link_layer).
     pub source_mac: Option<MacAddr>,
     /// The largest each IP fragment this probe is split into may be, in bytes,
     /// or `None` to send it whole. Only a self-built Ethernet frame carries
-    /// fragments this engine chose, and only for IPv4 — see
+    /// fragments this engine chose, and only for IPv4. See
     /// [`requires_link_layer`](Self::requires_link_layer).
     pub fragment: Option<u16>,
 }
@@ -457,7 +457,7 @@ impl Emission {
     ///
     /// The whole of how a path is measured. A hop limit of zero would be
     /// discarded by this host's own stack before it reached a wire, so it is
-    /// raised to one — the first router — rather than silently sending nothing.
+    /// raised to one, the first router, rather than silently sending nothing.
     pub const fn at_hop(hops: u8) -> Self {
         Self {
             hop_limit: if hops == 0 { 1 } else { hops },
@@ -580,8 +580,8 @@ pub enum TransportError {
     #[error("the raw send socket could not be opened: {0}")]
     RawSocket(String),
 
-    /// Layer-2 sending was asked for and this host has nothing to send from —
-    /// only tunnels or loopback. The raw-socket path is the one that works here.
+    /// Layer-2 sending was asked for and this host has nothing to send from,
+    /// holding only tunnels or loopback. The raw-socket path works here.
     #[error("no Ethernet-capable interface for Layer-2 send: {0}")]
     NoEthernetInterface(String),
 }
@@ -625,8 +625,9 @@ impl ProbeSender for RawIpSender {
         emission: Emission,
     ) -> Result<(), SendError> {
         // The kernel builds the IP header and the frame around it here, so a
-        // field only a self-built frame can carry — a spoofed hardware address —
-        // cannot be honoured. Refused with the reason rather than sent without
+        // field only a self-built frame can carry, such as a spoofed hardware
+        // address, cannot be honoured. Refused with the reason rather than sent
+        // without
         // it, so a scan that reports it spoofed did.
         if emission.requires_link_layer() {
             return Err(SendError::Unsupported(
@@ -798,8 +799,8 @@ impl ProbeTransport {
 /// Loopback is intentionally included so localhost probes are still heard.
 ///
 /// Each is named as a [`Zone`], carrying the index alongside the name. The
-/// index costs nothing to keep here — the interface table was already read to
-/// find the name — and it is what a finding scoped to a link needs, since a
+/// index costs nothing to keep here, the interface table having been read to find
+/// the name, and it is what a finding scoped to a link needs, since a
 /// link-local address names a different machine on every one of them.
 fn capturable_interfaces() -> Vec<Zone> {
     crate::system::interface::interfaces()

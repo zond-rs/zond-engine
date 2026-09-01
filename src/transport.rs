@@ -12,8 +12,8 @@
 //! job and does none: it builds and parses packets as plain byte slices, and
 //! this module opens the sockets and captures that carry them. The split is
 //! worth the two modules because it is the difference between code a unit test
-//! can exercise on any machine and code that needs a NIC and root — and a probe
-//! that cannot be built without a socket open is a probe nobody can test.
+//! can exercise on any machine and code that needs a NIC and root. A probe that
+//! cannot be built without a socket open is a probe nobody can test.
 //!
 //! [`probe`] is the handle a scanner actually holds. It pairs a send path with a
 //! receive path, because on this crate's platforms those cannot be the same
@@ -23,10 +23,10 @@
 //!
 //! ## One way in
 //!
-//! **Everything this crate hears arrives through [`capture`]**, in one of two
+//! Everything this crate hears arrives through [`capture`], in one of two
 //! shapes. [`capture::segments`] parses each admitted frame down to the Layer-4
 //! segment a port scanner reads; [`capture::frames`] forwards it whole, for a
-//! reader whose answer is below that — ARP, neighbour discovery, a VLAN tag, a
+//! reader whose answer is below that: ARP, neighbour discovery, a VLAN tag, a
 //! hardware address. They share the filter, the counters, the threading and the
 //! shutdown, and differ only in what they hand over.
 //!
@@ -40,8 +40,8 @@
 //! The two send backends are named for the layer they write at. [`raw`] hands a
 //! segment to a raw Layer-4 socket and lets the kernel route it, resolve the
 //! next hop and fragment it. [`link`] builds the whole Ethernet frame itself,
-//! which is what Windows requires — it blocks raw TCP sends outright — and what
-//! deliberately bypassing the host's firewall and connection tracking needs.
+//! which is what Windows requires, since it blocks raw TCP sends outright, and
+//! what bypassing the host's firewall and connection tracking needs.
 //! A scanner picks between them through [`probe::ProbeSender`] and is otherwise
 //! unaware of which one it has.
 

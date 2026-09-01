@@ -26,8 +26,8 @@
 //! currently needs UDP over IPv6. [`TransportType::SctpLayer4`] and
 //! [`TransportType::IcmpLayer4`] open both, and the ICMP one is
 //! is the only way this crate can put an ICMP message on the wire for a host it
-//! cannot reach at the link layer — the echo builders in
-//! [`crate::protocols::icmp`] emit whole Ethernet frames and therefore need a
+//! cannot reach at the link layer: the echo builders in
+//! [`crate::protocols::icmp`] emit whole Ethernet frames and so need a
 //! neighbour.
 
 use std::net::IpAddr;
@@ -64,7 +64,7 @@ pub enum TransportType {
     UdpLayer4,
     /// Raw ICMP messages, over both IPv4 and IPv6 where available.
     ///
-    /// The two families are **different protocols**, not one protocol over two
+    /// The two families are different protocols rather than one protocol over two
     /// address sizes: ICMP is next-header 1 and ICMPv6 is 58, they number their
     /// message types differently, and ICMPv6 checksums cover a pseudo-header
     /// while ICMPv4 checksums cover the message alone. A caller therefore builds
@@ -115,9 +115,9 @@ struct Socket {
     /// Tracked so that a scan sending millions of probes at one hop limit pays
     /// for one `setsockopt` rather than one per probe. It starts as `None`
     /// rather than as this engine's default, so the first send states the value
-    /// explicitly instead of trusting a kernel default that is only usually 64 —
-    /// a host tuned otherwise would silently send probes that expire early, and
-    /// an expired probe is indistinguishable from a host that did not answer.
+    /// explicitly instead of trusting a kernel default that is only usually 64. A
+    /// host tuned otherwise would send probes that expire early, and an expired
+    /// probe is indistinguishable from a host that did not answer.
     hop_limit: Option<u8>,
 }
 

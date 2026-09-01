@@ -182,8 +182,8 @@ impl NeighborResolver {
 /// Not simply the first one. An IPv6 interface normally holds several addresses
 /// at once, and they are not interchangeable: a link-local address is valid only
 /// on the segment it was configured for, so a packet aimed past the router and
-/// sourced from `fe80::` is discarded on the way — and the reply, if one were
-/// ever sent, would have nowhere to go. Interface order is whatever the
+/// sourced from `fe80::` is discarded on the way, and the reply, if one were ever
+/// sent, would have nowhere to go. Interface order is whatever the
 /// operating system happened to report, so taking the first address is a coin
 /// flip on a host that has both, which is every host with working IPv6.
 ///

@@ -25,9 +25,9 @@
 //! straight from the OS for off-link targets, and resolving on-link targets'
 //! MACs with an active ARP exchange that it caches.
 //!
-//! **Portability note:** on-link IPv6 currently returns an error rather than
-//! performing NDP neighbor solicitation; off-link IPv6 works, since the
-//! gateway's MAC comes from the OS. Wiring up NDP is the remaining gap.
+//! On portability: on-link IPv6 currently returns an error rather than performing
+//! NDP neighbor solicitation, while off-link IPv6 works since the gateway's MAC
+//! comes from the OS. Wiring up NDP is the remaining gap.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -77,9 +77,9 @@ impl EthernetSender {
     /// nothing else can tell it what it is carrying: the segment is opaque
     /// bytes by the time it arrives. The protocols are fixed at construction
     /// rather than passed per send because a transport is opened for one
-    /// `ProbeKind` and carries only that kind's probes — but they are a *pair*,
-    /// because a kind carrying ICMP carries two different protocol numbers and
-    /// only the destination says which. A wrong number here is invisible
+    /// `ProbeKind` and carries only that kind's probes. They are a pair because a
+    /// kind carrying ICMP carries two different protocol numbers and only the
+    /// destination says which. A wrong number here is invisible
     /// locally and fatal remotely: the datagram arrives and is handed to the
     /// wrong protocol handler, so it is simply never answered.
     ///

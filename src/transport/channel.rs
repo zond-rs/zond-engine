@@ -35,9 +35,9 @@ use crate::transport::capture::{self, CaptureGuard, CaptureOptions, FrameSink, F
 ///
 /// A sweep reads its queue inside the same loop that paces its probes, so a tick
 /// spent sending is a tick not spent receiving, and the queue is what covers
-/// that gap. Sized for a burst — every host on a `/24` answering an ARP sweep at
-/// once is a few hundred frames — rather than for a sustained rate, which the
-/// caller's filter is what keeps small.
+/// that gap. Sized for a burst, since every host on a `/24` answering an ARP
+/// sweep at once is a few hundred frames, rather than for a sustained rate, which
+/// the caller's filter is what keeps small.
 const QUEUE_DEPTH: usize = 1024;
 
 /// A live Ethernet channel: somewhere to put frames, and a stream of the frames
@@ -103,9 +103,9 @@ impl EthernetHandle {
 /// it means to sweep and "opening a channel failed" is not actionable without
 /// knowing which.
 /// Two halves open here and either can refuse, so which one did is the whole of
-/// what this says. Both usually fail for the same underlying reason — sending
-/// and receiving raw frames needs root everywhere this engine runs — and a
-/// person reading the message needs to know whether their probes would have
+/// what this says. Both usually fail for the same underlying reason, that sending
+/// and receiving raw frames needs root everywhere this engine runs, and a person
+/// reading the message needs to know whether their probes would have
 /// left, not only that something went wrong.
 ///
 /// There were three variants and one of them was ever constructed. `NoCapture`
@@ -144,12 +144,12 @@ pub enum ChannelError {
 /// Opens both halves on one interface: a link-layer sender, and a capture of the
 /// frames that link carries which `filter` admits.
 ///
-/// The capture is promiscuous, and `filter` is what narrows it — two halves of
-/// one decision, argued at
+/// The capture is promiscuous and `filter` is what narrows it, two halves of one
+/// decision, argued at
 /// [`CaptureOptions::for_link_traffic`](crate::transport::capture::CaptureOptions::for_link_traffic).
 ///
-/// **The filter belongs to the caller**, because what a frame is worth is
-/// decided by whoever reads it. This module knows how to open a capture and
+/// The filter belongs to the caller, since what a frame is worth is decided by
+/// whoever reads it. This module knows how to open a capture and
 /// nothing about ARP, neighbour discovery or DHCP; a filter written here would
 /// be a scanner's knowledge kept one layer below the scanner, and would go stale
 /// the first time a reader was added without anybody thinking to look down here.
