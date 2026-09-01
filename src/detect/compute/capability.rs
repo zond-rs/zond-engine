@@ -37,7 +37,9 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::detect::manifest::{Class, DetectionManifest};
+use crate::detect::manifest::{
+    Class, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS, DetectionManifest,
+};
 use crate::model::finding::{DetectionClass, DetectionId, Version};
 
 use super::budget::Budget;
@@ -208,17 +210,13 @@ pub struct Grant {
 }
 
 /// The work bound a compute detection runs under when it declares none, enough
-/// for real parsing and a stateful exchange, and bounded against a runaway.
+/// for real parsing and a stateful exchange, and bounded against a runaway. Fuel
+/// and memory are the compute tier's own; the byte, time, and connection defaults
+/// are shared with the flow tier and live in [`manifest`](crate::detect::manifest).
 const DEFAULT_FUEL: u64 = 10_000_000;
 /// The allocation ceiling a detection that declares none runs under: the largest
 /// string, array, or map it may build, counted in elements.
 const DEFAULT_MAX_MEMORY: usize = 1_000_000;
-/// The time budget a detection that declares none runs under.
-const DEFAULT_MAX_MILLIS: u64 = 2_000;
-/// The byte budget across all exchanges a detection that declares none runs under.
-const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
-/// The connection budget a detection that declares none runs under.
-const DEFAULT_MAX_CONNECTIONS: u32 = 64;
 
 impl Grant {
     /// The grant a [`DetectionManifest`] and the content hash of its body

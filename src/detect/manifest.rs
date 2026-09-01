@@ -183,3 +183,16 @@ pub enum Speak {
     /// examination. There is no address for a detection to name.
     Target,
 }
+
+/// The byte budget a detection that declares no `max_bytes` runs under, counting
+/// what it sends and what comes back across the whole run. Both tiers fall back to
+/// it, so it is defined once here beside the field it stands in for.
+pub(crate) const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
+
+/// The wall-clock budget, in milliseconds, a detection that declares no
+/// `max_millis` runs under.
+pub(crate) const DEFAULT_MAX_MILLIS: u64 = 2_000;
+
+/// The connection budget a detection that declares no `max_connections` runs
+/// under, the widest a single bounded loop can be.
+pub(crate) const DEFAULT_MAX_CONNECTIONS: u32 = 64;

@@ -50,7 +50,7 @@ use super::schema::{FindingSpec, FlowDetection, MAX_FLOW_STEPS, MAX_LOOP_ITEMS, 
 /// The reserved identity prefix the engine's own detections use; an authored
 /// flow may not claim it, so a third-party flow cannot forge a first-party
 /// finding.
-const RESERVED_ID_PREFIX: &str = "zond:";
+pub const RESERVED_ID_PREFIX: &str = "zond:";
 
 /// One way a flow is ill-formed. Each is a hard error: a flow that produces any
 /// does not ship. The [`Display`](fmt::Display) form is the message the build
@@ -418,7 +418,7 @@ fn template_vars(template: &str) -> Vec<String> {
 /// Whether `version` is a `major.minor.patch` triple of numbers, the shape the
 /// model's version is, checked here without reaching into the model so the file
 /// stays shareable with the build.
-fn is_version_triple(version: &str) -> bool {
+pub fn is_version_triple(version: &str) -> bool {
     let parts: Vec<&str> = version.split('.').collect();
     parts.len() == 3 && parts.iter().all(|part| part.parse::<u16>().is_ok())
 }

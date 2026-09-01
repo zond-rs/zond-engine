@@ -398,13 +398,13 @@ fn validate_module(detection: &compute_schema::ComputeDetection, path: &Path) {
     if manifest.id.trim().is_empty() {
         panic!("{file}: a detection needs a non-empty id");
     }
-    if manifest.id.starts_with("zond:") {
+    if manifest.id.starts_with(validate::RESERVED_ID_PREFIX) {
         panic!(
             "{file}: '{}' claims the reserved 'zond:' id namespace",
             manifest.id
         );
     }
-    if !is_version_triple(&manifest.version) {
+    if !validate::is_version_triple(&manifest.version) {
         panic!(
             "{file}: '{}' has version '{}', which is not major.minor.patch",
             manifest.id, manifest.version
@@ -421,17 +421,6 @@ fn validate_module(detection: &compute_schema::ComputeDetection, path: &Path) {
         ),
         _ => {}
     }
-}
-
-/// Whether `version` is three dot-separated unsigned 16-bit integers, the range
-/// the runtime's version type parses.
-fn is_version_triple(version: &str) -> bool {
-    let mut parts = version.split('.');
-    let component = |part: Option<&str>| part.is_some_and(|s| s.parse::<u16>().is_ok());
-    component(parts.next())
-        && component(parts.next())
-        && component(parts.next())
-        && parts.next().is_none()
 }
 
 /// The inline source of a module, reading its `body` file when it names one,
@@ -489,13 +478,13 @@ fn validate_host(detection: &host_schema::HostDetection, path: &Path) {
     if manifest.id.trim().is_empty() {
         panic!("{file}: a detection needs a non-empty id");
     }
-    if manifest.id.starts_with("zond:") {
+    if manifest.id.starts_with(validate::RESERVED_ID_PREFIX) {
         panic!(
             "{file}: '{}' claims the reserved 'zond:' id namespace",
             manifest.id
         );
     }
-    if !is_version_triple(&manifest.version) {
+    if !validate::is_version_triple(&manifest.version) {
         panic!(
             "{file}: '{}' has version '{}', which is not major.minor.patch",
             manifest.id, manifest.version

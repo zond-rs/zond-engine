@@ -69,7 +69,9 @@ use crate::detect::flow::db::FlowDb;
 use crate::detect::flow::{Probe, ProbeRefusal, stage};
 use crate::detect::host::db::HostDb;
 use crate::detect::host::stage as host_stage;
-use crate::detect::manifest::CapabilitySpec;
+use crate::detect::manifest::{
+    CapabilitySpec, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS,
+};
 use crate::fingerprint::PortContext;
 use crate::model::finding::Finding;
 use crate::model::ip::scoped::ScopedIp;
@@ -78,17 +80,6 @@ use crate::record::{DetectionIdRecord, wire};
 use crate::report::ScannerKind;
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Tapes};
-
-/// The reply-byte budget a flow that declares none is held to.
-const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
-
-/// The time budget a flow that declares none is held to.
-const DEFAULT_MAX_MILLIS: u64 = 2000;
-
-/// The connection budget a flow that declares none is held to. A flow's step and
-/// loop ceilings already bound how many exchanges it can attempt; this caps the
-/// sockets an undeclared one opens at the widest a single loop can be.
-const DEFAULT_MAX_CONNECTIONS: u32 = 64;
 
 /// One port's detections as they travel off the blocking pool: the host key, the
 /// port and protocol, the findings drawn, and the detections that did not finish
