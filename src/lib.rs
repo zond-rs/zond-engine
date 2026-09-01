@@ -8,17 +8,16 @@
 
 //! A network scanner, as a library.
 //!
-//! Give it addresses and it tells you which hosts are alive; give it hosts and
-//! ports and it tells you which of those ports are open and what is listening on
-//! them. Everything a front end needs is here — the scanning, the domain model,
-//! the report and the file formats — so that a CLI, a web service and an
+//! Addresses in, and it reports which hosts are alive; hosts and ports in, and
+//! it reports which of those ports are open and what is listening on them. Everything a front end needs is here, the scanning, the domain model,
+//! the report and the file formats, so that a CLI, a web service and an
 //! embedded consumer produce the same results and the same documents.
 //!
 //! # Three phases
 //!
 //! [`discover`] establishes which hosts exist. [`scan`] classifies the ports of
 //! hosts already known. [`listen`] sends nothing at all and reads what a link
-//! already carries — for the networks the other two may not touch, and for the
+//! already carries: for the networks the other two may not touch, and for the
 //! findings no probe obtains: which switch port this machine is on, which VLANs
 //! a link carries, what a device says about itself while asking for an address.
 //!
@@ -30,8 +29,8 @@
 //! it is a few hundred thousand. Run the cheap one first and spend the expensive
 //! one only on what answered.
 //!
-//! Both are unprivileged-safe. With root they use raw sockets — ARP and ICMPv6
-//! on the local segment, raw TCP and UDP elsewhere — and without it they fall
+//! Both are unprivileged-safe. With root they use raw sockets, ARP and ICMPv6
+//! on the local segment, raw TCP and UDP elsewhere, and without it they fall
 //! back to ordinary TCP connect attempts. The phase records which it was, so a
 //! result can be read for what it is worth. [`listen`] has no such fallback and
 //! cannot: reading a link *is* the capability, where a scan can degrade to
@@ -43,7 +42,7 @@
 //! its [`HostStore`] as they are found, and each change fires a [`ScanEvent`],
 //! so a caller can render a scan in progress instead of waiting for it. The
 //! [`ScanTask`] resolves when everything has finished and yields a
-//! [`ScanReport`] — the durable record of what was asked for, what came back,
+//! [`ScanReport`]: the durable record of what was asked for, what came back,
 //! what failed on the way, and under which settings.
 //!
 //! The two answer different questions and both are needed. A bare list of hosts
@@ -99,7 +98,7 @@
 //! - **One strategy at a time.** [`scanner::strategy`] holds every scanner the
 //!   engine uses behind two small traits, each constructible directly and each
 //!   able to run over a transport the caller opened. Aim one at one segment and
-//!   read the results out of a [`ScanSession`] you made yourself.
+//!   read the results out of a [`ScanSession`] the caller opened.
 //!
 //! The `test-support` feature is *not* the way in to any of this. It gates the
 //! synthetic transports the crate's own tests use to fake a network, and nothing
@@ -108,15 +107,15 @@
 //! # Reports out, targets in
 //!
 //! [`export`] writes a finished report as JSON, JSONL, CSV, a self-contained
-//! HTML page, or nmap-compatible XML. [`import`] reads targets back — from a
+//! HTML page, or nmap-compatible XML. [`import`] reads targets back, from a
 //! plain list, a CSV, this engine's own JSON, or an nmap XML file somebody else
-//! produced — and reads layered settings from TOML. Each format sits behind a
+//! produced, and reads layered settings from TOML. Each format sits behind a
 //! cargo feature; `export-json` is the only one on by default.
 //!
 //! `import::report` reads the other direction of the same documents: not the
 //! targets to scan next, but what the scan that produced them found, rebuilt as
-//! a [`ScanReport`]. That is what lets [`diff`] compare an archived file — this
-//! engine's or nmap's — against a scan that just finished. Unlinked because the
+//! a [`ScanReport`]. That is what lets [`diff`] compare an archived file, this
+//! engine's or nmap's, against a scan that just finished. Unlinked because the
 //! module is there only in a build that can read a report format at all, and a
 //! link into it would not resolve in one that cannot.
 //!
@@ -130,7 +129,7 @@
 //! not there before, a port that opened, a service that changed version, a
 //! certificate that rotated or is about to lapse. It is the other half of
 //! scanning a network on a schedule, and it asks nothing about where either
-//! report came from — one side can be a scan this process just ran, one can be
+//! report came from: one side can be a scan this process just ran, one can be
 //! read back out of a [`journal`], and one can be another scanner's output that
 //! something built a report from.
 //!
@@ -161,35 +160,35 @@
 //!
 //! **The modules are layered, and the layering is a rule.** Each depends only on
 //! those below it, and `tests/architecture.rs` reads every `crate::` path in the
-//! library — including the ones inside an expression, which is where three
-//! violations were hiding — and fails if that stops being true.
+//! library, including the ones inside an expression, which is where three
+//! violations were hiding, and fails if that stops being true.
 //!
 //! The list below is ordered for somebody meeting the crate rather than for the
 //! rule: it opens with the vocabulary and ends with the file formats, where the
 //! layering opens with the plumbing those two share. `ORDER` in that test is the
 //! layering itself, and it is the one that decides anything.
 //!
-//! - [`model`] — the vocabulary every other module names: [`Host`], [`Port`],
+//! - [`model`]: the vocabulary every other module names: [`Host`], [`Port`],
 //!   [`IpSet`], [`TargetMap`], and the grammars that construct them from what a
 //!   person wrote. It depends on nothing else here.
-//! - [`config`] — what a caller asks for before a scan starts, including the
+//! - [`config`]: what a caller asks for before a scan starts, including the
 //!   effort a scan is worth spending. Separate from [`model`] because a request
 //!   is not a finding, and separate from [`scanner`] because a report has to
 //!   record what was asked for whether or not a scan ever ran.
-//! - [`protocols`] — building and parsing packets, as bytes and nothing else.
-//! - [`transport`] — the sockets and captures that carry those bytes. Kept apart
+//! - [`protocols`]: building and parsing packets, as bytes and nothing else.
+//! - [`transport`]: the sockets and captures that carry those bytes. Kept apart
 //!   from [`protocols`] because one half needs a NIC and root and the other half
 //!   needs neither, and a packet that cannot be built without a socket open is a
 //!   packet nobody can test. Both are public because crafting a probe is a
 //!   reasonable thing to want on its own; nothing in the two phases above
 //!   requires touching them.
-//! - [`system`] — interfaces, routing, and whether the process may open raw
+//! - [`system`]: interfaces, routing, and whether the process may open raw
 //!   sockets. The one place the engine asks the host about itself.
-//! - [`evasion`] — what a scan is allowed to change about the packets it sends,
+//! - [`evasion`]: what a scan is allowed to change about the packets it sends,
 //!   and which of those a given strategy can honour. Beside [`protocols`] rather
 //!   than inside it, because a profile is asked for before a packet is built and
 //!   is refused up front when no scan could carry it.
-//! - [`resolve`] — turning the names a person writes into the addresses a scan
+//! - [`resolve`]: turning the names a person writes into the addresses a scan
 //!   probes, over unicast DNS and multicast DNS. It runs before a scan, deciding
 //!   what it covers; the reverse direction, naming hosts a scan has found, is the
 //!   scanner's own [`rdns`](scanner::rdns).
@@ -197,44 +196,44 @@
 //!   the grammar, this host's interface table, hostname lookup and the
 //!   segment-sweep question are answered together, rather than being four things
 //!   for every consumer to remember separately.
-//! - [`fingerprint`] — identifying the service behind an open port.
-//! - [`report`] — what a scan was and what it found: [`ScanReport`],
+//! - [`fingerprint`]: identifying the service behind an open port.
+//! - [`report`]: what a scan was and what it found: [`ScanReport`],
 //!   [`ScanPhase`](report::ScanPhase), the settings it ran under and the
 //!   counters it kept. Below [`scanner`] rather than inside it, because a report
 //!   outlives the scan that made one. It is journalled, read back without a
 //!   network, compared against a file from last year, merged with an nmap
 //!   document somebody else wrote, and exported in five formats, and only the
 //!   first of those involves a scanner at all.
-//! - [`cve`] — joining what a scan identified against known vulnerabilities.
+//! - [`cve`]: joining what a scan identified against known vulnerabilities.
 //!   A step rather than a phase: it sends nothing, and everything it needs is
 //!   already in hand, so it runs equally well over a host read back out of a
 //!   file as over one a scan just found.
-//! - [`detect`] — running a detection over what a scan has already established,
+//! - [`detect`]: running a detection over what a scan has already established,
 //!   and recording what it read so the run can be replayed offline. A step, like
 //!   [`cve`], rather than a phase.
-//! - [`record`] — the same information in a shape that survives a file.
-//! - [`journal`] — what a scan writes down as it runs, so one that did not finish
+//! - [`record`]: the same information in a shape that survives a file.
+//! - [`journal`]: what a scan writes down as it runs, so one that did not finish
 //!   can be continued rather than restarted. It holds the plan, how far the scan
 //!   got, and what it found; [`record`] is the shape all three are written in.
-//! - [`scanner`] — the two entry points, the [`plan`](scanner::plan) behind
+//! - [`scanner`]: the two entry points, the [`plan`](scanner::plan) behind
 //!   them, and the [`strategy`](scanner::strategy) implementations behind that,
 //!   together with the live [`session`](scanner::session), the
 //!   [`handle`](scanner::handle) that stops it, the
 //!   [`recorder`](scanner::recorder) that closes a phase into a [`ScanReport`],
 //!   and the [`checkpoint`](scanner::checkpoint) timer that carries a running
 //!   scan into a [`journal`].
-//! - [`diff`] — what changed between two scans. It sits above [`scanner`]
+//! - [`diff`]: what changed between two scans. It sits above [`scanner`]
 //!   because it reads the report the scanner leaves behind, and below the file
 //!   formats because it compares reports rather than documents: where either
 //!   report came from is not its business.
-//! - [`merge`] — several scans as one report. Above [`diff`] rather than beside
+//! - [`merge`]: several scans as one report. Above [`diff`] rather than beside
 //!   it, because it folds hosts under the same [`HostIdentity`](diff::HostIdentity)
 //!   a comparison pairs them by, and deciding which record is which host is one
 //!   argument that both of them make.
-//! - [`format`](mod@crate::format) — what a reader and a writer of the same document have to agree
+//! - [`format`](mod@crate::format): what a reader and a writer of the same document have to agree
 //!   on, and nothing else. It sits below both so that reading a format never
 //!   requires compiling the code that writes it.
-//! - [`export`], [`import`] — the file formats themselves, which sit above the
+//! - [`export`], [`import`]: the file formats themselves, which sit above the
 //!   report because they describe it and it does not know they exist.
 //!
 //! # Platforms
@@ -246,7 +245,7 @@
 //! resolve to `%LOCALAPPDATA%`, a local time gets its offset from
 //! `SystemTimeToTzSpecificLocalTime`, and privilege is read from the process
 //! token. Where it is not, the arm is a **stub that refuses** rather than one
-//! that guesses — a journal lock reports that a scan may be running, so nothing
+//! that guesses: a journal lock reports that a scan may be running, so nothing
 //! resumes underneath a writer this build cannot see. None of it is exercised by
 //! the test suite, and none of it should be read as a promise.
 

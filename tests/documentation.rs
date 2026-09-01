@@ -50,23 +50,39 @@
 //! corruption back and watching this fail. The sixth, `probe_distance`, is an
 //! inherent method and is the price of that exclusion.
 //!
-//! Scoped to the trees whose own audit brought them up to the standard, which
-//! is `src/scanner/` and `src/system/` so far. `system/` had four private
-//! modules with no module documentation at all, `routing.rs` among them, which
-//! is the file every strategy a scan runs follows from.
+//! Scoped to what has been audited, which is `scanner/`, `system/` and the six
+//! crate-root files so far. `system/` had four private modules with no module
+//! documentation at all, `routing.rs` among them, which is the file every
+//! strategy a scan runs follows from. See [`SCOPE`] for why it is not simply
+//! `src`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The trees this standard is enforced over, each with the module root that
-/// lives beside it rather than inside it.
+/// What this standard is enforced over: a directory covers itself and
+/// everything under it, a file covers itself.
 ///
-/// Two so far, added as each module's own audit brought it up to the standard.
-/// Widening this is a matter of documenting whatever the wider scan reports;
-/// the lists are in `audit/`.
-const SCOPE: &[(&str, &str)] = &[
-    ("src/scanner", "src/scanner.rs"),
-    ("src/system", "src/system.rs"),
+/// Grown one audit at a time, as each module was brought up to the standard.
+/// That is deliberate rather than a staging post to the whole crate: pointed at
+/// `src` this reports ninety items, most of them in modules nobody has read
+/// yet, and documenting those means writing prose for code without having read
+/// it -- which produces exactly the register `CONTRIBUTING.md` is dialling back.
+///
+/// It would also be measuring the wrong thing. Several of the ninety are `#[test]`
+/// functions in files gated at their `mod` declaration rather than with an inner
+/// `mod tests`, which the stripper below does not see. A rule that flags test
+/// code as undocumented production code is a rule people learn to silence.
+const SCOPE: &[&str] = &[
+    "src/lib.rs",
+    "src/scanner.rs",
+    "src/scanner",
+    "src/system.rs",
+    "src/system",
+    "src/report.rs",
+    "src/cve.rs",
+    "src/evasion.rs",
+    "src/logging.rs",
+    "src/version.rs",
 ];
 
 /// Every `.rs` file under `dir`, recursively.
@@ -84,11 +100,16 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// The files in scope, sorted so a failure names them in a stable order.
 fn sources() -> Vec<PathBuf> {
     let mut files = Vec::new();
-    for (tree, root) in SCOPE {
-        files.push(PathBuf::from(root));
-        rust_files(Path::new(tree), &mut files);
+    for entry in SCOPE {
+        let path = Path::new(entry);
+        if path.is_dir() {
+            rust_files(path, &mut files);
+        } else {
+            files.push(path.to_path_buf());
+        }
     }
     files.sort();
+    files.dedup();
     files
 }
 

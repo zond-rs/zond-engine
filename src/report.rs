@@ -84,6 +84,14 @@ use crate::transport::probe::SendMode;
 /// The version of the engine that produced a report.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+// --------------------------------------------------------------------------
+// What a scan was asked to do
+// --------------------------------------------------------------------------
+//
+// The request, as the report has to record it. A reader asks these of a result
+// before they ask what it found: over what range, on which ports, under which
+// technique, with how much patience.
+
 /// Which of the two scan phases a [`ScanPhase`] records.
 ///
 /// These are the engine's two entry points, [`discover`](crate::scanner::discover)
@@ -99,7 +107,7 @@ pub enum ScanKind {
     PortScan,
     /// Reading what a link already carries, having sent nothing.
     ///
-    /// Unlike the other two, this phase covers no address — see
+    /// Unlike the other two, this phase covers no address. see
     /// [`TargetScope::listening_on`]. It can raise a claim and never lower one:
     /// having sent nothing, it cannot have timed anything out, so silence from
     /// an address proves nothing about it.
@@ -138,8 +146,8 @@ impl fmt::Display for ScanKind {
 /// them are the whole reason this is not a bare `Option<PortSet>`.
 ///
 /// [`Every`](Self::Every) against [`Mixed`](Self::Mixed): a phase can be given
-/// different ports for different addresses — `10.0.0.0/24:80,443` alongside
-/// `10.0.1.0/24:8080` is one job with two units — and there is no single set
+/// different ports for different addresses: `10.0.0.0/24:80,443` alongside
+/// `10.0.1.0/24:8080` is one job with two units, and there is no single set
 /// that is true of every address in it. Publishing the union as though there
 /// were would have a consumer conclude that `10.0.0.5` was probed on 8080, which
 /// nothing did. So the union is published as a union and labelled one.
@@ -258,7 +266,7 @@ pub struct TargetScope {
     links: Vec<Zone>,
     /// Links whose traffic was read without anything being sent to them.
     ///
-    /// Deliberately not [`links`](Self::links), which means *swept* — a probe
+    /// Deliberately not [`links`](Self::links), which means *swept*: a probe
     /// went out that everything on the link was obliged to answer, so a host
     /// there and not in the report is a host that was not there. Nothing of the
     /// kind follows from having listened: a machine that said nothing during
@@ -316,7 +324,7 @@ impl TargetScope {
     ///
     /// **Covers no address, and says so.** A listener did not probe, so it
     /// cannot have timed anything out, so there is no address it can report as
-    /// empty. The count is zero and the ranges are none — which is not a
+    /// empty. The count is zero and the ranges are none, which is not a
     /// missing measurement but the honest one, and it is what stops a
     /// comparison reading a host that stayed quiet as a host that disappeared.
     ///
@@ -324,7 +332,7 @@ impl TargetScope {
     /// [`links`](Self::links), and the distinction is the whole of the above.
     ///
     /// `exclusions` is recorded so the report still shows the policy a passive
-    /// phase was run under — it withholds nothing here, because nothing was
+    /// phase was run under: it withholds nothing here, because nothing was
     /// enumerated for it to withhold, and it is enforced where it matters at
     /// the point findings are recorded.
     pub fn listening_on(links: Vec<Zone>, exclusions: &Exclusions) -> Self {
@@ -411,7 +419,7 @@ impl TargetScope {
     ///
     /// **A link is not an address range and is deliberately not recorded as
     /// one.** `fe80::/64` would be the obvious thing to put in `ranges`, and it
-    /// would make [`addresses`](Self::addresses) read eighteen quintillion —
+    /// would make [`addresses`](Self::addresses) read eighteen quintillion:
     /// destroying the one property that type has, that a report saying it
     /// covered 254 hosts can be believed. A link is named by its interface, so
     /// that is what is recorded.
@@ -435,7 +443,7 @@ impl TargetScope {
     /// **The question is about the link, not about the addresses on it.** An
     /// all-nodes solicitation reaches every IPv6 host on the segment whatever
     /// addresses it holds, and a host that answers one is routinely keyed under
-    /// a global address — this engine prefers a routable address over a
+    /// a global address: this engine prefers a routable address over a
     /// link-local one when both are known. Asking whether the *address* is
     /// link-local would then miss exactly the hosts this exists to cover.
     ///
@@ -453,7 +461,7 @@ impl TargetScope {
     /// Records that this phase swept a link whole.
     ///
     /// Called once a phase is over, because which links its strategies reached
-    /// is only knowable then — the scope itself is fixed before a probe goes
+    /// is only knowable then: the scope itself is fixed before a probe goes
     /// out. See [`PhaseRecorder::finish`].
     pub(crate) fn record_sweeps(&mut self, links: Vec<Zone>) {
         for link in links {
@@ -486,7 +494,7 @@ impl TargetScope {
     ///
     /// The exclusion policy that was in force, merged, whether or not it
     /// overlapped anything this phase would have covered. Empty means no policy
-    /// was set — not that one was set and did nothing, which is
+    /// was set: not that one was set and did nothing, which is
     /// [`withheld`](Self::withheld) returning zero and is a different fact.
     ///
     /// This is the half of the record a reader can check the engine against.
@@ -499,7 +507,7 @@ impl TargetScope {
     /// How many addresses the exclusion policy took out of this phase.
     ///
     /// Measured against what the phase was handed, at the moment its scope was
-    /// recorded — so it is the overlap between the policy and this phase's
+    /// recorded, so it is the overlap between the policy and this phase's
     /// input, not the size of the policy. Zero from a policy that named ground
     /// this phase was never going to walk, and zero again from a phase whose
     /// input an earlier one had already narrowed.
@@ -607,7 +615,7 @@ pub struct ScanSettings {
     /// A host reported without one is a different finding depending on this: at
     /// [`OsDetection::Off`] nothing looked, and at any other level something
     /// looked and found nothing conclusive. The level also bounds how much of
-    /// this phase's traffic the engine originated — see
+    /// this phase's traffic the engine originated. see
     /// [`OsDetection::is_active`].
     pub os_detection: OsDetection,
     /// How far the phase went to identify what was listening behind each open
@@ -641,8 +649,8 @@ pub struct ScanSettings {
     /// answered.
     ///
     /// Recorded for the same reason as [`traceroute`](Self::traceroute): a host
-    /// with no filtering finding is two things — a scan that did not look, and
-    /// one that looked and the filter showed nothing — and only this tells them
+    /// with no filtering finding is two things, a scan that did not look, and
+    /// one that looked and the filter showed nothing, and only this tells them
     /// apart.
     pub characterise: bool,
 
@@ -654,31 +662,76 @@ pub struct ScanSettings {
 
     /// The zombie a TCP port scan read its verdicts through, or `None` for an
     /// ordinary scan. Its presence is what tells a reader the ports were inferred
-    /// from a third party's counter rather than from the target's own replies —
+    /// from a third party's counter rather than from the target's own replies,
     /// which changes what an `open` or a `closed_filtered` means. See
     /// [`IdleScan`].
     pub idle_scan: Option<IdleScan>,
 }
 
 impl From<&ZondConfig> for ScanSettings {
+    /// What a phase records about the request behind it.
+    ///
+    /// Destructured with every field named rather than read through `cfg.`,
+    /// which is the same technique
+    /// [`ProbeTuning`](crate::config::ProbeTuning) uses on this type and for
+    /// the same reason: a field added to [`ZondConfig`] is then a compile error
+    /// here rather than a setting the report quietly stops carrying. What this
+    /// records is the whole of why a report exists, nine hosts after a
+    /// thorough privileged sweep and nine after an unprivileged fallback are the
+    /// same nine hosts and not the same result, so a field going missing here
+    /// costs more than it does anywhere else the config is read.
     fn from(cfg: &ZondConfig) -> Self {
+        let ZondConfig {
+            send_mode,
+            tcp_technique,
+            retry,
+            max_probe_rate,
+            no_dns,
+            redact,
+            os_detection,
+            service_detection,
+            detection,
+            traceroute,
+            characterise,
+            evasion,
+            idle_scan,
+
+            // Recorded elsewhere, and named so that dropping one is a decision
+            // rather than an omission. The exclusion policy and whether the
+            // sweep went beyond its targets are both properties of what a phase
+            // *covered*, which is `TargetScope`'s to say; `assume_up` is
+            // visible in the phase list, since a scan that skipped the liveness
+            // pass records no discovery phase.
+            exclusions: _,
+            segment_sweep: _,
+            assume_up: _,
+        } = cfg;
+
         Self {
-            send_mode: cfg.send_mode,
-            tcp_technique: cfg.tcp_technique,
-            retry: cfg.retry,
-            max_probe_rate: cfg.max_probe_rate,
-            dns_enabled: !cfg.no_dns,
-            redact: cfg.redact,
-            os_detection: cfg.os_detection,
-            service_detection: cfg.service_detection,
-            detection: cfg.detection,
-            traceroute: cfg.traceroute,
-            characterise: cfg.characterise,
-            evasion: EvasionRecord::from_profile(&cfg.evasion),
-            idle_scan: cfg.idle_scan,
+            send_mode: *send_mode,
+            tcp_technique: *tcp_technique,
+            retry: *retry,
+            max_probe_rate: *max_probe_rate,
+            dns_enabled: !no_dns,
+            redact: *redact,
+            os_detection: *os_detection,
+            service_detection: *service_detection,
+            detection: *detection,
+            traceroute: *traceroute,
+            characterise: *characterise,
+            evasion: EvasionRecord::from_profile(evasion),
+            idle_scan: *idle_scan,
         }
     }
 }
+
+// --------------------------------------------------------------------------
+// What a scan measured about itself
+// --------------------------------------------------------------------------
+//
+// Instrumentation, not findings. These bound how much the host list can be
+// trusted: a sweep that stopped on a deadline while replies were still arriving
+// found fewer hosts than the network holds, and nothing in the hosts says so.
 
 /// Upper bounds, in milliseconds, of the discovery-time histogram buckets in
 /// [`ProbeStats::found_at`]. A final bucket catches everything later than the
@@ -954,6 +1007,15 @@ impl ProbeStats {
     }
 }
 
+// --------------------------------------------------------------------------
+// What a scan did not cover
+// --------------------------------------------------------------------------
+//
+// Two kinds, and the difference is whether anything went wrong. A strategy that
+// could not run is a `ScannerFailure`; ground the engine declined before sending
+// anything is a `Refusal`. Both narrow a result and only one of them is a fault,
+// so a reader who cannot tell them apart learns to ignore both.
+
 /// Ground a scan decided not to cover, and why.
 ///
 /// **Not a failure**, and kept apart from one for the reason
@@ -1055,6 +1117,17 @@ impl fmt::Display for ScannerFailure {
         write!(f, "{:?} scanner failed: {}", self.scanner, self.reason)
     }
 }
+
+// --------------------------------------------------------------------------
+// Rebuilding what was recorded
+// --------------------------------------------------------------------------
+//
+// Each `*Parts` struct is followed by the `from_parts` that consumes it, rather
+// than sitting with the type it rebuilds. The pairs are the path a report takes
+// coming back off a disk, and reading them together is the only way to see that
+// path whole. It is also why `impl ScanPhase` appears below before
+// `struct ScanPhase` does, and why `TargetScope` and `ProbeStats` each have a
+// second impl block here rather than one block each.
 
 /// Everything a [`TargetScope`] holds, for rebuilding one that was recorded.
 ///
@@ -1169,9 +1242,17 @@ impl ProbeStats {
     }
 }
 
+// --------------------------------------------------------------------------
+// One phase of a scan
+// --------------------------------------------------------------------------
+//
+// A phase is one engine call: a sweep, a port scan, a watch. A report holds a
+// list of them rather than one set of metadata, because a caller who runs
+// discovery and then a port scan is describing one job.
+
 /// Which switch port the machine running a phase was plugged into.
 ///
-/// Not a finding about any host in the report — a relation between *this*
+/// Not a finding about any host in the report: a relation between *this*
 /// machine and somebody else's equipment, learned from an announcement the
 /// equipment sends unprompted (see [`crate::protocols::lldp`] and
 /// [`crate::protocols::cdp`]). No probe obtains it, and nothing else in a scan
@@ -1182,7 +1263,7 @@ impl ProbeStats {
 /// For the reason [`PhaseOrigin`] does. A [`merge`](crate::merge) folds phases
 /// measured from several vantage points into one report, and each of them ran
 /// somewhere different. Recorded once for the whole report, two machines'
-/// attachments would have to be arbitrated — a contest with no right answer,
+/// attachments would have to be arbitrated: a contest with no right answer,
 /// since both are true. On the phase, each keeps the vantage it was actually
 /// observed from and nothing has to be decided.
 ///
@@ -1207,7 +1288,7 @@ pub struct Attachment {
 /// Carried because the two do not cover the same ground: Cisco equipment runs
 /// CDP by default and LLDP only when somebody enables it, so a network that
 /// answers on one and not the other is saying something about what it is made
-/// of. It is also the honest answer to "why does this say VLAN 40" — the two
+/// of. It is also the honest answer to "why does this say VLAN 40": the two
 /// protocols carry that field in different places and not every device sends
 /// either.
 #[non_exhaustive]
@@ -1319,7 +1400,7 @@ impl Attachment {
     /// When the announcement this was read from arrived.
     ///
     /// Worth recording separately from the phase's own span, because a phase
-    /// that runs for days may see the answer change — which is somebody moving
+    /// that runs for days may see the answer change, which is somebody moving
     /// a cable, and is only legible if the two answers can be ordered.
     pub fn observed_at(&self) -> SystemTime {
         self.observed_at
@@ -1337,7 +1418,7 @@ impl Attachment {
 /// the report's own.
 ///
 /// **The label is the caller's.** The engine opens no files and has no word for
-/// one, so whoever read the document passes the name it used for it — a path, a
+/// one, so whoever read the document passes the name it used for it: a path, a
 /// record id, a bucket key. [`merge`](crate::merge) is the only thing that
 /// writes a `PhaseOrigin`, and it takes the version from the source report's own
 /// attribution.
@@ -1515,7 +1596,7 @@ impl ScanPhase {
     /// **`None` for a phase this engine did not measure.** The question is about
     /// *these* strategies and the sockets *they* need, and a scan another
     /// program ran answers it about its own. Recording `false` there said an
-    /// nmap sweep performed over ARP as root had no raw sockets — a claim about
+    /// nmap sweep performed over ARP as root had no raw sockets: a claim about
     /// this engine that no document supports, printed under findings that
     /// plainly contradicted it.
     pub fn privilege(&self) -> Option<Privilege> {
@@ -1561,6 +1642,14 @@ impl ScanPhase {
     }
 }
 
+// --------------------------------------------------------------------------
+// The report itself
+// --------------------------------------------------------------------------
+//
+// What the phases and the hosts add up to. Every count here is computed from the
+// hosts on demand rather than stored, so a summary cannot drift out of step with
+// the data it describes.
+
 /// Counts derived from a report's hosts.
 ///
 /// Computed on demand by [`ScanReport::summary`] rather than stored, so it
@@ -1595,8 +1684,8 @@ pub struct ScanSummary {
     /// Counted per host rather than per address, and the three do not sum to
     /// [`hosts_total`](Self::hosts_total): a dual-stack host appears in
     /// `ipv4`, in `ipv6` and in `dual_stack`. That is what makes the numbers
-    /// answer the question they are asked — "how much of this network did I see
-    /// over IPv6" — where a partition into three would answer a different one.
+    /// answer the question they are asked, "how much of this network did I see
+    /// over IPv6", where a partition into three would answer a different one.
     pub hosts_by_family: FamilyCounts,
 }
 
@@ -1636,7 +1725,7 @@ pub struct ScanReport {
     ///
     /// [`ScopedIp::scoped`] drops the zone from every address that does not need
     /// one, so this is the ordinary bare address for every host but that case,
-    /// and the map still orders by address — the zone only breaks ties between
+    /// and the map still orders by address: the zone only breaks ties between
     /// identically-numbered link-locals. Iteration order is unchanged for every
     /// report that does not contain one.
     ///
@@ -1677,8 +1766,8 @@ impl ScanReport {
     /// A report rebuilt from what an earlier scan wrote down, attributed to the
     /// engine that ran it.
     ///
-    /// For reading a finished scan back — out of a journal, or out of a report
-    /// this engine exported — where no new probing is happening. The version
+    /// For reading a finished scan back, out of a journal, or out of a report
+    /// this engine exported, where no new probing is happening. The version
     /// comes from the record rather than from this build, so a scan run by
     /// 0.11 still says 0.11 when 0.12 reads it. Every other constructor here
     /// describes a scan this build is part of, and names this build for that
@@ -1805,7 +1894,7 @@ impl ScanReport {
     /// When the latest phase stopped looking.
     ///
     /// The moment this report's findings are *as of*, which is what anything
-    /// judging them against a clock wants — a certificate's remaining validity,
+    /// judging them against a clock wants: a certificate's remaining validity,
     /// how stale a record is, which of two reports is the later word. A phase's
     /// end is its own `started_at + elapsed`, since `elapsed` is measured
     /// monotonically over that one phase; the report-wide
@@ -1820,7 +1909,7 @@ impl ScanReport {
     /// carries whatever that document claimed, and nmap's `elapsed` is a decimal
     /// number of seconds with no bound on it. A [`Duration`] holds five hundred
     /// billion years quite happily, a [`SystemTime`] does not, and `+` panics on
-    /// the difference — in a method a consumer calls to ask when a report is as
+    /// the difference: in a method a consumer calls to ask when a report is as
     /// of.
     ///
     /// Placing such a phase at its start understates it, which is the safe
@@ -1850,8 +1939,8 @@ impl ScanReport {
     /// span, and taking the earliest would judge tonight's certificates against
     /// last quarter.
     ///
-    /// A report without phases — a foreign scanner's output, or a scan that
-    /// ended before it wrote a phase down — is placed by the latest time any of
+    /// A report without phases, a foreign scanner's output, or a scan that
+    /// ended before it wrote a phase down, is placed by the latest time any of
     /// its hosts was seen, which is the only other thing in the record that is a
     /// time the scan happened rather than the time it is being read.
     ///
@@ -1964,8 +2053,8 @@ impl ScanReport {
     /// ```
     ///
     /// **Only hosts that answered.** [`Host::is_alive`] is the filter, so a host
-    /// recorded as [`Down`](HostStatus::Down) — a router said it was
-    /// unreachable — or [`Unknown`](HostStatus::Unknown) is left out. Probing an
+    /// recorded as [`Down`](HostStatus::Down), a router said it was
+    /// unreachable, or [`Unknown`](HostStatus::Unknown) is left out. Probing an
     /// address nothing answered for costs a full port scan's worth of silence to
     /// learn what the sweep already established.
     ///
@@ -1976,7 +2065,7 @@ impl ScanReport {
     /// who does want every address can build the set from [`Host::ips`] instead.
     ///
     /// A link-local address carries the interface it was found on, because it is
-    /// meaningless without one — `fe80::1` names a different machine on every
+    /// meaningless without one: `fe80::1` names a different machine on every
     /// segment, and the sweep that found it is the only thing that knows which.
     pub fn alive_targets(&self, ports: PortSet) -> TargetMap {
         let mut ips = IpSet::new();
@@ -2071,6 +2160,13 @@ fn index(hosts: impl IntoIterator<Item = Host>) -> BTreeMap<ScopedIp, Host> {
 // ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
 // ╚════════════════════════════════════════════╝
 
+// --------------------------------------------------------------------------
+// Naming the strategies
+// --------------------------------------------------------------------------
+//
+// Which strategy a failure, a refusal or a set of counters belongs to. Last
+// because everything above refers to it and nothing it refers to is here.
+
 /// Which scanning strategy a [`ScanEvent::ScannerFailed`](crate::scanner::session::ScanEvent::ScannerFailed) refers to.
 ///
 /// Marked `#[non_exhaustive]`: strategies are added as the engine learns to
@@ -2113,7 +2209,7 @@ pub enum ScannerKind {
     ///
     /// Named apart from [`Connect`] because a report has to be able to say which
     /// half of an unprivileged scan failed. The two send different datagrams,
-    /// read different answers, and fail for different reasons — a host that
+    /// read different answers, and fail for different reasons: a host that
     /// refuses one may be perfectly happy with the other, and one name for both
     /// makes that indistinguishable.
     ///
@@ -2194,7 +2290,7 @@ pub enum ScannerKind {
     /// Not a strategy, and here because it is the one channel a library
     /// consumer reads without opting in. A checkpoint that could not be written
     /// costs nothing a scan found and everything a *resume* would have skipped,
-    /// so it is a fact about the disk rather than about the network — and
+    /// so it is a fact about the disk rather than about the network, and
     /// filing it as a scanning strategy told a caller that ports had gone
     /// unprobed when none had.
     Journal,
@@ -2448,8 +2544,8 @@ mod tests {
     /// a run that put something different on the wire has to record something
     /// different.
     ///
-    /// The other half of this — that a run differing only in how it was
-    /// *displayed* records the same settings — used to be asserted here against
+    /// The other half of this, that a run differing only in how it was
+    /// *displayed* records the same settings, used to be asserted here against
     /// `no_banner`, `quiet` and `disable_input`. Those fields no longer exist on
     /// [`ZondConfig`]: presentation is the front end's, so there is nothing left
     /// that could leak into a report and nothing left for a test to catch.
@@ -2683,7 +2779,7 @@ mod tests {
     /// A dual-stack host is one host, counted under both families.
     ///
     /// These counts answer "how much of this network did I see over IPv6",
-    /// which is a different question from "how do the hosts partition" — so
+    /// which is a different question from "how do the hosts partition", so
     /// they deliberately do not sum to `hosts_total`, and a test that asserted
     /// they did would be pinning the wrong contract.
     #[test]

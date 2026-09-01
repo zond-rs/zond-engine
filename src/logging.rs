@@ -12,7 +12,7 @@
 //! `pub(crate)`, and that is the whole of its API design.
 //!
 //! **A library must not export these.** Exported from the crate root they would
-//! be `zond_engine::info!` and `zond_engine::error!` — five of the most generic
+//! be `zond_engine::info!` and `zond_engine::error!`: five of the most generic
 //! identifiers in Rust, shadowing `tracing`'s and `log`'s macros of the same
 //! names in any consumer that glob-imports this crate, and pinned by semver
 //! forever. Worse, a macro expanding to `tracing::info!` resolves that path in
@@ -29,7 +29,7 @@
 //! Two fields carry the conventions a front end reads. `status` names what kind
 //! of thing an event is, which is what a terminal colours on and a structured
 //! consumer filters on. `verbosity` is set by the caller on anything below a
-//! headline — a default run shows none of it.
+//! headline: a default run shows none of it.
 
 macro_rules! info {
     (incoming, $($arg:tt)+) => {
@@ -76,7 +76,7 @@ pub(crate) use warn_macro as warn;
 mod tests {
     /// Every diagnostic in the crate is written in one voice.
     ///
-    /// Lower case to begin with, and no full stop at the end — the way `rustc`
+    /// Lower case to begin with, and no full stop at the end: the way `rustc`
     /// and `cargo` write theirs, and the way the front end writes its own. A
     /// stream carrying `root privileges detected` beside `Successfully
     /// initialized hostname resolver` has two authors and reads like it.

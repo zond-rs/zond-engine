@@ -1991,6 +1991,7 @@ pub mod zond_engine::evasion
 pub zond_engine::evasion::EvasionError::FragmentTooSmall
 pub zond_engine::evasion::EvasionError::FragmentTooSmall::minimum: u16
 pub zond_engine::evasion::EvasionError::FragmentTooSmall::mtu: u16
+pub zond_engine::evasion::EvasionError::HopLimitZero
 pub zond_engine::evasion::EvasionError::PaddingTooLarge
 pub zond_engine::evasion::EvasionError::PaddingTooLarge::limit: u16
 pub zond_engine::evasion::EvasionError::PaddingTooLarge::padding: u16

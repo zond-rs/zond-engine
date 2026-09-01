@@ -11,11 +11,11 @@
 //! Controls what a scan sends so a probe can draw an answer an ordinary one
 //! would not: a probe from a source port a filter trusts, a chosen hop limit,
 //! padding that moves a probe off a recognisable size, a checksum built wrong so
-//! that only a middlebox would answer it. Set the fields you want on an
+//! that only a middlebox would answer it. Set the fields a scan needs on an
 //! [`EvasionProfile`] and hand it to the scan configuration.
 //!
-//! A default profile changes nothing — a scan configured with one puts the same
-//! packets on the wire, byte for byte, as a scan configured without it — so
+//! A default profile changes nothing, a scan configured with one puts the same
+//! packets on the wire, byte for byte, as a scan configured without it, so
 //! evasion is never something a scan does by accident.
 //!
 //! ```
@@ -60,8 +60,8 @@ use crate::transport::probe::SendMode;
 
 /// What a scan changes about the packets it sends, over the engine's defaults.
 ///
-/// A default profile is inert — see the [module documentation](self). Set a
-/// field for each technique you want; [`is_active`](Self::is_active) reports
+/// A default profile is inert. see the [module documentation](self). Set a
+/// field for each technique wanted; [`is_active`](Self::is_active) reports
 /// whether any is set.
 ///
 /// The fields are public and the `with_` methods chain, so either reads:
@@ -92,7 +92,7 @@ pub struct EvasionProfile {
     /// `None` keeps the engine's own choice, which is not one value: the raw TCP
     /// scanner randomises a fresh high port per probe, and the UDP scanner holds
     /// one high port for the scan. Setting this replaces *both* with the chosen
-    /// port — one profile shaping every packet — so a scan pins its source port
+    /// port, one profile shaping every packet, so a scan pins its source port
     /// everywhere a source port is chosen, the connect path included.
     pub source_port: Option<u16>,
 
@@ -120,7 +120,7 @@ pub struct EvasionProfile {
     /// rather than zero because a run of zeroes is itself the kind of fixed
     /// pattern this exists to escape.
     ///
-    /// Applies to TCP and UDP probes alike — appending data to a SYN is unusual,
+    /// Applies to TCP and UDP probes alike: appending data to a SYN is unusual,
     /// which is the point. `None` appends nothing, and every probe is the exact
     /// size it has always been.
     pub padding: Option<u16>,
@@ -129,7 +129,7 @@ pub struct EvasionProfile {
     /// wrong.
     ///
     /// A conformant host drops a segment whose TCP checksum does not verify, so
-    /// a reply to one was not sent by the host — it was sent by something in the
+    /// a reply to one was not sent by the host: it was sent by something in the
     /// path that answered without checking: a firewall, an intrusion-prevention
     /// system, a load balancer. The corrupt checksum crosses the whole path and
     /// is discarded at the far end, so a reply implicates a middlebox anywhere
@@ -144,8 +144,8 @@ pub struct EvasionProfile {
     /// sending interface's own.
     ///
     /// For NAC and MAC-filtering tests on the local segment. It is meaningful
-    /// only there — a router rewrites the source hardware address at the first
-    /// hop — and only over a self-built Ethernet frame, so setting it makes a
+    /// only there, a router rewrites the source hardware address at the first
+    /// hop, and only over a self-built Ethernet frame, so setting it makes a
     /// scan open the link-layer send path (see
     /// [`effective_send_mode`](Self::effective_send_mode)); a destination the
     /// Ethernet path cannot reach, such as loopback, is refused. `None` uses the
@@ -168,7 +168,7 @@ pub struct EvasionProfile {
     ///
     /// Each real probe goes out among its decoys in random order. A decoy is
     /// built from its own address with its own checksum, so it is not the odd
-    /// one out that carries a wrong one, and it is never recorded — a decoy's
+    /// one out that carries a wrong one, and it is never recorded: a decoy's
     /// reply can never resolve a port. Spoofing a source address needs a
     /// self-built Ethernet frame, so setting this opens the link-layer path (see
     /// [`effective_send_mode`](Self::effective_send_mode)); and egress filtering
@@ -245,20 +245,44 @@ pub enum EvasionError {
         /// The most that would fit.
         limit: u16,
     },
+
+    /// A hop limit of zero, which no probe survives.
+    ///
+    /// A packet with a hop limit of zero is discarded by the first router that
+    /// sees it, and by many stacks before it leaves the host. Every target of
+    /// such a scan answers nothing, and a scan that sends nothing and reports a
+    /// silent network is exactly what refusing a profile up front is for.
+    ///
+    /// Refused for the reason [`SourcePortZero`](Self::SourcePortZero) is: a
+    /// value the type permits and the protocol makes meaningless. Unlike the
+    /// other three this one is refused *nowhere else* -- the packet builds and
+    /// sends perfectly well -- so this check is not an early warning of a later
+    /// refusal, it is the only one there is.
+    #[error(
+        "a hop limit of zero expires every probe before it leaves; 1 is the least that travels"
+    )]
+    HopLimitZero,
 }
 
 impl EvasionProfile {
     /// Whether this profile is one a scan could actually put on the wire.
     ///
-    /// **What it checks is what a profile alone can be wrong about**, which is
-    /// three things: a fragment size below what a datagram can be split to, a
-    /// source port of zero, and padding past what a length field describes.
-    /// Each is refused deeper down anyway, on every probe, and finding out then
-    /// means a scan that sends nothing and reports a silent network.
+    /// **What it checks is what a profile alone can be wrong about**, with no
+    /// destination in hand: a fragment size below what a datagram can be split
+    /// to, a source port of zero, padding past what a length field describes,
+    /// and a hop limit of zero.
+    ///
+    /// The first three are refused deeper down anyway, on every probe, and
+    /// finding out then means a scan that sends nothing and reports a silent
+    /// network. The fourth is refused nowhere else at all: a probe with a hop
+    /// limit of zero builds and sends and is discarded by the first router, so
+    /// the scan reports that silent network without anything having gone wrong
+    /// anywhere it could be seen. It was the one field of the four this function
+    /// did not check.
     ///
     /// It is deliberately not a check that a scan will work. Whether the
     /// link-layer path can reach these targets, whether decoys survive egress
-    /// filtering, whether a fragment size suits an IPv6 destination — those are
+    /// filtering, whether a fragment size suits an IPv6 destination: those are
     /// questions about a scan and are answered against the destination in hand.
     ///
     /// ```
@@ -302,10 +326,14 @@ impl EvasionProfile {
             });
         }
 
+        if self.ttl == Some(0) {
+            return Err(EvasionError::HopLimitZero);
+        }
+
         Ok(())
     }
 
-    /// Whether this profile changes anything — `false` for a default profile.
+    /// Whether this profile changes anything: `false` for a default profile.
     #[must_use]
     pub fn is_active(&self) -> bool {
         *self != Self::default()
@@ -356,7 +384,7 @@ impl EvasionProfile {
     }
 
     /// The source port a probe should leave from: the [`source_port`] override
-    /// if one is set, otherwise `default` — the port the engine would have
+    /// if one is set, otherwise `default`: the port the engine would have
     /// chosen itself.
     ///
     /// [`source_port`]: Self::source_port
@@ -382,12 +410,12 @@ impl EvasionProfile {
     /// not be reshaped in any other way.
     ///
     /// This is what an OS-detection or path-measurement probe takes from the
-    /// profile. Such a probe should expire at the same distance as every other —
-    /// so it honours the hop limit — but its answer *is* the measurement, and a
+    /// profile. Such a probe should expire at the same distance as every other,
+    /// so it honours the hop limit, but its answer *is* the measurement, and a
     /// framing technique would change that answer: a fragmented or spoofed probe
     /// would have the engine reading its own evasion back instead of the host.
-    /// So the framing state a full [`emission`](Self::emission) carries — the
-    /// spoofed hardware address and the fragmentation — is deliberately left off.
+    /// So the framing state a full [`emission`](Self::emission) carries, the
+    /// spoofed hardware address and the fragmentation, is deliberately left off.
     #[must_use]
     pub fn hop_limited_emission(&self) -> Emission {
         match self.ttl {
@@ -396,7 +424,7 @@ impl EvasionProfile {
         }
     }
 
-    /// The [`SegmentShaping`] every probe should carry — the
+    /// The [`SegmentShaping`] every probe should carry: the
     /// [`padding`](Self::padding) and [`bad_tcp_checksum`](Self::bad_tcp_checksum)
     /// choices as one value.
     #[must_use]
@@ -545,8 +573,8 @@ mod tests {
     fn source_port_resolves_to_the_override_when_set_and_the_default_otherwise() {
         // The rule every source-port site depends on. A mutant that returned the
         // default even when the caller set an override would silently un-pin the
-        // source port of every scan that asked for one — the whole point of the
-        // knob — while every construction still compiled and ran.
+        // source port of every scan that asked for one, the whole point of the
+        // knob, while every construction still compiled and ran.
         assert_eq!(EvasionProfile::default().source_port_or(50_000), 50_000);
         assert_eq!(
             EvasionProfile::default()
@@ -594,7 +622,7 @@ mod tests {
     #[test]
     fn a_hop_limited_emission_carries_the_hop_limit_but_never_reshapes() {
         // What an OS-detection or path-measurement probe takes from the profile:
-        // the hop limit, so it expires like every other probe — and only that. A
+        // the hop limit, so it expires like every other probe, and only that. A
         // mutant that reused the full `emission` here would fragment or spoof the
         // very probe whose reply is the measurement, and the engine would read
         // its own evasion back instead of the host.
@@ -654,6 +682,17 @@ mod tests {
         ] {
             assert_eq!(allowed.validate(), Ok(()), "{allowed:?}");
         }
+        // A hop limit of zero, which is the one of the four refused nowhere
+        // else: the probe builds, sends, and dies at the first router, so every
+        // target answers nothing and the scan reports a silent network.
+        assert_eq!(
+            refused(EvasionProfile::default().with_ttl(0)),
+            EvasionError::HopLimitZero
+        );
+        assert!(
+            EvasionProfile::default().with_ttl(1).validate().is_ok(),
+            "one hop still travels, and expiring at a chosen distance is the point"
+        );
     }
 
     /// The bound `validate` reads is the bound the fragmenter enforces, not a
@@ -721,7 +760,7 @@ mod tests {
         );
         // Nothing else is touched: an ordinary scan keeps Auto, and an explicit
         // choice is left as the caller made it even when it cannot carry the
-        // technique — refused per probe, not silently overridden.
+        // technique: refused per probe, not silently overridden.
         assert_eq!(plain.effective_send_mode(SendMode::Auto), SendMode::Auto);
         assert_eq!(
             framing.effective_send_mode(SendMode::RawSocket),
@@ -764,7 +803,7 @@ mod tests {
         // Each override has to reach the field it names. A mutant that dropped
         // the padding would send a bare probe where the caller asked for a
         // padded one, and one that dropped the checksum flag would send a valid
-        // checksum where the caller asked for a corrupt one — silently undoing
+        // checksum where the caller asked for a corrupt one: silently undoing
         // the very knob that was set, while every construction still compiled.
         let shaping = EvasionProfile::default()
             .with_padding(16)

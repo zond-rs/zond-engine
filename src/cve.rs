@@ -11,8 +11,8 @@
 //! A report-level pass that reads the CPE a service identification produced and,
 //! where a known vulnerability names the same software at an affected version,
 //! records a [`Finding`] on the port. It answers the question most people run a
-//! scan to answer — not "what is listening" but "what is listening that I need to
-//! fix" — from data the engine already produces, with no probe of its own.
+//! scan to answer, not "what is listening" but "what is listening that I need to
+//! fix", from data the engine already produces, with no probe of its own.
 //!
 //! ## The one number two ways
 //!
@@ -35,8 +35,8 @@
 //!
 //! So [`Catalogue`] is a value. [`Catalogue::embedded`] is the one this crate
 //! ships and what [`correlate`] uses, and [`Catalogue::read`] takes a caller's
-//! own — a refreshed KEV dump, or the internal advisory feed an enterprise
-//! already maintains — for [`correlate_with`].
+//! own, a refreshed KEV dump, or the internal advisory feed an enterprise
+//! already maintains, for [`correlate_with`].
 //!
 //! A catalogue carries its own identity and version, and every finding it
 //! produces is stamped with them, so a report says which dataset concluded what
@@ -55,7 +55,7 @@
 //! ## How it runs
 //!
 //! [`correlate`] takes a finished [`Host`] and records findings on its ports. It
-//! is a caller's to run — the library performs no pass a caller did not ask for —
+//! is a caller's to run, the library performs no pass a caller did not ask for,
 //! and it is idempotent, because a finding deduplicates by claim, so a second run
 //! corroborates rather than doubles.
 
@@ -402,7 +402,7 @@ impl Vulnerability {
     }
 
     /// The finding this vulnerability produces for a matched `cpe`, or [`None`]
-    /// if the entry is malformed — an unknown severity, a bad CVE identifier.
+    /// if the entry is malformed: an unknown severity, a bad CVE identifier.
     fn to_finding(&self, cpe: &str, catalogue: &Catalogue) -> Option<Finding> {
         let severity = wire::severity(&self.severity)?;
         let detection = DetectionId::new(
@@ -452,19 +452,35 @@ impl Cpe {
             .strip_prefix("cpe:/")
             .or_else(|| cpe.strip_prefix("cpe:2.3:"))?;
         let mut fields = body.split(':');
-        let _part = fields.next()?; // a / o / h — application, os, hardware
+        let _part = fields.next()?; // a, o or h: application, os, hardware
         let vendor = fields.next()?;
         let product = fields.next()?;
         let version = fields.next().unwrap_or("");
+
+        // The 2.3 form puts a patch level in its own `update` field, where the
+        // URI form and every service banner run it onto the version: OpenSSH is
+        // `9.6:p1` in one and `9.6p1` in the other. Joined here so the two
+        // spellings of one release compare equal, since a predicate is written
+        // against whichever the author happened to have.
+        //
+        // `*` is "any" and `-` is "not applicable" in this grammar, and neither
+        // is a patch level.
+        let update = fields
+            .next()
+            .filter(|value| !value.is_empty() && *value != "*" && *value != "-");
+
         Some(Self {
             vendor: vendor.to_ascii_lowercase(),
             product: product.to_ascii_lowercase(),
-            version: version.to_string(),
+            version: match update {
+                Some(update) => format!("{version}{update}"),
+                None => version.to_string(),
+            },
         })
     }
 }
 
-/// Whether `version` satisfies `predicate` — a comma-joined list of
+/// Whether `version` satisfies `predicate`: a comma-joined list of
 /// `<op> <version>` clauses, all of which must hold, or `*` for any version.
 ///
 /// A version that was never learned (`-`, `*`, or empty) satisfies only `*`: a
@@ -484,6 +500,11 @@ fn version_matches(version: &str, predicate: &str) -> bool {
 
 /// Whether `version` satisfies one `<op> <bound>` clause. A clause with no
 /// operator is an exact-version match.
+///
+/// The ordering is [`version_cmp`]'s, which reads a hyphen two ways: a
+/// pre-release precedes the version it is a candidate for and a package
+/// revision follows it. Both matter to a bound written `<1.0.0`, and they
+/// matter in opposite directions.
 fn clause_holds(version: &str, clause: &str) -> bool {
     let (op, bound) = ["<=", ">=", "==", "<", ">", "="]
         .into_iter()
@@ -503,6 +524,45 @@ fn clause_holds(version: &str, clause: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// The 2.3 grammar puts a patch level in a field of its own and the URI
+    /// form runs it onto the version, so one release has two spellings. A
+    /// predicate is written against whichever the author had in front of them,
+    /// and the two have to compare equal.
+    #[test]
+    fn the_two_cpe_forms_of_one_release_read_the_same_version() {
+        let uri = Cpe::parse("cpe:/a:openbsd:openssh:9.6p1").expect("the URI form");
+        let two_three =
+            Cpe::parse("cpe:2.3:a:openbsd:openssh:9.6:p1:*:*:*:*:*:*").expect("the 2.3 form");
+
+        assert_eq!(uri.version, two_three.version);
+        assert_eq!(two_three.version, "9.6p1");
+    }
+
+    /// `*` is "any" and `-` is "not applicable" in that grammar, and neither is
+    /// a patch level to run onto the end of a version.
+    #[test]
+    fn an_unset_update_field_is_not_appended() {
+        for cpe in [
+            "cpe:2.3:a:nginx:nginx:1.21.0:*:*:*:*:*:*:*",
+            "cpe:2.3:a:nginx:nginx:1.21.0:-:*:*:*:*:*:*",
+            "cpe:2.3:a:nginx:nginx:1.21.0",
+        ] {
+            assert_eq!(Cpe::parse(cpe).expect("parses").version, "1.21.0", "{cpe}");
+        }
+    }
+
+    /// The correlator's end of T2: a pre-release is below the version it is a
+    /// candidate for, so a bound written `<1.0.0` catches it.
+    #[test]
+    fn a_pre_release_satisfies_a_bound_written_against_its_release() {
+        assert!(version_matches("1.0.0-rc1", "<1.0.0"));
+        assert!(version_matches("0.9.9", "<1.0.0"));
+        assert!(!version_matches("1.0.0", "<1.0.0"));
+
+        // And a distribution rebuild is a later build, not an earlier one.
+        assert!(!version_matches("1.21.0-1ubuntu2", "<1.21.0"));
+    }
     use super::*;
     use crate::model::finding::Severity;
 
