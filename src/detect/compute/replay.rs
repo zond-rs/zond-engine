@@ -79,7 +79,7 @@ pub struct CapTape {
     pub speaks: Vec<SpeakExchange>,
     /// Each `resolve`, in order.
     pub resolves: Vec<ResolveExchange>,
-    /// Each `now` tick the module read, in order, as milliseconds on the scan clock.
+    /// Each `now` tick the module read, in order, as milliseconds on the run's clock.
     pub nows: Vec<u64>,
 }
 

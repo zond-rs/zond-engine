@@ -80,7 +80,7 @@ pub trait Capabilities: Send {
     /// cannot also reach the resolver; served only where the class grants it.
     fn resolve(&mut self, name: &str) -> Result<Vec<IpAddr>, CapError>;
 
-    /// The injected clock: a scan-relative tick, the only clock a module can
+    /// The injected clock: a run-relative tick, the only clock a module can
     /// read. It is not wall-clock and not a system time, which is what lets a run
     /// be recorded and replayed, a real clock would make the same replay differ.
     fn now(&mut self) -> ScanInstant;
@@ -104,7 +104,7 @@ impl Capabilities for Box<dyn Capabilities> {
     }
 }
 
-/// A scan-relative instant: milliseconds since the scan's clock started.
+/// A run-relative instant: milliseconds since the run's clock started.
 ///
 /// A value the engine mints and can write down, not a
 /// [`std::time::Instant`], whose monotonic reading means nothing outside the
@@ -117,12 +117,12 @@ pub struct ScanInstant {
 }
 
 impl ScanInstant {
-    /// An instant `millis` milliseconds into the scan's clock.
+    /// An instant `millis` milliseconds into the run's clock.
     pub const fn from_millis(millis: u64) -> Self {
         Self { millis }
     }
 
-    /// Milliseconds since the scan's clock started.
+    /// Milliseconds since the run's clock started.
     pub const fn millis(self) -> u64 {
         self.millis
     }
@@ -184,8 +184,9 @@ impl CapError {
     }
 }
 
-/// What the operator's envelope produced for one detection: its identity, the
-/// class it runs at, the concrete [`Budget`], and which verbs to serve it.
+/// What a detection resolves into for the runtime: its identity, the class it
+/// declares, the concrete [`Budget`] filled from what it left open, and which verbs
+/// to serve it.
 ///
 /// The grant is all a runtime needs to instantiate a module, and it
 /// is where the class becomes enforcement rather than advice: a `passive` grant

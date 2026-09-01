@@ -12,7 +12,7 @@
 //! a host presents, and the findings to draw when the gate fits. Like the flow
 //! schema, these types deserialize free of the model so `build.rs` can validate the
 //! corpus with the same types the runtime reads; the lowering to the model's own
-//! vocabulary lives in [`convert`](super::convert).
+//! vocabulary lives in [`convert`](crate::detect::convert).
 
 // `build.rs` compiles this file to validate the host corpus, and its checks read
 // only a subset of these fields and never the runtime `matches`. Within the library

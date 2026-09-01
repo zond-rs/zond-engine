@@ -10,7 +10,7 @@
 //!
 //! The [`Capabilities`] a module is served during a scan: [`speak`](Capabilities::speak)
 //! over a fresh connection to the one scanned port, [`now`](Capabilities::now)
-//! off a scan-relative clock. It is the live counterpart to the recorded
+//! off a run-relative clock. It is the live counterpart to the recorded
 //! capabilities a test or a replay serves, and a module cannot tell which it
 //! holds, which is what the seam is for.
 //!

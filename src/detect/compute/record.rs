@@ -64,7 +64,7 @@ pub struct CapTapeRecord {
     /// Each recorded `resolve`, in call order.
     #[serde(default)]
     pub resolves: Vec<ResolveExchangeRecord>,
-    /// Each `now` tick, in call order, as milliseconds on the scan clock.
+    /// Each `now` tick, in call order, as milliseconds on the run's clock.
     #[serde(default)]
     pub nows: Vec<u64>,
 }

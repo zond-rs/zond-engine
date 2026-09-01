@@ -105,7 +105,7 @@ pub struct Step {
     /// `[[step.finding]]`: what the step may emit once it has run. Each is
     /// considered in order, and each guard reads `matched` alongside every
     /// variable bound so far.
-    #[serde(default, rename = "finding")]
+    #[serde(default)]
     pub finding: Vec<FindingSpec>,
 }
 

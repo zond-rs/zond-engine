@@ -9,10 +9,10 @@
 //! # Gating a detection to a port
 //!
 //! Every tier asks the same two questions before it runs a detection against a
-//! port: does the operator's [envelope](super::DetectionEnvelope) permit the
+//! port: does the operator's [envelope](crate::config::DetectionEnvelope) permit the
 //! detection's intrusiveness class, and does the detection's `when` rule fit this
 //! port. The envelope answers the first through
-//! [`permits`](super::DetectionEnvelope::permits); this module answers the second,
+//! [`permits`](crate::config::DetectionEnvelope::permits); this module answers the second,
 //! as a method on the shared [`Rule`] both a [flow](super::flow) and a [compute
 //! module](super::compute) gate on, so the two tiers select ports by one rule
 //! rather than each restating it.

@@ -401,7 +401,7 @@ fn capability_resolve(name: ImmutableString) -> Result<Array, Box<EvalAltResult>
     }
 }
 
-/// `now() -> millis`, the injected scan-relative tick.
+/// `now() -> millis`, the injected run-relative tick.
 fn capability_now() -> i64 {
     with_capabilities(|caps| caps.now().millis() as i64).unwrap_or(0)
 }
