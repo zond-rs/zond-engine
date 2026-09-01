@@ -231,6 +231,7 @@ mod tests {
                 |_grant| Some(Box::new(NoCaps)),
                 |_, _| {},
             )
+            .findings
         };
 
         // A response with none of the baseline headers: a finding, and the count of

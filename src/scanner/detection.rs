@@ -62,7 +62,9 @@ use crate::config::ServiceDetection;
 use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::detect::compute::db::ComputeDb;
 use crate::detect::compute::stage as compute_stage;
-use crate::detect::compute::{CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities};
+use crate::detect::compute::{
+    CapTapeRecord, Capabilities, DetectionRunRecord, LiveCapabilities, RunOutcome,
+};
 use crate::detect::flow::db::FlowDb;
 use crate::detect::flow::{Probe, stage};
 use crate::detect::host::db::HostDb;
@@ -87,6 +89,17 @@ const DEFAULT_MAX_MILLIS: u64 = 2000;
 /// loop ceilings already bound how many exchanges it can attempt; this caps the
 /// sockets an undeclared one opens at the widest a single loop can be.
 const DEFAULT_MAX_CONNECTIONS: u32 = 64;
+
+/// One port's detections as they travel off the blocking pool: the host key, the
+/// port and protocol, the findings drawn, and the runs that did not finish so the
+/// pool can record each as a failure.
+type PortResult = (
+    ScopedIp,
+    u16,
+    Protocol,
+    Vec<Finding>,
+    Vec<compute_stage::InconclusiveRun>,
+);
 
 /// Runs the corpus against every open port a detection is interested in,
 /// recording the findings it produces.
@@ -117,8 +130,21 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         CONNECT_CONCURRENCY,
         ctx.clone(),
         ScannerKind::Detection,
-        |result, _audit| {
-            if let Some((key, number, protocol, findings)) = result {
+        |result: Option<PortResult>, _audit| {
+            if let Some((key, number, protocol, findings, inconclusive)) = result {
+                // A detection that trapped on a budget or faulted did not clear the
+                // port; record that it did not finish so the report tells it apart
+                // from a detection that finished and found nothing.
+                for run in &inconclusive {
+                    ctx.record_failure(
+                        ScannerKind::Detection,
+                        format!(
+                            "detection '{}' on {key}:{number} {}",
+                            run.detection.id(),
+                            describe_outcome(&run.outcome)
+                        ),
+                    );
+                }
                 record(ctx, key, number, protocol, findings);
             }
         },
@@ -213,7 +239,7 @@ async fn detect_one(
     modules: &'static ComputeDb,
     envelope: DetectionEnvelope,
     tapes: Arc<Tapes>,
-) -> Option<(ScopedIp, u16, Protocol, Vec<Finding>)> {
+) -> Option<PortResult> {
     let PortTarget {
         address,
         number,
@@ -225,7 +251,7 @@ async fn detect_one(
 
     // Both tiers are synchronous and hold a blocking socket, so they run off the
     // reactor. `spawn_blocking` fails only if the runtime is shutting down.
-    let findings = tokio::task::spawn_blocking(move || {
+    let produced = tokio::task::spawn_blocking(move || {
         let mut findings = stage::detect_port(
             flows,
             &envelope,
@@ -248,7 +274,7 @@ async fn detect_one(
             addr: Some(addr),
             tunnel: None,
         };
-        findings.extend(compute_stage::detect_port(
+        let computed = compute_stage::detect_port(
             modules.runtime(),
             modules.detections(),
             &envelope,
@@ -271,13 +297,35 @@ async fn detect_one(
                     tape: CapTapeRecord::from(&tape),
                 });
             },
-        ));
-        findings
+        );
+        findings.extend(computed.findings);
+        (findings, computed.inconclusive)
     })
     .await
     .ok()?;
 
-    (!findings.is_empty()).then_some((address, number, protocol, findings))
+    let (findings, inconclusive) = produced;
+    (!findings.is_empty() || !inconclusive.is_empty()).then_some((
+        address,
+        number,
+        protocol,
+        findings,
+        inconclusive,
+    ))
+}
+
+/// A human phrase for why a compute run did not finish, for the failure the report
+/// carries. A reader needs which bound or fault ended the run, not the Rust
+/// spelling of the outcome enum.
+fn describe_outcome(outcome: &RunOutcome) -> String {
+    match outcome {
+        RunOutcome::BudgetExceeded(trap) => format!("hit its {trap:?} budget"),
+        RunOutcome::Denied(denial) => {
+            format!("was denied {:?}: {}", denial.capability, denial.reason)
+        }
+        RunOutcome::Faulted(fault) => format!("faulted: {fault:?}"),
+        RunOutcome::HostReentered => "re-entered the runtime".to_string(),
+    }
 }
 
 /// Folds one port's findings back into its host.

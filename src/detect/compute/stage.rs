@@ -37,12 +37,34 @@ use tracing::debug;
 use crate::config::DetectionEnvelope;
 use crate::detect::manifest::DetectionManifest;
 use crate::fingerprint::PortContext;
-use crate::model::finding::Finding;
+use crate::model::finding::{DetectionId, Finding};
 use crate::model::port::Protocol;
 
+use super::budget::RunOutcome;
 use super::capability::{Capabilities, Grant};
 use super::replay::{CapTape, RecordedCapabilities, RecordingCapabilities};
 use super::runtime::ComputeRuntime;
+
+/// A compute detection that did not finish cleanly: which detection, and why it
+/// ended. The stage returns these beside the findings so the caller can record an
+/// inconclusive run rather than dropping it — a run that trapped on a budget or
+/// faulted did not clear the port, and a reader must be able to tell the two apart.
+pub(crate) struct InconclusiveRun {
+    /// The detection whose run did not complete.
+    pub(crate) detection: DetectionId,
+    /// Why it did not complete.
+    pub(crate) outcome: RunOutcome,
+}
+
+/// What a port's compute detections produced: the findings, and the runs that did
+/// not finish cleanly. A clean scan leaves [`inconclusive`](Self::inconclusive)
+/// empty; anything in it is a detection the report should account for.
+pub(crate) struct PortDetections {
+    /// The findings the detections drew.
+    pub(crate) findings: Vec<Finding>,
+    /// The runs that ended abnormally, kept so the caller can surface them.
+    pub(crate) inconclusive: Vec<InconclusiveRun>,
+}
 
 /// A compute detection compiled and ready to run: its [`DetectionManifest`],
 /// its compiled module, and the content hash of the body it came from, which
@@ -90,6 +112,11 @@ impl<M> LoadedDetection<M> {
 /// Every run is recorded, and its [`CapTape`] is handed to `record` once the run
 /// ends, clean or not, so a caller can keep it for a later replay. A caller that
 /// does not want the tapes ignores them.
+///
+/// A run that ends abnormally is not turned into a finding, but it is not dropped
+/// either: it is returned in [`PortDetections::inconclusive`] so the caller can
+/// record that the detection did not finish, which a report needs to tell apart
+/// from a detection that finished and found nothing.
 // Eight inputs: the whole per-port situation plus both capability seams. Bundling
 // them into a request type is a later cleanup shared with the flow stage.
 #[allow(clippy::too_many_arguments)]
@@ -102,8 +129,9 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
     responses: &[&[u8]],
     mut caps_for: impl FnMut(&Grant) -> Option<Box<dyn Capabilities>>,
     mut record: impl FnMut(&Grant, CapTape),
-) -> Vec<Finding> {
+) -> PortDetections {
     let mut findings = Vec::new();
+    let mut inconclusive = Vec::new();
     for detection in detections {
         let Some(grant) = Grant::from_manifest(&detection.manifest, &detection.content_hash) else {
             continue;
@@ -135,15 +163,24 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
 
         match runtime.run(&mut instance, ctx, responses, &mut recording) {
             Ok(produced) => findings.extend(produced),
-            Err(outcome) => debug!(
-                detection = grant.detection.id(),
-                ?outcome,
-                "a compute detection ended without a clean result"
-            ),
+            Err(outcome) => {
+                debug!(
+                    detection = grant.detection.id(),
+                    ?outcome,
+                    "a compute detection ended without a clean result"
+                );
+                inconclusive.push(InconclusiveRun {
+                    detection: grant.detection.clone(),
+                    outcome,
+                });
+            }
         }
         record(&grant, recording.into_tape());
     }
-    findings
+    PortDetections {
+        findings,
+        inconclusive,
+    }
 }
 
 /// Replays one detection over a recorded [`CapTape`], reproducing the findings the
@@ -287,7 +324,8 @@ mod tests {
             &[],
             |_grant| Some(Box::new(StubCaps)),
             |_, _| {},
-        );
+        )
+        .findings;
 
         assert_eq!(findings.len(), 1, "only the redis gate fit the port");
         assert_eq!(findings[0].detection().id(), "redis-check");
@@ -308,7 +346,8 @@ mod tests {
             &[],
             |_grant| Some(Box::new(StubCaps)),
             |_, _| {},
-        );
+        )
+        .findings;
         assert!(
             withheld.is_empty(),
             "an exploit ran under the default envelope"
@@ -324,7 +363,8 @@ mod tests {
             &[],
             |_grant| Some(Box::new(StubCaps)),
             |_, _| {},
-        );
+        )
+        .findings;
         assert_eq!(permitted.len(), 1, "an opted-in exploit did not run");
     }
 
@@ -359,7 +399,8 @@ mod tests {
             &[],
             |_grant| Some(Box::new(StubCaps)),
             |_, _| {},
-        );
+        )
+        .findings;
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity(), Severity::High);
@@ -387,7 +428,8 @@ mod tests {
             &[],
             |_grant| Some(Box::new(StubCaps)),
             |_, _| {},
-        );
+        )
+        .findings;
 
         assert!(
             findings.is_empty(),
@@ -428,7 +470,8 @@ mod tests {
             &[],
             |_grant| Some(Box::new(StubCaps)),
             |_grant, tape| tapes.push(tape),
-        );
+        )
+        .findings;
 
         assert_eq!(findings.len(), 1);
         assert_eq!(tapes.len(), 1, "the run's tape was not handed back");
@@ -470,5 +513,42 @@ mod tests {
         let findings = replay_over_tape(&runtime, &detection, &ctx(6379), &[], tape);
         assert_eq!(findings.len(), 1, "the recorded run did not replay");
         assert_eq!(findings[0].severity(), Severity::High);
+    }
+
+    #[test]
+    fn a_faulting_detection_is_returned_as_inconclusive_not_a_finding() {
+        // A module that throws did not clear the port; it did not finish. The stage
+        // must hand that back as an inconclusive run, naming the detection and why,
+        // rather than dropping it into a log where the report cannot see it.
+        let runtime = RhaiRuntime::new();
+        let source = r#"
+            fn analyze(ctx, responses) {
+                throw "deliberate fault";
+            }
+        "#;
+        let detections = vec![loaded(&runtime, "faulty", "redis", Class::Passive, source)];
+
+        let result = detect_port(
+            &runtime,
+            &detections,
+            &DetectionEnvelope::default(),
+            Some("redis"),
+            &ctx(6379),
+            &[],
+            |_grant| Some(Box::new(StubCaps)),
+            |_, _| {},
+        );
+
+        assert!(
+            result.findings.is_empty(),
+            "a fault must not be reported as a finding"
+        );
+        assert_eq!(result.inconclusive.len(), 1, "the fault was not surfaced");
+        assert_eq!(result.inconclusive[0].detection.id(), "faulty");
+        assert!(
+            matches!(result.inconclusive[0].outcome, RunOutcome::Faulted(_)),
+            "the outcome was not a fault: {:?}",
+            result.inconclusive[0].outcome
+        );
     }
 }
