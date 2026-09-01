@@ -75,7 +75,7 @@ use crate::scanner::strategy::routed::RoutedScanner;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::interface::Link;
 use crate::system::interface::{self, RoutedTarget};
-use crate::system::neighbors;
+use crate::system::neighbor_cache;
 use crate::system::privilege::Privilege;
 use crate::{info, warn};
 
@@ -202,6 +202,34 @@ impl RefusedStep {
                  scan has no other strategy. Run with root to sweep a segment this \
                  size, or give specific addresses or a smaller prefix.",
                 describe(range)
+            ),
+        }
+    }
+
+    /// A port target that is a bare IPv6 link-local address.
+    ///
+    /// `fe80::1` names a different machine on every segment, and a port scan
+    /// reaches its targets over the routing table rather than at the link
+    /// layer, so it has no interface to send from and no way to choose one.
+    /// Every interface holds an `fe80::/64`, which is why picking the first
+    /// match is a guess dressed as an answer.
+    ///
+    /// [`RoutedTargets::ambiguous`](crate::system::interface::RoutedTargets)
+    /// refuses the same address on the discovery path. A port scan run with
+    /// [`assume_up`](crate::config::ZondConfig::assume_up) never reaches that
+    /// path, which is how such a target used to arrive at a raw scanner and be
+    /// probed from whichever segment the host listed first.
+    ///
+    /// Written `fe80::1%en0` it is unambiguous, and the sweep that reaches it
+    /// is the local one.
+    pub fn link_local_port_target_needs_an_interface(address: IpAddr) -> Self {
+        Self {
+            scanner: ScannerKind::SynPort,
+            reason: format!(
+                "{address} is link-local, so it names a different machine on \
+                 every segment and a port scan has no interface to reach it \
+                 from. Say which: {address}%<interface>, which is swept at the \
+                 link layer."
             ),
         }
     }
@@ -859,7 +887,7 @@ fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
 /// address that answered *once*, from a table that goes stale, so each becomes a
 /// probe like any other and earns its place in the report by answering now.
 fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>) {
-    let table = neighbors::ipv6_neighbors();
+    let table = neighbor_cache::ipv6_neighbors();
     if !table.is_empty() {
         seed_from_neighbor_table_with(local, &table);
     }
@@ -867,7 +895,10 @@ fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>) {
 
 /// [`seed_from_neighbor_table`] against an explicit table, so the exclusions can
 /// be tested without a host that happens to have the right neighbours.
-fn seed_from_neighbor_table_with(local: &mut HashMap<Link, IpSet>, table: &[neighbors::Neighbor]) {
+fn seed_from_neighbor_table_with(
+    local: &mut HashMap<Link, IpSet>,
+    table: &[neighbor_cache::Neighbor],
+) {
     for (intf, targets) in local.iter_mut() {
         let mut seeded = 0usize;
         for addr in candidates_for(intf, table) {
@@ -895,7 +926,7 @@ fn seed_from_neighbor_table_with(local: &mut HashMap<Link, IpSet>, table: &[neig
 }
 
 /// The neighbour-table addresses worth probing on `intf`, in table order.
-fn candidates_for(link: &Link, table: &[neighbors::Neighbor]) -> Vec<IpAddr> {
+fn candidates_for(link: &Link, table: &[neighbor_cache::Neighbor]) -> Vec<IpAddr> {
     let own: std::collections::HashSet<IpAddr> =
         link.addresses().iter().map(|held| held.address()).collect();
 
@@ -937,8 +968,8 @@ mod tests {
         )
     }
 
-    fn entry(ip: &str, index: u32) -> neighbors::Neighbor {
-        neighbors::Neighbor {
+    fn entry(ip: &str, index: u32) -> neighbor_cache::Neighbor {
+        neighbor_cache::Neighbor {
             ip: v6(ip),
             mac: None,
             interface_index: index,

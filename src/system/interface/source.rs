@@ -29,6 +29,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, UdpSocket};
 
+use crate::model::ip::scoped::ScopedIp;
 use crate::system::interface::{Link, LinkAddress};
 
 /// The links usable as a probe source: up, not loopback, and holding at least
@@ -45,7 +46,7 @@ pub(crate) fn viable_interfaces() -> Vec<Link> {
 /// matching prefix wins.
 ///
 /// A destination on the same segment is reached directly, so its source is
-/// simply this host's address on that segment — no kernel round-trip required.
+/// simply this host's address on that segment: no kernel round-trip required.
 ///
 /// One list rather than one per family, because a [`LinkAddress`] already knows
 /// which family it is and declines a target of the other. Sorting the two
@@ -71,7 +72,29 @@ impl OnLinkTable {
 
     /// Returns the source address for `target` if it sits on one of the host's
     /// own subnets, or `None` if it has to be routed off-link.
+    ///
+    /// **A bare link-local target answers `None`, and that is the whole of why
+    /// this is not a one-line `find`.** Every interface holds an `fe80::/64`, so
+    /// such a target matches all of them and identifies none, and the first
+    /// match is decided by whatever order the host listed its interfaces in.
+    /// [`RoutedTargets::ambiguous`](super::RoutedTargets) is the same refusal
+    /// made earlier and with a reason the caller can read; this is the one that
+    /// holds for a caller who never went through the classifier.
+    ///
+    /// Both are needed. The classifier runs on the discovery path, and a port
+    /// scan with [`assume_up`](crate::config::ZondConfig::assume_up) set skips
+    /// that path entirely -- so before this check a bare `fe80::` port target
+    /// reached the raw scanner and was probed from an arbitrary segment.
+    ///
+    /// A link-local target written `fe80::1%en0` carries its interface and never
+    /// arrives here bare: the classifier places it against that interface and
+    /// the local scanner reaches it at the link layer, where a source address is
+    /// not the question.
     pub fn source_for(&self, target: IpAddr) -> Option<IpAddr> {
+        if ScopedIp::needs_zone(&target) {
+            return None;
+        }
+
         self.held
             .iter()
             .find(|held| held.contains(&target))
@@ -99,7 +122,7 @@ pub struct ProbeSockets {
 /// A refusal is not always the truth about reachability. A VPN that claims the
 /// IPv6 default route without carrying IPv6 makes every off-link IPv6 lookup
 /// fail while the host still holds a global address on a segment with a working
-/// router — measured on the machine this was written on, where `connect` to
+/// router: measured on the machine this was written on, where `connect` to
 /// every public resolver returned `No route to host` and the same addresses
 /// answered in 22 ms once a source was named explicitly.
 ///
@@ -110,9 +133,13 @@ pub struct ProbeSockets {
 /// the network.
 ///
 /// Scope-matched, since an address of the wrong scope cannot reach the target
-/// whatever the routing table says: a global destination needs a global source,
-/// and a link-local destination needs the link-local address of the interface it
-/// is on.
+/// whatever the routing table says: a global destination needs a global source.
+///
+/// A **link-local destination is declined** rather than matched. It would need
+/// the link-local address of the interface it is on, and a bare [`IpAddr`]
+/// cannot say which interface that is -- so the honest answer is that this
+/// function does not know. See
+/// [`OnLinkTable::source_for`](OnLinkTable::source_for).
 pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr> {
     let IpAddr::V6(target_v6) = target else {
         // IPv4 has no equivalent failure worth second-guessing: there is one
@@ -121,12 +148,19 @@ pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr>
         return None;
     };
 
-    let wants_link_local = target_v6.is_unicast_link_local();
+    // A link-local destination cannot be answered here for the reason
+    // `OnLinkTable::source_for` gives: every interface holds one, so any answer
+    // is the interface list's order rather than a fact about the target. The
+    // scope match below would otherwise pick the first and look deliberate.
+    if target_v6.is_unicast_link_local() {
+        return None;
+    }
+
     links
         .iter()
         .flat_map(|link| link.ipv6())
         .map(|(addr, _)| addr)
-        .find(|addr| addr.is_unicast_link_local() == wants_link_local && !addr.is_loopback())
+        .find(|addr| !addr.is_unicast_link_local() && !addr.is_loopback())
         .map(IpAddr::V6)
 }
 
@@ -164,7 +198,7 @@ pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<
 /// Three sources, in descending order of confidence. On-link destinations are
 /// answered from an in-memory table of each interface's own subnets. Everything
 /// else is put to the kernel, by connecting a UDP socket to the target and
-/// reading back the address it chose — which asks the routing table without
+/// reading back the address it chose, which asks the routing table without
 /// sending a packet. When the kernel declines, the last resort is any address
 /// on an interface that could plausibly carry the traffic.
 pub struct SourceResolver {
@@ -233,6 +267,89 @@ impl SourceResolver {
 
 #[cfg(test)]
 mod tests {
+
+    /// The defect this guard exists for, and the shape of it: every interface
+    /// holds an `fe80::/64`, so a bare link-local target matched whichever one
+    /// the host happened to list first. Measured before the fix: the same
+    /// target answered `fe80::a` or `fe80::b` depending only on the order the
+    /// links arrived in.
+    #[test]
+    fn a_bare_link_local_target_has_no_source_rather_than_an_arbitrary_one() {
+        let en0 = mock_interface(vec![v6net(
+            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xa),
+            64,
+        )]);
+        let en1 = mock_interface(vec![v6net(
+            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xb),
+            64,
+        )]);
+        let target = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x99));
+
+        assert_eq!(
+            OnLinkTable::from_links(&[en0.clone(), en1.clone()]).source_for(target),
+            None
+        );
+        assert_eq!(
+            OnLinkTable::from_links(&[en1, en0]).source_for(target),
+            None,
+            "and the answer does not depend on the order, because there is none"
+        );
+    }
+
+    /// The fallback made the same guess, so it declines the same case. A global
+    /// destination is still answered, which is what the fallback is for.
+    #[test]
+    fn the_fallback_declines_a_link_local_and_still_answers_a_global() {
+        let links = [mock_interface(vec![
+            v6net(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xa), 64),
+            v6net(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5), 64),
+        ])];
+
+        assert_eq!(
+            plausible_source(
+                &links,
+                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x99))
+            ),
+            None
+        );
+        assert_eq!(
+            plausible_source(
+                &links,
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 9, 0, 0, 0, 0, 1))
+            ),
+            Some(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5))),
+            "a global target still gets the global address the host holds"
+        );
+    }
+
+    /// An ordinary on-link target is untouched: the guard is about one family
+    /// of address and must not cost the rest anything.
+    #[test]
+    fn an_on_link_target_still_resolves_to_its_own_segment() {
+        let table = OnLinkTable::from_links(&[mock_interface(vec![v4net(192, 168, 1, 10, 24)])]);
+
+        assert_eq!(
+            table.source_for(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50))),
+            Some(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 10)))
+        );
+        assert_eq!(
+            table.source_for(IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1))),
+            None
+        );
+    }
+
+    /// A link-local written with its interface is not this case at all: it
+    /// carries the answer, and the sweep that reaches it is the local one.
+    #[test]
+    fn a_zoned_link_local_is_not_what_this_declines() {
+        use crate::model::ip::scoped::ScopedIp;
+        let bare: IpAddr = "fe80::1".parse().expect("literal");
+        assert!(ScopedIp::needs_zone(&bare), "bare is the case declined");
+
+        let global: IpAddr = "2001:db8::1".parse().expect("literal");
+        assert!(!ScopedIp::needs_zone(&global));
+    }
+
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -279,17 +396,21 @@ mod tests {
 
     #[test]
     fn v6_and_v4_are_kept_separate() {
-        let v6 = v6net(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64);
+        // A global prefix rather than a link-local one: this is about the two
+        // families not matching each other, and a link-local target is declined
+        // for a different reason that would mask what is being tested.
+        let v6 = v6net(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, 1), 64);
         let intf = mock_interface(vec![v4net(192, 168, 1, 50, 24), v6]);
         let table = OnLinkTable::from_links(&[intf]);
 
         assert_eq!(
-            table.source_for(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 99))),
-            Some(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)))
+            table.source_for(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, 99))),
+            Some(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, 1)))
         );
         assert_eq!(
-            table.source_for(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
-            None
+            table.source_for(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 9, 0, 0, 0, 1))),
+            None,
+            "a prefix the host does not hold is not on-link"
         );
     }
 
@@ -346,8 +467,17 @@ mod tests {
     /// Scope is not negotiable in the other direction either: a link-local
     /// destination is reachable only from a link-local address, so a global one
     /// must not be offered for it.
+    ///
+    /// **Nor may a link-local one be**, which is what this used to assert. The
+    /// property above is real and still holds; what it does not establish is
+    /// *which* link-local address, and on a fixture with one interface there
+    /// was only one to pick. Every interface holds an `fe80::/64`, so on a real
+    /// host the answer was whichever the platform listed first: a guess with
+    /// the shape of an answer, and the one
+    /// [`RoutedTargets::ambiguous`](super::RoutedTargets) names as exactly the
+    /// mistake.
     #[test]
-    fn a_link_local_target_gets_a_link_local_source() {
+    fn a_link_local_target_is_offered_no_source_at_all() {
         let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
         let intf = mock_interface(vec![
             v6net(Ipv6Addr::new(0x2a02, 0x908, 0, 0, 0, 0, 0, 1), 64),
@@ -359,7 +489,10 @@ mod tests {
             IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA)),
         );
 
-        assert_eq!(source, Some(IpAddr::V6(link_local)));
+        assert_eq!(
+            source, None,
+            "a global was never offered, and now nor is a guess"
+        );
     }
 
     /// IPv4 keeps the kernel's answer. It has one scope and no equivalent of a

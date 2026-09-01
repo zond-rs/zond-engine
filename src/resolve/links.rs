@@ -199,7 +199,7 @@ mod tests {
     /// An interface table that exists nowhere, so the behaviour under test is
     /// this function's rather than the machine's.
     fn table() -> Vec<Link> {
-        let up = |name: &str, index: u32, up: bool| Link::new(name, index).up(up);
+        let up = |name: &str, index: u32, up: bool| Link::new(name, index).with_link_up(up);
 
         // A link says whether it is up rather than carrying a flags word the
         // reader has to know the bit positions of, which is what was wrong on
@@ -215,16 +215,16 @@ mod tests {
     /// MAC and a private address, and carrying the default route.
     fn lan_capable(name: &str, index: u32) -> Link {
         Link::new(name, index)
-            .up(true)
-            .physical(true)
-            .addressing(crate::system::interface::Addressing::Broadcast)
-            .of_kind(crate::system::interface::LinkKind::Wired)
+            .with_link_up(true)
+            .with_physical(true)
+            .with_addressing(crate::system::interface::Addressing::Broadcast)
+            .with_kind(crate::system::interface::LinkKind::Wired)
             .with_mac(crate::model::mac::MacAddr::new(2, 0, 0, 0, 0, 1))
             .with_addresses(vec![crate::system::interface::LinkAddress::new(
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 10)),
                 24,
             )])
-            .carrying_the_default_route(true)
+            .with_default_route(true)
     }
 
     /// `lan` is answered from the table this was handed, like every other

@@ -962,19 +962,72 @@ pub(super) async fn spawn_resolver(
     })
 }
 
+/// Takes the bare IPv6 link-local targets out of `target_map`, refusing each.
+///
+/// A port scan reaches its targets over the routing table, which cannot carry a
+/// link-local address without an interface — and every interface holds an
+/// `fe80::/64`, so there is nothing to choose between them. The discovery path
+/// refuses these in the classifier; this is the same refusal for the path that
+/// skips it, which is any scan with
+/// [`assume_up`](crate::config::ZondConfig::assume_up) set.
+///
+/// Withheld here rather than declined at the socket, because a target dropped
+/// at the send is a target with no verdict, no settlement and no line in the
+/// report: `resolve_unasked` only accounts for what is still queued, and one
+/// already taken off the stream is simply gone. A refusal says what was not
+/// covered and why, which is what the caller can act on.
+fn withhold_ambiguous_targets(target_map: &mut TargetMap, ctx: &ScanContext) {
+    let mut refused: Vec<IpAddr> = Vec::new();
+    let mut kept = Vec::with_capacity(target_map.units.len());
+
+    for unit in std::mem::take(&mut target_map.units) {
+        let (ips, ports) = unit.into_parts();
+        let mut walkable = IpSet::new();
+
+        for ip in ips.iter() {
+            if crate::model::ip::scoped::ScopedIp::needs_zone(&ip) {
+                refused.push(ip);
+            } else {
+                push_single(&mut walkable, ip, None);
+            }
+        }
+        walkable.canonicalize();
+
+        if !walkable.is_empty() {
+            kept.push(TargetSet::new(walkable, ports));
+        }
+    }
+    target_map.units = kept;
+
+    refused.sort_unstable();
+    refused.dedup();
+    for address in refused {
+        ctx.record_refusal(
+            plan::RefusedStep::link_local_port_target_needs_an_interface(address).into(),
+        );
+    }
+}
+
 /// Probes `target_map`'s ports, enriching the hosts as it goes.
 ///
 /// Nothing is opened for an empty map. A liveness phase that found nothing is a
 /// finished answer, and raw sockets held to probe no targets are a failure this
 /// would report for no reason.
 pub(super) async fn run_port_phase(
-    target_map: TargetMap,
+    mut target_map: TargetMap,
     live: Option<IpSet>,
     ctx: &ScanContext,
     caps: ScanCapabilities,
     cfg: &ZondConfig,
     settled: Checkpoint,
 ) {
+    if target_map.is_empty() {
+        return;
+    }
+
+    // Before the plan is built, so the counts a phase records describe what it
+    // was actually going to probe.
+    withhold_ambiguous_targets(&mut target_map, ctx);
     if target_map.is_empty() {
         return;
     }
@@ -1139,6 +1192,80 @@ fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// `fe80::1` names a different machine on every segment, and a port scan
+    /// reaches its targets over the routing table, which cannot carry one
+    /// without an interface. The classifier refuses these on the discovery
+    /// path; a scan with `assume_up` never reaches the classifier, so before
+    /// this the target arrived at a raw scanner and was probed from whichever
+    /// segment the host listed first.
+    #[test]
+    fn a_bare_link_local_port_target_is_refused_rather_than_probed() {
+        use crate::model::target::TargetSet;
+        use crate::scanner::session::ScanSession;
+
+        let (_session, ctx) = ScanSession::new();
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            ip_set(&["fe80::1"]),
+            "80".parse().expect("a port set"),
+        ));
+
+        withhold_ambiguous_targets(&mut map, &ctx);
+
+        assert!(map.is_empty(), "nothing is left for a scanner to probe");
+        let refusals = ctx.refusals_snapshot();
+        assert_eq!(refusals.len(), 1);
+        assert!(
+            refusals[0].reason().contains("%<interface>"),
+            "the refusal says what the caller could write instead: {}",
+            refusals[0].reason()
+        );
+        assert!(
+            ctx.failures_snapshot().is_empty(),
+            "nothing went wrong; the engine declined"
+        );
+    }
+
+    /// Refusing the whole unit over one bad address in it would discard targets
+    /// the caller named and the engine can reach.
+    #[test]
+    fn the_addressable_targets_beside_it_survive() {
+        use crate::model::target::TargetSet;
+        use crate::scanner::session::ScanSession;
+
+        let (_session, ctx) = ScanSession::new();
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            ip_set(&["fe80::1", "192.0.2.7", "2001:db8::1"]),
+            "80".parse().expect("a port set"),
+        ));
+
+        withhold_ambiguous_targets(&mut map, &ctx);
+
+        assert_eq!(map.units.len(), 1);
+        assert_eq!(map.units[0].ips().len(), 2, "the two addressable ones");
+        assert_eq!(ctx.refusals_snapshot().len(), 1);
+    }
+
+    /// A scan naming no link-local pays nothing and is told nothing.
+    #[test]
+    fn an_ordinary_target_map_is_left_alone() {
+        use crate::model::target::TargetSet;
+        use crate::scanner::session::ScanSession;
+
+        let (_session, ctx) = ScanSession::new();
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            ip_set(&["192.0.2.0/30"]),
+            "80".parse().expect("a port set"),
+        ));
+
+        withhold_ambiguous_targets(&mut map, &ctx);
+
+        assert_eq!(map.units[0].ips().len(), 4);
+        assert!(ctx.refusals_snapshot().is_empty());
+    }
     use super::*;
     use crate::model::host::{Host, HostStatus};
     use crate::report::Refusal;

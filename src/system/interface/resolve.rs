@@ -6,6 +6,20 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # Turning what a person wrote into addresses
+//!
+//! The two answers this module supplies to [`crate::model::parse::ip`], which
+//! knows the syntax of a target and nothing about the host it runs on.
+//!
+//! [`resolve_zone`] turns the `%en0` on a link-local address into the scope id
+//! the kernel wants. [`resolve_keyword`] turns `lan` into the addresses of the
+//! network this machine is on.
+//!
+//! The split is the point: a parser that read the interface table could not be
+//! tested without one, and a host module that knew the syntax would have to be
+//! changed every time the syntax was. Each knows one half and they meet at a
+//! function pointer.
+
 use crate::{info, warn};
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -54,8 +68,8 @@ fn lan_unresolved(reason: impl Into<String>) -> IpParseError {
 /// Dynamically resolves the host's primary LAN interface into an inclusive range.
 ///
 /// Resolves the *link* rather than an IPv4 network, because the two can come
-/// apart: [`is_viable_lan_interface`](interface::lan) accepts an interface
-/// carrying only a link-local IPv6 address, and that link is scannable — the
+/// apart: [`lan_viability`](interface::lan) accepts an interface
+/// carrying only a link-local IPv6 address, and that link is scannable: the
 /// all-nodes echo and neighbour discovery both work on it. Asking only for an
 /// `Ipv4Network` reported such a link as **"No active network interface
 /// found"**, having just selected one and logged its name, and it does the same

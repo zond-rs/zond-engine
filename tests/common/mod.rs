@@ -278,10 +278,10 @@ pub fn scanner_interface() -> Link {
     // kernel, so a fixture using it could not tell a recorded zone from a
     // missing one.
     Link::new("sim0", 7)
-        .of_kind(LinkKind::Wired)
-        .up(true)
-        .physical(true)
-        .addressing(Addressing::Broadcast)
+        .with_kind(LinkKind::Wired)
+        .with_link_up(true)
+        .with_physical(true)
+        .with_addressing(Addressing::Broadcast)
         .with_mac(SCANNER_MAC.into_core())
         .with_addresses(vec![
             LinkAddress::new(IpAddr::V4(SCANNER_V4), 24),

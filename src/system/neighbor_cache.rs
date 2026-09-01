@@ -15,7 +15,7 @@
 //! address it has spoken to on a local segment recently is sitting in its
 //! neighbour cache, already resolved to a MAC, obtained for no packets and no
 //! waiting. On the segment this was written against, that table names twelve
-//! devices over IPv6 — against thirteen in the ARP table — and fourteen of its
+//! devices over IPv6, against thirteen in the ARP table, and fourteen of its
 //! addresses are global or unique-local ones the engine could not otherwise
 //! learn at all, because the only IPv6 probe it sends is sourced from a
 //! link-local address and so draws only link-local answers.
@@ -23,7 +23,7 @@
 //! ## Why this matters more for IPv6 than for IPv4
 //!
 //! An IPv4 segment can be swept: a `/24` is 256 ARP requests. An IPv6 segment
-//! cannot — a `/64` holds 2^64 addresses — and the one probe that does reach a
+//! cannot, a `/64` holds 2^64 addresses, and the one probe that does reach a
 //! whole IPv6 segment, the all-nodes echo, is optional to answer. A neighbor
 //! solicitation is *not* optional, but it can only be aimed at an address
 //! somebody already has.
@@ -39,11 +39,11 @@
 //! nothing about the rest of the segment. Entries also go stale: an address in
 //! the table is one that answered once, not one that is answering now. Both are
 //! reasons to treat an entry as a lead to be confirmed rather than as a
-//! discovered host — nothing here writes to the store.
+//! discovered host: nothing here writes to the store.
 
 use std::net::IpAddr;
 
-use pnet_base::MacAddr;
+use crate::model::mac::MacAddr;
 
 /// One entry from the host's neighbour cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +52,15 @@ pub struct Neighbor {
     pub ip: IpAddr,
     /// Its link-layer address, when the entry is resolved.
     ///
-    /// `None` for an entry the operating system created but has not completed —
+    /// The crate's own [`MacAddr`] rather than the
+    /// one belonging to whichever library read the table, on the reasoning
+    /// [`Link`](crate::system::interface::Link) gives: a consumer should not
+    /// have to know which crate this came from, any more than they have to know
+    /// which syscall did. This field published `pnet_base::MacAddr` until
+    /// September 2026, which put a pre-1.0 foreign type in the public API of the
+    /// module making that argument.
+    ///
+    /// `None` for an entry the operating system created but has not completed:
     /// an address it is currently asking about. Those are still worth having:
     /// something on this host had a reason to look the address up, which is
     /// evidence it exists even though the neighbour has not answered yet.
@@ -88,11 +96,11 @@ mod platform {
     use std::mem;
     use std::net::{IpAddr, Ipv6Addr};
 
+    use crate::model::mac::MacAddr;
     use libc::{
         AF_INET6, AF_LINK, CTL_NET, NET_RT_FLAGS, PF_ROUTE, RTA_DST, RTA_GATEWAY, RTF_LLINFO,
         c_int, c_void, rt_msghdr, size_t, sockaddr, sockaddr_dl, sockaddr_in6,
     };
-    use pnet_base::MacAddr;
 
     use super::Neighbor;
     use crate::warn;
@@ -101,6 +109,8 @@ mod platform {
     /// and a zero-length one still occupies that much.
     const SA_ALIGN: usize = mem::size_of::<u32>();
 
+    /// A sockaddr's length rounded up to the alignment the routing socket pads
+    /// each one to.
     fn roundup(len: usize) -> usize {
         if len == 0 {
             SA_ALIGN
@@ -109,6 +119,10 @@ mod platform {
         }
     }
 
+    /// The neighbour table as the BSD routing socket reports it.
+    ///
+    /// A `sysctl` walk over `NET_RT_FLAGS`, which hands back a run of routing
+    /// messages that have to be stepped through by their own length fields.
     pub(super) fn ipv6_neighbors() -> Vec<Neighbor> {
         let mut mib: [c_int; 6] = [
             CTL_NET,
@@ -332,7 +346,7 @@ mod platform {
 ///
 /// Reported once rather than silently returning nothing, because an empty table
 /// and an unread one lead to the same host count and mean entirely different
-/// things — the distinction this whole engine is built to preserve.
+/// things: the distinction this whole engine is built to preserve.
 ///
 /// Linux keeps its table behind netlink (`RTM_GETNEIGH`) and Windows behind
 /// `GetIpNetTable2`; both are a self-contained piece of work against an
@@ -342,6 +356,11 @@ mod platform {
     use super::Neighbor;
     use crate::warn;
 
+    /// Nothing, on a platform whose neighbour table this engine cannot read.
+    ///
+    /// Empty rather than an error, for the reason the public function gives: a
+    /// scan that cannot read the table is a scan with one fewer source of
+    /// candidate addresses, not a scan that failed.
     pub(super) fn ipv6_neighbors() -> Vec<Neighbor> {
         warn!(
             verbosity = 1,

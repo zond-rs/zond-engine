@@ -189,7 +189,7 @@ fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
 /// the sender's, and the two are indistinguishable from here, so an OUI lookup
 /// against this would confidently report the router's manufacturer as the host's.
 /// Where a vendor is actually wanted, it belongs to the on-link discovery path
-/// ([`crate::system::neighbors`] and the local scanner), which knows a neighbour
+/// ([`crate::system::neighbor_cache`] and the local scanner), which knows a neighbour
 /// is a neighbour.
 ///
 /// `None` where there is genuinely nothing to read: a `DLT_NULL`/`DLT_LOOP`

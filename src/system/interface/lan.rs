@@ -6,17 +6,37 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # Which link `lan` means
+//!
+//! One question: of the interfaces this machine has, which one is the network
+//! a person means when they type `lan`?
+//!
+//! The answer is the link the default route leaves by, and the reason it is
+//! that rather than anything about the hardware is written on
+//! [`select_best_lan_interface`]. Every hardware guess this module tried before
+//! picked the wrong interface on a real laptop, and the routing table is the
+//! one fact that is answerable the same way on every platform.
+//!
+//! [`ViabilityError`] is the other half: which links could carry a sweep at all,
+//! named the way each check reads rather than the way it passes.
+
 use crate::info;
+use crate::system::interface::source::viable_interfaces;
 use crate::system::interface::{Link, LinkAddress};
 use std::net::Ipv6Addr;
 
-/// Errors arising from network validation constraints during LAN interface selection.
+/// Why a link cannot carry a LAN sweep.
+///
+/// One variant per condition [`lan_link`] requires, named the way the check
+/// reads rather than the way it passes.
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ViabilityError {
     /// The interface is operationally down.
     IsDown,
-    /// The interface was filtered out as "not physical" by the provided logic.
+    /// There is no physical port behind the interface: a tunnel, a hypervisor's
+    /// virtual switch, a VPN. Each carries IP and none has a neighbour to ARP
+    /// for.
     NotPhysical,
     /// The interface does not have a MAC address.
     NoMacAddress,
@@ -32,15 +52,15 @@ pub enum ViabilityError {
 /// both families.
 ///
 /// The selection picks a *link*, and until this existed it returned an
-/// `Ipv4Network` — so everything the link knew about itself was thrown away at
+/// `Ipv4Network`, so everything the link knew about itself was thrown away at
 /// the moment it was chosen. The interface identity is what
 /// [`Zone`](crate::model::ip::scoped::Zone) needs to make a link-local
 /// address usable, and the IPv6 prefixes are what say which addresses are on
 /// this segment at all.
 ///
 /// `ipv4` is optional because a viable LAN link need not have one. An interface
-/// carrying only a link-local IPv6 address is perfectly scannable — the
-/// all-nodes echo and neighbour discovery both work — and treating that as "no
+/// carrying only a link-local IPv6 address is perfectly scannable, the
+/// all-nodes echo and neighbour discovery both work, and treating that as "no
 /// network found" is what the shape of the old return value forced.
 #[derive(Debug, Clone)]
 pub struct LanLink {
@@ -64,6 +84,23 @@ impl LanLink {
             })
             .find(Ipv6Addr::is_unicast_link_local)
     }
+}
+
+/// The links most likely to be worth scanning from, best first.
+pub fn prioritized_interfaces(limit: usize) -> Vec<Link> {
+    prioritized_interfaces_with(limit, viable_interfaces())
+}
+
+/// The ordering, decoupled from the host so it can be tested.
+///
+/// **Wired before wireless, and a name is no longer consulted.** This sorted on
+/// `name.starts_with("e")`, which is `eth0` and `en0` on Linux and macOS, and
+/// nothing at all on Windows, where an adapter is named by its GUID. It also
+/// ranked `en1` above `wlan0` on a machine where `en1` *is* the Wi-Fi, which is
+/// this laptop. A link now says what it is, so the sort asks it.
+pub(crate) fn prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) -> Vec<Link> {
+    links.sort_by_key(|link| if link.is_wireless() { 1 } else { 0 });
+    links.into_iter().take(limit).collect()
 }
 
 /// The best local network this host is attached to, or `None` if it is attached
@@ -91,13 +128,16 @@ pub fn lan_network() -> Option<LinkAddress> {
     lan_link()?.ipv4
 }
 
-/// Core LAN selection logic, decoupled from OS interface dependencies for testing.
+/// [`lan_link`] against an interface table the caller supplies.
 ///
-/// `is_physical` is injected for the same reason
-/// [`is_viable_lan_interface`] takes it: on a real host it asks the platform
-/// which interfaces are hardware, and a hand-built interface is not one — so
-/// without the seam this function can only be exercised against whatever the
+/// The seam every decision in this module is tested through: on a real host the
+/// table comes from the platform, and a test hands in interfaces that do not
+/// exist, so the selection can be exercised without depending on whatever the
 /// machine running the tests happens to have plugged in.
+///
+/// It used to be a `is_physical` predicate injected alongside, which is what
+/// the paragraph here described for a while after `Link` grew a field for it
+/// and the parameter went.
 pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
     let interfaces_str: &str = match interfaces.len() {
         1 => "interface",
@@ -113,7 +153,7 @@ pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
 
     let viable: Vec<Link> = interfaces
         .into_iter()
-        .filter(|link| is_viable_lan_interface(link).is_ok())
+        .filter(|link| lan_viability(link).is_ok())
         .collect();
 
     let link = select_best_lan_interface(viable)?;
@@ -138,7 +178,16 @@ pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
     Some(LanLink { link, ipv4, ipv6 })
 }
 
-fn is_viable_lan_interface(link: &Link) -> Result<(), ViabilityError> {
+/// Whether `link` could carry a LAN sweep, and what stops it if not.
+///
+/// Public because [`ViabilityError`] was otherwise a vocabulary for a decision
+/// nobody could see: [`lan_link`] answers `Option` and drops the reason, which
+/// is right for the question it asks and leaves a caller whose sweep found no
+/// network with nothing to look at. This is that reason, per link.
+///
+/// The conditions are the ones ARP and neighbour discovery need between them: a
+/// segment with somebody else on it, and a hardware address to send from.
+pub fn lan_viability(link: &Link) -> Result<(), ViabilityError> {
     if !link.is_up() {
         return Err(ViabilityError::IsDown);
     }
@@ -169,8 +218,8 @@ fn is_viable_lan_interface(link: &Link) -> Result<(), ViabilityError> {
 /// The best of the viable links.
 ///
 /// **The one the default route leaves by, before anything else.** That is what
-/// `lan` means to somebody who types it — the network this machine is actually
-/// on — and it is a fact about the routing table rather than a guess about the
+/// `lan` means to somebody who types it, the network this machine is actually
+/// on, and it is a fact about the routing table rather than a guess about the
 /// hardware, which is why it is answerable the same way on every platform.
 ///
 /// The guess is what this used to do, and macOS is where it broke. `awdl0`
@@ -178,12 +227,12 @@ fn is_viable_lan_interface(link: &Link) -> Result<(), ViabilityError> {
 /// hardware behind them: physical, up, a MAC, indistinguishable from a wired
 /// port by every field an interface table exposes. So "prefer a wired link"
 /// picked `awdl0`, which has no IPv4 at all, over the Wi-Fi carrying the whole
-/// `/24` — and `zond discover lan` answered *"awdl0 has no private IPv4 network
+/// `/24`, and `zond discover lan` answered *"awdl0 has no private IPv4 network
 /// to sweep"* on a machine plainly on a network.
 ///
 /// **Neither does having an address make a link the LAN.** Falling back to "the
 /// first one with a private IPv4" would pick `bridge100` on this same laptop,
-/// which is the virtualisation bridge on `192.168.64.1/24` — a real private
+/// which is the virtualisation bridge on `192.168.64.1/24`: a real private
 /// network with nothing on it but virtual machines.
 ///
 /// The remaining order is for the case where no link claims the default route
@@ -220,6 +269,47 @@ fn has_private_ipv4(link: &Link) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::mac::MacAddr;
+
+    fn of_kind(name: &str, kind: LinkKind) -> Link {
+        Link::new(name, 1)
+            .with_kind(kind)
+            .with_mac(MacAddr::new(1, 2, 3, 4, 5, 6))
+    }
+
+    /// A wired link outranks a wireless one, whatever either is called.
+    ///
+    /// The old ordering read the first letter of the name. `en1` is the Wi-Fi on
+    /// this laptop and `eth0` is wired on that server, and both start with `e`,
+    /// so the sort was right by accident where it was right at all, and had
+    /// nothing to say on Windows, where an adapter is named by a GUID.
+    #[test]
+    fn a_wired_link_is_preferred_however_the_platform_names_it() {
+        let ordered = prioritized_interfaces_with(
+            10,
+            vec![
+                of_kind("en1", LinkKind::Wireless),
+                of_kind("{3F2504E0-4F89}", LinkKind::Wired),
+            ],
+        );
+
+        assert_eq!(ordered[0].name(), "{3F2504E0-4F89}");
+        assert_eq!(ordered[1].name(), "en1");
+    }
+
+    /// The limit is a limit.
+    #[test]
+    fn no_more_links_than_were_asked_for() {
+        let links = vec![
+            of_kind("en0", LinkKind::Wired),
+            of_kind("en1", LinkKind::Wired),
+            of_kind("en2", LinkKind::Wired),
+        ];
+
+        assert_eq!(prioritized_interfaces_with(2, links.clone()).len(), 2);
+        assert_eq!(prioritized_interfaces_with(0, links).len(), 0);
+    }
+
     use super::*;
     use crate::system::interface::Addressing;
     use crate::system::interface::LinkKind;
@@ -234,12 +324,12 @@ mod tests {
         ip: bool,
     ) -> Link {
         let mut link = Link::new("test0", 0)
-            .up(up)
-            .addressing(Addressing::of(broadcast, p2p))
+            .with_link_up(up)
+            .with_addressing(Addressing::of(broadcast, p2p))
             // Every case this builds is a real interface unless it says
             // otherwise; the physical/virtual axis is exercised by `loopback`.
-            .physical(!loopback)
-            .of_kind(if loopback {
+            .with_physical(!loopback)
+            .with_kind(if loopback {
                 LinkKind::Loopback
             } else {
                 LinkKind::Wired
@@ -264,7 +354,7 @@ mod tests {
             LinkAddress::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 64),
         ]);
 
-        assert_eq!(is_viable_lan_interface(&intf), Ok(()));
+        assert_eq!(lan_viability(&intf), Ok(()));
 
         let link = lan_link_with(vec![intf]).expect("a viable link is selected");
 
@@ -321,19 +411,19 @@ mod tests {
     /// Found by running `zond discover lan` on a real Mac, which answered
     /// *"awdl0 has no private IPv4 network to sweep"* while sitting on a `/24`.
     /// `awdl0` is AirDrop: macOS presents it as broadcast Ethernet, physical, up,
-    /// with a MAC — every field a wired port has — so "prefer a wired link" chose
+    /// with a MAC, every field a wired port has, so "prefer a wired link" chose
     /// it over the Wi-Fi that had the actual network.
     #[test]
     fn the_link_carrying_the_default_route_is_the_lan() {
         let wifi = mock_interface(true, true, true, false, false, true)
-            .of_kind(LinkKind::Wireless)
-            .carrying_the_default_route(true);
+            .with_kind(LinkKind::Wireless)
+            .with_default_route(true);
         // No IPv4 at all, and indistinguishable from a wired port otherwise.
         let airdrop = Link::new("awdl0", 17)
-            .up(true)
-            .physical(true)
-            .addressing(Addressing::Broadcast)
-            .of_kind(LinkKind::Wired)
+            .with_link_up(true)
+            .with_physical(true)
+            .with_addressing(Addressing::Broadcast)
+            .with_kind(LinkKind::Wired)
             .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 6))
             .with_addresses(vec![LinkAddress::new(
                 IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
@@ -359,13 +449,13 @@ mod tests {
     #[test]
     fn a_virtualisation_bridge_does_not_outrank_the_default_route() {
         let wifi = mock_interface(true, true, true, false, false, true)
-            .of_kind(LinkKind::Wireless)
-            .carrying_the_default_route(true);
+            .with_kind(LinkKind::Wireless)
+            .with_default_route(true);
         let bridge = Link::new("bridge100", 20)
-            .up(true)
-            .physical(true)
-            .addressing(Addressing::Broadcast)
-            .of_kind(LinkKind::Wired)
+            .with_link_up(true)
+            .with_physical(true)
+            .with_addressing(Addressing::Broadcast)
+            .with_kind(LinkKind::Wired)
             .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 7))
             .with_addresses(vec![LinkAddress::new(
                 IpAddr::V4(Ipv4Addr::new(192, 168, 64, 1)),
@@ -378,16 +468,16 @@ mod tests {
     }
 
     /// With no default route anywhere, a link that could be swept beats one that
-    /// could not — which is the ordering that would have made the reported bug
+    /// could not, which is the ordering that would have made the reported bug
     /// harmless even without the rule above.
     #[test]
     fn with_no_route_a_sweepable_link_beats_one_with_nothing_to_sweep() {
         let addressed = mock_interface(true, true, true, false, false, true);
         let bare = Link::new("awdl0", 17)
-            .up(true)
-            .physical(true)
-            .addressing(Addressing::Broadcast)
-            .of_kind(LinkKind::Wired)
+            .with_link_up(true)
+            .with_physical(true)
+            .with_addressing(Addressing::Broadcast)
+            .with_kind(LinkKind::Wired)
             .with_mac(crate::model::mac::MacAddr::new(1, 2, 3, 4, 5, 6));
 
         let chosen =
@@ -399,7 +489,7 @@ mod tests {
     #[test]
     fn is_viable_down() {
         let intf = mock_interface(false, true, true, false, false, true);
-        assert_eq!(is_viable_lan_interface(&intf), Err(ViabilityError::IsDown));
+        assert_eq!(lan_viability(&intf), Err(ViabilityError::IsDown));
     }
 
     /// A virtual adapter is not a LAN, however well-addressed it is.
@@ -410,25 +500,19 @@ mod tests {
     /// test states the fact rather than stubbing the function that found it.
     #[test]
     fn is_viable_not_physical() {
-        let intf = mock_interface(true, true, true, false, false, true).physical(false);
-        assert_eq!(
-            is_viable_lan_interface(&intf),
-            Err(ViabilityError::NotPhysical)
-        );
+        let intf = mock_interface(true, true, true, false, false, true).with_physical(false);
+        assert_eq!(lan_viability(&intf), Err(ViabilityError::NotPhysical));
     }
 
     #[test]
     fn is_viable_no_mac() {
         let intf = mock_interface(true, false, true, false, false, true);
-        assert_eq!(
-            is_viable_lan_interface(&intf),
-            Err(ViabilityError::NoMacAddress)
-        );
+        assert_eq!(lan_viability(&intf), Err(ViabilityError::NoMacAddress));
     }
 
     #[test]
     fn is_viable_success() {
         let intf = mock_interface(true, true, true, false, false, true);
-        assert_eq!(is_viable_lan_interface(&intf), Ok(()));
+        assert_eq!(lan_viability(&intf), Ok(()));
     }
 }

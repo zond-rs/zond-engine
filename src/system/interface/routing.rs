@@ -6,6 +6,36 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # How this host reaches a target
+//!
+//! The classifier, and the one decision every strategy a scan runs follows
+//! from. A target is on a segment this machine is attached to, or behind a
+//! gateway, or reachable by neither, and which of the three it is decides
+//! whether it gets a link-layer sweep, a raw probe with a source address
+//! attached, or the unprivileged fallback.
+//!
+//! ## What it refuses, and why refusing is the work
+//!
+//! Two of the five buckets [`RoutedTargets`] hands back are refusals, and they
+//! carry more of this module's reasoning than the three that succeed.
+//!
+//! A bare IPv6 link-local matches every interface and identifies none, so it is
+//! reported as the unanswerable question it is rather than assigned to whichever
+//! interface the host listed first. An off-link IPv6 range past
+//! [`MAX_ENUMERABLE_ADDRESSES`] is kept whole and refused, because the only
+//! strategy the engine has for an off-link range is to walk it and IPv6 defeats
+//! walking outright.
+//!
+//! Both are carried out rather than dropped, on the rule the rest of the crate
+//! is built on: a scan may report that it found nothing, and may never be quiet
+//! about ground it did not look at.
+//!
+//! ## What it costs
+//!
+//! One `connect` per off-link target on an unbound UDP socket, which performs a
+//! route lookup and sends nothing, parallelised across the target list. On-link
+//! targets cost a prefix comparison and no syscall at all.
+
 use crate::model::ip::range::IpRange::{V4, V6};
 use crate::model::ip::range::Ipv6Range;
 use crate::model::ip::set::IpSet;
@@ -45,15 +75,22 @@ pub struct RoutedTarget {
 /// engine did not look rather than believing it looked and found nothing.
 ///
 /// IPv4 ranges are not bounded by this. Every IPv4 range is finite in a way a
-/// user can reason about — the whole space is 2^32 — and a `/8` is an
+/// user can reason about, the whole space is 2^32, and a `/8` is an
 /// unreasonable request rather than an impossible one.
 ///
-/// Public because two callers need the same answer and there is only one right
-/// one. The classifier applies it when a routed range would have to be walked;
-/// [`crate::scanner`] applies it again on the unprivileged path, which takes its
-/// addresses as given and has no classifier to consult. Two spellings of this
-/// number meant a `/64` that was refused with root and scanned forever without
-/// it.
+/// Public as the number, where [`is_enumerable`] is the test: three places now
+/// ask the question and every one of them asks it through the function, which is
+/// what keeps the number in one place. The classifier applies it to a routed
+/// range it would have to walk; [`crate::scanner`] applies it on the
+/// unprivileged path, which takes its addresses as given and has no classifier
+/// to consult; and `DiscoveryPlan::build` applies it to an on-link range, which
+/// the classifier hands over whole because a segment is swept by multicast
+/// rather than walked.
+///
+/// Each of the three arrived after a defect. Two spellings of the number meant a
+/// `/64` refused with root and scanned forever without it; no check at all on
+/// the third path meant an on-link `/64` was walked two thousand addresses deep
+/// and reported covered.
 pub const MAX_ENUMERABLE_ADDRESSES: u128 = 1 << 16;
 
 /// The result of classifying a set of targets against this host's interfaces
@@ -75,7 +112,7 @@ pub struct RoutedTargets {
     /// Every interface holds an `fe80::/64`, so such a target matches all of
     /// them and identifies none. Assigning it to whichever the host happened to
     /// list first probes an arbitrary segment and reports the address absent
-    /// when it is present on another — a wrong answer arrived at silently, and
+    /// when it is present on another: a wrong answer arrived at silently, and
     /// on a laptop with two dozen interfaces an unlikely guess. Written
     /// `fe80::1%en0`, it is unambiguous; written bare, it is a question with no
     /// answer and is reported as one.
@@ -85,7 +122,7 @@ pub struct RoutedTargets {
     /// These are not failures of the network and not addresses that went
     /// unanswered; they were never probed. They are carried out of here rather
     /// than dropped because the one thing a scanner may never do is stay quiet
-    /// about a target it declined to look at — a caller reading "no hosts
+    /// about a target it declined to look at: a caller reading "no hosts
     /// found" would otherwise take it as evidence about the range.
     pub unenumerable: Vec<Ipv6Range>,
 }
@@ -94,7 +131,11 @@ pub struct RoutedTargets {
 /// interface), routed through a gateway (paired with a source address), or
 /// unreachable.
 ///
-/// Under the hood, this evaluates `pnet::datalink::interfaces()`.
+/// Reads the host's interface table through
+/// [`interfaces`](super::interfaces), narrowed to the links that could carry a
+/// probe. Where that table comes from is [`Link::from_netdev`](super::Link)'s
+/// business and deliberately nobody else's; this used to name `pnet::datalink`,
+/// which stopped being the source, and then stopped being a dependency.
 pub fn map_ips_to_interfaces(ip_set: IpSet) -> RoutedTargets {
     map_ips_to_interfaces_with(ip_set, viable_interfaces())
 }
@@ -110,6 +151,13 @@ enum Classification {
     Unmapped,
 }
 
+/// [`map_ips_to_interfaces`] against an interface table the caller supplies.
+///
+/// The seam every classification decision in this module is tested through: on
+/// a real host the table comes from the platform, and a test hands in
+/// interfaces that do not exist, so which bucket a target lands in can be
+/// exercised without depending on what the machine running the tests happens to
+/// have plugged in.
 pub(crate) fn map_ips_to_interfaces_with(ip_set: IpSet, interfaces: Vec<Link>) -> RoutedTargets {
     let owned_ips: HashSet<IpAddr> = interfaces
         .iter()
@@ -397,7 +445,7 @@ mod tests {
     }
 
     /// Named, the same target is unambiguous, and the name outranks any prefix
-    /// match — every interface matches the prefix, so a prefix match is no
+    /// match: every interface matches the prefix, so a prefix match is no
     /// evidence at all.
     #[test]
     fn a_link_local_target_goes_to_the_interface_it_names() {

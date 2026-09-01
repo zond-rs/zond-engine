@@ -12601,6 +12601,7 @@ pub zond_engine::scanner::plan::RefusedStep::reason: alloc::string::String
 pub zond_engine::scanner::plan::RefusedStep::scanner: zond_engine::report::ScannerKind
 impl zond_engine::scanner::plan::RefusedStep
 pub fn zond_engine::scanner::plan::RefusedStep::idle_needs_privilege() -> Self
+pub fn zond_engine::scanner::plan::RefusedStep::link_local_port_target_needs_an_interface(core::net::ip_addr::IpAddr) -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::local_range_needs_a_sweep(&zond_engine::model::ip::range::Ipv6Range) -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::routed_range_not_enumerable(&zond_engine::model::ip::range::Ipv6Range) -> Self
 pub fn zond_engine::scanner::plan::RefusedStep::sctp_needs_raw_sockets() -> Self
@@ -13952,10 +13953,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::interface::La
 pub struct zond_engine::system::interface::Link
 impl zond_engine::system::interface::Link
 pub fn zond_engine::system::interface::Link::addresses(&self) -> &[zond_engine::system::interface::LinkAddress]
-pub fn zond_engine::system::interface::Link::addressing(self, zond_engine::system::interface::Addressing) -> Self
 pub fn zond_engine::system::interface::Link::carries_default_route(&self) -> bool
 pub fn zond_engine::system::interface::Link::carries_frames(&self) -> bool
-pub fn zond_engine::system::interface::Link::carrying_the_default_route(self, bool) -> Self
 pub fn zond_engine::system::interface::Link::index(&self) -> u32
 pub fn zond_engine::system::interface::Link::ipv4(&self) -> impl core::iter::traits::iterator::Iterator<Item = (core::net::ip_addr::Ipv4Addr, u8)> + '_
 pub fn zond_engine::system::interface::Link::ipv6(&self) -> impl core::iter::traits::iterator::Iterator<Item = (core::net::ip_addr::Ipv6Addr, u8)> + '_
@@ -13970,11 +13969,13 @@ pub fn zond_engine::system::interface::Link::kind(&self) -> zond_engine::system:
 pub fn zond_engine::system::interface::Link::mac(&self) -> core::option::Option<zond_engine::model::mac::MacAddr>
 pub fn zond_engine::system::interface::Link::name(&self) -> &str
 pub fn zond_engine::system::interface::Link::new(impl core::convert::Into<alloc::string::String>, u32) -> Self
-pub fn zond_engine::system::interface::Link::of_kind(self, zond_engine::system::interface::LinkKind) -> Self
-pub fn zond_engine::system::interface::Link::physical(self, bool) -> Self
-pub fn zond_engine::system::interface::Link::up(self, bool) -> Self
 pub fn zond_engine::system::interface::Link::with_addresses(self, alloc::vec::Vec<zond_engine::system::interface::LinkAddress>) -> Self
+pub fn zond_engine::system::interface::Link::with_addressing(self, zond_engine::system::interface::Addressing) -> Self
+pub fn zond_engine::system::interface::Link::with_default_route(self, bool) -> Self
+pub fn zond_engine::system::interface::Link::with_kind(self, zond_engine::system::interface::LinkKind) -> Self
+pub fn zond_engine::system::interface::Link::with_link_up(self, bool) -> Self
 pub fn zond_engine::system::interface::Link::with_mac(self, zond_engine::model::mac::MacAddr) -> Self
+pub fn zond_engine::system::interface::Link::with_physical(self, bool) -> Self
 pub fn zond_engine::system::interface::Link::zone(&self) -> zond_engine::model::ip::scoped::Zone
 impl zond_engine::system::interface::Link
 pub fn zond_engine::system::interface::Link::from_netdev(netdev::interface::interface::Interface) -> Self
@@ -14073,34 +14074,35 @@ pub const zond_engine::system::interface::MAX_ENUMERABLE_ADDRESSES: u128
 pub fn zond_engine::system::interface::interfaces() -> alloc::vec::Vec<zond_engine::system::interface::Link>
 pub fn zond_engine::system::interface::is_enumerable(&zond_engine::model::ip::range::Ipv6Range) -> bool
 pub fn zond_engine::system::interface::is_layer_2_capable(&zond_engine::system::interface::Link) -> bool
-pub fn zond_engine::system::interface::is_on_link(&zond_engine::system::interface::Link, &mut zond_engine::model::ip::set::IpSet) -> bool
+pub fn zond_engine::system::interface::is_on_link(&zond_engine::system::interface::Link, &zond_engine::model::ip::set::IpSet) -> bool
 pub fn zond_engine::system::interface::lan_link() -> core::option::Option<zond_engine::system::interface::LanLink>
 pub fn zond_engine::system::interface::lan_network() -> core::option::Option<zond_engine::system::interface::LinkAddress>
+pub fn zond_engine::system::interface::lan_viability(&zond_engine::system::interface::Link) -> core::result::Result<(), zond_engine::system::interface::ViabilityError>
 pub fn zond_engine::system::interface::map_ips_to_interfaces(zond_engine::model::ip::set::IpSet) -> zond_engine::system::interface::RoutedTargets
 pub fn zond_engine::system::interface::prioritized_interfaces(usize) -> alloc::vec::Vec<zond_engine::system::interface::Link>
 pub fn zond_engine::system::interface::resolve_keyword(zond_engine::model::parse::ip::Keyword, &mut zond_engine::model::ip::set::IpSet) -> core::result::Result<(), zond_engine::model::parse::ip::IpParseError>
 pub fn zond_engine::system::interface::resolve_zone(&str) -> core::option::Option<u32>
-pub mod zond_engine::system::neighbors
-pub struct zond_engine::system::neighbors::Neighbor
-pub zond_engine::system::neighbors::Neighbor::interface_index: u32
-pub zond_engine::system::neighbors::Neighbor::ip: core::net::ip_addr::IpAddr
-pub zond_engine::system::neighbors::Neighbor::mac: core::option::Option<pnet_base::macaddr::MacAddr>
-impl core::clone::Clone for zond_engine::system::neighbors::Neighbor
-pub fn zond_engine::system::neighbors::Neighbor::clone(&self) -> zond_engine::system::neighbors::Neighbor
-impl core::cmp::Eq for zond_engine::system::neighbors::Neighbor
-impl core::cmp::PartialEq for zond_engine::system::neighbors::Neighbor
-pub fn zond_engine::system::neighbors::Neighbor::eq(&self, &zond_engine::system::neighbors::Neighbor) -> bool
-impl core::fmt::Debug for zond_engine::system::neighbors::Neighbor
-pub fn zond_engine::system::neighbors::Neighbor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for zond_engine::system::neighbors::Neighbor
-impl core::marker::Freeze for zond_engine::system::neighbors::Neighbor
-impl core::marker::Send for zond_engine::system::neighbors::Neighbor
-impl core::marker::Sync for zond_engine::system::neighbors::Neighbor
-impl core::marker::Unpin for zond_engine::system::neighbors::Neighbor
-impl core::marker::UnsafeUnpin for zond_engine::system::neighbors::Neighbor
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::neighbors::Neighbor
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::neighbors::Neighbor
-pub fn zond_engine::system::neighbors::ipv6_neighbors() -> alloc::vec::Vec<zond_engine::system::neighbors::Neighbor>
+pub mod zond_engine::system::neighbor_cache
+pub struct zond_engine::system::neighbor_cache::Neighbor
+pub zond_engine::system::neighbor_cache::Neighbor::interface_index: u32
+pub zond_engine::system::neighbor_cache::Neighbor::ip: core::net::ip_addr::IpAddr
+pub zond_engine::system::neighbor_cache::Neighbor::mac: core::option::Option<zond_engine::model::mac::MacAddr>
+impl core::clone::Clone for zond_engine::system::neighbor_cache::Neighbor
+pub fn zond_engine::system::neighbor_cache::Neighbor::clone(&self) -> zond_engine::system::neighbor_cache::Neighbor
+impl core::cmp::Eq for zond_engine::system::neighbor_cache::Neighbor
+impl core::cmp::PartialEq for zond_engine::system::neighbor_cache::Neighbor
+pub fn zond_engine::system::neighbor_cache::Neighbor::eq(&self, &zond_engine::system::neighbor_cache::Neighbor) -> bool
+impl core::fmt::Debug for zond_engine::system::neighbor_cache::Neighbor
+pub fn zond_engine::system::neighbor_cache::Neighbor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::system::neighbor_cache::Neighbor
+impl core::marker::Freeze for zond_engine::system::neighbor_cache::Neighbor
+impl core::marker::Send for zond_engine::system::neighbor_cache::Neighbor
+impl core::marker::Sync for zond_engine::system::neighbor_cache::Neighbor
+impl core::marker::Unpin for zond_engine::system::neighbor_cache::Neighbor
+impl core::marker::UnsafeUnpin for zond_engine::system::neighbor_cache::Neighbor
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::neighbor_cache::Neighbor
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::neighbor_cache::Neighbor
+pub fn zond_engine::system::neighbor_cache::ipv6_neighbors() -> alloc::vec::Vec<zond_engine::system::neighbor_cache::Neighbor>
 pub mod zond_engine::system::privilege
 pub enum zond_engine::system::privilege::Privilege
 pub zond_engine::system::privilege::Privilege::Connect

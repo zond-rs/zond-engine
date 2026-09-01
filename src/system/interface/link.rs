@@ -21,7 +21,7 @@
 //! The one about `pnet`: its Windows backend fills the flags word with a
 //! literal zero and a `FIXME`, so `is_up()` was false for every interface on
 //! that platform, always. Nothing errored. Every entry point in this engine
-//! filtered on it, found nothing, and reported a machine with no network — which
+//! filtered on it, found nothing, and reported a machine with no network, which
 //! is the one failure shape the rest of this crate is built to refuse.
 //!
 //! **The one that outlives it**: swapping that type for another library's would
@@ -35,13 +35,14 @@
 //! ## What it deliberately does not carry
 //!
 //! Speed, MTU, DNS servers, statistics. All available from the source and none
-//! of them read by anything in this engine — and a field nothing reads is a
+//! of them read by anything in this engine, and a field nothing reads is a
 //! field that is wrong on some platform without anybody finding out.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use crate::model::ip::range::{IpRange, cidr_range};
 use crate::model::ip::scoped::Zone;
+use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 
 /// One address an interface holds, and how much of it names the network.
@@ -62,7 +63,7 @@ impl LinkAddress {
     ///
     /// The prefix is clamped to what the family allows rather than refused. It
     /// comes from the operating system's own interface table, so a value past
-    /// the end is a platform reporting something impossible — and the address is
+    /// the end is a platform reporting something impossible, and the address is
     /// still true and still worth having.
     pub fn new(address: IpAddr, prefix: u8) -> Self {
         let ceiling = if address.is_ipv4() { 32 } else { 128 };
@@ -102,8 +103,8 @@ impl LinkAddress {
 /// What kind of thing a link is.
 ///
 /// Narrower than the source's own two dozen variants, because this engine asks
-/// only three questions of it: can it carry a link-layer probe, is it wireless —
-/// which is a pacing question rather than a capability one — and is it the
+/// only three questions of it: can it carry a link-layer probe, is it wireless,
+/// which is a pacing question rather than a capability one, and is it the
 /// machine talking to itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -177,35 +178,35 @@ impl Link {
 
     /// What kind of link it is.
     #[must_use]
-    pub fn of_kind(mut self, kind: LinkKind) -> Self {
+    pub fn with_kind(mut self, kind: LinkKind) -> Self {
         self.kind = kind;
         self
     }
 
     /// Whether the operating system reports it as up.
     #[must_use]
-    pub fn up(mut self, up: bool) -> Self {
+    pub fn with_link_up(mut self, up: bool) -> Self {
         self.up = up;
         self
     }
 
     /// How addresses on this link reach anything.
     #[must_use]
-    pub fn addressing(mut self, addressing: Addressing) -> Self {
+    pub fn with_addressing(mut self, addressing: Addressing) -> Self {
         self.addressing = addressing;
         self
     }
 
     /// Whether there is real hardware behind it.
     #[must_use]
-    pub fn physical(mut self, physical: bool) -> Self {
+    pub fn with_physical(mut self, physical: bool) -> Self {
         self.physical = physical;
         self
     }
 
     /// Whether this machine's default route leaves by it.
     #[must_use]
-    pub fn carrying_the_default_route(mut self, carries: bool) -> Self {
+    pub fn with_default_route(mut self, carries: bool) -> Self {
         self.default_route = carries;
         self
     }
@@ -223,7 +224,7 @@ impl Link {
     /// Its number in this kernel's interface table.
     ///
     /// True of this boot and no other, which is why nothing durable is keyed by
-    /// it — see [`Zone`].
+    /// it. see [`Zone`].
     pub fn index(&self) -> u32 {
         self.index
     }
@@ -284,7 +285,7 @@ impl Link {
 
     /// Whether there is a physical port behind it.
     ///
-    /// False for a tunnel, a hypervisor's virtual switch, and a VPN — each of
+    /// False for a tunnel, a hypervisor's virtual switch, and a VPN: each of
     /// which carries IP perfectly well and none of which has a neighbour to ARP
     /// for.
     pub fn is_physical(&self) -> bool {
@@ -305,7 +306,7 @@ impl Link {
     ///
     /// **The closest thing there is to "which network am I on".** It is a fact
     /// about the routing table rather than a guess about the hardware, which is
-    /// what makes it answerable the same way on every platform — and what makes
+    /// what makes it answerable the same way on every platform, and what makes
     /// it right where hardware guesses are wrong. macOS presents `awdl0`
     /// (AirDrop) and `llw0` as ordinary broadcast Ethernet with real hardware
     /// behind them, indistinguishable from a wired port by any other field;
@@ -378,7 +379,7 @@ impl Addressing {
 ///
 /// **The one place the host is asked.** Everything else in this crate takes
 /// [`Link`]s from a caller or from here, which is what makes a scan against a
-/// stated set of links and a scan against the real machine the same code path —
+/// stated set of links and a scan against the real machine the same code path,
 /// and what stops a second enumeration appearing with a second library's
 /// opinion of what is up.
 pub fn interfaces() -> Vec<Link> {
@@ -397,7 +398,7 @@ impl Link {
     ///
     /// Windows is the reason it says `oper_state` rather than a flags word.
     /// Flags are a Unix idea, and a library reporting them on Windows is either
-    /// translating or — as the last one did — filling in a zero. The operational
+    /// translating or, as the last one did, filling in a zero. The operational
     /// state is what Windows actually publishes, through `GetAdaptersAddresses`,
     /// and what Linux and the BSDs can be asked for as readily.
     pub fn from_netdev(interface: netdev::Interface) -> Self {
@@ -432,7 +433,7 @@ impl Link {
             // Both, because they are not the same claim: a cable can be plugged
             // in to an interface nobody has brought up, and an interface can be
             // administratively up with nothing on the other end. A scan wants
-            // the conjunction — there is no point probing out of either.
+            // the conjunction: there is no point probing out of either.
             up: interface.is_up() && interface.is_oper_up(),
             addressing: Addressing::of(interface.is_broadcast(), interface.is_point_to_point()),
             physical: interface.is_physical(),
@@ -441,6 +442,45 @@ impl Link {
             index: interface.index,
         }
     }
+}
+
+/// Whether a link-layer probe can be put on this link.
+///
+/// The free-function face of [`Link::carries_frames`], kept because it reads as
+/// a question about the link rather than about the type. Both are the same
+/// answer and neither is the older one.
+pub fn is_layer_2_capable(link: &Link) -> bool {
+    link.carries_frames()
+}
+
+/// Whether every target in `ips` is on the same segment as `link`.
+///
+/// **Every range, wholly, in both families.** A range straddling the edge of
+/// the link's network is not on-link: half of it is reachable by ARP and half
+/// needs a router, and treating the whole as local would have a sweep wait out
+/// a timeout for every address past the boundary.
+///
+/// It read only the IPv4 ranges until September 2026, which made an IPv6-only
+/// target set vacuously on-link for every link, including one holding no IPv6
+/// address at all. Nothing called it, so nothing was wrong in a scan; what was
+/// wrong was that the answer did not mean what the name said.
+///
+/// An empty set is on-link, which is the ordinary reading of "every": there is
+/// no target here that needs a router.
+pub fn is_on_link(link: &Link, ips: &IpSet) -> bool {
+    let within = |start: IpAddr, end: IpAddr| {
+        link.addresses()
+            .iter()
+            .any(|held| held.contains(&start) && held.contains(&end))
+    };
+
+    ips.v4()
+        .iter()
+        .all(|range| within(range.start_addr().into(), range.end_addr().into()))
+        && ips
+            .v6()
+            .iter()
+            .all(|range| within(range.start_addr().into(), range.end_addr().into()))
 }
 
 // ╔════════════════════════════════════════════╗
@@ -454,6 +494,63 @@ impl Link {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::ip::range::IpRange;
+
+    fn link(name: &str, kind: LinkKind) -> Link {
+        Link::new(name, 1)
+            .with_kind(kind)
+            .with_mac(MacAddr::new(1, 2, 3, 4, 5, 6))
+    }
+    fn holding(name: &str, address: &str, prefix: u8) -> Link {
+        link(name, LinkKind::Wired).with_addresses(vec![LinkAddress::new(
+            address.parse::<IpAddr>().expect("an address"),
+            prefix,
+        )])
+    }
+    fn targets(written: &str) -> IpSet {
+        let mut set = IpSet::new();
+        set.insert_range(written.parse::<IpRange>().expect("a range"));
+        set
+    }
+    /// A range wholly inside the link's network is on it; one that leaves is
+    /// not, and half of one is not either.
+    ///
+    /// The last is the case worth the test. A range straddling the boundary is
+    /// half reachable by ARP and half not, and calling it on-link makes the
+    /// sweep wait out a timeout for every address past the edge.
+    #[test]
+    fn a_range_is_on_link_only_if_all_of_it_is() {
+        let link = holding("en0", "10.0.0.7", 24);
+
+        assert!(is_on_link(&link, &targets("10.0.0.1-10.0.0.50")));
+        assert!(is_on_link(&link, &targets("10.0.0.0/24")), "the whole");
+        assert!(!is_on_link(&link, &targets("10.0.1.1-10.0.1.5")), "past");
+        assert!(
+            !is_on_link(&link, &targets("10.0.0.200-10.0.1.10")),
+            "a range that starts on the link and leaves it is not on the link"
+        );
+    }
+    /// A link with no address of its own puts nothing on it.
+    #[test]
+    fn a_link_with_no_addressing_has_nothing_on_it() {
+        let bare = link("en0", LinkKind::Wired);
+
+        assert!(!is_on_link(&bare, &targets("10.0.0.1-10.0.0.50")));
+    }
+    /// An IPv6 address on the link does not make an IPv4 range local.
+    ///
+    /// `is_on_link` answers for IPv4 only, the callers that ask it are the ARP
+    /// path, and a link holding a v6 prefix that happens to contain the same
+    /// bits must not be read as covering a v4 range.
+    #[test]
+    fn an_ipv6_prefix_does_not_answer_for_an_ipv4_range() {
+        let v6_only = link("en0", LinkKind::Wired).with_addresses(vec![LinkAddress::new(
+            "fe80::1".parse::<IpAddr>().expect("an address"),
+            64,
+        )]);
+
+        assert!(!is_on_link(&v6_only, &targets("10.0.0.1-10.0.0.50")));
+    }
     use super::*;
 
     fn v4(address: &str, prefix: u8) -> LinkAddress {
@@ -497,7 +594,7 @@ mod tests {
     /// A prefix past the end of its family is clamped rather than refused.
     ///
     /// It comes from the operating system's own table, so a `/40` on an IPv4
-    /// address is a platform reporting something impossible — and the address is
+    /// address is a platform reporting something impossible, and the address is
     /// still true. Refusing would lose a real address over a field nothing else
     /// depends on; clamping keeps it and makes `network` total, which is what
     /// lets it return a value rather than a `Result` nobody could act on.
@@ -522,27 +619,27 @@ mod tests {
     #[test]
     fn a_link_carries_frames_only_with_a_segment_and_an_address_to_send_from() {
         let mac = MacAddr::new(2, 0, 0, 0, 0, 1);
-        let wired = Link::new("en0", 1).of_kind(LinkKind::Wired).with_mac(mac);
+        let wired = Link::new("en0", 1).with_kind(LinkKind::Wired).with_mac(mac);
         assert!(wired.carries_frames());
 
         assert!(
             !Link::new("en0", 1)
-                .of_kind(LinkKind::Wired)
+                .with_kind(LinkKind::Wired)
                 .carries_frames(),
             "no hardware address to send from"
         );
         assert!(
             !Link::new("lo0", 1)
-                .of_kind(LinkKind::Loopback)
+                .with_kind(LinkKind::Loopback)
                 .with_mac(mac)
                 .carries_frames(),
             "nobody else on it"
         );
         assert!(
             !Link::new("utun0", 1)
-                .of_kind(LinkKind::Wired)
+                .with_kind(LinkKind::Wired)
                 .with_mac(mac)
-                .addressing(Addressing::PointToPoint)
+                .with_addressing(Addressing::PointToPoint)
                 .carries_frames(),
             "a peer rather than a segment"
         );
@@ -580,8 +677,8 @@ mod tests {
 
     /// Whatever the host says, read through the one function that reads it.
     ///
-    /// Not an assertion about this machine — a container has one interface and a
-    /// laptop has twenty — but about the mapping holding for every one of them.
+    /// Not an assertion about this machine, a container has one interface and a
+    /// laptop has twenty, but about the mapping holding for every one of them.
     /// A `Link` whose kind is `Loopback` must not also claim to carry frames,
     /// and an address must not survive the trip with a prefix its family cannot
     /// hold. Both are properties of `from_netdev`, and this is the only place

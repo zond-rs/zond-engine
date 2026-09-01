@@ -50,18 +50,24 @@
 //! corruption back and watching this fail. The sixth, `probe_distance`, is an
 //! inherent method and is the price of that exclusion.
 //!
-//! Scoped to `src/scanner/` because that is the tree the standard has been
-//! brought up to. Widening it means documenting what the wider scan reports,
-//! and the list is in the audit.
+//! Scoped to the trees whose own audit brought them up to the standard, which
+//! is `src/scanner/` and `src/system/` so far. `system/` had four private
+//! modules with no module documentation at all, `routing.rs` among them, which
+//! is the file every strategy a scan runs follows from.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The tree this standard is enforced over.
-const SCOPE: &str = "src/scanner";
-
-/// The module root of that tree, which lives beside it rather than inside it.
-const SCOPE_ROOT: &str = "src/scanner.rs";
+/// The trees this standard is enforced over, each with the module root that
+/// lives beside it rather than inside it.
+///
+/// Two so far, added as each module's own audit brought it up to the standard.
+/// Widening this is a matter of documenting whatever the wider scan reports;
+/// the lists are in `audit/`.
+const SCOPE: &[(&str, &str)] = &[
+    ("src/scanner", "src/scanner.rs"),
+    ("src/system", "src/system.rs"),
+];
 
 /// Every `.rs` file under `dir`, recursively.
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -77,8 +83,11 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// The files in scope, sorted so a failure names them in a stable order.
 fn sources() -> Vec<PathBuf> {
-    let mut files = vec![PathBuf::from(SCOPE_ROOT)];
-    rust_files(Path::new(SCOPE), &mut files);
+    let mut files = Vec::new();
+    for (tree, root) in SCOPE {
+        files.push(PathBuf::from(root));
+        rust_files(Path::new(tree), &mut files);
+    }
     files.sort();
     files
 }
