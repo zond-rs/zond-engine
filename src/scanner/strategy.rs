@@ -8,10 +8,33 @@
 
 //! # What a scanning strategy is
 //!
-//! Two traits, one per phase, and the error a strategy fails with. Everything in
-//! [`crate::scanner::strategy`]'s submodules implements one of them, and
+//! Two traits, one per phase, and the error a strategy fails with.
 //! [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan)
 //! know nothing about any strategy beyond these methods.
+//!
+//! ## How the submodules are arranged
+//!
+//! By the phase a strategy serves, which is the same axis
+//! [`ScanKind`](crate::report::ScanKind) and
+//! [`PhaseRecorder`](crate::scanner::recorder::PhaseRecorder) are written in.
+//! Transport and privilege vary *inside* a category rather than naming one,
+//! because varying over them is what these two traits are for.
+//!
+//! | module | what it is |
+//! |---|---|
+//! | [`local`], [`routed`], [`connect`] | which hosts are there: at the link layer, through a gateway, or by ordinary connect |
+//! | [`ports`] | which ports are open, and the machinery its four scanners share |
+//! | [`identify`] | what a machine is, asked of hosts already found |
+//! | [`topology`] | what is between here and a host |
+//! | [`passive`] | what a link already carries, having sent nothing |
+//! | [`composite`] | routes each target to a strategy that covers its protocol |
+//! | [`raw`], [`frames`], [`icmp_error`] | not strategies: what they are built from, and what they read |
+//!
+//! It was arranged by the target's network position until September 2026, and
+//! the two axes had been crossed: `routed` meant "reached through a gateway"
+//! for one strategy and "opens a raw socket" for the ten others that had been
+//! written underneath it, including every port scanner, both operating-system
+//! probes and the trace. What each of them *is* now decides where it sits.
 //!
 //! ## Findings go to the context, not to the return value
 //!
@@ -175,10 +198,31 @@ pub trait PortScanner: Send {
 
 pub mod composite;
 pub mod connect;
+// The reader two scanners share for what an ICMP error says: a UDP port scan
+// reads a port's verdict out of one, and a trace reads a router's identity out
+// of one. Neither owns it, and it is a parser rather than a strategy.
+pub mod icmp_error;
 // The readers two strategies share: a local sweep interprets the replies its
 // probes draw with them, and a listener interprets frames nobody asked for with
 // the same ones. A frame that proves a host is there proves it either way.
-pub mod discovery;
+//
+// Named for what it reads rather than for the phase that reads it: `discovery`
+// collided with `scanner::discover` and `ScanKind::Discovery`, neither of which
+// this is.
+pub mod frames;
 pub mod local;
+// What a machine is, asked of hosts a scan has already found. Neither of these
+// discovers anything: they revisit what the store holds and read a stack off
+// what answers.
+pub mod identify;
 pub mod passive;
+// Which ports are open, and the machinery all four raw port scanners share.
+pub mod ports;
+// What every raw strategy is built from: how a probe reaches the wire, and the
+// timings a probe over a routed path is held to.
+pub mod raw;
 pub mod routed;
+// What is between here and a host, rather than what is at it. Both passes here
+// run after the ports are known, because what reaches a host is what decides
+// how to ask about the path to it.
+pub mod topology;

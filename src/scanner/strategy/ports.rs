@@ -15,14 +15,16 @@
 //!
 //! Two pieces make up that machine, and the division between them is the point
 //! of the module. [`RawProbeScan`] is the state a raw port scan carries and the
-//! questions it can answer about itself. [`run`] is the loop that asks them,
+//! questions it can answer about itself. [`drive`] is the loop that asks them,
 //! and [`RawPortScan`] is the short list of things it cannot work out alone.
 //!
-//! The TCP and UDP port scanners each hold a [`RawProbeScan`] and implement
+//! [`tcp`], [`udp`] and [`sctp`] each hold a [`RawProbeScan`] and implement
 //! [`RawPortScan`]. What stays with them is what is genuinely protocol
 //! knowledge: how a probe is built, how a reply is recognised, what an answer
 //! proves about a port and its host, and what silence means once a probe has
-//! spent its budget.
+//! spent its budget. [`idle`] is the fourth and is not built this way, because
+//! it reads its verdicts off a third party's counter rather than off a reply to
+//! anything it sent.
 //!
 //! ## Why this line and not a different one
 //!
@@ -50,13 +52,31 @@
 //! copy is what makes that class of divergence impossible rather than merely
 //! unlikely.
 //!
-//! ## Writing a third one
+//! ## Writing a fourth one
 //!
 //! Everything here is public because the argument above applies to a scanner
-//! this engine does not have yet. An SCTP INIT scan, or any protocol added
-//! later, needs the same stop conditions, the same congestion window and the
-//! same audit tail; implementing [`RawPortScan`] gets all of it, and the only
-//! code to write is the part that is actually about the protocol.
+//! this engine does not have yet. The SCTP INIT scan was written this way after
+//! the fact and needed no changes here, which is the evidence the line is in the
+//! right place; any protocol added later needs the same stop conditions, the
+//! same congestion window and the same audit tail. Implementing [`RawPortScan`]
+//! gets all of it, and the only code to write is the part that is actually
+//! about the protocol.
+
+// Public rather than private-with-re-exports. A caller writing a fifth scanner
+// has to be able to read the four that exist, and a module they cannot name is
+// a file they have to already know about — which is what the shared machinery
+// here used to be, under a name that described where the target sat.
+pub mod idle;
+pub mod sctp;
+pub mod tcp;
+pub mod udp;
+
+// And re-exported flat, because four scanners for one phase is exactly the case
+// where a caller wants them in one list.
+pub use idle::IdlePortScanner;
+pub use sctp::{SctpPortScanner, SctpToken};
+pub use tcp::{TcpPortScanner, TcpToken};
+pub use udp::UdpPortScanner;
 
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -75,12 +95,136 @@ use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
-use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy};
+use crate::scanner::pacing::retry::{Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::PortScanner;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeTransport};
+
+// ---------------------------------------------------------------------------
+// What a raw port scan is paced and timed by
+// ---------------------------------------------------------------------------
+//
+// Declared here rather than beside the sweep they were written next to. These
+// are what a *port scan* is held to, and the four scanners below are their only
+// readers; the profiles a routed probe shares whatever it is asking about are
+// in `raw`.
+
+/// How a **port scan's** probes are retransmitted.
+///
+/// [`RETRY_POLICY`] with a steeper backoff and a wider spread, and the reason is
+/// specific to what a port scan's retries are recovering from. A sweep's probes
+/// are lost to whatever the path is doing, which is not correlated with the
+/// sweep; a port scan's are lost to the burst the port scan itself is making at
+/// one stack, and a retry sent while that burst is still going is a second
+/// packet into the same congested moment.
+///
+/// Measured, against a Raspberry Pi: a quarter of a thousand probes went
+/// unanswered, and with three independent attempts at that loss rate an open
+/// port should be missed one time in seventy — eleven open ports should have
+/// come back as nearly eleven. Three runs found seven each. The attempts were
+/// not independent; all three of them fitted inside the congestion that lost the
+/// first.
+///
+/// So the schedule is stretched at the back and left alone at the front. The
+/// first timeout stays as early as measurement allows, because it is what tells
+/// [`TCP_PORT_WINDOW`] the target is struggling; the last lands far enough out
+/// to sample a network state the scan has had time to stop causing. The jitter
+/// is widened for the same reason one step down: probes admitted together time
+/// out together, and an unspread retry wave rebuilds the burst it is escaping.
+const PORT_RETRY_POLICY: RetryPolicy = RetryPolicy::new(
+    3,
+    Duration::from_millis(200),
+    Duration::from_millis(25),
+    Duration::from_secs(2),
+    3.0,
+    0.3,
+    Some(SilentHostPolicy::new(32, 2)),
+);
+
+/// The window a **TCP** port scan paces itself by.
+///
+/// This is the answer to a question no fixed rate answers well. A port scan
+/// aims every probe at one stack, and it is that stack's willingness to answer
+/// that bounds the result — a number that differs by two orders of magnitude
+/// between the consumer router and the Linux server on the same switch, and
+/// that neither this crate nor its caller can know in advance. So the scan
+/// discovers it: see [`congestion`](crate::scanner::pacing::congestion) for how,
+/// and for why the signal it grows and cuts on is a probe answered *on a retry*
+/// rather than a probe not answered at all.
+///
+/// Each of the four numbers, and what would go wrong at another value:
+///
+/// - **Start at 32.** Every stack in service answers a few dozen simultaneous
+///   SYNs without noticing. Starting at one would spend a round trip per
+///   doubling, and on a local segment the ramp would be most of the scan.
+/// - **Never below 16.** The floor is what a target that is genuinely being
+///   outrun gets cut back to, and it has to leave the scan able to finish: at
+///   sixteen questions per round-trip budget a thousand silent ports still
+///   settle in a few seconds, where single digits would take a minute. Past
+///   that a scan is not being polite, it is failing, and an unfinished scan's
+///   verdicts are indeterminate rather than late.
+/// - **Never above 1024.** A thousand questions outstanding at one stack is
+///   already more than any of them will answer; growth past it buys nothing and
+///   the rate ceiling would bind first anyway.
+/// - **Stop doubling at 64.** This is the number the controller is blind for.
+///   Nothing can be known about a target until a probe to it has been answered
+///   or has timed out, and slow start doubles every round trip in the meantime —
+///   so the threshold is the worst overshoot a target can be subjected to before
+///   the scan has any evidence about it at all. It was 256, and against a
+///   Raspberry Pi that meant several hundred probes already in the air by the
+///   time the first timeout arrived. Sixty-four outstanding still empties a
+///   thousand ports in a fraction of a second on any local segment, and linear
+///   growth carries it further wherever the evidence supports it.
+const TCP_PORT_WINDOW: WindowLimits = WindowLimits::new(32, 16, 1_024, 64);
+
+/// The most probes a TCP port scan leaves unresolved at once.
+///
+/// Not the pacing — [`TCP_PORT_WINDOW`] is — but the bound on how far the
+/// bookkeeping may run ahead of it. A probe leaves the window at its first
+/// timeout and stays on the ledger until its last, so against a range that
+/// answers nothing the scan admits at window speed while the backlog of
+/// half-finished probes grows behind it. Several times the window's ceiling,
+/// because that backlog is the retry schedule's whole length divided by the
+/// first timeout and is expected to be a multiple of what is in flight; far
+/// below where the memory matters, because each entry is two durations and a
+/// handful of tokens.
+const TCP_PORT_UNRESOLVED: usize = 8_192;
+
+/// The fastest a TCP port scan will go regardless of what the window says.
+///
+/// A **backstop**, not the pacing — [`TCP_PORT_WINDOW`] is the pacing. It is
+/// here so that a defect in the controller cannot turn a scan into a flood, and
+/// it is set far above any rate a correct scan reaches: at this rate a
+/// thousand-port scan emits in fifty milliseconds, which is already faster than
+/// the round trips it is waiting on. A caller who wants a real rate limit sets
+/// `--max-probe-rate`, which replaces this.
+const TCP_PORT_RATE_CEILING: NonZeroU32 = NonZeroU32::new(20_000).expect("a non-zero rate");
+
+/// The fastest a **UDP** port scan puts probes on the wire, in probes per
+/// second.
+///
+/// Two orders of magnitude below [`TCP_PORT_RATE_CEILING`], and it is a real
+/// limit rather than a backstop, because UDP has no window to pace it with. A
+/// UDP probe's ordinary outcome is silence and its replies name no attempt, so
+/// neither half of the congestion signal exists (see
+/// [`congestion`](crate::scanner::pacing::congestion)) and the scan is held to a
+/// fixed rate instead.
+///
+/// The rate is set against the thing that actually answers a UDP probe. Most
+/// UDP verdicts come from an ICMP port unreachable, and a Linux host emits those
+/// under a token bucket that refills at roughly one per second; a burst that
+/// outruns it does not merely go unanswered, it manufactures
+/// [`OpenFiltered`](crate::model::port::PortState::OpenFiltered) verdicts on
+/// ports that are closed. Spread across the hosts of a shuffled scan this is
+/// survivable; aimed at one host it is the whole result.
+///
+/// **This number is inherited reasoning, not a measurement.** The sweep's rate
+/// was measured; this is set an order of magnitude below it because the
+/// per-target load is an order of magnitude higher, and that is an argument
+/// rather than an experiment.
+const UDP_PORT_RATE_PER_SEC: NonZeroU32 = NonZeroU32::new(400).expect("a non-zero rate");
 
 /// A probe's identity within a scan: which address, which port.
 pub type ProbeTarget = (IpAddr, u16);
@@ -120,11 +264,11 @@ pub struct RawProbeScan<T> {
     pub src_port: u16,
     /// The IP-header state every probe in this scan carries: its hop limit and
     /// any evasion override of the IP header. See
-    /// [`Emission`](crate::transport::probe::Emission).
+    /// [`Emission`].
     pub emission: Emission,
     /// The segment-level shaping every probe in this scan carries: the payload
     /// padding and, on the TCP paths, the bad-checksum choice. See
-    /// [`SegmentShaping`](crate::evasion::SegmentShaping).
+    /// [`SegmentShaping`].
     pub shaping: SegmentShaping,
     /// The decoy source addresses every probe in this scan is copied from, or
     /// empty. Resolved once from the scan's
@@ -247,7 +391,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             max_unresolved,
         } = parts;
 
-        let (send_tick, batch) = super::pacing_for(rate);
+        let (send_tick, batch) = super::raw::pacing_for(rate);
         let deadline = deadline
             .allowing_for(retry.worst_case_probe_lifetime())
             .allowing_pace_of(pace, target_count);
@@ -512,12 +656,12 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     }
 }
 
-/// What a raw port scan has to supply that [`run`] cannot work out for itself.
+/// What a raw port scan has to supply that [`drive`] cannot work out for itself.
 ///
 /// Everything below is protocol knowledge: which transport this scan speaks,
 /// how it builds a probe, how it reads a reply, what a verdict proves about the
 /// host behind the port, and what silence means once a probe has spent its
-/// budget. [`run`] supplies the rest, which is the loop those answers are fed
+/// budget. [`drive`] supplies the rest, which is the loop those answers are fed
 /// into.
 ///
 /// The division is the same one [`RawProbeScan`] draws and for the same reason:
@@ -597,7 +741,7 @@ pub trait RawPortScan: PortScanner {
     /// engine's considered choice, since an absent port is the shortfall a
     /// reader cannot see. Only the earned ones carry a position, and only a
     /// position lets a resume skip a target. See
-    /// [`Outcome`](crate::journal::settle::Outcome).
+    /// [`Outcome`].
     fn settle(&mut self, outcome: Outcome) {
         self.core().ctx.record_outcome(outcome);
     }
@@ -772,7 +916,7 @@ pub struct AuditLabels {
 /// short by its own deadline reports the ports it never reached instead of
 /// leaving them off the host entirely, which is the one shortfall a reader
 /// cannot see. See [`RawPortScan::resolve_unasked`] for how far that reaches.
-pub async fn run<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<PlannedTarget>) {
+pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<PlannedTarget>) {
     // The rate backstop. What paces the scan is `RawProbeScan::window`, which
     // the batch loop below re-checks after every send; this bounds how fast a
     // window's worth of probes may be released, so a defect in the controller
@@ -910,8 +1054,8 @@ mod tests {
             resolver: SourceResolver::from_links(&[]),
             ctx,
             transport: ProbeTransport::from_parts(Box::new(NullSender), rx),
-            deadline: AdaptiveDeadline::new(super::super::DEADLINE_CONFIG, 8),
-            ledger: ProbeLedger::new(super::super::RETRY_POLICY, 8),
+            deadline: AdaptiveDeadline::new(super::super::raw::DEADLINE_CONFIG, 8),
+            ledger: ProbeLedger::new(super::super::raw::RETRY_POLICY, 8),
             due: Vec::new(),
             src_port: 54_321,
             emission: Emission::routed(),

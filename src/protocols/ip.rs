@@ -69,7 +69,7 @@ pub const SMALLEST_FRAGMENT_MTU: u16 = (IP_V4_HDR_LEN + FRAGMENT_UNIT) as u16;
 /// `ttl` is a parameter for the same reason its IPv6 counterpart's `hop_limit`
 /// is, and for one more: a probe sent to expire on purpose is how a path is
 /// measured. [`HOP_LIMIT_ROUTED`] is what an ordinary probe passes;
-/// [`traceroute`](crate::scanner::strategy::routed::traceroute) passes each
+/// [`traceroute`](crate::scanner::strategy::topology::traceroute) passes each
 /// value in turn and reads the errors that come back.
 ///
 /// # Errors

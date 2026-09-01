@@ -983,7 +983,7 @@ pub struct ZondConfig {
     /// read out of a reply it sent, so a host that answered nothing has no path
     /// this engine can measure and is skipped rather than probed thirty times for
     /// nothing. See
-    /// [`traceroute`](crate::scanner::strategy::routed::traceroute).
+    /// [`traceroute`](crate::scanner::strategy::topology::traceroute).
     ///
     /// Needs raw sockets, like every other probe this engine builds by hand. An
     /// unprivileged run records the refusal rather than reporting an empty path,

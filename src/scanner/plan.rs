@@ -68,9 +68,10 @@ use crate::scanner::strategy::connect::{
     ConnectPortScanner, ConnectScanner, ConnectUdpPortScanner,
 };
 use crate::scanner::strategy::local::{LocalScanner, Scope};
-use crate::scanner::strategy::routed::{
-    IdlePortScanner, RoutedScanner, SctpPortScanner, TcpPortScanner, UdpPortScanner,
+use crate::scanner::strategy::ports::{
+    IdlePortScanner, SctpPortScanner, TcpPortScanner, UdpPortScanner,
 };
+use crate::scanner::strategy::routed::RoutedScanner;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError};
 use crate::system::interface::Link;
 use crate::system::interface::{self, RoutedTarget};
@@ -203,6 +204,82 @@ impl RefusedStep {
                 describe(range)
             ),
         }
+    }
+
+    /// An on-link IPv6 range too large to walk, in a scan that will not sweep
+    /// the segment it is on.
+    ///
+    /// The one range this engine can reach and declines to. A local segment is
+    /// covered by the all-nodes solicitation, which is a single packet whatever
+    /// the prefix length, so the remedy is a sweep rather than a smaller
+    /// prefix. A [`Scope::Sweep`] step already sends that packet and refuses
+    /// nothing.
+    ///
+    /// Walking it instead is what used to happen, and the failure was silent:
+    /// the address count overflowed the deadline's target count, the sweep was
+    /// budgeted as though it had no targets at all, and it stopped a couple of
+    /// thousand solicitations into a space of eighteen quintillion having
+    /// reported the range covered.
+    pub fn local_range_needs_a_sweep(range: &Ipv6Range) -> Self {
+        Self {
+            scanner: ScannerKind::Local,
+            reason: format!(
+                "{}: too large to probe one address at a time, and this scan is \
+                 not sweeping the segment. The all-nodes solicitation reaches a \
+                 prefix this size in one packet - scan the segment rather than \
+                 the range, or give specific addresses.",
+                describe(range)
+            ),
+        }
+    }
+}
+
+/// Takes the IPv6 ranges out of `targets` that are too large to probe one
+/// address at a time, leaving the rest.
+///
+/// The same test the routed path applies, applied where the local path needed
+/// it: [`is_enumerable`](interface::is_enumerable) asks it of a range rather
+/// than of a set, so a set holding a `/64` and three literal addresses keeps
+/// the three.
+///
+/// IPv4 is untouched, on the same reasoning that leaves it untouched
+/// everywhere else: every IPv4 range is finite in a way a person can reason
+/// about.
+fn withhold_unwalkable(targets: &mut IpSet) -> Vec<Ipv6Range> {
+    let unwalkable: Vec<Ipv6Range> = targets
+        .v6()
+        .iter()
+        .filter(|range| !interface::is_enumerable(range))
+        .copied()
+        .collect();
+
+    if unwalkable.is_empty() {
+        return unwalkable;
+    }
+
+    let mut kept = IpSet::new();
+    for range in targets.v4() {
+        kept.push_v4_range(*range);
+    }
+    for range in targets.v6() {
+        if interface::is_enumerable(range) {
+            kept.push_v6_range(*range);
+        }
+    }
+    kept.canonicalize();
+    *targets = kept;
+
+    unwalkable
+}
+
+impl From<RefusedStep> for crate::report::Refusal {
+    /// The recorded form of a refusal a plan carries.
+    ///
+    /// One direction only. A plan's refusal knows how it was decided, and a
+    /// recorded one is what a reader is handed afterwards; going back would mean
+    /// inventing the decision from the words.
+    fn from(step: RefusedStep) -> Self {
+        Self::new(step.scanner, step.reason)
     }
 }
 
@@ -379,7 +456,28 @@ impl DiscoveryPlan {
             seed_from_neighbor_table(&mut local);
         }
 
-        for (interface, targets) in local {
+        for (interface, mut targets) in local {
+            // An on-link range too large to walk is dropped here rather than
+            // handed on. `map_ips_to_interfaces` keeps such a range whole,
+            // because the strategy for a segment is the all-nodes solicitation
+            // and that is one packet whatever the prefix length - but the
+            // solicitation is a sweep's, and the walk below it is what a
+            // targeted run has. See `local_range_needs_a_sweep`.
+            for range in withhold_unwalkable(&mut targets) {
+                match scope {
+                    // Covered: the sweep sends the one packet the whole segment
+                    // answers, so nothing is lost by not walking the prefix.
+                    Scope::Sweep => info!(
+                        verbosity = 1,
+                        "{} is swept by solicitation rather than walked",
+                        describe(&range)
+                    ),
+                    Scope::Targeted => {
+                        refusals.push(RefusedStep::local_range_needs_a_sweep(&range))
+                    }
+                }
+            }
+
             // A sweep's link earns a step whether or not any address mapped to
             // it. A targeted run has nothing to send without targets.
             if targets.is_empty() && matches!(scope, Scope::Targeted) {
@@ -890,6 +988,55 @@ mod tests {
         );
     }
 
+    fn v6_set(cidr: &str) -> IpSet {
+        crate::model::parse::ip::to_set(&[cidr], None, None).expect("a range")
+    }
+
+    /// A `/64` on the local segment is eighteen quintillion addresses, and the
+    /// walk is what a targeted run does with a local range. It is withheld
+    /// before a scanner is built from it, because the alternative was measured
+    /// and is worse than useless: the count overflows `usize`, the sweep is
+    /// budgeted as though it had no targets, and it stops two thousand
+    /// solicitations in having reported the prefix covered.
+    #[test]
+    fn a_local_prefix_too_large_to_walk_is_withheld_from_the_targets() {
+        let mut targets = v6_set("2001:db8:1:1::/64");
+        assert_eq!(targets.len(), 1u128 << 64, "a /64, kept whole to here");
+
+        let withheld = withhold_unwalkable(&mut targets);
+
+        assert_eq!(withheld.len(), 1, "the prefix is taken out");
+        assert!(targets.is_empty(), "and nothing is left to walk");
+    }
+
+    /// Asked of a range and not of a set, so a prefix beside three literal
+    /// addresses costs the prefix and not the three.
+    #[test]
+    fn withholding_a_prefix_keeps_the_addresses_named_beside_it() {
+        let mut targets = crate::model::parse::ip::to_set(
+            &["2001:db8:1:1::/64", "2001:db8:2::1", "192.0.2.7"],
+            None,
+            None,
+        )
+        .expect("a mixed set");
+
+        let withheld = withhold_unwalkable(&mut targets);
+
+        assert_eq!(withheld.len(), 1);
+        assert_eq!(targets.len(), 2, "the literal and the IPv4 address survive");
+    }
+
+    /// A range small enough to walk is left exactly as it was, so the ordinary
+    /// case pays nothing.
+    #[test]
+    fn a_walkable_prefix_is_untouched() {
+        let mut targets = v6_set("2001:db8::/120");
+        let before = targets.len();
+
+        assert!(withhold_unwalkable(&mut targets).is_empty());
+        assert_eq!(targets.len(), before);
+    }
+
     /// The three entries that must never become targets, each wrong in its own
     /// way: another interface's neighbour is not reachable through this one,
     /// this host would be reported as a discovered neighbour of itself, and
@@ -985,7 +1132,7 @@ mod tests {
     #[test]
     fn a_step_reports_under_the_same_name_as_the_scanner_it_builds() {
         use crate::scanner::session::ScanSession;
-        use crate::scanner::strategy::routed::TcpPortScanner;
+        use crate::scanner::strategy::ports::TcpPortScanner;
         use crate::transport::probe::{Emission, ProbeSender, ProbeTransport, SendError};
 
         struct Unsendable;

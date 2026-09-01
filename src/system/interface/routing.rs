@@ -155,8 +155,11 @@ pub(crate) fn map_ips_to_interfaces_with(ip_set: IpSet, interfaces: Vec<Link>) -
         }
 
         match owning_interface(&interfaces, start, end) {
-            // On-link, so it is kept whole and never expanded here: the local
-            // scanner reaches a segment by multicast rather than by walking it.
+            // On-link, so it is kept whole and never expanded here: a segment is
+            // reached by multicast, and that is one packet whatever the prefix
+            // length. Whether the range is *also* small enough to walk address
+            // by address is a question for whoever builds the sweep, since only
+            // a targeted run walks one; `DiscoveryPlan::build` asks it.
             Some(idx) => local.entry(idx).or_default().insert_range(V6(*range)),
             // Off-link, where the only strategy is to probe each address in
             // turn. The check comes before `to_iter` because the expansion is

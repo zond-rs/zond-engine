@@ -82,7 +82,7 @@ use crate::report::ScannerKind;
 use crate::report::{Attachment, AttachmentSource};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
-use crate::scanner::strategy::discovery::{self, DiscoveryProtocol, ProtocolMatch};
+use crate::scanner::strategy::frames::{self, DiscoveryProtocol, ProtocolMatch};
 use crate::transport::capture::{self, CaptureOptions, CapturedFrame, FrameStream};
 use crate::transport::frame::LinkType;
 use crate::transport::mac::IntoCoreMac;
@@ -608,7 +608,7 @@ impl PassiveListener {
             mac_to_ip,
             declared: HashMap::new(),
             said_full: false,
-            protocols: discovery::sweep_protocols(),
+            protocols: frames::sweep_protocols(),
         }
     }
 
@@ -679,7 +679,7 @@ impl PassiveListener {
     /// admits everything copies a link into this process to discard almost all
     /// of it.
     fn filter() -> String {
-        let mut clauses: Vec<&'static str> = discovery::sweep_protocols()
+        let mut clauses: Vec<&'static str> = frames::sweep_protocols()
             .iter()
             .map(|protocol| protocol.capture_clause())
             .collect();
@@ -1118,7 +1118,7 @@ impl PassiveListener {
         // At the ceiling a record that already exists still takes everything
         // this frame proves — the phase goes on raising claims about what it is
         // holding. What it stops doing is starting new ones.
-        if self.held >= MAX_RECORDED_HOSTS && !self.ctx.holds_host(&key) {
+        if self.held >= MAX_RECORDED_HOSTS && !self.ctx.contains_host(&key) {
             self.report_full();
             return;
         }
@@ -1226,7 +1226,7 @@ impl PassiveListener {
         //
         // Asked once per machine rather than once per frame, since a machine
         // already paired takes neither branch.
-        if known.is_none() && self.ctx.holds_host(&key) {
+        if known.is_none() && self.ctx.contains_host(&key) {
             self.mac_to_ip.insert(mac, key);
         }
     }
@@ -1295,7 +1295,7 @@ impl PassiveListener {
 mod tests {
     use super::*;
     use crate::scanner::session::ScanSession;
-    use crate::scanner::strategy::discovery::tests::{
+    use crate::scanner::strategy::frames::tests::{
         PEER_MAC, advertisement_body, arp_reply_frame, dhcp_reply_frame, ndp_frame,
     };
     use std::net::Ipv4Addr;

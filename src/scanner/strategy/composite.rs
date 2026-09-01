@@ -33,6 +33,14 @@ use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::{PortScanner, StrategyError};
 
+/// How many targets one route holds while its scanner is busy.
+///
+/// A buffer per protocol rather than a shared one, so a slow scanner cannot
+/// stall the router for the others. Deep enough to absorb a dispatcher batch
+/// arriving while a scanner is mid-send, and shallow enough that the memory is
+/// a function of the protocol count rather than of the plan.
+const ROUTE_DEPTH: usize = 1024;
+
 /// A port scanner that multiplexes targets by protocol.
 pub struct CompositePortScanner {
     scanners: Vec<Box<dyn PortScanner>>,
@@ -83,7 +91,7 @@ impl PortScanner for CompositePortScanner {
 
         // Spin up an independent task for every scanner we own.
         for mut scanner in self.scanners.drain(..) {
-            let (tx, rx) = mpsc::channel(1024);
+            let (tx, rx) = mpsc::channel(ROUTE_DEPTH);
             let supported_protocols = scanner.supported_protocols();
             let kind = scanner.kind();
 

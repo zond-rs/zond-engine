@@ -33,9 +33,8 @@ use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::report::StopReason;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
-use zond_engine::scanner::strategy::routed::{
-    RoutedScanner, SctpPortScanner, TcpPortScanner, UdpPortScanner,
-};
+use zond_engine::scanner::strategy::ports::{SctpPortScanner, TcpPortScanner, UdpPortScanner};
+use zond_engine::scanner::strategy::routed::RoutedScanner;
 use zond_engine::system::interface::RoutedTarget;
 
 /// The fixed source port the simulated UDP scans probe from.

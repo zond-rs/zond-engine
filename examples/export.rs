@@ -786,6 +786,10 @@ fn phase() -> ScanPhase {
         origin: None,
         probes: Vec::new(),
         failures: Vec::new(),
+        // A scan that declined nothing. The field is left out of the document
+        // entirely rather than written as an empty list, which is what a
+        // consumer reading `refusals` has to expect.
+        refusals: Vec::new(),
         attachments: Vec::new(),
         unroutable: Vec::new(),
     })

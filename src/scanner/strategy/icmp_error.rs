@@ -17,8 +17,16 @@
 //! defensively. What differs is one type number and what the message means, and
 //! those are the only parts written twice.
 //!
-//! Both raw port scanners depend on this, and both would otherwise carry their
-//! own copy of two code tables that number the same meanings differently.
+//! Three strategies depend on this — the UDP and SCTP port scans and the trace —
+//! and each would otherwise carry its own copy of two code tables that number
+//! the same meanings differently. It sits beside them rather than inside any of
+//! them because it is a parser and none of them owns it; a caller writing a
+//! fourth raw scanner needs it for the reason the UDP one does.
+//!
+//! The types here are `#[non_exhaustive]`. Nothing outside this module builds
+//! one: they come back from [`parse`] and [`parse_expired`] and are read, so
+//! closing construction costs a caller nothing and leaves room for whatever the
+//! next protocol turns out to need.
 //! What they must *not* share is the conclusion, which is why this module stops
 //! at [`Unreachable`] and leaves [`PortState`](crate::model::port::PortState)
 //! to the caller: a port unreachable answering a UDP probe is the port's own
@@ -84,6 +92,7 @@ pub(super) const ICMPV6_UNUSED_LEN: usize = 4;
 /// is code 3 over IPv4 and code 4 over IPv6 - so resolving the number here is
 /// what keeps a scanner from reading a v6 code as its identically numbered v4
 /// neighbour, which is a different message entirely.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unreachable {
     /// Something received the datagram, looked for a listener on that port, and
@@ -100,6 +109,7 @@ pub enum Unreachable {
 
 /// One parsed Destination Unreachable: what it says, and the packet it quotes.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct IcmpError<'a> {
     /// What the code establishes.
     pub reason: Unreachable,
@@ -123,6 +133,7 @@ pub fn parse(reply: &CapturedSegment) -> Option<IcmpError<'_>> {
 
 /// One router naming itself, having discarded a probe that ran out of hops.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Expired<'a> {
     /// The probe the router discarded, as it quoted it back. The only thing
     /// tying this message to one of ours — see [`parse_expired`].

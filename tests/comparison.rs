@@ -65,7 +65,8 @@ use zond_engine::scanner::recorder::PhaseRecorder;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
-use zond_engine::scanner::strategy::routed::{RoutedScanner, TcpPortScanner};
+use zond_engine::scanner::strategy::ports::TcpPortScanner;
+use zond_engine::scanner::strategy::routed::RoutedScanner;
 use zond_engine::system::interface::RoutedTarget;
 use zond_engine::system::privilege::Privilege;
 

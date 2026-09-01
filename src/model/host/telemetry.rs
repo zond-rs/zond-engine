@@ -120,7 +120,7 @@ pub struct HostTelemetry {
     /// every captured reply carries one and the scan reads it anyway, where
     /// re-obtaining it costs a probe and a round trip.
     ///
-    /// What reads it is [`traceroute`](crate::scanner::strategy::routed::traceroute),
+    /// What reads it is [`traceroute`](crate::scanner::strategy::topology::traceroute),
     /// which needs to know how far away a host is before it can measure the path
     /// backwards from it. Without this the trace has to send a probe of its own
     /// purely to be answered, which is a round trip spent re-learning something

@@ -740,6 +740,9 @@ impl Run {
             targets,
             settings: self.settings(),
             failures: Vec::new(),
+            // Nothing in nmap's output distinguishes ground it declined from
+            // ground it covered, so nothing is invented here.
+            refusals: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
             origin: None,

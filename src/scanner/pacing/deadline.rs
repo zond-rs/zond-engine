@@ -6,18 +6,19 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Adaptive Scan Deadlines
+//! # How long to keep going
 //!
-//! Combines [`ScanTimer`] and [`RttWindow`] into a single policy for
-//! deciding how long a discovery sweep should keep running.
+//! [`ScanTimer`] and [`RttWindow`] joined into the one policy a probing loop
+//! actually needs.
 //!
-//! The timer alone can only enforce fixed limits; the window alone only
-//! tracks statistics. Neither answers the actual question a scanning loop
-//! needs answered on every iteration: "have we been quiet long enough to
-//! give up?" [`AdaptiveDeadline`] answers that by deriving the timer's
-//! silence tolerance from the window's own recent samples, so the two
-//! pieces of state are always used together and a scanner never has to
-//! wire them up itself.
+//! Neither half answers the question on its own. The timer enforces fixed
+//! limits and knows nothing about the network; the window measures the network
+//! and decides nothing. What a loop asks on every iteration is *have we been
+//! quiet long enough to stop*, and that is the timer's question answered with
+//! the window's evidence: the silence tolerance comes out of the samples, so a
+//! scan on a fast segment gives up on silence in a fraction of the time one
+//! crossing an ocean does, and no scanner has to wire the two together to get
+//! it.
 
 use std::time::Duration;
 
@@ -33,7 +34,13 @@ use super::timer::{ScanBudget, ScanTimer};
 /// jitter adds to it, and `rtt_window_capacity` sets how many recent
 /// samples inform that adaptation. See [`RttWindow::suggest_timeout`] for
 /// exactly how the latter three combine.
+///
+/// `#[non_exhaustive]`: built through [`new`](Self::new) and the two builders
+/// beside it, never by naming every field. See
+/// [`WindowLimits`](super::congestion::WindowLimits) for the argument, which is
+/// the same one.
 #[must_use]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct AdaptiveDeadlineConfig {
     /// The hard deadline, past which the scan stops with whatever it has.
@@ -127,16 +134,15 @@ impl AdaptiveDeadlineConfig {
     }
 }
 
-/// Decides when a discovery sweep should stop, adapting to how quickly and
-/// how consistently hosts have responded so far.
+/// When a scan should stop, given how quickly and how consistently its targets
+/// have been answering.
 ///
-/// A scanner calls [`AdaptiveDeadline::mark_activity`] whenever it learns
-/// something new (typically: discovers a host it hadn't seen before) and
-/// [`AdaptiveDeadline::record_rtt`] whenever it can measure a round-trip
-/// time, then asks [`AdaptiveDeadline::has_expired`] on every iteration of
-/// its receive loop. [`AdaptiveDeadline::time_until_next_tick`] gives a
-/// duration suitable for sleeping until the next check is worthwhile,
-/// rather than busy-polling.
+/// Three calls make up its whole use. A scanner marks
+/// [`mark_activity`](Self::mark_activity) when it learns something new, records
+/// a round trip with [`record_rtt`](Self::record_rtt) whenever it can measure
+/// one, and asks [`has_expired`](Self::has_expired) each time round its receive
+/// loop. [`time_until_next_tick`](Self::time_until_next_tick) is what to sleep
+/// on in between, rather than polling.
 pub struct AdaptiveDeadline {
     timer: ScanTimer,
     rtt_window: RttWindow,
@@ -160,15 +166,17 @@ impl AdaptiveDeadline {
         }
     }
 
-    /// Resets the silence clock. Call this when the scan learns something
-    /// new, as opposed to every packet - repeated activity from an already
-    /// known host doesn't represent new information about whether the scan
-    /// is still worth continuing.
+    /// Restarts the silence clock, for a loop that has just learned something.
+    ///
+    /// Something *new*, rather than every packet: a second reply from a host
+    /// already found says nothing about whether the scan is still worth
+    /// running, and treating it as activity keeps a sweep open on the strength
+    /// of traffic it had already accounted for.
     pub fn mark_activity(&mut self) {
         self.timer.mark_activity();
     }
 
-    /// Feeds a newly measured round-trip time into the adaptive estimate.
+    /// Folds one measured round trip into what the tolerance is derived from.
     pub fn record_rtt(&mut self, rtt: Duration) {
         self.rtt_window.record(rtt);
     }
@@ -181,9 +189,9 @@ impl AdaptiveDeadline {
         )
     }
 
-    /// Reports whether the scan should stop: either the hard deadline has
-    /// passed, or the minimum runtime has elapsed and nothing new has
-    /// happened for longer than the current silence tolerance justifies.
+    /// Whether the scan should stop: the deadline has passed, or the minimum
+    /// runtime is behind it and nothing new has happened for longer than the
+    /// measured tolerance justifies.
     pub fn has_expired(&self) -> bool {
         self.timer.has_expired(self.silence_tolerance())
     }
@@ -198,7 +206,8 @@ impl AdaptiveDeadline {
         self.timer.hard_deadline_passed()
     }
 
-    /// How long a caller should wait before checking [`has_expired`](Self::has_expired) again.
+    /// How long a caller may sleep before asking
+    /// [`has_expired`](Self::has_expired) again.
     pub fn time_until_next_tick(&self) -> Duration {
         self.timer.time_until_next_tick(self.silence_tolerance())
     }

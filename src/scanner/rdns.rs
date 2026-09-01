@@ -70,6 +70,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::transport::probe::{ProbeKind, ProbeTransport, TransportError};
 
+/// Where a name server answers, and where this resolver both listens and asks.
 const DNS_PORT: u16 = 53;
 use crate::protocols::mdns::PORT as MDNS_PORT;
 
@@ -82,7 +83,10 @@ const MAX_DNS_DATAGRAM: usize = 4096;
 /// replies still in flight are not thrown away with the scan that asked for them.
 const REPLY_GRACE: Duration = Duration::from_millis(250);
 
+/// A name as it came off the wire, already trimmed of its trailing root label.
 type Hostname = String;
+/// The transaction id a query carries, and the only thing tying a reply to the
+/// question it answers.
 type TransID = u16;
 
 /// One resolver a reverse query is sent to, paired with the socket that can
@@ -622,6 +626,8 @@ fn bind_family(
     }
 }
 
+/// Opens a UDP socket on an ephemeral port of `bind_addr`, for asking rather
+/// than for listening.
 fn bind_ephemeral(bind_addr: &str) -> std::io::Result<UdpSocket> {
     let socket = std::net::UdpSocket::bind(bind_addr)?;
     socket.set_nonblocking(true)?;
@@ -690,6 +696,10 @@ fn udp_port(name_server: &hickory_resolver::config::NameServerConfig) -> Option<
         .map(|connection| connection.port)
 }
 
+/// Adds `server` unless it is already listed.
+///
+/// A linear scan because the list is a handful of resolvers and order is worth
+/// keeping: the platform lists them in the order it wants them tried.
 fn push_unique(servers: &mut Vec<SocketAddr>, server: SocketAddr) {
     if !servers.contains(&server) {
         servers.push(server);

@@ -84,6 +84,10 @@ const MAX_TRACKED_ATTEMPTS: usize = 4;
 /// than abandoned. What it can still cost is a port that is open, behind a path
 /// lossy enough to drop consecutive probes, on a host that answered nothing
 /// else; that is the trade, and it is why this is optional.
+///
+/// `#[non_exhaustive]`: built through [`new`](Self::new). See
+/// [`WindowLimits`](super::congestion::WindowLimits) for the argument.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SilentHostPolicy {
     /// Probes to one host that must exhaust their full budget, with no reply of
@@ -110,7 +114,11 @@ impl SilentHostPolicy {
 /// reasonable wait differs by protocol far more than by network: a SYN is
 /// answered as fast as the path allows, while an ICMP error is rate-limited to
 /// roughly one per second by the host that would send it.
+///
+/// `#[non_exhaustive]`: built through [`new`](Self::new) and the builders beside
+/// it. See [`WindowLimits`](super::congestion::WindowLimits) for the argument.
 #[must_use]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     /// Total sends per probe, initial attempt included. One disables

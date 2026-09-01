@@ -341,6 +341,23 @@
         }
       }
     },
+    "refusal": {
+      "description": "Ground the scan declined to cover, decided before anything was sent. Not a failure and not listed among them: nothing broke, and the engine worked out that part of what it was asked for had no strategy behind it. The remedies are opposite - a failure might not recur, and a refusal recurs every time the same scan is run. No timestamp, because a refusal is decided before the phase begins rather than observed while it runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scanner",
+        "reason"
+      ],
+      "properties": {
+        "scanner": {
+          "$ref": "#/$defs/scanner_kind"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
     "hardware": {
       "description": "Physical hardware identity. The engine records when each address was last seen; those readings are not exported, because the addresses themselves are what identifies the hardware and a consumer comparing two scans has each report's own timestamps to work from.",
       "type": "object",
@@ -732,6 +749,13 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/failure"
+          }
+        },
+        "refusals": {
+          "description": "Ground this phase declined to cover, and why. Absent where it declined nothing, which is most phases.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/refusal"
           }
         },
         "probe_stats": {
@@ -1251,7 +1275,10 @@
         "os_series",
         "os_snmp",
         "idle",
-        "composite"
+        "composite",
+        "service",
+        "detection",
+        "journal"
       ]
     },
     "scope": {

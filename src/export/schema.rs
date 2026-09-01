@@ -94,7 +94,7 @@ use crate::model::host::{
 use crate::model::ip::range::IpRange;
 use crate::model::port::{CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service};
 use crate::report::{
-    ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, ScanPhase,
+    ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, Refusal, ScanPhase,
     ScanReport, ScanSettings, ScanSummary, ScannerFailure, TargetScope,
 };
 use crate::system::privilege::Privilege;
@@ -529,6 +529,16 @@ pub struct PhaseDto<'a> {
     /// Strategies that did not run to completion. A non-empty list means the
     /// findings are narrower than the caller asked for.
     pub failures: Vec<FailureDto<'a>>,
+    /// Ground the phase declined to cover before sending anything, and why.
+    ///
+    /// Not failures and not listed among them, on the same reasoning
+    /// `unroutable` is kept out: nothing broke. The engine worked out that part
+    /// of what it was asked for had no strategy behind it and said so, which is
+    /// a claim about the scan as written rather than about the machine or the
+    /// network. A reader acts on the two differently — a failure might not
+    /// recur, and a refusal will recur every time the same scan is run.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refusals: Vec<RefusalDto<'a>>,
     /// Addresses this host had no route to, so nothing was sent to them,
     /// ascending.
     ///
@@ -618,6 +628,7 @@ impl<'a> PhaseDto<'a> {
             targets: ScopeDto::new(phase.targets()),
             settings: SettingsDto::new(phase.settings()),
             failures: phase.failures().iter().map(FailureDto::new).collect(),
+            refusals: phase.refusals().iter().map(RefusalDto::new).collect(),
             unroutable: phase
                 .unroutable()
                 .iter()
@@ -1032,6 +1043,29 @@ impl<'a> FailureDto<'a> {
             scanner: scanner_kind_name(failure.scanner()),
             reason: failure.reason(),
             at: rfc3339(failure.at()),
+        }
+    }
+}
+
+/// Ground a phase declined to cover.
+///
+/// No timestamp, unlike [`FailureDto`]: a refusal is decided before the phase
+/// begins rather than observed while it runs, so there is no moment to report.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct RefusalDto<'a> {
+    /// The strategy that would have taken this work.
+    pub scanner: &'static str,
+    /// What was not done, and what could be asked for instead.
+    pub reason: &'a str,
+}
+
+impl<'a> RefusalDto<'a> {
+    /// Renders a recorded refusal.
+    pub fn new(refusal: &'a Refusal) -> Self {
+        Self {
+            scanner: scanner_kind_name(refusal.scanner()),
+            reason: refusal.reason(),
         }
     }
 }

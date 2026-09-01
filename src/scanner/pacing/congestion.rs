@@ -173,6 +173,15 @@ use crate::report::WindowSummary;
 /// Declared per scanner beside its retry policy and deadline profile, since what
 /// counts as a reasonable number of outstanding questions is a property of the
 /// protocol and of what answers it.
+///
+/// `#[non_exhaustive]`, along with the three other pacing configurations, and
+/// for the reason they share: these are the knobs a controller gains a field of
+/// every time somebody measures something new — this module records three such
+/// measurements already — and every one of them is read here rather than
+/// pattern-matched by a consumer. Closing the literal costs a caller
+/// [`new`](Self::new) instead of a struct expression, and it is what keeps
+/// [`new`](Self::new)'s bounds check from being walked around.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct WindowLimits {
     /// The window before anything has been learned.
@@ -265,8 +274,22 @@ pub struct CongestionWindow {
 
 impl CongestionWindow {
     /// A window at its starting size, with nothing learned yet.
+    ///
+    /// **Bounds that disagree do not panic.** `floor` and `ceiling` are adjacent
+    /// arguments of one type on a public constructor, so a caller can cross
+    /// them; the floor wins, for the reason
+    /// [`suggest_timeout`](super::rtt_window::RttWindow::suggest_timeout) and
+    /// [`ProbeLedger`](super::retry::ProbeLedger) give. A crossed pair then
+    /// describes a range with nothing in it, so the window is stationary and
+    /// reports itself as such through [`WindowSummary::adaptive`] — where
+    /// `u32::clamp` asserted and took the scan down before that logic could
+    /// run.
     pub fn new(limits: WindowLimits) -> Self {
-        let window = f64::from(limits.initial.clamp(limits.floor, limits.ceiling));
+        let window = f64::from(
+            limits
+                .initial
+                .clamp(limits.floor, limits.ceiling.max(limits.floor)),
+        );
         Self {
             limits,
             window,
@@ -402,6 +425,36 @@ impl CongestionWindow {
 
 #[cfg(test)]
 mod tests {
+
+    /// `floor` and `ceiling` are adjacent `u32`s on a public constructor, so a
+    /// caller can cross them. `u32::clamp` asserted, which turned that into a
+    /// panic in the caller's process — two lines before the `adaptive` check
+    /// that already handles a range with nothing in it.
+    #[test]
+    fn crossed_bounds_freeze_the_window_rather_than_panicking() {
+        let window = CongestionWindow::new(WindowLimits::new(10, 100, 50, 20));
+
+        assert_eq!(window.capacity(), 100, "the floor wins");
+        assert!(
+            !window.summary().adaptive,
+            "and a range with nothing in it cannot move"
+        );
+    }
+
+    /// Growth and reduction are both no-ops on such a window, so nothing
+    /// downstream has to know the bounds were crossed.
+    #[test]
+    fn a_frozen_window_neither_grows_nor_cuts() {
+        let mut window = CongestionWindow::new(WindowLimits::new(10, 100, 50, 20));
+        let before = window.capacity();
+
+        window.record_send();
+        window.record_progress();
+        window.record_congestion();
+
+        assert_eq!(window.capacity(), before);
+        assert_eq!(window.summary().reductions, 0);
+    }
     use super::*;
 
     fn limits() -> WindowLimits {

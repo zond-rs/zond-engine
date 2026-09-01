@@ -112,7 +112,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
         ctx.clone(),
-        ScannerKind::Connect,
+        ScannerKind::Detection,
         |result, _audit| {
             if let Some((key, number, protocol, findings)) = result {
                 record(ctx, key, number, protocol, findings);

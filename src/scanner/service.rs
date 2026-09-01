@@ -15,7 +15,7 @@
 //!
 //! The unprivileged [`connect`](crate::scanner::strategy::connect) scanner already holds a live
 //! `TcpStream` the moment it finds a port open, so it fingerprints inline. The
-//! privileged [`TcpPortScanner`](crate::scanner::strategy::routed::TcpPortScanner) never completes a
+//! privileged [`TcpPortScanner`](crate::scanner::strategy::ports::TcpPortScanner) never completes a
 //! handshake, since it classifies each port from a single raw SYN/SYN-ACK/RST
 //! exchange, and so it has no connection to fingerprint through. Fingerprinting
 //! does not need raw sockets, it needs a real TCP connection. This phase opens one
@@ -67,7 +67,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
         ctx.clone(),
-        ScannerKind::Connect,
+        ScannerKind::Service,
         |fingerprinted: Option<(ScopedIp, Port, Vec<OsEvidence>, Vec<String>)>, _audit| {
             if let Some((ip, port, about_the_host, banners)) = fingerprinted {
                 ctx.record_responses(ip.clone(), port.number(), port.protocol(), banners);
@@ -97,14 +97,14 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection) {
 ///
 /// # Which UDP ports qualify
 ///
-/// Only those whose reply this engine can read — [`extract::reads`]. A TCP port
+/// Only those whose reply this engine can read — [`reads_replies`]. A TCP port
 /// always qualifies, because any of them may volunteer a banner and reading one
 /// costs a connection that was going to be made anyway. A UDP port is different:
 /// there is no banner to wait for, so a datagram nothing here could decode
 /// teaches nothing the scan has not already recorded, and sending one would be
 /// traffic spent to learn a fact already in hand.
 ///
-/// [`extract::reads`]: crate::fingerprint
+/// [`reads_replies`]: crate::fingerprint::reads_replies
 fn fingerprintable_ports(ctx: &ScanContext) -> Vec<(ScopedIp, u16, Protocol)> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {

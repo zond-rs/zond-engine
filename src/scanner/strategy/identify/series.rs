@@ -31,7 +31,7 @@
 //! ## The probe is the one the scanner already sends
 //!
 //! There is no new packet shape here: every probe is
-//! [`tcp::build_probe`](crate::protocols::tcp::build_probe) for
+//! [`crate::protocols::tcp::build_probe`] for
 //! [`TcpScanTechnique::Syn`], the same segment an ordinary SYN scan sends. What
 //! differs is only that each target is asked more than once.
 //!
@@ -89,7 +89,8 @@
 //! to finish inside the spacing**, or every host in it is reported as unclear
 //! and the traffic bought nothing. Hosts are therefore followed in batches small
 //! enough for a sweep to fit, and each batch is its own timing window rather
-//! than a slice of one long one. See [`BATCH`].
+//! than a slice of one long one. `BATCH` is that size, and carries the
+//! arithmetic behind it.
 //!
 //! ## No retransmission, deliberately
 //!

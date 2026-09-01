@@ -74,8 +74,8 @@ use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
 use crate::{error, success};
 
-use super::icmp_error::{self, Unreachable};
-use super::probe_scan::{self, AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
+use super::{AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
+use crate::scanner::strategy::icmp_error::{self, Unreachable};
 
 /// What identifies one attempt of a probe on the wire: the Initiate Tag it went
 /// out carrying, which a conformant peer echoes back whichever answer it sends.
@@ -157,7 +157,7 @@ impl SctpPortScanner {
         target_count: usize,
     ) -> RawProbeScan<SctpToken> {
         let retry = super::PORT_RETRY_POLICY.configured(tuning.retry);
-        let rate = super::rate_or(tuning.max_probe_rate, super::TCP_PORT_RATE_CEILING);
+        let rate = super::super::raw::rate_or(tuning.max_probe_rate, super::TCP_PORT_RATE_CEILING);
 
         RawProbeScan::new(CoreParts {
             resolver,
@@ -168,7 +168,7 @@ impl SctpPortScanner {
             target_count,
             retry,
             rate,
-            deadline: super::DEADLINE_CONFIG,
+            deadline: super::super::raw::DEADLINE_CONFIG,
             pace: retry.min_rto / super::TCP_PORT_WINDOW.floor,
             window: super::TCP_PORT_WINDOW,
             max_unresolved: super::TCP_PORT_UNRESOLVED,
@@ -525,7 +525,7 @@ fn send_init_probe(
         })
         .collect();
 
-    match super::emit_among_decoys(
+    match super::super::raw::emit_among_decoys(
         sender,
         dst_addr,
         emission,
@@ -573,7 +573,7 @@ impl PortScanner for SctpPortScanner {
     /// or the scan's deadline expires. Anything still outstanding at the end is
     /// reported filtered.
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
-        probe_scan::run(self, targets).await;
+        super::drive(self, targets).await;
         Ok(())
     }
 }

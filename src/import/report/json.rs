@@ -105,7 +105,7 @@ use crate::record::{
     CaptureRecord, CertificateRecord, DetectionIdRecord, DiscoveryRecord, EvasionSettingsRecord,
     FailureRecord, FindingRecord, HardwareRecord, HopRecord, HostRecord, IdleScanRecord, OsRecord,
     PhaseOriginRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord,
-    ReferenceRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord,
+    ReferenceRecord, RefusalRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord,
     StatusReasonRecord, TelemetryRecord, WindowRecord,
 };
 use crate::report::{ScanPhase, ScanReport};
@@ -571,6 +571,7 @@ struct PhaseDto {
     targets: ScopeDto,
     settings: SettingsDto,
     failures: Vec<FailureDto>,
+    refusals: Vec<RefusalDto>,
     probe_stats: Vec<ProbeStatsDto>,
     unroutable: Vec<String>,
     origin: Option<PhaseOriginDto>,
@@ -603,6 +604,11 @@ impl PhaseDto {
                 .failures
                 .into_iter()
                 .map(FailureDto::record)
+                .collect::<Result<_, _>>()?,
+            refusals: self
+                .refusals
+                .into_iter()
+                .map(RefusalDto::record)
                 .collect::<Result<_, _>>()?,
             unroutable: self
                 .unroutable
@@ -840,6 +846,32 @@ impl FailureDto {
 
         Ok(FailureRecord {
             at: timestamp(&self.at)?,
+            scanner: self.scanner,
+            reason: self.reason,
+        })
+    }
+}
+
+/// Ground a phase declined to cover, as a document holds it.
+///
+/// No timestamp, unlike [`FailureDto`]: a refusal is decided before the phase
+/// runs, so there is no moment to record and none is read.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RefusalDto {
+    scanner: String,
+    reason: String,
+}
+
+impl RefusalDto {
+    fn record(self) -> Result<RefusalRecord, String> {
+        known(
+            wire::scanner_kind(&self.scanner),
+            "a scanner",
+            &self.scanner,
+        )?;
+
+        Ok(RefusalRecord {
             scanner: self.scanner,
             reason: self.reason,
         })

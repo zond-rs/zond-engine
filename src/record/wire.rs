@@ -462,6 +462,9 @@ pub fn scanner_kind_name(kind: ScannerKind) -> &'static str {
         ScannerKind::OsSnmp => "os_snmp",
         ScannerKind::Idle => "idle",
         ScannerKind::Composite => "composite",
+        ScannerKind::Service => "service",
+        ScannerKind::Detection => "detection",
+        ScannerKind::Journal => "journal",
     }
 }
 
@@ -482,6 +485,9 @@ pub fn scanner_kind(name: &str) -> Option<ScannerKind> {
         "os_snmp" => ScannerKind::OsSnmp,
         "idle" => ScannerKind::Idle,
         "composite" => ScannerKind::Composite,
+        "service" => ScannerKind::Service,
+        "detection" => ScannerKind::Detection,
+        "journal" => ScannerKind::Journal,
         _ => return None,
     })
 }

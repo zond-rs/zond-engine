@@ -45,7 +45,7 @@
 //!
 //! No `with_transport` constructor takes an [`EvasionProfile`]. What
 //! `TcpPortScanner::new` does with one is set four fields on the shared
-//! [`RawProbeScan`](zond_engine::scanner::strategy::routed::RawProbeScan) core,
+//! [`RawProbeScan`](zond_engine::scanner::strategy::ports::RawProbeScan) core,
 //! and those fields are public, so [`shaped`] does the same thing to a scanner
 //! built over a simulated transport. The step this does not cover is
 //! `new` itself reading `tuning.evasion`, which needs a real socket.
@@ -66,7 +66,7 @@ use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::protocols::ip::HOP_LIMIT_ROUTED;
 use zond_engine::scanner::session::ScanSession;
-use zond_engine::scanner::strategy::routed::{RawPortScan, TcpPortScanner, UdpPortScanner};
+use zond_engine::scanner::strategy::ports::{RawPortScan, TcpPortScanner, UdpPortScanner};
 use zond_engine::transport::probe::SendMode;
 
 /// The source port both protocols probe from where a test is not asserting on

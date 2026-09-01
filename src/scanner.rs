@@ -43,7 +43,7 @@
 //! **Build one strategy and drive it yourself.** Everything in [`strategy`] is
 //! ordinary public API: open a [`ScanSession`], construct a
 //! [`LocalScanner`](strategy::local::LocalScanner) aimed at one segment or a
-//! [`TcpPortScanner`](strategy::routed::TcpPortScanner) over a transport you
+//! [`TcpPortScanner`](strategy::ports::TcpPortScanner) over a transport you
 //! opened, run it, and read the store. None of it needs a cargo feature.
 //!
 //! A scan driven this way produces the same record as one the engine ran.
@@ -94,7 +94,7 @@
 //! on the same physical segment, and
 //! [`RoutedScanner`](strategy::routed::RoutedScanner) with TCP SYN for anything
 //! behind a gateway. [`scan`] follows the same pattern for ports, where a
-//! privileged caller gets [`TcpPortScanner`](strategy::routed::TcpPortScanner)
+//! privileged caller gets [`TcpPortScanner`](strategy::ports::TcpPortScanner)
 //! and each port is classified from a single raw exchange rather than a
 //! completed handshake. Targets that map to no usable interface, and every
 //! target when unprivileged, fall back to plain TCP connect attempts.
@@ -483,7 +483,7 @@ pub async fn discover_with_journal(
     Ok((session, ScanTask::journalling(handle, ticker, earlier)))
 }
 
-/// Runs a discovery sweep against an existing context./// Runs a discovery sweep against an existing context./// Runs a discovery sweep against an existing context.
+/// Runs a discovery sweep against an existing context.
 ///
 /// The body of [`discover`], taking a context rather than making one so that a
 /// caller journalling the sweep can seed it and keep a handle on it. Nothing
@@ -828,7 +828,7 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
 ///
 /// With root privileges, every probe is a raw TCP SYN sent from the source
 /// address this host would route the target through, and
-/// [`TcpPortScanner`](strategy::routed::TcpPortScanner) reads the port's state
+/// [`TcpPortScanner`](strategy::ports::TcpPortScanner) reads the port's state
 /// from a single reply rather than a completed handshake. Without root, or with
 /// no address to probe from, probes fall back to one TCP connect attempt per
 /// target.

@@ -350,6 +350,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         targets: TargetScope::from_target_map(&mut targets, &Exclusions::none()),
         settings: ScanSettings::from(&ZondConfig::default()),
         failures: Vec::new(),
+        refusals: Vec::new(),
         unroutable: Vec::new(),
         probes: Vec::new(),
         origin: None,

@@ -139,6 +139,7 @@ impl PhaseRecorder {
             targets,
             settings: self.settings,
             failures: ctx.take_failures(),
+            refusals: ctx.take_refusals(),
             unroutable: ctx.take_unroutable(),
             probes: ctx.take_probe_stats(),
             origin: None,
@@ -163,15 +164,85 @@ impl PhaseRecorder {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
-    use std::str::FromStr;
-    use std::time::Duration;
 
     use super::*;
     use crate::model::exclusion::Exclusions;
     use crate::model::host::HostStatus;
     use crate::model::ip::set::IpSet;
-    use crate::report::{BUCKET_BOUNDS_MS, ProbeStats, ScannerKind, StopReason};
+    use crate::report::{BUCKET_BOUNDS_MS, ProbeStats, Refusal, ScannerKind, StopReason};
+    use crate::scanner::session::ScanSession;
+
+    /// A scope over two addresses, since `TargetScope` is built from a target
+    /// set rather than defaulted.
+    fn scope() -> TargetScope {
+        let mut targets = IpSet::from_str("192.168.0.1-192.168.0.2").expect("a valid range");
+        TargetScope::from_ip_set(&mut targets, &Exclusions::none())
+    }
+
+    /// A refusal and a failure are both the scan saying what it did not cover,
+    /// and only one of them says something went wrong. They reached the report
+    /// as one list, so a scan that declined an unenumerable prefix and a scan
+    /// whose raw socket died were indistinguishable to a caller of `discover`
+    /// or `scan` — which is the distinction `plan.rs` opens by saying a scanner
+    /// may never lose.
+    #[test]
+    fn a_refusal_reaches_the_report_as_a_refusal_and_not_as_a_failure() {
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+        let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg);
+
+        ctx.record_refusal(Refusal::new(
+            ScannerKind::SctpPort,
+            "no unprivileged init probe exists",
+        ));
+        ctx.record_failure(ScannerKind::Local, "the capture would not open".to_string());
+
+        let report = recorder.finish(&ctx);
+        let phase = &report.phases()[0];
+
+        assert_eq!(phase.refusals().len(), 1, "the refusal is its own kind");
+        assert_eq!(phase.refusals()[0].scanner(), ScannerKind::SctpPort);
+        assert_eq!(
+            phase.failures().len(),
+            1,
+            "and the failure is still a failure"
+        );
+        assert_eq!(phase.failures()[0].scanner(), ScannerKind::Local);
+    }
+
+    /// Taken rather than copied, on the same terms the failures are: a context
+    /// reused for a second phase must not hand the same refusal to two reports.
+    #[test]
+    fn a_phase_takes_its_refusals_rather_than_copying_them() {
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+        ctx.record_refusal(Refusal::new(ScannerKind::SctpPort, "no init probe"));
+
+        let first = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope(), &cfg)
+            .finish(&ctx);
+        let second = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .finish(&ctx);
+
+        assert_eq!(first.phases()[0].refusals().len(), 1);
+        assert!(second.phases()[0].refusals().is_empty());
+    }
+
+    /// Filed once per distinct reason. A plan that declines the same range on
+    /// two links has one thing to tell the caller, and saying it twice is how a
+    /// report teaches a reader to skim past it.
+    #[test]
+    fn the_same_refusal_filed_twice_is_recorded_once() {
+        let (_session, ctx) = ScanSession::new();
+        let refusal = Refusal::new(ScannerKind::Local, "too large to walk");
+
+        ctx.record_refusal(refusal.clone());
+        ctx.record_refusal(refusal);
+
+        assert_eq!(ctx.refusals_snapshot().len(), 1);
+    }
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::str::FromStr;
+    use std::time::Duration;
 
     fn ip(last: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(192, 168, 0, last))

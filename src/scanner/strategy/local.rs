@@ -60,7 +60,7 @@ use crate::transport::mac::IntoCoreMac;
 use crate::transport::mac::IntoPnetMac;
 use crate::{error, info};
 
-use crate::scanner::strategy::discovery::{self, DiscoveryProtocol, ProtocolMatch, Reading};
+use crate::scanner::strategy::frames::{self, DiscoveryProtocol, ProtocolMatch, Reading};
 use ipv6::Ipv6Discovery;
 
 /// What a local sweep's capture admits, as a `libpcap` filter expression.
@@ -78,7 +78,7 @@ use ipv6::Ipv6Discovery;
 /// frame reader below takes the EtherType from its fixed offset, so a tagged
 /// frame already read as an unsupported EtherType and was rejected a layer up.
 fn sweep_filter() -> String {
-    let mut clauses: Vec<&'static str> = discovery::sweep_protocols()
+    let mut clauses: Vec<&'static str> = frames::sweep_protocols()
         .iter()
         .map(|protocol| protocol.capture_clause())
         .collect();
@@ -97,7 +97,7 @@ fn sweep_filter() -> String {
 /// The clauses for the readers that conclude no liveness, and so have no
 /// [`DiscoveryProtocol`] to declare them.
 ///
-/// Every protocol in [`discovery::sweep_protocols`] exists to conclude that a
+/// Every protocol in [`frames::sweep_protocols`] exists to conclude that a
 /// host is present. These three deliberately do not, and each declines for its
 /// own reason:
 ///
@@ -386,7 +386,7 @@ enum Dispatched {
 /// Frames are built and read directly rather than through this host's IP
 /// stack, so a run takes root and reaches only the segment its [`Link`] is
 /// attached to. What a given reply proves is left to the [`DiscoveryProtocol`]
-/// implementations in [`discovery`], and [`Scope`] decides whether a run probes
+/// implementations in [`frames`], and [`Scope`] decides whether a run probes
 /// the whole segment or only the addresses it was handed.
 pub struct LocalScanner {
     /// Shared state (host store, event channel, abort signal) for the scan
@@ -646,7 +646,12 @@ impl LocalScanner {
     ) -> Result<Self, StrategyError> {
         let identity = SourceIdentity::resolve(&link, &ip_set)?;
 
-        let target_count = ip_set.len() as usize;
+        // Saturating, not truncating. An address count is a `u128` and a `/64`
+        // is exactly `usize::MAX + 1`, so the plain cast turned the largest
+        // possible sweep into a target count of zero and handed it the smallest
+        // possible budget. `ScanBudget::unclamped` saturates its own cast for
+        // the same reason one layer down.
+        let target_count = usize::try_from(ip_set.len()).unwrap_or(usize::MAX);
         // The sweep has to outlive the schedule it commits each probe to, or
         // addresses are given up on having never been fully asked.
         // The longer of the two schedules, because the sweep has to outlive
@@ -666,7 +671,7 @@ impl LocalScanner {
             identity,
             eth_handle,
             deadline,
-            protocols: discovery::sweep_protocols(),
+            protocols: frames::sweep_protocols(),
             ledger: Ledger::new(retry, target_count),
 
             due: Vec::new(),
@@ -760,8 +765,9 @@ impl LocalScanner {
         // still mid-schedule was cut off rather than spent, and one the iterator
         // still holds was never built, let alone sent.
         let outstanding = self.ledger.drain_unresolved().len() as u64;
-        self.ctx.record_many(Outcome::Interrupted, outstanding);
-        self.ctx.record_many(
+        self.ctx
+            .record_many_outcomes(Outcome::Interrupted, outstanding);
+        self.ctx.record_many_outcomes(
             Outcome::Unasked,
             u64::try_from(self.ip_set.len().saturating_sub(dispatched)).unwrap_or(u64::MAX),
         );
@@ -1761,7 +1767,7 @@ impl LocalScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scanner::strategy::discovery::tests::{
+    use crate::scanner::strategy::frames::tests::{
         LOCAL_MAC, PEER_MAC, advertisement_body, arp_reply_frame, dhcp_reply_frame,
         echo_reply_frame, mdns_frame, ndp_frame,
     };

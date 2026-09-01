@@ -88,7 +88,7 @@ use crate::transport::frame::IpSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{info, warn};
 
-use super::icmp_error;
+use crate::scanner::strategy::icmp_error;
 
 /// How far a trace will look before giving up on reaching the target.
 ///
@@ -755,9 +755,12 @@ impl Tracer {
         found
     }
 
-    /// Walks from `distance` back to the first router, splicing where the cache
-    /// recognises one.
-    /// What one distance turned out to hold.
+    /// Asks what is at one distance from here, and reports what answered.
+    ///
+    /// The unit the walk is built from: [`walk`](Self::walk) chooses which
+    /// distances to ask about and this asks about one of them. Three outcomes
+    /// come back rather than two, because a distance nothing answered and one
+    /// the target answered are different facts — see [`Landing`].
     async fn probe_distance(&mut self, target: IpAddr, at: u8, source: IpAddr) -> Landing {
         // A burst rather than one probe waited out three times: the answers are
         // independent, so sending them together costs one round trip instead of

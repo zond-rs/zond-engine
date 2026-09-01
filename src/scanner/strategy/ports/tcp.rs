@@ -12,7 +12,7 @@
 //! specific `(address, port)` pairs with raw TCP segments and classifies each
 //! one by whether and how it responds, rather than completing a full TCP
 //! handshake per port the way the unprivileged fallback in
-//! [`crate::scanner::connect`] must.
+//! [`crate::scanner::strategy::connect`] must.
 //!
 //! Which segment goes out, and what an answer to it proves, is
 //! [`TcpScanTechnique`]'s business - this drives the same loop whichever of the
@@ -41,7 +41,7 @@
 //! An ICMP error is correlated the same way, through the copy of the probe it
 //! quotes rather than through its own header - so an error relayed by a router
 //! still points at the host the probe was aimed at. See
-//! [`icmp_error`](super::icmp_error).
+//! [`icmp_error`].
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -79,8 +79,8 @@ use crate::transport::probe::{Emission, ProbeKind, ProbeSender, ProbeTransport};
 // a sweep's probes are lost to what the path is doing, and a port scan's to the
 // burst it is itself making at one stack. See `PORT_RETRY_POLICY`.
 use super::PORT_RETRY_POLICY;
-use super::icmp_error::{self, Unreachable};
-use super::probe_scan::{self, AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
+use super::{AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
+use crate::scanner::strategy::icmp_error::{self, Unreachable};
 
 /// What identifies one attempt of a probe on the wire.
 ///
@@ -99,7 +99,7 @@ pub struct TcpToken {
 /// Probes specific `(address, port)` pairs with raw TCP segments, using
 /// whichever [`TcpScanTechnique`] it was built for.
 ///
-/// Unlike [`RoutedScanner`](super::RoutedScanner), which sends one SYN per host
+/// Unlike [`RoutedScanner`](crate::scanner::strategy::routed::RoutedScanner), which sends one SYN per host
 /// purely to check for a pulse, this sends one per `(address, port)` pair it is
 /// given and reports what each one revealed.
 pub struct TcpPortScanner {
@@ -243,7 +243,7 @@ impl TcpPortScanner {
         target_count: usize,
     ) -> RawProbeScan<TcpToken> {
         let retry = PORT_RETRY_POLICY.configured(tuning.retry);
-        let rate = super::rate_or(tuning.max_probe_rate, super::TCP_PORT_RATE_CEILING);
+        let rate = super::super::raw::rate_or(tuning.max_probe_rate, super::TCP_PORT_RATE_CEILING);
 
         RawProbeScan::new(CoreParts {
             resolver,
@@ -254,7 +254,7 @@ impl TcpPortScanner {
             target_count,
             retry,
             rate,
-            deadline: super::DEADLINE_CONFIG,
+            deadline: super::super::raw::DEADLINE_CONFIG,
             pace: retry.min_rto / super::TCP_PORT_WINDOW.floor,
             window: super::TCP_PORT_WINDOW,
             max_unresolved: super::TCP_PORT_UNRESOLVED,
@@ -870,7 +870,7 @@ fn send_tcp_probe(
         })
         .collect();
 
-    match super::emit_among_decoys(
+    match super::super::raw::emit_among_decoys(
         sender,
         dst_addr,
         emission,
@@ -942,7 +942,7 @@ impl PortScanner for TcpPortScanner {
     /// what it discovers about each target's capacity; see
     /// `TCP_PORT_WINDOW`.
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
-        probe_scan::run(self, targets).await;
+        super::drive(self, targets).await;
         Ok(())
     }
 
@@ -960,8 +960,6 @@ impl PortScanner for TcpPortScanner {
         service::detect(ctx, self.service_detection).await;
     }
 }
-
-impl TcpPortScanner {}
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -1850,7 +1848,7 @@ mod tests {
     #[test]
     fn the_scan_budget_covers_the_whole_retry_schedule() {
         let lifetime = PORT_RETRY_POLICY.worst_case_probe_lifetime();
-        let budget = crate::scanner::strategy::routed::DEADLINE_CONFIG
+        let budget = crate::scanner::strategy::raw::DEADLINE_CONFIG
             .allowing_for(lifetime)
             .max_budget
             .for_target_count(1);

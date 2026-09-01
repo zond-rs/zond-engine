@@ -799,6 +799,7 @@ mod tests {
             targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
+            refusals: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
             origin: None,

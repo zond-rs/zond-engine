@@ -56,7 +56,7 @@ async fn syn_scan(
     // in the engine too, and every clone reads the same logs.
     let observer = ctx.clone();
 
-    let mut scanner = zond_engine::scanner::strategy::routed::TcpPortScanner::with_transport(
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
         scanner_resolver(),
         ctx,
         TcpScanTechnique::Syn,
@@ -466,7 +466,7 @@ async fn a_probe_outstanding_at_the_stop_is_asked_again() {
     let observer = ctx.clone();
     let handle = session.handle().clone();
 
-    let mut scanner = zond_engine::scanner::strategy::routed::TcpPortScanner::with_transport(
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
         scanner_resolver(),
         ctx,
         TcpScanTechnique::Syn,

@@ -54,7 +54,7 @@ async fn wide_syn_scan(policy: Policy) -> Vec<PortState> {
     }
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner = zond_engine::scanner::strategy::routed::TcpPortScanner::with_transport(
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
         scanner_resolver(),
         ctx,
         TcpScanTechnique::Syn,
@@ -153,7 +153,7 @@ async fn a_host_that_talks_and_drops_is_recognised_as_being_outrun() {
     }
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner = zond_engine::scanner::strategy::routed::TcpPortScanner::with_transport(
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
         scanner_resolver(),
         ctx,
         TcpScanTechnique::Syn,

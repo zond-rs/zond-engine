@@ -119,7 +119,7 @@ const QUALIFICATION_SPACING: Duration = Duration::from_millis(5);
 /// the zombie's counter by this many where a stray packet moves it by one, so a
 /// wider count is a measurement that survives a zombie that is not perfectly
 /// idle. The cost is this many spoofed packets per port.
-const SPOOFED_PROBES: u16 = 6;
+pub const SPOOFED_PROBES: u16 = 6;
 
 /// The smallest counter advance, over the one the second reading itself causes,
 /// that is read as an open port.
@@ -128,7 +128,7 @@ const SPOOFED_PROBES: u16 = 6;
 /// and the open one (by `SPOOFED_PROBES + 1`), so the verdict tolerates losing
 /// up to half the forged probes and up to half of [`SPOOFED_PROBES`]-worth of
 /// stray zombie traffic before it turns over.
-const OPEN_MIN_DELTA: u16 = SPOOFED_PROBES / 2 + 1;
+pub const OPEN_MIN_DELTA: u16 = SPOOFED_PROBES / 2 + 1;
 
 /// How long to wait for the zombie's reset to one probe of its counter.
 ///

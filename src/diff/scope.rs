@@ -237,6 +237,7 @@ mod tests {
             targets: scope,
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
+            refusals: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
             origin: None,

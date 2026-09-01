@@ -86,7 +86,7 @@ pub fn spawn_checkpoints(mut journal: Journal, ctx: ScanProgress) -> Checkpointi
 
                     if let Err(e) = outcome {
                         ctx.record_failure(
-                            ScannerKind::Composite,
+                            ScannerKind::Journal,
                             format!("journal checkpoint failed, so a resume would replay further back than it should: {e}"),
                         );
                     }

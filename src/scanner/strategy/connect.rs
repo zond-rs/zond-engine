@@ -197,7 +197,7 @@ type ProbedPort = Option<Probed>;
 
 /// Adapts the unprivileged [`scan`] engine to [`PortScanner`], so
 /// [`crate::scanner::scan`] can drive it through the same path as the privileged
-/// [`TcpPortScanner`](super::routed::TcpPortScanner).
+/// [`TcpPortScanner`](super::ports::TcpPortScanner).
 ///
 /// It carries no [`detect_services`](PortScanner::detect_services) override,
 /// because the connect engine fingerprints each port inline over the live stream
@@ -696,7 +696,7 @@ async fn shaped_udp_socket(
 }
 
 /// Probes a single [`Target`] for UDP using a standard OS `UdpSocket`, the
-/// unprivileged counterpart of [`UdpPortScanner`](super::routed::UdpPortScanner).
+/// unprivileged counterpart of [`UdpPortScanner`](super::ports::UdpPortScanner).
 ///
 /// UDP has no handshake to read a verdict from, so this leans on what the local
 /// kernel reports about the datagram it sent. The socket is *connected*, which

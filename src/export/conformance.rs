@@ -414,6 +414,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         ("origin", "label"),
         ("phase", "attachments"),
         ("phase", "origin"),
+        // A phase that declined nothing leaves this out rather than writing an
+        // empty list, which is what most phases do.
+        ("phase", "refusals"),
         ("scope", "listened"),
         ("settings", "evasion"),
         ("settings", "idle_scan"),

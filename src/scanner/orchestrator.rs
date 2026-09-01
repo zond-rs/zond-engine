@@ -107,8 +107,7 @@ pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
     kept.canonicalize();
 
     for range in &refused {
-        let refusal = plan::RefusedStep::unprivileged_range_not_enumerable(range);
-        ctx.record_failure(refusal.scanner, refusal.reason);
+        ctx.record_refusal(plan::RefusedStep::unprivileged_range_not_enumerable(range).into());
     }
 
     kept
@@ -220,7 +219,7 @@ pub(super) async fn spawn_explorers(
     tuning: ProbeTuning,
 ) -> Vec<(ScannerKind, JoinHandle<Result<(), StrategyError>>)> {
     for refusal in plan.refusals() {
-        ctx.record_failure(refusal.scanner, refusal.reason.clone());
+        ctx.record_refusal(refusal.clone().into());
     }
 
     let mut explorers: Vec<Box<dyn HostScanner>> = Vec::new();
@@ -269,7 +268,7 @@ pub(super) fn build_port_scanner(
     tuning: ProbeTuning,
 ) -> BuiltPortScan {
     for refusal in plan.refusals() {
-        ctx.record_failure(refusal.scanner, refusal.reason.clone());
+        ctx.record_refusal(refusal.clone().into());
     }
 
     let technique = plan.technique();
@@ -361,8 +360,7 @@ pub(super) fn ensure_coverage(
                 evasion,
             )));
         } else {
-            let refusal = plan::RefusedStep::technique_needs_raw_sockets(technique);
-            ctx.record_failure(refusal.scanner, refusal.reason);
+            ctx.record_refusal(plan::RefusedStep::technique_needs_raw_sockets(technique).into());
         }
     }
 
@@ -378,8 +376,7 @@ pub(super) fn ensure_coverage(
     // to open is reported rather than answered by something that asked a
     // different question, which for SCTP is the whole of what is available.
     if missing(Protocol::Sctp) {
-        let refusal = plan::RefusedStep::sctp_needs_raw_sockets();
-        ctx.record_failure(refusal.scanner, refusal.reason);
+        ctx.record_refusal(plan::RefusedStep::sctp_needs_raw_sockets().into());
     }
 
     scanners
@@ -548,11 +545,10 @@ pub(super) async fn run_active_os_series(
     }
     let thorough = matches!(os_detection, OsDetection::Aggressive);
 
-    let targets: Vec<strategy::routed::SeriesTarget> = ctx
+    let targets: Vec<strategy::identify::series::SeriesTarget> = ctx
         .host_addresses()
         .into_iter()
         .filter_map(|key| {
-            let key = key.clone();
             ctx.read_host(&key, |host| {
                 if !host.status().is_up() {
                     return None;
@@ -565,7 +561,7 @@ pub(super) async fn run_active_os_series(
                 if settled && !thorough {
                     return None;
                 }
-                strategy::routed::SeriesTarget::for_host(key.clone(), host)
+                strategy::identify::series::SeriesTarget::for_host(key.clone(), host)
             })
             .flatten()
         })
@@ -576,13 +572,13 @@ pub(super) async fn run_active_os_series(
     }
 
     let samples = if thorough {
-        strategy::routed::AGGRESSIVE_SAMPLES
+        strategy::identify::series::AGGRESSIVE_SAMPLES
     } else {
-        strategy::routed::ACTIVE_SAMPLES
+        strategy::identify::series::ACTIVE_SAMPLES
     };
     info!("following {} host(s) over {samples} samples", targets.len());
 
-    match strategy::routed::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning) {
+    match strategy::identify::series::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning) {
         Ok(mut scanner) => {
             if let Err(e) = scanner.discover_hosts().await {
                 ctx.record_failure(ScannerKind::OsSeries, e.to_string());
@@ -734,24 +730,6 @@ async fn ask_for_kernel(
     Some((target, port, evidence))
 }
 
-/// Runs the active operating-system echo probe, where the caller asked for it
-/// and the passive sources left hosts unnamed.
-///
-/// Target selection is from the store and not from the plan, deliberately: "the
-/// passive sources concluded nothing" is only true once those sources have
-/// finished, and the store is where that conclusion lives. Every host that
-/// answered nothing a TCP rule could read — a stock Windows firewall drops
-/// rather than refuses — is here, and an echo reply is the one packet such a
-/// host still gives.
-///
-/// Runs after [`run_active_os_series`], which has by then read everything a
-/// host with an open or closed TCP port can be made to say. What is left here is
-/// the machine that answered no TCP probe at all, and one ping is the cheapest
-/// thing that still reaches it.
-///
-/// Declines quietly rather than failing when there is nothing to do: a scan
-/// where every host was already named, or where none were, has not lost
-/// anything by not pinging.
 /// Measures the route to every host the scan found alive, when asked to.
 ///
 /// Runs last, after the ports are known, and that ordering is the whole reason
@@ -765,7 +743,7 @@ async fn ask_for_kernel(
 /// Hosts that answered nothing are skipped rather than traced. A path is
 /// measured backwards from its far end and the far end's distance comes out of
 /// a reply, so there is nothing to measure from; see
-/// [`traceroute`](crate::scanner::strategy::routed::traceroute).
+/// [`traceroute`](crate::scanner::strategy::topology::traceroute).
 pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
     if !cfg.traceroute {
         return;
@@ -788,7 +766,7 @@ pub(super) async fn run_traceroute(ctx: &ScanContext, cfg: &crate::config::ZondC
     }
 
     info!("measuring the route to {} host(s)", alive.len());
-    strategy::routed::traceroute::trace(ctx, alive).await;
+    strategy::topology::traceroute::trace(ctx, alive).await;
 }
 
 /// Joins what the scan identified against the embedded vulnerability catalogue,
@@ -836,7 +814,7 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
         return;
     }
 
-    let mut subjects: Vec<strategy::routed::characterise::Subject> = Vec::new();
+    let mut subjects: Vec<strategy::topology::characterise::Subject> = Vec::new();
     for key in ctx.host_addresses() {
         // One open port to send the middlebox probe at, and one the scan found
         // filtered to aim the comparative probes at — a filter is doing
@@ -858,7 +836,7 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
             continue;
         }
         if let Some(host) = routable(key) {
-            subjects.push(strategy::routed::characterise::Subject {
+            subjects.push(strategy::topology::characterise::Subject {
                 host,
                 open_port,
                 filtered_port,
@@ -870,9 +848,27 @@ pub(super) async fn run_characterise(ctx: &ScanContext, cfg: &crate::config::Zon
         return;
     }
 
-    strategy::routed::characterise::characterise(ctx, subjects).await;
+    strategy::topology::characterise::characterise(ctx, subjects).await;
 }
 
+/// Runs the active operating-system echo probe, where the caller asked for it
+/// and the passive sources left hosts unnamed.
+///
+/// Target selection is from the store and not from the plan, deliberately: "the
+/// passive sources concluded nothing" is only true once those sources have
+/// finished, and the store is where that conclusion lives. Every host that
+/// answered nothing a TCP rule could read — a stock Windows firewall drops
+/// rather than refuses — is here, and an echo reply is the one packet such a
+/// host still gives.
+///
+/// Runs after [`run_active_os_series`], which has by then read everything a
+/// host with an open or closed TCP port can be made to say. What is left here is
+/// the machine that answered no TCP probe at all, and one ping is the cheapest
+/// thing that still reaches it.
+///
+/// Declines quietly rather than failing when there is nothing to do: a scan
+/// where every host was already named, or where none were, has not lost
+/// anything by not pinging.
 pub(super) async fn run_active_os_probe(
     ctx: &ScanContext,
     os_detection: crate::config::OsDetection,
@@ -908,7 +904,7 @@ pub(super) async fn run_active_os_probe(
         unnamed.len()
     );
 
-    match strategy::routed::OsEchoScanner::new(ctx.clone(), unnamed, tuning) {
+    match strategy::identify::echo::OsEchoScanner::new(ctx.clone(), unnamed, tuning) {
         Ok(mut scanner) => {
             if let Err(e) = scanner.discover_hosts().await {
                 ctx.record_failure(ScannerKind::OsEcho, e.to_string());
@@ -1034,12 +1030,18 @@ pub(super) async fn run_port_phase(
 /// because a unit may carry ports no other one does — `10.0.0.1:8080` names its
 /// own, and a subset that dropped that would answer a different question.
 pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
+    // Walked once, not once per unit. `live.iter()` expands every address of
+    // every host the sweep found, so doing it inside the loop cost that walk
+    // again for each target set - and a scan naming several port lists over a
+    // wide range is exactly when both numbers are large.
+    let live: Vec<IpAddr> = live.iter().collect();
+
     let mut kept = TargetMap::new();
     for unit in &target_map.units {
         let mut ips = IpSet::new();
-        for ip in live.iter() {
-            if unit.ips().contains(&ip) {
-                push_single(&mut ips, ip, None);
+        for ip in &live {
+            if unit.ips().contains(ip) {
+                push_single(&mut ips, *ip, None);
             }
         }
         ips.canonicalize();
@@ -1080,8 +1082,6 @@ pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
     live
 }
 
-/// Pushes one address into `set` as a range of itself.
-///
 /// The address a raw routed probe can be aimed at, or `None` for a host it
 /// cannot reach.
 ///
@@ -1108,6 +1108,8 @@ fn routable(key: crate::model::ip::scoped::ScopedIp) -> Option<IpAddr> {
     (!crate::model::ip::scoped::ScopedIp::needs_zone(&key.addr())).then(|| key.addr())
 }
 
+/// Pushes one address into `set` as a range of itself.
+///
 /// The zone is kept only for the addresses that cannot be reached without one:
 /// `fe80::1` names a different machine on every segment.
 fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
@@ -1139,7 +1141,7 @@ fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
 mod tests {
     use super::*;
     use crate::model::host::{Host, HostStatus};
-    use crate::report::ScannerFailure;
+    use crate::report::Refusal;
     use crate::scanner::session::ScanSession;
     use tokio::sync::mpsc;
 
@@ -1185,13 +1187,17 @@ mod tests {
 
         assert!(kept.is_empty(), "nothing here can be walked");
 
-        let failures = ctx.failures_snapshot();
-        assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].scanner(), ScannerKind::Connect);
+        // A refusal rather than a failure: nothing broke, and a reader who
+        // cannot tell the two apart learns to ignore both.
+        assert!(ctx.failures_snapshot().is_empty(), "nothing went wrong");
+
+        let refusals = ctx.refusals_snapshot();
+        assert_eq!(refusals.len(), 1);
+        assert_eq!(refusals[0].scanner(), ScannerKind::Connect);
         assert!(
-            failures[0].reason().contains("18446744073709551616"),
+            refusals[0].reason().contains("18446744073709551616"),
             "the refusal quotes the size it is refusing: {}",
-            failures[0].reason()
+            refusals[0].reason()
         );
     }
 
@@ -1208,7 +1214,8 @@ mod tests {
 
         // Four IPv4 addresses and the four in the /126; the /64 is gone.
         assert_eq!(kept.len(), 8);
-        assert_eq!(ctx.failures_snapshot().len(), 1);
+        assert_eq!(ctx.refusals_snapshot().len(), 1);
+        assert!(ctx.failures_snapshot().is_empty());
     }
 
     /// A set that is entirely walkable is handed back untouched, and — the part
@@ -1275,18 +1282,15 @@ mod tests {
             cfg.probe_tuning(),
         );
 
-        let failures = ctx.take_failures();
+        let refusals = ctx.take_refusals();
         assert_eq!(
-            failures.len(),
+            refusals.len(),
             1,
             "one cause, one entry: {:?}",
-            failures
-                .iter()
-                .map(ScannerFailure::reason)
-                .collect::<Vec<_>>()
+            refusals.iter().map(Refusal::reason).collect::<Vec<_>>()
         );
-        assert_eq!(failures[0].scanner(), ScannerKind::TcpPort);
-        assert!(failures[0].reason().contains("fin"));
+        assert_eq!(refusals[0].scanner(), ScannerKind::TcpPort);
+        assert!(refusals[0].reason().contains("fin"));
     }
 
     /// Host enrichment is keyed on whether a raw scan is happening, and a raw
@@ -1368,13 +1372,13 @@ mod tests {
             "a connect scan cannot send a FIN and must not pretend to"
         );
 
-        let failures = ctx.take_failures();
-        assert_eq!(failures.len(), 1, "the caller has to be told");
-        assert_eq!(failures[0].scanner(), ScannerKind::TcpPort);
+        let refusals = ctx.take_refusals();
+        assert_eq!(refusals.len(), 1, "the caller has to be told");
+        assert_eq!(refusals[0].scanner(), ScannerKind::TcpPort);
         assert!(
-            failures[0].reason().contains("fin"),
-            "the failure has to name the technique: {}",
-            failures[0].reason()
+            refusals[0].reason().contains("fin"),
+            "the refusal has to name the technique: {}",
+            refusals[0].reason()
         );
     }
 

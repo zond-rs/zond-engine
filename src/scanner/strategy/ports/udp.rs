@@ -70,14 +70,14 @@ use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{ProbeKind, ProbeTransport};
 
-use super::icmp_error::{self, Unreachable};
-use super::probe_scan::{self, AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
-use super::{EvasionParts, send_udp};
+use super::super::raw::{EvasionParts, send_udp};
+use super::{AuditLabels, CoreParts, ProbeTarget, RawPortScan, RawProbeScan};
+use crate::scanner::strategy::icmp_error::{self, Unreachable};
 
 /// How long this scan runs and how it adapts.
 ///
 /// Deliberately *not* the profile the SYN scanners share
-/// ([`DEADLINE_CONFIG`](super::DEADLINE_CONFIG)), because the thing being
+/// ([`DEADLINE_CONFIG`](super::super::raw::DEADLINE_CONFIG)), because the thing being
 /// waited for is different in kind. A SYN probe is answered by the target's
 /// TCP stack as fast as the link allows. A UDP probe's most informative answer
 /// is an ICMP error, and hosts **rate-limit** those: Linux emits roughly one
@@ -118,7 +118,7 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 ///
 /// Every number here is set against a rate limit rather than against a round
 /// trip, which is what makes this profile different in kind from the SYN one
-/// ([`RETRY_POLICY`](super::RETRY_POLICY)). A closed UDP port answers with an
+/// ([`RETRY_POLICY`](super::super::raw::RETRY_POLICY)). A closed UDP port answers with an
 /// ICMP error, and hosts emit those at roughly one per second; a retry sooner
 /// than that interval is guaranteed to be wasted, because the answer it is
 /// chasing was never allowed to be sent.
@@ -238,7 +238,7 @@ impl UdpPortScanner {
         src_port: u16,
         target_count: usize,
     ) -> RawProbeScan<()> {
-        let rate = super::rate_or(tuning.max_probe_rate, super::UDP_PORT_RATE_PER_SEC);
+        let rate = super::super::raw::rate_or(tuning.max_probe_rate, super::UDP_PORT_RATE_PER_SEC);
 
         RawProbeScan::new(CoreParts {
             resolver,
@@ -642,7 +642,7 @@ impl PortScanner for UdpPortScanner {
     /// it could adapt on: silence is its ordinary outcome and its replies name
     /// no attempt.
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
-        probe_scan::run(self, targets).await;
+        super::drive(self, targets).await;
         Ok(())
     }
 
@@ -654,8 +654,6 @@ impl PortScanner for UdpPortScanner {
     // needs a UDP conversation, and the engine has none yet; until it does, the
     // trait's no-op default is the honest implementation.
 }
-
-impl UdpPortScanner {}
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -679,7 +677,7 @@ mod tests {
     use pnet_packet::icmp::{IcmpCode, IcmpTypes};
     use pnet_packet::icmpv6::{Icmpv6Code, Icmpv6Packet, Icmpv6Types, MutableIcmpv6Packet};
 
-    use crate::scanner::strategy::routed::icmp_error::{
+    use crate::scanner::strategy::icmp_error::{
         ICMPV6_ADMIN_PROHIBITED, ICMPV6_INGRESS_EGRESS_POLICY, ICMPV6_NO_ROUTE,
         ICMPV6_PORT_UNREACHABLE, ICMPV6_REJECT_ROUTE, ICMPV6_UNUSED_LEN,
     };
@@ -1560,7 +1558,7 @@ mod tests {
             DEADLINE_CONFIG.silence_floor
         );
         assert!(
-            super::super::DEADLINE_CONFIG.silence_floor < ICMP_RATE_LIMIT_INTERVAL,
+            super::super::super::raw::DEADLINE_CONFIG.silence_floor < ICMP_RATE_LIMIT_INTERVAL,
             "the SYN profile was expected to be the tighter one"
         );
     }

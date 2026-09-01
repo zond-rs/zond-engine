@@ -9,11 +9,20 @@
 //! # Target Dispatch
 //!
 //! Turns a [`TargetMap`] into a shuffled stream of individual
-//! [`PlannedTarget`]s for the scanning strategies to consume. Rather than expand the whole address space into
-//! memory and shuffle it in one pass, it fills a fixed-size batch, shuffles that,
-//! and streams it out before moving on. Neighbouring addresses end up spread apart
-//! in time, which avoids hammering one subnet in a tight burst, and the memory cost
-//! stays bounded regardless of how large the target range is.
+//! [`PlannedTarget`]s for the scanning strategies to consume. Rather than
+//! expand the whole address space into memory and shuffle it in one pass, it
+//! fills a fixed-size batch, shuffles that, and streams it out before moving on.
+//! Neighbouring addresses end up spread apart in time, which avoids hammering
+//! one subnet in a tight burst, and the memory cost stays bounded regardless of
+//! how large the target range is.
+//!
+//! ## The batch size
+//!
+//! Both entry points here take one, and both hold it to at least one probe. A
+//! batch of zero is a caller error rather than an instruction to send nothing:
+//! it reaches `mpsc::channel`, which asserts on an empty buffer, so honouring
+//! the number would end the scan in a panic rather than in an empty result. The
+//! same reading `rate_or` gives a configured rate of zero.
 
 use std::net::IpAddr;
 
@@ -39,12 +48,15 @@ use tokio::sync::mpsc;
 /// filled, shuffled and streamed before the next is drawn, so neighbouring
 /// addresses end up spread apart in time and the memory cost stays bounded
 /// however large the set.
+///
+/// `batch_size` is held to at least one probe; see the module documentation.
 pub fn shuffled_addresses(
     ips: IpSet,
     batch_size: usize,
     scan_handle: &ScanHandle,
 ) -> mpsc::Receiver<IpAddr> {
-    let (tx, rx) = mpsc::channel(batch_size * 2);
+    let batch_size = batch_size.max(1);
+    let (tx, rx) = mpsc::channel(batch_size.saturating_mul(2));
     let scan_handle = scan_handle.clone();
 
     tokio::spawn(async move {
@@ -68,19 +80,28 @@ pub fn shuffled_addresses(
 
 /// Shuffles `batch` and sends it, reporting whether the receiver is still there
 /// and the scan still wanted.
-async fn drain(
-    batch: &mut Vec<IpAddr>,
-    tx: &mpsc::Sender<IpAddr>,
-    scan_handle: &ScanHandle,
-) -> bool {
+///
+/// Generic over what the batch carries because both streams here draw the same
+/// bargain and differ only in what they yield: a sweep is counted in addresses
+/// and a port scan in numbered targets. The dispatcher used to spell this out
+/// twice inline, once for a full batch and once for the flush, which is two
+/// places for the stop check to be got wrong.
+async fn drain<T>(batch: &mut Vec<T>, tx: &mpsc::Sender<T>, scan_handle: &ScanHandle) -> bool {
     batch.shuffle(&mut rand::rng());
-    for ip in batch.drain(..) {
-        if tx.send(ip).await.is_err() || scan_handle.should_stop() {
+    for item in batch.drain(..) {
+        if tx.send(item).await.is_err() || scan_handle.should_stop() {
             return false;
         }
     }
     true
 }
+
+/// How many targets a [`Dispatcher`] shuffles together unless told otherwise.
+///
+/// Wide enough that neighbouring addresses of a `/24` land far apart in the
+/// stream, and small enough that the buffer behind it is a few hundred kilobytes
+/// rather than a function of the range.
+pub const DEFAULT_BATCH: usize = 8192;
 
 /// Streams the targets of a [`TargetMap`] out in shuffled batches, each
 /// numbered by its position in the plan.
@@ -104,11 +125,11 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    /// Creates a dispatcher over `target_map` with a default batch size of 8192.
+    /// Creates a dispatcher over `target_map`, batched at [`DEFAULT_BATCH`].
     pub fn new(target_map: TargetMap) -> Self {
         Self {
             target_map,
-            batch_size: 8192,
+            batch_size: DEFAULT_BATCH,
             settled: Checkpoint::default(),
             live: None,
         }
@@ -144,6 +165,8 @@ impl Dispatcher {
 
     /// Overrides the batch size. A larger batch shuffles addresses over a wider
     /// window, at the cost of holding more of them in memory at once.
+    ///
+    /// Held to at least one probe; see the module documentation.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
         self
@@ -157,12 +180,13 @@ impl Dispatcher {
     /// the buffer grow without bound. The task stops early if the receiver is
     /// dropped or `scan_handle` signals a stop.
     pub fn run_shuffled(self, ctx: &ScanContext) -> mpsc::Receiver<PlannedTarget> {
-        let (tx, rx) = mpsc::channel(self.batch_size * 2);
+        let batch_size = self.batch_size.max(1);
+        let (tx, rx) = mpsc::channel(batch_size.saturating_mul(2));
         let scan_handle = ctx.handle.clone();
         let ctx = ctx.clone();
 
         tokio::spawn(async move {
-            let mut batch = Vec::with_capacity(self.batch_size);
+            let mut batch = Vec::with_capacity(batch_size);
 
             // Numbered here, where the plan is walked in order, so nothing
             // downstream has to re-derive a position. Shuffling below permutes
@@ -183,25 +207,12 @@ impl Dispatcher {
 
                 batch.push(planned);
 
-                if batch.len() >= self.batch_size {
-                    batch.shuffle(&mut rand::rng());
-                    for t in batch.drain(..) {
-                        if tx.send(t).await.is_err() || scan_handle.should_stop() {
-                            return;
-                        }
-                    }
+                if batch.len() >= batch_size && !drain(&mut batch, &tx, &scan_handle).await {
+                    return;
                 }
             }
 
-            // Flush any remaining targets
-            if !batch.is_empty() {
-                batch.shuffle(&mut rand::rng());
-                for t in batch {
-                    if tx.send(t).await.is_err() || scan_handle.should_stop() {
-                        return;
-                    }
-                }
-            }
+            drain(&mut batch, &tx, &scan_handle).await;
         });
 
         rx
@@ -219,6 +230,30 @@ impl Dispatcher {
 
 #[cfg(test)]
 mod tests {
+
+    /// A batch of zero reached `mpsc::channel`, which asserts on an empty
+    /// buffer, so the mistake ended the scan in a panic rather than in an empty
+    /// result. Both entry points take the size from the caller.
+    #[tokio::test]
+    async fn a_zero_batch_is_read_as_one_probe_rather_than_panicking() {
+        use crate::scanner::session::ScanSession;
+
+        let (_session, ctx) = ScanSession::new();
+        let mut rx = Dispatcher::new(TargetMap::new())
+            .with_batch_size(0)
+            .run_shuffled(&ctx);
+
+        assert!(rx.recv().await.is_none(), "an empty plan yields nothing");
+    }
+
+    /// The sweep stream takes its size the same way and holds it the same way.
+    #[tokio::test]
+    async fn the_address_stream_holds_a_zero_batch_to_one_too() {
+        let handle = ScanHandle::new();
+        let mut rx = shuffled_addresses(IpSet::new(), 0, &handle);
+
+        assert!(rx.recv().await.is_none());
+    }
     use super::*;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;

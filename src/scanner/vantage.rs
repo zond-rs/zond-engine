@@ -53,7 +53,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::model::host::{Host, NetworkRole};
-use crate::model::ip::scoped::Zone;
+use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::scanner::session::ScanContext;
 
 /// One interface's addressing, reduced to what a role can be read from.
@@ -83,7 +83,7 @@ struct Located {
 
 impl Located {
     fn new(ip: IpAddr, interface: u32) -> Self {
-        let zone = needs_zone(ip).then_some(interface);
+        let zone = ScopedIp::needs_zone(&ip).then_some(interface);
         Self { ip, zone }
     }
 
@@ -94,14 +94,6 @@ impl Located {
     /// would put the router marking on a stranger.
     fn matches(&self, ip: IpAddr, zone: Option<u32>) -> bool {
         self.ip == ip && (self.zone.is_none() || self.zone == zone)
-    }
-}
-
-/// Whether an address names a different machine on every segment.
-fn needs_zone(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V6(v6) => v6.is_unicast_link_local(),
-        IpAddr::V4(_) => false,
     }
 }
 

@@ -32,6 +32,7 @@ use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::protocols::{arp, ndp};
 
+/// One built frame, ready for the link layer.
 type Bytes = Vec<u8>;
 
 /// The stream of first-attempt probes a sweep works through, each frame paired
@@ -141,9 +142,13 @@ impl Iterator for Interleave {
 
 /// One neighbor solicitation per IPv6 address in `ip_set`.
 ///
-/// Ranges are expanded the same way ARP's are, and bounded the same way: the
-/// classifier refuses an IPv6 range too large to walk long before it reaches
-/// here, so an unbounded expansion is not reachable through the scan path.
+/// Ranges are expanded the same way ARP's are, and bounded the same way: a
+/// range too large to walk is withheld from the step's targets before a scanner
+/// is built from it, so an unbounded expansion is not reachable through the
+/// scan path. That happens in two places, because a range reaches this function
+/// by two routes: `map_ips_to_interfaces` refuses an off-link one, and
+/// `DiscoveryPlan::build` withholds an on-link one. The second used not to
+/// exist, and this comment claimed it did.
 fn build_ndp_iter(local_mac: &MacAddr, src_addr: &Ipv6Addr, ip_set: &IpSet) -> PacketIter {
     let local_mac = *local_mac;
     let src_addr = *src_addr;

@@ -954,6 +954,52 @@ impl ProbeStats {
     }
 }
 
+/// Ground a scan decided not to cover, and why.
+///
+/// **Not a failure**, and kept apart from one for the reason
+/// [`unroutable`](ScanPhase::unroutable) is kept apart from both: nothing broke.
+/// The engine worked out before sending anything that some part of what it was
+/// asked for had no strategy behind it, and said so. A raw socket that would not
+/// open is a [`ScannerFailure`]; an SCTP port named by a scan with no way to
+/// probe one is this.
+///
+/// A reader has to be able to tell them apart because the remedies are
+/// opposite. A failure means something is wrong with the machine or the
+/// network and the same scan might work next time. A refusal means the scan as
+/// written cannot answer the question, and running it again will refuse it
+/// again.
+///
+/// The live form is [`RefusedStep`](crate::scanner::plan::RefusedStep), which a
+/// plan carries before anything runs. This is the recorded form, on the same
+/// terms [`ScannerFailure`] is the recorded form of
+/// [`StrategyError`](crate::scanner::strategy::StrategyError).
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    scanner: ScannerKind,
+    reason: String,
+}
+
+impl Refusal {
+    /// Records that `scanner`'s work was declined, for `reason`.
+    pub fn new(scanner: ScannerKind, reason: impl Into<String>) -> Self {
+        Self {
+            scanner,
+            reason: reason.into(),
+        }
+    }
+
+    /// The strategy that would have taken this work.
+    pub fn scanner(&self) -> ScannerKind {
+        self.scanner
+    }
+
+    /// What was not done, and what the caller could ask for instead.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
 /// A scanning strategy that did not run to completion.
 ///
 /// A scan continues with whatever strategies remain when one of them fails, so
@@ -1353,6 +1399,8 @@ pub struct PhaseParts {
     pub settings: ScanSettings,
     /// The strategies that could not do their job.
     pub failures: Vec<ScannerFailure>,
+    /// Ground the phase declined before sending anything.
+    pub refusals: Vec<Refusal>,
     /// Addresses this host had no route to.
     pub unroutable: Vec<IpAddr>,
     /// What each strategy recorded about its own run.
@@ -1379,6 +1427,7 @@ impl ScanPhase {
             targets: parts.targets,
             settings: parts.settings,
             failures: parts.failures,
+            refusals: parts.refusals,
             unroutable: parts.unroutable,
             probes: parts.probes,
             origin: parts.origin,
@@ -1413,6 +1462,12 @@ pub struct ScanPhase {
     /// different things from a reader. Telling somebody to scan an unreachable
     /// address on trust is advice that cannot work.
     unroutable: Vec<IpAddr>,
+    /// Ground this phase declined before sending anything, and why.
+    ///
+    /// Beside `unroutable` rather than inside `failures`, on the reasoning
+    /// [`Refusal`] gives: both of these are the scan saying what it did not
+    /// cover, and neither is the scan saying something went wrong.
+    refusals: Vec<Refusal>,
     probes: Vec<ProbeStats>,
     /// Which document this phase was folded in from, for a merged report.
     origin: Option<PhaseOrigin>,
@@ -1482,9 +1537,18 @@ impl ScanPhase {
         &self.unroutable
     }
 
-    /// Ground this phase did not cover, and why.
+    /// The strategies in this phase that could not do their job.
     pub fn failures(&self) -> &[ScannerFailure] {
         &self.failures
+    }
+
+    /// Ground this phase declined to cover, and why.
+    ///
+    /// Read beside [`failures`](Self::failures) rather than instead of it:
+    /// together they are everything the phase was asked for and did not answer,
+    /// and apart they say whether anything went wrong. See [`Refusal`].
+    pub fn refusals(&self) -> &[Refusal] {
+        &self.refusals
     }
 
     /// What each instrumented scanner observed about its own run.
@@ -1823,6 +1887,11 @@ impl ScanReport {
         self.phases.iter().flat_map(ScanPhase::failures)
     }
 
+    /// Every refusal, across all phases.
+    pub fn refusals(&self) -> impl Iterator<Item = &Refusal> {
+        self.phases.iter().flat_map(ScanPhase::refusals)
+    }
+
     /// Every instrumented scanner's counters, across all phases.
     pub fn probe_stats(&self) -> impl Iterator<Item = &ProbeStats> {
         self.phases.iter().flat_map(ScanPhase::probe_stats)
@@ -2098,6 +2167,37 @@ pub enum ScannerKind {
     Idle,
     /// Composite scanner that delegates to protocol-specific scanners.
     Composite,
+    /// The service-identification pass, which opens a connection to each open
+    /// port a raw scan classified without ever holding one.
+    ///
+    /// Named apart from [`Connect`] though it makes the same kind of
+    /// connection, because a report has to be able to say which pass lost work.
+    /// A connect scan that failed means port *states* are missing; this failing
+    /// means the states stand and the services behind them were not identified,
+    /// which is a narrower and differently actionable result. Filed as
+    /// `connect`, a scan that ran no connect strategy at all reported one as
+    /// having broken.
+    ///
+    /// [`Connect`]: ScannerKind::Connect
+    Service,
+    /// The detection pass, which runs the authored corpus over the services the
+    /// scan identified.
+    ///
+    /// Named apart from [`Service`] because it depends on it and can fail
+    /// alone: with the services named and this pass broken, the report carries
+    /// every port and none of the findings a detection would have drawn.
+    ///
+    /// [`Service`]: ScannerKind::Service
+    Detection,
+    /// The journal a scan was writing itself into.
+    ///
+    /// Not a strategy, and here because it is the one channel a library
+    /// consumer reads without opting in. A checkpoint that could not be written
+    /// costs nothing a scan found and everything a *resume* would have skipped,
+    /// so it is a fact about the disk rather than about the network — and
+    /// filing it as a scanning strategy told a caller that ports had gone
+    /// unprobed when none had.
+    Journal,
 }
 
 /// What a [`CongestionWindow`](crate::scanner::pacing::congestion::CongestionWindow) did over one run.
@@ -2134,7 +2234,7 @@ impl ScannerKind {
     /// reads this list against the published schema's own and fails unless they hold
     /// the same names. A variant added without a place in the schema is a value this
     /// engine writes and no consumer's validator accepts.
-    pub const ALL: [ScannerKind; 14] = [
+    pub const ALL: [ScannerKind; 17] = [
         Self::Local,
         Self::Passive,
         Self::Routed,
@@ -2149,6 +2249,9 @@ impl ScannerKind {
         Self::OsSnmp,
         Self::Idle,
         Self::Composite,
+        Self::Service,
+        Self::Detection,
+        Self::Journal,
     ];
 
     /// What a raw TCP scan carrying `technique` reports itself as.
@@ -2261,6 +2364,7 @@ mod tests {
             targets: TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
+            refusals: Vec::new(),
             unroutable: Vec::new(),
             probes: Vec::new(),
             origin: None,

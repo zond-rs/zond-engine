@@ -72,10 +72,18 @@ where
     ///
     /// `kind` names the strategy this pool is probing for, so a panic can be
     /// attributed to it in the report.
+    ///
+    /// **A limit of zero is a caller error rather than an instruction to run
+    /// nothing**, and is read as one probe, on the same terms `rate_or` reads a
+    /// configured rate of zero. Honouring it is not an option: the admission
+    /// loop below would spin on an empty set, and because it never awaits
+    /// anything it never returns to the runtime — so on a current-thread
+    /// runtime the scan hangs with no diagnostic and a `timeout` wrapped around
+    /// it cannot fire.
     pub fn new(limit: usize, ctx: ScanContext, kind: ScannerKind, fold: F) -> Self {
         Self {
             set: JoinSet::new(),
-            limit,
+            limit: limit.max(1),
             fold,
             audit: ProbeAudit::new(),
             ctx,
@@ -147,5 +155,51 @@ where
             }
             None => {}
         }
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::session::ScanSession;
+
+    /// A limit of zero spun the admission loop on an empty set forever, and
+    /// because the loop never awaited anything it never returned to the
+    /// runtime: on a current-thread runtime the scan hung with no diagnostic,
+    /// and a `timeout` around it could not fire. This test runs on exactly such
+    /// a runtime, so it would not have completed at all before the fix.
+    #[tokio::test]
+    async fn a_zero_limit_admits_one_probe_rather_than_spinning() {
+        let (_session, ctx) = ScanSession::new();
+        let mut done = 0usize;
+        let mut pool = ProbePool::new(0, ctx, ScannerKind::Connect, |_: (), _| done += 1);
+
+        pool.admit(async {}).await;
+        pool.admit(async {}).await;
+        pool.drain().await;
+
+        assert_eq!(done, 2, "both probes ran and both were folded");
+    }
+
+    /// And the cap it was given is still the cap, for every other value.
+    #[tokio::test]
+    async fn the_pool_never_exceeds_its_limit() {
+        let (_session, ctx) = ScanSession::new();
+        let mut pool = ProbePool::new(2, ctx, ScannerKind::Connect, |_: (), _| {});
+
+        for _ in 0..8 {
+            pool.admit(async {}).await;
+            assert!(pool.set.len() <= 2, "the cap held while admitting");
+        }
+        pool.drain().await;
     }
 }

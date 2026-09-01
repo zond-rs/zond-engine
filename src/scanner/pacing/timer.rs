@@ -6,44 +6,58 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! High-performance timing and lifecycle management for network scanning engines.
+//! # How long a scan is allowed, and when it stops
 //!
-//! Provides two building blocks used to govern how long a scanning loop runs:
+//! Two values, and between them they are every clock a probing loop reads.
 //!
-//! - [`ScanTimer`] tracks a hard deadline and a minimum runtime, and reports
-//!   whether a loop should stop because a period of "silence" (time since
-//!   the last relevant activity) has exceeded a caller-supplied tolerance.
-//! - [`ScanBudget`] computes how long a scan of a given size should be
-//!   allotted, so a single host and a large subnet don't run for the same
-//!   fixed duration.
+//! [`ScanBudget`] answers how long a scan of a given size should get. A single
+//! host and a `/16` cannot be given the same fixed duration, so a budget is a
+//! base plus a term per target, held under a ceiling.
+//!
+//! [`ScanTimer`] is that duration once it is running, alongside two other
+//! limits: a minimum runtime, and a silence tolerance the caller supplies on
+//! every check rather than fixing at construction. That last part is what makes
+//! it adaptive — a loop learning what the network costs narrows or widens what
+//! it is willing to read as "nothing more is coming", and the timer does not
+//! have to know how.
 
 use std::time::{Duration, Instant};
 
-/// Manages the loop lifecycle and operational boundaries for network scanning operations.
+/// How long a loop waits before re-checking a silence tolerance that is already
+/// spent.
 ///
-/// `ScanTimer` tracks a hard deadline, enforces a minimum runtime, and lets a
-/// caller decide when a loop should abort early because a period of network
-/// "silence" (time since the last relevant packet) has exceeded a tolerance
-/// that the caller supplies on each check. That tolerance is intentionally
-/// not fixed at construction time: a caller can widen or narrow it as it
-/// learns more about current network conditions (for example, from an
-/// [`crate::scanner::pacing::rtt_window::RttWindow`]).
+/// Short, because the condition it is waiting on has passed and the next check
+/// will say so; not zero, because a loop that returns immediately is a busy
+/// wait against a clock that has nothing new to tell it.
+pub const RECHECK_SOON: Duration = Duration::from_millis(100);
+
+/// The three limits a probing loop runs under: a hard deadline, a minimum
+/// runtime, and however long silence has gone on.
+///
+/// Only the first two are fixed here. The silence tolerance arrives on every
+/// check, because it is the one of the three a scan can learn: with round trips
+/// measured, silence that means "nothing more is coming" is a different length
+/// than it was before anything answered. [`AdaptiveDeadline`] is that pairing
+/// written down, and is what a scanner holds rather than one of these.
+///
+/// [`AdaptiveDeadline`]: super::deadline::AdaptiveDeadline
 #[derive(Debug, Clone, Copy)]
 pub struct ScanTimer {
-    // Configuration
+    /// When the scan stops whatever else is true.
     hard_deadline: Instant,
+    /// Before this, silence is not allowed to end anything.
     min_runtime: Instant,
-
-    // State
+    /// When the loop last learned something, which is what silence is measured
+    /// from.
     last_activity: Instant,
 }
 
 impl ScanTimer {
-    /// Constructs a new `ScanTimer` with the specified operational limits.
+    /// A timer running from now, bounded above by `max_total_duration` and
+    /// below by `min_runtime_duration`.
     ///
-    /// # Arguments
-    /// * `max_total_duration` - The absolute maximum time the scan is allowed to run.
-    /// * `min_runtime_duration` - The absolute minimum time the scan must run before it can abort due to silence.
+    /// The lower bound is what keeps silence from ending a scan before an
+    /// answer could plausibly have arrived at all.
     pub fn new(max_total_duration: Duration, min_runtime_duration: Duration) -> Self {
         let now = Instant::now();
         Self {
@@ -53,38 +67,40 @@ impl ScanTimer {
         }
     }
 
-    /// Resets the internal "silence" tracker.
+    /// Restarts the silence clock, for a loop that has just learned something.
     ///
-    /// This should be called whenever a relevant packet or activity is observed on the network.
+    /// What counts as learning something is the caller's: a discovery sweep
+    /// marks a host it had not seen, not every packet, because a duplicate reply
+    /// from a host already found says nothing about whether the scan is still
+    /// worth running.
     pub fn mark_activity(&mut self) {
         self.last_activity = Instant::now();
     }
 
-    /// Calculates how long to wait before the next check is worthwhile,
-    /// given the current silence tolerance.
+    /// How long a caller may sleep before asking again, given the tolerance in
+    /// force.
     ///
-    /// Returns a short fallback duration if that tolerance has already been
-    /// exceeded, so a caller re-checks promptly instead of sleeping past an
-    /// already-expired condition.
+    /// [`RECHECK_SOON`] comes back when the tolerance is already spent, so a
+    /// loop wakes promptly rather than sleeping through a condition that has
+    /// passed.
     pub fn time_until_next_tick(&self, max_silence: Duration) -> Duration {
         let now = Instant::now();
         let time_since_last = now.duration_since(self.last_activity);
 
         max_silence
             .checked_sub(time_since_last)
-            .unwrap_or_else(|| Duration::from_millis(100))
+            .unwrap_or(RECHECK_SOON)
     }
 
-    /// Checks if the entire operation should abort due to hard limits or excessive silence.
+    /// Whether the loop should stop: the deadline has passed, or the minimum
+    /// runtime is behind it and nothing has happened for longer than
+    /// `max_silence`.
     ///
-    /// Returns `true` if:
-    /// 1. The current time has exceeded the `hard_deadline`.
-    /// 2. The `min_runtime` has elapsed AND the time since the last recorded
-    ///    activity exceeds `max_silence`.
-    ///
-    /// `max_silence` is supplied by the caller on every call rather than
-    /// fixed at construction time, so the silence tolerance can adapt as
-    /// network conditions become known over the course of a scan.
+    /// Two conditions rather than one, and only the first is binding. Silence is
+    /// evidence that nothing more is coming, which a loop with probes still
+    /// outstanding is entitled to disagree with; see
+    /// [`hard_deadline_passed`](Self::hard_deadline_passed) for the one it may
+    /// not.
     pub fn has_expired(&self, max_silence: Duration) -> bool {
         let now = Instant::now();
 
@@ -107,23 +123,21 @@ impl ScanTimer {
         Instant::now() > self.hard_deadline
     }
 
-    /// Helper to decide if a socket timeout is fatal or if the scan should continue.
+    /// Whether a socket timeout is allowed to end the loop yet.
     ///
-    /// Returns `true` if the minimum runtime has been met, indicating that a timeout
-    /// could be a valid reason to break the loop.
+    /// A timeout before the minimum runtime is a scan that has not waited long
+    /// enough to conclude anything from quiet.
     pub fn should_break_on_timeout(&self) -> bool {
         Instant::now() >= self.min_runtime
     }
 }
 
-/// Defines how a scan's time allotment grows with the number of targets involved.
+/// How a scan's time grows with the number of targets.
 ///
-/// A single fixed duration is a poor fit for scans that might cover one host
-/// or tens of thousands: too short for large sweeps, needlessly long for
-/// small ones. A `ScanBudget` instead defines a starting duration (`base`)
-/// plus a small increment added once per additional target (`per_target`),
-/// so the resulting duration grows with the size of the scan while never
-/// exceeding an absolute `ceiling`.
+/// A base, a term added per target, and a ceiling over the sum. One fixed
+/// duration cannot serve a scan that might cover one host or sixty-five
+/// thousand ports: it is too short for the second and spent waiting on the
+/// first.
 #[must_use]
 #[derive(Debug, Clone, Copy)]
 pub struct ScanBudget {
@@ -133,11 +147,11 @@ pub struct ScanBudget {
 }
 
 impl ScanBudget {
-    /// Creates a new budget.
+    /// A budget of `base`, plus `per_target` for each target beyond the first,
+    /// never exceeding `ceiling`.
     ///
-    /// * `base` - The duration allotted for a single target.
-    /// * `per_target` - The additional duration added for every target beyond the first.
-    /// * `ceiling` - The maximum duration this budget will ever return, regardless of target count.
+    /// See [`covering`](Self::covering) for when the ceiling stops being a
+    /// backstop and becomes the answer, which is the way this goes wrong.
     pub const fn new(base: Duration, per_target: Duration, ceiling: Duration) -> Self {
         Self {
             base,
@@ -199,7 +213,7 @@ impl ScanBudget {
         }
     }
 
-    /// Computes the effective duration for a scan covering `target_count` addresses.
+    /// What a scan of `target_count` targets gets.
     pub fn for_target_count(&self, target_count: usize) -> Duration {
         self.unclamped(target_count).min(self.ceiling)
     }
@@ -227,15 +241,20 @@ mod tests {
     use super::*;
     use std::thread::sleep;
 
+    /// A timer that has just started has neither run out of time nor waited
+    /// long enough for silence to mean anything.
     #[test]
-    fn test_initialization() {
+    fn a_fresh_timer_has_neither_expired_nor_earned_the_right_to() {
         let timer = ScanTimer::new(Duration::from_secs(10), Duration::from_secs(5));
         assert!(!timer.has_expired(Duration::from_secs(1)));
         assert!(!timer.should_break_on_timeout());
     }
 
+    /// The sleep shortens as silence accumulates and resets when the loop
+    /// learns something, which is what keeps a caller from waking on a schedule
+    /// that has nothing to do with the network.
     #[test]
-    fn test_mark_activity() {
+    fn the_next_check_moves_with_the_silence_and_resets_with_activity() {
         let mut timer = ScanTimer::new(Duration::from_secs(10), Duration::from_secs(5));
         let max_silence = Duration::from_millis(500);
 
@@ -248,26 +267,29 @@ mod tests {
         timer.mark_activity();
         let wait_time3 = timer.time_until_next_tick(max_silence);
 
-        // Wait time should reset to near the original max_silence
-        assert!(wait_time3 > wait_time2);
+        assert!(
+            wait_time3 > wait_time2,
+            "activity restarts the silence clock"
+        );
     }
 
+    /// A tolerance already spent has no time left to sleep through, and
+    /// returning zero would spin. `RECHECK_SOON` is the floor.
     #[test]
-    fn test_time_until_next_tick_fallback() {
+    fn a_spent_tolerance_waits_a_short_fixed_time_rather_than_none() {
         let timer = ScanTimer::new(Duration::from_secs(10), Duration::from_secs(5));
         let max_silence = Duration::from_millis(10);
 
         sleep(Duration::from_millis(15)); // Exceed max_silence
 
         // Should return the 100ms fallback since the time since last activity is greater than max_silence
-        assert_eq!(
-            timer.time_until_next_tick(max_silence),
-            Duration::from_millis(100)
-        );
+        assert_eq!(timer.time_until_next_tick(max_silence), RECHECK_SOON);
     }
 
+    /// The deadline is the guarantee that a scan terminates, so it fires
+    /// whatever the minimum runtime says and whatever the silence tolerance is.
     #[test]
-    fn test_hard_deadline_expiration() {
+    fn the_hard_deadline_fires_even_before_the_minimum_runtime() {
         let timer = ScanTimer::new(
             Duration::from_millis(10),  // short hard deadline
             Duration::from_millis(100), // long min runtime (will not be reached)
@@ -279,8 +301,10 @@ mod tests {
         assert!(timer.has_expired(max_silence));
     }
 
+    /// Silence ends a scan only once both conditions hold: the minimum runtime
+    /// is behind it, and nothing has happened for longer than the tolerance.
     #[test]
-    fn test_silence_expiration() {
+    fn silence_ends_a_scan_once_the_minimum_runtime_is_behind_it() {
         let timer = ScanTimer::new(
             Duration::from_secs(10),
             Duration::from_millis(10), // short min runtime
@@ -292,8 +316,10 @@ mod tests {
         assert!(timer.has_expired(max_silence));
     }
 
+    /// A socket timeout before the minimum runtime is a scan that has not
+    /// waited long enough to conclude anything from quiet.
     #[test]
-    fn test_should_break_on_timeout() {
+    fn a_socket_timeout_may_end_the_loop_only_after_the_minimum_runtime() {
         let timer = ScanTimer::new(Duration::from_secs(10), Duration::from_millis(10));
 
         assert!(!timer.should_break_on_timeout());

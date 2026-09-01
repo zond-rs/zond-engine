@@ -92,8 +92,8 @@ use crate::report::ScannerKind;
 use crate::report::WindowSummary;
 use crate::report::{
     Attachment, AttachmentSource, EvasionRecord, PhaseOrigin, PhaseParts, PortScope, ProbeStats,
-    ProbeStatsParts, ScanKind, ScanPhase, ScanSettings, ScannerFailure, ScopeParts, StopReason,
-    TargetScope,
+    ProbeStatsParts, Refusal, ScanKind, ScanPhase, ScanSettings, ScannerFailure, ScopeParts,
+    StopReason, TargetScope,
 };
 use crate::system::privilege::Privilege;
 use std::num::{NonZeroU8, NonZeroU32};
@@ -1042,6 +1042,15 @@ pub struct PhaseRecord {
     /// The strategies that could not do their job.
     #[serde(default)]
     pub failures: Vec<FailureRecord>,
+    /// Ground the sitting declined before sending anything.
+    ///
+    /// Skipped when empty, which is most sittings, and defaulted on the way in,
+    /// so a record written before this field existed reads back as a sitting
+    /// that refused nothing. That is the honest reading: a refusal was written
+    /// down as a failure then, and it stays a failure rather than being invented
+    /// as a refusal now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refusals: Vec<RefusalRecord>,
     /// Addresses the scanning host had no route to.
     #[serde(default)]
     pub unroutable: Vec<IpAddr>,
@@ -1177,6 +1186,7 @@ impl From<&ScanPhase> for PhaseRecord {
             targets: ScopeRecord::from(phase.targets()),
             settings: SettingsRecord::from(phase.settings()),
             failures: phase.failures().iter().map(FailureRecord::from).collect(),
+            refusals: phase.refusals().iter().map(RefusalRecord::from).collect(),
             unroutable: phase.unroutable().to_vec(),
             probe_stats: phase
                 .probe_stats()
@@ -1208,6 +1218,7 @@ impl From<&PhaseRecord> for ScanPhase {
             targets: TargetScope::from(&record.targets),
             settings: ScanSettings::from(&record.settings),
             failures: record.failures.iter().map(ScannerFailure::from).collect(),
+            refusals: record.refusals.iter().map(Refusal::from).collect(),
             unroutable: record.unroutable.clone(),
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),
             origin: record.origin.as_ref().map(PhaseOrigin::from),
@@ -1390,6 +1401,38 @@ impl RangeRecord {
                 .map(IpRange::V6),
             _ => None,
         }
+    }
+}
+
+/// Ground a sitting declined to cover.
+///
+/// No timestamp, unlike [`FailureRecord`], and the difference is the point: a
+/// failure happened at a moment and a refusal was decided before the phase
+/// began. Recording a clock reading for one would invite a reader to order it
+/// against the failures, which says nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusalRecord {
+    /// Which strategy would have taken the work, by wire name.
+    pub scanner: String,
+    /// What was not done, and what could be asked for instead.
+    pub reason: String,
+}
+
+impl From<&Refusal> for RefusalRecord {
+    fn from(refusal: &Refusal) -> Self {
+        Self {
+            scanner: wire::scanner_kind_name(refusal.scanner()).to_owned(),
+            reason: refusal.reason().to_owned(),
+        }
+    }
+}
+
+impl From<&RefusalRecord> for Refusal {
+    fn from(record: &RefusalRecord) -> Self {
+        Refusal::new(
+            wire::scanner_kind(&record.scanner).unwrap_or(ScannerKind::Composite),
+            record.reason.clone(),
+        )
     }
 }
 

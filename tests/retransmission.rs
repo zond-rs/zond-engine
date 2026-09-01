@@ -63,7 +63,8 @@ use zond_engine::report::ScannerKind;
 use zond_engine::scanner::session::ScanSession;
 use zond_engine::scanner::strategy::HostScanner;
 use zond_engine::scanner::strategy::local::{LocalScanner, Scope};
-use zond_engine::scanner::strategy::routed::{RoutedScanner, TcpPortScanner, UdpPortScanner};
+use zond_engine::scanner::strategy::ports::{TcpPortScanner, UdpPortScanner};
+use zond_engine::scanner::strategy::routed::RoutedScanner;
 use zond_engine::system::interface::RoutedTarget;
 
 /// How many times a probe should be sent before the engine concludes the target

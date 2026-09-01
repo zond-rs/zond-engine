@@ -25,7 +25,8 @@
 //!
 //! ## The probe asks a question, or it is not worth sending
 //!
-//! The request carries [`ECHO_PROBE_CODE`] rather than a conformant zero,
+//! The request carries [`ECHO_PROBE_CODE`](crate::protocols::icmp::ECHO_PROBE_CODE)
+//! rather than a conformant zero,
 //! because whether a responder echoes a non-zero code or writes zero is a
 //! documented disagreement between stacks — invisible to a probe that never
 //! asked. The identifier is the scan's identity (every other ping on the host
@@ -203,8 +204,15 @@ impl OsEchoScanner {
     fn service_retries(&mut self, now: Instant) {
         self.ledger.drain_due(now, &mut self.due);
         for event in self.due.drain(..) {
-            if let Due::Retry { key, .. } = event {
-                self.retries.push_back(key);
+            match event {
+                Due::Retry { key, .. } => self.retries.push_back(key),
+                // Nothing to settle. A sweep earns a verdict for the address
+                // when its budget runs out; this probe is asking a host the
+                // scan already found what kernel it runs, so a spent budget
+                // means only that it would not say. Matched rather than
+                // ignored, so a third variant is a compile error here as it
+                // already is in the two sweeps.
+                Due::Exhausted { .. } => {}
             }
         }
     }

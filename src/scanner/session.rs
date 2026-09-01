@@ -86,7 +86,7 @@ use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::Positions;
 use crate::model::port::Protocol;
 use crate::report::ScannerKind;
-use crate::report::{Attachment, AttachmentSource, ProbeStats, ScannerFailure};
+use crate::report::{Attachment, AttachmentSource, ProbeStats, Refusal, ScannerFailure};
 use crate::scanner::handle::ScanHandle;
 
 /// Lightweight notifications for the status of an ongoing scan.
@@ -447,20 +447,43 @@ impl Tapes {
     }
 }
 
-/// Where strategy failures accumulate for the final
-/// [`ScanReport`](crate::report::ScanReport).
+/// Ground a phase declined to cover, gathered as it is decided.
 ///
-/// [`ScanEvent::ScannerFailed`] tells a live consumer about a failure the moment
-/// it happens, but an event nobody listens for is an event that never happened:
-/// a caller that simply awaits the scan and reads the store at the end has no
-/// way to learn that a strategy died. The log keeps the same failures somewhere
-/// the report can reach them afterwards, so "the network is empty" and "the raw
-/// scanner never started" stay distinguishable however the caller chose to
-/// consume the scan.
+/// Kept apart from [`FailureLog`] for the reason [`Refusal`] gives: a strategy
+/// that could not run means something went wrong, and a refusal means the scan
+/// as written cannot answer part of what it was asked. Both narrow the result
+/// and only one of them is a fault, so a reader who cannot tell them apart
+/// learns to ignore both.
 ///
-/// A plain [`Mutex`] rather than a lock-free structure: failures are rare
-/// enough that contention is not a consideration, and the lock is never held
-/// across an await.
+/// Ordered by insertion rather than sorted: the plan decides these in the order
+/// it works through the targets, and that order is the one a reader following
+/// the plan expects.
+#[derive(Debug, Default)]
+pub(crate) struct RefusalLog {
+    entries: Mutex<Vec<Refusal>>,
+}
+
+impl RefusalLog {
+    fn push(&self, refusal: Refusal) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if !entries.contains(&refusal) {
+            entries.push(refusal);
+        }
+    }
+
+    fn drain(&self) -> Vec<Refusal> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries)
+    }
+
+    fn snapshot(&self) -> Vec<Refusal> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
 /// Addresses this host had no route to, gathered across a phase.
 ///
 /// A set, so a target probed several times is named once, and ordered so two
@@ -577,12 +600,18 @@ impl ScanProgress {
         self.tapes.take()
     }
 
-    /// Every host found so far, cloned.
+    /// Every host found so far, cloned, ordered by the address each is keyed
+    /// under. The counterpart of
+    /// [`ScanContext::hosts_snapshot`](ScanContext::hosts_snapshot), and ordered
+    /// for the same reason.
     pub fn hosts_snapshot(&self) -> Vec<Host> {
-        self.store
+        let mut hosts: Vec<Host> = self
+            .store
             .iter()
             .map(|entry| entry.value().clone())
-            .collect()
+            .collect();
+        hosts.sort_by_cached_key(Host::scoped_ip);
+        hosts
     }
 
     /// How many hosts have been found so far.
@@ -616,6 +645,20 @@ impl ChangedHosts {
     }
 }
 
+/// Where strategy failures accumulate for the final
+/// [`ScanReport`](crate::report::ScanReport).
+///
+/// [`ScanEvent::ScannerFailed`] tells a live consumer about a failure the moment
+/// it happens, but an event nobody listens for is an event that never happened:
+/// a caller that simply awaits the scan and reads the store at the end has no
+/// way to learn that a strategy died. The log keeps the same failures somewhere
+/// the report can reach them afterwards, so "the network is empty" and "the raw
+/// scanner never started" stay distinguishable however the caller chose to
+/// consume the scan.
+///
+/// A plain [`Mutex`] rather than a lock-free structure: failures are rare
+/// enough that contention is not a consideration, and the lock is never held
+/// across an await.
 #[derive(Debug, Default)]
 pub(crate) struct FailureLog {
     entries: Mutex<Vec<ScannerFailure>>,
@@ -661,6 +704,8 @@ pub struct ScanContext {
     pub(crate) store: Arc<DashMap<ScopedIp, Host>>,
     pub(crate) events_tx: broadcast::Sender<ScanEvent>,
     pub(crate) failures: Arc<FailureLog>,
+    /// Ground this scan declined to cover before sending anything.
+    pub(crate) refusals: Arc<RefusalLog>,
     pub(crate) probe_stats: Arc<ProbeStatsLog>,
     /// Addresses this host has no route to, so nothing could be sent to them.
     pub(crate) unroutable: Arc<UnroutableLog>,
@@ -851,13 +896,14 @@ impl ScanContext {
     /// Whether anything is recorded under `ip`.
     ///
     /// Cheaper than [`read_host`](Self::read_host) when the host itself is not
-    /// wanted: nothing is cloned and no closure runs. The read counterpart of
-    /// [`HostStore::contains`].
+    /// wanted: nothing is cloned and no closure runs. The writing half's name
+    /// for what [`HostStore::contains`] answers on the reading half, and named
+    /// to match it: one question should not have two names across the pair.
     ///
     /// **A question about the key, not about the machine.** A host is reachable
     /// at every address it holds and is recorded under one of them, so this
     /// answers "is there a record here" and never "is this machine known".
-    pub fn holds_host(&self, ip: &ScopedIp) -> bool {
+    pub fn contains_host(&self, ip: &ScopedIp) -> bool {
         self.store.contains_key(ip)
     }
 
@@ -889,6 +935,44 @@ impl ScanContext {
         let _ = self
             .events_tx
             .send(ScanEvent::ScannerFailed { scanner, reason });
+    }
+
+    /// The single place a refusal enters the record.
+    ///
+    /// **Not a failure, and this is the difference.** A refusal is the engine
+    /// working out, before anything is sent, that part of what it was asked for
+    /// has no strategy behind it: an SCTP port on a host with no raw sockets, a
+    /// prefix too large to walk, a technique a connect scan cannot express.
+    /// Nothing broke, so it is not announced on the event stream and no
+    /// strategy is blamed — it reaches the report as its own kind of thing, and
+    /// [`Refusal`] has the argument for why that matters.
+    ///
+    /// Filed once per distinct refusal. A plan that declines the same range on
+    /// two links says it once, because a reader acts on the reason rather than
+    /// on the count.
+    ///
+    /// Public for the reason [`record_failure`](Self::record_failure) is: a
+    /// caller assembling their own scan decides their own coverage, and one who
+    /// could not say what they declined would produce a report claiming to have
+    /// covered ground nobody looked at.
+    pub fn record_refusal(&self, refusal: Refusal) {
+        info!(verbosity = 1, "not covered: {}", refusal.reason());
+        self.refusals.push(refusal);
+    }
+
+    /// Takes the refusals recorded so far, leaving the log empty.
+    pub(crate) fn take_refusals(&self) -> Vec<Refusal> {
+        self.refusals.drain()
+    }
+
+    /// The refusals filed so far, left in place.
+    ///
+    /// The reading counterpart of [`record_refusal`](Self::record_refusal), on
+    /// the same terms [`failures_snapshot`](Self::failures_snapshot) is for
+    /// failures: a caller driving strategies themselves never reaches the phase
+    /// that drains these into a report.
+    pub fn refusals_snapshot(&self) -> Vec<Refusal> {
+        self.refusals.snapshot()
     }
 
     /// Files what an instrumented scanner observed about its own run.
@@ -992,7 +1076,7 @@ impl ScanContext {
 
     /// Records `count` targets ending the same way, for the outcomes that carry
     /// no position. See [`Settlements::record_many`].
-    pub fn record_many(&self, outcome: Outcome, count: u64) {
+    pub fn record_many_outcomes(&self, outcome: Outcome, count: u64) {
         self.settlements.record_many(outcome, count);
     }
 
@@ -1062,15 +1146,22 @@ impl ScanContext {
         }
     }
 
-    /// Every host found so far, cloned.
+    /// Every host found so far, cloned, ordered by the address each is keyed
+    /// under.
     ///
     /// For a journal compacting its findings, which needs the whole state rather
-    /// than what changed recently.
+    /// than what changed recently. Ordered for the reason
+    /// [`HostStore::snapshot`] is: the one consumer writes these to disk, and a
+    /// compaction whose record order came out of a concurrent map's iteration
+    /// writes a different file every time it runs over the same findings.
     pub fn hosts_snapshot(&self) -> Vec<Host> {
-        self.store
+        let mut hosts: Vec<Host> = self
+            .store
             .iter()
             .map(|entry| entry.value().clone())
-            .collect()
+            .collect();
+        hosts.sort_by_cached_key(Host::scoped_ip);
+        hosts
     }
 
     /// How many hosts have been found so far.
@@ -1191,6 +1282,7 @@ impl ScanSession {
             store,
             events_tx,
             failures: Arc::new(FailureLog::default()),
+            refusals: Arc::new(RefusalLog::default()),
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             swept_links: Arc::new(SweptLinks::default()),
