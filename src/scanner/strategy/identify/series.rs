@@ -109,7 +109,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use pnet_packet::ip::IpNextHeaderProtocols;
 
 use crate::config::ProbeTuning;
@@ -124,7 +123,7 @@ use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::{HostScanner, StrategyError};
+use crate::scanner::strategy::StrategyError;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
@@ -621,13 +620,19 @@ impl OsSeriesScanner {
     }
 }
 
-#[async_trait]
-impl HostScanner for OsSeriesScanner {
-    fn kind(&self) -> ScannerKind {
-        ScannerKind::OsSeries
-    }
-
-    async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
+impl OsSeriesScanner {
+    /// Asks each target the same question several times and reads the
+    /// policies behind the answers.
+    ///
+    /// Not `discover_hosts`, for the reason
+    /// [`echo`](super::echo::OsEchoScanner::probe) gives: every host here has
+    /// already been found, and this revisits a port whose state is already
+    /// settled.
+    ///
+    /// `Ok` once the run reached its end, including an end forced by
+    /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort), and
+    /// `Err` only where the probe itself could not do its job.
+    pub async fn probe(&mut self) -> Result<(), StrategyError> {
         let followed: u128 = self.batches.iter().map(|batch| batch.len() as u128).sum();
         let mut reason = StopReason::AttemptsSpent;
 
@@ -935,7 +940,7 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let mut scanner = scanner(&ctx, both_ports(), 4, true);
 
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         let host = session.hosts().get(TARGET).expect("the host is recorded");
         let found = host.os().expect("a Linux-shaped series names Linux");
@@ -950,7 +955,7 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let mut scanner = scanner(&ctx, both_ports(), 4, true);
 
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         let host = session.hosts().get(TARGET).expect("the host is recorded");
         let evidence = host
@@ -978,7 +983,7 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let mut scanner = scanner(&ctx, both_ports(), 4, true);
 
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         let evidence = session
             .hosts()
@@ -1008,7 +1013,7 @@ mod tests {
         };
         let mut scanner = scanner(&ctx, target, 4, false);
 
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         let host = session.hosts().get(TARGET).expect("the host is recorded");
         assert_eq!(host.os().and_then(|os| os.family()), Some("Linux"));
@@ -1041,7 +1046,7 @@ mod tests {
             transport,
             Emission::routed(),
         );
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         let sent = recorded.lock().expect("the record is readable").clone();
         assert_eq!(sent.len(), samples, "one probe per sample");
@@ -1104,7 +1109,7 @@ mod tests {
             let _ = tx.try_send(captured(theirs.bytes(), 0));
         });
 
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         assert!(
             session.hosts().get(TARGET).is_none(),

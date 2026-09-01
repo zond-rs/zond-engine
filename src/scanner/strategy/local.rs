@@ -519,9 +519,9 @@ impl HostScanner for LocalScanner {
             let now = Instant::now();
             // Both schedules, and a sweep settles: it was asked whether an
             // address is there and has asked as many times as it may.
-            self.sweep.service_retries(&self.ctx, now, true);
+            self.sweep.service_retries(&self.ctx, now);
             self.sweep
-                .service_second_ledger(&self.ctx, self.ipv6.ledger_mut(), now, true);
+                .service_second_ledger(&self.ctx, self.ipv6.ledger_mut(), now);
 
             if let Some(reason) = self.stop_reason(now, sending_finished) {
                 break reason;

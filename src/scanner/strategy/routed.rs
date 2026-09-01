@@ -179,7 +179,7 @@ impl HostScanner for RoutedScanner {
             let now = Instant::now();
             // A sweep settles: it was asked whether an address is there and
             // has now asked as many times as the policy allows.
-            self.sweep.service_retries(&self.ctx, now, true);
+            self.sweep.service_retries(&self.ctx, now);
 
             let all_responded = self.sweep.all_responded(self.ips.len());
             if self.ctx.handle.should_stop() {

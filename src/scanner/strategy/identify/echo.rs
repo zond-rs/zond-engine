@@ -46,7 +46,6 @@ use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use pnet_packet::ip::IpNextHeaderProtocols;
 
 use crate::config::ProbeTuning;
@@ -58,8 +57,8 @@ use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::session::ScanContext;
+use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::sweep::HostSweep;
-use crate::scanner::strategy::{HostScanner, StrategyError};
 use crate::success;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
@@ -335,13 +334,22 @@ impl OsEchoScanner {
     }
 }
 
-#[async_trait]
-impl HostScanner for OsEchoScanner {
-    fn kind(&self) -> ScannerKind {
-        ScannerKind::OsEcho
-    }
-
-    async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
+impl OsEchoScanner {
+    /// Sends one echo request per target and reads what answers for the shape
+    /// of the stack behind it.
+    ///
+    /// Not `discover_hosts`, and not a [`HostScanner`](super::super::HostScanner).
+    /// It used to be both, because `HostScanner` was the trait to hand when this
+    /// was written as a submodule of the routed sweep -- but the trait says a
+    /// strategy that finds which hosts are reachable, and every address here
+    /// came out of the store because something else already found it. Nothing
+    /// ever dispatched this dynamically, so the impl bought a method name and
+    /// the method name was untrue.
+    ///
+    /// `Ok` once the run reached its end, including an end forced by
+    /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort), and
+    /// `Err` only where the probe itself could not do its job.
+    pub async fn probe(&mut self) -> Result<(), StrategyError> {
         let mut send_tick = tokio::time::interval(SEND_TICK);
         send_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -350,7 +358,7 @@ impl HostScanner for OsEchoScanner {
             // An exhausted probe settles nothing: this asks hosts the scan
             // already found what they run, and a scan not counted in addresses
             // has no position to settle against.
-            self.sweep.service_retries(&self.ctx, now, false);
+            self.sweep.service_retries_without_settling(&self.ctx, now);
 
             if self.ctx.handle.should_stop() {
                 break StopReason::Aborted;
@@ -519,7 +527,7 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let (mut scanner, _tx) = scanner(&ctx, 128);
 
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         let host = session.hosts().get(TARGET).expect("the host is recorded");
         let found = host
@@ -542,7 +550,7 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let (mut scanner, _tx) = scanner(&ctx, 64);
 
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         let host = session.hosts().get(TARGET).expect("the host is recorded");
         assert!(
@@ -607,7 +615,7 @@ mod tests {
             let _ = tx.try_send(theirs);
         });
 
-        scanner.discover_hosts().await.expect("the phase runs");
+        scanner.probe().await.expect("the phase runs");
 
         // The foreign reply was declined before anything was written: no
         // host record exists, because nothing this scan drew said anything

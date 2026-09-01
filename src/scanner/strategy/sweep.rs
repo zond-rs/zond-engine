@@ -115,20 +115,37 @@ impl<T: Copy + PartialEq> HostSweep<T> {
         }
     }
 
-    /// Moves every probe whose timer has fired onto the retry queue, and settles
-    /// the ones that have run out of attempts.
+    /// Moves every probe whose timer has fired onto the retry queue, and
+    /// settles the ones that have run out of attempts.
     ///
-    /// `settles` says whether an exhausted probe earns its address a verdict a
-    /// resume may skip. True for a sweep, which was asked whether an address is
-    /// there and has now asked as many times as the policy allows. False for a
-    /// probe that revisits hosts the scan already found: a spent budget there
-    /// means only that the host would not say what it runs, and a scan not
-    /// counted in addresses has no position to settle anyway.
+    /// For a **sweep**, which was asked whether an address is there and has now
+    /// asked as many times as the policy allows: a spent budget is the moment
+    /// silence stops being provisional and becomes a verdict a resume may skip.
+    /// [`service_retries_without_settling`](Self::service_retries_without_settling)
+    /// is the other case, and they are two methods rather than one taking a
+    /// flag because a bare `true` at a call site says nothing about which of
+    /// the two a reader is looking at.
     ///
     /// Written once because it was written three times, and two of those had
     /// already drifted into stating one claim about the ledger in two different
     /// wordings.
-    pub fn service_retries(&mut self, ctx: &ScanContext, now: Instant, settles: bool) {
+    pub fn service_retries(&mut self, ctx: &ScanContext, now: Instant) {
+        self.drain_into_retries(ctx, now, true);
+    }
+
+    /// [`service_retries`](Self::service_retries) for a probe that earns no
+    /// address a verdict.
+    ///
+    /// For the probes that revisit hosts the scan has already found. A spent
+    /// budget there means only that the host would not say what it runs, which
+    /// is not an answer to the question the plan is counted in, and marking a
+    /// position for it would tell a resume that an address had been covered by
+    /// a probe that never asked.
+    pub fn service_retries_without_settling(&mut self, ctx: &ScanContext, now: Instant) {
+        self.drain_into_retries(ctx, now, false);
+    }
+
+    fn drain_into_retries(&mut self, ctx: &ScanContext, now: Instant, settles: bool) {
         // Taken so the ledger can borrow `self` mutably; the buffer itself is
         // reused, so this costs no allocation.
         let mut due = std::mem::take(&mut self.due);
@@ -149,8 +166,8 @@ impl<T: Copy + PartialEq> HostSweep<T> {
         ctx: &ScanContext,
         other: &mut ProbeLedger<IpAddr, U>,
         now: Instant,
-        settles: bool,
     ) {
+        let settles = true;
         let mut due = std::mem::take(&mut self.due);
         other.drain_due(now, &mut due);
         self.absorb_due(ctx, &mut due, settles);
@@ -220,5 +237,153 @@ impl<T: Copy + PartialEq> HostSweep<T> {
     ) {
         self.audit.report(label, targets, reason, capture, None);
         ctx.record_probe_stats(self.audit.stats(kind, targets, reason, capture, None));
+    }
+}
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::settle::Outcome;
+    use crate::model::ip::set::IpSet;
+    use crate::scanner::pacing::retry::RetryPolicy;
+    use crate::scanner::session::ScanSession;
+    use std::str::FromStr;
+
+    /// One attempt, so a probe exhausts the moment its first timeout fires.
+    const ONE_SHOT: RetryPolicy = RetryPolicy::new(
+        1,
+        Duration::from_millis(10),
+        Duration::from_millis(1),
+        Duration::from_millis(20),
+        1.0,
+        0.0,
+        None,
+    );
+
+    /// A context numbering `written`, so an exhausted probe has a position to
+    /// settle at.
+    fn counting(written: &str) -> (crate::scanner::session::ScanContext, IpAddr) {
+        let plan = IpSet::from_str(written).expect("a range");
+        let first = plan.iter().next().expect("at least one address");
+        let (_session, ctx) = ScanSession::builder().counting(plan.positions()).build();
+        // The session is dropped; the context holds every Arc that matters and
+        // nothing here reads the event stream.
+        (ctx, first)
+    }
+
+    /// The verdict a sweep earns. Its budget is spent and the address answered
+    /// nothing, which is the moment silence stops being provisional.
+    #[test]
+    fn an_exhausted_probe_settles_the_address_when_the_sweep_settles() {
+        let (ctx, host) = counting("127.0.0.1");
+        let mut sweep: HostSweep<()> = HostSweep::new(ProbeLedger::new(ONE_SHOT, 4));
+        let now = Instant::now();
+
+        sweep.ledger.arm(host, host, (), (), now);
+        sweep.service_retries(&ctx, now + Duration::from_millis(50));
+
+        assert_eq!(
+            ctx.settlements().count(Outcome::Answered { position: 0 }),
+            0
+        );
+        assert_eq!(
+            ctx.settlements().checkpoint().watermark,
+            1,
+            "the one position in the plan, earned by a spent budget"
+        );
+    }
+
+    /// The echo probe's contract, and the reason there are two names. It revisits
+    /// hosts the scan already found, so a spent budget means only that the host
+    /// would not say what it runs. Settling there would mark a position no
+    /// probe of this plan had asked about.
+    #[test]
+    fn an_exhausted_probe_settles_nothing_when_the_sweep_does_not() {
+        let (ctx, host) = counting("127.0.0.1");
+        let mut sweep: HostSweep<()> = HostSweep::new(ProbeLedger::new(ONE_SHOT, 4));
+        let now = Instant::now();
+
+        sweep.ledger.arm(host, host, (), (), now);
+        sweep.service_retries_without_settling(&ctx, now + Duration::from_millis(50));
+
+        assert_eq!(
+            ctx.settlements().checkpoint().watermark,
+            0,
+            "nothing was earned, so nothing is skipped on a resume"
+        );
+        assert_eq!(ctx.settlements().settled_count(), 0);
+    }
+
+    /// A probe with budget left goes back on the queue instead, and settles
+    /// nothing: silence is still provisional while an attempt is owed.
+    #[test]
+    fn a_probe_with_budget_left_is_queued_rather_than_settled() {
+        let (ctx, host) = counting("127.0.0.1");
+        let policy = RetryPolicy::new(
+            3,
+            Duration::from_millis(10),
+            Duration::from_millis(1),
+            Duration::from_millis(20),
+            1.0,
+            0.0,
+            None,
+        );
+        let mut sweep: HostSweep<()> = HostSweep::new(ProbeLedger::new(policy, 4));
+        let now = Instant::now();
+
+        sweep.ledger.arm(host, host, (), (), now);
+        sweep.service_retries(&ctx, now + Duration::from_millis(50));
+
+        assert_eq!(sweep.retries.front(), Some(&host), "owed another attempt");
+        assert_eq!(ctx.settlements().settled_count(), 0);
+    }
+
+    /// The local sweep's case: two schedules over one link, because a
+    /// mains-powered router answers a solicitation in five milliseconds and a
+    /// phone asleep on wifi takes four hundred. Both must reach the same
+    /// queueing and the same settling, which is what this asserts and what
+    /// three separate copies of the loop could not.
+    #[test]
+    fn a_second_ledger_queues_and_settles_through_the_same_path() {
+        let (ctx, host) = counting("127.0.0.1");
+        let mut sweep: HostSweep<()> = HostSweep::new(ProbeLedger::new(ONE_SHOT, 4));
+        let mut other: ProbeLedger<IpAddr, ()> = ProbeLedger::new(ONE_SHOT, 4);
+        let now = Instant::now();
+
+        other.arm(host, host, (), (), now);
+        sweep.service_second_ledger(&ctx, &mut other, now + Duration::from_millis(50));
+
+        assert_eq!(
+            ctx.settlements().checkpoint().watermark,
+            1,
+            "the second schedule settles exactly as the first does"
+        );
+    }
+
+    /// The count a sweep stops on. Kept here rather than read off the store,
+    /// because in a port scan's liveness pass the store almost always holds the
+    /// host already and every one of this sweep's own answers would report
+    /// "not new".
+    #[test]
+    fn a_sweep_knows_when_every_target_has_answered() {
+        let mut sweep: HostSweep<()> = HostSweep::new(ProbeLedger::new(ONE_SHOT, 4));
+        let one: IpAddr = "192.0.2.1".parse().expect("literal");
+        let two: IpAddr = "192.0.2.2".parse().expect("literal");
+
+        assert!(sweep.note_answered(one), "the first sighting is news");
+        assert!(!sweep.note_answered(one), "the second is not");
+        assert!(!sweep.all_responded(2));
+
+        sweep.note_answered(two);
+        assert!(sweep.all_responded(2));
     }
 }

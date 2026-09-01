@@ -580,7 +580,7 @@ pub(super) async fn run_active_os_series(
 
     match strategy::identify::series::OsSeriesScanner::new(ctx.clone(), targets, samples, tuning) {
         Ok(mut scanner) => {
-            if let Err(e) = scanner.discover_hosts().await {
+            if let Err(e) = scanner.probe().await {
                 ctx.record_failure(ScannerKind::OsSeries, e.to_string());
             }
         }
@@ -906,7 +906,7 @@ pub(super) async fn run_active_os_probe(
 
     match strategy::identify::echo::OsEchoScanner::new(ctx.clone(), unnamed, tuning) {
         Ok(mut scanner) => {
-            if let Err(e) = scanner.discover_hosts().await {
+            if let Err(e) = scanner.probe().await {
                 ctx.record_failure(ScannerKind::OsEcho, e.to_string());
             }
         }

@@ -13053,9 +13053,8 @@ pub struct zond_engine::scanner::strategy::identify::echo::OsEchoScanner
 impl zond_engine::scanner::strategy::identify::echo::OsEchoScanner
 pub fn zond_engine::scanner::strategy::identify::echo::OsEchoScanner::new(zond_engine::scanner::session::ScanContext, alloc::vec::Vec<core::net::ip_addr::IpAddr>, zond_engine::config::ProbeTuning) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
 pub fn zond_engine::scanner::strategy::identify::echo::OsEchoScanner::with_transport(zond_engine::scanner::session::ScanContext, alloc::vec::Vec<core::net::ip_addr::IpAddr>, zond_engine::transport::probe::ProbeTransport) -> Self
-impl zond_engine::scanner::strategy::HostScanner for zond_engine::scanner::strategy::identify::echo::OsEchoScanner
-pub fn zond_engine::scanner::strategy::identify::echo::OsEchoScanner::discover_hosts<'life0, 'async_trait>(&'life0 mut self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn zond_engine::scanner::strategy::identify::echo::OsEchoScanner::kind(&self) -> zond_engine::report::ScannerKind
+impl zond_engine::scanner::strategy::identify::echo::OsEchoScanner
+pub async fn zond_engine::scanner::strategy::identify::echo::OsEchoScanner::probe(&mut self) -> core::result::Result<(), zond_engine::scanner::strategy::StrategyError>
 impl core::marker::Freeze for zond_engine::scanner::strategy::identify::echo::OsEchoScanner
 impl core::marker::Send for zond_engine::scanner::strategy::identify::echo::OsEchoScanner
 impl core::marker::Sync for zond_engine::scanner::strategy::identify::echo::OsEchoScanner
@@ -13068,9 +13067,8 @@ pub struct zond_engine::scanner::strategy::identify::series::OsSeriesScanner
 impl zond_engine::scanner::strategy::identify::series::OsSeriesScanner
 pub fn zond_engine::scanner::strategy::identify::series::OsSeriesScanner::new(zond_engine::scanner::session::ScanContext, alloc::vec::Vec<zond_engine::scanner::strategy::identify::series::SeriesTarget>, usize, zond_engine::config::ProbeTuning) -> core::result::Result<Self, zond_engine::scanner::strategy::StrategyError>
 pub fn zond_engine::scanner::strategy::identify::series::OsSeriesScanner::with_transport(zond_engine::scanner::session::ScanContext, alloc::vec::Vec<zond_engine::scanner::strategy::identify::series::SeriesTarget>, usize, zond_engine::transport::probe::ProbeTransport, zond_engine::transport::probe::Emission) -> Self
-impl zond_engine::scanner::strategy::HostScanner for zond_engine::scanner::strategy::identify::series::OsSeriesScanner
-pub fn zond_engine::scanner::strategy::identify::series::OsSeriesScanner::discover_hosts<'life0, 'async_trait>(&'life0 mut self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn zond_engine::scanner::strategy::identify::series::OsSeriesScanner::kind(&self) -> zond_engine::report::ScannerKind
+impl zond_engine::scanner::strategy::identify::series::OsSeriesScanner
+pub async fn zond_engine::scanner::strategy::identify::series::OsSeriesScanner::probe(&mut self) -> core::result::Result<(), zond_engine::scanner::strategy::StrategyError>
 impl core::marker::Freeze for zond_engine::scanner::strategy::identify::series::OsSeriesScanner
 impl core::marker::Send for zond_engine::scanner::strategy::identify::series::OsSeriesScanner
 impl core::marker::Sync for zond_engine::scanner::strategy::identify::series::OsSeriesScanner
@@ -13658,8 +13656,9 @@ pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::idle_delay(&self, &z
 pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::new(zond_engine::scanner::pacing::retry::ProbeLedger<core::net::ip_addr::IpAddr, T>) -> Self
 pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::note_answered(&mut self, core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::report(&mut self, &zond_engine::scanner::session::ScanContext, &str, zond_engine::report::ScannerKind, u128, zond_engine::report::StopReason, core::option::Option<zond_engine::model::capture::CaptureCounts>)
-pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::service_retries(&mut self, &zond_engine::scanner::session::ScanContext, std::time::Instant, bool)
-pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::service_second_ledger<U: core::marker::Copy + core::cmp::PartialEq>(&mut self, &zond_engine::scanner::session::ScanContext, &mut zond_engine::scanner::pacing::retry::ProbeLedger<core::net::ip_addr::IpAddr, U>, std::time::Instant, bool)
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::service_retries(&mut self, &zond_engine::scanner::session::ScanContext, std::time::Instant)
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::service_retries_without_settling(&mut self, &zond_engine::scanner::session::ScanContext, std::time::Instant)
+pub fn zond_engine::scanner::strategy::sweep::HostSweep<T>::service_second_ledger<U: core::marker::Copy + core::cmp::PartialEq>(&mut self, &zond_engine::scanner::session::ScanContext, &mut zond_engine::scanner::pacing::retry::ProbeLedger<core::net::ip_addr::IpAddr, U>, std::time::Instant)
 impl<T> core::marker::Freeze for zond_engine::scanner::strategy::sweep::HostSweep<T>
 impl<T> core::marker::Send for zond_engine::scanner::strategy::sweep::HostSweep<T> where T: core::marker::Send
 impl<T> core::marker::Sync for zond_engine::scanner::strategy::sweep::HostSweep<T> where T: core::marker::Sync
@@ -13733,12 +13732,6 @@ pub fn zond_engine::scanner::strategy::HostScanner::kind(&self) -> zond_engine::
 impl zond_engine::scanner::strategy::HostScanner for zond_engine::scanner::strategy::connect::ConnectScanner
 pub fn zond_engine::scanner::strategy::connect::ConnectScanner::discover_hosts<'life0, 'async_trait>(&'life0 mut self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn zond_engine::scanner::strategy::connect::ConnectScanner::kind(&self) -> zond_engine::report::ScannerKind
-impl zond_engine::scanner::strategy::HostScanner for zond_engine::scanner::strategy::identify::echo::OsEchoScanner
-pub fn zond_engine::scanner::strategy::identify::echo::OsEchoScanner::discover_hosts<'life0, 'async_trait>(&'life0 mut self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn zond_engine::scanner::strategy::identify::echo::OsEchoScanner::kind(&self) -> zond_engine::report::ScannerKind
-impl zond_engine::scanner::strategy::HostScanner for zond_engine::scanner::strategy::identify::series::OsSeriesScanner
-pub fn zond_engine::scanner::strategy::identify::series::OsSeriesScanner::discover_hosts<'life0, 'async_trait>(&'life0 mut self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn zond_engine::scanner::strategy::identify::series::OsSeriesScanner::kind(&self) -> zond_engine::report::ScannerKind
 impl zond_engine::scanner::strategy::HostScanner for zond_engine::scanner::strategy::local::LocalScanner
 pub fn zond_engine::scanner::strategy::local::LocalScanner::discover_hosts<'life0, 'async_trait>(&'life0 mut self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), zond_engine::scanner::strategy::StrategyError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn zond_engine::scanner::strategy::local::LocalScanner::kind(&self) -> zond_engine::report::ScannerKind

@@ -23,13 +23,19 @@
 //! one: they read different evidence off different hosts and share only the fact
 //! that both are asking what a machine *is* rather than what it has open.
 //!
-//! ## Why they are not discovery
+//! ## Why neither is a `HostScanner`
 //!
-//! Both implement [`HostScanner`](super::HostScanner), and that trait's summary
-//! says a strategy which finds reachable hosts. Neither does. They take the
-//! addresses the store already holds, so the trait is being used here for its
-//! shape, a run loop and a [`ScannerKind`](crate::report::ScannerKind), rather
-//! than for what it describes.
+//! Both implemented [`HostScanner`](super::HostScanner) until September 2026,
+//! and that trait's summary says a strategy which finds which hosts are
+//! reachable. Neither does: every address they are handed came out of the store
+//! because something else already found it.
+//!
+//! The impl bought a method name and the method name was untrue. Nothing ever
+//! dispatched either of them dynamically -- `Box<dyn HostScanner>` is built in
+//! one place, from the three strategies that really do discovery, and the
+//! `ScannerKind` these two report under is written at the call site rather than
+//! read from `kind()`. So the trait went and the entry point is `probe`, which
+//! is what the documentation here had been calling it all along.
 
 pub mod echo;
 pub mod series;
