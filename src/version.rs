@@ -33,7 +33,7 @@
 //! pre-release identifier does not, which is the rule both ecosystems follow
 //! and the only thing available to separate them. See [`split_pre_release`].
 //!
-//! It is still a deliberately lax order, enough to rank the version strings
+//! It is still a lax order, enough to rank the version strings
 //! services actually emit rather than a full semver grammar. What it is not is
 //! *inverted*: until September 2026 a hyphen was read as a dot throughout, so
 //! every pre-release sorted after its own release, and a host running
@@ -71,8 +71,8 @@ pub(crate) fn version_cmp(a: &str, b: &str) -> Ordering {
 /// A version split into what it releases and what it is a pre-release of, if
 /// anything.
 ///
-/// **A hyphen means two opposite things and the digit after it is what tells
-/// them apart.** Debian and Ubuntu put a package revision there, which is a
+/// A hyphen means two opposite things and the digit after it is what tells them
+/// apart. Debian and Ubuntu put a package revision there, which is a
 /// later build of the same source and sorts after the bare version:
 /// `1.21.0-1ubuntu2` is nginx 1.21.0 rebuilt, and service banners carry these
 /// constantly. Every version grammar that has a pre-release puts it in the same

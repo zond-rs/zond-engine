@@ -11,7 +11,7 @@
 //! How the engine's own code emits diagnostic events. Every macro here is
 //! `pub(crate)`, and that is the whole of its API design.
 //!
-//! **A library must not export these.** Exported from the crate root they would
+//! A library must not export these. Exported from the crate root they would
 //! be `zond_engine::info!` and `zond_engine::error!`: five of the most generic
 //! identifiers in Rust, shadowing `tracing`'s and `log`'s macros of the same
 //! names in any consumer that glob-imports this crate, and pinned by semver
@@ -81,7 +81,7 @@ mod tests {
     /// stream carrying `root privileges detected` beside `Successfully
     /// initialized hostname resolver` has two authors and reads like it.
     ///
-    /// **An initialism keeps its capitals.** `DNS resolution skipped` is not a
+    /// An initialism keeps its capitals. `DNS resolution skipped` is not a
     /// sentence beginning with a capital, it is a sentence beginning with a
     /// name, so the rule is that the first *word* must not be capitalised unless
     /// it is capitalised throughout.

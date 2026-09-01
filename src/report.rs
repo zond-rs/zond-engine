@@ -291,7 +291,7 @@ impl TargetScope {
     /// Canonicalizes the set, so the recorded ranges are the merged ones the
     /// sweep iterates rather than the raw arguments it was built from.
     ///
-    /// **`ips` comes back narrowed**, with everything `exclusions` forbids taken
+    /// `ips` comes back narrowed, with everything `exclusions` forbids taken
     /// out of it, and the scope records what that cost. Applying the policy and
     /// recording it are one call because doing either without the other is the
     /// bug: a scope recorded before the subtraction overstates what was covered,
@@ -322,7 +322,7 @@ impl TargetScope {
 
     /// The scope of a phase that sent nothing and read what `links` carried.
     ///
-    /// **Covers no address, and says so.** A listener did not probe, so it
+    /// Covers no address, and says so. A listener did not probe, so it
     /// cannot have timed anything out, so there is no address it can report as
     /// empty. The count is zero and the ranges are none, which is not a
     /// missing measurement but the honest one, and it is what stops a
@@ -356,7 +356,7 @@ impl TargetScope {
     /// to overflow that count, which is a failure to measure and is reported as
     /// one rather than as a plausible-looking number.
     ///
-    /// **`targets` comes back narrowed**, on the same terms and for the same
+    /// `targets` comes back narrowed, on the same terms and for the same
     /// reasons as [`from_ip_set`](Self::from_ip_set). A unit left holding no
     /// address at all is dropped.
     pub fn from_target_map(targets: &mut TargetMap, exclusions: &Exclusions) -> Self {
@@ -417,8 +417,8 @@ impl TargetScope {
     /// answer, and it reaches hosts holding addresses nobody could have named in
     /// advance.
     ///
-    /// **A link is not an address range and is deliberately not recorded as
-    /// one.** `fe80::/64` would be the obvious thing to put in `ranges`, and it
+    /// A link is not an address range and is not recorded as one.
+    /// `fe80::/64` would be the obvious thing to put in `ranges`, and it
     /// would make [`addresses`](Self::addresses) read eighteen quintillion:
     /// destroying the one property that type has, that a report saying it
     /// covered 254 hosts can be believed. A link is named by its interface, so
@@ -440,7 +440,7 @@ impl TargetScope {
 
     /// Whether this phase swept the link a host was found on.
     ///
-    /// **The question is about the link, not about the addresses on it.** An
+    /// The question is about the link, not about the addresses on it. An
     /// all-nodes solicitation reaches every IPv6 host on the segment whatever
     /// addresses it holds, and a host that answers one is routinely keyed under
     /// a global address: this engine prefers a routable address over a
@@ -582,7 +582,7 @@ impl EvasionRecord {
 
 /// The settings that shaped what a phase did.
 ///
-/// A deliberate subset of [`ZondConfig`]: the fields here are the ones that
+/// A subset of [`ZondConfig`]: the fields here are the ones that
 /// change which packets went out and how long the engine waited for answers, so
 /// they are the ones needed to interpret - or reproduce - a result. The rest of
 /// the config drives presentation (banner, verbosity, key handling) and has no
@@ -766,7 +766,7 @@ pub const ATTEMPTS_COUNTED: usize = 6;
 /// one that ends in [`DeadlineExpired`](StopReason::DeadlineExpired) with
 /// replies still arriving near the end almost certainly was.
 ///
-/// There is deliberately no "still running" variant. A scan loop yields its
+/// There is no "still running" variant. A scan loop yields its
 /// reason as the value it breaks with, so every exit path has to name one and
 /// the audit cannot report a reason the code never took.
 #[non_exhaustive]
@@ -833,7 +833,7 @@ impl fmt::Display for StopReason {
 ///
 /// A host count on its own cannot say why a sweep came back short, and the three
 /// possible answers call for opposite fixes. Probes or replies may have been
-/// **lost**, which is what retransmission exists for; replies may have arrived
+/// lost, which is what retransmission exists for; replies may have arrived
 /// after the scan had already **stopped**, which makes the deadline wrong rather
 /// than the network; or they may have arrived and gone **unrecognized**, which
 /// no amount of extra time or extra packets would help.
@@ -1018,7 +1018,7 @@ impl ProbeStats {
 
 /// Ground a scan decided not to cover, and why.
 ///
-/// **Not a failure**, and kept apart from one for the reason
+/// Not a failure, and kept apart from one for the reason
 /// [`unroutable`](ScanPhase::unroutable) is kept apart from both: nothing broke.
 /// The engine worked out before sending anything that some part of what it was
 /// asked for had no strategy behind it, and said so. A raw socket that would not
@@ -1417,7 +1417,7 @@ impl Attachment {
 /// `None` on a phase this process measured, which needs no attribution: it is
 /// the report's own.
 ///
-/// **The label is the caller's.** The engine opens no files and has no word for
+/// The label is the caller's. The engine opens no files and has no word for
 /// one, so whoever read the document passes the name it used for it: a path, a
 /// record id, a bucket key. [`merge`](crate::merge) is the only thing that
 /// writes a `PhaseOrigin`, and it takes the version from the source report's own
@@ -1459,7 +1459,7 @@ impl PhaseOrigin {
 
 /// Everything a [`ScanPhase`] holds, for rebuilding one that was recorded.
 ///
-/// Mirrors the phase field for field, deliberately and without a default: a
+/// Mirrors the phase field for field, without a default: a
 /// field added to [`ScanPhase`] is added here too, and every place that builds
 /// one stops compiling until it says what the new field should be. That is what
 /// keeps a journal from quietly losing what a phase gained.
@@ -1593,7 +1593,7 @@ impl ScanPhase {
     /// unprivileged phase reached its targets over plain TCP connect attempts,
     /// which see less and are more visible to the target.
     ///
-    /// **`None` for a phase this engine did not measure.** The question is about
+    /// `None` for a phase this engine did not measure. The question is about
     /// *these* strategies and the sockets *they* need, and a scan another
     /// program ran answers it about its own. Recording `false` there said an
     /// nmap sweep performed over ARP as root had no raw sockets: a claim about
@@ -2052,13 +2052,13 @@ impl ScanReport {
     /// # }
     /// ```
     ///
-    /// **Only hosts that answered.** [`Host::is_alive`] is the filter, so a host
+    /// Only hosts that answered. [`Host::is_alive`] is the filter, so a host
     /// recorded as [`Down`](HostStatus::Down), a router said it was
     /// unreachable, or [`Unknown`](HostStatus::Unknown) is left out. Probing an
     /// address nothing answered for costs a full port scan's worth of silence to
     /// learn what the sweep already established.
     ///
-    /// **One address per host, the one it is reported under.** A dual-stack host
+    /// One address per host, the one it is reported under. A dual-stack host
     /// is one machine and is scanned once, at the address
     /// [`Host::primary_ip`] picked; scanning both would report it twice, keyed
     /// separately, which is the outcome that ranking exists to prevent. A caller
@@ -2250,7 +2250,7 @@ pub enum ScannerKind {
     /// Named apart from the port scanners because it establishes no port state.
     /// It asks one question of one service and files the answer against the
     /// *host*; whether anything is listening on 161 is the port scan's to
-    /// report, and this phase deliberately does not.
+    /// report, and this phase does not.
     OsSnmp,
     /// The idle (zombie) TCP port scan: port states read off a third party's
     /// IP-ID counter rather than from any reply the target sent this scanner.
@@ -2470,7 +2470,7 @@ mod tests {
     /// A duration no clock can add to is a phase to place at its start, not a
     /// process to end.
     ///
-    /// **This crashed.** `finished_at` added a phase's `elapsed` to its start
+    /// This crashed. `finished_at` added a phase's `elapsed` to its start
     /// with `+`, which panics on overflow, and a phase's `elapsed` is not always
     /// something this engine measured: a report read out of nmap's XML carries
     /// whatever `<finished elapsed="...">` claimed, and that is a decimal number
@@ -2780,7 +2780,7 @@ mod tests {
     ///
     /// These counts answer "how much of this network did I see over IPv6",
     /// which is a different question from "how do the hosts partition", so
-    /// they deliberately do not sum to `hosts_total`, and a test that asserted
+    /// they do not sum to `hosts_total`, and a test that asserted
     /// they did would be pinning the wrong contract.
     #[test]
     fn family_counts_record_a_dual_stack_host_under_both() {

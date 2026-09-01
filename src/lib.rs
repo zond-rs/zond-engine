@@ -158,7 +158,7 @@
 //! The names most consumers need are re-exported here at the root. The modules
 //! below are the whole of it:
 //!
-//! **The modules are layered, and the layering is a rule.** Each depends only on
+//! The modules are layered, and the layering is a rule. Each depends only on
 //! those below it, and `tests/architecture.rs` reads every `crate::` path in the
 //! library, including the ones inside an expression, which is where three
 //! violations were hiding, and fails if that stops being true.
@@ -311,6 +311,6 @@ pub use crate::scanner::{discover_with_journal, listen_with_journal, scan_with_j
 pub use crate::transport::probe::SendMode;
 
 // The engine's own diagnostic macros, reachable as `crate::info!` and friends
-// from anywhere in the crate. They are deliberately not part of the public API;
+// from anywhere in the crate. They are not part of the public API;
 // see `logging` for what exporting them would cost a consumer.
 pub(crate) use crate::logging::{error, info, success, warn};

@@ -267,7 +267,7 @@ pub enum EvasionError {
 impl EvasionProfile {
     /// Whether this profile is one a scan could actually put on the wire.
     ///
-    /// **What it checks is what a profile alone can be wrong about**, with no
+    /// What it checks is what a profile alone can be wrong about, with no
     /// destination in hand: a fragment size below what a datagram can be split
     /// to, a source port of zero, padding past what a length field describes,
     /// and a hop limit of zero.
@@ -280,7 +280,7 @@ impl EvasionProfile {
     /// anywhere it could be seen. It was the one field of the four this function
     /// did not check.
     ///
-    /// It is deliberately not a check that a scan will work. Whether the
+    /// It is not a check that a scan will work. Whether the
     /// link-layer path can reach these targets, whether decoys survive egress
     /// filtering, whether a fragment size suits an IPv6 destination: those are
     /// questions about a scan and are answered against the destination in hand.
@@ -415,7 +415,7 @@ impl EvasionProfile {
     /// framing technique would change that answer: a fragmented or spoofed probe
     /// would have the engine reading its own evasion back instead of the host.
     /// So the framing state a full [`emission`](Self::emission) carries, the
-    /// spoofed hardware address and the fragmentation, is deliberately left off.
+    /// spoofed hardware address and the fragmentation, is left off.
     #[must_use]
     pub fn hop_limited_emission(&self) -> Emission {
         match self.ttl {
