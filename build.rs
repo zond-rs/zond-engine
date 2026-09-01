@@ -218,6 +218,36 @@ fn warn_unknown_gate_services<'a>(
     }
 }
 
+/// Refuses a gate whose singular and plural fields share no value.
+///
+/// `port` and `ports` AND, as do `service` and `services`, so naming a number in
+/// one and a disjoint set in the other is a gate that fits no port, ever, the same
+/// dead detection [`warn_unknown_gate_services`] guards against by another route.
+fn refuse_contradictory_gate(path: &Path, id: &str, when: &manifest::Rule) {
+    if let Some(port) = when.port
+        && !when.ports.is_empty()
+        && !when.ports.contains(&port)
+    {
+        panic!(
+            "{}: '{id}' gates on port = {port} and ports = {:?}, which share no value; \
+             the detection can never fit a port",
+            path.display(),
+            when.ports
+        );
+    }
+    if let Some(service) = &when.service
+        && !when.services.is_empty()
+        && !when.services.contains(service)
+    {
+        panic!(
+            "{}: '{id}' gates on service = '{service}' and services = {:?}, which share no \
+             value; the detection can never fit a port",
+            path.display(),
+            when.services
+        );
+    }
+}
+
 /// The service names a `[detection.when]` gate gives, both spellings together.
 fn gated_services(when: &manifest::Rule) -> impl Iterator<Item = &str> {
     when.service
@@ -327,6 +357,7 @@ fn compile_flow(
         &flow.detection.when,
         known_protocols,
     );
+    refuse_contradictory_gate(path, &flow.detection.id, &flow.detection.when);
 
     flows.push((sha256_hex(content.as_bytes()), content.to_string()));
 }
@@ -358,6 +389,7 @@ fn compile_module(
         &detection.detection.when,
         known_protocols,
     );
+    refuse_contradictory_gate(path, &detection.detection.id, &detection.detection.when);
 
     let source = resolve_module_source(&detection.compute, path);
 
@@ -409,6 +441,9 @@ fn validate_module(detection: &compute_schema::ComputeDetection, path: &Path) {
             "{file}: '{}' has version '{}', which is not major.minor.patch",
             manifest.id, manifest.version
         );
+    }
+    if manifest.title.trim().is_empty() {
+        panic!("{file}: '{}' has an empty title", manifest.id);
     }
     match (&detection.compute.source, &detection.compute.body) {
         (Some(_), Some(_)) => panic!(
@@ -490,6 +525,9 @@ fn validate_host(detection: &host_schema::HostDetection, path: &Path) {
             manifest.id, manifest.version
         );
     }
+    if manifest.title.trim().is_empty() {
+        panic!("{file}: '{}' has an empty title", manifest.id);
+    }
     if manifest.host.ports_open.is_empty() && manifest.host.services.is_empty() {
         panic!(
             "{file}: '{}' has an empty host gate, which would fire on every host",
@@ -568,27 +606,48 @@ fn compile_flow_pattern(pattern: &str, context: std::fmt::Arguments) -> pattern:
 /// not here; what the build proves is that a flow can at least send what it
 /// declares without exceeding the budget it claims.
 fn validate_flow_budget(flow: &schema::FlowDetection, path: &Path) {
-    let Some(max_bytes) = flow.detection.capabilities.max_bytes else {
-        return;
-    };
-    let mut sent: u64 = 0;
-    for step in &flow.step {
-        if let Some(send) = &step.send {
-            let bytes = unescape(send).len() as u64;
-            let iterations = step
-                .for_each
-                .as_ref()
-                .map_or(1, |for_each| for_each.items.len() as u64);
-            sent += bytes * iterations;
+    let id = &flow.detection.id;
+
+    if let Some(max_bytes) = flow.detection.capabilities.max_bytes {
+        let mut sent: u64 = 0;
+        for step in &flow.step {
+            if let Some(send) = &step.send {
+                let bytes = unescape(send).len() as u64;
+                sent += bytes * step_iterations(step);
+            }
+        }
+        if sent > u64::from(max_bytes) {
+            panic!(
+                "{}: '{id}' declares max_bytes = {max_bytes} but its steps send {sent} bytes",
+                path.display()
+            );
         }
     }
-    if sent > u64::from(max_bytes) {
-        panic!(
-            "{}: '{}' declares max_bytes = {max_bytes} but its steps send {sent} bytes",
-            path.display(),
-            flow.detection.id
-        );
+
+    // One connection per send, times a `for_each`'s item count: a flow that would
+    // open more than it declared runs out mid-sweep, halting on a refusal the
+    // report records rather than finishing. Caught here so it never ships.
+    if let Some(max_connections) = flow.detection.capabilities.max_connections {
+        let mut opened: u64 = 0;
+        for step in &flow.step {
+            if step.send.is_some() {
+                opened += step_iterations(step);
+            }
+        }
+        if opened > u64::from(max_connections) {
+            panic!(
+                "{}: '{id}' declares max_connections = {max_connections} but its steps open {opened}",
+                path.display()
+            );
+        }
     }
+}
+
+/// How many times a step's `send` runs: once, or once per `for_each` item.
+fn step_iterations(step: &schema::Step) -> u64 {
+    step.for_each
+        .as_ref()
+        .map_or(1, |for_each| for_each.items.len() as u64)
 }
 
 /// Soft issues that do not fail the build but an author should see: a class that
